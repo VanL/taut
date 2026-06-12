@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 780" role="img" aria-label="Taut logo: five colored strands woven into a knot above the wordmark TAUT">
+  <!-- Taut: many strands, one structure, held by tension alone.
+       Weave construction: each strand (a rotated ellipse) is rendered as two
+       overlapping halves via pathLength-normalized dashes. Lower halves are
+       drawn in rotation order, upper halves in reverse order, so every
+       strand passes over some neighbors and under others - a true
+       alternating weave with no hand-placed patches. Casings in background
+       white create the over/under gaps. -->
+  <rect width="1200" height="780" fill="#ffffff"/>
+
+  <g stroke-linecap="round" fill="none">
+    <!-- lower halves (param -2..52 of each ellipse), rotation order -->
+    <g transform="rotate(0 600 300)">
+      <ellipse cx="600" cy="300" rx="170" ry="64" stroke="#ffffff" stroke-width="46" pathLength="100" stroke-dasharray="54 46" stroke-dashoffset="2"/>
+      <ellipse cx="600" cy="300" rx="170" ry="64" stroke="#E23E57" stroke-width="30" pathLength="100" stroke-dasharray="54 46" stroke-dashoffset="2"/>
+    </g>
+    <g transform="rotate(36 600 300)">
+      <ellipse cx="600" cy="300" rx="170" ry="64" stroke="#ffffff" stroke-width="46" pathLength="100" stroke-dasharray="54 46" stroke-dashoffset="2"/>
+      <ellipse cx="600" cy="300" rx="170" ry="64" stroke="#F0862B" stroke-width="30" pathLength="100" stroke-dasharray="54 46" stroke-dashoffset="2"/>
+    </g>
+    <g transform="rotate(72 600 300)">
+      <ellipse cx="600" cy="300" rx="170" ry="64" stroke="#ffffff" stroke-width="46" pathLength="100" stroke-dasharray="54 46" stroke-dashoffset="2"/>
+      <ellipse cx="600" cy="300" rx="170" ry="64" stroke="#33A65E" stroke-width="30" pathLength="100" stroke-dasharray="54 46" stroke-dashoffset="2"/>
+    </g>
+    <g transform="rotate(108 600 300)">
+      <ellipse cx="600" cy="300" rx="170" ry="64" stroke="#ffffff" stroke-width="46" pathLength="100" stroke-dasharray="54 46" stroke-dashoffset="2"/>
+      <ellipse cx="600" cy="300" rx="170" ry="64" stroke="#2F7FD0" stroke-width="30" pathLength="100" stroke-dasharray="54 46" stroke-dashoffset="2"/>
+    </g>
+    <g transform="rotate(144 600 300)">
+      <ellipse cx="600" cy="300" rx="170" ry="64" stroke="#ffffff" stroke-width="46" pathLength="100" stroke-dasharray="54 46" stroke-dashoffset="2"/>
+      <ellipse cx="600" cy="300" rx="170" ry="64" stroke="#8A4FBE" stroke-width="30" pathLength="100" stroke-dasharray="54 46" stroke-dashoffset="2"/>
+    </g>
+
+    <!-- upper halves (param 48..102), reverse rotation order -->
+    <g transform="rotate(144 600 300)">
+      <ellipse cx="600" cy="300" rx="170" ry="64" stroke="#ffffff" stroke-width="46" pathLength="100" stroke-dasharray="54 46" stroke-dashoffset="-48"/>
+      <ellipse cx="600" cy="300" rx="170" ry="64" stroke="#8A4FBE" stroke-width="30" pathLength="100" stroke-dasharray="54 46" stroke-dashoffset="-48"/>
+    </g>
+    <g transform="rotate(108 600 300)">
+      <ellipse cx="600" cy="300" rx="170" ry="64" stroke="#ffffff" stroke-width="46" pathLength="100" stroke-dasharray="54 46" stroke-dashoffset="-48"/>
+      <ellipse cx="600" cy="300" rx="170" ry="64" stroke="#2F7FD0" stroke-width="30" pathLength="100" stroke-dasharray="54 46" stroke-dashoffset="-48"/>
+    </g>
+    <g transform="rotate(72 600 300)">
+      <ellipse cx="600" cy="300" rx="170" ry="64" stroke="#ffffff" stroke-width="46" pathLength="100" stroke-dasharray="54 46" stroke-dashoffset="-48"/>
+      <ellipse cx="600" cy="300" rx="170" ry="64" stroke="#33A65E" stroke-width="30" pathLength="100" stroke-dasharray="54 46" stroke-dashoffset="-48"/>
+    </g>
+    <g transform="rotate(36 600 300)">
+      <ellipse cx="600" cy="300" rx="170" ry="64" stroke="#ffffff" stroke-width="46" pathLength="100" stroke-dasharray="54 46" stroke-dashoffset="-48"/>
+      <ellipse cx="600" cy="300" rx="170" ry="64" stroke="#F0862B" stroke-width="30" pathLength="100" stroke-dasharray="54 46" stroke-dashoffset="-48"/>
+    </g>
+    <g transform="rotate(0 600 300)">
+      <ellipse cx="600" cy="300" rx="170" ry="64" stroke="#ffffff" stroke-width="46" pathLength="100" stroke-dasharray="54 46" stroke-dashoffset="-48"/>
+      <ellipse cx="600" cy="300" rx="170" ry="64" stroke="#E23E57" stroke-width="30" pathLength="100" stroke-dasharray="54 46" stroke-dashoffset="-48"/>
+    </g>
+  </g>
+
+  <!-- Wordmark: geometric caps drawn as paths (no font dependency). -->
+  <g fill="#39414B">
+    <!-- T -->
+    <path d="M340 560 h112 v30 h-41 v90 h-30 v-90 h-41 Z"/>
+    <!-- A (evenodd: outer shape + triangular counter above the crossbar) -->
+    <path fill-rule="evenodd" d="M484 680 L522 560 L558 560 L596 680 L566 680 L558.5 656 L521.5 656 L514 680 Z
+                                 M529 630 L551 630 L540 593 Z"/>
+    <!-- U -->
+    <path d="M628 560 h30 v82 q0 14 22 14 q22 0 22 -14 v-82 h30 v84 q0 40 -52 40 q-52 0 -52 -40 Z"/>
+    <!-- T -->
+    <path d="M760 560 h112 v30 h-41 v90 h-30 v-90 h-41 Z"/>
+  </g>
+</svg>

@@ -1,0 +1,17 @@
+.DS_Store
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+.hypothesis/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+__pycache__/
+*.py[cod]
+.venv/
+.taut.db
+.taut.lock
+.taut.db-wal
+.taut.db-shm

@@ -1,0 +1,348 @@
+# Writing Implementation Plans
+
+Plans must be detailed enough that a skilled developer with little or no
+repository context can implement them correctly without guesswork.
+
+Write every plan as if the implementer is technically strong but:
+
+- has zero context for the codebase
+- knows almost nothing about the local tooling or domain
+- will make poor local design choices if the plan leaves room for them
+- and tends to choose mock-heavy or shallow verification unless the real proof
+  is named
+
+If the plan is ambiguous, assume the implementer will choose the wrong file,
+the wrong abstraction, and the wrong test seam.
+
+For risky or boundary-crossing work, the plan is not review-ready or
+implementation-ready until it also satisfies the companion runbook:
+
+- `docs/agent-context/runbooks/hardening-plans.md`
+
+Role split:
+
+- this runbook defines the required plan shape, mandatory sections, and minimum
+  blockers before implementation
+- `hardening-plans.md` defines the rewrite criteria, rationale, and generic
+  examples for risky work
+
+## Audience Assumptions
+
+- Strong engineer, limited or zero project context.
+- Unfamiliar with repo-specific helper paths unless you point to them.
+- Prone to over-abstracting or future-proofing if reuse paths are not explicit.
+- Prone to adding weak tests unless the production path is spelled out.
+- Will follow the plan literally, including ambiguities.
+
+## Planning Standard
+
+Plans are executable documents, not rough notes.
+
+- Document everything needed to succeed on the first pass:
+  source specs, files to touch, files to read first, helpers to reuse,
+  invariants to preserve, tests to write, and commands to run.
+- State what must not change, not just what should be added.
+- Break work into bite-sized, dependency-ordered tasks. Each task should be
+  small enough to implement and verify independently.
+- Plan for independent review, not just author self-checking.
+- Prefer over-prescribing boundaries and load-bearing behavior to leaving room
+  for implementer inference.
+- Prefer explicit local reuse over invention.
+- Apply YAGNI aggressively.
+- For risky changes, write rollback and rollout notes early enough to shape the
+  task breakdown instead of appending them at the end.
+- Required reading should describe the current structure and load-bearing
+  behavior, not only name files.
+- Red-green TDD is the default when the behavior can be expressed cleanly as a
+  failing test first (see `runbooks/testing-patterns.md`, rule 5). If not, say
+  why and name the smallest concrete proof that replaces it.
+
+If a first draft is structurally complete but still feels easy to implement
+wrong, or if the change is risky, use the companion runbook:
+
+- `docs/agent-context/runbooks/hardening-plans.md`
+
+## When Hardening Is Mandatory
+
+Treat `hardening-plans.md` as required input when any of these are true:
+
+- the change introduces async, deferred, queued, or background work
+- the same core logic must run in more than one execution context
+- a public contract, storage format, CLI shape, or compatibility surface is
+  changing
+- rollback depends on backward compatibility or rollout order
+- the work introduces new persistence, temp-file, or cleanup lifecycle
+- the change contains a one-way door or destructive edge
+
+## File Placement
+
+- Put plans in `docs/plans/`.
+- Prefer descriptive filenames.
+- Use a date prefix for new plans when possible:
+  `YYYY-MM-DD-short-name-plan.md`.
+
+## Required Plan Sections
+
+### 1. Goal
+
+One short paragraph on what is changing and why.
+
+### 2. Source Documents
+
+Link the source spec(s) and any existing plan, README, or implementation note
+that defines the desired outcome.
+
+Use exact spec files and section identifiers when they exist. Prefer:
+
+```text
+Source specs:
+- docs/specs/00-some-spec.md [ABC-2], [ABC-4]
+- docs/specs/01-another-spec.md [XYZ-1.2]
+```
+
+If no spec exists, say so plainly:
+
+```text
+Source spec: None — bug fix / refactor / tooling change
+```
+
+### 3. Context and Key Files
+
+For the change, list:
+
+- files to modify
+- files to read first
+- style or guidance docs to consult
+- shared helpers or patterns that must be reused
+- what the important existing files, entry points, or contracts currently do
+- which current class, function, command, route, or module owns the behavior
+- which registrations, imports, auth rules, cleanup jobs, or lock semantics are
+  load-bearing today when they matter
+
+For complex or risky changes, required reading should not stop at file paths.
+Add one or two comprehension questions so the implementer can verify they
+understood the load-bearing behavior before editing.
+
+Do not make the implementer infer the file list from later prose.
+If the reader could still open the file cold and guess wrong about where or how
+to edit, this section is incomplete.
+
+### 4. Invariants and Constraints
+
+Call out what must stay true. At minimum, consider:
+
+- behavior or contract invariants
+- boundaries that must not split into parallel paths
+- compatibility constraints
+- hidden couplings or state that crosses boundaries
+- which failures are fatal versus best-effort
+- which auxiliary failures must not downgrade a successful core operation
+- lifecycle constraints for deferred work, temp files, or queued inputs
+- rollback compatibility that must hold during rollout
+- one-way doors that need a higher verification or rollout bar
+- review gates such as no drive-by refactor, no silent CLI change, or no new
+  dependency
+
+State invariants before or alongside the task breakdown, not after it. If the
+plan only says what to build and not what must not move, it is not ready.
+
+### 5. Tasks
+
+Use a numbered, dependency-ordered checklist. Each task should be small enough
+to implement and verify independently.
+
+For each task, include:
+
+- outcome
+- exact files to touch
+- what to read before editing
+- helpers or patterns to reuse
+- tests to add or update
+- stop-and-re-evaluate gates when the implementation starts drifting
+- per-task done signal
+
+When relevant, tasks should also say:
+
+- whether the task is introducing a wrapper or the core work
+- whether rollback depends on the task remaining backward-compatible
+- whether the task touches a one-way door that needs narrower sequencing
+- what new evidence would force replanning instead of continuing implementation
+
+Prefer:
+
+```text
+2. Update the existing serializer path to emit the new field.
+   - Files to touch: src/serializer.py, tests/test_serializer.py
+   - Read first: docs/specs/00-api.md [API-3]
+   - Reuse the current response builder; do not add a second formatter
+   - Verify with the targeted test file
+```
+
+Not:
+
+```text
+2. Update serialization
+```
+
+### 6. Testing Plan
+
+Every plan must say what to test and how.
+
+Include:
+
+- which harness or layer to use
+- which test file(s) to update or add
+- which commands to run
+- what observable behavior should prove the change
+- which invariants the tests protect
+- what should not be mocked
+
+Bias the testing plan toward contract and behavior:
+
+- public request/response shapes
+- durable side effects
+- externally visible state transitions
+- compatibility behavior
+
+Do not leave the implementer to infer the anti-mocking posture. If a real
+dependency must stay real, say so explicitly.
+
+If the plan says only “write tests” without naming what must stay real, what
+may be mocked, and which contract the proof protects, the testing plan is
+incomplete.
+
+For docs-only changes, say that verification is by inspection and document
+quality gates instead of runtime behavior.
+
+### 7. Verification and Gates
+
+List the exact commands to run and what success looks like.
+
+Every plan should distinguish:
+
+- per-task verification
+- final gates before claiming completion
+
+For changes that affect runtime behavior, also say:
+
+- how success will be observed after deploy
+- what rollout sequencing matters
+- what rollback path exists
+- what operational signal should confirm the change worked
+
+For risky changes, write the rollback notes before implementation starts. If
+you cannot describe rollback or safe rollout cleanly, stop and revise the plan
+before coding.
+
+### 8. Independent Review Loop
+
+Every non-trivial plan should say how independent review will happen.
+
+At minimum, include:
+
+- which other agent or agent family should review the plan
+- which files and docs the reviewer should read
+- the review prompt or review stance
+- how feedback will be handed back to the plan author
+
+Recommended prompt:
+
+> Read the plan at [path]. Carefully examine the plan and the associated code.
+> Look for errors, bad ideas, and latent ambiguities. Don't do any
+> implementation, but answer carefully: Could you implement this confidently and
+> correctly if asked?
+
+The authoring agent must then consider each review point explicitly and either:
+
+- update the plan
+- explain why the current path is still the best choice
+- or mark the point out of scope with reasoning
+
+If the reviewer says they could not implement the plan confidently and
+correctly, treat that as a blocker until the ambiguity is resolved or the
+limitation is recorded explicitly.
+
+### 9. Out of Scope
+
+State what is explicitly not changing. This reduces scope creep.
+
+### 10. Fresh-Eyes Review
+
+Before considering the plan complete, re-read it as if you are a new engineer.
+
+Check for:
+
+- missing file paths
+- ambiguous phrases like “update the logic”
+- unstated invariants
+- missing test harness or verification commands
+- tasks that are too large to review safely
+- hidden assumptions about local style or tooling
+- accidental drift away from the requested direction
+
+Fix those gaps and re-read the plan again.
+
+If tightening the plan would require materially changing scope, architecture, or
+direction, stop and report that instead of quietly rewriting the task.
+
+## Plan Hardening Checklist
+
+Before treating a plan as review-ready, confirm that it covers these when
+relevant:
+
+- invariants named before tasks
+- hidden couplings and boundary-crossing state called out
+- wrapper logic separated from core work when the same logic spans contexts
+- stop-and-re-evaluate gates included for risky tasks
+- explicit out-of-scope notes
+- anti-mocking guidance
+- contract-focused tests
+- fatal versus best-effort error-path priorities
+- post-deploy success signals
+- current-file or current-contract context
+- rollout sequencing and rollback
+- rollback written early enough to shape the design
+- one-way doors
+- required reading with comprehension questions
+
+## Blockers Before Implementation
+
+Do not start implementation on risky work if the plan is missing any of these:
+
+- invariants that say what must not change
+- enough current-structure context to find the right edit point
+- anti-mocking guidance for the important proof
+- rollback or rollout notes when order or compatibility matters
+- an independent review loop
+- deferred-processing lifecycle constraints
+- required reading with comprehension questions
+
+For the deeper rationale and examples behind this checklist, see:
+
+- `docs/agent-context/runbooks/hardening-plans.md`
+
+## Backlink Rule
+
+When a plan implements a spec in `docs/specs/`, add a backlink in that spec
+under `## Related Plans` or `## Plans`.
+
+When the touched spec already contains nearby implementation notes such as
+`_Implementation snapshot_`, `_Implementation status_`, or
+`_Implementation mapping_`, update those notes in the same change.
+
+## Anti-Patterns
+
+- “Update the system” without naming the file, path, or invariant involved
+- citing only a whole spec document when section codes exist
+- assuming the implementer knows local helpers or style rules
+- tasks that bundle several unrelated edits into one step
+- “add tests” without naming the layer, harness, or regression
+- plans that lean on mocks for core behavior
+- plans that require independent review but never say who reviews them or how
+  feedback is handled
+- plans that describe what to build but not what must not change
+- plans that omit rollback, rollout, or one-way doors on risky changes
+- plans that introduce async or deferred processing without input-lifecycle
+  answers
+- future-proofing or abstraction decisions left to the implementer
+- over-scoping with unrelated cleanup

@@ -1,0 +1,84 @@
+# Agent Entry Point
+
+## Shared Agent Context
+
+Canonical shared context lives in `docs/agent-context/`.
+
+Required read order for any agent operating in this repository:
+
+1. `docs/agent-context/README.md`
+2. `docs/agent-context/decision-hierarchy.md`
+3. `docs/agent-context/principles.md`
+4. `docs/agent-context/engineering-principles.md`
+5. Relevant runbook(s) in `docs/agent-context/runbooks/`
+6. `docs/agent-context/lessons.md`
+7. `docs/lessons.md`
+
+If local defaults conflict with repository guidance, follow the decision policy
+in `docs/agent-context/decision-hierarchy.md`.
+
+## Project Conventions
+
+- Specs live in `docs/specs/`.
+- Plans live in `docs/plans/`.
+- Implementation docs live in `docs/implementation/`.
+- Reusable skills live in `skills/`.
+- Durable lessons learned live in `docs/lessons.md`.
+- Documentation maintenance is part of the definition of done for each change.
+- Red-green TDD is the default for behavior changes; exceptions must be
+  explicit and name the substitute proof
+  (see `docs/agent-context/runbooks/testing-patterns.md`, rule 5).
+- Non-trivial changes should start with a dated plan in `docs/plans/`
+  (see [DOM-5] in `docs/specs/01-development-documentation-operating-model.md`).
+- Risky or boundary-crossing changes should also read
+  `docs/agent-context/runbooks/hardening-plans.md` and treat its checklist as
+  required, not optional. Risky includes async or deferred work, contract
+  changes, new persistence or cleanup lifecycles, rollout sequencing, and
+  one-way doors.
+- Tool-specific root aliases such as `CLAUDE.md` should symlink to `AGENTS.md`
+  when the environment supports symlinks; thin pointer files are the fallback.
+- Optimize for agent usability, not just human readability. If something seems
+  clear to a human but ambiguous to an agent, call that out and suggest a
+  concrete fix.
+- Agent-usable guidance should make four things explicit:
+  owner, boundary, verification, and the required action.
+- Non-trivial plans should receive an independent review pass, preferably from a
+  different agent family than the authoring agent (see [DOM-5] and [DOM-11]).
+- Larger changes should run an independent review after each meaningful slice
+  and again before completion. A meaningful slice is a stage where another
+  engineer could review a coherent partial result without needing the rest of
+  the change to exist yet.
+- Specs should use stable section/reference codes so plans and code can cite
+  exact requirements.
+- Implementation docs should explain the why, boundaries, and tradeoffs of the
+  code, not just narrate the current how.
+
+## If You Are New Here
+
+Start with:
+
+1. `docs/README.md`
+2. `docs/specs/00-specs-index.md`
+3. `docs/specs/01-development-documentation-operating-model.md`
+4. `docs/implementation/00-implementation-index.md`
+5. `docs/implementation/01-documentation-system.md`
+6. `docs/implementation/02-repository-map.md`
+7. `docs/implementation/03-agent-inventory.md`
+
+## Definition of Done
+
+Do not consider work complete until:
+
+- the requested behavior is implemented or the blocker is explicit
+- verification has produced concrete evidence:
+  changed files, verification command or inspection gate, and observed result or
+  residual risk (see [DOM-10])
+- risky work has explicit invariants, hidden couplings, anti-mocking guidance,
+  rollback or rollout notes, and post-deploy success signals where relevant
+- the relevant plan, spec, and implementation docs are aligned
+- an independent review has been run for non-trivial work and its feedback has
+  been incorporated or explicitly answered
+- related repository maps or ownership notes are updated when needed
+- any skill or runbook used heavily during the work has been evaluated for
+  possible improvement
+- durable lessons are recorded if the work exposed a reusable correction
