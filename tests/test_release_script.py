@@ -207,6 +207,43 @@ def test_plan_tag_action_rejects_remote_tag_at_different_commit() -> None:
         )
 
 
+def test_dry_run_branch_push_reports_detached_head(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    release = _load_release_module()
+    pushed_commands: list[tuple[str, ...]] = []
+
+    def fake_capture_command(command: tuple[str, ...]) -> str:
+        assert command == ("git", "rev-parse", "--abbrev-ref", "HEAD")
+        return "HEAD"
+
+    def fake_run_command(command: tuple[str, ...], *, dry_run: bool = False) -> None:
+        pushed_commands.append(command)
+
+    monkeypatch.setattr(release, "capture_command", fake_capture_command)
+    monkeypatch.setattr(release, "run_command", fake_run_command)
+
+    release.push_current_branch(dry_run=True)
+
+    assert "DRY RUN: detached HEAD" in capsys.readouterr().out
+    assert pushed_commands == []
+
+
+def test_real_branch_push_rejects_detached_head(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _load_release_module()
+
+    def fake_capture_command(command: tuple[str, ...]) -> str:
+        assert command == ("git", "rev-parse", "--abbrev-ref", "HEAD")
+        return "HEAD"
+
+    monkeypatch.setattr(release, "capture_command", fake_capture_command)
+
+    with pytest.raises(SystemExit, match="Cannot release from a detached HEAD"):
+        release.push_current_branch(dry_run=False)
+
+
 def test_remote_tag_commit_fails_on_remote_inspection_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

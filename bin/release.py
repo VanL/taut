@@ -190,6 +190,18 @@ def current_branch() -> str:
     return branch
 
 
+def push_current_branch(*, dry_run: bool) -> None:
+    branch = capture_command(("git", "rev-parse", "--abbrev-ref", "HEAD"))
+    if branch == "HEAD":
+        if dry_run:
+            print(
+                "DRY RUN: detached HEAD; a real release would stop before branch push"
+            )
+            return
+        fail("Cannot release from a detached HEAD")
+    run_command(("git", "push", "origin", branch), dry_run=dry_run)
+
+
 def is_dirty_worktree() -> bool:
     return bool(capture_command(("git", "status", "--porcelain")))
 
@@ -567,8 +579,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     prepare_tag(tag_action, dry_run=args.dry_run)
 
-    branch = current_branch()
-    run_command(("git", "push", "origin", branch), dry_run=args.dry_run)
+    push_current_branch(dry_run=args.dry_run)
     push_tag(tag_action, dry_run=args.dry_run)
     print_publish_note(state.tag_name)
     return 0
