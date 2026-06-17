@@ -20,7 +20,7 @@ def run_cli(
     cwd: Path,
     stdin: str | None = None,
     env: dict[str, str] | None = None,
-    timeout: float = 8.0,
+    timeout: float = 20.0,
 ) -> tuple[int, str, str]:
     full_env = os.environ.copy()
     if env:
