@@ -3,8 +3,8 @@
 *Slack in your terminal, for you and your agents. No server, no daemon, no
 config, no accounts. One SQLite file.*
 
-> **Status:** v0.1.1 is prepared for source release; PyPI publication is
-> pending the package-name request. This README is the contract for it —
+> **Status:** v0.1.1 is prepared for GitHub source release; PyPI publication
+> is pending the package-name request. This README is the contract for it —
 > written first, on purpose. The full specification lives in
 > [`docs/specs/02-taut-core.md`](docs/specs/02-taut-core.md).
 
@@ -71,12 +71,15 @@ today, one Postgres away from a few machines ([roadmap](#roadmap)).
 ## Installation
 
 ```bash
-pipx install taut        # CLI use
-uv add taut              # as a library
+pipx install "git+https://github.com/VanL/taut.git@v0.1.1"       # CLI use
+uv add "taut @ git+https://github.com/VanL/taut.git@v0.1.1"      # as a library
 ```
 
 Requirements: Python 3.11+. Runtime dependencies are `simplebroker`
 (which itself has none) and `psutil` for cross-platform process metadata.
+
+PyPI install names stay out of the documented path until the `taut` package
+name is cleared.
 
 ## Quick Start
 
@@ -375,9 +378,9 @@ In order, each behind its own spec (this project is docs-first):
 - **`taut summon` — captive agents.** Spawn an agent *as a thread
   member*: messages in the thread become its prompts, its output becomes
   replies. Ships as a separate extension (`taut-summon`) so the core
-  stays one-dependency, runs daemon-free, and speaks the same agent-task
-  contract Weft pioneered — same control verbs, same queue shapes —
-  with a conformance suite both projects can run.
+  keeps the same small dependency set, runs daemon-free, and speaks the
+  same agent-task contract Weft pioneered — same control verbs, same queue
+  shapes — with a conformance suite both projects can run.
 - **TUI** (`taut[tui]`): panes for threads, live presence, zero new core
   dependencies.
 - **Redis/Valkey backend.** Queues already work (`simplebroker-redis`).
@@ -397,13 +400,24 @@ and both are kept in CI-grade sync with the code. Start with
 git clone git@github.com:VanL/taut.git && cd taut
 uv sync --all-extras
 uv run pytest
-uv run ruff check taut tests && uv run ruff format --check taut tests
-uv run mypy taut
+uv run ruff check taut tests bin
+uv run ruff format --check taut tests bin
+uv run mypy taut tests bin/release.py
 ```
 
 Tests follow the house anti-mocking rule: the broker is never mocked,
 identity tests spawn real process chains, and CLI tests drive the real
 entry point.
+
+Release prep is local and GitHub-only:
+
+```bash
+python bin/release.py --dry-run
+python bin/release.py --version X.Y.Z
+```
+
+The helper updates version files, runs the release gates, manages `vX.Y.Z`
+tags, and pushes to GitHub. It does not upload to PyPI.
 
 ## License
 

@@ -9,6 +9,7 @@ Quick pointers to the key guidance documents in this repository.
 | `AGENTS.md` | Canonical agent entry point |
 | `CLAUDE.md` | Alias for tools that expect Claude-style root guidance |
 | `README.md` | Product face and v0.1 behavior contract (see `docs/specs/02-taut-core.md`) |
+| `bin/release.py` | GitHub-only release helper for version sync, release gates, and `vX.Y.Z` tags |
 
 ## Shared Agent Context
 
@@ -43,6 +44,7 @@ Quick pointers to the key guidance documents in this repository.
 | `docs/plans/README.md` | Plan directory rules |
 | `docs/plans/2026-06-12-taut-foundation-plan.md` | Active plan for the v0.1 implementation |
 | `docs/plans/2026-06-12-taut-0.1.1-hardening-plan.md` | Hardening plan for handle quality, [TAUT-11] proof burndown, README rendering, and 0.1.1 release |
+| `docs/plans/2026-06-17-github-release-helper-plan.md` | GitHub-only release-helper plan while PyPI name clearance is pending |
 | `docs/implementation/00-implementation-index.md` | Numbered entry point for implementation docs |
 | `docs/implementation/01-documentation-system.md` | Why the documentation system is shaped this way |
 | `docs/implementation/03-agent-inventory.md` | Current observed agent availability and review preference |

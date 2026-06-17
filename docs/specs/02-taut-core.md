@@ -732,7 +732,8 @@ Contract:
   converge on membership changes within the interval.
 
 The TUI (future) is a consumer of `TautClient` + `TautWatcher`, ships as
-the optional extra `taut[tui]`, and adds no third dependency to the core.
+the optional extra `taut[tui]`, and adds no new runtime dependency to the
+core package.
 
 ## 9. Trust Model [TAUT-9]
 
@@ -934,3 +935,5 @@ extra, own spec.
 - `docs/plans/2026-06-12-taut-0.1.1-hardening-plan.md` — post-0.1.0
   hardening slice: handle-quality fix, [TAUT-11] burndown, renderer
   conformance to the README, round-5 review, 0.1.1 tag.
+- `docs/plans/2026-06-17-github-release-helper-plan.md` — GitHub-only
+  release helper while the PyPI `taut` package-name request is pending.

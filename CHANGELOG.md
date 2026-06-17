@@ -12,6 +12,8 @@
 - Completed the remaining [TAUT-11] proof obligations for concurrent writer
   processes, mid-watch joins, idle peek queues, and continuity-token acts-as.
 - Added strict mypy coverage for the test suite (`mypy taut tests`).
+- Added a GitHub-only `bin/release.py` helper for version sync, local release
+  gates, and `vX.Y.Z` tag management while PyPI name clearance is pending.
 
 ## 0.1.0 - 2026-06-12
 

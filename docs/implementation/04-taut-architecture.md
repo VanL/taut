@@ -30,6 +30,12 @@ SimpleBroker owns the storage and queue substrate; `psutil` is scoped to
 cross-platform process metadata for identity capture so taut does not rely on
 fragile platform-specific argv parsing for the core recognition path.
 
+Release tooling lives in `bin/release.py`. Its boundary is repository hygiene,
+not runtime behavior: it verifies that `pyproject.toml` and
+`taut/_constants.py` stay in sync, runs the typed/lint/build release gates,
+plans `vX.Y.Z` tag actions, and checks GitHub Release state. It deliberately has
+no PyPI upload path while the `taut` package-name request is unresolved.
+
 All taut-owned relational state flows through `taut/schema.py`. It is the only
 module with sidecar SQL. That boundary matters because SQL sidecar tables are
 the v0.1 state mapping, while [TAUT-12.2] reserves a future non-SQL mapping
@@ -87,6 +93,7 @@ backends whose native waiters only wake for queue writes.
 | `taut/client.py` | Public API and all verb semantics |
 | `taut/watcher.py` | Vendored multi-queue watcher and `TautWatcher` |
 | `taut/cli.py` | Argparse tree, rendering, exit-code mapping |
+| `bin/release.py` | GitHub-only release helper and local release gates |
 | `tests/` | Contract tests against real `.taut.db` files and subprocess CLI |
 
 ## Change Guidance
@@ -100,9 +107,9 @@ Before completion, run:
 
 ```bash
 uv run pytest
-uv run ruff check taut tests
-uv run ruff format --check taut tests
-uv run mypy taut tests
+uv run ruff check taut tests bin
+uv run ruff format --check taut tests bin
+uv run mypy taut tests bin/release.py
 uv build
 ```
 
@@ -113,3 +120,4 @@ consuming broker APIs, SQL outside `schema.py`, and `Queue.write()`.
 
 - `docs/plans/2026-06-12-taut-foundation-plan.md`
 - `docs/plans/2026-06-12-taut-0.1.1-hardening-plan.md`
+- `docs/plans/2026-06-17-github-release-helper-plan.md`
