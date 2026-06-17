@@ -138,6 +138,13 @@ ignored noise: they caught detached-head release dry-run behavior, Windows
 `psutil` terminal fallback handling, legacy stdout encoding, POSIX-only test
 assumptions, and timing-sensitive concurrent writer tests.
 
+Post-release follow-up:
+
+- Test workflow run `27700821362` was cancelled after two runners wedged in the
+  `Install uv` setup action before taut code ran. The workflows already had job
+  timeouts, but they were too coarse for this failure mode. Setup, build,
+  verification, and publish steps now have explicit step-level timeouts.
+
 ## 7. Rollback
 
 Remove the new `.github/workflows/*.yml` files and revert the small optional

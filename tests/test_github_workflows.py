@@ -26,6 +26,24 @@ def test_test_workflow_is_reusable_and_runs_release_gates() -> None:
     assert "uv build" in workflow
 
 
+def test_setup_uv_steps_have_tight_timeouts() -> None:
+    for name in ("test.yml", "release.yml"):
+        lines = _workflow(name).splitlines()
+        setup_uv_lines = [
+            index
+            for index, line in enumerate(lines)
+            if "uses: astral-sh/setup-uv@" in line
+        ]
+
+        assert setup_uv_lines, name
+        for index in setup_uv_lines:
+            step_header = lines[max(0, index - 2) : index + 2]
+            assert any("timeout-minutes: 5" in line for line in step_header), (
+                name,
+                index,
+            )
+
+
 def test_release_gate_runs_tests_before_publishing() -> None:
     workflow = _workflow("release-gate.yml")
 
