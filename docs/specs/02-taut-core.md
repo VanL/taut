@@ -937,3 +937,5 @@ extra, own spec.
   conformance to the README, round-5 review, 0.1.1 tag.
 - `docs/plans/2026-06-17-github-release-helper-plan.md` — GitHub-only
   release helper while the PyPI `taut` package-name request is pending.
+- `docs/plans/2026-06-17-github-actions-release-workflows-plan.md` —
+  GitHub Actions test and GitHub-only release publication workflows.

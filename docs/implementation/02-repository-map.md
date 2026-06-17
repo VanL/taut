@@ -10,6 +10,9 @@ Quick pointers to the key guidance documents in this repository.
 | `CLAUDE.md` | Alias for tools that expect Claude-style root guidance |
 | `README.md` | Product face and v0.1 behavior contract (see `docs/specs/02-taut-core.md`) |
 | `bin/release.py` | GitHub-only release helper for version sync, release gates, and `vX.Y.Z` tags |
+| `.github/workflows/test.yml` | Push/PR/reusable pytest, lint, type, and build gates |
+| `.github/workflows/release-gate.yml` | `v*` tag gate that runs tests, verifies tag stability, and publishes release artifacts |
+| `.github/workflows/release.yml` | Reusable GitHub Release artifact builder/uploader; no PyPI path |
 
 ## Shared Agent Context
 
@@ -45,6 +48,7 @@ Quick pointers to the key guidance documents in this repository.
 | `docs/plans/2026-06-12-taut-foundation-plan.md` | Active plan for the v0.1 implementation |
 | `docs/plans/2026-06-12-taut-0.1.1-hardening-plan.md` | Hardening plan for handle quality, [TAUT-11] proof burndown, README rendering, and 0.1.1 release |
 | `docs/plans/2026-06-17-github-release-helper-plan.md` | GitHub-only release-helper plan while PyPI name clearance is pending |
+| `docs/plans/2026-06-17-github-actions-release-workflows-plan.md` | GitHub Actions test and GitHub-only release workflow plan |
 | `docs/implementation/00-implementation-index.md` | Numbered entry point for implementation docs |
 | `docs/implementation/01-documentation-system.md` | Why the documentation system is shaped this way |
 | `docs/implementation/03-agent-inventory.md` | Current observed agent availability and review preference |

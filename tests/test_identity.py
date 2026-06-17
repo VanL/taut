@@ -161,6 +161,19 @@ def test_ps_fallback_uses_reconstructed_argv0_before_truncated_comm(
     assert proc.argv == (str(executable), "--print")
 
 
+def test_login_name_falls_back_without_pwd(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The identity module must import and resolve a login name on platforms
+    without the Unix-only ``pwd`` module."""
+
+    def fake_getuser() -> str:
+        return "windows-user"
+
+    monkeypatch.setattr(identity, "_PWD", None)
+    monkeypatch.setattr(identity.getpass, "getuser", fake_getuser)
+
+    assert identity._login_name(0) == "windows-user"
+
+
 @pytest.mark.usefixtures("clean_env")
 def test_recognition_survives_fresh_shell_per_command(tmp_path: Path) -> None:
     """[TAUT-5.3]: the same member must resolve across separate shell

@@ -35,6 +35,11 @@ not runtime behavior: it verifies that `pyproject.toml` and
 `taut/_constants.py` stay in sync, runs the typed/lint/build release gates,
 plans `vX.Y.Z` tag actions, and checks GitHub Release state. It deliberately has
 no PyPI upload path while the `taut` package-name request is unresolved.
+GitHub Actions mirrors that boundary: `.github/workflows/test.yml` owns normal
+push/PR gates and is reusable, `.github/workflows/release-gate.yml` runs on
+`v*` tags, reuses the test workflow, verifies that the tag still points at the
+tested commit, and calls `.github/workflows/release.yml` to build artifacts and
+create the GitHub Release. No workflow uploads to PyPI.
 
 All taut-owned relational state flows through `taut/schema.py`. It is the only
 module with sidecar SQL. That boundary matters because SQL sidecar tables are
@@ -94,6 +99,7 @@ backends whose native waiters only wake for queue writes.
 | `taut/watcher.py` | Vendored multi-queue watcher and `TautWatcher` |
 | `taut/cli.py` | Argparse tree, rendering, exit-code mapping |
 | `bin/release.py` | GitHub-only release helper and local release gates |
+| `.github/workflows/` | GitHub Actions test and GitHub-only release publication gates |
 | `tests/` | Contract tests against real `.taut.db` files and subprocess CLI |
 
 ## Change Guidance
@@ -121,3 +127,4 @@ consuming broker APIs, SQL outside `schema.py`, and `Queue.write()`.
 - `docs/plans/2026-06-12-taut-foundation-plan.md`
 - `docs/plans/2026-06-12-taut-0.1.1-hardening-plan.md`
 - `docs/plans/2026-06-17-github-release-helper-plan.md`
+- `docs/plans/2026-06-17-github-actions-release-workflows-plan.md`

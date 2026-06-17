@@ -417,7 +417,9 @@ python bin/release.py --version X.Y.Z
 ```
 
 The helper updates version files, runs the release gates, manages `vX.Y.Z`
-tags, and pushes to GitHub. It does not upload to PyPI.
+tags, and pushes to GitHub. Tag pushes run the GitHub Actions release gate,
+which creates the GitHub Release and uploads the built source/wheel artifacts.
+It does not upload to PyPI.
 
 ## License
 

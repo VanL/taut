@@ -14,6 +14,8 @@
 - Added strict mypy coverage for the test suite (`mypy taut tests`).
 - Added a GitHub-only `bin/release.py` helper for version sync, local release
   gates, and `vX.Y.Z` tag management while PyPI name clearance is pending.
+- Added GitHub Actions test and release workflows that publish GitHub Releases
+  without uploading to PyPI.
 
 ## 0.1.0 - 2026-06-12
 

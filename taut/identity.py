@@ -7,10 +7,10 @@ Spec references:
 from __future__ import annotations
 
 import getpass
+import importlib
 import json
 import os
 import platform
-import pwd
 import secrets
 import socket
 import subprocess
@@ -30,6 +30,12 @@ from taut._constants import (
     WRAPPER_BASENAMES,
     normalize_handle_seed,
 )
+
+_PWD: Any | None
+try:
+    _PWD = importlib.import_module("pwd")
+except ImportError:  # pragma: no cover - exercised on non-Unix platforms.
+    _PWD = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -631,13 +637,15 @@ def _safe_readlink(path: Path) -> str | None:
 
 
 def _login_name(uid: int) -> str:
-    try:
-        return pwd.getpwuid(uid).pw_name
-    except (KeyError, AttributeError):
+    if _PWD is not None:
         try:
-            return getpass.getuser()
-        except Exception:
-            return platform.node() or "human"
+            return str(_PWD.getpwuid(uid).pw_name)
+        except KeyError:
+            pass
+    try:
+        return getpass.getuser()
+    except Exception:
+        return platform.node() or "human"
 
 
 def _process_summary(proc: ProcessInfo | None) -> dict[str, Any] | None:
