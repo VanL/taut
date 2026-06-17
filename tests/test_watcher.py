@@ -32,6 +32,8 @@ def _spawn_cli(cwd: Path, *args: object) -> subprocess.Popen[str]:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
 
 

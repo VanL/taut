@@ -437,7 +437,7 @@ def build_postupdate_steps(
     if target == PG_TARGET:
         return (
             CommandStep(
-                ("uv", "build", str(PG_TARGET.package_dir)),
+                ("uv", "build", PG_TARGET.package_dir.as_posix()),
                 "Build taut-pg source and wheel artifacts",
             ),
         )
