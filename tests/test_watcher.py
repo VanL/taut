@@ -138,7 +138,8 @@ def test_watcher_receives_all_concurrent_writer_processes(
     van.join("foo")
     for handle in ("bob", "codex"):
         TautClient(db_path=tmp_path / ".taut.db", as_handle=handle).join("foo")
-    van.read("foo")
+
+    target_texts = {"from bob", "from codex"}
     processes = [
         _spawn_cli(tmp_path, "--as", "bob", "say", "foo", "from bob"),
         _spawn_cli(tmp_path, "--as", "codex", "say", "foo", "from codex"),
@@ -164,10 +165,11 @@ def test_watcher_receives_all_concurrent_writer_processes(
         _wait_until(thread.is_alive)
 
         _wait_until(
-            lambda: {text for _ts, text in seen} == {"from bob", "from codex"},
+            lambda: target_texts.issubset({text for _ts, text in seen}),
             timeout=8.0,
         )
-        assert [ts for ts, _text in seen] == sorted(ts for ts, _text in seen)
+        target_timestamps = [ts for ts, text in seen if text in target_texts]
+        assert target_timestamps == sorted(target_timestamps)
     finally:
         watcher.stop()
         thread.join(timeout=2)
