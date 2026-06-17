@@ -11,7 +11,7 @@ import json
 import sys
 from collections.abc import Sequence
 from datetime import datetime
-from typing import Any
+from typing import Any, TextIO
 
 from taut._constants import __version__
 from taut._exceptions import (
@@ -334,8 +334,9 @@ def _group_messages_by_thread(messages: list[Message]) -> dict[str, list[Message
     return grouped
 
 
-def _thread_heading(thread: str) -> str:
-    return f"── {thread} ──────────────────────────────────────"
+def _thread_heading(thread: str, *, stream: TextIO | None = None) -> str:
+    prefix, rule, _notice = _human_glyphs(stream or sys.stdout)
+    return f"{prefix} {thread} {rule * 38}"
 
 
 def _human_message_row(
@@ -343,12 +344,30 @@ def _human_message_row(
     *,
     timestamps: bool,
     sender_width: int,
+    stream: TextIO | None = None,
 ) -> str:
     id_column = f"{message.ts}  " if timestamps else ""
     clock = _format_message_time(message.ts)
     if message.kind == "notice":
-        return f"  {id_column}{clock} · {message.text}"
+        _prefix, _rule, notice = _human_glyphs(stream or sys.stdout)
+        return f"  {id_column}{clock} {notice} {message.text}"
     return f"  {id_column}{clock} {message.from_handle:<{sender_width}}  {message.text}"
+
+
+def _human_glyphs(stream: TextIO) -> tuple[str, str, str]:
+    if _stream_can_encode("─·", stream):
+        return "──", "─", "·"
+    return "--", "-", "-"
+
+
+def _stream_can_encode(text: str, stream: TextIO) -> bool:
+    encoding = stream.encoding or sys.getdefaultencoding()
+    errors = stream.errors or "strict"
+    try:
+        text.encode(encoding, errors=errors)
+    except UnicodeEncodeError:
+        return False
+    return True
 
 
 def _format_message_time(ts: int) -> str:

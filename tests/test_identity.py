@@ -34,6 +34,11 @@ import pytest
 import taut.identity as identity
 from taut._constants import normalize_handle_seed
 
+_POSIX_SHELL_PROCESS_TEST = pytest.mark.skipif(
+    os.name == "nt",
+    reason="POSIX shell-wrapper ancestry is not a Windows process contract",
+)
+
 
 def _taut_via_shell(
     shell: Path | str,
@@ -187,6 +192,7 @@ def test_psutil_terminal_falls_back_when_platform_lacks_terminal() -> None:
     assert identity._psutil_terminal(proc) is None
 
 
+@_POSIX_SHELL_PROCESS_TEST
 @pytest.mark.usefixtures("clean_env")
 def test_recognition_survives_fresh_shell_per_command(tmp_path: Path) -> None:
     """[TAUT-5.3]: the same member must resolve across separate shell
@@ -215,6 +221,7 @@ def test_recognition_survives_fresh_shell_per_command(tmp_path: Path) -> None:
     assert created == _expected_handle_from_anchor(anchor_argv0)
 
 
+@_POSIX_SHELL_PROCESS_TEST
 @pytest.mark.usefixtures("clean_env")
 def test_shell_skip_survives_long_executable_paths(tmp_path: Path) -> None:
     """[TAUT-5.1]/[TAUT-5.2]: shell classification must not depend on a
@@ -253,6 +260,7 @@ def test_shell_skip_survives_long_executable_paths(tmp_path: Path) -> None:
     assert created == _expected_handle_from_anchor(anchor_argv0)
 
 
+@_POSIX_SHELL_PROCESS_TEST
 @pytest.mark.usefixtures("clean_env")
 def test_token_acts_as_unanchored_member_despite_different_live_anchor(
     tmp_path: Path,

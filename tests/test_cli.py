@@ -3,13 +3,56 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from typing import TextIO, cast
 
 import pytest
 
+import taut.cli as cli
 from taut.cli import _format_unread_count
+from taut.client import Message
 from tests.conftest import run_cli
 
 pytestmark = pytest.mark.usefixtures("clean_env")
+
+
+def _heading_pattern(thread: str) -> str:
+    escaped = re.escape(thread)
+    return rf"(?:── {escaped} ─{{38}}|-- {escaped} -{{38}})"
+
+
+def _notice_pattern(text_pattern: str, *, timestamps: bool = False) -> str:
+    id_pattern = r"\d{19}  " if timestamps else ""
+    return rf"  {id_pattern}\d\d:\d\d (?:·|-) {text_pattern}"
+
+
+def test_cli_human_glyphs_fall_back_for_legacy_stdout_encoding() -> None:
+    class C1252Stream:
+        encoding = "cp1252"
+        errors = "strict"
+
+    stream = cast(TextIO, C1252Stream())
+    message = Message(
+        thread="general",
+        ts=1_785_000_000_000_000_000,
+        from_handle="van",
+        kind="notice",
+        text="van created #general",
+    )
+
+    assert cli._thread_heading("general", stream=stream) == (
+        "-- general --------------------------------------"
+    )
+    expected_time = cli._format_message_time(message.ts)
+
+    assert (
+        cli._human_message_row(
+            message,
+            timestamps=False,
+            sender_width=6,
+            stream=stream,
+        )
+        == f"  {expected_time} - van created #general"
+    )
 
 
 def test_cli_json_join_say_log(tmp_path: Path) -> None:
@@ -50,9 +93,9 @@ def test_cli_human_log_groups_messages_by_thread(tmp_path: Path) -> None:
 
     assert rc == 0
     lines = out.splitlines()
-    assert lines[0] == "── general ──────────────────────────────────────"
-    assert re.fullmatch(r"  \d\d:\d\d · van created #general", lines[1])
-    assert re.fullmatch(r"  \d\d:\d\d · claude joined", lines[2])
+    assert re.fullmatch(_heading_pattern("general"), lines[0])
+    assert re.fullmatch(_notice_pattern(r"van created #general"), lines[1])
+    assert re.fullmatch(_notice_pattern(r"claude joined"), lines[2])
     assert re.fullmatch(r"  \d\d:\d\d claude  yes\. what broke\?", lines[3])
 
 
@@ -64,8 +107,11 @@ def test_cli_human_log_timestamps_prepend_message_ids(tmp_path: Path) -> None:
 
     assert rc == 0
     lines = out.splitlines()
-    assert lines[0] == "── general ──────────────────────────────────────"
-    assert re.fullmatch(r"  \d{19}  \d\d:\d\d · van created #general", lines[1])
+    assert re.fullmatch(_heading_pattern("general"), lines[0])
+    assert re.fullmatch(
+        _notice_pattern(r"van created #general", timestamps=True),
+        lines[1],
+    )
 
 
 def test_cli_log_limit_returns_most_recent_messages(tmp_path: Path) -> None:
@@ -91,8 +137,8 @@ def test_cli_human_read_uses_grouped_readme_shape(tmp_path: Path) -> None:
 
     assert rc == 0
     lines = out.splitlines()
-    assert lines[0] == "── general ──────────────────────────────────────"
-    assert re.fullmatch(r"  \d\d:\d\d · claude joined", lines[1])
+    assert re.fullmatch(_heading_pattern("general"), lines[0])
+    assert re.fullmatch(_notice_pattern(r"claude joined"), lines[1])
     assert re.fullmatch(r"  \d\d:\d\d claude  yes", lines[2])
 
 
