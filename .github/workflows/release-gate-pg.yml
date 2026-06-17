@@ -1,9 +1,9 @@
-name: Release Gate
+name: Release Gate (taut-pg)
 
 on:
   push:
     tags:
-      - "v*"
+      - "taut_pg/v*"
 
 permissions:
   actions: read
@@ -59,11 +59,12 @@ jobs:
       - verify-tag-current
     uses: ./.github/workflows/release.yml
     with:
-      package_name: taut
-      package_dir: .
+      package_name: taut-pg
+      package_dir: extensions/taut_pg
       tag_name: ${{ github.ref_name }}
       release_ref: ${{ github.sha }}
       expected_tag_commit: ${{ github.sha }}
     permissions:
       actions: read
       contents: write
+

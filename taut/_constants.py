@@ -13,7 +13,7 @@ from typing import Any, Final
 
 from simplebroker import resolve_config
 
-__version__: Final[str] = "0.1.1"
+__version__: Final[str] = "0.2.0"
 
 DEFAULT_DB_NAME: Final[str] = ".taut.db"
 PROJECT_CONFIG_NAME: Final[str] = ".taut.toml"
@@ -111,6 +111,7 @@ def load_config(overrides: Mapping[str, Any] | None = None) -> dict[str, Any]:
         "BROKER_DEFAULT_DB_NAME": os.environ.get("TAUT_DB", DEFAULT_DB_NAME),
         "BROKER_PROJECT_SCOPE": True,
         "BROKER_PROJECT_CONFIG_NAME": PROJECT_CONFIG_NAME,
+        "BROKER_BACKEND": "sqlite",
     }
     if overrides:
         raw.update(overrides)

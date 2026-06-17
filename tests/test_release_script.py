@@ -35,7 +35,7 @@ def _release_state(
     return release.ReleaseState(
         target=target,
         version="0.1.1",
-        tag_name="v0.1.1",
+        tag_name=target.tag_for_version("0.1.1"),
         github_release_exists=github_release_exists,
         local_tag_commit=local_tag_commit,
         remote_tag_commit=remote_tag_commit,
@@ -55,7 +55,7 @@ def test_validate_version_accepts_strict_semver() -> None:
 
 
 def test_read_current_version_rejects_mismatch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ) -> None:
     release = _load_release_module()
     pyproject_path = tmp_path / "pyproject.toml"
@@ -66,15 +66,23 @@ def test_read_current_version_rejects_mismatch(
         encoding="utf-8",
     )
     constants_path.write_text('__version__: Final[str] = "0.1.2"\n', encoding="utf-8")
-    monkeypatch.setattr(release, "PYPROJECT_PATH", pyproject_path)
-    monkeypatch.setattr(release, "CONSTANTS_PATH", constants_path)
+    target = release.ReleaseTarget(
+        name="temp",
+        package_name="temp",
+        package_dir=Path("."),
+        pyproject_path=pyproject_path,
+        constants_path=constants_path,
+        tag_namespace=None,
+        github_release=True,
+        pypi_publish=False,
+    )
 
     with pytest.raises(SystemExit, match="Version mismatch"):
-        release.read_current_version()
+        release.read_current_version(target)
 
 
 def test_write_version_files_updates_pyproject_and_constants(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ) -> None:
     release = _load_release_module()
     pyproject_path = tmp_path / "pyproject.toml"
@@ -85,10 +93,18 @@ def test_write_version_files_updates_pyproject_and_constants(
         encoding="utf-8",
     )
     constants_path.write_text('__version__: Final[str] = "0.1.1"\n', encoding="utf-8")
-    monkeypatch.setattr(release, "PYPROJECT_PATH", pyproject_path)
-    monkeypatch.setattr(release, "CONSTANTS_PATH", constants_path)
+    target = release.ReleaseTarget(
+        name="temp",
+        package_name="temp",
+        package_dir=Path("."),
+        pyproject_path=pyproject_path,
+        constants_path=constants_path,
+        tag_namespace=None,
+        github_release=True,
+        pypi_publish=False,
+    )
 
-    release.write_version_files("0.1.2")
+    release.write_version_files("0.1.2", target)
 
     assert 'version = "0.1.2"' in pyproject_path.read_text(encoding="utf-8")
     assert '__version__: Final[str] = "0.1.2"' in constants_path.read_text(
@@ -96,12 +112,69 @@ def test_write_version_files_updates_pyproject_and_constants(
     )
 
 
+def test_write_version_files_updates_pg_dependency_floor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _load_release_module()
+    pyproject_path = tmp_path / "extensions" / "taut_pg" / "pyproject.toml"
+    pyproject_path.parent.mkdir(parents=True)
+    pyproject_path.write_text(
+        "\n".join(
+            [
+                "[project]",
+                'name = "taut-pg"',
+                'version = "0.1.1"',
+                "dependencies = [",
+                '    "taut>=0.1.1",',
+                '    "simplebroker-pg>=2.2.1",',
+                "]",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    target = release.ReleaseTarget(
+        name="pg",
+        package_name="taut-pg",
+        package_dir=Path("extensions/taut_pg"),
+        pyproject_path=pyproject_path,
+        constants_path=None,
+        tag_namespace="taut_pg",
+        github_release=True,
+        pypi_publish=False,
+    )
+
+    def fake_read_current_version(target: object = release.ROOT_TARGET) -> str:
+        assert target == release.ROOT_TARGET
+        return "0.2.0"
+
+    monkeypatch.setattr(release, "read_current_version", fake_read_current_version)
+
+    release.write_version_files("0.2.1", target)
+
+    text = pyproject_path.read_text(encoding="utf-8")
+    assert 'version = "0.2.1"' in text
+    assert '"taut>=0.2.0",' in text
+
+
 def test_root_target_uses_v_prefixed_github_tag() -> None:
     release = _load_release_module()
 
     assert release.ROOT_TARGET.tag_for_version("0.1.1") == "v0.1.1"
+    assert release.ROOT_TARGET.package_dir == Path(".")
     assert release.ROOT_TARGET.github_release is True
     assert release.ROOT_TARGET.pypi_publish is False
+
+
+def test_pg_target_uses_namespaced_github_tag() -> None:
+    release = _load_release_module()
+
+    assert release.PG_TARGET.package_name == "taut-pg"
+    assert release.PG_TARGET.package_dir == Path("extensions/taut_pg")
+    assert release.PG_TARGET.tag_for_version("0.1.1") == "taut_pg/v0.1.1"
+    assert release.PG_TARGET.github_release is True
+    assert release.PG_TARGET.pypi_publish is False
 
 
 def test_inspect_release_state_is_github_only(
@@ -138,7 +211,8 @@ def test_resolve_target_version_rejects_existing_github_release(
 ) -> None:
     release = _load_release_module()
 
-    def fake_read_current_version() -> str:
+    def fake_read_current_version(target: Any = release.ROOT_TARGET) -> str:
+        assert target == release.ROOT_TARGET
         return "0.1.1"
 
     def fake_inspect_release_state(target: Any, version: str) -> Any:
@@ -304,12 +378,33 @@ def test_precheck_commands_include_typed_release_helper() -> None:
     assert ("uv", "run", "mypy", "taut", "tests", "bin/release.py") in commands
 
 
+def test_pg_precheck_commands_include_pg_gate_and_extension_checks() -> None:
+    release = _load_release_module()
+
+    commands = release.build_precheck_commands(release.PG_TARGET)
+
+    assert ("uv", "run", "./bin/pytest-pg", "--fast") in commands
+    assert ("uv", "build", "extensions/taut_pg") in commands
+    assert any("extensions/taut_pg/taut_pg" in command for command in commands)
+    assert any("taut/_scripts.py" in command for command in commands)
+    assert all("pypi" not in " ".join(command).lower() for command in commands)
+
+
+def test_pg_postupdate_builds_extension_path() -> None:
+    release = _load_release_module()
+
+    steps = release.build_postupdate_steps(release.PG_TARGET)
+
+    assert steps[0].command == ("uv", "build", "extensions/taut_pg")
+
+
 def test_dry_run_publish_is_github_only_noop(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     release = _load_release_module()
 
-    def fake_read_current_version() -> str:
+    def fake_read_current_version(target: Any = release.ROOT_TARGET) -> str:
+        assert target == release.ROOT_TARGET
         return "0.1.1"
 
     def fake_inspect_release_state(target: Any, version: str) -> Any:

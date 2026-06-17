@@ -63,16 +63,16 @@ DDL: tuple[str, ...] = (
     CREATE TABLE IF NOT EXISTS taut_members (
         handle            TEXT PRIMARY KEY,
         kind              TEXT NOT NULL CHECK (kind IN ('human', 'agent')),
-        uid               INTEGER NOT NULL,
+        uid               BIGINT NOT NULL,
         host_id           TEXT NOT NULL,
         host_label        TEXT,
-        anchor_pid        INTEGER,
+        anchor_pid        BIGINT,
         anchor_start_time TEXT,
         fingerprint       TEXT,
         token             TEXT UNIQUE,
         meta              TEXT,
-        created_ts        INTEGER NOT NULL,
-        last_active_ts    INTEGER NOT NULL
+        created_ts        BIGINT NOT NULL,
+        last_active_ts    BIGINT NOT NULL
     )
     """,
     """
@@ -89,17 +89,17 @@ DDL: tuple[str, ...] = (
     CREATE TABLE IF NOT EXISTS taut_threads (
         name       TEXT PRIMARY KEY,
         parent     TEXT,
-        origin_ts  INTEGER,
+        origin_ts  BIGINT,
         created_by TEXT NOT NULL,
-        created_ts INTEGER NOT NULL
+        created_ts BIGINT NOT NULL
     )
     """,
     """
     CREATE TABLE IF NOT EXISTS taut_membership (
         thread       TEXT NOT NULL,
         member       TEXT NOT NULL,
-        joined_ts    INTEGER NOT NULL,
-        last_seen_ts INTEGER NOT NULL DEFAULT 0,
+        joined_ts    BIGINT NOT NULL,
+        last_seen_ts BIGINT NOT NULL DEFAULT 0,
         PRIMARY KEY (thread, member)
     )
     """,

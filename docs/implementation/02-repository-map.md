@@ -10,8 +10,11 @@ Quick pointers to the key guidance documents in this repository.
 | `CLAUDE.md` | Alias for tools that expect Claude-style root guidance |
 | `README.md` | Product face and v0.1 behavior contract (see `docs/specs/02-taut-core.md`) |
 | `bin/release.py` | GitHub-only release helper for version sync, release gates, and `vX.Y.Z` tags |
+| `bin/pytest-pg` | Docker-backed Postgres test runner for shared root tests and `taut-pg` tests |
 | `.github/workflows/test.yml` | Push/PR/reusable pytest, lint, type, and build gates |
+| `.github/workflows/test-pg-extension.yml` | Push/PR/reusable Docker Postgres gate for `taut-pg` |
 | `.github/workflows/release-gate.yml` | `v*` tag gate that runs tests, verifies tag stability, and publishes release artifacts |
+| `.github/workflows/release-gate-pg.yml` | `taut_pg/v*` tag gate for GitHub-only `taut-pg` release artifacts |
 | `.github/workflows/release.yml` | Reusable GitHub Release artifact builder/uploader; no PyPI path |
 
 ## Shared Agent Context
@@ -49,6 +52,7 @@ Quick pointers to the key guidance documents in this repository.
 | `docs/plans/2026-06-12-taut-0.1.1-hardening-plan.md` | Hardening plan for handle quality, [TAUT-11] proof burndown, README rendering, and 0.1.1 release |
 | `docs/plans/2026-06-17-github-release-helper-plan.md` | GitHub-only release-helper plan while PyPI name clearance is pending |
 | `docs/plans/2026-06-17-github-actions-release-workflows-plan.md` | GitHub Actions test and GitHub-only release workflow plan |
+| `docs/plans/2026-06-17-taut-pg-extension-plan.md` | Postgres extension plan covering `extensions/`, PG test harness, and GitHub-only release gates |
 | `docs/implementation/00-implementation-index.md` | Numbered entry point for implementation docs |
 | `docs/implementation/01-documentation-system.md` | Why the documentation system is shaped this way |
 | `docs/implementation/03-agent-inventory.md` | Current observed agent availability and review preference |
@@ -60,13 +64,15 @@ Quick pointers to the key guidance documents in this repository.
 | Path | Purpose |
 |------|---------|
 | `taut/_constants.py` | Taut constants, config translation, identity lists, handle pools |
+| `taut/_scripts.py` | Importable developer-script helper logic, currently for `bin/pytest-pg` |
 | `taut/envelope.py` | Envelope v1 encode/decode and foreign-message fallback |
 | `taut/schema.py` | Taut sidecar schema and all taut-owned SQL |
 | `taut/identity.py` | Process fingerprint capture, anchor selection, presence checks |
 | `taut/client.py` | Public Python API and command semantics |
 | `taut/watcher.py` | Vendored multi-queue watcher plus cursor-aware `TautWatcher` |
 | `taut/cli.py` | Argparse CLI and output/exit-code rendering |
-| `tests/` | Contract tests using real `.taut.db` files and subprocess CLI |
+| `tests/` | Contract tests using real SQLite files, shared backend markers, and subprocess CLI |
+| `extensions/taut_pg/` | Separate `taut-pg` project with extension metadata, README, and PG-only tests |
 
 ## Skills
 

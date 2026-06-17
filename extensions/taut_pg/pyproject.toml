@@ -1,0 +1,47 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "taut-pg"
+version = "0.2.0"
+description = "Postgres support package for Taut"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+license-files = ["LICENSE"]
+authors = [
+    {name = "Van Lindberg", email = "van.lindberg@gmail.com"},
+]
+dependencies = [
+    "taut>=0.2.0",
+    "simplebroker-pg>=2.2.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "mypy>=1.0",
+    "pytest>=7.0",
+    "pytest-timeout>=2.4.0",
+    "pytest-xdist>=3.0",
+    "ruff>=0.1.0",
+]
+
+[tool.uv.sources]
+taut = { path = "../..", editable = true }
+
+[tool.hatch.build]
+include = [
+    "/taut_pg/**/*.py",
+    "/taut_pg/py.typed",
+    "/README.md",
+    "/LICENSE",
+]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+addopts = "-ra -q --strict-markers"
+markers = [
+    "pg_only: tests that validate the Postgres extension package",
+]

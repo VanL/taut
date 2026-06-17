@@ -18,7 +18,6 @@ from typing import Final, Literal, NoReturn
 PROJECT_ROOT: Final = Path(__file__).resolve().parents[1]
 PYPROJECT_PATH = PROJECT_ROOT / "pyproject.toml"
 CONSTANTS_PATH = PROJECT_ROOT / "taut" / "_constants.py"
-VERSION_FILES: Final = (PYPROJECT_PATH, CONSTANTS_PATH)
 GITHUB_RELEASE_WORKFLOW: Final = (
     PROJECT_ROOT / ".github" / "workflows" / "release-gate.yml"
 )
@@ -29,6 +28,7 @@ PYPROJECT_VERSION_PATTERN: Final = re.compile(r'(?m)^version = "([^"]+)"')
 CONSTANTS_VERSION_PATTERN: Final = re.compile(
     r'(?m)^__version__(?::[^=]+)? = "([^"]+)"'
 )
+TAUT_DEPENDENCY_PATTERN: Final = re.compile(r'(?m)^(\s*"taut>=)[^"]+(",\s*)$')
 
 Command = tuple[str, ...]
 TagActionName = Literal[
@@ -44,10 +44,16 @@ TagActionName = Literal[
 class ReleaseTarget:
     name: str
     package_name: str
+    package_dir: Path
+    pyproject_path: Path
+    constants_path: Path | None
+    tag_namespace: str | None
     github_release: bool
     pypi_publish: bool
 
     def tag_for_version(self, version: str) -> str:
+        if self.tag_namespace is not None:
+            return f"{self.tag_namespace}/v{version}"
         return f"v{version}"
 
 
@@ -77,13 +83,40 @@ class CommandStep:
 ROOT_TARGET: Final = ReleaseTarget(
     name="taut",
     package_name="taut",
+    package_dir=Path("."),
+    pyproject_path=PYPROJECT_PATH,
+    constants_path=CONSTANTS_PATH,
+    tag_namespace=None,
     github_release=True,
     pypi_publish=False,
 )
+PG_PYPROJECT_PATH = PROJECT_ROOT / "extensions" / "taut_pg" / "pyproject.toml"
+PG_TARGET: Final = ReleaseTarget(
+    name="pg",
+    package_name="taut-pg",
+    package_dir=Path("extensions/taut_pg"),
+    pyproject_path=PG_PYPROJECT_PATH,
+    constants_path=None,
+    tag_namespace="taut_pg",
+    github_release=True,
+    pypi_publish=False,
+)
+TARGETS: Final = {
+    "root": ROOT_TARGET,
+    "taut": ROOT_TARGET,
+    "pg": PG_TARGET,
+}
 
 
 def fail(message: str) -> NoReturn:
     raise SystemExit(message)
+
+
+def display_path(path: Path) -> str:
+    try:
+        return str(path.relative_to(PROJECT_ROOT))
+    except ValueError:
+        return str(path)
 
 
 def validate_version(version: str) -> None:
@@ -95,24 +128,30 @@ def _read_version(path: Path, pattern: re.Pattern[str], label: str) -> str:
     text = path.read_text(encoding="utf-8")
     match = pattern.search(text)
     if match is None:
-        fail(f"Could not find {label} version in {path.relative_to(PROJECT_ROOT)}")
+        fail(f"Could not find {label} version in {display_path(path)}")
     version = match.group(1)
     validate_version(version)
     return version
 
 
-def read_current_version() -> str:
+def read_current_version(target: ReleaseTarget = ROOT_TARGET) -> str:
     pyproject_version = _read_version(
-        PYPROJECT_PATH, PYPROJECT_VERSION_PATTERN, "pyproject.toml"
+        target.pyproject_path,
+        PYPROJECT_VERSION_PATTERN,
+        display_path(target.pyproject_path),
     )
+    if target.constants_path is None:
+        return pyproject_version
     constants_version = _read_version(
-        CONSTANTS_PATH, CONSTANTS_VERSION_PATTERN, "taut/_constants.py"
+        target.constants_path,
+        CONSTANTS_VERSION_PATTERN,
+        display_path(target.constants_path),
     )
     if pyproject_version != constants_version:
         fail(
             "Version mismatch: "
-            f"pyproject.toml has {pyproject_version}, "
-            f"taut/_constants.py has {constants_version}"
+            f"{display_path(target.pyproject_path)} has {pyproject_version}, "
+            f"{display_path(target.constants_path)} has {constants_version}"
         )
     return pyproject_version
 
@@ -123,24 +162,40 @@ def _replace_version(
     text = path.read_text(encoding="utf-8")
     updated, count = pattern.subn(replacement, text, count=1)
     if count != 1:
-        fail(f"Could not update {label} version in {path.relative_to(PROJECT_ROOT)}")
+        fail(f"Could not update {label} version in {display_path(path)}")
     path.write_text(updated, encoding="utf-8")
 
 
-def write_version_files(version: str) -> None:
+def target_version_files(target: ReleaseTarget) -> tuple[Path, ...]:
+    paths = [target.pyproject_path]
+    if target.constants_path is not None:
+        paths.append(target.constants_path)
+    return tuple(paths)
+
+
+def write_version_files(version: str, target: ReleaseTarget = ROOT_TARGET) -> None:
     validate_version(version)
     _replace_version(
-        PYPROJECT_PATH,
+        target.pyproject_path,
         re.compile(r'(?m)^version = "[^"]+"'),
         f'version = "{version}"',
-        "pyproject.toml",
+        display_path(target.pyproject_path),
     )
-    _replace_version(
-        CONSTANTS_PATH,
-        re.compile(r'(?m)^(__version__(?::[^=]+)? = )"[^"]+"'),
-        rf'\g<1>"{version}"',
-        "taut/_constants.py",
-    )
+    if target.constants_path is not None:
+        _replace_version(
+            target.constants_path,
+            re.compile(r'(?m)^(__version__(?::[^=]+)? = )"[^"]+"'),
+            rf'\g<1>"{version}"',
+            display_path(target.constants_path),
+        )
+    if target.package_name == "taut-pg":
+        root_version = read_current_version(ROOT_TARGET)
+        _replace_version(
+            target.pyproject_path,
+            TAUT_DEPENDENCY_PATTERN,
+            rf"\g<1>{root_version}\g<2>",
+            f"{display_path(target.pyproject_path)} taut dependency",
+        )
 
 
 def format_command(command: Command) -> str:
@@ -312,20 +367,62 @@ def inspect_release_state(target: ReleaseTarget, version: str) -> ReleaseState:
 
 def resolve_target_version(
     requested_version: str | None,
+    target: ReleaseTarget = ROOT_TARGET,
 ) -> tuple[str, str, ReleaseState]:
-    current_version = read_current_version()
+    current_version = read_current_version(target)
     target_version = requested_version or current_version
     validate_version(target_version)
-    state = inspect_release_state(ROOT_TARGET, target_version)
+    state = inspect_release_state(target, target_version)
     if state.github_release_exists:
         fail(
-            f"{ROOT_TARGET.name} {target_version} already exists as a GitHub Release; "
+            f"{target.package_name} {target_version} already exists as a GitHub Release; "
             "choose a new version"
         )
     return current_version, target_version, state
 
 
-def build_precheck_commands() -> tuple[Command, ...]:
+def build_precheck_commands(target: ReleaseTarget = ROOT_TARGET) -> tuple[Command, ...]:
+    if target == PG_TARGET:
+        return (
+            ("uv", "run", "pytest"),
+            ("uv", "run", "./bin/pytest-pg", "--fast"),
+            (
+                "uv",
+                "run",
+                "--extra",
+                "dev",
+                "ruff",
+                "check",
+                "extensions/taut_pg/taut_pg",
+                "extensions/taut_pg/tests",
+                "bin/pytest-pg",
+            ),
+            (
+                "uv",
+                "run",
+                "--extra",
+                "dev",
+                "ruff",
+                "format",
+                "--check",
+                "extensions/taut_pg/taut_pg",
+                "extensions/taut_pg/tests",
+                "bin/pytest-pg",
+            ),
+            (
+                "uv",
+                "run",
+                "--extra",
+                "dev",
+                "mypy",
+                "taut/_scripts.py",
+                "extensions/taut_pg/taut_pg",
+                "extensions/taut_pg/tests",
+                "--config-file",
+                "pyproject.toml",
+            ),
+            ("uv", "build", "extensions/taut_pg"),
+        )
     return (
         ("uv", "run", "pytest"),
         ("uv", "run", "ruff", "check", "taut", "tests", "bin"),
@@ -334,17 +431,26 @@ def build_precheck_commands() -> tuple[Command, ...]:
     )
 
 
-def build_postupdate_steps() -> tuple[CommandStep, ...]:
+def build_postupdate_steps(
+    target: ReleaseTarget = ROOT_TARGET,
+) -> tuple[CommandStep, ...]:
+    if target == PG_TARGET:
+        return (
+            CommandStep(
+                ("uv", "build", str(PG_TARGET.package_dir)),
+                "Build taut-pg source and wheel artifacts",
+            ),
+        )
     return (CommandStep(("uv", "build"), "Build source and wheel artifacts"),)
 
 
-def run_prechecks(*, dry_run: bool) -> None:
-    for command in build_precheck_commands():
+def run_prechecks(target: ReleaseTarget, *, dry_run: bool) -> None:
+    for command in build_precheck_commands(target):
         run_command(command, dry_run=dry_run)
 
 
-def run_postupdate_steps(*, dry_run: bool) -> None:
-    for step in build_postupdate_steps():
+def run_postupdate_steps(target: ReleaseTarget, *, dry_run: bool) -> None:
+    for step in build_postupdate_steps(target):
         print(step.description)
         run_command(step.command, dry_run=dry_run)
 
@@ -457,6 +563,7 @@ def print_release_summary(
     tag_action: TagAction,
 ) -> None:
     print(f"Package: {state.target.package_name}")
+    print(f"Package directory: {state.target.package_dir}")
     print(f"Current version: {current_version}")
     print(f"Target version: {target_version}")
     print(f"Version change: {'yes' if version_changed else 'no'}")
@@ -465,7 +572,7 @@ def print_release_summary(
     print(f"Local tag commit: {state.local_tag_commit or '<missing>'}")
     print(f"Remote tag commit: {state.remote_tag_commit or '<missing>'}")
     print(f"Tag action: {describe_tag_action(tag_action)}")
-    print("PyPI publish: disabled until the taut package-name request is cleared")
+    print("PyPI publish: disabled")
 
 
 def print_publish_note(tag_name: str) -> None:
@@ -483,6 +590,12 @@ def print_publish_note(tag_name: str) -> None:
 
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Prepare a taut GitHub-only release.")
+    parser.add_argument(
+        "--target",
+        choices=tuple(TARGETS),
+        default="root",
+        help="Release target to prepare: root/taut or pg.",
+    )
     parser.add_argument(
         "--version",
         help="Target version in X.Y.Z form. Defaults to the current project version.",
@@ -512,6 +625,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    target = TARGETS[args.target]
 
     if args.publish:
         print(
@@ -526,7 +640,10 @@ def main(argv: list[str] | None = None) -> int:
         else:
             fail("Worktree is dirty; commit or stash changes before releasing")
 
-    current_version, target_version, state = resolve_target_version(args.version)
+    current_version, target_version, state = resolve_target_version(
+        args.version,
+        target,
+    )
     version_changed = target_version != current_version
     planning_head = (
         PENDING_RELEASE_COMMIT
@@ -548,25 +665,32 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if not args.skip_checks:
-        run_prechecks(dry_run=args.dry_run)
+        run_prechecks(target, dry_run=args.dry_run)
 
     if version_changed:
         if args.dry_run:
             print(f"Would update version files to {target_version}:")
-            for path in VERSION_FILES:
-                print(f"  {path.relative_to(PROJECT_ROOT)}")
+            for path in target_version_files(target):
+                print(f"  {display_path(path)}")
         else:
-            write_version_files(target_version)
+            write_version_files(target_version, target)
 
-    run_postupdate_steps(dry_run=args.dry_run)
+    run_postupdate_steps(target, dry_run=args.dry_run)
 
     if version_changed:
         run_command(
-            ("git", "add", "pyproject.toml", "taut/_constants.py"),
+            (
+                "git",
+                "add",
+                *[
+                    str(path.relative_to(PROJECT_ROOT))
+                    for path in target_version_files(target)
+                ],
+            ),
             dry_run=args.dry_run,
         )
         run_command(
-            ("git", "commit", "-m", f"Release taut {target_version}"),
+            ("git", "commit", "-m", f"Release {target.package_name} {target_version}"),
             dry_run=args.dry_run,
         )
 

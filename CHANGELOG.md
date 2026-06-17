@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.0 - 2026-06-17
+
+- Added the separate `taut-pg` extension package for Postgres-backed Taut
+  projects through `.taut.toml`.
+- Added `bin/pytest-pg` and typed shared/PG-only tests against real Docker
+  Postgres.
+- Relaxed core target resolution for SimpleBroker project-config targets while
+  keeping `TAUT_DB`, `--db`, and `db_path=` as filesystem path selectors.
+- Added GitHub-only release gates for `taut-pg` using the `taut_pg/vX.Y.Z` tag
+  namespace.
+- Updated sidecar DDL to use `BIGINT` for 64-bit timestamp/id portability.
+
 ## 0.1.1 - 2026-06-12
 
 - Added `psutil` as a bounded runtime dependency for cross-platform process

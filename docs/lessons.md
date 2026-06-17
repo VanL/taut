@@ -63,6 +63,13 @@ sessions.
   See `docs/specs/02-taut-core.md` [TAUT-8.4] and comprehension Q1/Q2 in
   `docs/plans/2026-06-12-taut-foundation-plan.md`.
 
+- 2026-06-17: Treat cross-backend integer types as an executable portability
+  invariant, not a naming convention. SQLite accepts SimpleBroker's 64-bit
+  hybrid timestamps in `INTEGER` columns, but Postgres `integer` overflows.
+  Sidecar columns that store timestamps, process ids, or uid-like values must
+  be documented and implemented as `BIGINT` before PG acceptance tests can be
+  trusted.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

@@ -5,7 +5,9 @@ Status: Proposed (governs the v0.1 implementation)
 Taut is private, no-config chat for the processes that already share your
 machine: you, your agents, and anything else that can run a CLI. It is built
 on SimpleBroker and stores everything — messages, threads, members, read
-state — in one SQLite file, `.taut.db`.
+state — in one SQLite file, `.taut.db`, by default. With the `taut-pg`
+extension installed, the same state lives in a project-configured Postgres
+schema.
 
 This spec defines intended behavior for the v0.1 core: storage model,
 identity, message contract, read model, and the CLI, Python API, and watcher
@@ -15,7 +17,7 @@ surfaces. It is the source of truth those surfaces are verified against.
 
 In scope:
 
-- the `.taut.db` storage model and project resolution rules
+- the default `.taut.db` storage model and project resolution rules
 - thread and room semantics over SimpleBroker queues
 - member identity, process fingerprinting, recognition, and rejoin
 - the message envelope contract
@@ -23,10 +25,10 @@ In scope:
 - the CLI surface, the `TautClient` Python API, and the `TautWatcher`
 - the trust model and its limits
 
-Out of scope for v0.1 but committed on the roadmap, with v0.1
-forward-compatibility obligations defined in [TAUT-12]:
+Out of scope for v0.1 but committed on the roadmap, with compatibility
+obligations defined in [TAUT-12]:
 
-- non-SQLite backends (Postgres first; multi-host arrives with it)
+- non-SQL state mappings beyond the SQL sidecar path (`taut-pg` remains SQL)
 - captive agents (`summon`): hosting an agent process as a thread member
 - the TUI (named as a surface in [TAUT-8.4]; it gets its own spec before
   implementation)
@@ -42,10 +44,12 @@ Out of scope as non-goals (not deferred ambiguity):
 
 ## 2. Mental Model [TAUT-2]
 
-- One file. `.taut.db` is a standard SimpleBroker database plus taut-owned
-  sidecar tables. There is no other durable state: no config file, no state
-  directory, no lock files. (SQLite WAL companions `.taut.db-wal` and
-  `.taut.db-shm` are transient and managed by SQLite.)
+- One file by default. `.taut.db` is a standard SimpleBroker database plus
+  taut-owned sidecar tables. There is no other durable state in the SQLite
+  path: no config file, no state directory, no lock files. (SQLite WAL
+  companions `.taut.db-wal` and `.taut.db-shm` are transient and managed by
+  SQLite.) Under `taut-pg`, `.taut.toml` selects a Postgres target and the same
+  sidecar tables live in that configured schema.
 - A thread is a queue. A **room** is a top-level thread (`general`). A
   **sub-thread** hangs off one message in a room and is itself a queue
   (`general.1837025672140161024`, named by the origin message id).
@@ -66,10 +70,12 @@ Out of scope as non-goals (not deferred ambiguity):
 
 ### [TAUT-3.1] Single-file state
 
-All durable taut state lives in `.taut.db`: SimpleBroker's own tables
-(messages, meta, aliases) and the `taut_*` sidecar tables. Taut must not
-create config files, dotfiles, caches, or state outside the database file.
-Violation of this rule is a spec bug, not an implementation choice.
+All durable taut state lives in the resolved SimpleBroker target: by default
+`.taut.db`, containing SimpleBroker's own tables (messages, meta, aliases) and
+the `taut_*` sidecar tables. Under `taut-pg`, `.taut.toml` is configuration,
+not message state; the durable chat state lives in the configured Postgres
+schema. Taut must not create extra caches or state directories. Violation of
+this rule is a spec bug, not an implementation choice.
 
 ### [TAUT-3.2] Resolution and configuration translation
 
@@ -78,8 +84,9 @@ Taut resolves its database the way git resolves a repository:
 1. `--db PATH` (CLI) or `db_path=` (API), if given, is used as-is — but
    the file must already exist (see the creation rule below).
 2. `TAUT_DB`, if set, behaves exactly like `--db`.
-3. Otherwise taut searches upward from the current directory for `.taut.db`
-   and uses the first one found.
+3. Otherwise taut searches upward from the current directory for `.taut.toml`
+   or `.taut.db` through SimpleBroker project resolution, and uses the first
+   resolved target.
 4. If nothing is found, commands fail with exit code 1 and the message
    `No taut database found. Run 'taut init' to create one.` Only
    `taut init` creates a database.
@@ -93,15 +100,24 @@ client always resolves a target first and only then constructs queues
 against it. The creation rule is enforced by taut, because SimpleBroker
 auto-creates missing SQLite files on open: for explicit `--db`/`TAUT_DB`/
 `db_path=` targets, taut requires the file to exist before opening it
-(exit 1 with the `taut init` hint otherwise). `taut init` itself resolves
-the current directory explicitly (`target_for_directory`), creates the
-database by opening it, and installs the sidecar schema ([TAUT-3.3]).
+(exit 1 with the `taut init` hint otherwise). These selectors are path-only;
+Taut never interprets them as DSNs. `taut init` itself resolves the current
+directory explicitly (`target_for_directory`), creates the SQLite database or
+initializes the configured non-SQLite target by opening it, and installs the
+sidecar schema ([TAUT-3.3]).
 
-v0.1 supports SQLite targets only. If resolution yields anything else —
-for example a stray `.taut.toml` selecting a server backend, since
-project-config discovery runs before database discovery — taut exits 1
-with a clear "backend not supported in this version" error rather than
-proceeding into undefined behavior. ([TAUT-12.1] lifts this.)
+v0.2.0 supports SQLite in the core package and Postgres through the separate
+`taut-pg` extension. Postgres selection uses `.taut.toml` with SimpleBroker's
+project-config shape:
+
+```toml
+version = 1
+backend = "postgres"
+target = "postgresql://postgres:postgres@127.0.0.1:54329/taut_test"
+
+[backend_options]
+schema = "taut_project"
+```
 
 The configuration handed to SimpleBroker goes through `resolve_config()`
 with these keys:
@@ -111,15 +127,17 @@ with these keys:
 | database filename | `BROKER_DEFAULT_DB_NAME` | `.taut.db` |
 | upward search | `BROKER_PROJECT_SCOPE` | `true` |
 | config-file isolation | `BROKER_PROJECT_CONFIG_NAME` | `.taut.toml` |
+| ambient backend pin | `BROKER_BACKEND` | `sqlite` |
 
 `BROKER_PROJECT_CONFIG_NAME=.taut.toml` exists so a stray `.broker.toml`
 belonging to a standalone SimpleBroker or Weft project can never redirect
-taut. In v0.1 the name is claimed but undocumented; on the roadmap it is
-the backend-selection door ([TAUT-12.1]) — the same project-config format
-SimpleBroker and Weft already use, which is why backend support costs
-taut no new resolution machinery. `BROKER_*` environment variables are
-not part of taut's public surface; `TAUT_DB`, `TAUT_AS`, and
-`TAUT_TOKEN` ([TAUT-5.8]) are the only public environment knobs in v0.1.
+taut. It is also the Postgres backend-selection door ([TAUT-12.1]) using the
+same project-config format SimpleBroker and Weft already use, which is why
+backend support costs taut no new resolution machinery. `BROKER_BACKEND` is
+pinned to SQLite in Taut's resolved config so ambient `BROKER_*` variables do
+not silently become Taut's public backend API. `.taut.toml` still wins through
+SimpleBroker project resolution. `TAUT_DB`, `TAUT_AS`, and `TAUT_TOKEN`
+([TAUT-5.8]) are the only public environment knobs in v0.1.
 
 ### [TAUT-3.3] Sidecar schema v1
 
@@ -136,16 +154,16 @@ CREATE TABLE IF NOT EXISTS taut_meta (
 CREATE TABLE IF NOT EXISTS taut_members (
     handle            TEXT PRIMARY KEY,
     kind              TEXT NOT NULL CHECK (kind IN ('human', 'agent')),
-    uid               INTEGER NOT NULL,
+    uid               BIGINT NOT NULL,
     host_id           TEXT NOT NULL,
     host_label        TEXT,
-    anchor_pid        INTEGER,
+    anchor_pid        BIGINT,
     anchor_start_time TEXT,
     fingerprint       TEXT,
     token             TEXT UNIQUE,
     meta              TEXT,
-    created_ts        INTEGER NOT NULL,
-    last_active_ts    INTEGER NOT NULL
+    created_ts        BIGINT NOT NULL,
+    last_active_ts    BIGINT NOT NULL
 );  -- anchor_* and fingerprint are NULL for kind='human'.
     -- token is the continuity token minted at creation ([TAUT-5.8]);
     -- meta is a JSON object; defined keys so far: "persona"
@@ -168,16 +186,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS taut_members_human_unique
 CREATE TABLE IF NOT EXISTS taut_threads (
     name       TEXT PRIMARY KEY,
     parent     TEXT,
-    origin_ts  INTEGER,
+    origin_ts  BIGINT,
     created_by TEXT NOT NULL,
-    created_ts INTEGER NOT NULL
+    created_ts BIGINT NOT NULL
 );  -- parent/origin_ts are NULL for rooms
 
 CREATE TABLE IF NOT EXISTS taut_membership (
     thread       TEXT NOT NULL,
     member       TEXT NOT NULL,
-    joined_ts    INTEGER NOT NULL,
-    last_seen_ts INTEGER NOT NULL DEFAULT 0,
+    joined_ts    BIGINT NOT NULL,
+    last_seen_ts BIGINT NOT NULL DEFAULT 0,
     PRIMARY KEY (thread, member)
 );
 ```
@@ -627,7 +645,7 @@ message ids in human output; `say` prints the new message's id),
 
 | Verb | Behavior | Exit codes |
 |---|---|---|
-| `init` | Create `.taut.db` + sidecar schema in the current directory. Idempotent with notice if present. | 0 created/exists, 1 error |
+| `init` | Create the resolved SQLite `.taut.db` or initialize the configured backend target plus sidecar schema in the current directory. Idempotent with notice if present. | 0 created/exists, 1 error |
 | `join THREAD [--as NAME] [--persona TEXT] [--new]` | Register identity if needed (`--new` forces a fresh one, [TAUT-5.4]), create room if needed, add membership (cursor at now, [TAUT-7.4]), write notice. `--persona` sets/updates the member's persona ([TAUT-5.9]). | 0; 1 error |
 | `leave THREAD` | Remove membership, write notice. | 0; 1 error; 2 not a member |
 | `say THREAD [TEXT\|-]` | Post a message (stdin with `-` or when piped and TEXT omitted). Requires membership: non-members are refused with a `taut join` hint, mirroring `read`. Prints message id with `-t`. | 0; 1 error; 2 not a member (hint on stderr) |
@@ -674,7 +692,9 @@ polling loops compose in shell.
     object. The token never appears in output again. Scripts must
     therefore select by field, not by line position, on paths that can
     create;
-  - `init`: `db` (path), `created` (bool).
+  - `init`: `db` (backend display target; a filesystem path for SQLite),
+    `created` (bool). For Postgres, `created` is `false` because Taut has no
+    public backend API for a reliable database-created signal.
 
   These field names are a compatibility surface from v0.1 on; additions
   are allowed, renames and removals are not.
@@ -691,8 +711,10 @@ model). Public exports from `taut`: `TautClient`, `TautWatcher`,
 `Message`, `Thread`, `Member`, the exception hierarchy rooted at
 `TautError`, and `__version__`. The package ships typed (`py.typed`).
 
-Runtime dependencies: exactly `simplebroker` and `psutil`. Python ≥ 3.11.
-The CLI uses argparse, not a CLI framework.
+Core runtime dependencies: exactly `simplebroker` and `psutil`. The optional
+`taut-pg` extension adds `simplebroker-pg` and its driver dependencies in the
+same environment as Taut. Python ≥ 3.11. The CLI uses argparse, not a CLI
+framework.
 
 ### [TAUT-8.4] Watcher
 
@@ -837,31 +859,49 @@ anti-mocking posture:
 
 ## 12. Roadmap Commitments and Forward Compatibility [TAUT-12]
 
-These are committed directions, not v0.1 features. Each gets its own
-spec section or spec before implementation. They appear here because
-v0.1 carries obligations that keep them cheap. Taut deliberately builds
-on the same components SimpleBroker and Weft already ship — an
-alternative use case over proven parts — so the roadmap mostly turns on
-existing capability; where a real gap surfaces, it is fixed upstream,
-never worked around locally (plan §9).
+These sections capture backend obligations beyond the default SQLite path. Taut
+deliberately builds on the same components SimpleBroker and Weft already ship:
+an alternative use case over proven parts. Where a real gap surfaces, it is
+fixed upstream or at the state-boundary layer, never worked around locally.
 
 ### [TAUT-12.1] Postgres backend (multi-host for free)
 
-Mechanism: `.taut.toml` ([TAUT-3.2]) carrying the same
-`backend`/`target`/`backend_options` shape as SimpleBroker's
-`.broker.toml` and Weft's `broker.toml`. `resolve_broker_target()`
-already discovers project config first, sidecar tables already live in
-the broker's configured schema on Postgres, and the multi-queue activity
-waiter already rides LISTEN/NOTIFY — which is why this is a
-documentation-and-tests milestone, not an architecture one.
+Status: implemented in v0.2.0 as the separate `taut-pg` extension project.
+The core package remains SQLite-first and does not depend on
+`simplebroker-pg`.
 
-v0.1 obligations (binding now):
+Mechanism: `.taut.toml` ([TAUT-3.2]) carries the same
+`backend`/`target`/`backend_options` shape as SimpleBroker's `.broker.toml` and
+Weft's `broker.toml`. `resolve_broker_target()` discovers project config
+first, sidecar tables live in the broker's configured Postgres schema, and the
+multi-queue activity waiter rides LISTEN/NOTIFY while [TAUT-8.4]'s interval
+refresh remains the portable correctness path.
+
+Implementation boundaries:
+
+- `extensions/taut_pg` is packaging, docs, and PG-only tests. It does not own
+  target resolution, queue construction, sidecar SQL, identity, CLI behavior,
+  or watcher behavior.
+- The backend plugin is SimpleBroker's `simplebroker-pg` plugin, exposed
+  through SimpleBroker's public backend entry point.
+- Shared root tests marked `shared` must run against SQLite in the default
+  suite and against Postgres through `bin/pytest-pg`.
+- Extension tests marked `pg_only` must prove package import, plugin
+  availability, `.taut.toml` selection, sidecar compatibility, and cleanup
+  against a real Docker Postgres database.
+- Release remains GitHub-only. Root releases use `vX.Y.Z`; extension releases
+  use `taut_pg/vX.Y.Z`.
+
+Binding obligations:
 
 - no SQLite-specific assumptions outside target resolution and the
   documented data-version wake ([TAUT-8.4] interval backstop is the
   portable path)
 - sidecar SQL uses qmark placeholders only (SimpleBroker translates them
   for Postgres)
+- SimpleBroker hybrid timestamps and process ids are stored in `BIGINT`
+  columns in documented DDL so Postgres does not truncate values that SQLite
+  accepts as unbounded integers
 - identity is host-aware from day one: hostname captured ([TAUT-5.1]),
   stored ([TAUT-3.3]), matched ([TAUT-5.3]), and presence degrades to
   `remote` off-host ([TAUT-5.6])
@@ -939,3 +979,7 @@ extra, own spec.
   release helper while the PyPI `taut` package-name request is pending.
 - `docs/plans/2026-06-17-github-actions-release-workflows-plan.md` —
   GitHub Actions test and GitHub-only release publication workflows.
+- `docs/plans/2026-06-17-taut-pg-extension-plan.md` — implemented
+  [TAUT-12.1] plan: separate `taut-pg` extension project,
+  Postgres shared/PG-only test split, `bin/pytest-pg`, and GitHub-only
+  extension release flow.

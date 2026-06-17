@@ -27,7 +27,7 @@ def test_test_workflow_is_reusable_and_runs_release_gates() -> None:
 
 
 def test_setup_uv_steps_have_tight_timeouts() -> None:
-    for name in ("test.yml", "release.yml"):
+    for name in ("test.yml", "test-pg-extension.yml", "release.yml"):
         lines = _workflow(name).splitlines()
         setup_uv_lines = [
             index
@@ -48,11 +48,43 @@ def test_release_gate_runs_tests_before_publishing() -> None:
     workflow = _workflow("release-gate.yml")
 
     test_position = workflow.index("uses: ./.github/workflows/test.yml")
+    pg_test_position = workflow.index("uses: ./.github/workflows/test-pg-extension.yml")
     publish_position = workflow.index("uses: ./.github/workflows/release.yml")
 
     assert test_position < publish_position
+    assert pg_test_position < publish_position
     assert "verify-tag-current:" in workflow
     assert "expected: ${EXPECTED_SHA}" in workflow
+
+
+def test_pg_workflow_is_reusable_and_runs_pg_helper() -> None:
+    workflow = _workflow("test-pg-extension.yml")
+
+    assert "workflow_call:" in workflow
+    assert "uv run ./bin/pytest-pg" in workflow
+    assert (
+        "ruff check extensions/taut_pg/taut_pg extensions/taut_pg/tests bin/pytest-pg"
+        in workflow
+    )
+    assert (
+        "mypy taut/_scripts.py extensions/taut_pg/taut_pg extensions/taut_pg/tests"
+        in workflow
+    )
+
+
+def test_pg_release_gate_is_github_only() -> None:
+    workflow = _workflow("release-gate-pg.yml")
+    lower_workflow = workflow.lower()
+
+    assert 'tags:\n      - "taut_pg/v*"' in workflow
+    assert "uses: ./.github/workflows/test.yml" in workflow
+    assert "uses: ./.github/workflows/test-pg-extension.yml" in workflow
+    assert "package_name: taut-pg" in workflow
+    assert "package_dir: extensions/taut_pg" in workflow
+    assert "verify-tag-current:" in workflow
+    assert "uv publish" not in lower_workflow
+    assert "pypi" not in lower_workflow
+    assert "trusted-publishing" not in lower_workflow
 
 
 def test_release_workflow_publishes_github_release_only() -> None:

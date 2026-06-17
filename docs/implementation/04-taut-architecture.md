@@ -2,10 +2,10 @@
 
 ## Purpose and Scope
 
-This document explains the v0.1 core implementation: the `.taut.db` storage
-boundary, identity resolution, message read/write path, watcher, and CLI/API
-split. The TUI, summon extension, and non-SQLite state mappings remain out of
-scope.
+This document explains the v0.1 core implementation: the default `.taut.db`
+storage boundary, optional `taut-pg` extension boundary, identity resolution,
+message read/write path, watcher, and CLI/API split. The TUI, summon extension,
+and non-SQL state mappings remain out of scope.
 
 ## Governing Spec References
 
@@ -29,17 +29,31 @@ Runtime dependencies are intentionally bounded to `simplebroker` and `psutil`.
 SimpleBroker owns the storage and queue substrate; `psutil` is scoped to
 cross-platform process metadata for identity capture so taut does not rely on
 fragile platform-specific argv parsing for the core recognition path.
+`taut-pg` is a separate project under `extensions/taut_pg`; it installs
+`simplebroker-pg` beside Taut but does not add a root runtime dependency.
+
+Postgres support intentionally reuses the same core path. `.taut.toml` selects
+SimpleBroker's public `postgres` backend plugin, `TautClient` resolves that
+`BrokerTarget`, and the existing `Queue.sidecar()` calls in `taut/schema.py`
+create the same `taut_*` tables in the configured schema. The extension package
+does not own target parsing, queue construction, SQL, identity, CLI rendering,
+or watcher behavior.
 
 Release tooling lives in `bin/release.py`. Its boundary is repository hygiene,
 not runtime behavior: it verifies that `pyproject.toml` and
 `taut/_constants.py` stay in sync, runs the typed/lint/build release gates,
-plans `vX.Y.Z` tag actions, and checks GitHub Release state. It deliberately has
-no PyPI upload path while the `taut` package-name request is unresolved.
+plans root `vX.Y.Z` tag actions and extension `taut_pg/vX.Y.Z` tag actions, and
+checks GitHub Release state. It deliberately has no PyPI upload path while the
+`taut` package-name request is unresolved.
 GitHub Actions mirrors that boundary: `.github/workflows/test.yml` owns normal
 push/PR gates and is reusable, `.github/workflows/release-gate.yml` runs on
-`v*` tags, reuses the test workflow, verifies that the tag still points at the
-tested commit, and calls `.github/workflows/release.yml` to build artifacts and
-create the GitHub Release. No workflow uploads to PyPI.
+`v*` tags, reuses the root and PG test workflows, verifies that the tag still
+points at the tested commit, and calls `.github/workflows/release.yml` to build
+artifacts and create the GitHub Release. `.github/workflows/test-pg-extension.yml`
+owns the Docker Postgres gate for `taut-pg`, and
+`.github/workflows/release-gate-pg.yml` publishes GitHub artifacts for
+`taut_pg/v*` tags through the same reusable release workflow. No workflow
+uploads to PyPI.
 
 All taut-owned relational state flows through `taut/schema.py`. It is the only
 module with sidecar SQL. That boundary matters because SQL sidecar tables are
@@ -62,10 +76,13 @@ backends whose native waiters only wake for queue writes.
 
 ## Boundaries and Invariants
 
-- Storage: `.taut.db` is the only durable file. SQLite WAL/shm companions are
-  SQLite-managed transients.
+- Storage: `.taut.db` is the default durable target. SQLite WAL/shm companions
+  are SQLite-managed transients. Under `taut-pg`, `.taut.toml` is config and
+  durable chat state lives in the configured Postgres schema.
 - Project resolution: `TautClient` resolves a target before any queue is opened.
   Only `TautClient.init()` creates a database.
+- Backend selection: `--db`, `db_path=`, and `TAUT_DB` remain filesystem path
+  selectors. Postgres is selected only through `.taut.toml`.
 - SimpleBroker API: taut imports from `simplebroker` and `simplebroker.ext`
   only. No private SimpleBroker modules and no SQL against broker tables.
 - Process capture: `psutil` is the primary source for argv, executable, cwd,
@@ -91,6 +108,7 @@ backends whose native waiters only wake for queue writes.
 | Path | Owner |
 |---|---|
 | `taut/_constants.py` | Version, config translation, name rules, identity constants |
+| `taut/_scripts.py` | Developer helper logic for `bin/pytest-pg` |
 | `taut/_exceptions.py` | Public exception hierarchy |
 | `taut/envelope.py` | Envelope v1 encode/decode and foreign fallback |
 | `taut/schema.py` | Sidecar DDL, version gate, member/thread/membership queries |
@@ -99,8 +117,10 @@ backends whose native waiters only wake for queue writes.
 | `taut/watcher.py` | Vendored multi-queue watcher and `TautWatcher` |
 | `taut/cli.py` | Argparse tree, rendering, exit-code mapping |
 | `bin/release.py` | GitHub-only release helper and local release gates |
+| `bin/pytest-pg` | Docker-backed Postgres test runner for shared and extension suites |
+| `extensions/taut_pg/` | Separate `taut-pg` package, docs, and PG-only tests |
 | `.github/workflows/` | GitHub Actions test and GitHub-only release publication gates |
-| `tests/` | Contract tests against real `.taut.db` files and subprocess CLI |
+| `tests/` | Contract tests against real SQLite files, shared backend tests, and subprocess CLI |
 
 ## Change Guidance
 
@@ -113,10 +133,13 @@ Before completion, run:
 
 ```bash
 uv run pytest
-uv run ruff check taut tests bin
-uv run ruff format --check taut tests bin
-uv run mypy taut tests bin/release.py
+uv run pytest -m shared
+uv run ./bin/pytest-pg --fast
+uv run ruff check taut tests bin extensions/taut_pg/taut_pg extensions/taut_pg/tests
+uv run ruff format --check taut tests bin extensions/taut_pg/taut_pg extensions/taut_pg/tests
+uv run --extra dev mypy taut tests bin/release.py extensions/taut_pg/taut_pg extensions/taut_pg/tests --config-file pyproject.toml
 uv build
+uv build extensions/taut_pg
 ```
 
 Then run the grep gates from the foundation plan for private imports,
@@ -128,3 +151,4 @@ consuming broker APIs, SQL outside `schema.py`, and `Queue.write()`.
 - `docs/plans/2026-06-12-taut-0.1.1-hardening-plan.md`
 - `docs/plans/2026-06-17-github-release-helper-plan.md`
 - `docs/plans/2026-06-17-github-actions-release-workflows-plan.md`
+- `docs/plans/2026-06-17-taut-pg-extension-plan.md`

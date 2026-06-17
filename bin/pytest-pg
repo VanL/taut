@@ -1,0 +1,9 @@
+#!/usr/bin/env python3
+"""Run the Postgres-backed Taut test suites with automatic Docker setup."""
+
+from __future__ import annotations
+
+from taut._scripts import pytest_pg_main
+
+if __name__ == "__main__":
+    raise SystemExit(pytest_pg_main())

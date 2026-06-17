@@ -1,9 +1,9 @@
 # Taut
 
 *Slack in your terminal, for you and your agents. No server, no daemon, no
-config, no accounts. One SQLite file.*
+config, no accounts. One SQLite file by default; Postgres when you need it.*
 
-> **Status:** v0.1.1 is prepared for GitHub source release; PyPI publication
+> **Status:** v0.2.0 is prepared for GitHub source release; PyPI publication
 > is pending the package-name request. This README is the contract for it —
 > written first, on purpose. The full specification lives in
 > [`docs/specs/02-taut-core.md`](docs/specs/02-taut-core.md).
@@ -31,7 +31,9 @@ Taut exists for the machine you're already on: you in one terminal, two
 coding agents in others, a cron job that should be able to speak up. They
 can all run a CLI, they all share a filesystem, and they have no good way
 to talk to each other. Taut gives them rooms, threads, history, unread
-counts, and live following — backed by a single `.taut.db` file, built on
+counts, and live following. By default it is backed by a single `.taut.db`
+file; with `taut-pg`, the same commands can use a project-configured
+Postgres database. Both paths are built on
 [SimpleBroker](https://github.com/VanL/simplebroker)'s durable queues.
 
 ## Recommended For
@@ -47,14 +49,15 @@ counts, and live following — backed by a single `.taut.db` file, built on
 - **People who think a chat app should be installable with `pipx` and
   deletable with `rm`.**
 
-**Good for:** one trust domain, in-the-moment coordination — one machine
-today, one Postgres away from a few machines ([roadmap](#roadmap)).
+**Good for:** one trust domain, in-the-moment coordination — one machine by
+default, or a few machines through the Postgres extension.
 **Not for:** untrusted users, compliance, anything Slack is actually for.
 
 ## Features
 
-- **Zero configuration** — no server, no daemon, no dotfiles, no account.
-  `taut init` creates one file; that file is the entire installation.
+- **Zero configuration by default** — no server, no daemon, no dotfiles, no
+  account. `taut init` creates one file; that file is the entire SQLite
+  installation.
 - **Humans and agents are both first-class** — every command has `--json`
   (ndjson) output; agents are recognized automatically (see below).
 - **Real history** — messages are never consumed. Reading moves *your*
@@ -71,8 +74,8 @@ today, one Postgres away from a few machines ([roadmap](#roadmap)).
 ## Installation
 
 ```bash
-pipx install "git+https://github.com/VanL/taut.git@v0.1.1"       # CLI use
-uv add "taut @ git+https://github.com/VanL/taut.git@v0.1.1"      # as a library
+pipx install "git+https://github.com/VanL/taut.git@v0.2.0"       # CLI use
+uv add "taut @ git+https://github.com/VanL/taut.git@v0.2.0"      # as a library
 ```
 
 Requirements: Python 3.11+. Runtime dependencies are `simplebroker`
@@ -80,6 +83,36 @@ Requirements: Python 3.11+. Runtime dependencies are `simplebroker`
 
 PyPI install names stay out of the documented path until the `taut` package
 name is cleared.
+
+### Postgres Extension
+
+`taut-pg` is a separate package. Install it into the same environment as
+`taut`; it brings in `simplebroker-pg` and the Postgres driver dependencies.
+Until PyPI clearance changes, use matching GitHub Release artifacts:
+
+```bash
+pipx install "git+https://github.com/VanL/taut.git@v0.2.0"
+pipx inject taut ./taut_pg-0.2.0-py3-none-any.whl
+```
+
+The Postgres database must already exist. Create `.taut.toml` in the project
+root:
+
+```toml
+version = 1
+backend = "postgres"
+target = "postgresql://postgres:postgres@127.0.0.1:54329/taut_test"
+
+[backend_options]
+schema = "taut_project"
+```
+
+Then run `taut init` normally. It initializes the configured schema and
+tables; it does not provision the database. `taut init --json` reports `db`
+as the resolved backend display target. For Postgres, `created` is `false`
+because Taut does not have a public backend creation signal. `TAUT_DB`,
+`--db`, and `db_path=` remain filesystem path selectors; `.taut.toml` is the
+Postgres door.
 
 ## Quick Start
 
@@ -281,18 +314,18 @@ watcher.run_in_thread()         # or run_forever()
 Taut's trust model is deliberately weak, and saying so loudly is part of
 the design:
 
-- **Everyone who can open the file is root of the chat.** Any process
-  that can read `.taut.db` can read all history; any that can write it
-  can post as anyone — `--as` requires no proof, and sqlite3 is right
-  there.
+- **Everyone who can access the storage is root of the chat.** Any process
+  that can read `.taut.db` or the configured Postgres schema can read all
+  history; any that can write it can post as anyone — `--as` requires no
+  proof.
 - **Fingerprints identify; they do not authenticate.** They make the
   common case frictionless and impersonation *visible* (`whoami
   --explain`, fingerprints on record) — not impossible.
-- **The boundary is the filesystem.** `.taut.db` is created `0600`. Want
-  another user in the chat? That's a `chmod`/group decision you make, not
-  one taut manages. (With the Postgres backend on the roadmap, the
-  boundary becomes "who can reach the database" — wider, same shape:
-  storage access *is* membership.)
+- **The boundary is storage access.** `.taut.db` is created `0600`. Want
+  another local user in the SQLite chat? That's a `chmod`/group decision you
+  make, not one taut manages. With Postgres, the boundary is who can reach and
+  write the configured database/schema. Wider, same shape: storage access *is*
+  membership.
 
 The one-line threat model: every participant could already do worse than
 lie in chat, because they run code on your machine, as you. Taut is for
@@ -326,11 +359,11 @@ one is watching, taut is no processes at all.
 <details>
 <summary><strong>One file? Really?</strong></summary>
 
-Really. Messages, threads, members, fingerprints, read cursors — all of
-it is in `.taut.db` (SQLite's transient `-wal`/`-shm` companions come and
-go). Backup is `cp`, deletion is `rm`, and "export the workspace" is the
-file. Taut's own tables are namespaced `taut_*` beside SimpleBroker's,
-written through SimpleBroker's public sidecar API.
+By default, yes. Messages, threads, members, fingerprints, read cursors — all
+of it is in `.taut.db` (SQLite's transient `-wal`/`-shm` companions come and
+go). Backup is `cp`, deletion is `rm`, and "export the workspace" is the file.
+Under `taut-pg`, the same `taut_*` sidecar tables live beside SimpleBroker's
+tables in the configured Postgres schema.
 </details>
 
 <details>
@@ -370,11 +403,6 @@ set stays small.
 
 In order, each behind its own spec (this project is docs-first):
 
-- **Postgres backend → multi-host chat.** SimpleBroker already speaks
-  Postgres (and Weft runs on it in production shape). For taut it's one
-  project-config file — same chat, several machines, still no taut
-  server. The v0.1 schema and identity model are already host-aware so
-  this lands without a migration.
 - **`taut summon` — captive agents.** Spawn an agent *as a thread
   member*: messages in the thread become its prompts, its output becomes
   replies. Ships as a separate extension (`taut-summon`) so the core
@@ -400,6 +428,7 @@ and both are kept in CI-grade sync with the code. Start with
 git clone git@github.com:VanL/taut.git && cd taut
 uv sync --all-extras
 uv run pytest
+uv run ./bin/pytest-pg --fast
 uv run ruff check taut tests bin
 uv run ruff format --check taut tests bin
 uv run mypy taut tests bin/release.py
@@ -414,12 +443,13 @@ Release prep is local and GitHub-only:
 ```bash
 python bin/release.py --dry-run
 python bin/release.py --version X.Y.Z
+python bin/release.py --target pg --dry-run
 ```
 
-The helper updates version files, runs the release gates, manages `vX.Y.Z`
-tags, and pushes to GitHub. Tag pushes run the GitHub Actions release gate,
-which creates the GitHub Release and uploads the built source/wheel artifacts.
-It does not upload to PyPI.
+The helper updates version files, runs the release gates, manages root
+`vX.Y.Z` tags and extension `taut_pg/vX.Y.Z` tags, and pushes to GitHub. Tag
+pushes run the GitHub Actions release gate, which creates the GitHub Release
+and uploads the built source/wheel artifacts. It does not upload to PyPI.
 
 ## License
 

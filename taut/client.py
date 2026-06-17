@@ -11,7 +11,7 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 from simplebroker import (
     BrokerTarget,
@@ -34,7 +34,6 @@ from taut._constants import (
 )
 from taut._exceptions import (
     AmbiguousMessageError,
-    BackendNotSupportedError,
     EmptyResultError,
     IdentityError,
     MembershipError,
@@ -47,6 +46,21 @@ from taut.envelope import DecodedEnvelope, decode_envelope, encode_envelope
 
 if TYPE_CHECKING:
     from taut.watcher import TautWatcher
+
+_MISSING_POSTGRES_PLUGIN_ERROR = "Unknown backend plugin: postgres"
+_MISSING_POSTGRES_PLUGIN_HINT = (
+    "Install taut-pg in the same environment as taut to enable Postgres project configs"
+)
+
+
+def _raise_with_backend_install_hint(exc: RuntimeError) -> NoReturn:
+    """Re-raise missing Postgres backend errors with the Taut extension hint."""
+
+    if str(exc) == _MISSING_POSTGRES_PLUGIN_ERROR:
+        raise RuntimeError(
+            f"{_MISSING_POSTGRES_PLUGIN_ERROR}. {_MISSING_POSTGRES_PLUGIN_HINT}."
+        ) from exc
+    raise exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,22 +151,30 @@ class TautClient:
 
         config = load_config()
         explicit = db_path or os.environ.get("TAUT_DB")
+        db_file: Path | None
         if explicit is not None:
             path = Path(explicit).expanduser()
             target: BrokerTarget | str = str(path)
             db_file = path
         else:
-            target_obj = target_for_directory(Path.cwd(), config=config)
-            if target_obj.backend_name != "sqlite":
-                raise BackendNotSupportedError(
-                    f"backend '{target_obj.backend_name}' is not supported in taut v0.1"
-                )
+            try:
+                target_obj = target_for_directory(Path.cwd(), config=config)
+            except RuntimeError as exc:
+                _raise_with_backend_install_hint(exc)
             target = target_obj
-            db_file = Path(target_obj.target)
-        created = not db_file.exists()
+            db_file = (
+                Path(target_obj.target) if target_obj.backend_name == "sqlite" else None
+            )
+        created = False if db_file is None else not db_file.exists()
         queue = Queue(META_QUEUE_NAME, db_path=target, config=config)
-        schema.ensure_schema(queue)
-        return InitResult(db=str(db_file), created=created)
+        try:
+            schema.ensure_schema(queue)
+        finally:
+            queue.close()
+        display_target = (
+            str(db_file) if isinstance(target, str) else target.display_target
+        )
+        return InitResult(db=display_target, created=created)
 
     def queue(self, name: str, *, persistent: bool = False) -> Queue:
         """Return a queue bound to this client's resolved target."""
@@ -385,8 +407,7 @@ class TautClient:
             raise ValueError("limit must be positive")
         after_timestamp = self._parse_since(since)
         queue = self.queue(thread)
-        messages: list[Message] | deque[Message]
-        messages = [] if limit is None else deque(maxlen=limit)
+        messages: list[Message] = []
         generator = queue.peek_generator(
             with_timestamps=True,
             after_timestamp=after_timestamp,
@@ -394,6 +415,9 @@ class TautClient:
         for result in generator:
             body, ts = cast(tuple[str, int], result)
             messages.append(self._message_from_body(thread, body, ts))
+        messages.sort(key=lambda message: message.ts)
+        if limit is not None:
+            messages = messages[-limit:]
         messages = list(messages)
         if not messages:
             raise EmptyResultError("empty")
@@ -504,14 +528,13 @@ class TautClient:
             if not path.exists():
                 raise NotInitializedError(NO_DATABASE_MESSAGE)
             return str(path)
-        target = resolve_broker_target(Path.cwd(), config=self.config)
+        try:
+            target = resolve_broker_target(Path.cwd(), config=self.config)
+        except RuntimeError as exc:
+            _raise_with_backend_install_hint(exc)
         if target is None:
             raise NotInitializedError(NO_DATABASE_MESSAGE)
-        if target.backend_name != "sqlite":
-            raise BackendNotSupportedError(
-                f"backend '{target.backend_name}' is not supported in taut v0.1"
-            )
-        if not Path(target.target).exists():
+        if target.backend_name == "sqlite" and not Path(target.target).exists():
             raise NotInitializedError(NO_DATABASE_MESSAGE)
         return target
 
