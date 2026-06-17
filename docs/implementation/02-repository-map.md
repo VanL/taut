@@ -42,10 +42,11 @@ Quick pointers to the key guidance documents in this repository.
 | `docs/specs/02-taut-core.md` | Taut v0.1 core spec: storage, identity, envelope, read model, surfaces, trust model |
 | `docs/plans/README.md` | Plan directory rules |
 | `docs/plans/2026-06-12-taut-foundation-plan.md` | Active plan for the v0.1 implementation |
+| `docs/plans/2026-06-12-taut-0.1.1-hardening-plan.md` | Hardening plan for handle quality, [TAUT-11] proof burndown, README rendering, and 0.1.1 release |
 | `docs/implementation/00-implementation-index.md` | Numbered entry point for implementation docs |
 | `docs/implementation/01-documentation-system.md` | Why the documentation system is shaped this way |
 | `docs/implementation/03-agent-inventory.md` | Current observed agent availability and review preference |
-| `docs/implementation/04-taut-architecture.md` | Taut v0.1 implementation rationale, boundaries, and key files |
+| `docs/implementation/04-taut-architecture.md` | Taut v0.1 implementation rationale, boundaries, dependencies, and key files |
 | `docs/lessons.md` | Canonical lessons ledger |
 
 ## Product Code

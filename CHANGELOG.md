@@ -1,6 +1,19 @@
 # Changelog
 
-## 0.1.0 - Unreleased
+## 0.1.1 - 2026-06-12
+
+- Added `psutil` as a bounded runtime dependency for cross-platform process
+  metadata capture, while preserving native start-time tokens where available.
+- Fixed identity handle quality for fallback `ps args=` output with spaces in
+  `argv[0]`.
+- Updated human `read`, `log`, `watch`, and `list` rendering to match the
+  README transcript shape, including grouped thread headings, local HH:MM
+  display, `-t` id columns, and bounded unread counts.
+- Completed the remaining [TAUT-11] proof obligations for concurrent writer
+  processes, mid-watch joins, idle peek queues, and continuity-token acts-as.
+- Added strict mypy coverage for the test suite (`mypy taut tests`).
+
+## 0.1.0 - 2026-06-12
 
 - Added the taut v0.1 core package: config translation, schema, identity,
   envelope, client API, watcher, and CLI.

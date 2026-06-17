@@ -105,3 +105,8 @@ For meaningful changes:
 2. run the nearest neighboring suite when blast radius justifies it
 3. run static checks when source files changed
 4. call out anything not verified
+
+When tests are the executable proof for a spec or hardening plan, include
+them in static typing gates too. Untyped tests can hide fixture, helper,
+and contract-shape mistakes in the very surface that is supposed to prove
+the behavior.

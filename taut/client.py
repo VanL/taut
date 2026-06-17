@@ -70,6 +70,7 @@ class Thread:
     parent: str | None
     unread: bool
     last_ts: int | None
+    unread_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -380,9 +381,12 @@ class TautClient:
         self._validate_thread_name(thread, allow_subthread=True)
         if schema.get_thread(self._meta_queue, thread) is None:
             raise NotFoundError(f"thread not found: {thread}")
+        if limit is not None and limit <= 0:
+            raise ValueError("limit must be positive")
         after_timestamp = self._parse_since(since)
         queue = self.queue(thread)
-        messages: list[Message] = []
+        messages: list[Message] | deque[Message]
+        messages = [] if limit is None else deque(maxlen=limit)
         generator = queue.peek_generator(
             with_timestamps=True,
             after_timestamp=after_timestamp,
@@ -390,8 +394,7 @@ class TautClient:
         for result in generator:
             body, ts = cast(tuple[str, int], result)
             messages.append(self._message_from_body(thread, body, ts))
-            if limit is not None and len(messages) >= limit:
-                break
+        messages = list(messages)
         if not messages:
             raise EmptyResultError("empty")
         return messages
@@ -769,16 +772,13 @@ class TautClient:
         membership: schema.MembershipRow | None,
     ) -> Thread:
         queue = self.queue(row["name"])
-        unread = (
-            False
-            if membership is None
-            else queue.has_pending(after_timestamp=membership["last_seen_ts"])
-        )
+        unread_count = self._unread_count(queue, membership)
         return Thread(
             name=row["name"],
             parent=row["parent"],
-            unread=unread,
+            unread=unread_count > 0,
             last_ts=self._last_message_ts(queue),
+            unread_count=unread_count,
         )
 
     def _member_from_row(
@@ -835,6 +835,22 @@ class TautClient:
             _body, ts = cast(tuple[str, int], result)
             last_ts = ts
         return last_ts
+
+    def _unread_count(
+        self,
+        queue: Queue,
+        membership: schema.MembershipRow | None,
+        *,
+        cap: int = 1000,
+    ) -> int:
+        if membership is None:
+            return 0
+        rows = queue.peek_many(
+            cap,
+            with_timestamps=True,
+            after_timestamp=membership["last_seen_ts"],
+        )
+        return len(rows)
 
     def _parse_since(self, since: str | int | None) -> int | None:
         if since is None:

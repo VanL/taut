@@ -1,12 +1,11 @@
 # Taut v0.1 Foundation Plan
 
 Date: 2026-06-12
-Status: Four review rounds incorporated — round 1 (codex), round 2
-confirmation ("yes, implementable"), round 3 adversarial (codex +
-author pass), round 4 adversarial (grok, fresh family, covering the
-addendum-2 identity UX; all findings applied — see appendix).
-Implementation in progress (external agent); next reviews after Task 6a
-and before Task 9.
+Status: Complete for the v0.1 CLI milestone and 0.1.1 hardening slice.
+Review rounds 1–5 are recorded in the appendix; implementation,
+verification, documentation alignment, and release commit/tag bookkeeping
+are complete. PyPI publication remains out of scope pending the package-name
+request.
 
 ## 1. Goal
 
@@ -163,8 +162,11 @@ Named before tasks; every task is bounded by these.
   ([TAUT-6.1]), sidecar DDL ([TAUT-3.3]), `--json` field names and exit
   codes ([TAUT-8.1], [TAUT-8.2]). Pre-release these may change only by
   amending the spec first ([DOM-6]).
-- I8 — Zero new dependencies. Runtime deps stay exactly
-  `["simplebroker>=4.7.1"]`; CLI is argparse; Python ≥ 3.11.
+- I8 — Bounded dependency set. Runtime deps stay exactly
+  `["simplebroker>=4.7.1", "psutil>=6.0"]`; CLI is argparse; Python ≥
+  3.11. `psutil` is scoped to cross-platform process metadata for
+  identity capture; it must not become a general process-control
+  abstraction.
 - I9 — Backend forward compatibility ([TAUT-12.1], [TAUT-12.2]). No
   SQLite-specific assumption outside target resolution and the
   documented data-version wake; sidecar SQL is qmark-only; identity is
@@ -216,13 +218,15 @@ the named invariants before continuing.
    - Files: `pyproject.toml`, `taut/__init__.py`, `taut/py.typed`,
      `LICENSE` (MIT, © Van Lindberg), `.gitignore`, `uv.lock`.
    - Content: name/description/readme; `requires-python = ">=3.11"`;
-     `dependencies = ["simplebroker>=4.7.1"]`; `[project.scripts]`
+     `dependencies = ["simplebroker>=4.7.1", "psutil>=6.0"]`;
+     `[project.scripts]`
      `taut = "taut.cli:main"`; dev extra (pytest, pytest-xdist, ruff,
      mypy); copy ruff/mypy/pytest tool sections from
      `../simplebroker/pyproject.toml` (same strictness), build backend
      matching weft (hatchling).
    - Done: `uv sync --all-extras` clean; `uv run python -c "import taut"`.
-   - Gate: stop if you add any dependency beyond simplebroker (I8).
+   - Gate: stop if you add any dependency beyond simplebroker and psutil
+     (I8).
 2. Constants and exceptions.
    - Files: `taut/_constants.py`, `taut/_exceptions.py`,
      `tests/test_constants.py`.
@@ -262,8 +266,10 @@ the named invariants before continuing.
    - Done: tests green; grep shows no SQL outside `schema.py`.
 5. Identity.
    - Files: `taut/identity.py`, `tests/test_identity.py`.
-   - Chain capture (Linux `/proc`; macOS `ps -p PID -o ...` + best-effort
-     `lsof` cwd), each field degrading to `None` ([TAUT-5.1]); host
+   - Chain capture (`psutil` for cross-platform process metadata; Linux
+     `/proc` and macOS/BSD `ps`/`lsof` fallbacks where native start tokens
+     or individual fields are still needed), each field degrading to
+     `None` ([TAUT-5.1]); host
      identity capture: opaque `host_id` (`/etc/machine-id` on Linux,
      `IOPlatformUUID` via `ioreg` on macOS, hostname fallback) plus
      `host_label` for display — matching always uses `host_id`; anchor
@@ -281,7 +287,8 @@ the named invariants before continuing.
      process chains (`sh -c`, nested interpreters) per [TAUT-11].
    - Done: real-chain tests pass on the dev platform; CI covers Linux +
      macOS.
-   - Gate: stop if capture needs psutil (I8) or elevated privileges.
+   - Gate: stop if capture needs elevated privileges or a dependency
+     beyond the I8 set.
 6. Client — two reviewable slices sharing `taut/client.py`,
    `taut/__init__.py` exports, and `tests/test_client.py`. Common to
    both: `Queue(name, db_path=target, config=cfg)` per the simplebroker
@@ -441,7 +448,7 @@ no-busy-spin.
 
 Per task: the task's named tests plus
 `uv run ruff check taut tests && uv run ruff format --check taut tests`
-and `uv run mypy taut`.
+and `uv run mypy taut tests`.
 
 Final gates before calling the plan complete:
 
@@ -450,7 +457,7 @@ uv sync --all-extras
 uv run pytest                       # full suite, -n auto via config
 uv run ruff check taut tests
 uv run ruff format --check taut tests
-uv run mypy taut
+uv run mypy taut tests
 uv build                            # packaging smoke
 grep -rn "from weft\|import weft" taut/        # must be empty (I3)
 grep -rn "simplebroker\._" taut/               # must be empty (I3)
@@ -527,7 +534,7 @@ this plan:
 
 ## Review Notes (appendix)
 
-### OPEN — live review findings, implementation phase (2026-06-12)
+### Closed — live review findings, implementation phase (2026-06-12)
 
 Filed by the watching reviewer (Claude). Items 1–2 blocked release per
 `testing-patterns.md` rule 5 and are resolved; item 3 is launch-quality
@@ -564,13 +571,51 @@ Filed by the watching reviewer (Claude). Items 1–2 blocked release per
    Prescription: reconstruct `argv[0]` by incrementally joining
    `args=` tokens while the joined prefix is an existing executable
    path (Linux `/proc` argv is NUL-separated and unaffected); keep
-   `comm=` only as a last-resort fallback. Status: OPEN.
+   `comm=` only as a last-resort fallback. Status: RESOLVED
+   2026-06-12 in the 0.1.1 hardening slice — `psutil` is the primary
+   capture path; the fallback reconstructs `argv[0]` and uses it before
+   truncatable `comm=` evidence. Regression coverage:
+   `test_ps_argv_reconstruction_preserves_argv0_paths_with_spaces` and
+   `test_ps_fallback_uses_reconstructed_argv0_before_truncated_comm`.
 2. **Spec gap — `say` to a non-member thread.** Implementation refuses
    ("X is not a member of THREAD"); [TAUT-8.1]'s say row never defined
    non-member behavior. RESOLVED: spec ratifies the refusal — exit 2
    with a `taut join` hint, mirroring `read` ([TAUT-8.1] say row
    updated 2026-06-12). Implementation should confirm its exit code
    matches.
+
+### Round 5 — codex, 2026-06-12 (0.1.1 implementation review)
+
+Read-only reviewer verdict before fixes: not approved for the 0.1.1
+hardening gate. All findings accepted and resolved before final gates:
+
+1. [TAUT-5.1] fallback capture still preferred truncatable `comm=` as
+   `exe`. Fixed in `taut/identity.py`; fallback capture now stores
+   reconstructed `argv[0]` first, with `comm=` only as last resort.
+2. README Quick Start byte-shape diverged from code/tests for `list` and
+   `log -t --limit 1`. Fixed in `README.md` to match the grouped renderer
+   contract and two-space list count shape.
+3. Token proof could be masked by ordinary anchor recognition. Fixed by
+   changing the identity test to create an unanchored token-bearing member
+   while the live chain resolves a different anchored member; token
+   resolution must now beat a concrete conflicting anchor.
+4. Poison-message warning was implemented but untested. Fixed by asserting
+   the `taut.watcher` warning in the poison-advance regression.
+5. Completion trail was inconsistent. Fixed by closing the live handle
+   finding here and recording this Round 5 disposition.
+
+Focused read-only codex re-review after these fixes: approved; no
+release-blocking mismatch remained in the scoped TAUT-5.1 fallback,
+README byte-shape, TAUT-11 token proof, poison-warning test, or ledger
+areas. Residual noted by the reviewer: the token proof is a
+conflicting-live-anchor proof rather than a literal unrelated-process-tree
+fixture, but it proves the load-bearing rule that token resolution beats
+anchor recognition.
+
+Grok review for this round was attempted with the local Grok CLI, but the
+process hung after environment/plugin warnings and returned no findings
+before interruption. Substitute review evidence for this slice is the
+completed read-only codex pass above plus the full verification gates.
 
 ### Round 1 — codex, 2026-06-12 (docs phase)
 

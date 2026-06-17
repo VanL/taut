@@ -25,6 +25,11 @@ read cursor semantics. The CLI only parses arguments and renders results. This
 keeps one operational path for every verb and prevents CLI behavior from
 drifting away from the Python API.
 
+Runtime dependencies are intentionally bounded to `simplebroker` and `psutil`.
+SimpleBroker owns the storage and queue substrate; `psutil` is scoped to
+cross-platform process metadata for identity capture so taut does not rely on
+fragile platform-specific argv parsing for the core recognition path.
+
 All taut-owned relational state flows through `taut/schema.py`. It is the only
 module with sidecar SQL. That boundary matters because SQL sidecar tables are
 the v0.1 state mapping, while [TAUT-12.2] reserves a future non-SQL mapping
@@ -52,6 +57,10 @@ backends whose native waiters only wake for queue writes.
   Only `TautClient.init()` creates a database.
 - SimpleBroker API: taut imports from `simplebroker` and `simplebroker.ext`
   only. No private SimpleBroker modules and no SQL against broker tables.
+- Process capture: `psutil` is the primary source for argv, executable, cwd,
+  uid, parent, process group/session, and terminal when available. Native
+  `/proc` or `ps` evidence remains the start-time token where needed so
+  existing `(pid, start_time)` identity matching stays stable.
 - Read model: client and CLI paths use peek APIs only. Consuming read/move code
   appears only in the vendored watcher compatibility modes, not in
   `TautWatcher`.
@@ -93,7 +102,7 @@ Before completion, run:
 uv run pytest
 uv run ruff check taut tests
 uv run ruff format --check taut tests
-uv run mypy taut
+uv run mypy taut tests
 uv build
 ```
 
@@ -103,3 +112,4 @@ consuming broker APIs, SQL outside `schema.py`, and `Queue.write()`.
 ## Related Plans
 
 - `docs/plans/2026-06-12-taut-foundation-plan.md`
+- `docs/plans/2026-06-12-taut-0.1.1-hardening-plan.md`

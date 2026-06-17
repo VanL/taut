@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import logging
+import subprocess
+import sys
 import time
 from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+
+import pytest
 
 import taut.schema as schema
-from taut.client import TautClient
-from taut.watcher import TautWatcher
+from taut.client import Message, TautClient
+from taut.watcher import QueueRuntimeConfig, TautWatcher
 from tests.conftest import run_cli
 
 
@@ -18,7 +25,17 @@ def _wait_until(predicate: Callable[[], bool], *, timeout: float = 3.0) -> None:
     raise AssertionError("condition was not satisfied before timeout")
 
 
-def test_explicit_watch_filter_drops_left_thread_on_refresh(tmp_path) -> None:
+def _spawn_cli(cwd: Path, *args: object) -> subprocess.Popen[str]:
+    return subprocess.Popen(
+        [sys.executable, "-m", "taut", *map(str, args)],
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+def test_explicit_watch_filter_drops_left_thread_on_refresh(tmp_path: Path) -> None:
     TautClient.init(db_path=tmp_path / ".taut.db")
     client = TautClient(db_path=tmp_path / ".taut.db", as_handle="van")
     client.join("foo")
@@ -34,7 +51,9 @@ def test_explicit_watch_filter_drops_left_thread_on_refresh(tmp_path) -> None:
     watcher.stop()
 
 
-def test_live_watch_filter_drops_left_thread_without_killing_watcher(tmp_path) -> None:
+def test_live_watch_filter_drops_left_thread_without_killing_watcher(
+    tmp_path: Path,
+) -> None:
     TautClient.init(db_path=tmp_path / ".taut.db")
     van = TautClient(db_path=tmp_path / ".taut.db", as_handle="van")
     bob = TautClient(db_path=tmp_path / ".taut.db", as_handle="bob")
@@ -76,7 +95,7 @@ def test_live_watch_filter_drops_left_thread_without_killing_watcher(tmp_path) -
         assert not thread.is_alive()
 
 
-def test_live_watcher_receives_message_from_cli_subprocess(tmp_path) -> None:
+def test_live_watcher_receives_message_from_cli_subprocess(tmp_path: Path) -> None:
     TautClient.init(db_path=tmp_path / ".taut.db")
     bob = TautClient(db_path=tmp_path / ".taut.db", as_handle="bob")
     van = TautClient(db_path=tmp_path / ".taut.db", as_handle="van")
@@ -111,7 +130,123 @@ def test_live_watcher_receives_message_from_cli_subprocess(tmp_path) -> None:
         assert not thread.is_alive()
 
 
-def test_live_watcher_drop_to_zero_then_rejoin_continues(tmp_path) -> None:
+def test_live_watcher_receives_all_concurrent_writer_processes(
+    tmp_path: Path,
+) -> None:
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    van = TautClient(db_path=tmp_path / ".taut.db", as_handle="van")
+    van.join("foo")
+    for handle in ("bob", "codex"):
+        TautClient(db_path=tmp_path / ".taut.db", as_handle=handle).join("foo")
+    van.read("foo")
+    seen: list[tuple[int, str]] = []
+    watcher = TautWatcher(
+        van,
+        "van",
+        lambda message: seen.append((message.ts, message.text)),
+        membership_refresh_interval=0.05,
+    )
+    thread = watcher.start()
+    processes: list[subprocess.Popen[str]] = []
+    try:
+        _wait_until(thread.is_alive)
+
+        processes = [
+            _spawn_cli(tmp_path, "--as", "bob", "say", "foo", "from bob"),
+            _spawn_cli(tmp_path, "--as", "codex", "say", "foo", "from codex"),
+        ]
+        for process in processes:
+            stdout, stderr = process.communicate(timeout=8)
+            assert process.returncode == 0, stdout + stderr
+
+        _wait_until(lambda: {text for _ts, text in seen} == {"from bob", "from codex"})
+        assert [ts for ts, _text in seen] == sorted(ts for ts, _text in seen)
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                process.kill()
+        watcher.stop()
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+
+
+def test_live_watcher_picks_up_mid_watch_join_via_add_queue(tmp_path: Path) -> None:
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    van = TautClient(db_path=tmp_path / ".taut.db", as_handle="van")
+    bob = TautClient(db_path=tmp_path / ".taut.db", as_handle="bob")
+    van.join("foo")
+    bob.join("foo")
+    seen: list[tuple[str, str]] = []
+    watcher = TautWatcher(
+        van,
+        "van",
+        lambda message: seen.append((message.thread, message.text)),
+        membership_refresh_interval=0.05,
+    )
+    thread = watcher.start()
+    try:
+        _wait_until(thread.is_alive)
+
+        van.join("bar")
+        bob.join("bar")
+        bob.say("bar", "new room")
+
+        _wait_until(lambda: "bar" in watcher.list_queues())
+        _wait_until(lambda: ("bar", "new room") in seen)
+        assert "foo" in watcher.list_queues()
+    finally:
+        watcher.stop()
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+
+
+def test_idle_peek_queue_does_not_busy_fetch_after_cursor_advance(
+    tmp_path: Path,
+) -> None:
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    van = TautClient(db_path=tmp_path / ".taut.db", as_handle="van")
+    van.join("foo")
+    seen: list[int] = []
+
+    class CountingWatcher(TautWatcher):
+        pending_checks = 0
+        fetches = 0
+
+        def _queue_has_pending(self, queue: Any) -> bool:
+            self.pending_checks += 1
+            return super()._queue_has_pending(queue)
+
+        def _fetch_next_message(
+            self,
+            config: QueueRuntimeConfig,
+        ) -> tuple[str, int] | None:
+            self.fetches += 1
+            return super()._fetch_next_message(config)
+
+    watcher = CountingWatcher(
+        van,
+        "van",
+        lambda message: seen.append(message.ts),
+        membership_refresh_interval=60.0,
+    )
+    try:
+        message = van.say("foo", "once")
+
+        watcher._drain_queue()
+        assert seen == [message.ts]
+        fetches_after_message = watcher.fetches
+        pending_checks_after_message = watcher.pending_checks
+
+        for _ in range(5):
+            watcher._drain_queue()
+
+        assert watcher.fetches == fetches_after_message
+        assert watcher.pending_checks <= pending_checks_after_message + 5
+    finally:
+        watcher.stop()
+
+
+def test_live_watcher_drop_to_zero_then_rejoin_continues(tmp_path: Path) -> None:
     TautClient.init(db_path=tmp_path / ".taut.db")
     van = TautClient(db_path=tmp_path / ".taut.db", as_handle="van")
     bob = TautClient(db_path=tmp_path / ".taut.db", as_handle="bob")
@@ -141,7 +276,7 @@ def test_live_watcher_drop_to_zero_then_rejoin_continues(tmp_path) -> None:
         assert not thread.is_alive()
 
 
-def test_watcher_membership_refresh_timer_counts_as_pending(tmp_path) -> None:
+def test_watcher_membership_refresh_timer_counts_as_pending(tmp_path: Path) -> None:
     TautClient.init(db_path=tmp_path / ".taut.db")
     client = TautClient(db_path=tmp_path / ".taut.db", as_handle="van")
     client.join("foo")
@@ -159,7 +294,9 @@ def test_watcher_membership_refresh_timer_counts_as_pending(tmp_path) -> None:
         watcher.stop()
 
 
-def test_live_watcher_does_not_redispatch_after_cursor_advance(tmp_path) -> None:
+def test_live_watcher_does_not_redispatch_after_cursor_advance(
+    tmp_path: Path,
+) -> None:
     TautClient.init(db_path=tmp_path / ".taut.db")
     van = TautClient(db_path=tmp_path / ".taut.db", as_handle="van")
     van.join("foo")
@@ -192,13 +329,17 @@ def test_live_watcher_does_not_redispatch_after_cursor_advance(tmp_path) -> None
         assert not thread.is_alive()
 
 
-def test_watcher_poison_message_advances_after_three_failures(tmp_path) -> None:
+def test_watcher_poison_message_advances_after_three_failures(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     TautClient.init(db_path=tmp_path / ".taut.db")
     client = TautClient(db_path=tmp_path / ".taut.db", as_handle="van")
     client.join("foo")
     attempts: list[int] = []
+    caplog.set_level(logging.WARNING, logger="taut.watcher")
 
-    def fail(message) -> None:
+    def fail(message: Message) -> None:
         attempts.append(message.ts)
         raise RuntimeError("boom")
 
@@ -226,6 +367,7 @@ def test_watcher_poison_message_advances_after_three_failures(tmp_path) -> None:
         assert membership is not None
         assert membership["last_seen_ts"] >= message.ts
         assert thread.is_alive()
+        assert f"advancing past poison message {message.ts} in foo" in caplog.text
     finally:
         watcher.stop()
         thread.join(timeout=2)

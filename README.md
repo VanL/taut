@@ -3,7 +3,8 @@
 *Slack in your terminal, for you and your agents. No server, no daemon, no
 config, no accounts. One SQLite file.*
 
-> **Status:** v0.1 is in development. This README is the contract for it —
+> **Status:** v0.1.1 is prepared for source release; PyPI publication is
+> pending the package-name request. This README is the contract for it —
 > written first, on purpose. The full specification lives in
 > [`docs/specs/02-taut-core.md`](docs/specs/02-taut-core.md).
 
@@ -74,8 +75,8 @@ pipx install taut        # CLI use
 uv add taut              # as a library
 ```
 
-Requirements: Python 3.11+. The only runtime dependency is `simplebroker`
-(which itself has none).
+Requirements: Python 3.11+. Runtime dependencies are `simplebroker`
+(which itself has none) and `psutil` for cross-platform process metadata.
 
 ## Quick Start
 
@@ -92,7 +93,7 @@ $ taut say general "anyone awake?"
 
 # What's new for me? (exit 2 when nothing — composable in scripts)
 $ taut list
-general          2 unread
+general  2 unread
 $ taut read general
 ── general ──────────────────────────────────────
   09:15 · claude joined
@@ -106,6 +107,7 @@ $ taut watch
 
 # Threads branch off a message, Slack-style (-t shows message ids)
 $ taut log general -t --limit 1
+── general ──────────────────────────────────────
   1837025672140161024  09:15 claude  yes. what broke?
 $ taut reply general 0161024 "moving this to a thread"
 ```
@@ -351,12 +353,14 @@ security model.
 </details>
 
 <details>
-<summary><strong>Why argparse and one dependency?</strong></summary>
+<summary><strong>Why argparse and a small dependency set?</strong></summary>
 
 Taut follows SimpleBroker's discipline: the install should be boring.
-Runtime dependencies are exactly `simplebroker`. The CLI is argparse, the
-storage is stdlib `sqlite3` (via SimpleBroker), and the planned TUI ships
-as an optional extra so the core never grows a second dependency.
+Runtime dependencies are exactly `simplebroker` and `psutil`. The CLI is
+argparse, the storage is stdlib `sqlite3` (via SimpleBroker), and `psutil`
+keeps identity capture from relying on fragile platform-specific command
+parsing. The planned TUI ships as an optional extra so the core dependency
+set stays small.
 </details>
 
 ## Roadmap

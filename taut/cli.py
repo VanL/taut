@@ -10,6 +10,7 @@ import argparse
 import json
 import sys
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Any
 
 from taut._constants import __version__
@@ -241,15 +242,30 @@ def _emit_created_member(args: argparse.Namespace, client: TautClient) -> None:
 def _emit_messages(args: argparse.Namespace, messages: list[Message]) -> None:
     if args.quiet:
         return
-    for message in messages:
-        if message.warning:
-            print(f"warning: {message.warning}", file=sys.stderr)
-        if args.json:
+    if args.json:
+        for message in messages:
+            if message.warning:
+                print(f"warning: {message.warning}", file=sys.stderr)
             _print_json(_message_object(message))
-        else:
-            prefix = f"{message.ts} " if args.timestamps else ""
-            sender = "·" if message.kind == "notice" else message.from_handle
-            print(f"{prefix}{message.thread} {sender}: {message.text}")
+        return
+    for thread, grouped in _group_messages_by_thread(messages).items():
+        print(_thread_heading(thread))
+        sender_width = max(
+            [6]
+            + [
+                len(message.from_handle)
+                for message in grouped
+                if message.kind != "notice"
+            ]
+        )
+        for message in grouped:
+            if message.warning:
+                print(f"warning: {message.warning}", file=sys.stderr)
+            print(
+                _human_message_row(
+                    message, timestamps=args.timestamps, sender_width=sender_width
+                )
+            )
 
 
 def _emit_threads(args: argparse.Namespace, threads: list[Thread]) -> None:
@@ -266,8 +282,7 @@ def _emit_threads(args: argparse.Namespace, threads: list[Thread]) -> None:
                 }
             )
         else:
-            unread = "unread" if thread.unread else "read"
-            print(f"{thread.name}\t{unread}")
+            print(f"{thread.name}  {_format_unread_count(thread.unread_count)} unread")
 
 
 def _emit_members(args: argparse.Namespace, members: list[Member]) -> None:
@@ -310,6 +325,38 @@ def _member_object(member: Member, *, include_token: bool) -> dict[str, Any]:
 
 def _print_json(obj: dict[str, Any]) -> None:
     print(json.dumps(obj, ensure_ascii=False, separators=(",", ":")))
+
+
+def _group_messages_by_thread(messages: list[Message]) -> dict[str, list[Message]]:
+    grouped: dict[str, list[Message]] = {}
+    for message in messages:
+        grouped.setdefault(message.thread, []).append(message)
+    return grouped
+
+
+def _thread_heading(thread: str) -> str:
+    return f"── {thread} ──────────────────────────────────────"
+
+
+def _human_message_row(
+    message: Message,
+    *,
+    timestamps: bool,
+    sender_width: int,
+) -> str:
+    id_column = f"{message.ts}  " if timestamps else ""
+    clock = _format_message_time(message.ts)
+    if message.kind == "notice":
+        return f"  {id_column}{clock} · {message.text}"
+    return f"  {id_column}{clock} {message.from_handle:<{sender_width}}  {message.text}"
+
+
+def _format_message_time(ts: int) -> str:
+    return datetime.fromtimestamp(ts / 1_000_000_000).strftime("%H:%M")
+
+
+def _format_unread_count(count: int) -> str:
+    return "999+" if count >= 1000 else str(count)
 
 
 def _read_text_argument(text: str | None) -> str:

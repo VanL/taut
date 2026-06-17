@@ -294,9 +294,10 @@ unreadable ancestor. Per process, best-effort:
 - current working directory (may be unavailable for non-self processes on
   macOS without elevated rights; recorded as null when unknown)
 
-Source is `/proc` on Linux and `ps`/`lsof` fallbacks on macOS and BSDs.
-Capture must not require any third-party dependency and must degrade
-field-by-field: a missing field is null, never a failed command.
+Source is `psutil` for cross-platform process metadata, with `/proc` on
+Linux and `ps`/`lsof` fallbacks where a native start-time token or
+best-effort field is still needed. Capture must degrade field-by-field:
+a missing field is null, never a failed command.
 
 Start time is an opaque token: taut stores the platform-native value
 exactly as captured (the `/proc` ticks field on Linux, the `ps lstart`
@@ -632,7 +633,7 @@ message ids in human output; `say` prints the new message's id),
 | `say THREAD [TEXT\|-]` | Post a message (stdin with `-` or when piped and TEXT omitted). Requires membership: non-members are refused with a `taut join` hint, mirroring `read`. Prints message id with `-t`. | 0; 1 error; 2 not a member (hint on stderr) |
 | `reply THREAD MSG_ID [TEXT\|-]` | Post into the sub-thread of MSG_ID, creating it on first reply. Requires membership in THREAD. A full 19-digit id resolves exactly (peek by id — works for any message ever written). A suffix ≥ 4 digits resolves via a bounded public-API scan of the most recent 1,000 message ids of THREAD; ambiguous → error listing candidates. | 0; 1 error (incl. ambiguous suffix); 2 no such message / not a member |
 | `read [THREAD]` | Show unread (all joined threads when bare, grouped), advance cursor. Requires a resolved member; explicit THREAD requires membership (sub-threads implicit-join per [TAUT-4.3]). | 0 showed messages; 1 error; 2 nothing unread / not a member (hint on stderr) |
-| `log THREAD [--since TS] [--limit N]` | Show history. No cursor movement. | 0; 1; 2 empty |
+| `log THREAD [--since TS] [--limit N]` | Show history. No cursor movement. `--limit N` selects the most recent N messages after `--since`, rendered in chronological order. | 0; 1; 2 empty |
 | `list [--all]` | Bare: joined threads with unread state. `--all`: every registered thread. | 0; 2 when bare list has no unread |
 | `watch [THREAD ...]` | Live-follow (default: all joined threads), advancing cursor per message. Adds/drops threads as membership changes while running; a running watch that loses its last membership keeps running idle and picks up the next join. | 0 on clean stop; 1 error; 2 started with no joined threads (hint to join) |
 | `who [THREAD]` | Members and presence (thread members, or all members when bare). | 0; 1 error; 2 no such thread |
@@ -690,8 +691,8 @@ model). Public exports from `taut`: `TautClient`, `TautWatcher`,
 `Message`, `Thread`, `Member`, the exception hierarchy rooted at
 `TautError`, and `__version__`. The package ships typed (`py.typed`).
 
-Runtime dependencies: exactly `simplebroker`. Python ≥ 3.11 (SimpleBroker's
-floor). The CLI uses argparse, not a CLI framework.
+Runtime dependencies: exactly `simplebroker` and `psutil`. Python ≥ 3.11.
+The CLI uses argparse, not a CLI framework.
 
 ### [TAUT-8.4] Watcher
 
@@ -894,8 +895,9 @@ chat.
 Shape decided 2026-06-12:
 
 - Ships as a **separate extension package** (`taut-summon`), so the core
-  package keeps exactly one runtime dependency. The extension may grow
-  optional backends behind its own extras later without touching core.
+  package keeps its runtime dependency set deliberately small. The
+  extension may grow optional backends behind its own extras later
+  without touching core.
 - The captive lane is **taut-native**: built on the vendored multi-queue
   watcher plus direct child-process supervision by the summoning
   process. No manager or daemon appears — the no-daemon property holds
@@ -929,3 +931,6 @@ extra, own spec.
 
 - `docs/plans/2026-06-12-taut-foundation-plan.md` — v0.1 foundation:
   package scaffolding, schema, identity, envelope, client, watcher, CLI.
+- `docs/plans/2026-06-12-taut-0.1.1-hardening-plan.md` — post-0.1.0
+  hardening slice: handle-quality fix, [TAUT-11] burndown, renderer
+  conformance to the README, round-5 review, 0.1.1 tag.

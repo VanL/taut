@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from taut._constants import load_config
 
 
@@ -15,7 +17,7 @@ def test_load_config_translates_taut_resolution_keys(clean_env: None) -> None:
 
 def test_taut_db_overrides_default_db_name(
     clean_env: None,
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     db = tmp_path / "chosen.db"

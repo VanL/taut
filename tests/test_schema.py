@@ -72,7 +72,6 @@ def test_cursor_advance_is_monotonic(tmp_path: Path) -> None:
     schema.advance_cursor(queue, thread="general", member="van", seen_ts=90)
     schema.advance_cursor(queue, thread="general", member="van", seen_ts=110)
 
-    assert (
-        schema.get_membership(queue, thread="general", member="van")["last_seen_ts"]
-        == 110
-    )
+    membership = schema.get_membership(queue, thread="general", member="van")
+    assert membership is not None
+    assert membership["last_seen_ts"] == 110

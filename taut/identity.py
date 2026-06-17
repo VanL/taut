@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import psutil
+
 import taut.schema as schema
 from taut._constants import (
     HISTORICAL_HANDLE_POOL,
@@ -160,6 +162,9 @@ def capture_process_chain(start_pid: int, *, limit: int = 12) -> list[ProcessInf
 def capture_process(pid: int) -> ProcessInfo | None:
     """Capture one process using the native platform source."""
 
+    psutil_process = _capture_psutil_process(pid)
+    if psutil_process is not None:
+        return psutil_process
     if sys.platform.startswith("linux"):
         return _capture_linux_process(pid)
     return _capture_ps_process(pid)
@@ -374,41 +379,50 @@ def _capture_linux_process(pid: int) -> ProcessInfo | None:
     )
 
 
-def _capture_ps_process(pid: int) -> ProcessInfo | None:
+def _capture_psutil_process(pid: int) -> ProcessInfo | None:
     try:
-        completed = subprocess.run(
-            [
-                "ps",
-                "-p",
-                str(pid),
-                "-o",
-                "pid=",
-                "-o",
-                "ppid=",
-                "-o",
-                "pgid=",
-                "-o",
-                "sess=",
-                "-o",
-                "uid=",
-                "-o",
-                "lstart=",
-                "-o",
-                "comm=",
-                "-o",
-                "args=",
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-    except (OSError, subprocess.SubprocessError):
+        proc = psutil.Process(pid)
+    except psutil.Error:
         return None
-    if completed.returncode != 0 or not completed.stdout.strip():
+    try:
+        with proc.oneshot():
+            ppid = _psutil_ppid(proc)
+            start_time = _native_start_time(pid) or _psutil_start_time(proc)
+            exe = _psutil_exe(proc)
+            argv = _psutil_argv(proc)
+            cwd = _psutil_cwd(proc)
+            uid = _psutil_uid(proc)
+            tty = _psutil_terminal(proc)
+    except psutil.Error:
         return None
-    parts = completed.stdout.strip().split()
-    if len(parts) < 12:
+    return ProcessInfo(
+        pid=pid,
+        ppid=ppid,
+        start_time=start_time,
+        exe=exe,
+        argv=argv,
+        uid=uid,
+        pgid=_safe_getpgid(pid),
+        session_id=_safe_getsid(pid),
+        tty=tty,
+        cwd=cwd,
+    )
+
+
+def _capture_ps_process(pid: int) -> ProcessInfo | None:
+    metadata = _ps_output(
+        pid,
+        "pid=",
+        "ppid=",
+        "pgid=",
+        "sess=",
+        "uid=",
+        "lstart=",
+    )
+    if not metadata:
+        return None
+    parts = metadata.split()
+    if len(parts) < 10:
         return None
     try:
         pid_value = int(parts[0])
@@ -419,8 +433,9 @@ def _capture_ps_process(pid: int) -> ProcessInfo | None:
     except ValueError:
         return None
     start_time = " ".join(parts[5:10])
-    exe = parts[10]
-    argv = tuple(parts[11:])
+    args_output = _ps_output(pid, "args=") or ""
+    argv = _reconstruct_ps_argv(args_output.split())
+    exe = (argv[0] if argv else None) or _ps_output(pid, "comm=")
     return ProcessInfo(
         pid=pid_value,
         ppid=ppid,
@@ -433,6 +448,134 @@ def _capture_ps_process(pid: int) -> ProcessInfo | None:
         tty=None,
         cwd=_capture_cwd_with_lsof(pid_value),
     )
+
+
+def _ps_output(pid: int, *fields: str) -> str | None:
+    try:
+        completed = subprocess.run(
+            [
+                "ps",
+                "-ww",
+                "-p",
+                str(pid),
+                *(item for field in fields for item in ("-o", field)),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    value = completed.stdout.strip()
+    return value or None
+
+
+def _reconstruct_ps_argv(tokens: list[str]) -> tuple[str, ...]:
+    """Rebuild argv[0] after whitespace-splitting fallback ``ps args=`` output."""
+
+    if not tokens:
+        return ()
+    for index in range(1, len(tokens) + 1):
+        candidate = " ".join(tokens[:index])
+        path = Path(candidate)
+        if path.exists() and not path.is_dir():
+            return (candidate, *tokens[index:])
+    return tuple(tokens)
+
+
+def _native_start_time(pid: int) -> str | None:
+    if sys.platform.startswith("linux"):
+        return _read_linux_start_time(pid)
+    return _read_ps_lstart(pid)
+
+
+def _read_linux_start_time(pid: int) -> str | None:
+    try:
+        stat = (Path("/proc") / str(pid) / "stat").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        _prefix, _, tail = stat.rpartition(") ")
+        fields = tail.split()
+        return fields[19]
+    except IndexError:
+        return None
+
+
+def _read_ps_lstart(pid: int) -> str | None:
+    return _ps_output(pid, "lstart=")
+
+
+def _psutil_ppid(proc: psutil.Process) -> int | None:
+    try:
+        return proc.ppid()
+    except psutil.Error:
+        return None
+
+
+def _psutil_start_time(proc: psutil.Process) -> str | None:
+    try:
+        return f"psutil:{proc.create_time():.6f}"
+    except psutil.Error:
+        return None
+
+
+def _psutil_exe(proc: psutil.Process) -> str | None:
+    try:
+        value = proc.exe()
+    except (psutil.Error, OSError):
+        return None
+    return value or None
+
+
+def _psutil_argv(proc: psutil.Process) -> tuple[str, ...]:
+    try:
+        return tuple(proc.cmdline())
+    except (psutil.Error, OSError):
+        return ()
+
+
+def _psutil_cwd(proc: psutil.Process) -> str | None:
+    try:
+        value = proc.cwd()
+    except (psutil.Error, OSError):
+        return None
+    return value or None
+
+
+def _psutil_uid(proc: psutil.Process) -> int | None:
+    try:
+        uids = proc.uids()
+    except (psutil.Error, AttributeError):
+        return None
+    return int(uids.real)
+
+
+def _psutil_terminal(proc: psutil.Process) -> str | None:
+    try:
+        value = proc.terminal()
+    except (psutil.Error, OSError):
+        return None
+    return value or None
+
+
+def _safe_getpgid(pid: int) -> int | None:
+    if not hasattr(os, "getpgid"):
+        return None
+    try:
+        return os.getpgid(pid)
+    except OSError:
+        return None
+
+
+def _safe_getsid(pid: int) -> int | None:
+    if not hasattr(os, "getsid"):
+        return None
+    try:
+        return os.getsid(pid)
+    except OSError:
+        return None
 
 
 def _capture_cwd_with_lsof(pid: int) -> str | None:

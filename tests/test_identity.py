@@ -20,6 +20,7 @@ Spec references:
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import shutil
 import subprocess
@@ -28,11 +29,16 @@ from pathlib import Path
 
 import pytest
 
+import taut.identity as identity
+from taut._constants import normalize_handle_seed
+
 
 def _taut_via_shell(
     shell: Path | str,
     args: str,
     cwd: Path,
+    *,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run ``taut`` through a fresh shell wrapper, like per-command agents do.
 
@@ -42,9 +48,13 @@ def _taut_via_shell(
     exercise would never be captured. Do not "simplify" it away.
     """
     cmd = f"{shlex.quote(sys.executable)} -m taut {args} ; exit $?"
+    process_env = os.environ.copy()
+    if env:
+        process_env.update(env)
     return subprocess.run(
         [str(shell), "-c", cmd],
         cwd=cwd,
+        env=process_env,
         capture_output=True,
         text=True,
         timeout=20,
@@ -98,6 +108,59 @@ def _anchor_argv0(shell: Path | str, cwd: Path) -> str:
     return str(argv[0]) if argv else str(anchor.get("exe") or "")
 
 
+def _expected_handle_from_anchor(argv0: str) -> str:
+    return normalize_handle_seed(Path(argv0).name, fallback="agent")
+
+
+def test_ps_argv_reconstruction_preserves_argv0_paths_with_spaces(
+    tmp_path: Path,
+) -> None:
+    """[TAUT-5.1]: fallback ``ps args=`` parsing may be whitespace-split, but
+    argv[0] must be reconstructed before handle generation sees it."""
+    executable = tmp_path / "Application Support" / "Claude Code"
+    executable.parent.mkdir()
+    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    executable.chmod(0o755)
+
+    argv = identity._reconstruct_ps_argv([*str(executable).split(), "--print"])
+
+    assert argv == (str(executable), "--print")
+
+
+def test_ps_fallback_uses_reconstructed_argv0_before_truncated_comm(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[TAUT-5.1]: fallback capture must not store truncatable ``comm=`` as
+    executable evidence when reconstructed argv evidence exists."""
+    executable = tmp_path / "Application Support" / "Claude Code"
+    executable.parent.mkdir()
+    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    executable.chmod(0o755)
+
+    def fake_ps_output(pid: int, *fields: str) -> str | None:
+        assert pid == 123
+        if fields == ("pid=", "ppid=", "pgid=", "sess=", "uid=", "lstart="):
+            return "123 1 123 123 501 Fri Jun 12 18:00:00 2026"
+        if fields == ("args=",):
+            return f"{executable} --print"
+        if fields == ("comm=",):
+            return "/opt/homebrew/bi"
+        raise AssertionError(f"unexpected ps fields: {fields}")
+
+    def fake_cwd(_pid: int) -> str | None:
+        return None
+
+    monkeypatch.setattr(identity, "_ps_output", fake_ps_output)
+    monkeypatch.setattr(identity, "_capture_cwd_with_lsof", fake_cwd)
+
+    proc = identity._capture_ps_process(123)
+
+    assert proc is not None
+    assert proc.exe == str(executable)
+    assert proc.argv == (str(executable), "--print")
+
+
 @pytest.mark.usefixtures("clean_env")
 def test_recognition_survives_fresh_shell_per_command(tmp_path: Path) -> None:
     """[TAUT-5.3]: the same member must resolve across separate shell
@@ -123,6 +186,7 @@ def test_recognition_survives_fresh_shell_per_command(tmp_path: Path) -> None:
         f"anchor landed on a shell process ({anchor_argv0}); the walk must "
         "skip shells even when the captured executable name is truncated"
     )
+    assert created == _expected_handle_from_anchor(anchor_argv0)
 
 
 @pytest.mark.usefixtures("clean_env")
@@ -160,3 +224,39 @@ def test_shell_skip_survives_long_executable_paths(tmp_path: Path) -> None:
     assert anchor_argv0 != str(shell), (
         "anchor landed on the disposable long-path wrapper itself"
     )
+    assert created == _expected_handle_from_anchor(anchor_argv0)
+
+
+@pytest.mark.usefixtures("clean_env")
+def test_token_acts_as_unanchored_member_despite_different_live_anchor(
+    tmp_path: Path,
+) -> None:
+    """[TAUT-5.8]/[TAUT-11]: a continuity token bypasses process-tree
+    heuristics, even when the live chain would resolve another member."""
+    shell = shutil.which("bash") or "/bin/sh"
+    _init_db(tmp_path)
+
+    completed = _taut_via_shell(shell, "--as ada --json join general", tmp_path)
+    assert completed.returncode == 0, completed.stderr
+
+    completed = _taut_via_shell(shell, "--as van --json join general", tmp_path)
+    assert completed.returncode == 0, completed.stderr
+    token = next(
+        json.loads(line)["token"]
+        for line in completed.stdout.splitlines()
+        if "token" in json.loads(line)
+    )
+
+    rc, resolved = _whoami(shell, tmp_path)
+    assert rc == 0
+    assert resolved == "ada"
+
+    completed = _taut_via_shell(
+        shell,
+        "--json whoami",
+        tmp_path,
+        env={"TAUT_TOKEN": token},
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout.strip())["handle"] == "van"

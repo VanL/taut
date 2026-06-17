@@ -36,7 +36,7 @@ Last refreshed: 2026-06-12
 | Gemini | present, blocked | `/opt/homebrew/bin/gemini`; 2026-06-12 invocation failed: `GEMINI_API_KEY` not set in environment |
 | Qwen | present, blocked | `/opt/homebrew/bin/qwen`; 2026-06-12 invocation failed: configured model unavailable on free tier (API 404) |
 | Kimi | present, blocked | `/Users/van/.local/bin/kimi`; 2026-06-12 invocation failed: API key invalid or expired (401) |
-| Grok | verified usable | `/Users/van/.grok/bin/grok`; re-authorized 2026-06-12. Works headless via `grok -p … --always-approve` **run from inside a git repo** (hung from a non-git parent dir); a stale `Auth(AuthorizationRequired)` worker ERROR still prints but does not block. Reviewer for round 4 |
+| Grok | present, currently unreliable | `/Users/van/.grok/bin/grok`; re-authorized 2026-06-12 and worked for round 4, but the 0.1.1 round 5 implementation-review attempt hung after environment/plugin warnings and returned no findings. Treat as fallback-only until a fresh no-op or review invocation completes. |
 
 ## Review Preference
 

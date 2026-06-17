@@ -13,6 +13,11 @@ sessions.
 
 ## Project Lessons
 
+- 2026-06-12: Type-check tests when they are the executable spec proof.
+  A strict source tree with excluded tests leaves a blind spot in fixtures
+  and helper contracts; use `mypy taut tests` when test code is part of
+  the release gate.
+
 - 2026-06-12: Code-first was accepted for the v0.1 bootstrap uplift and
   promptly demonstrated its cost: the one module that shipped with zero
 	  tests (identity capture) is exactly where the release-gating bug lived
