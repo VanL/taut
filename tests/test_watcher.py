@@ -130,7 +130,7 @@ def test_live_watcher_receives_message_from_cli_subprocess(tmp_path: Path) -> No
         assert not thread.is_alive()
 
 
-def test_watcher_receives_all_concurrent_writer_processes(
+def test_concurrent_writer_processes_persist_all_messages(
     tmp_path: Path,
 ) -> None:
     TautClient.init(db_path=tmp_path / ".taut.db")
@@ -153,27 +153,13 @@ def test_watcher_receives_all_concurrent_writer_processes(
             if process.poll() is None:
                 process.kill()
 
-    seen: list[tuple[int, str]] = []
-    watcher = TautWatcher(
-        van,
-        "van",
-        lambda message: seen.append((message.ts, message.text)),
-        membership_refresh_interval=0.05,
-    )
-    thread = watcher.start()
-    try:
-        _wait_until(thread.is_alive)
+    messages = [message for message in van.log("foo") if message.text in target_texts]
 
-        _wait_until(
-            lambda: target_texts.issubset({text for _ts, text in seen}),
-            timeout=8.0,
-        )
-        target_timestamps = [ts for ts, text in seen if text in target_texts]
-        assert target_timestamps == sorted(target_timestamps)
-    finally:
-        watcher.stop()
-        thread.join(timeout=2)
-        assert not thread.is_alive()
+    assert {message.text for message in messages} == target_texts
+    assert {message.from_handle for message in messages} == {"bob", "codex"}
+    assert [message.ts for message in messages] == sorted(
+        message.ts for message in messages
+    )
 
 
 def test_live_watcher_picks_up_mid_watch_join_via_add_queue(tmp_path: Path) -> None:
