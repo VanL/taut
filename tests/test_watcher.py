@@ -159,7 +159,10 @@ def test_live_watcher_receives_all_concurrent_writer_processes(
             stdout, stderr = process.communicate(timeout=8)
             assert process.returncode == 0, stdout + stderr
 
-        _wait_until(lambda: {text for _ts, text in seen} == {"from bob", "from codex"})
+        _wait_until(
+            lambda: {text for _ts, text in seen} == {"from bob", "from codex"},
+            timeout=8.0,
+        )
         assert [ts for ts, _text in seen] == sorted(ts for ts, _text in seen)
     finally:
         for process in processes:
