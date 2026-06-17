@@ -561,7 +561,7 @@ def _psutil_uid(proc: psutil.Process) -> int | None:
 def _psutil_terminal(proc: psutil.Process) -> str | None:
     try:
         value = proc.terminal()
-    except (psutil.Error, OSError):
+    except (psutil.Error, OSError, AttributeError):
         return None
     return value or None
 

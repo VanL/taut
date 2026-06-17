@@ -26,7 +26,9 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import cast
 
+import psutil
 import pytest
 
 import taut.identity as identity
@@ -172,6 +174,17 @@ def test_login_name_falls_back_without_pwd(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(identity.getpass, "getuser", fake_getuser)
 
     assert identity._login_name(0) == "windows-user"
+
+
+def test_psutil_terminal_falls_back_when_platform_lacks_terminal() -> None:
+    """Some psutil backends do not expose ``Process.terminal``."""
+
+    class ProcessWithoutTerminal:
+        pass
+
+    proc = cast(psutil.Process, ProcessWithoutTerminal())
+
+    assert identity._psutil_terminal(proc) is None
 
 
 @pytest.mark.usefixtures("clean_env")
