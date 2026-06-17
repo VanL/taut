@@ -130,7 +130,7 @@ def test_live_watcher_receives_message_from_cli_subprocess(tmp_path: Path) -> No
         assert not thread.is_alive()
 
 
-def test_live_watcher_receives_all_concurrent_writer_processes(
+def test_watcher_receives_all_concurrent_writer_processes(
     tmp_path: Path,
 ) -> None:
     TautClient.init(db_path=tmp_path / ".taut.db")
@@ -139,6 +139,19 @@ def test_live_watcher_receives_all_concurrent_writer_processes(
     for handle in ("bob", "codex"):
         TautClient(db_path=tmp_path / ".taut.db", as_handle=handle).join("foo")
     van.read("foo")
+    processes = [
+        _spawn_cli(tmp_path, "--as", "bob", "say", "foo", "from bob"),
+        _spawn_cli(tmp_path, "--as", "codex", "say", "foo", "from codex"),
+    ]
+    try:
+        for process in processes:
+            stdout, stderr = process.communicate(timeout=8)
+            assert process.returncode == 0, stdout + stderr
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                process.kill()
+
     seen: list[tuple[int, str]] = []
     watcher = TautWatcher(
         van,
@@ -147,17 +160,8 @@ def test_live_watcher_receives_all_concurrent_writer_processes(
         membership_refresh_interval=0.05,
     )
     thread = watcher.start()
-    processes: list[subprocess.Popen[str]] = []
     try:
         _wait_until(thread.is_alive)
-
-        processes = [
-            _spawn_cli(tmp_path, "--as", "bob", "say", "foo", "from bob"),
-            _spawn_cli(tmp_path, "--as", "codex", "say", "foo", "from codex"),
-        ]
-        for process in processes:
-            stdout, stderr = process.communicate(timeout=8)
-            assert process.returncode == 0, stdout + stderr
 
         _wait_until(
             lambda: {text for _ts, text in seen} == {"from bob", "from codex"},
@@ -165,9 +169,6 @@ def test_live_watcher_receives_all_concurrent_writer_processes(
         )
         assert [ts for ts, _text in seen] == sorted(ts for ts, _text in seen)
     finally:
-        for process in processes:
-            if process.poll() is None:
-                process.kill()
         watcher.stop()
         thread.join(timeout=2)
         assert not thread.is_alive()
