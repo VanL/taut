@@ -1,7 +1,7 @@
 # GitHub Actions Release Workflows Plan
 
 Date: 2026-06-17
-Status: In progress.
+Status: Complete.
 
 ## 1. Goal
 
@@ -21,15 +21,18 @@ only, no PyPI upload until the package-name request is cleared.
 
 ## 3. Current State
 
-- The repository has no `.github` workflow files.
-- `bin/release.py` already pushes `vX.Y.Z` tags and checks for an existing
-  GitHub Release.
-- `v0.1.1` currently points at `origin/main`.
+- The repository has GitHub Actions workflows for test, release gate, and
+  GitHub Release publication.
+- `bin/release.py` pushes `vX.Y.Z` tags, checks for an existing GitHub Release,
+  and keeps dry-run detached tag testing separate from real release rejection.
+- `v0.1.1` points at the tested release commit and has a published GitHub
+  Release.
 - PyPI is still unavailable for taut, so release automation must not contain a
   PyPI publish job, Trusted Publishing environment, or package-index upload
   step.
-- A Windows test matrix exposes an existing portability gap: `taut.identity`
-  imports Unix-only `pwd` at module import time.
+- The Windows test matrix exposed portability gaps in identity discovery,
+  terminal fallback handling, CLI stdout encoding, and POSIX-only tests. Those
+  were fixed as part of this release workflow slice.
 
 ## 4. Invariants
 
@@ -70,7 +73,7 @@ only, no PyPI upload until the package-name request is cleared.
 
 ## 6. Verification
 
-Local gates:
+Planned local gates:
 
 ```bash
 uv run pytest
@@ -94,6 +97,46 @@ PY
 
 If pushed in this turn, observe the Test workflow and any tag-triggered release
 gate with `gh run list`.
+
+Observed local evidence:
+
+```bash
+uv run pytest
+# 69 passed
+
+uv run ruff check taut tests bin assets/gen_taut_logo.py generate_knot.py
+# passed
+
+uv run ruff format --check taut tests bin assets/gen_taut_logo.py generate_knot.py
+# 25 files already formatted
+
+uv run mypy taut tests bin/release.py --config-file pyproject.toml
+# Success: no issues found in 23 source files
+
+uv build
+# Built taut-0.1.1.tar.gz and taut-0.1.1-py3-none-any.whl
+
+uv run python bin/release.py --retag
+# Re-ran local release gates, pushed main, force-updated v0.1.1 to the tested
+# commit, and triggered the tag release gate. PyPI remained disabled.
+```
+
+Observed hosted evidence:
+
+- Test workflow run `27700415360`: success across lint, packaging, Ubuntu
+  Python 3.11-3.14, Windows Python 3.11-3.14, and macOS Python 3.13-3.14.
+- Release Gate workflow run `27700556933`: success. It called the reusable test
+  workflow, verified the tag, built release artifacts, verified the tag again,
+  and uploaded the artifacts to a GitHub Release.
+- GitHub Release:
+  `https://github.com/VanL/taut/releases/tag/v0.1.1`
+  - `taut-0.1.1-py3-none-any.whl`
+  - `taut-0.1.1.tar.gz`
+
+Hosted failures before the final green run were useful gates rather than
+ignored noise: they caught detached-head release dry-run behavior, Windows
+`psutil` terminal fallback handling, legacy stdout encoding, POSIX-only test
+assumptions, and timing-sensitive concurrent writer tests.
 
 ## 7. Rollback
 
