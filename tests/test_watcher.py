@@ -348,11 +348,25 @@ def test_watcher_poison_message_advances_after_three_failures(
         _wait_until(thread.is_alive)
 
         message = client.say("foo", "poison")
-        _wait_until(lambda: attempts.count(message.ts) == 3)
-        time.sleep(0.1)
+        failure_key = (message.thread, message.ts)
+
+        def poison_message_advanced() -> bool:
+            membership = schema.get_membership(
+                client._meta_queue,
+                thread="foo",
+                member="van",
+            )
+            return (
+                attempts.count(message.ts) == 3
+                and failure_key not in watcher._failures
+                and membership is not None
+                and membership["last_seen_ts"] >= message.ts
+            )
+
+        _wait_until(poison_message_advanced)
 
         assert attempts.count(message.ts) == 3
-        assert (message.thread, message.ts) not in watcher._failures
+        assert failure_key not in watcher._failures
         membership = schema.get_membership(
             client._meta_queue,
             thread="foo",
