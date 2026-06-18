@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import pytest
+
 import taut
+
+pytestmark = pytest.mark.sqlite_only
 
 
 def test_exception_leaves_are_public_exports() -> None:

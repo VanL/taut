@@ -65,6 +65,11 @@ Message writes use one path: `Queue.generate_timestamp()` followed by
 the caller needs the message id before rendering, cursor advancement, and
 sub-thread naming.
 
+List metadata asks SimpleBroker for the newest pending timestamp with
+`Queue.latest_pending_timestamp()`. That keeps `taut list` from walking full
+thread history for `last_ts` while preserving the public SimpleBroker API
+boundary and avoiding a Taut-owned cache or sidecar denormalization.
+
 `TautWatcher` subclasses a vendored Weft-style `MultiQueueWatcher`, but changes
 the peek behavior at the taut boundary: fetch uses
 `peek_many(..., after_timestamp=cursor)`, pending checks use
@@ -152,3 +157,5 @@ consuming broker APIs, SQL outside `schema.py`, and `Queue.write()`.
 - `docs/plans/2026-06-17-github-release-helper-plan.md`
 - `docs/plans/2026-06-17-github-actions-release-workflows-plan.md`
 - `docs/plans/2026-06-17-taut-pg-extension-plan.md`
+- `docs/plans/2026-06-17-implementation-review-followups-plan.md`
+- `docs/plans/2026-06-18-simplebroker-latest-timestamp-plan.md`

@@ -9,6 +9,8 @@ from taut._constants import META_QUEUE_NAME
 from taut._exceptions import EmptyResultError, NotInitializedError
 from taut.client import TautClient
 
+pytestmark = pytest.mark.sqlite_only
+
 
 def client(tmp_path: Path, as_handle: str) -> TautClient:
     TautClient.init(db_path=tmp_path / ".taut.db")

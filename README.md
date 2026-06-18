@@ -267,6 +267,10 @@ a unique suffix of 4+ digits — ids are timestamps, and the last few
 digits are the part that varies. Suffix search covers the thread's most
 recent 1,000 messages.
 
+`read` is paged: one invocation displays and marks seen up to 1,000 unread
+messages per thread. To drain a large backlog, run `taut read` again until it
+exits `2` for nothing unread.
+
 ## Working With Agents
 
 The agent side of taut is just the CLI with `--json`:

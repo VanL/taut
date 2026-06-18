@@ -11,6 +11,8 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RELEASE_SCRIPT = PROJECT_ROOT / "bin" / "release.py"
 
+pytestmark = pytest.mark.sqlite_only
+
 
 def _load_release_module() -> Any:
     spec = importlib.util.spec_from_file_location("taut_release", RELEASE_SCRIPT)

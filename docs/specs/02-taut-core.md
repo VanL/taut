@@ -650,7 +650,7 @@ message ids in human output; `say` prints the new message's id),
 | `leave THREAD` | Remove membership, write notice. | 0; 1 error; 2 not a member |
 | `say THREAD [TEXT\|-]` | Post a message (stdin with `-` or when piped and TEXT omitted). Requires membership: non-members are refused with a `taut join` hint, mirroring `read`. Prints message id with `-t`. | 0; 1 error; 2 not a member (hint on stderr) |
 | `reply THREAD MSG_ID [TEXT\|-]` | Post into the sub-thread of MSG_ID, creating it on first reply. Requires membership in THREAD. A full 19-digit id resolves exactly (peek by id — works for any message ever written). A suffix ≥ 4 digits resolves via a bounded public-API scan of the most recent 1,000 message ids of THREAD; ambiguous → error listing candidates. | 0; 1 error (incl. ambiguous suffix); 2 no such message / not a member |
-| `read [THREAD]` | Show unread (all joined threads when bare, grouped), advance cursor. Requires a resolved member; explicit THREAD requires membership (sub-threads implicit-join per [TAUT-4.3]). | 0 showed messages; 1 error; 2 nothing unread / not a member (hint on stderr) |
+| `read [THREAD]` | Show unread (all joined threads when bare, grouped), advance cursor through displayed messages. Reads are paged: one invocation displays and marks seen up to 1,000 unread messages per thread; callers drain larger backlogs by rerunning until exit 2. Requires a resolved member; explicit THREAD requires membership (sub-threads implicit-join per [TAUT-4.3]). | 0 showed messages; 1 error; 2 nothing unread / not a member (hint on stderr) |
 | `log THREAD [--since TS] [--limit N]` | Show history. No cursor movement. `--limit N` selects the most recent N messages after `--since`, rendered in chronological order. | 0; 1; 2 empty |
 | `list [--all]` | Bare: joined threads with unread state. `--all`: every registered thread. | 0; 2 when bare list has no unread |
 | `watch [THREAD ...]` | Live-follow (default: all joined threads), advancing cursor per message. Adds/drops threads as membership changes while running; a running watch that loses its last membership keeps running idle and picks up the next join. | 0 on clean stop; 1 error; 2 started with no joined threads (hint to join) |
@@ -679,7 +679,9 @@ polling loops compose in shell.
     has no `ts`;
   - `join` and `leave` echo their notice's message object;
   - list objects (`list`): `thread`, `parent`, `unread` (bool),
-    `last_ts`;
+    `last_ts`. `last_ts` is the newest pending broker timestamp for the
+    registered thread, obtained through SimpleBroker's public indexed lookup;
+    claimed rows from foreign consumers do not count, matching [TAUT-7.1].
   - member objects (`who`, `whoami`, `rejoin`): `handle`, `kind`,
     `presence`, `last_active_ts`, `persona` (string or null); `whoami
     --explain` adds `explain` (object with the captured chain and the
@@ -983,3 +985,9 @@ extra, own spec.
   [TAUT-12.1] plan: separate `taut-pg` extension project,
   Postgres shared/PG-only test split, `bin/pytest-pg`, and GitHub-only
   extension release flow.
+- `docs/plans/2026-06-17-implementation-review-followups-plan.md` —
+  post-review hardening for missing-plugin errors, bounded `log --limit`,
+  project-config proof strength, and expanded shared backend conformance.
+- `docs/plans/2026-06-18-simplebroker-latest-timestamp-plan.md` —
+  planned issue #3 fix: use SimpleBroker's indexed latest pending timestamp
+  API for `list` metadata instead of a full-history scan.

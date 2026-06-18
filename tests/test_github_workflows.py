@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_DIR = PROJECT_ROOT / ".github" / "workflows"
+
+pytestmark = pytest.mark.sqlite_only
 
 
 def _workflow(name: str) -> str:

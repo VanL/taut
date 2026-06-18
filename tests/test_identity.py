@@ -34,6 +34,8 @@ import pytest
 import taut.identity as identity
 from taut._constants import normalize_handle_seed
 
+pytestmark = pytest.mark.sqlite_only
+
 _POSIX_SHELL_PROCESS_TEST = pytest.mark.skipif(
     os.name == "nt",
     reason="POSIX shell-wrapper ancestry is not a Windows process contract",

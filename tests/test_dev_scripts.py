@@ -7,6 +7,8 @@ import pytest
 
 import taut._scripts as scripts
 
+pytestmark = pytest.mark.sqlite_only
+
 
 def test_route_pytest_args_defaults_to_both_suites() -> None:
     shared, extension, run_shared, run_extension, marker, workers, dist = (

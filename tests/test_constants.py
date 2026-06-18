@@ -6,6 +6,8 @@ import pytest
 
 from taut._constants import load_config
 
+pytestmark = pytest.mark.sqlite_only
+
 
 def test_load_config_translates_taut_resolution_keys(clean_env: None) -> None:
     config = load_config()

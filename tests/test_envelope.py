@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
 from taut.envelope import decode_envelope, encode_envelope
+
+pytestmark = pytest.mark.sqlite_only
 
 
 @given(

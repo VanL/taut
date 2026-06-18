@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1 - Unreleased
+
+- Fixed Postgres project-config and shared backend conformance coverage.
+- Documented `read` pagination and tightened bounded `log --limit` behavior.
+
 ## 0.2.0 - 2026-06-17
 
 - Added the separate `taut-pg` extension package for Postgres-backed Taut

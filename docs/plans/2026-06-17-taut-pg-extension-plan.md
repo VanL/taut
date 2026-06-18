@@ -888,8 +888,9 @@ Implementation guidance:
 
 9. Update `run_cli()`:
    - keep its public shape
-   - when active backend is Postgres, derive the config root from `cwd`,
-     `--dir`, or `-d`, matching SimpleBroker's CLI helper behavior
+   - when active backend is Postgres, derive the config root from `cwd`
+     only. Taut's CLI has no `--dir`/`-d` flag; do not copy SimpleBroker's
+     `--dir` parsing into this harness.
    - ensure that root has `.taut.toml` by calling
      `ensure_taut_project_config()` with the worker schema
    - pass `SIMPLEBROKER_PG_TEST_DSN` through
@@ -906,8 +907,8 @@ Implementation guidance:
 
 Tests:
 
-- Add or update tests that prove the marker logic marks no unmarked test
-  ambiguously.
+- Add or update tests that prove root collection rejects unmarked tests instead
+  of silently assigning backend coverage.
 - Add a small test for `.taut.toml` helper output.
 - Add a small test that `run_cli()` and `taut_project` use the same schema-name
   source when `BROKER_TEST_BACKEND=postgres`.

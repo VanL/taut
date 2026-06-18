@@ -9,6 +9,8 @@ from taut import schema
 from taut._constants import META_QUEUE_NAME
 from taut._exceptions import SchemaVersionError
 
+pytestmark = pytest.mark.sqlite_only
+
 
 def meta_queue(tmp_path: Path) -> Queue:
     return Queue(META_QUEUE_NAME, db_path=str(tmp_path / ".taut.db"))

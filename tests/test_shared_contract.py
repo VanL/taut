@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+import taut.identity as identity
+from taut._exceptions import EmptyResultError, IdentityError, MembershipError
 from taut.client import TautClient
 from taut.watcher import TautWatcher
 from tests.conftest import build_cli_env, run_cli
@@ -38,6 +40,27 @@ def _spawn_cli(cwd: Path, *args: object) -> subprocess.Popen[str]:
     )
 
 
+def _agent_capture(*, pid: int, start_time: str) -> identity.IdentityCapture:
+    process = identity.ProcessInfo(
+        pid=pid,
+        ppid=None,
+        start_time=start_time,
+        exe="/usr/bin/codex",
+        argv=("codex",),
+        uid=1000,
+        cwd="/workspace",
+    )
+    return identity.IdentityCapture(
+        chain=(process,),
+        host=identity.HostIdentity("host:test", "test-host"),
+        uid=1000,
+        login="tester",
+        anchor=process,
+        kind="agent",
+        rule="test capture",
+    )
+
+
 def test_project_client_join_say_read_contract(taut_project: Path) -> None:
     result = TautClient.init()
     van = TautClient(as_handle="van")
@@ -50,6 +73,153 @@ def test_project_client_join_say_read_contract(taut_project: Path) -> None:
     assert result.db
     assert message.thread == "general"
     assert [item.text for item in bob.read("general")][-1:] == ["shared hello"]
+
+
+def test_project_reply_creates_subthread_contract(taut_project: Path) -> None:
+    TautClient.init()
+    van = TautClient(as_handle="van")
+    bob = TautClient(as_handle="bob")
+    van.join("general")
+    bob.join("general")
+    root = van.say("general", "root")
+
+    reply = bob.reply("general", str(root.ts), "threaded shared reply")
+
+    assert reply.thread == f"general.{root.ts}"
+    assert [message.text for message in van.log(reply.thread)] == [
+        "threaded shared reply"
+    ]
+    child = next(
+        thread
+        for thread in van.list_threads(all_threads=True)
+        if thread.name == reply.thread
+    )
+    assert child.parent == "general"
+
+
+def test_project_leave_removes_membership_contract(taut_project: Path) -> None:
+    TautClient.init()
+    van = TautClient(as_handle="van")
+    bob = TautClient(as_handle="bob")
+    van.join("general")
+    bob.join("general")
+
+    left = bob.leave("general")
+
+    assert left.text == "bob left"
+    assert [member.handle for member in van.who("general")] == ["van"]
+    with pytest.raises(MembershipError):
+        bob.say("general", "should fail after leave")
+
+
+def test_project_rejoin_updates_anchor_contract(taut_project: Path) -> None:
+    TautClient.init()
+    old_capture = _agent_capture(pid=1001, start_time="old-start")
+    new_capture = _agent_capture(pid=2002, start_time="new-start")
+    TautClient(as_handle="codex", identity_capture=old_capture).join("general")
+
+    rejoined = TautClient(identity_capture=new_capture).rejoin("codex")
+
+    assert rejoined.handle == "codex"
+    assert TautClient(identity_capture=new_capture).whoami().handle == "codex"
+    with pytest.raises(IdentityError):
+        TautClient(identity_capture=old_capture).whoami()
+
+
+def test_project_list_reports_unread_contract(taut_project: Path) -> None:
+    TautClient.init()
+    van = TautClient(as_handle="van")
+    bob = TautClient(as_handle="bob")
+    van.join("general")
+    bob.join("general")
+    bob.say("general", "unread shared message")
+
+    threads = van.list_threads()
+
+    assert [
+        (thread.name, thread.unread, thread.unread_count) for thread in threads
+    ] == [("general", True, 2)]
+    assert [message.text for message in van.read("general")] == [
+        "bob joined",
+        "unread shared message",
+    ]
+    with pytest.raises(EmptyResultError):
+        van.list_threads()
+
+
+def test_project_list_reports_newest_pending_timestamp_contract(
+    taut_project: Path,
+) -> None:
+    TautClient.init()
+    van = TautClient(as_handle="van")
+    bob = TautClient(as_handle="bob")
+    van.join("general")
+    bob.join("general")
+    bob.say("general", "first timestamp message")
+    newest = bob.say("general", "newest timestamp message")
+
+    listed = next(
+        thread
+        for thread in van.list_threads(all_threads=True)
+        if thread.name == "general"
+    )
+
+    assert listed.last_ts == newest.ts
+    assert "newest timestamp message" in [
+        message.text for message in van.read("general")
+    ]
+    listed_after_read = next(
+        thread
+        for thread in van.list_threads(all_threads=True)
+        if thread.name == "general"
+    )
+    assert listed_after_read.last_ts == newest.ts
+
+
+def test_project_list_ignores_foreign_claimed_messages_contract(
+    taut_project: Path,
+) -> None:
+    TautClient.init()
+    van = TautClient(as_handle="van")
+    bob = TautClient(as_handle="bob")
+    van.join("general")
+    bob.join("general")
+    older = bob.say("general", "still pending")
+    newest = bob.say("general", "foreign claimed")
+    queue = van.queue("general")
+
+    claimed = queue.read_one(exact_timestamp=newest.ts, with_timestamps=True)
+
+    assert claimed is not None
+    listed = next(
+        thread
+        for thread in van.list_threads(all_threads=True)
+        if thread.name == "general"
+    )
+    assert listed.last_ts == older.ts
+
+    while queue.read_one(with_timestamps=True) is not None:
+        pass
+    listed_after_all_claimed = next(
+        thread
+        for thread in van.list_threads(all_threads=True)
+        if thread.name == "general"
+    )
+    assert listed_after_all_claimed.last_ts is None
+
+
+def test_project_log_limit_returns_recent_chronological_contract(
+    taut_project: Path,
+) -> None:
+    TautClient.init()
+    van = TautClient(as_handle="van")
+    van.join("general")
+    for text in ("first", "second", "third"):
+        van.say("general", text)
+
+    messages = van.log("general", limit=2)
+
+    assert [message.text for message in messages] == ["second", "third"]
 
 
 def test_project_cli_join_say_log_contract(taut_project: Path) -> None:

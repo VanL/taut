@@ -39,6 +39,7 @@ from taut._exceptions import (
     MembershipError,
     NotFoundError,
     NotInitializedError,
+    TautError,
     ThreadNameError,
     TokenError,
 )
@@ -56,8 +57,12 @@ _MISSING_POSTGRES_PLUGIN_HINT = (
 def _raise_with_backend_install_hint(exc: RuntimeError) -> NoReturn:
     """Re-raise missing Postgres backend errors with the Taut extension hint."""
 
-    if str(exc) == _MISSING_POSTGRES_PLUGIN_ERROR:
-        raise RuntimeError(
+    message = str(exc)
+    if (
+        _MISSING_POSTGRES_PLUGIN_ERROR in message
+        or "Requested backend 'postgres' is not available" in message
+    ):
+        raise TautError(
             f"{_MISSING_POSTGRES_PLUGIN_ERROR}. {_MISSING_POSTGRES_PLUGIN_HINT}."
         ) from exc
     raise exc
@@ -407,7 +412,11 @@ class TautClient:
             raise ValueError("limit must be positive")
         after_timestamp = self._parse_since(since)
         queue = self.queue(thread)
-        messages: list[Message] = []
+        messages: list[Message] | deque[Message]
+        if limit is None:
+            messages = []
+        else:
+            messages = deque(maxlen=limit)
         generator = queue.peek_generator(
             with_timestamps=True,
             after_timestamp=after_timestamp,
@@ -415,10 +424,7 @@ class TautClient:
         for result in generator:
             body, ts = cast(tuple[str, int], result)
             messages.append(self._message_from_body(thread, body, ts))
-        messages.sort(key=lambda message: message.ts)
-        if limit is not None:
-            messages = messages[-limit:]
-        messages = list(messages)
+        messages = sorted(messages, key=lambda message: message.ts)
         if not messages:
             raise EmptyResultError("empty")
         return messages
@@ -853,11 +859,7 @@ class TautClient:
         return matches[0]
 
     def _last_message_ts(self, queue: Queue) -> int | None:
-        last_ts: int | None = None
-        for result in queue.peek_generator(with_timestamps=True):
-            _body, ts = cast(tuple[str, int], result)
-            last_ts = ts
-        return last_ts
+        return queue.latest_pending_timestamp()
 
     def _unread_count(
         self,

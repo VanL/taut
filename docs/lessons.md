@@ -70,6 +70,13 @@ sessions.
   be documented and implemented as `BIGINT` before PG acceptance tests can be
   trusted.
 
+- 2026-06-17: Backend-selection tests must prove resolution through the real
+  client or CLI path, not just inspect config-file contents or fabricated
+  error strings. A test named as precedence or missing-plugin coverage should
+  fail when the actual resolver changes; otherwise it creates false confidence
+  while backend drift slips through. Shared conformance modules also need an
+  explicit marker guard so PG coverage cannot silently collapse to SQLite-only.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

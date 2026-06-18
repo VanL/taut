@@ -14,6 +14,7 @@ from taut._constants import PROJECT_CONFIG_NAME
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 POSTGRES_TEST_BACKEND = "postgres"
+BACKEND_MARKERS = ("shared", "sqlite_only", "pg_only")
 
 
 @pytest.fixture
@@ -100,26 +101,18 @@ def ensure_taut_project_config(root: Path, *, dsn: str, schema: str) -> Path:
     return config_path
 
 
-def _config_root_from_args(args: tuple[object, ...], cwd: Path) -> Path:
-    """Return the project root a CLI invocation should use for PG config."""
+def _requires_explicit_shared_marker(path: Path) -> bool:
+    """Return whether a test module name promises backend-shared coverage."""
 
-    arg_list = [str(arg) for arg in args]
-    for index, arg in enumerate(arg_list):
-        if arg.startswith("--dir="):
-            dir_arg = arg.split("=", 1)[1]
-            return (
-                (cwd / dir_arg).resolve()
-                if not Path(dir_arg).is_absolute()
-                else Path(dir_arg)
-            )
-        if arg in {"-d", "--dir"} and index + 1 < len(arg_list):
-            dir_arg = arg_list[index + 1]
-            return (
-                (cwd / dir_arg).resolve()
-                if not Path(dir_arg).is_absolute()
-                else Path(dir_arg)
-            )
-    return cwd.resolve()
+    return path.name.startswith("test_shared")
+
+
+def _has_backend_marker(item: pytest.Item) -> bool:
+    """Return whether a test item explicitly declares backend coverage."""
+
+    return any(
+        item.get_closest_marker(marker) is not None for marker in BACKEND_MARKERS
+    )
 
 
 @pytest.fixture
@@ -182,7 +175,7 @@ def run_cli(
         schema = full_env.get(
             "SIMPLEBROKER_PG_TEST_SCHEMA"
         ) or postgres_schema_for_worker("master")
-        config_root = _config_root_from_args(args, cwd)
+        config_root = cwd.resolve()
         ensure_taut_project_config(config_root, dsn=dsn, schema=schema)
     cmd = [sys.executable, "-m", "taut", *map(str, args)]
     kwargs: dict[str, Any] = {
@@ -206,13 +199,20 @@ def run_cli(
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    """Classify unmarked root tests as SQLite-only by default."""
+    """Require explicit backend coverage markers on root tests."""
 
     for item in items:
         if (
-            item.get_closest_marker("shared")
-            or item.get_closest_marker("sqlite_only")
-            or item.get_closest_marker("pg_only")
+            _requires_explicit_shared_marker(Path(str(item.path)))
+            and item.get_closest_marker("shared") is None
         ):
+            raise pytest.UsageError(
+                f"{item.path} is named as a shared contract test but is not "
+                "marked with @pytest.mark.shared"
+            )
+        if _has_backend_marker(item):
             continue
-        item.add_marker(pytest.mark.sqlite_only)
+        raise pytest.UsageError(
+            f"{item.nodeid} has no backend marker; add @pytest.mark.shared, "
+            "@pytest.mark.sqlite_only, or @pytest.mark.pg_only"
+        )

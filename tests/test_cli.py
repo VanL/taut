@@ -12,7 +12,7 @@ from taut.cli import _format_unread_count
 from taut.client import Message
 from tests.conftest import run_cli
 
-pytestmark = pytest.mark.usefixtures("clean_env")
+pytestmark = [pytest.mark.sqlite_only, pytest.mark.usefixtures("clean_env")]
 
 
 def _heading_pattern(thread: str) -> str:

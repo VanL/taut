@@ -14,8 +14,8 @@ authors = [
     {name = "Van Lindberg", email = "van.lindberg@gmail.com"},
 ]
 dependencies = [
-    "taut>=0.2.0",
-    "simplebroker-pg>=2.2.1",
+    "taut>=0.2.1",
+    "simplebroker-pg>=2.3.0",
 ]
 
 [project.optional-dependencies]

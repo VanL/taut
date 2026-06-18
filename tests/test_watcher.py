@@ -15,6 +15,8 @@ from taut.client import Message, TautClient
 from taut.watcher import QueueRuntimeConfig, TautWatcher
 from tests.conftest import run_cli
 
+pytestmark = pytest.mark.sqlite_only
+
 
 def _wait_until(predicate: Callable[[], bool], *, timeout: float = 3.0) -> None:
     deadline = time.monotonic() + timeout
