@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.1 - Unreleased
+## 0.2.1 - 2026-06-18
 
 - Fixed Postgres project-config and shared backend conformance coverage.
 - Documented `read` pagination and tightened bounded `log --limit` behavior.
