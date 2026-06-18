@@ -467,5 +467,3 @@ multi-queue watcher pattern adapted from
 
 The name is the design goal: the opposite of slack.
 
-Taut's bias is intentional: the chat should be lighter than the work it
-coordinates.
