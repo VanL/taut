@@ -28,7 +28,7 @@ import shlex
 import shutil
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace, TracebackType
 from typing import Any, cast
 
@@ -244,7 +244,7 @@ def test_capture_host_identity_prefers_linux_machine_id(
     monkeypatch.setattr(identity.socket, "gethostname", lambda: "workstation")
 
     def fake_read_text(self: Path, **_kwargs: Any) -> str:
-        if str(self) == "/etc/machine-id":
+        if self.as_posix() == "/etc/machine-id":
             return "machine-123\n"
         raise OSError("missing")
 
@@ -524,7 +524,7 @@ def test_capture_linux_process_reads_procfs_fields(
     stat = "123 (codex) " + " ".join(stat_fields)
 
     def fake_read_text(self: Path, **_kwargs: Any) -> str:
-        path = str(self)
+        path = self.as_posix()
         if path == "/proc/123/stat":
             return stat
         if path == "/proc/123/status":
@@ -532,15 +532,15 @@ def test_capture_linux_process_reads_procfs_fields(
         raise OSError("missing")
 
     def fake_read_bytes(self: Path) -> bytes:
-        if str(self) == "/proc/123/cmdline":
+        if self.as_posix() == "/proc/123/cmdline":
             return b"codex\0--work\0"
         raise OSError("missing")
 
-    def fake_readlink(self: Path) -> Path:
-        if str(self) == "/proc/123/exe":
-            return Path("/usr/bin/codex")
-        if str(self) == "/proc/123/cwd":
-            return Path("/workspace")
+    def fake_readlink(self: Path) -> PurePosixPath:
+        if self.as_posix() == "/proc/123/exe":
+            return PurePosixPath("/usr/bin/codex")
+        if self.as_posix() == "/proc/123/cwd":
+            return PurePosixPath("/workspace")
         raise OSError("missing")
 
     monkeypatch.setattr(identity.Path, "read_text", fake_read_text)
@@ -567,14 +567,14 @@ def test_capture_linux_process_returns_none_for_missing_or_malformed_stat(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def missing_read_text(self: Path, **_kwargs: Any) -> str:
-        assert str(self) == "/proc/123/stat"
+        assert self.as_posix() == "/proc/123/stat"
         raise OSError("missing")
 
     monkeypatch.setattr(identity.Path, "read_text", missing_read_text)
     assert identity._capture_linux_process(123) is None
 
     def malformed_read_text(self: Path, **_kwargs: Any) -> str:
-        assert str(self) == "/proc/123/stat"
+        assert self.as_posix() == "/proc/123/stat"
         return "not proc stat"
 
     monkeypatch.setattr(identity.Path, "read_text", malformed_read_text)
@@ -739,7 +739,7 @@ def test_read_linux_start_time_parses_proc_stat(
     stat_fields = ["S", "1", "123", "456", "0", *("0" for _ in range(14)), "98765"]
 
     def valid_read_text(self: Path, **_kwargs: Any) -> str:
-        assert str(self) == "/proc/123/stat"
+        assert self.as_posix() == "/proc/123/stat"
         return "123 (codex) " + " ".join(stat_fields)
 
     monkeypatch.setattr(identity.Path, "read_text", valid_read_text)
@@ -859,7 +859,7 @@ def test_linux_proc_helpers_tolerate_missing_or_bad_data(
     assert identity._read_linux_argv(proc_dir) == ()
 
     def bad_uid_text(self: Path, **_kwargs: Any) -> str:
-        assert str(self) == "/proc/123/status"
+        assert self.as_posix() == "/proc/123/status"
         return "Uid:\tnot-int\n"
 
     monkeypatch.setattr(identity.Path, "read_text", bad_uid_text)
