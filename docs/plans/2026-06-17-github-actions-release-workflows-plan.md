@@ -77,8 +77,8 @@ Planned local gates:
 
 ```bash
 uv run pytest
-uv run ruff check taut tests bin assets/gen_taut_logo.py generate_knot.py
-uv run ruff format --check taut tests bin assets/gen_taut_logo.py generate_knot.py
+uv run ruff check taut tests bin
+uv run ruff format --check taut tests bin
 uv run mypy taut tests bin/release.py
 uv build
 python -m py_compile taut/identity.py tests/test_identity.py
@@ -104,10 +104,10 @@ Observed local evidence:
 uv run pytest
 # 69 passed
 
-uv run ruff check taut tests bin assets/gen_taut_logo.py generate_knot.py
+uv run ruff check taut tests bin
 # passed
 
-uv run ruff format --check taut tests bin assets/gen_taut_logo.py generate_knot.py
+uv run ruff format --check taut tests bin
 # 25 files already formatted
 
 uv run mypy taut tests bin/release.py --config-file pyproject.toml

@@ -19,13 +19,12 @@ def test_test_workflow_is_reusable_and_runs_release_gates() -> None:
 
     assert "workflow_call:" in workflow
     assert "pytest -v --tb=short" in workflow
-    assert (
-        "ruff check taut tests bin assets/gen_taut_logo.py generate_knot.py" in workflow
-    )
-    assert (
-        "ruff format --check taut tests bin assets/gen_taut_logo.py generate_knot.py"
-        in workflow
-    )
+    assert "ruff check taut tests bin" in workflow
+    assert "ruff format --check taut tests bin" in workflow
+    # Guard against the stale-path regression: neither the removed generator script
+    # nor the deleted logo asset may reappear in the lint command.
+    assert "generate_knot.py" not in workflow
+    assert "gen_taut_logo" not in workflow
     assert "mypy taut tests bin/release.py --config-file pyproject.toml" in workflow
     assert "uv build" in workflow
 

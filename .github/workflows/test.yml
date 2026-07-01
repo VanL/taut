@@ -95,12 +95,12 @@ jobs:
       - name: Run linting with ruff
         timeout-minutes: 5
         run: |
-          ruff check taut tests bin assets/gen_taut_logo.py generate_knot.py
+          ruff check taut tests bin
 
       - name: Check formatting with ruff
         timeout-minutes: 5
         run: |
-          ruff format --check taut tests bin assets/gen_taut_logo.py generate_knot.py
+          ruff format --check taut tests bin
 
       - name: Type check with mypy
         timeout-minutes: 10

@@ -481,8 +481,8 @@ Actions:
 
    ```bash
    uv run pytest
-   uv run ruff check taut tests bin assets/gen_taut_logo.py generate_knot.py
-   uv run ruff format --check taut tests bin assets/gen_taut_logo.py generate_knot.py
+   uv run ruff check taut tests bin
+   uv run ruff format --check taut tests bin
    uv run mypy taut tests bin/release.py --config-file pyproject.toml
    ```
 
@@ -1562,8 +1562,8 @@ uv run pytest -m shared
 uv run pytest -m sqlite_only
 uv run ./bin/pytest-pg --fast
 uv run ./bin/pytest-pg
-uv run ruff check taut tests bin assets/gen_taut_logo.py generate_knot.py extensions/taut_pg/taut_pg extensions/taut_pg/tests
-uv run ruff format --check taut tests bin assets/gen_taut_logo.py generate_knot.py extensions/taut_pg/taut_pg extensions/taut_pg/tests
+uv run ruff check taut tests bin extensions/taut_pg/taut_pg extensions/taut_pg/tests
+uv run ruff format --check taut tests bin extensions/taut_pg/taut_pg extensions/taut_pg/tests
 uv run --extra dev mypy taut tests bin/release.py extensions/taut_pg/taut_pg extensions/taut_pg/tests --config-file pyproject.toml
 uv build
 cd extensions/taut_pg && uv build
@@ -1799,12 +1799,12 @@ uv run ./bin/pytest-pg
 # root shared: 4 passed
 # extension pg_only: 8 passed
 
-uv run ruff check taut tests bin assets/gen_taut_logo.py generate_knot.py \
+uv run ruff check taut tests bin \
   extensions/taut_pg/taut_pg extensions/taut_pg/tests
 # All checks passed
 
-uv run ruff format --check taut tests bin assets/gen_taut_logo.py \
-  generate_knot.py extensions/taut_pg/taut_pg extensions/taut_pg/tests
+uv run ruff format --check taut tests bin \
+  extensions/taut_pg/taut_pg extensions/taut_pg/tests
 # 34 files already formatted
 
 uv run --extra dev mypy taut tests bin/release.py extensions/taut_pg/taut_pg \
