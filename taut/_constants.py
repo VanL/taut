@@ -14,7 +14,7 @@ from typing import Any, Final
 
 from simplebroker import resolve_config
 
-__version__: Final[str] = "0.3.0"
+__version__: Final[str] = "0.4.0"
 
 DEFAULT_DB_NAME: Final[str] = ".taut.db"
 PROJECT_CONFIG_NAME: Final[str] = ".taut.toml"

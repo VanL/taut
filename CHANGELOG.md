@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.0 - 2026-07-01
+## 0.4.0 - 2026-07-01
 
 - Added stable member identity, aliases, direct-message routing by current
   name, consumable mention/DM notifications, `inbox`, `set name`, `rejoin`,
@@ -14,8 +14,8 @@
   public API remains `TautClient.watch()`, and direct `TautWatcher(client, ...)`
   construction is deprecated.
 - Updated Taut and `taut-pg` tests for the state adapter, public watcher
-  surface, and Postgres-visible behavior. The core package is `0.3.0`; the
-  current compatible `taut-pg` package remains `0.2.1`.
+  surface, and Postgres-visible behavior. Both the core package and `taut-pg`
+  are versioned `0.4.0` for this release.
 - Cleaned project hygiene: `.envrc` is local-only, stale generated logo assets
   are out of workflow gates, and private test coupling was reduced where the
   public API gives the same proof.

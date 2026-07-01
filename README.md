@@ -82,8 +82,8 @@ default, or a few machines through the Postgres extension.
 ## Installation
 
 ```bash
-pipx install "git+https://github.com/VanL/taut.git@v0.3.0"       # CLI use
-uv add "taut @ git+https://github.com/VanL/taut.git@v0.3.0"      # as a library
+pipx install "git+https://github.com/VanL/taut.git@v0.4.0"       # CLI use
+uv add "taut @ git+https://github.com/VanL/taut.git@v0.4.0"      # as a library
 ```
 
 Requirements: Python 3.11+. Runtime dependencies are `simplebroker`
@@ -102,8 +102,8 @@ extension uses its own `taut_pg/vX.Y.Z` tags, so its version does not have to
 match the core package version:
 
 ```bash
-pipx install "git+https://github.com/VanL/taut.git@v0.3.0"
-pipx inject taut ./taut_pg-0.2.1-py3-none-any.whl
+pipx install "git+https://github.com/VanL/taut.git@v0.4.0"
+pipx inject taut ./taut_pg-0.4.0-py3-none-any.whl
 ```
 
 The Postgres database must already exist. Create `.taut.toml` in the project
