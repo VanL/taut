@@ -34,7 +34,8 @@ def test_cli_human_glyphs_fall_back_for_legacy_stdout_encoding() -> None:
     message = Message(
         thread="general",
         ts=1_785_000_000_000_000_000,
-        from_handle="van",
+        from_id="m_" + "a" * 26,
+        from_name="van",
         kind="notice",
         text="van created #general",
     )
@@ -61,8 +62,10 @@ def test_cli_json_join_say_log(tmp_path: Path) -> None:
 
     assert rc == 0
     lines = [json.loads(line) for line in out.splitlines()]
-    assert lines[0]["handle"] == "van"
+    assert lines[0]["name"] == "van"
+    assert lines[0]["member_id"].startswith("m_")
     assert lines[1]["kind"] == "notice"
+    assert lines[1]["from_id"] == lines[0]["member_id"]
 
     rc, out, _ = run_cli(
         "--as", "van", "say", "general", "hello", "--json", cwd=tmp_path
@@ -189,12 +192,12 @@ def test_cli_global_token_resolves_identity_before_and_after_command(
     rc, out, _err = run_cli("--token", token, "whoami", "--json", cwd=tmp_path)
 
     assert rc == 0
-    assert json.loads(out)["handle"] == "van"
+    assert json.loads(out)["name"] == "van"
 
     rc, out, _err = run_cli("whoami", "--json", "--token", token, cwd=tmp_path)
 
     assert rc == 0
-    assert json.loads(out)["handle"] == "van"
+    assert json.loads(out)["name"] == "van"
 
 
 def test_cli_whoami_invalid_token_is_error_exit_1(tmp_path: Path) -> None:
@@ -224,7 +227,7 @@ def test_cli_rejoin_token_is_not_consumed_by_global_hoisting(
     rc, out, _err = run_cli("rejoin", "--token", token, "--json", cwd=tmp_path)
 
     assert rc == 0
-    assert json.loads(out)["handle"] == "van"
+    assert json.loads(out)["name"] == "van"
 
 
 def test_cli_rejoin_uses_global_token_or_as_selector(tmp_path: Path) -> None:
@@ -238,15 +241,15 @@ def test_cli_rejoin_uses_global_token_or_as_selector(tmp_path: Path) -> None:
     rc, out, _err = run_cli("--token", token, "rejoin", "--json", cwd=tmp_path)
 
     assert rc == 0
-    assert json.loads(out)["handle"] == "van"
+    assert json.loads(out)["name"] == "van"
 
     rc, out, _err = run_cli("--as", "van", "rejoin", "--json", cwd=tmp_path)
 
     assert rc == 0
-    assert json.loads(out)["handle"] == "van"
+    assert json.loads(out)["name"] == "van"
 
 
-def test_cli_rejoin_rejects_ambiguous_handle_and_token(tmp_path: Path) -> None:
+def test_cli_rejoin_rejects_ambiguous_name_and_token(tmp_path: Path) -> None:
     assert run_cli("init", cwd=tmp_path)[0] == 0
     rc, out, _err = run_cli("--as", "van", "join", "general", "--json", cwd=tmp_path)
     assert rc == 0
@@ -263,3 +266,80 @@ def test_cli_rejoin_rejects_ambiguous_handle_and_token(tmp_path: Path) -> None:
 
     assert rc == 1
     assert "exactly one" in err
+
+
+def test_cli_set_name_json_and_old_name_stops_routing(tmp_path: Path) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+
+    rc, out, err = run_cli("--as", "van", "set", "name", "VanL", "--json", cwd=tmp_path)
+
+    assert rc == 0, err
+    obj = json.loads(out)
+    assert obj["name"] == "VanL"
+    assert "member_id" in obj
+
+    rc, _out, err = run_cli("--as", "van", "whoami", cwd=tmp_path)
+    assert rc == 2
+    assert "member not found" in err
+
+
+def test_cli_set_name_unrecognized_exits_2(tmp_path: Path) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+
+    rc, _out, err = run_cli("set", "name", "VanL", cwd=tmp_path)
+
+    assert rc == 2
+    assert "unrecognized caller" in err
+
+
+def test_cli_say_dm_and_list_json_members(tmp_path: Path) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "bob", "join", "general", cwd=tmp_path)[0] == 0
+
+    rc, out, err = run_cli("--as", "van", "say", "@bob", "hi", "--json", cwd=tmp_path)
+
+    assert rc == 0, err
+    message = json.loads(out)
+    assert message["thread"].startswith("dm.")
+
+    rc, out, err = run_cli("--as", "bob", "list", "--all", "--json", cwd=tmp_path)
+    assert rc == 0, err
+    dm = next(obj for obj in map(json.loads, out.splitlines()) if obj["kind"] == "dm")
+    assert set(dm["members"]) == {
+        message["from_id"],
+        json.loads(run_cli("--as", "bob", "whoami", "--json", cwd=tmp_path)[1])[
+            "member_id"
+        ],
+    }
+
+
+def test_cli_inbox_json_claims_notifications(tmp_path: Path) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "bob", "join", "general", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "say", "general", "hello @bob", cwd=tmp_path)[0] == 0
+
+    rc, out, err = run_cli("--as", "bob", "inbox", "--json", cwd=tmp_path)
+
+    assert rc == 0, err
+    notification = json.loads(out)
+    assert notification["type"] == "mention"
+    assert notification["actor_name"] == "van"
+
+    rc, _out, err = run_cli("--as", "bob", "inbox", "--json", cwd=tmp_path)
+    assert rc == 2
+    assert "nothing pending" in err
+
+
+def test_cli_rename_channel_json(tmp_path: Path) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+
+    rc, out, err = run_cli("rename", "general", "ops", "--json", cwd=tmp_path)
+
+    assert rc == 0, err
+    obj = json.loads(out)
+    assert obj["thread"] == "ops"
+    assert obj["kind"] == "channel"

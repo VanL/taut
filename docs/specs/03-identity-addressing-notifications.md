@@ -1,0 +1,513 @@
+# Identity, Addressing, and Notifications Specification
+
+Status: Proposed
+
+This spec defines Taut's member identity model, mutable names, addressing
+syntax, special queue namespaces, direct-message queues, notification queues,
+and channel rename semantics. It describes the intended model directly. Current
+implementation details belong in plans, not in this spec as compatibility
+rules.
+
+## 1. Purpose and Scope [IAN-1]
+
+In scope:
+
+- stable member identity and deterministic identity evidence
+- mutable member names and reserved routeable-alias storage
+- `@name` direct-message addressing, plus alias routing where an alias already
+  exists
+- channel, sub-thread, direct-message, notification, and system queue naming
+- mention and direct-message notifications
+- channel rename semantics across channel queues, sub-thread queues, and
+  sidecar state
+- verification expectations for the identity, addressing, and notification
+  contracts
+
+Out of scope:
+
+- authentication, authorization, signing, encryption, or proof of identity
+- per-device notification fanout
+- private channel permissions beyond the existing storage-access trust model
+- message deletion, editing, retention, archival, or history rewrite
+- opaque channel ids for normal channels
+- nested sub-threads beyond one level
+
+## 2. Mental Model [IAN-2]
+
+### [IAN-2.1] Members have stable opaque ids
+
+A member is the logical participant that sends messages, owns read cursors, can
+be mentioned, can receive a direct message, and can receive notifications. A
+member has a stable opaque `member_id`.
+
+`member_id` is the identity used inside Taut. It is not a display name, not a
+route alias, and not a channel name. A member may change names without changing
+`member_id`.
+
+### [IAN-2.2] Names are current values
+
+Names are mutable current-value lookup data. They are used to route new
+commands such as `taut say @claude "..."` or `taut rejoin claude`; they are not
+the durable identity. Alias storage follows the same model, but public alias
+management is not part of the current command surface.
+
+Messages keep the sender name that was current when the message was written.
+Taut does not rewrite old messages when a member changes name.
+
+### [IAN-2.3] Identity evidence is separate from member identity
+
+Process-chain evidence, human session evidence, and continuity-token evidence
+produce deterministic identity claim hashes. A claim hash is evidence that a
+session probably belongs to a member. It is not, by itself, the durable member
+identity.
+
+Rejoin associates a new claim hash with an existing `member_id`. This is what
+lets a restarted agent keep its old cursors, memberships, direct-message
+queues, and notification inbox even though the process evidence changed.
+
+### [IAN-2.4] Normal channels stay human-named
+
+Normal channels are unprefixed human slugs such as `general` and `ops`. They do
+not use opaque ids. This keeps the common command surface simple and avoids
+turning every channel operation into an indirection lookup.
+
+Direct messages and notification queues do use opaque member-derived names
+because their routing identity must survive mutable names.
+
+### [IAN-2.5] Chat history and notifications have different consumption rules
+
+Channel, sub-thread, and direct-message queues are chat history. Taut reads them
+with peek-family broker APIs and advances member cursors in sidecar state.
+
+Notification queues are inbox pointers. They are claimed when read so the
+notification goes away. This is intentionally per member, not per device.
+
+## 3. Member Identity [IAN-3]
+
+### [IAN-3.1] Member id format
+
+`member_id` values are opaque strings matching:
+
+```text
+^m_[a-z0-9]{26,52}$
+```
+
+The prefix makes member ids distinguishable from channel names and message ids.
+The suffix is lowercase, URL-safe, and has no dots.
+
+Taut mints `member_id` as an opaque value when a member is created. It must not
+derive `member_id` from a display name or alias, and it must not recompute
+`member_id` from the current process evidence on later commands.
+
+The deterministic value tied to local identity evidence is the claim hash in
+[IAN-3.2]. A claim hash maps to a member id; it is not the durable member id
+itself.
+
+### [IAN-3.2] Identity claim hashes
+
+Every resolved command captures best-effort local evidence and canonicalizes it
+into an identity claim. The claim hash format is:
+
+```text
+^ic_[a-z0-9]{52}$
+```
+
+The hash input is canonical JSON with sorted keys and no insignificant
+whitespace. It includes `claim_kind` and only the evidence that belongs to that
+kind.
+
+Supported claim kinds:
+
+| Claim kind | Evidence |
+|---|---|
+| `agent_process` | host id, anchor pid, anchor start token, executable path, argv, cwd, uid, process group, session id, tty |
+| `human_session` | host id, uid, login name, tty when available, session id when available |
+| `continuity_token` | token id or token hash, not the token display string |
+
+The exact evidence may be null field-by-field when the platform cannot provide
+it. Missing optional fields must not fail identity capture.
+
+### [IAN-3.3] Claim association
+
+`taut_identity_claims` maps claim hashes to `member_id` values. A claim hash can
+belong to only one member. A member can have many claim hashes.
+
+Resolution order:
+
+1. Explicit `--as NAME_OR_ALIAS` / `TAUT_AS`, if present, resolves the current
+   name or alias. If no member exists and the command may create a member, Taut
+   creates a member with that name and associates the current claim when one is
+   available.
+2. Continuity token, if present, resolves to its member and records a
+   `continuity_token` claim.
+3. Captured claim hash match resolves to the associated member.
+4. Human fallback resolves by local host id plus uid when an existing human
+   member has that claim history.
+5. Otherwise the caller is unrecognized. Read-only commands may operate as
+   guests where the core spec allows that. State-changing commands create a new
+   member only when the command can still succeed after creating that member.
+   Membership-gated writes, such as channel `say` and `reply`, must not create
+   throwaway members before failing membership or missing-target validation.
+
+No resolution path silently changes a member name. Name changes are explicit
+through [IAN-4.4].
+
+`join --new` creates a fresh member and bypasses rejoin suggestions. If the
+current claim hash is unclaimed, Taut may associate it with the fresh member. If
+the current claim hash already belongs to another member, `join --new` must not
+steal it; the fresh member is reachable by its name or continuity token until a
+future explicit rejoin from suitable evidence.
+
+### [IAN-3.4] Rejoin
+
+`taut rejoin NAME_OR_ALIAS` means "associate the current identity claim with the
+member selected by this name or alias." It does not merge message history, does
+not rename the member, and does not rewrite old messages.
+
+If the current claim is already associated with a different member, `rejoin`
+fails and names the conflicting current member. There is no implicit merge.
+
+## 4. Names and Aliases [IAN-4]
+
+### [IAN-4.1] Name roles
+
+Taut stores:
+
+- `member_id`: stable opaque identity
+- `display_name`: current human-readable name shown in member lists and used as
+  the message sender snapshot for new messages
+- `name_key`: normalized unique key for `display_name`
+- aliases: normalized route keys that also point to a `member_id`
+
+The term "name" in the CLI refers to `display_name`, with `name_key` computed
+from it for routing.
+
+### [IAN-4.2] Name validation
+
+Names are case-preserving but route-normalized. A name must match:
+
+```text
+^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$
+```
+
+The route key is lowercase ASCII. `VanL`, `vanl`, and `VANL` conflict.
+
+Free-form display profiles, names with spaces, and non-ASCII route aliases are
+out of scope until a later spec defines unambiguous shell and JSON behavior.
+
+### [IAN-4.3] Alias validation
+
+Aliases use the same validation and normalization rules as names. An alias is
+route-only; old messages never display an alias unless that alias was also the
+member's `display_name` at write time.
+
+All active name keys and alias keys share one uniqueness namespace. If `claude`
+is a member name, another member cannot claim `claude` as an alias.
+
+The current public CLI does not define an alias-management command. Alias
+storage and lookup are reserved for schema/API use and future command work.
+Any future public alias command must specify ownership, collision behavior,
+rendering, and tests before exposing aliases to users.
+
+### [IAN-4.4] Name changes
+
+`taut set name NAME` updates the acting member's `display_name` and `name_key`.
+The old name stops routing to the member unless it is retained explicitly as an
+alias by a future alias-management command. Taut does not keep stale route
+aliases by default.
+
+An explicit name change fails if the normalized name is already owned by another
+member as either a current name or alias. Automatic name generation may append
+or choose a deterministic fallback to avoid collisions, but explicit `set name`
+must not silently choose a different name.
+
+### [IAN-4.5] Message sender snapshot
+
+Every Taut-written chat message records both:
+
+- `from_id`: sender `member_id`
+- `from`: sender `display_name` at write time
+
+Renderers show `from`. Machine consumers should use `from_id` when they need
+stable identity across name changes.
+
+## 5. Addressing [IAN-5]
+
+### [IAN-5.1] Command address classes
+
+Taut command arguments that accept a conversation target recognize:
+
+| Input shape | Meaning |
+|---|---|
+| `general` | channel `general` |
+| `#general` | channel `general`, accepted for familiarity but usually needs shell quoting |
+| `general.<message_id>` | sub-thread under channel `general` |
+| `@claude` | direct message with the member currently named `claude`, or aliased `claude` if an alias exists |
+
+Documentation should prefer bare channel names in shell commands because an
+unquoted leading `#` can be interpreted as a shell comment. Human rendering may
+show channels as `#general`.
+
+### [IAN-5.2] Mention parsing
+
+Taut parses mentions from Taut-written message text after the message has been
+accepted for write. A mention is a token of the form `@name` or `@alias` where
+the route key matches [IAN-4.2] / [IAN-4.3] and resolves at write time.
+
+Rules:
+
+- A message can mention multiple members.
+- Multiple mentions of the same member in one message produce at most one
+  notification.
+- The sender does not receive a mention notification for mentioning themself.
+- Mentions inside foreign broker bodies are not parsed by Taut.
+- Mention routing uses the current name/alias route table at write time; later
+  name changes do not retarget the old mention.
+
+## 6. Queue Namespace [IAN-6]
+
+### [IAN-6.1] Queue classes
+
+Taut-owned queues have one of these classes:
+
+| Queue class | Queue name shape | Consumption rule |
+|---|---|---|
+| channel | `<channel>` | peek history |
+| sub-thread | `<channel>.<message_id>` | peek history |
+| direct message | `dm.<dm_id>` | peek history |
+| notification | `notify.<member_id>` | claim inbox pointers |
+| system | `sys.<name>` or `taut.<name>` | class-specific |
+
+All Taut-visible queues must have a sidecar registry row that records their
+class. Unknown broker queues remain invisible to Taut commands.
+
+### [IAN-6.2] Channel names
+
+Channel names match:
+
+```text
+^[a-z0-9][a-z0-9_-]{0,63}$
+```
+
+Dots are forbidden. Dot is structural namespace syntax. This means
+`general.1837025672140161024` can only mean a sub-thread, never a top-level
+channel.
+
+The exact channel names `dm`, `notify`, `sys`, and `taut` are reserved. Dotted
+queue names whose first segment is one of those reserved words are reserved for
+special queues.
+
+### [IAN-6.3] Sub-thread queues
+
+A sub-thread queue name is:
+
+```text
+<channel>.<origin_message_id>
+```
+
+`origin_message_id` is the 19-digit SimpleBroker timestamp of the parent
+message. Sub-threads of sub-threads are not supported.
+
+### [IAN-6.4] Direct-message queues
+
+A direct-message queue name is:
+
+```text
+dm.<dm_id>
+```
+
+`dm_id` is deterministic from the unordered pair of member ids:
+
+```text
+dm_id = "d_" + base32_lower(sha256("taut-dm\0" + min(member_id_a, member_id_b) + "\0" + max(member_id_a, member_id_b)))[0:26]
+```
+
+Both participants map to the same queue regardless of who starts the
+conversation or what either member is named later.
+
+Human renderers should label a direct-message queue by the other participant's
+current display name when there are exactly two participants. JSON surfaces must
+keep the internal `dm.<dm_id>` queue name in `thread` and expose participant
+member ids through the list/thread metadata contract in [TAUT-8.2].
+
+Self-DM is rejected unless a later spec explicitly gives it a use.
+
+### [IAN-6.5] Notification queues
+
+A member's notification queue name is:
+
+```text
+notify.<member_id>
+```
+
+There is exactly one notification queue per member. Taut does not create
+per-device queues. In a multi-host backend, whichever session claims a
+notification consumes it for that member.
+
+## 7. Notifications [IAN-7]
+
+### [IAN-7.1] Notification purpose
+
+A notification is a small pointer telling a member that a relevant chat event
+exists elsewhere. It is not the source of truth. The source message remains in
+the channel, sub-thread, or direct-message queue.
+
+### [IAN-7.2] Notification payload
+
+Notification queue bodies are JSON objects:
+
+```json
+{
+  "type": "mention",
+  "to_id": "m_abcd1234abcd1234abcd1234ab",
+  "actor_id": "m_wxyz1234wxyz1234wxyz1234wx",
+  "actor_name": "claude",
+  "thread": "general",
+  "message_ts": 1837025672140161024,
+  "matched": "@van"
+}
+```
+
+Required fields:
+
+| Field | Meaning |
+|---|---|
+| `type` | `mention` or `dm_started` |
+| `to_id` | recipient member id |
+| `actor_id` | member id that caused the notification |
+| `actor_name` | actor display-name snapshot at event time |
+| `thread` | source chat queue |
+| `message_ts` | source message timestamp |
+
+`matched` is required for `mention` and omitted for `dm_started`.
+
+Notification payloads may add fields later. Consumers must ignore unknown
+fields and must not depend on notification text formatting.
+
+### [IAN-7.3] Notification write ordering
+
+For a mention, Taut writes the source chat message first. Notification writes
+come after the source message succeeds.
+
+If notification emission fails after the source message succeeds, the chat
+write remains successful. The implementation should surface a warning when the
+CLI can do so without corrupting JSON output. It must not roll back the source
+message or rewrite history.
+
+### [IAN-7.4] Notification reads
+
+Notification reads use claim/read broker APIs. Reading a notification removes
+it from the recipient's notification inbox. A failed notification renderer may
+lose that notification; the source chat message remains available through
+normal history.
+
+This tradeoff is intentional. Notifications are wakeups and pointers, not
+durable chat history.
+
+## 8. Channel Rename [IAN-8]
+
+### [IAN-8.1] Rename semantics
+
+Renaming a channel changes the channel slug and all one-level sub-thread queue
+names under it.
+
+Example:
+
+```text
+general -> ops
+general.1837025672140161024 -> ops.1837025672140161024
+```
+
+The rename must update:
+
+- the channel queue name
+- every registered sub-thread queue name under that channel
+- `taut_threads.name`
+- `taut_threads.parent`
+- `taut_membership.thread`
+- any notification payloads still pending that point at the old queue name, if
+  the backend exposes a safe public way to update them
+
+It must not rewrite existing chat message bodies. Existing message `from` values
+and text remain unchanged.
+
+### [IAN-8.2] Rename dependency on SimpleBroker
+
+Taut must use a public SimpleBroker queue-rename API for broker queue renames.
+Taut must not update SimpleBroker-owned message tables directly.
+
+Taut requires SimpleBroker `>=4.9.0` and `taut-pg` requires
+`simplebroker-pg>=2.4.0` so rename-capable backends are available. The
+implementation must use `simplebroker.open_broker(...).rename_queue(...)`
+against Taut's resolved broker target; it must not assume `Queue.rename()` or a
+module-level `simplebroker.rename_queue()` exists.
+
+### [IAN-8.3] Rename failure handling
+
+Rename is rejected before mutation if:
+
+- the source channel does not exist
+- the target channel already exists
+- the source or target is a special queue name
+- the target name is invalid under [IAN-6.2]
+
+Because broker queue renames and sidecar updates may not share one transaction,
+the implementation plan must define recovery for partial rename. At minimum,
+the operation needs a sidecar marker that records old name, new name, affected
+queue names, current phase, and completion state so a later command can finish
+or report the interrupted rename.
+
+## 9. Failure Modes and Edge Cases [IAN-9]
+
+- Name collision: explicit `set name` and schema-level alias creation fail.
+  Automatic member creation may choose a deterministic fallback.
+- Claim collision: if the same claim hash is already mapped to another member,
+  resolution uses that member. `rejoin` to a different member fails loudly.
+- Name change after mention: pending and historical notifications keep the
+  actor and matched route-token snapshots from event time.
+- Name change after direct message: the direct-message queue stays the same
+  because it is derived from member ids.
+- Foreign writes into chat queues: Taut renders them as foreign bodies and does
+  not parse mentions.
+- Foreign writes into notification queues: Taut drops or reports malformed
+  notification bodies after claiming them. It must not crash the inbox reader.
+- Notification claimed but not displayed: allowed. Notifications are
+  best-effort pointers; chat history remains the durable source.
+- Channel with dot: rejected. Dots are structural.
+- Channel named `dm`, `notify`, `sys`, or `taut`: rejected.
+- Partial channel rename: must be recoverable or loudly reportable; silent
+  split-brain is not acceptable.
+
+## 10. Verification Expectations [IAN-10]
+
+Tests for this spec must use real Taut client, CLI, broker, and sidecar paths.
+Do not mock the broker, schema helpers, identity resolver, or queue naming
+logic for contract tests.
+
+Required proofs:
+
+- changing a member name does not change `member_id`
+- messages written before a name change keep the old `from` snapshot and the
+  same `from_id`
+- messages written after a name change use the new `from` snapshot and the
+  same `from_id`
+- `taut rejoin NAME_OR_ALIAS` associates a new claim hash with the same
+  `member_id`
+- `@name` direct messages route to the member id currently owning the name
+- alias-route direct messages route to the member id currently owning the alias
+  when an alias exists; public alias-management tests belong with the future
+  alias command
+- a direct-message queue is stable across both participants changing names
+- mentions write exactly one notification per mentioned member per message
+- notification reads claim notifications and do not affect chat history
+- a second session for the same member can drain notifications; no per-device
+  state exists
+- channels cannot contain dots or use reserved special names
+- unregistered broker queues remain invisible
+- channel rename, when enabled by a public SimpleBroker rename API, renames the
+  channel and every registered sub-thread and updates sidecar references
+
+## Related Plans
+
+- `docs/plans/2026-06-18-member-identity-addressing-plan.md` - implemented
+  migration from the current development implementation to this model.

@@ -18,9 +18,12 @@ stay aligned instead of competing.
 ## Recommended Starting Points
 
 1. `01-development-documentation-operating-model.md`
-2. `02-taut-core.md` — the taut v0.1 product spec: storage model,
-   identity and fingerprinting, message envelope, read model, CLI/API/
-   watcher surfaces, and trust model
+2. `02-taut-core.md` - the taut core product spec: storage model,
+   thread semantics, message envelope, read model, CLI/API/watcher surfaces,
+   and trust model
+3. `03-identity-addressing-notifications.md` - stable member identity,
+   mutable names, reserved alias storage, `@name` direct messages, special
+   queue namespaces, notification inboxes, and channel rename semantics
 
 ## Naming
 

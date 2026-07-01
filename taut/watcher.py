@@ -15,11 +15,12 @@ import itertools
 import logging
 import threading
 import time
+import warnings
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from simplebroker import (
     BrokerTarget,
@@ -35,14 +36,18 @@ from simplebroker.ext import (
     default_error_handler,
 )
 
-import taut.schema as schema
+from taut import addressing
 from taut._constants import (
     QUEUE_PRIORITY_NORMAL,
     WATCH_MEMBERSHIP_REFRESH_SECONDS,
     load_config,
 )
 from taut._exceptions import EmptyResultError, MembershipError
-from taut.client import Message, TautClient
+from taut._watch_runtime import TautWatchRuntime, WatchedThread
+from taut.client import Message, Notification
+
+if TYPE_CHECKING:
+    from taut.client import TautClient
 
 logger = logging.getLogger(__name__)
 
@@ -528,61 +533,95 @@ class TautWatcher(MultiQueueWatcher):
 
     def __init__(
         self,
-        client: TautClient,
-        member: str,
-        handler: Callable[[Message], None],
+        runtime: TautWatchRuntime | TautClient,
+        member_id: str,
+        handler: Callable[[Message | Notification], None],
         *,
         threads: list[str] | None = None,
         stop_event: threading.Event | None = None,
         membership_refresh_interval: float = WATCH_MEMBERSHIP_REFRESH_SECONDS,
     ) -> None:
-        self.client = client
-        self.member = member
+        from taut.client._base import _ClientBase
+
+        if isinstance(runtime, _ClientBase):
+            from taut.client._watching import _watch_runtime_for_client
+
+            warnings.warn(
+                "TautWatcher(client, ...) is deprecated; use client.watch(...) "
+                "or pass a TautWatchRuntime",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            runtime = _watch_runtime_for_client(runtime)
+        self._runtime = runtime
+        self.member_id = member_id
         self._user_handler = handler
         self._cursors: dict[str, int] = {}
         self._failures: dict[tuple[str, int], int] = {}
         self._thread_filter = set(threads) if threads else None
         self._membership_refresh_interval = membership_refresh_interval
         self._next_membership_refresh_at = time.monotonic()
+        self._notification_queue_name = addressing.notification_queue_name(member_id)
         memberships = self._current_memberships(strict=True)
-        if not memberships:
+        if not memberships and self._thread_filter is not None:
             raise EmptyResultError("no joined threads to watch; run 'taut join THREAD'")
         queue_configs = {
-            row["thread"]: {
-                "handler": self._make_taut_handler(row["thread"]),
-                "mode": QueueMode.PEEK,
-            }
-            for row in memberships
+            self._notification_queue_name: {
+                "handler": self._make_notification_handler(),
+                "mode": QueueMode.READ,
+            },
+            **{
+                row.name: {
+                    "handler": self._make_taut_handler(row.name),
+                    "mode": QueueMode.PEEK,
+                }
+                for row in memberships
+            },
         }
         for row in memberships:
-            self._cursors[row["thread"]] = row["last_seen_ts"]
+            self._cursors[row.name] = row.last_seen_ts
         super().__init__(
             queue_configs,
-            db=client.target,
+            db=self._runtime.target,
             stop_event=stop_event,
             persistent=True,
             inactive_probe_interval=membership_refresh_interval,
-            config=client.config,
+            config=self._runtime.config,
         )
 
-    def _current_memberships(self, *, strict: bool) -> list[schema.MembershipRow]:
-        rows = schema.list_memberships(self.client._meta_queue, self.member)
+    def list_queues(self) -> list[str]:
+        return [
+            name
+            for name in super().list_queues()
+            if name != self._notification_queue_name
+        ]
+
+    def _current_memberships(self, *, strict: bool) -> list[WatchedThread]:
+        rows = self._runtime.list_watched_threads(self.member_id)
         if self._thread_filter is None:
             return rows
-        filtered = [row for row in rows if row["thread"] in self._thread_filter]
-        missing = self._thread_filter - {row["thread"] for row in filtered}
+        filtered = [row for row in rows if row.name in self._thread_filter]
+        missing = self._thread_filter - {row.name for row in filtered}
         if strict and missing:
             raise MembershipError(
                 "not a member of watched thread(s): " + ", ".join(sorted(missing))
             )
         return filtered
 
+    def _make_notification_handler(
+        self,
+    ) -> Callable[[str, int, QueueMessageContext], None]:
+        def handle(body: str, timestamp: int, _context: QueueMessageContext) -> None:
+            self._user_handler(self._runtime.decode_notification(body, timestamp))
+
+        return handle
+
     def _make_taut_handler(
         self,
         thread: str,
     ) -> Callable[[str, int, QueueMessageContext], None]:
         def handle(body: str, timestamp: int, _context: QueueMessageContext) -> None:
-            message = self.client._message_from_body(thread, body, timestamp)
+            message = self._runtime.decode_message(thread, body, timestamp)
             failure_key = (thread, timestamp)
             try:
                 self._user_handler(message)
@@ -608,15 +647,17 @@ class TautWatcher(MultiQueueWatcher):
         current = self._cursors.get(thread, 0)
         if timestamp > current:
             self._cursors[thread] = timestamp
-        schema.advance_cursor(
-            self.client._meta_queue,
+        self._runtime.advance_cursor(
             thread=thread,
-            member=self.member,
+            member_id=self.member_id,
             seen_ts=timestamp,
         )
 
     def _fetch_next_message(self, config: QueueRuntimeConfig) -> tuple[str, int] | None:
-        if config.mode is not QueueMode.PEEK:
+        if (
+            config.name == self._notification_queue_name
+            or config.mode is not QueueMode.PEEK
+        ):
             return super()._fetch_next_message(config)
         cursor = self._cursors.get(config.name, 0)
         rows = cast(
@@ -632,6 +673,8 @@ class TautWatcher(MultiQueueWatcher):
     def _queue_has_pending(self, queue: Queue) -> bool:
         if self._stop_event.is_set():
             return False
+        if queue.name == self._notification_queue_name:
+            return super()._queue_has_pending(queue)
         cursor = self._cursors.get(queue.name, 0)
         try:
             return queue.has_pending(after_timestamp=cursor)
@@ -661,12 +704,12 @@ class TautWatcher(MultiQueueWatcher):
 
     def _refresh_memberships(self) -> None:
         rows = self._current_memberships(strict=False)
-        current = {row["thread"] for row in rows}
-        configured = set(self._queues)
+        current = {row.name for row in rows}
+        configured = set(self._queues) - {self._notification_queue_name}
         for row in rows:
-            thread = row["thread"]
+            thread = row.name
             if thread not in self._cursors:
-                self._cursors[thread] = row["last_seen_ts"]
+                self._cursors[thread] = row.last_seen_ts
             if thread not in configured:
                 self.add_queue(
                     thread,

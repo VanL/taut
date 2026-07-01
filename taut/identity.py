@@ -6,7 +6,9 @@ Spec references:
 
 from __future__ import annotations
 
+import base64
 import getpass
+import hashlib
 import importlib
 import json
 import os
@@ -21,15 +23,15 @@ from typing import Any
 
 import psutil
 
-import taut.schema as schema
 from taut._constants import (
-    HISTORICAL_HANDLE_POOL,
+    HISTORICAL_NAME_POOL,
     INFRASTRUCTURE_BASENAMES,
-    PER_BASENAME_HANDLE_POOLS,
+    PER_BASENAME_NAME_POOLS,
     SHELL_BASENAMES,
     WRAPPER_BASENAMES,
-    normalize_handle_seed,
+    normalize_name_seed,
 )
+from taut.state import MemberRow
 
 _PWD: Any | None
 try:
@@ -90,6 +92,17 @@ class IdentityCapture:
     anchor: ProcessInfo | None
     kind: str
     rule: str
+
+
+@dataclass(frozen=True, slots=True)
+class IdentityClaim:
+    """Deterministic evidence claim for one captured identity source."""
+
+    claim_hash: str
+    claim_kind: str
+    host_id: str | None
+    host_label: str | None
+    evidence: dict[str, Any]
 
 
 def capture_identity() -> IdentityCapture:
@@ -214,6 +227,84 @@ def fingerprint_for_process(proc: ProcessInfo | None) -> str | None:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
+def claim_for_capture(capture: IdentityCapture) -> IdentityClaim:
+    """Build the deterministic claim for captured local identity evidence."""
+
+    if capture.anchor is not None:
+        evidence = {
+            "claim_kind": "agent_process",
+            "host_id": capture.host.host_id,
+            "anchor_pid": capture.anchor.pid,
+            "anchor_start_time": capture.anchor.start_time,
+            "exe": capture.anchor.exe,
+            "argv": list(capture.anchor.argv),
+            "cwd": capture.anchor.cwd,
+            "uid": capture.uid,
+            "process_uid": capture.anchor.uid,
+            "pgid": capture.anchor.pgid,
+            "session_id": capture.anchor.session_id,
+            "tty": capture.anchor.tty,
+        }
+        return IdentityClaim(
+            claim_hash=claim_hash(evidence),
+            claim_kind="agent_process",
+            host_id=capture.host.host_id,
+            host_label=capture.host.host_label,
+            evidence=evidence,
+        )
+    first = capture.chain[0] if capture.chain else None
+    evidence = {
+        "claim_kind": "human_session",
+        "host_id": capture.host.host_id,
+        "uid": capture.uid,
+        "login": capture.login,
+        "tty": first.tty if first is not None else None,
+        "session_id": first.session_id if first is not None else None,
+    }
+    return IdentityClaim(
+        claim_hash=claim_hash(evidence),
+        claim_kind="human_session",
+        host_id=capture.host.host_id,
+        host_label=capture.host.host_label,
+        evidence=evidence,
+    )
+
+
+def claim_for_token(token: str) -> IdentityClaim:
+    """Build a continuity-token claim without storing the token as evidence."""
+
+    token_digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    evidence = {
+        "claim_kind": "continuity_token",
+        "token_hash": token_digest,
+    }
+    return IdentityClaim(
+        claim_hash=claim_hash(evidence),
+        claim_kind="continuity_token",
+        host_id=None,
+        host_label=None,
+        evidence=evidence,
+    )
+
+
+def claim_hash(payload: dict[str, Any]) -> str:
+    """Return the deterministic claim hash for canonical JSON evidence."""
+
+    raw = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "ic_" + _base32_lower(hashlib.sha256(raw).digest())
+
+
+def random_member_id() -> str:
+    """Mint an opaque durable member id."""
+
+    return "m_" + _base32_lower(secrets.token_bytes(20))
+
+
 def explain_capture(capture: IdentityCapture, matched_rule: str) -> dict[str, Any]:
     """Return diagnostic identity evidence for ``whoami --explain``."""
 
@@ -229,8 +320,8 @@ def explain_capture(capture: IdentityCapture, matched_rule: str) -> dict[str, An
 
 def match_anchor(
     capture: IdentityCapture,
-    members: list[schema.MemberRow],
-) -> schema.MemberRow | None:
+    members: list[MemberRow],
+) -> MemberRow | None:
     """Return the nearest stored anchor in the captured chain."""
 
     for proc in capture.chain:
@@ -248,11 +339,11 @@ def match_anchor(
 
 
 def anchor_claimant(
-    members: list[schema.MemberRow],
+    members: list[MemberRow],
     *,
     host_id: str,
     anchor: ProcessInfo,
-) -> schema.MemberRow | None:
+) -> MemberRow | None:
     if anchor.start_time is None:
         return None
     for member in members:
@@ -265,7 +356,7 @@ def anchor_claimant(
     return None
 
 
-def member_presence(member: schema.MemberRow, local_host_id: str) -> str:
+def member_presence(member: MemberRow, local_host_id: str) -> str:
     """Return a display presence value for one member."""
 
     if member["kind"] == "human" or member["anchor_pid"] is None:
@@ -284,23 +375,23 @@ def mint_token() -> str:
     return "taut-" + secrets.token_urlsafe(12).lower().replace("_", "-")
 
 
-def choose_handle(
+def choose_name(
     *,
     seed: str | None,
     taken: set[str],
     fallback: str = "agent",
 ) -> str:
-    """Choose the first deterministic available handle for a seed."""
+    """Choose the first deterministic available name for a seed."""
 
-    stem = normalize_handle_seed(seed, fallback=fallback)
+    stem = normalize_name_seed(seed, fallback=fallback)
     if stem not in taken:
         return stem
-    for handle in PER_BASENAME_HANDLE_POOLS.get(stem, ()):
-        if handle not in taken:
-            return handle
-    for handle in HISTORICAL_HANDLE_POOL:
-        if handle not in taken:
-            return handle
+    for name in PER_BASENAME_NAME_POOLS.get(stem, ()):
+        if name not in taken:
+            return name
+    for name in HISTORICAL_NAME_POOL:
+        if name not in taken:
+            return name
     index = 2
     while True:
         suffix = f"-{index}"
@@ -312,15 +403,15 @@ def choose_handle(
 
 def rank_candidates(
     capture: IdentityCapture,
-    members: list[schema.MemberRow],
+    members: list[MemberRow],
     *,
     limit: int = 5,
-) -> list[tuple[schema.MemberRow, list[str]]]:
+) -> list[tuple[MemberRow, list[str]]]:
     """Return heuristic rejoin candidates for an unrecognized agent."""
 
     if capture.anchor is None:
         return []
-    scored: list[tuple[int, int, schema.MemberRow, list[str]]] = []
+    scored: list[tuple[int, int, MemberRow, list[str]]] = []
     current = capture.anchor
     for member in members:
         if member["kind"] != "agent" or not member["fingerprint"]:
@@ -345,8 +436,12 @@ def rank_candidates(
             reasons.append("same session")
         if score:
             scored.append((score, member["last_active_ts"], member, reasons))
-    scored.sort(key=lambda item: (-item[0], -item[1], item[2]["handle"]))
+    scored.sort(key=lambda item: (-item[0], -item[1], item[2]["display_name"]))
     return [(member, reasons) for _, _, member, reasons in scored[:limit]]
+
+
+def _base32_lower(raw: bytes) -> str:
+    return base64.b32encode(raw).decode("ascii").lower().rstrip("=")
 
 
 def _capture_linux_process(pid: int) -> ProcessInfo | None:

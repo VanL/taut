@@ -2,6 +2,7 @@
 
 Spec references:
 - docs/specs/02-taut-core.md [TAUT-3.2], [TAUT-4.1], [TAUT-5.2], [TAUT-5.4]
+- docs/specs/03-identity-addressing-notifications.md [IAN-3], [IAN-4], [IAN-6]
 """
 
 from __future__ import annotations
@@ -17,14 +18,20 @@ __version__: Final[str] = "0.2.1"
 
 DEFAULT_DB_NAME: Final[str] = ".taut.db"
 PROJECT_CONFIG_NAME: Final[str] = ".taut.toml"
-SCHEMA_VERSION: Final[int] = 1
+SCHEMA_VERSION: Final[int] = 2
 META_QUEUE_NAME: Final[str] = "taut_meta"
 QUEUE_PRIORITY_NORMAL: Final[int] = 100
 WATCH_MEMBERSHIP_REFRESH_SECONDS: Final[float] = 0.5
 
-ROOM_NAME_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
-HANDLE_RE: Final[re.Pattern[str]] = ROOM_NAME_RE
+CHANNEL_NAME_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+MEMBER_NAME_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+MEMBER_ID_RE: Final[re.Pattern[str]] = re.compile(r"^m_[a-z0-9]{26,52}$")
+CLAIM_HASH_RE: Final[re.Pattern[str]] = re.compile(r"^ic_[a-z0-9]{52}$")
 MESSAGE_ID_RE: Final[re.Pattern[str]] = re.compile(r"^[0-9]{19}$")
+RESERVED_QUEUE_PREFIXES: Final[frozenset[str]] = frozenset(
+    {"dm", "notify", "sys", "taut"}
+)
+
 
 SHELL_BASENAMES: Final[tuple[str, ...]] = (
     "sh",
@@ -69,7 +76,7 @@ INFRASTRUCTURE_BASENAMES: Final[tuple[str, ...]] = (
     "init",
 )
 
-PER_BASENAME_HANDLE_POOLS: Final[dict[str, tuple[str, ...]]] = {
+PER_BASENAME_NAME_POOLS: Final[dict[str, tuple[str, ...]]] = {
     "claude": ("claudette", "claudius", "claudion", "claudine"),
     "codex": ("codette", "codexter", "codius", "codine"),
     "gemini": ("gemina", "geminus", "gemma", "gem"),
@@ -78,7 +85,7 @@ PER_BASENAME_HANDLE_POOLS: Final[dict[str, tuple[str, ...]]] = {
     "grok": ("grokkette", "grokus", "grokker", "grokin"),
 }
 
-HISTORICAL_HANDLE_POOL: Final[tuple[str, ...]] = (
+HISTORICAL_NAME_POOL: Final[tuple[str, ...]] = (
     "ada",
     "grace",
     "blaise",
@@ -118,8 +125,8 @@ def load_config(overrides: Mapping[str, Any] | None = None) -> dict[str, Any]:
     return resolve_config(raw)
 
 
-def normalize_handle_seed(seed: str | None, *, fallback: str = "agent") -> str:
-    """Turn an executable/login seed into a valid deterministic handle stem."""
+def normalize_name_seed(seed: str | None, *, fallback: str = "agent") -> str:
+    """Turn an executable/login seed into a valid deterministic name stem."""
 
     candidate = (seed or fallback).strip().lower()
     candidate = candidate.rsplit("/", 1)[-1]
@@ -129,8 +136,23 @@ def normalize_handle_seed(seed: str | None, *, fallback: str = "agent") -> str:
     return candidate[:64]
 
 
-def validate_handle(handle: str) -> None:
-    """Raise ``ValueError`` if *handle* is not a taut handle."""
+def route_key(name: str) -> str:
+    """Return the normalized route key for a member name or alias."""
 
-    if HANDLE_RE.fullmatch(handle) is None:
-        raise ValueError("handle must match ^[a-z0-9][a-z0-9_-]{0,63}$")
+    return name.lower()
+
+
+def validate_member_name(name: str) -> None:
+    """Raise ``ValueError`` if *name* is not a routable member name."""
+
+    if MEMBER_NAME_RE.fullmatch(name) is None:
+        raise ValueError("name must match ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+
+
+def validate_channel_name(name: str) -> None:
+    """Raise ``ValueError`` if *name* is not a top-level channel name."""
+
+    if CHANNEL_NAME_RE.fullmatch(name) is None:
+        raise ValueError("channel must match ^[a-z0-9][a-z0-9_-]{0,63}$")
+    if name in RESERVED_QUEUE_PREFIXES:
+        raise ValueError(f"{name} is reserved")

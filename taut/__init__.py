@@ -18,7 +18,7 @@ from taut._exceptions import (
     ThreadNameError,
     TokenError,
 )
-from taut.client import Member, Message, TautClient, Thread
+from taut.client import Member, Message, Notification, TautClient, Thread
 from taut.watcher import TautWatcher
 
 __all__ = [
@@ -31,6 +31,7 @@ __all__ = [
     "Message",
     "NotInitializedError",
     "NotFoundError",
+    "Notification",
     "SchemaVersionError",
     "TautClient",
     "TautError",

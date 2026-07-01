@@ -16,7 +16,7 @@ class NotInitializedError(TautError):
 
 
 class BackendNotSupportedError(TautError):
-    """Raised when the resolved broker backend is not supported by v0.1."""
+    """Raised when the resolved broker backend is not supported by taut."""
 
 
 class SchemaVersionError(TautError):

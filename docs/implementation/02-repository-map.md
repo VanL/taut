@@ -8,7 +8,7 @@ Quick pointers to the key guidance documents in this repository.
 |------|---------|
 | `AGENTS.md` | Canonical agent entry point |
 | `CLAUDE.md` | Alias for tools that expect Claude-style root guidance |
-| `README.md` | Product face and v0.1 behavior contract (see `docs/specs/02-taut-core.md`) |
+| `README.md` | Product face and current CLI/API behavior contract (see `docs/specs/02-taut-core.md`) |
 | `bin/release.py` | GitHub-only release helper for version sync, release gates, and `vX.Y.Z` tags |
 | `bin/pytest-pg` | Docker-backed Postgres test runner for shared root tests and `taut-pg` tests |
 | `.github/workflows/test.yml` | Push/PR/reusable pytest, lint, type, and build gates |
@@ -46,9 +46,10 @@ Quick pointers to the key guidance documents in this repository.
 |------|---------|
 | `docs/specs/00-specs-index.md` | Numbered entry point for specs |
 | `docs/specs/01-development-documentation-operating-model.md` | Governing spec for the documentation workflow |
-| `docs/specs/02-taut-core.md` | Taut v0.1 core spec: storage, identity, envelope, read model, surfaces, trust model |
+| `docs/specs/02-taut-core.md` | Taut core spec: storage, threads, envelope, read model, surfaces, trust model |
 | `docs/plans/README.md` | Plan directory rules |
-| `docs/plans/2026-06-12-taut-foundation-plan.md` | Active plan for the v0.1 implementation |
+| `docs/plans/2026-06-12-taut-foundation-plan.md` | Historical foundation implementation plan |
+| `docs/plans/2026-06-18-member-identity-addressing-plan.md` | Implemented plan for member ids, addressing, notifications, and channel rename |
 | `docs/plans/2026-06-12-taut-0.1.1-hardening-plan.md` | Hardening plan for handle quality, [TAUT-11] proof burndown, README rendering, and 0.1.1 release |
 | `docs/plans/2026-06-17-github-release-helper-plan.md` | GitHub-only release-helper plan while PyPI name clearance is pending |
 | `docs/plans/2026-06-17-github-actions-release-workflows-plan.md` | GitHub Actions test and GitHub-only release workflow plan |
@@ -56,19 +57,21 @@ Quick pointers to the key guidance documents in this repository.
 | `docs/implementation/00-implementation-index.md` | Numbered entry point for implementation docs |
 | `docs/implementation/01-documentation-system.md` | Why the documentation system is shaped this way |
 | `docs/implementation/03-agent-inventory.md` | Current observed agent availability and review preference |
-| `docs/implementation/04-taut-architecture.md` | Taut v0.1 implementation rationale, boundaries, dependencies, and key files |
+| `docs/implementation/04-taut-architecture.md` | Taut implementation rationale, boundaries, dependencies, and key files |
 | `docs/lessons.md` | Canonical lessons ledger |
 
 ## Product Code
 
 | Path | Purpose |
 |------|---------|
-| `taut/_constants.py` | Taut constants, config translation, identity lists, handle pools |
+| `taut/_constants.py` | Taut constants, config translation, name validation, and identity name pools |
+| `taut/addressing.py` | Channel, sub-thread, DM, mention, and notification addressing helpers |
 | `taut/_scripts.py` | Importable developer-script helper logic, currently for `bin/pytest-pg` |
-| `taut/envelope.py` | Envelope v1 encode/decode and foreign-message fallback |
-| `taut/schema.py` | Taut sidecar schema and all taut-owned SQL |
+| `taut/envelope.py` | Message envelope encode/decode and foreign-message fallback |
+| `taut/state/` | Internal Taut state interface, SQL dialect marker, and sidecar SQL adapter |
+| `taut/schema.py` | Compatibility forwarding module for historical sidecar helper imports |
 | `taut/identity.py` | Process fingerprint capture, anchor selection, presence checks |
-| `taut/client.py` | Public Python API and command semantics |
+| `taut/client/` | Public Python API package: facade plus identity, messaging, notification, and thread mixins |
 | `taut/watcher.py` | Vendored multi-queue watcher plus cursor-aware `TautWatcher` |
 | `taut/cli.py` | Argparse CLI and output/exit-code rendering |
 | `tests/` | Contract tests using real SQLite files, shared backend markers, and subprocess CLI |

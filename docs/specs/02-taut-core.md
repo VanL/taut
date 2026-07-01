@@ -1,6 +1,6 @@
 # Taut Core Specification
 
-Status: Proposed (governs the v0.1 implementation)
+Status: Proposed
 
 Taut is private, no-config chat for the processes that already share your
 machine: you, your agents, and anything else that can run a CLI. It is built
@@ -9,23 +9,35 @@ state — in one SQLite file, `.taut.db`, by default. With the `taut-pg`
 extension installed, the same state lives in a project-configured Postgres
 schema.
 
-This spec defines intended behavior for the v0.1 core: storage model,
-identity, message contract, read model, and the CLI, Python API, and watcher
-surfaces. It is the source of truth those surfaces are verified against.
+This spec defines intended behavior for the core storage model, thread model,
+message contract, read model, and CLI, Python API, and watcher surfaces.
+Stable member identity, mutable names, reserved alias storage, direct messages,
+notifications, and special queue namespaces are governed by
+`docs/specs/03-identity-addressing-notifications.md`.
 
 ## 1. Purpose and Scope [TAUT-1]
 
 In scope:
 
 - the default `.taut.db` storage model and project resolution rules
-- thread and room semantics over SimpleBroker queues
-- member identity, process fingerprinting, recognition, and rejoin
+- thread and channel semantics over SimpleBroker queues
+- the core sidecar state model
 - the message envelope contract
-- the read model: cursors, unread state, and the peek-only discipline
+- the read model: cursors, unread state, chat-history peek discipline, and
+  notification-inbox claim discipline
 - the CLI surface, the `TautClient` Python API, and the `TautWatcher`
 - the trust model and its limits
 
-Out of scope for v0.1 but committed on the roadmap, with compatibility
+Delegated to `03-identity-addressing-notifications.md`:
+
+- stable member ids, identity claim hashes, process evidence, recognition, and
+  rejoin
+- mutable names, reserved alias storage, and `taut set name`
+- `@name` direct messages and mention routing
+- notification queue payloads and consumption semantics
+- special queue namespaces and channel rename
+
+Out of scope for core but committed on the roadmap, with compatibility
 obligations defined in [TAUT-12]:
 
 - non-SQL state mappings beyond the SQL sidecar path (`taut-pg` remains SQL)
@@ -39,8 +51,8 @@ Out of scope as non-goals (not deferred ambiguity):
 - message deletion, editing, retention, or archival verbs
 - taut-owned networking; remote reach only ever comes from the broker
   backend, never from taut growing a protocol
-- code-signing identity as fingerprint evidence (recorded as a possible
-  future macOS evidence field; not captured in v0.1)
+- code-signing identity as identity-claim evidence (recorded as a possible
+  future macOS evidence field; not captured by the current spec)
 
 ## 2. Mental Model [TAUT-2]
 
@@ -50,18 +62,21 @@ Out of scope as non-goals (not deferred ambiguity):
   companions `.taut.db-wal` and `.taut.db-shm` are transient and managed by
   SQLite.) Under `taut-pg`, `.taut.toml` selects a Postgres target and the same
   sidecar tables live in that configured schema.
-- A thread is a queue. A **room** is a top-level thread (`general`). A
-  **sub-thread** hangs off one message in a room and is itself a queue
+- A thread is a queue. A **channel** is a top-level thread (`general`). A
+  **sub-thread** hangs off one message in a channel and is itself a queue
   (`general.1837025672140161024`, named by the origin message id).
-- Messages are never consumed. Every reader peeks; nothing is ever claimed,
-  so the queue is the conversation history. "Read" in taut means "move my
-  bookmark", never "remove".
-- Who you are is where you ran from. Agents are recognized by a process
-  fingerprint anchored at `(pid, process start time)` of an ancestor
-  process. Humans are recognized by uid. Explicit `--as` always wins.
-- Per-member state is relational. Members, thread registry, membership, and
-  read cursors live in `taut_*` sidecar tables in the same file, written
-  through SimpleBroker's sidecar API.
+- Chat messages are never consumed. Channel, sub-thread, and direct-message
+  readers peek; the queue is the conversation history. "Read" on a chat
+  surface means "move my bookmark", never "remove". Notification queues are the
+  exception: they are per-member inbox pointers and are claimed when read
+  ([IAN-7.4]).
+- Who you are is a stable opaque member id plus current evidence. Process
+  fingerprints, human session evidence, and continuity tokens produce identity
+  claim hashes that map to a `member_id`; names are mutable current-value data
+  ([IAN-2], [IAN-3]).
+- Per-member state is relational. Members, identity claims, names, thread
+  registry, membership, and read cursors live in `taut_*` sidecar tables in the
+  same file, written through SimpleBroker's sidecar API.
 - Identification, not authentication. Anyone with storage access can be
   anyone. Taut makes coordination inside one trust domain frictionless;
   it is not a security boundary ([TAUT-9]).
@@ -136,10 +151,10 @@ same project-config format SimpleBroker and Weft already use, which is why
 backend support costs taut no new resolution machinery. `BROKER_BACKEND` is
 pinned to SQLite in Taut's resolved config so ambient `BROKER_*` variables do
 not silently become Taut's public backend API. `.taut.toml` still wins through
-SimpleBroker project resolution. `TAUT_DB`, `TAUT_AS`, and `TAUT_TOKEN`
-([TAUT-5.8]) are the only public environment knobs in v0.1.
+SimpleBroker project resolution. `TAUT_DB`, `TAUT_AS`, and `TAUT_TOKEN` are the
+only public environment knobs in the core CLI.
 
-### [TAUT-3.3] Sidecar schema v1
+### [TAUT-3.3] Sidecar schema
 
 Taut-owned tables are created through `Queue.sidecar(transaction=True)`
 with idempotent DDL at `taut init` time and verified (created if missing)
@@ -149,10 +164,12 @@ on first write access. All tables are prefixed `taut_`.
 CREATE TABLE IF NOT EXISTS taut_meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
-);  -- holds schema_version, currently '1'
+);  -- holds schema_version
 
 CREATE TABLE IF NOT EXISTS taut_members (
-    handle            TEXT PRIMARY KEY,
+    member_id         TEXT PRIMARY KEY,
+    display_name      TEXT NOT NULL,
+    name_key          TEXT NOT NULL UNIQUE,
     kind              TEXT NOT NULL CHECK (kind IN ('human', 'agent')),
     uid               BIGINT NOT NULL,
     host_id           TEXT NOT NULL,
@@ -164,53 +181,76 @@ CREATE TABLE IF NOT EXISTS taut_members (
     meta              TEXT,
     created_ts        BIGINT NOT NULL,
     last_active_ts    BIGINT NOT NULL
-);  -- anchor_* and fingerprint are NULL for kind='human'.
-    -- token is the continuity token minted at creation ([TAUT-5.8]);
-    -- meta is a JSON object; defined keys so far: "persona"
-    -- ([TAUT-5.9]). Unknown keys are preserved.
-    -- host_id is the opaque stable host identity from [TAUT-5.1];
-    -- host_label is the human-readable hostname for display only.
-    -- pids and uids only mean anything on their own host, and the
-    -- Postgres backend ([TAUT-12.1]) makes multi-host databases real.
-    -- Schema v1 carries both columns from day one because the first
-    -- release freezes the schema.
+);  -- member_id is the stable opaque identity from [IAN-3.1].
+    -- display_name is mutable and captured into new message envelopes.
+    -- name_key is the normalized route key from [IAN-4.2].
+    -- uid/host/anchor/fingerprint columns are current recognition evidence
+    -- and presence diagnostics; taut_identity_claims is the durable claim map.
+    -- token is continuity, not authentication ([IAN-3.3]).
+    -- meta is a JSON object. Defined key so far: "persona".
+    -- Unknown keys are preserved.
 
-CREATE UNIQUE INDEX IF NOT EXISTS taut_members_anchor_unique
-    ON taut_members (host_id, anchor_pid, anchor_start_time)
-    WHERE anchor_pid IS NOT NULL;
+CREATE TABLE IF NOT EXISTS taut_member_aliases (
+    alias_key   TEXT PRIMARY KEY,
+    member_id   TEXT NOT NULL REFERENCES taut_members(member_id),
+    created_ts  BIGINT NOT NULL
+);  -- aliases share the same normalized uniqueness namespace as name_key.
 
-CREATE UNIQUE INDEX IF NOT EXISTS taut_members_human_unique
-    ON taut_members (host_id, uid)
-    WHERE kind = 'human';
+CREATE TABLE IF NOT EXISTS taut_identity_claims (
+    claim_hash     TEXT PRIMARY KEY,
+    member_id      TEXT NOT NULL REFERENCES taut_members(member_id),
+    claim_kind     TEXT NOT NULL,
+    host_id        TEXT,
+    host_label     TEXT,
+    evidence_json  TEXT NOT NULL,
+    first_seen_ts  BIGINT NOT NULL,
+    last_seen_ts   BIGINT NOT NULL
+);  -- claim_hash is deterministic evidence from [IAN-3.2].
+    -- A member may have many claims; a claim belongs to only one member.
 
 CREATE TABLE IF NOT EXISTS taut_threads (
     name       TEXT PRIMARY KEY,
+    kind       TEXT NOT NULL CHECK (
+        kind IN ('channel', 'subthread', 'dm', 'notification', 'system')
+    ),
     parent     TEXT,
     origin_ts  BIGINT,
     created_by TEXT NOT NULL,
+    meta       TEXT,
     created_ts BIGINT NOT NULL
-);  -- parent/origin_ts are NULL for rooms
+);  -- parent/origin_ts are set for sub-threads.
+    -- dm/notification/system metadata is stored in meta as JSON and must
+    -- duplicate only routing data that is needed to render or recover.
 
 CREATE TABLE IF NOT EXISTS taut_membership (
     thread       TEXT NOT NULL,
-    member       TEXT NOT NULL,
+    member_id    TEXT NOT NULL REFERENCES taut_members(member_id),
     joined_ts    BIGINT NOT NULL,
     last_seen_ts BIGINT NOT NULL DEFAULT 0,
-    PRIMARY KEY (thread, member)
+    PRIMARY KEY (thread, member_id)
+);
+
+CREATE TABLE IF NOT EXISTS taut_channel_renames (
+    old_name      TEXT PRIMARY KEY,
+    new_name      TEXT NOT NULL,
+    state         TEXT NOT NULL,
+    affected_json TEXT NOT NULL,
+    started_ts    BIGINT NOT NULL,
+    updated_ts    BIGINT NOT NULL
 );
 ```
 
-The unique indexes are the schema backstop for the identity invariants:
-one anchor → at most one member, one (host, uid) → at most one human.
-Member-creation paths must treat a uniqueness violation as a lost race,
-not an error — re-resolve and use the member the other process created.
-(Partial unique indexes work identically on SQLite and Postgres, so this
-stays inside the I9 portability rule.)
+The schema backs the identity invariants from [IAN-3] and [IAN-4]:
+one member id is the durable identity, each normalized current name or alias
+routes to at most one member, and each identity claim hash maps to at most one
+member. Member-creation paths must treat uniqueness violations as lost races,
+not ordinary user-facing errors: re-resolve and use the member the other
+process created when the conflict represents the same claim.
 
-Schema evolution is additive within v1 (new tables, new nullable columns).
-Any breaking change bumps `schema_version` and requires an explicit
-migration path in a future spec revision. Older taut versions encountering
-a newer `schema_version` must refuse with a clear error rather than guess.
+Schema evolution is additive within the current schema generation when possible
+(new tables, new nullable columns). Breaking changes bump `schema_version` and
+require an explicit migration plan. Older taut versions encountering a newer
+`schema_version` must refuse with a clear error rather than guess.
 
 ### [TAUT-3.4] SimpleBroker interop
 
@@ -249,23 +289,26 @@ queue.insert_messages([(envelope_json, ts)])
 This is the single write path (invariant: there is no `Queue.write()`
 call anywhere in taut).
 
-## 4. Threads and Rooms [TAUT-4]
+## 4. Threads and Channels [TAUT-4]
 
 ### [TAUT-4.1] Naming
 
-- Room names match `^[a-z0-9][a-z0-9_-]{0,63}$`. No dots: the dot is the
-  hierarchy separator. Uppercase is rejected, not folded.
-- The room name `taut` and the prefix `taut.` are reserved for future
-  system use; creating them is an error.
-- A sub-thread's queue name is `<room>.<origin_ts>` where `origin_ts` is
+- Channel names match `^[a-z0-9][a-z0-9_-]{0,63}$`. No dots: dot is
+  structural namespace syntax. Uppercase is rejected, not folded.
+- The exact channel names `dm`, `notify`, `sys`, and `taut` are reserved.
+  Dotted queue names whose first segment is one of those reserved words are
+  special queues, not channels ([IAN-6.2]).
+- A sub-thread's queue name is `<channel>.<origin_ts>` where `origin_ts` is
   the message id it branched from. Sub-threads of sub-threads are not
-  supported in v0.1 (one level, like Slack).
+  supported (one level, like Slack).
+- Direct-message, notification, and system queues are special queues governed
+  by [IAN-6].
 - These names are valid SimpleBroker queue names by construction; taut
   performs its own validation before SimpleBroker sees the name.
 
 ### [TAUT-4.2] Creation and registry
 
-- `join` on a nonexistent room creates it: a `taut_threads` row plus a
+- `join` on a nonexistent channel creates it: a `taut_threads` row plus a
   membership row, and a `notice` envelope ([TAUT-6.2]) is written to the
   new queue so creation is visible in history.
 - `reply` to a message creates the sub-thread on first use: registry row
@@ -283,270 +326,55 @@ call anywhere in taut).
   within the [TAUT-8.4] refresh interval, so a just-left thread may
   display briefly before the watcher drops it. One-shot commands
   (`read`, `list`) check membership at invocation and are exact.
-- Joining a room does not auto-join its sub-threads. Replying to a
-  sub-thread, or explicitly reading one (`read room.<ts>`), joins it
-  implicitly — provided the caller is a member of the parent room
-  (Slack's "you're in the thread now"). Rooms are never joined
-  implicitly; `read` on a room you have not joined is a miss ([TAUT-8.1]).
+- Joining a channel does not auto-join its sub-threads. Replying to a
+  sub-thread, or explicitly reading one (`read channel.<ts>`), joins it
+  implicitly — provided the caller is a member of the parent channel
+  (Slack's "you're in the thread now"). Channels are never joined implicitly;
+  `read` on a channel you have not joined is a miss ([TAUT-8.1]).
 
-## 5. Identity and Fingerprinting [TAUT-5]
+## 5. Identity and Recognition [TAUT-5]
 
-### [TAUT-5.1] Fingerprint capture
+Identity, names, reserved alias storage, direct-message addressing,
+notifications, and special queue namespaces are governed by
+`docs/specs/03-identity-addressing-notifications.md`.
 
-At identity-relevant commands, taut captures its own ancestor process
-chain, from its parent upward, bounded at 12 levels or the first
-unreadable ancestor. Per process, best-effort:
+Core obligations:
 
-- pid and process start time (the load-bearing pair: start time disarms
-  pid reuse)
-- executable path and argv
-- uid, parent pid, process group id, session id, controlling tty
-- host identity: an opaque stable id (`/etc/machine-id` on Linux,
-  `IOPlatformUUID` on macOS, hostname only as last resort) plus the
-  hostname as a display label. Hostnames are not identity — macOS
-  renames them spontaneously and containers randomize them; pids and
-  uids are meaningless off their host, and multi-host databases
-  ([TAUT-12.1]) make collisions real (two devcontainers named
-  `devcontainer`, both uid 1000). Matching always uses the opaque id;
-  container/namespace evidence is a [TAUT-12.1]-round refinement.
-- current working directory (may be unavailable for non-self processes on
-  macOS without elevated rights; recorded as null when unknown)
-
-Source is `psutil` for cross-platform process metadata, with `/proc` on
-Linux and `ps`/`lsof` fallbacks where a native start-time token or
-best-effort field is still needed. Capture must degrade field-by-field:
-a missing field is null, never a failed command.
-
-Start time is an opaque token: taut stores the platform-native value
-exactly as captured (the `/proc` ticks field on Linux, the `ps lstart`
-string on macOS) and matches by byte equality. It is never parsed into
-numeric or calendar form — locale, precision, and rounding drift would
-silently break the pid+start-time pair. This is why [TAUT-3.3] types
-`anchor_start_time` as TEXT.
-
-Executable identity must never come from a truncatable field. macOS
-`ps -o comm=` clips to 16 characters (`/opt/homebrew/bi`), which is
-enough to defeat shell classification and anchor identities on
-per-command wrappers. Rule: when the captured executable path does not
-end with `argv[0]`'s basename, `argv[0]` is the authoritative path
-source; the [TAUT-5.2] shell/wrapper/infrastructure classification must
-consult the best-available untruncated basename. (Capture-fidelity
-note for implementers and test authors: `sh -c` with a single simple
-command exec-optimizes the shell out of the chain entirely — wrappers
-under test must run compound commands to exist at all.)
-
-### [TAUT-5.2] Anchor selection
-
-The **anchor** is the ancestor that *is* the member. Selection walks the
-chain from taut's parent upward and picks the first process that is not:
-
-- a shell (`sh`, `bash`, `zsh`, `fish`, `dash`, `ksh`, `csh`, `tcsh`), or
-- a trivial wrapper (`env`, `command`, `timeout`, `xargs`, `nohup`,
-  `setsid`, `script`, `uv`, `uvx`, `npx`), or
-- session infrastructure (`tmux`, `screen`, `sshd`, `login`, terminal
-  emulators, `launchd`, `systemd`, `init`).
-
-If such a process exists, the caller is presumed to be an **agent**
-anchored there (the direct parent of a CLI invocation is usually a shell;
-the agent is one or two levels above it — anchoring must look past
-wrappers). If the walk hits session infrastructure or the chain top first,
-the caller is presumed to be the **human** owning the uid. The lists above
-are constants in one module, not configuration.
-
-Recognition stops at process-namespace boundaries: `ssh box taut …` and
-`docker exec app taut …` start fresh ancestor chains in which the
-originating agent does not appear, so the caller resolves per the rules
-above *inside* that boundary (and typically auto-creates a new identity
-there). The supported pattern for crossing the boundary is explicit
-identity: propagate `TAUT_AS` (or pass `--as`) through ssh/container
-invocations. Namespace-aware evidence is a [TAUT-12.1]-round refinement,
-not a v0.1 behavior.
-
-### [TAUT-5.3] Resolution order
-
-Every command resolves the acting member, in order:
-
-1. `--as HANDLE` / `TAUT_AS` — explicit always wins. If the handle
-   exists, act as that member for this command (no proof required, see
-   [TAUT-9]; acting never re-anchors — `rejoin` is the only verb that
-   moves anchors). If the handle does not exist, create it: anchored to
-   the current chain when the chain is agent-shaped *and* that anchor is
-   unclaimed; otherwise created **unanchored** (kind from the chain
-   shape, no anchor). Unanchored members are reachable only via `--as`
-   until a later `rejoin` gives them an anchor — anchor uniqueness
-   ([TAUT-5.5]) is never violated to satisfy `--as`.
-2. Continuity token — if `TAUT_TOKEN` is set (or `--token` given), act
-   as the member holding that token ([TAUT-5.8]). A token that matches
-   no member is a loud error (exit 1), never a silent fall-through —
-   a presented credential failing quietly would mis-attribute
-   everything after it.
-3. Anchor match — if any stored agent anchor `(pid, start_time)` appears in
-   the current ancestor chain *and its stored `host_id` equals the local
-   host identity*, the member whose anchor is **nearest to the calling
-   process** wins. Nearest-wins is what lets an agent and the human who
-   launched it coexist in one process tree; the host clause is what keeps
-   anchors meaningful when a Postgres-backed database spans machines.
-4. Human fallback — if the chain is human-shaped per [TAUT-5.2], resolve
-   to the human member with the caller's uid on the local `host_id`
-   (uids, like pids, mean nothing off-host), creating it on first
-   state-changing command with handle = login name (suffix-disambiguated
-   per [TAUT-5.4] if the name is taken).
-5. Otherwise the caller is **unrecognized**: an agent-shaped chain with no
-   matching anchor.
-
-### [TAUT-5.4] Unrecognized callers, auto-creation, and suggestions
-
-For the read-only commands `list`, `log`, `who`, and `whoami`, an
-unrecognized caller operates as a guest: output works, no cursor exists,
-nothing is written. `read` is **not** guest-available — it exists to
-advance a member's cursors, so it requires a resolved member and (for an
-explicit thread) membership; a non-member gets exit 2 with a hint to
-`log` or `join` ([TAUT-8.1]).
-
-For state-changing commands (`join`, `say`, `reply`) from an
-unrecognized caller, taut first computes **candidates**: existing agent
-members ranked by fingerprint similarity (same executable path: strong;
-same cwd: medium; same tty or session: weak; recent `last_active_ts`:
-tiebreak; scoring is implementation-owned, not contract). Then:
-
-- Interactively, taut presents the candidates and asks — rejoin one of
-  them, or join as new. "Interactively" means **stdin is a tty and
-  neither `--json` nor `-q` is in effect**; `--json` output must stay
-  pure ndjson, so it always takes the non-interactive path below.
-  (Consequence: a human running `echo hi | taut say ci -` is mid-pipe,
-  stdin is not a tty, and gets the non-interactive path too — the hint
-  on stderr is their prompt.)
-- Off-tty (agents — no prompts, ever, [TAUT-8.2]), taut auto-creates a
-  new member anchored at the current chain — join stays frictionless —
-  and prints the candidate list as a rejoin hint to stderr:
-
-```
-created new identity 'claudette'
-note: you may be one of these —
-        claude     same executable, same cwd, active 4m ago
-        claudius   same executable, active 2d ago
-      reclaim with 'taut rejoin claude' (or set its TAUT_TOKEN).
-```
-
-- `join --new` skips candidates and prompting entirely and creates a
-  fresh identity on either kind of terminal.
-
-Taut never rejoins automatically; the choice is the caller's.
-
-Generated handles avoid the `name-2` aesthetic: the first instance of an
-executable gets its basename (`claude`); later unrecognized instances
-draw from a per-basename knockoff pool (`claudette`, `claudius`,
-`claudion`, `claudine`, …), then from a shared pool of names from the
-history of computing and ideas (`ada`, `grace`, `blaise`, `hypatia`,
-`kurt`, …), and only as a last resort fall back to numeric suffixes.
-Pools are constants in one module (like the shell lists), all entries
-satisfy the handle rule, and selection is deterministic (first unused,
-in order) so tests and transcripts are reproducible. The numeric-suffix
-rule still backstops every other collision in taut, including the human
-login-name fallback.
-
-### [TAUT-5.5] Rejoin
-
-`taut rejoin [HANDLE]` re-anchors an existing member to the current
-chain's anchor and replaces its stored fingerprint. It is the explicit
-"that was me" verb after a process restart.
-
-Target selection, exactly: the positional HANDLE if given; otherwise a
-`--token` selector (either `rejoin --token TOKEN` or global
-`--token TOKEN`); otherwise the member selected by global `--as`.
-Giving HANDLE plus any `--token` is an error (ambiguous selectors), and
-bare `rejoin` with no selector of any kind is an error with a usage
-hint. For this verb the selectors name the **target**, and the target is
-also the acting member for attribution (`last_active_ts`) —
-re-anchoring *is* the target proving it is alive; there is no separate
-acting identity to resolve.
-Rules:
-
-- Anchor uniqueness is an invariant enforced at every join and rejoin: one
-  anchor, at most one member. `rejoin HANDLE` succeeds iff the current
-  chain's anchor is unclaimed or already belongs to `HANDLE`; if it
-  belongs to a different member (typically an auto-created `claudette`),
-  `rejoin` fails and names that member. There is no merge verb in v0.1;
-  the resolution is to rejoin from the right process, or rejoin the stray
-  identity itself if that is the one you want going forward.
-- Membership rows and cursors are untouched by rejoin; identity continuity
-  is the whole point.
-
-### [TAUT-5.6] Presence and activity
-
-- Agent liveness is checked on demand (`who`): the anchor pid exists and
-  its start time matches the stored one. Match → `here`; no match →
-  `gone`. Liveness is checkable only for anchors on the local host;
-  members anchored elsewhere show `remote` (their activity timestamps
-  still tell the story). Humans are not liveness-checked (shown by
-  activity only).
-- Every resolved (non-guest) command updates the member's
-  `last_active_ts`.
-
-### [TAUT-5.7] Transparency
-
-`taut whoami --explain` prints the captured chain, which anchor or fallback
-rule matched, and why — the heuristic must be observable, because it will
-sometimes be wrong and the fix (`--as`, `rejoin`) is only discoverable if
-the decision is visible.
-
-### [TAUT-5.8] Continuity tokens
-
-Every member gets a token at creation — short, URL-safe, generated with
-`secrets` (`taut-` prefix plus random base32). It is shown exactly once
-in the creation output ([TAUT-8.2]) with the suggestion to stash it in
-the agent's own state; afterward it lives only in the database.
-
-A token is **continuity, not authentication**. It confers nothing
-`--as` doesn't already (the trust model holds, [TAUT-9]); what it adds
-is a zero-heuristic way for the *same logical agent* to be itself again
-when its process tree has churned — new session, new tty, cron respawn,
-fresh container. `TAUT_TOKEN` in the agent's environment means
-"remember me", and it survives everything the process anchor doesn't.
-It is stored in plaintext: hashing it would imply a security property
-taut explicitly does not have.
-
-Token resolution **acts as** the member ([TAUT-5.3] step 2); it does not
-move the anchor. Re-anchoring stays the explicit job of `rejoin`, which
-accepts `--token` as an alternative selector to the handle
-([TAUT-5.5]) — present the token once, rejoin, and the process tree
-recognizes you from then on without it.
-
-### [TAUT-5.9] Personas
-
-A member may carry a persona: a saved prompt/description string in
-`meta.persona`. Set it at join time (`taut join debate --as claudius
---persona "Stoic. Argues from first principles."`) or update it by
-re-running `join --persona`; show it via `who`/`whoami` ([TAUT-8.2]
-member objects carry `persona`). To be explicit about power: **any
-writer may set or update any member's persona** (and join that member
-to rooms) via `--as HANDLE --persona …` — that is the [TAUT-9] trust
-model, where storage access is membership; "update it as that member"
-is convention, not enforcement. Taut itself only stores and displays
-the persona — it is the natural system-prompt seed for captive agents
-([TAUT-12.3]) and the thing that makes multi-agent debates read like
-debates instead of like one process arguing with itself.
+- Taut surfaces resolve an acting member to a stable `member_id` before any
+  state-changing command writes sidecar state or chat history.
+- Process evidence, human session evidence, and continuity tokens are identity
+  claims that map to a `member_id`; they are not display names.
+- Names are mutable current values. The CLI may accept a name, and may resolve
+  an existing alias where the schema contains one, but core state, cursors,
+  memberships, direct messages, and notifications use `member_id`.
+- `taut rejoin NAME_OR_ALIAS` associates the current identity claim with the
+  selected member. It does not rename the member or rewrite history.
+- `taut set name NAME` updates the acting member's current display name and
+  route key. It does not alter old message envelopes.
+- `--as NAME_OR_ALIAS` and `TAUT_AS` select by current name, or by an alias if
+  one exists. If used to create a member, the new member still receives a stable
+  opaque `member_id`.
+- `TAUT_TOKEN` remains continuity, not authentication. It is another way to
+  resolve a member inside the weak trust model from [TAUT-9].
 
 ## 6. Message Envelope [TAUT-6]
 
-### [TAUT-6.1] Envelope v1
+### [TAUT-6.1] Envelope
 
 Every message taut writes is one JSON object, UTF-8, no newlines required:
 
 ```json
-{"v": 1, "from": "claude", "kind": "message", "text": "parser is green"}
+{"from_id": "m_abcd1234abcd1234abcd1234ab", "from": "claude", "kind": "message", "text": "parser is green"}
 ```
 
-- `v` (int, required): envelope version, `1`.
-- `from` (string, required): sender handle at write time.
+- `from_id` (string, required): sender `member_id` at write time.
+- `from` (string, required): sender display-name snapshot at write time.
 - `kind` (string, required): `"message"` or `"notice"`.
 - `text` (string, required): the content.
 
 The broker timestamp is the message id and time; the envelope never
-duplicates it. Readers must ignore unknown fields (forward tolerance);
-writers must not emit fields outside this spec plus a future-versioned
-extension. A `v` greater than known renders as raw text with a one-line
-upgrade warning to stderr, never an error.
+duplicates it. Readers must ignore unknown fields. Writers must not emit fields
+outside this spec unless the governing spec is updated first.
 
 ### [TAUT-6.2] Notices
 
@@ -558,13 +386,11 @@ filter on `kind`.
 
 ### [TAUT-6.3] Foreign bodies
 
-A body that does not parse as a v1 envelope (raw `broker write`, other
-tools) renders with sender `?` and the raw body as text. In `--json`
-output it is an ordinary [TAUT-8.2] message object — same fields, no
-extras — with `"from": "?"` and `"kind": "foreign"`. `foreign` is an
-output-only kind: taut never writes it to a queue, and the envelope `v`
-field never appears in output. Foreign bodies must never crash or stall
-any taut surface.
+A body that does not parse as a Taut envelope (raw `broker write`, other
+tools) renders with sender `?` and the raw body as text. In `--json` output it
+is an ordinary [TAUT-8.2] message object with `"from_id": null`, `"from": "?"`,
+and `"kind": "foreign"`. `foreign` is an output-only kind: taut never writes it
+to a queue. Foreign bodies must never crash or stall any taut surface.
 
 ### [TAUT-6.4] Limits
 
@@ -575,13 +401,16 @@ job, and `--json` output is the safe path for machine consumers.
 
 ## 7. Read Model [TAUT-7]
 
-### [TAUT-7.1] Peek-only invariant
+### [TAUT-7.1] Chat-history peek invariant
 
-No taut surface consumes, claims, moves, or deletes broker messages. All
-retrieval is peek-family API. v0.1 ships no deletion verb at all; history
-is append-only. (Consequence: SimpleBroker vacuum never has work; claimed
-counts stay 0. A nonzero claimed count means a foreign tool consumed
-messages — tolerated, but those messages are gone from history.)
+No chat-history surface consumes, claims, moves, or deletes broker messages.
+Channel, sub-thread, and direct-message retrieval uses peek-family APIs.
+History is append-only. A nonzero claimed count in a chat queue means a foreign
+tool consumed messages; Taut tolerates that state, but those messages are gone
+from history.
+
+Notification queues are the explicit exception. They are inbox pointers and use
+claim/read broker APIs as defined in [IAN-7.4].
 
 ### [TAUT-7.2] Cursors
 
@@ -612,7 +441,7 @@ have catching up to do).
 Joining starts you at **now**: the membership row's `last_seen_ts` is
 initialized to the join (or creation) notice's own timestamp, so a new
 member begins caught up, and history is a deliberate rewind away via
-`log` — joining a busy room must not scream a thousand unread. One
+`log` — joining a busy channel must not scream a thousand unread. One
 carve-out: implicit sub-thread join *by reading it* ([TAUT-4.3])
 initializes the cursor to 0, because reading the thread is exactly what
 was asked; implicit join by replying starts at now like any join.
@@ -637,26 +466,29 @@ timestamp parsing ([TAUT-3.5]).
 
 ### [TAUT-8.1] CLI verbs
 
-One executable, `taut`. Global options: `--db PATH`, `--as HANDLE`,
-`--token TOKEN` (acts-as via continuity token, [TAUT-5.8]; the flag
-wins over the `TAUT_TOKEN` env var), `--json`, `-t/--timestamps` (show
-message ids in human output; `say` prints the new message's id),
-`-q/--quiet`, `--version`, `--help`.
+One executable, `taut`. Global options: `--db PATH`, `--as NAME_OR_ALIAS`,
+`--token TOKEN` (acts as the member selected by continuity token; the flag wins
+over the `TAUT_TOKEN` env var), `--json`, `-t/--timestamps` (show message ids in
+human output; `say` prints the new message's id), `-q/--quiet`, `--version`,
+`--help`.
 
 | Verb | Behavior | Exit codes |
 |---|---|---|
 | `init` | Create the resolved SQLite `.taut.db` or initialize the configured backend target plus sidecar schema in the current directory. Idempotent with notice if present. | 0 created/exists, 1 error |
-| `join THREAD [--as NAME] [--persona TEXT] [--new]` | Register identity if needed (`--new` forces a fresh one, [TAUT-5.4]), create room if needed, add membership (cursor at now, [TAUT-7.4]), write notice. `--persona` sets/updates the member's persona ([TAUT-5.9]). | 0; 1 error |
+| `join THREAD [--as NAME_OR_ALIAS] [--persona TEXT] [--new]` | Register identity if needed (`--new` forces a fresh member), create a channel if needed, add membership (cursor at now, [TAUT-7.4]), write notice. `--persona` sets/updates the member's persona. | 0; 1 error |
 | `leave THREAD` | Remove membership, write notice. | 0; 1 error; 2 not a member |
-| `say THREAD [TEXT\|-]` | Post a message (stdin with `-` or when piped and TEXT omitted). Requires membership: non-members are refused with a `taut join` hint, mirroring `read`. Prints message id with `-t`. | 0; 1 error; 2 not a member (hint on stderr) |
+| `set name NAME` | Change the acting member's current display name and route key. Does not rewrite old messages. | 0; 1 error/name collision; 2 unrecognized |
+| `say TARGET [TEXT\|-]` | Post a message (stdin with `-` or when piped and TEXT omitted). `TARGET` may be a channel, sub-thread, or `@name` direct message target ([IAN-5]). Channel and sub-thread targets require membership. Prints message id with `-t`. | 0; 1 error; 2 not a member / no such member |
 | `reply THREAD MSG_ID [TEXT\|-]` | Post into the sub-thread of MSG_ID, creating it on first reply. Requires membership in THREAD. A full 19-digit id resolves exactly (peek by id — works for any message ever written). A suffix ≥ 4 digits resolves via a bounded public-API scan of the most recent 1,000 message ids of THREAD; ambiguous → error listing candidates. | 0; 1 error (incl. ambiguous suffix); 2 no such message / not a member |
 | `read [THREAD]` | Show unread (all joined threads when bare, grouped), advance cursor through displayed messages. Reads are paged: one invocation displays and marks seen up to 1,000 unread messages per thread; callers drain larger backlogs by rerunning until exit 2. Requires a resolved member; explicit THREAD requires membership (sub-threads implicit-join per [TAUT-4.3]). | 0 showed messages; 1 error; 2 nothing unread / not a member (hint on stderr) |
+| `inbox` | Claim and show pending notifications for the acting member. Notifications are consumed; source chat history is not changed. | 0 showed notifications; 1 error; 2 nothing pending |
 | `log THREAD [--since TS] [--limit N]` | Show history. No cursor movement. `--limit N` selects the most recent N messages after `--since`, rendered in chronological order. | 0; 1; 2 empty |
 | `list [--all]` | Bare: joined threads with unread state. `--all`: every registered thread. | 0; 2 when bare list has no unread |
-| `watch [THREAD ...]` | Live-follow (default: all joined threads), advancing cursor per message. Adds/drops threads as membership changes while running; a running watch that loses its last membership keeps running idle and picks up the next join. | 0 on clean stop; 1 error; 2 started with no joined threads (hint to join) |
+| `watch [THREAD ...]` | Live-follow (default: all joined chat threads plus the acting member's notification inbox), advancing chat cursors per message and claiming notifications as they display. Adds/drops threads as membership changes while running; a running watch that loses its last chat membership keeps running idle and picks up the next join or notification. | 0 on clean stop; 1 error; 2 unrecognized member / explicit thread miss |
+| `rename OLD NEW` | Rename a channel and every registered one-level sub-thread under it. Uses SimpleBroker's public queue rename API and sidecar rename markers. Does not rewrite message bodies. | 0; 1 error/collision/invalid name; 2 no such channel |
 | `who [THREAD]` | Members and presence (thread members, or all members when bare). | 0; 1 error; 2 no such thread |
 | `whoami [--explain]` | Resolved identity; with `--explain`, the evidence and rule. | 0 resolved; 1 error (incl. invalid token); 2 unrecognized |
-| `rejoin [HANDLE] [--token TOKEN]` | Re-anchor a member to the current process chain ([TAUT-5.5]). Target: HANDLE if given, else `--token` (subcommand or global), else global `--as`; HANDLE combined with any `--token` is an error. | 0; 1 error/collision/ambiguous selectors; 2 no such handle/token |
+| `rejoin [NAME_OR_ALIAS] [--token TOKEN]` | Associate the current identity claim with the selected member ([IAN-3.4]). Target: name or alias if given, else `--token` (subcommand or global), else global `--as`; name/alias combined with any `--token` is an error. | 0; 1 error/collision/ambiguous selectors; 2 no such member/token |
 
 Exit-code rule, matching SimpleBroker: 0 success, 1 error, 2 "empty /
 nothing matched / not found" — so `taut read -q && process_inbox` and
@@ -670,38 +502,43 @@ polling loops compose in shell.
   question).
 - `--json` emits one JSON object per line (ndjson), and **every verb has
   a defined JSON shape** — an agent must never have to guess:
-  - message objects (`read`, `log`, `watch`): exactly `thread`, `ts`,
+  - message objects (`read`, `log`, `watch`): `thread`, `ts`, `from_id`,
     `from`, `kind`, `text`;
   - writing verbs (`say`, `reply`) echo the message object they wrote —
-    same five fields. The robust id-capture idiom is
+    same fields. The robust id-capture idiom is
     `taut say t "x" --json | jq -r 'select(has("ts")).ts'`, because a
     first-ever use may emit a leading creation line (next bullet) that
     has no `ts`;
+  - notification objects (`inbox`, `watch`): `type`, `to_id`, `actor_id`,
+    `actor_name`, `thread`, `message_ts`, plus `matched` for mention
+    notifications;
   - `join` and `leave` echo their notice's message object;
-  - list objects (`list`): `thread`, `parent`, `unread` (bool),
-    `last_ts`. `last_ts` is the newest pending broker timestamp for the
-    registered thread, obtained through SimpleBroker's public indexed lookup;
-    claimed rows from foreign consumers do not count, matching [TAUT-7.1].
-  - member objects (`who`, `whoami`, `rejoin`): `handle`, `kind`,
-    `presence`, `last_active_ts`, `persona` (string or null); `whoami
+  - list objects (`list`): `thread`, `kind`, `parent`, `unread` (bool),
+    `last_ts`. Direct-message list objects also include `members`, an array of
+    participant member ids. `last_ts` is the newest pending broker timestamp for
+    the registered thread, obtained through SimpleBroker's public indexed
+    lookup; claimed rows from foreign consumers do not count, matching
+    [TAUT-7.1].
+  - member objects (`who`, `whoami`, `rejoin`, `set name`): `member_id`,
+    `name`, `aliases`, `kind`, `presence`, `last_active_ts`, `persona`
+    (string or null); `whoami
     --explain` adds `explain` (object with the captured chain and the
-    rule that matched; its internal layout is diagnostic, not a
-    compatibility surface);
+    rule that matched; its internal layout is diagnostic, not a stable
+    contract);
   - member **creation** (whichever verb caused it) emits one extra
     member-object line *first* — the normal member fields (including
     `persona` when supplied at creation) plus the one-time `token`
-    field ([TAUT-5.8]) and no `ts` — followed by the verb's primary
-    object. The token never appears in output again. Scripts must
-    therefore select by field, not by line position, on paths that can
-    create;
+    field and no `ts` — followed by the verb's primary object. The token never
+    appears in output again. Scripts must therefore select by field, not by line
+    position, on paths that can create;
   - `init`: `db` (backend display target; a filesystem path for SQLite),
     `created` (bool). For Postgres, `created` is `false` because Taut has no
     public backend API for a reliable database-created signal.
 
-  These field names are a compatibility surface from v0.1 on; additions
-  are allowed, renames and removals are not.
+  These field names are the current contract. Because the project is still in
+  development, the specs describe the intended shape directly.
 - Human-readable rendering (colors, alignment, time formatting) is
-  explicitly not a compatibility surface.
+  explicitly not a stable contract.
 
 ### [TAUT-8.3] Python API
 
@@ -722,6 +559,10 @@ framework.
 
 `TautWatcher` subclasses a taut-vendored copy of Weft's
 `MultiQueueWatcher` (adapted, attributed; taut must not depend on weft).
+The preferred Python construction path is `TautClient.watch(...)`.
+`TautWatcher` remains exported for embedding and advanced construction; direct
+`TautWatcher(client, ...)` construction is a deprecated compatibility path that
+is converted to the same internal watch runtime used by `TautClient.watch()`.
 Contract:
 
 - All queues run in peek mode with a per-queue cursor: fetch is
@@ -768,10 +609,10 @@ plainly rather than imply otherwise:
   created with SimpleBroker's default 0600 permissions; any process that
   can read/write it can read all history, post as anyone (`--as` requires
   no proof), move cursors, and edit tables with sqlite3.
-- Fingerprints identify, they do not authenticate. The anchor match is a
-  convenience that makes the common case (same process talking again)
-  frictionless and makes impersonation *visible* (`whoami --explain`,
-  fingerprints on record), not impossible.
+- Identity claims identify, they do not authenticate. Process evidence,
+  continuity tokens, names, existing aliases, and `rejoin` make the common case
+  frictionless and make attribution inspectable (`whoami --explain`, claims on
+  record), not impossible to spoof.
 - The boundary is the file system. Sharing with another uid means loosening
   file permissions yourself; taut will neither manage nor monitor that.
   When a server-backed broker arrives ([TAUT-12.1]), the boundary becomes
@@ -780,8 +621,8 @@ plainly rather than imply otherwise:
 - Threat model in one line: taut assumes every participant could already
   do worse than lie in chat, because they run inside your trust domain.
 
-Anything stronger (signing, tamper evidence) is future work and must not
-be implied by v0.1 docs or output.
+Anything stronger (signing, tamper evidence) is future work and must not be
+implied by docs or output.
 
 ## 10. Failure Modes and Edge Cases [TAUT-10]
 
@@ -805,22 +646,29 @@ be implied by v0.1 docs or output.
   converges.
 - Locked/busy database: SimpleBroker's busy-timeout and retry discipline
   apply; surfaced errors name the database path.
-- Anchor collision at (re)join: refused with the conflicting handle named
-  ([TAUT-5.5]).
-- Member whose anchor process died: existing membership and history are
-  untouched; the *next* command from the restarted process follows
-  [TAUT-5.4] (guest reads, auto-create + hint on writes). `who` shows
-  `gone`.
-- Two members in one ancestor chain: nearest anchor wins ([TAUT-5.3]);
-  `whoami --explain` shows both candidates.
-- Same `(pid, start_time)` on two hosts sharing a database: distinct
-  anchors — `host_id` disambiguates, and it is an opaque machine
-  identity rather than a hostname precisely because hostnames collide
-  and drift ([TAUT-3.3], [TAUT-5.1]).
+- Identity claim collision at rejoin: refused with the conflicting member named
+  ([IAN-3.4]).
+- Member whose process claim went stale: existing membership, history, direct
+  messages, and notifications are untouched; the next command from the
+  restarted process resolves by token, claim, explicit `--as`, or creates a new
+  member with rejoin hints as defined in [IAN-3.3].
+- Two members in one ancestor chain: the identity resolver chooses the nearest
+  matching claim and `whoami --explain` shows the evidence.
+- Same `(pid, start_time)` on two hosts sharing a database: distinct claims;
+  `host_id` disambiguates, and it is an opaque machine identity rather than a
+  hostname precisely because hostnames collide and drift ([TAUT-3.3],
+  [IAN-3.2]).
 - Crossing ssh/container boundaries: fresh ancestor chains, identity via
-  explicit `--as`/`TAUT_AS` propagation ([TAUT-5.2]).
+  explicit `--as`/`TAUT_AS` or continuity token propagation ([IAN-3.3]).
 - Foreign body in a watched queue: rendered per [TAUT-6.3]; the watcher
   advances past it.
+- Notification emission failure after a successful source message write:
+  source message remains successful; the warning and retry behavior follow
+  [IAN-7.3].
+- Notification claimed but renderer fails: notification may be lost; source
+  chat history remains the durable record ([IAN-7.4]).
+- Partial channel rename: must be recoverable or loudly reportable under
+  [IAN-8.3].
 - Registry/queue divergence (queue deleted via broker CLI, registry row
   remains): thread lists and joins still work; reads show empty history.
   Taut never repairs silently; a future `doctor` verb may report.
@@ -833,17 +681,18 @@ be implied by v0.1 docs or output.
 
 ## 11. Verification Expectations [TAUT-11]
 
-Proof obligations for the v0.1 implementation, and the standing
-anti-mocking posture:
+Proof obligations for the core implementation, and the standing anti-mocking
+posture:
 
 - The broker is never mocked. All client, CLI, and watcher tests run
   against real `.taut.db` files in temp dirs.
-- Identity tests spawn real child processes (shell → wrapper → taut) and
-  assert anchor selection, nearest-wins, recognition across invocations,
-  rejoin, and token acts-as from an unrelated process tree — not unit
-  tests against fabricated chain dicts (capture parsing may be
-  unit-tested per platform; *selection and matching* must be proven on
-  real chains).
+- Identity tests spawn real child processes where process evidence matters and
+  assert claim creation, claim matching, rejoin, token acts-as from an unrelated
+  process tree, stable `member_id`, and mutable names. Unit tests may cover
+  capture parsing, but selection and matching must be proven through real
+  client or CLI paths.
+- Addressing and notification tests follow [IAN-10]. They must use real
+  broker-backed queues and sidecar state, not mocked schema or queue helpers.
 - Watcher tests run a live `TautWatcher` against concurrent writer
   processes and prove: no message lost, no message re-dispatched after
   cursor advance, cursor persisted, `add_queue` on mid-watch join, no
@@ -855,7 +704,7 @@ anti-mocking posture:
   `run_cli`-style harness as in SimpleBroker) and assert exit codes 0/1/2
   and `--json` field names per [TAUT-8.2].
 - Envelope encode/decode gets a property-based round-trip test including
-  foreign-body and future-version inputs.
+  `from_id`, sender-name snapshots, and foreign-body inputs.
 - Multi-process write/read interleaving over one database is exercised at
   least once (two writers, one reader, ordering by ts holds).
 
@@ -904,9 +753,9 @@ Binding obligations:
 - SimpleBroker hybrid timestamps and process ids are stored in `BIGINT`
   columns in documented DDL so Postgres does not truncate values that SQLite
   accepts as unbounded integers
-- identity is host-aware from day one: hostname captured ([TAUT-5.1]),
-  stored ([TAUT-3.3]), matched ([TAUT-5.3]), and presence degrades to
-  `remote` off-host ([TAUT-5.6])
+- identity claims are host-aware: host identity is captured as claim evidence,
+  stored in sidecar state, and used to prevent pid/uid collisions across
+  Postgres-backed multi-host databases ([IAN-3.2])
 
 ### [TAUT-12.2] Redis/Valkey backend (needs a state mapping, not new plumbing)
 
@@ -922,11 +771,10 @@ and membership as hashes; the monotonic cursor advance of [TAUT-7.2] as
 an atomic max via a small Lua script or `WATCH`/`MULTI`). Deferred until
 that mapping has its own spec section.
 
-v0.1 obligation (binding now): every taut state read and write flows
-through one state module, so the SQL implementation and a future Redis
-mapping are swappable behind a single interface. The single-target
-principle generalizes with it: whatever backend holds the queues holds
-the state.
+Binding obligation: every taut state read and write flows through one state
+module, so the SQL implementation and a future Redis mapping are swappable
+behind a single interface. The single-target principle generalizes with it:
+whatever backend holds the queues holds the state.
 
 ### [TAUT-12.3] Captive agents (`summon`)
 
@@ -960,9 +808,9 @@ Shape decided 2026-06-12:
   its CI. Contract findings flow upstream as tests, not prose (the plan
   §9 discipline).
 
-Needs its own spec before implementation (addressing/mention semantics,
-lifecycle, provider lanes). v0.1 obligations: envelope forward tolerance
-([TAUT-6.1]) and no assumption anywhere that members only speak via CLI
+Needs its own spec before implementation (agent lifecycle, provider lanes, and
+any summon-specific addressing rules). Core obligations: envelope readers ignore
+unknown fields ([TAUT-6.1]) and no code assumes members only speak via CLI
 invocations.
 
 ### [TAUT-12.4] TUI
@@ -972,10 +820,17 @@ extra, own spec.
 
 ## Related Plans
 
-- `docs/plans/2026-06-12-taut-foundation-plan.md` — v0.1 foundation:
+- `docs/plans/2026-06-30-client-module-split-plan.md` — structural
+  refactor of `taut.client` from a single module into a package facade and
+  concern-specific mixins while preserving the [TAUT-8.3] public import and
+  Python API contract.
+- `docs/plans/2026-06-18-member-identity-addressing-plan.md` - implemented
+  migration from the current development implementation to the stable
+  member identity, mutable naming, direct-message, and notification model.
+- `docs/plans/2026-06-12-taut-foundation-plan.md` — historical foundation:
   package scaffolding, schema, identity, envelope, client, watcher, CLI.
 - `docs/plans/2026-06-12-taut-0.1.1-hardening-plan.md` — post-0.1.0
-  hardening slice: handle-quality fix, [TAUT-11] burndown, renderer
+  hardening slice: name-quality fix, [TAUT-11] burndown, renderer
   conformance to the README, round-5 review, 0.1.1 tag.
 - `docs/plans/2026-06-17-github-release-helper-plan.md` — GitHub-only
   release helper while the PyPI `taut` package-name request is pending.
@@ -991,3 +846,10 @@ extra, own spec.
 - `docs/plans/2026-06-18-simplebroker-latest-timestamp-plan.md` —
   planned issue #3 fix: use SimpleBroker's indexed latest pending timestamp
   API for `list` metadata instead of a full-history scan.
+- `docs/plans/2026-07-01-taut-state-sql-dialect-plan.md` — implemented
+  [TAUT-12.2] state-module refactor: introduce an internal `TautState`
+  interface and `SqlDialect` seam while preserving current SQLite/Postgres
+  behavior.
+- `docs/plans/2026-07-01-taut-watch-runtime-plan.md` — planned [TAUT-8.4]
+  follow-up: replace `TautWatcher` access to `TautClient` private state and
+  decoder methods with an internal `TautWatchRuntime` seam.

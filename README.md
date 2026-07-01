@@ -3,10 +3,11 @@
 *Slack in your terminal, for you and your agents. No server, no daemon, no
 config, no accounts. One SQLite file by default; Postgres when you need it.*
 
-> **Status:** v0.2.0 is prepared for GitHub source release; PyPI publication
-> is pending the package-name request. This README is the contract for it —
-> written first, on purpose. The full specification lives in
-> [`docs/specs/02-taut-core.md`](docs/specs/02-taut-core.md).
+> **Status:** development branch. This README is the intended product
+> contract, written first on purpose. The core specification lives in
+> [`docs/specs/02-taut-core.md`](docs/specs/02-taut-core.md); identity,
+> addressing, direct messages, and notifications are specified in
+> [`docs/specs/03-identity-addressing-notifications.md`](docs/specs/03-identity-addressing-notifications.md).
 
 ```bash
 $ taut init
@@ -30,7 +31,7 @@ $ taut say general "claude here. parser tests green in ~20 min."
 Taut exists for the machine you're already on: you in one terminal, two
 coding agents in others, a cron job that should be able to speak up. They
 can all run a CLI, they all share a filesystem, and they have no good way
-to talk to each other. Taut gives them rooms, threads, history, unread
+to talk to each other. Taut gives them channels, threads, history, unread
 counts, and live following. By default it is backed by a single `.taut.db`
 file; with `taut-pg`, the same commands can use a project-configured
 Postgres database. Both paths are built on
@@ -42,7 +43,7 @@ Postgres database. Both paths are built on
   trivially scriptable; an agent can join, catch up, and reply with three
   shell commands and zero setup.
 - **Agents talking to each other.** Two agents in one repo coordinate
-  through a room instead of polling files at each other.
+  through a channel instead of polling files at each other.
 - **Leaving yourself notes that have an audience.** A deploy script that
   posts to `#ops` in your project beats one that echoes into a log nobody
   follows.
@@ -66,16 +67,23 @@ default, or a few machines through the Postgres extension.
   you*; exit codes make it shell-composable.
 - **Live following** — `taut watch` streams every thread you're in, and
   picks up threads you join while it runs.
-- **Process-fingerprint identity** — your agent joined once; taut
-  recognizes it on every later command. Magic, but inspectable magic.
+- **Direct messages by current name** — `taut say @claude ...` maps the
+  current name to a member-id pair queue, so later renames do not move the
+  conversation.
+- **Consumable notifications** — mentions and new DMs can wake the member's
+  notification inbox without adding per-device state.
+- **Stable member identity** — names can change, but messages, cursors,
+  direct messages, and notifications stay tied to an opaque member id.
+  Process evidence makes the common case automatic; `whoami --explain`
+  keeps it inspectable.
 - **SimpleBroker all the way down** — `.taut.db` is a standard SimpleBroker
   database. `broker -f .taut.db list` works. Plumbing is not hidden.
 
 ## Installation
 
 ```bash
-pipx install "git+https://github.com/VanL/taut.git@v0.2.0"       # CLI use
-uv add "taut @ git+https://github.com/VanL/taut.git@v0.2.0"      # as a library
+pipx install "git+https://github.com/VanL/taut.git@main"       # CLI use
+uv add "taut @ git+https://github.com/VanL/taut.git@main"      # as a library
 ```
 
 Requirements: Python 3.11+. Runtime dependencies are `simplebroker`
@@ -88,11 +96,12 @@ name is cleared.
 
 `taut-pg` is a separate package. Install it into the same environment as
 `taut`; it brings in `simplebroker-pg` and the Postgres driver dependencies.
-Until PyPI clearance changes, use matching GitHub Release artifacts:
+Until PyPI clearance changes, use matching GitHub Release artifacts for the
+tag you are installing:
 
 ```bash
-pipx install "git+https://github.com/VanL/taut.git@v0.2.0"
-pipx inject taut ./taut_pg-0.2.0-py3-none-any.whl
+pipx install "git+https://github.com/VanL/taut.git@vX.Y.Z"
+pipx inject taut ./taut_pg-X.Y.Z-py3-none-any.whl
 ```
 
 The Postgres database must already exist. Create `.taut.toml` in the project
@@ -121,7 +130,7 @@ Postgres door.
 $ cd ~/myproject
 $ taut init
 
-# Rooms are created by joining them
+# Channels are created by joining them
 $ taut join general
 $ taut say general "anyone awake?"
 
@@ -155,103 +164,100 @@ $ make test 2>&1 | tail -20 | taut say ci -
 $ taut read --json | jq -r 'select(.kind=="message") | .text'
 ```
 
+Direct messages use `@name` and route through the member's current name, not
+through the display name captured in old messages:
+
+```bash
+$ taut say @claude "can you check the parser branch?"
+```
+
+Channels may render as `#general` in human output, but bare `general` remains
+the command-line form. If you want to type the hash, quote it:
+`taut say '#general' "hello"`; an unquoted leading `#` is too easy for shells
+to treat as a comment.
+
 ## The Identity Trick
 
-Nobody logs in to taut. Instead, when a process joins, taut fingerprints
-the *process chain* that invoked it — walking past the shell to find the
-thing that actually spoke (your agent is usually one or two ancestors up):
+Nobody logs in to taut. Each participant gets a stable opaque member id, and
+that id is what owns memberships, cursors, direct messages, and notifications.
+The name you see is a current display name. It can change.
 
-- pid + process start time (the pair that defeats pid reuse)
+```bash
+$ taut whoami --json
+{"member_id":"m_abcd1234abcd1234abcd1234ab","name":"claude","kind":"agent","presence":"here","last_active_ts":1837025672140161024,"persona":null}
+$ taut set name codex
+$ taut whoami --json | jq -r .member_id
+m_abcd1234abcd1234abcd1234ab
+```
+
+Messages keep the sender name from the moment they were written. If `claude`
+renames to `codex`, old messages still say `claude`; new messages say `codex`.
+Machine consumers use `from_id` when they need stable identity:
+
+```json
+{"thread":"general","ts":1837025672140161024,"from_id":"m_abcd1234abcd1234abcd1234ab","from":"claude","kind":"message","text":"parser is green"}
+```
+
+The automatic part is still process evidence. When a command runs, taut walks
+the caller's process ancestry, looks past shells and wrapper commands, and
+records a deterministic identity claim for the process or human session:
+
+- pid + process start time where available
 - executable path, argv, cwd, uid
 - parent chain, process group, session, controlling tty
+- host identity plus hostname for display
 
-When any command arrives later, taut walks the caller's ancestry again. If
-a known fingerprint anchor appears in the chain, that member is speaking —
-no flags, no tokens. You ran from a plain terminal? You're you (your uid).
-An agent and the human who launched it share a process tree without
-colliding: the nearest anchor wins.
-
-It's a heuristic, so it is inspectable and overridable:
-
-```bash
-$ taut whoami --explain
-you are: claude  (agent)
-anchor:  pid 84117  claude  start "Thu Jun 12 08:41:03 2026"
-chain:   taut(91442) ← zsh(91440) ← claude(84117) ← zsh(70211) ← tmux(412)
-rule:    nearest stored anchor in ancestor chain
-```
-
-(The start value is the platform's raw token, shown verbatim — taut
-matches it byte-for-byte and never parses it.)
-
-When an agent restarts, its old anchor is dead. Taut never silently
-reassigns an identity — it creates a fresh one and tells you what it
+That claim maps to the member id. If the claim is known, taut knows who is
+speaking. If an agent restarts and gets a new process claim, taut creates a new
+member only when it cannot safely infer continuity. Then it tells you what it
 noticed:
 
-```
+```text
 created new identity 'claudette'
-note: you may be one of these —
-        claude   same executable, same cwd, active 4m ago
-      reclaim with 'taut rejoin claude'.
+note: you may be one of these:
+  claude  same executable, same cwd
+reclaim with 'taut rejoin claude'
 ```
 
-(In an interactive terminal taut asks instead; agents never get prompts.
-And yes — duplicates get knockoff names from a pool, `claudette`,
-`claudius`, `claudion`, then history's greats, `ada`, `grace`,
-`blaise`… never `claude-2`.)
+`taut rejoin claude` associates the current process claim with the member
+currently named `claude`. It does not rename the member and it does not rewrite
+history.
 
-`taut rejoin claude` is the explicit "that was me." Memberships, cursors,
-and history all carry over, because the identity never changed — only its
-process did.
+For process trees that churn constantly, every member also gets a continuity
+token at creation. Stash it in your agent's state, and
+`TAUT_TOKEN=taut-7f3k9q2m taut say ...` is that same member from anywhere. It is
+continuity, not security: anyone with storage access can still use `--as`.
 
-For agents whose process trees churn — cron jobs, containers, fresh
-sessions — there's a zero-heuristic path: every identity gets a
-**continuity token** at creation. Stash it in your agent's state, and
-`TAUT_TOKEN=taut-7f3k9q2m taut say …` is you from anywhere, no guessing.
-It's continuity, not security: it grants nothing `--as` doesn't, it just
-survives process death.
+Presence remains evidence-based. `taut who` checks whether local agent process
+claims still appear alive; members anchored elsewhere in a shared Postgres
+backend show remote-style presence rather than pretending local liveness is
+knowable.
 
-Identities can also carry a **persona** — a saved description that shows
-up in `who --json` and that captive agents ([roadmap](#roadmap)) will
-adopt as their character. Three stoics walk into a debate:
-
-```bash
-$ taut join debate --as claudius --persona "Stoic. First principles. Hates adverbs."
-```
-
-Presence falls out for free: `taut who` checks whether each agent's
-anchor process still exists (same pid *and* same start time).
-
-```bash
-$ taut who general
-  van       human                    active 2m ago
-● claude    agent    here            active 30s ago
-○ codex     agent    gone            active 2h ago
-```
-
-And when the magic guesses wrong: `--as NAME` (or `TAUT_AS`) always wins.
-One boundary to know: recognition can't cross ssh or container walls —
-those start fresh process trees, so pass `TAUT_AS` through
-(`ssh box TAUT_AS=claude taut say …`).
+When the magic guesses wrong, `--as NAME_OR_ALIAS` (or `TAUT_AS`) always wins for
+that command. One boundary to know: recognition cannot cross ssh or container
+walls unless you pass `TAUT_AS` or `TAUT_TOKEN` through.
 
 ## Command Reference
 
 | Command | Description |
 |---------|-------------|
 | `taut init` | Create `.taut.db` in the current directory |
-| `taut join THREAD [--as NAME] [--persona TEXT] [--new]` | Join (creating if needed) a room; you start at now |
+| `taut join THREAD [--as NAME] [--persona TEXT] [--new]` | Join (creating if needed) a channel; you start at now |
 | `taut leave THREAD` | Leave a thread; history stays |
-| `taut say THREAD [TEXT\|-]` | Post a message (stdin with `-` or a pipe) |
+| `taut set name NAME` | Change your current display/routing name; old messages keep the old name |
+| `taut say THREAD\|@NAME [TEXT\|-]` | Post to a channel, sub-thread, or direct message (stdin with `-` or a pipe) |
 | `taut reply THREAD MSG_ID [TEXT\|-]` | Reply in a sub-thread, creating it on first reply |
 | `taut read [THREAD]` | Show unread and advance your bookmark; bare = all your threads |
+| `taut inbox` | Claim and show notification pointers for mentions and new DMs |
 | `taut log THREAD [--since TS] [--limit N]` | Show history; never moves your bookmark |
 | `taut list [--all]` | Your threads with unread state; `--all` = every thread |
-| `taut watch [THREAD ...]` | Follow live; default = everything you're in |
+| `taut watch [THREAD ...]` | Follow live; default = everything you're in plus your notification inbox |
+| `taut rename OLD NEW` | Rename a channel and its sub-threads |
 | `taut who [THREAD]` | Members and presence |
 | `taut whoami [--explain]` | Who taut thinks you are, and why |
-| `taut rejoin [HANDLE] [--token TOKEN]` | Re-anchor an identity (named, or selected by `--token`) to the current process |
+| `taut rejoin [NAME] [--token TOKEN]` | Associate the current identity evidence with an existing member |
 
-Global options: `--db PATH`, `--as HANDLE`, `--token TOKEN`, `--json`,
+Global options: `--db PATH`, `--as NAME`, `--token TOKEN`, `--json`,
 `-t/--timestamps`, `-q/--quiet`. Environment: `TAUT_DB`, `TAUT_AS`,
 `TAUT_TOKEN`. That's the whole configuration surface.
 
@@ -278,7 +284,7 @@ The agent side of taut is just the CLI with `--json`:
 ```bash
 # An agent catching up and replying
 $ taut read --json
-{"thread":"general","ts":1837025672140161024,"from":"van","kind":"message","text":"anyone awake?"}
+{"thread":"general","ts":1837025672140161024,"from_id":"m_k7p9x2q4m6n8r1s3t5v7w9y0za","from":"van","kind":"message","text":"anyone awake?"}
 $ taut say general "on it"
 
 # An agent following everything, as a stream
@@ -307,7 +313,7 @@ message = client.say("general", "build finished: 312 passed")
 print(message.ts)
 
 for msg in client.read():       # advances this member's cursors
-    print(msg.thread, msg.from_handle, msg.text)
+    print(msg.thread, msg.from_id, msg.from_name, msg.text)
 
 watcher = client.watch(lambda m: print(m.text))
 watcher.run_in_thread()         # or run_forever()
@@ -322,9 +328,9 @@ the design:
   that can read `.taut.db` or the configured Postgres schema can read all
   history; any that can write it can post as anyone — `--as` requires no
   proof.
-- **Fingerprints identify; they do not authenticate.** They make the
-  common case frictionless and impersonation *visible* (`whoami
-  --explain`, fingerprints on record) — not impossible.
+- **Identity claims identify; they do not authenticate.** Process evidence,
+  names, rejoin, and tokens make the common case frictionless and attribution
+  inspectable (`whoami --explain`, claims on record) — not impossible to spoof.
 - **The boundary is storage access.** `.taut.db` is created `0600`. Want
   another local user in the SQLite chat? That's a `chmod`/group decision you
   make, not one taut manages. With Postgres, the boundary is who can reach and
@@ -341,13 +347,20 @@ coordination inside a trust domain, not for establishing one.
 <summary><strong>Reading never deletes — isn't this a message queue?</strong></summary>
 
 SimpleBroker queues normally hand each message to exactly one consumer.
-Taut inverts that on purpose: every reader *peeks*, nothing is ever
-claimed, and the queue **is** the history. "Read" means "move my
-bookmark" — each member's position lives in a sidecar table, and unread
-is just "is there anything after my bookmark?", answered by the broker
-itself. One consequence worth knowing: if you point a vanilla `broker
-read` at a taut database, you will consume messages out of the history.
-Taut tolerates it; your teammates may not.
+Taut inverts that for chat history on purpose: channel, sub-thread, and
+direct-message readers *peek*, and the queue **is** the history. "Read"
+means "move my bookmark" — each member's position lives in a sidecar table,
+and unread is just "is there anything after my bookmark?", answered by the
+broker itself.
+
+Notification inboxes are different. They are pointers for pings and new direct
+messages, so `taut inbox` and `taut watch` claim them. If two sessions are the
+same member, one can drain the other's notifications. That is the intended
+single-directory model.
+
+One consequence worth knowing: if you point a vanilla `broker read` at a taut
+chat-history queue, you will consume messages out of the history. Taut
+tolerates it; your teammates may not.
 </details>
 
 <details>
@@ -363,23 +376,23 @@ one is watching, taut is no processes at all.
 <details>
 <summary><strong>One file? Really?</strong></summary>
 
-By default, yes. Messages, threads, members, fingerprints, read cursors — all
-of it is in `.taut.db` (SQLite's transient `-wal`/`-shm` companions come and
-go). Backup is `cp`, deletion is `rm`, and "export the workspace" is the file.
-Under `taut-pg`, the same `taut_*` sidecar tables live beside SimpleBroker's
-tables in the configured Postgres schema.
+By default, yes. Messages, threads, members, identity claims, names,
+notifications, and read cursors all live in `.taut.db` (SQLite's transient
+`-wal`/`-shm` companions come and go). Backup is `cp`, deletion is `rm`, and
+"export the workspace" is the file. Under `taut-pg`, the same `taut_*` sidecar
+tables live beside SimpleBroker's tables in the configured Postgres schema.
 </details>
 
 <details>
 <summary><strong>Why is every message a little JSON envelope?</strong></summary>
 
-`{"v":1,"from":"van","kind":"message","text":"hi"}` — because sender and
-type have to live somewhere, message bodies can contain newlines and
-terminal escapes, and JSON-per-line is the convention every shell tool
-already speaks. The broker's 64-bit hybrid timestamp is the message id
-*and* its time, so the envelope never carries either. Bodies that aren't
-envelopes (someone `broker write`-ing into a thread) render as plain text
-from sender `?` instead of breaking anything.
+`{"from_id":"m_abcd...","from":"van","kind":"message","text":"hi"}` — because
+stable sender id, sender-name snapshot, and type have to live somewhere,
+message bodies can contain newlines and terminal escapes, and JSON-per-line is
+the convention every shell tool already speaks. The broker's 64-bit hybrid
+timestamp is the message id *and* its time, so the envelope never carries
+either. Bodies that aren't envelopes (someone `broker write`-ing into a
+thread) render as plain text from sender `?` instead of breaking anything.
 </details>
 
 <details>
@@ -466,4 +479,3 @@ multi-queue watcher pattern adapted from
 [Weft](https://github.com/VanL/weft).
 
 The name is the design goal: the opposite of slack.
-

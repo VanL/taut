@@ -30,7 +30,7 @@ classifiers = [
     "Topic :: Utilities",
 ]
 dependencies = [
-    "simplebroker>=4.8.0",
+    "simplebroker>=4.9.0",
     "psutil>=6.0",
 ]
 
@@ -44,7 +44,7 @@ dev = [
     "pytest-timeout>=2.4.0",
     "pytest-xdist>=3.0",
     "ruff>=0.1.0",
-    "simplebroker-pg>=2.3.0",
+    "simplebroker-pg>=2.4.0",
     "types-psutil>=6.0",
 ]
 

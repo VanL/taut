@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.metadata as importlib_metadata
 from pathlib import Path
 
 import pytest
@@ -64,12 +65,13 @@ def test_missing_postgres_plugin_error_mentions_extension(
         schema="taut_schema",
     )
 
-    def raise_unknown(name: str) -> None:
-        raise RuntimeError(f"Unknown backend plugin: {name}; entry point not loaded")
+    class EmptyEntryPoints:
+        def select(
+            self, **_kwargs: object
+        ) -> tuple[importlib_metadata.EntryPoint, ...]:
+            return ()
 
-    monkeypatch.setattr(
-        "simplebroker._project_config.get_backend_plugin", raise_unknown
-    )
+    monkeypatch.setattr(importlib_metadata, "entry_points", EmptyEntryPoints)
 
     with pytest.raises(TautError, match="Install taut-pg"):
         TautClient.init()
@@ -95,7 +97,7 @@ def test_taut_project_config_wins_over_broker_toml(
     monkeypatch.chdir(tmp_path)
 
     result = TautClient.init()
-    TautClient(as_handle="van").join("general")
+    TautClient(as_name="van").join("general")
 
     assert result.db == str(taut_db)
     assert taut_db.exists()

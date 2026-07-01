@@ -26,7 +26,7 @@ from taut._exceptions import (
     ThreadNameError,
     TokenError,
 )
-from taut.client import InitResult, Member, Message, TautClient, Thread
+from taut.client import InitResult, Member, Message, Notification, TautClient, Thread
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -43,7 +43,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="taut")
     parser.add_argument("--db", dest="db_path")
-    parser.add_argument("--as", dest="as_handle")
+    parser.add_argument("--as", dest="as_name")
     parser.add_argument("--token", dest="auth_token")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("-t", "--timestamps", action="store_true")
@@ -66,7 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=_cmd_leave)
 
     p = sub.add_parser("say")
-    p.add_argument("thread")
+    p.add_argument("target")
     p.add_argument("text", nargs="?")
     p.set_defaults(func=_cmd_say)
 
@@ -94,6 +94,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("threads", nargs="*")
     p.set_defaults(func=_cmd_watch)
 
+    p = sub.add_parser("inbox")
+    p.set_defaults(func=_cmd_inbox)
+
+    p = sub.add_parser("set")
+    set_sub = p.add_subparsers(dest="set_command", required=True)
+    p_name = set_sub.add_parser("name")
+    p_name.add_argument("name")
+    p_name.set_defaults(func=_cmd_set_name)
+
+    p = sub.add_parser("rename")
+    p.add_argument("old_name")
+    p.add_argument("new_name")
+    p.set_defaults(func=_cmd_rename)
+
     p = sub.add_parser("who")
     p.add_argument("thread", nargs="?")
     p.set_defaults(func=_cmd_who)
@@ -103,7 +117,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=_cmd_whoami)
 
     p = sub.add_parser("rejoin")
-    p.add_argument("handle", nargs="?")
+    p.add_argument("name_or_alias", nargs="?")
     p.add_argument("--token", dest="rejoin_token")
     p.set_defaults(func=_cmd_rejoin)
 
@@ -113,7 +127,7 @@ def build_parser() -> argparse.ArgumentParser:
 def _client(args: argparse.Namespace) -> TautClient:
     return TautClient(
         db_path=args.db_path,
-        as_handle=args.as_handle,
+        as_name=args.as_name,
         token=args.auth_token,
     )
 
@@ -141,12 +155,13 @@ def _cmd_leave(args: argparse.Namespace) -> int:
 
 def _cmd_say(args: argparse.Namespace) -> int:
     client = _client(args)
-    message = client.say(args.thread, _read_text_argument(args.text))
+    message = client.say(args.target, _read_text_argument(args.text))
     _emit_created_member(args, client)
     if args.json:
         _emit_messages(args, [message])
     elif args.timestamps and not args.quiet:
         print(message.ts)
+    _emit_notification_warnings(args, client)
     return 0
 
 
@@ -158,6 +173,7 @@ def _cmd_reply(args: argparse.Namespace) -> int:
         _emit_messages(args, [message])
     elif args.timestamps and not args.quiet:
         print(message.ts)
+    _emit_notification_warnings(args, client)
     return 0
 
 
@@ -182,8 +198,11 @@ def _cmd_list(args: argparse.Namespace) -> int:
 def _cmd_watch(args: argparse.Namespace) -> int:
     client = _client(args)
 
-    def handle(message: Message) -> None:
-        _emit_messages(args, [message])
+    def handle(item: Message | Notification) -> None:
+        if isinstance(item, Notification):
+            _emit_notifications(args, [item])
+        else:
+            _emit_messages(args, [item])
 
     watcher = client.watch(handle, threads=args.threads or None)
     try:
@@ -207,8 +226,31 @@ def _cmd_whoami(args: argparse.Namespace) -> int:
 
 def _cmd_rejoin(args: argparse.Namespace) -> int:
     client = _client(args)
-    member = client.rejoin(args.handle, token=args.rejoin_token)
+    member = client.rejoin(args.name_or_alias, token=args.rejoin_token)
     _emit_members(args, [member])
+    return 0
+
+
+def _cmd_inbox(args: argparse.Namespace) -> int:
+    notifications = _client(args).inbox()
+    _emit_notifications(args, notifications)
+    return 0
+
+
+def _cmd_set_name(args: argparse.Namespace) -> int:
+    member = _client(args).set_name(args.name)
+    _emit_members(args, [member])
+    return 0
+
+
+def _cmd_rename(args: argparse.Namespace) -> int:
+    thread = _client(args).rename_channel(args.old_name, args.new_name)
+    if args.quiet:
+        return 0
+    if args.json:
+        _print_json(_thread_object(thread))
+    else:
+        print(f"renamed {args.old_name} to {thread.name}")
     return 0
 
 
@@ -230,13 +272,23 @@ def _emit_created_member(args: argparse.Namespace, client: TautClient) -> None:
         _print_json(_member_object(member, include_token=True))
         return
     if not args.quiet:
-        print(f"created new identity '{member.handle}'", file=sys.stderr)
+        print(f"created new identity '{member.name}'", file=sys.stderr)
         if member.token:
             print(f"token: {member.token}", file=sys.stderr)
     if client.last_candidates:
         print("note: you may be one of these:", file=sys.stderr)
-        for handle, reasons in client.last_candidates:
-            print(f"  {handle}  {', '.join(reasons)}", file=sys.stderr)
+        for name, reasons in client.last_candidates:
+            print(f"  {name}  {', '.join(reasons)}", file=sys.stderr)
+
+
+def _emit_notification_warnings(
+    args: argparse.Namespace,
+    client: TautClient,
+) -> None:
+    if args.quiet:
+        return
+    for warning in client.last_notification_warnings:
+        print(f"warning: notification delivery failed: {warning}", file=sys.stderr)
 
 
 def _emit_messages(args: argparse.Namespace, messages: list[Message]) -> None:
@@ -253,7 +305,7 @@ def _emit_messages(args: argparse.Namespace, messages: list[Message]) -> None:
         sender_width = max(
             [6]
             + [
-                len(message.from_handle)
+                len(message.from_name)
                 for message in grouped
                 if message.kind != "notice"
             ]
@@ -273,14 +325,7 @@ def _emit_threads(args: argparse.Namespace, threads: list[Thread]) -> None:
         return
     for thread in threads:
         if args.json:
-            _print_json(
-                {
-                    "thread": thread.name,
-                    "parent": thread.parent,
-                    "unread": thread.unread,
-                    "last_ts": thread.last_ts,
-                }
-            )
+            _print_json(_thread_object(thread))
         else:
             print(f"{thread.name}  {_format_unread_count(thread.unread_count)} unread")
 
@@ -293,16 +338,42 @@ def _emit_members(args: argparse.Namespace, members: list[Member]) -> None:
             _print_json(_member_object(member, include_token=member.token is not None))
         else:
             persona = f"  {member.persona}" if member.persona else ""
-            print(f"{member.handle}\t{member.kind}\t{member.presence}{persona}")
+            print(f"{member.name}\t{member.kind}\t{member.presence}{persona}")
             if member.explain is not None:
                 print(json.dumps(member.explain, ensure_ascii=False, sort_keys=True))
+
+
+def _emit_notifications(
+    args: argparse.Namespace,
+    notifications: list[Notification],
+) -> None:
+    if args.quiet:
+        return
+    for notification in notifications:
+        if notification.warning:
+            print(f"warning: {notification.warning}", file=sys.stderr)
+        if args.json:
+            _print_json(_notification_object(notification))
+        elif notification.type == "mention":
+            print(
+                f"{notification.actor_name} mentioned you in "
+                f"{notification.thread} at {notification.message_ts}"
+            )
+        elif notification.type == "dm_started":
+            print(
+                f"{notification.actor_name} started a direct message "
+                f"in {notification.thread}"
+            )
+        else:
+            print(notification.raw or "foreign notification")
 
 
 def _message_object(message: Message) -> dict[str, Any]:
     return {
         "thread": message.thread,
         "ts": message.ts,
-        "from": message.from_handle,
+        "from_id": message.from_id,
+        "from": message.from_name,
         "kind": message.kind,
         "text": message.text,
     }
@@ -310,7 +381,9 @@ def _message_object(message: Message) -> dict[str, Any]:
 
 def _member_object(member: Member, *, include_token: bool) -> dict[str, Any]:
     obj: dict[str, Any] = {
-        "handle": member.handle,
+        "member_id": member.member_id,
+        "name": member.name,
+        "aliases": list(member.aliases),
         "kind": member.kind,
         "presence": member.presence,
         "last_active_ts": member.last_active_ts,
@@ -320,6 +393,37 @@ def _member_object(member: Member, *, include_token: bool) -> dict[str, Any]:
         obj["token"] = member.token
     if member.explain is not None:
         obj["explain"] = member.explain
+    return obj
+
+
+def _thread_object(thread: Thread) -> dict[str, Any]:
+    obj: dict[str, Any] = {
+        "thread": thread.name,
+        "kind": thread.kind,
+        "parent": thread.parent,
+        "unread": thread.unread,
+        "last_ts": thread.last_ts,
+    }
+    if thread.kind == "dm":
+        obj["members"] = list(thread.members)
+    return obj
+
+
+def _notification_object(notification: Notification) -> dict[str, Any]:
+    obj: dict[str, Any] = {
+        "type": notification.type,
+        "to_id": notification.to_id,
+        "actor_id": notification.actor_id,
+        "actor_name": notification.actor_name,
+        "thread": notification.thread,
+        "message_ts": notification.message_ts,
+    }
+    if notification.matched is not None:
+        obj["matched"] = notification.matched
+    if notification.warning is not None:
+        obj["warning"] = notification.warning
+    if notification.raw is not None and notification.type == "foreign":
+        obj["raw"] = notification.raw
     return obj
 
 
@@ -351,7 +455,7 @@ def _human_message_row(
     if message.kind == "notice":
         _prefix, _rule, notice = _human_glyphs(stream or sys.stdout)
         return f"  {id_column}{clock} {notice} {message.text}"
-    return f"  {id_column}{clock} {message.from_handle:<{sender_width}}  {message.text}"
+    return f"  {id_column}{clock} {message.from_name:<{sender_width}}  {message.text}"
 
 
 def _human_glyphs(stream: TextIO) -> tuple[str, str, str]:
@@ -404,7 +508,7 @@ def _exit_code_for_exception(args: argparse.Namespace, exc: Exception) -> int:
         return 1
     if isinstance(exc, (EmptyResultError, NotFoundError, MembershipError)):
         return 2
-    if isinstance(exc, IdentityError) and getattr(args, "command", None) == "whoami":
+    if isinstance(exc, IdentityError) and str(exc) == "unrecognized caller":
         return 2
     if isinstance(
         exc,
@@ -463,6 +567,9 @@ def _first_command(argv: list[str]) -> str | None:
         "log",
         "list",
         "watch",
+        "inbox",
+        "set",
+        "rename",
         "who",
         "whoami",
         "rejoin",

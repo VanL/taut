@@ -3,7 +3,7 @@
 These tests spawn taut through a *fresh shell wrapper per command*,
 mimicking how per-command agents (e.g. Claude Code's Bash tool) actually
 invoke CLIs. The long-lived ancestor shared by every invocation is this
-pytest process; per [TAUT-5.2] the anchor walk must skip the disposable
+pytest process; per [IAN-3.2] the anchor walk must skip the disposable
 shell wrapper and land on a durable ancestor, so the same member resolves
 across invocations.
 
@@ -12,15 +12,18 @@ which is why the rest of the suite cannot catch shell-skip regressions —
 these tests exist precisely to keep a real wrapper in the chain.
 
 Spec references:
-- docs/specs/02-taut-core.md [TAUT-5.1] (untruncated capture),
-  [TAUT-5.2] (anchor walk), [TAUT-5.3] (recognition), [TAUT-8.2]
-  (creation member-object line), [TAUT-11]
+- docs/specs/03-identity-addressing-notifications.md [IAN-3.2]
+  (identity claim evidence), [IAN-3.3] (claim association and recognition),
+  [IAN-3.4] (rejoin)
+- docs/specs/02-taut-core.md [TAUT-8.2] (creation member-object line),
+  [TAUT-11]
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -32,7 +35,7 @@ import psutil
 import pytest
 
 import taut.identity as identity
-from taut._constants import normalize_handle_seed
+from taut._constants import normalize_name_seed
 
 pytestmark = pytest.mark.sqlite_only
 
@@ -81,15 +84,15 @@ def _init_db(cwd: Path) -> None:
     assert completed.returncode == 0, completed.stderr
 
 
-def _join_and_capture_handle(shell: Path | str, cwd: Path) -> str:
-    """Join via a fresh shell; return the created handle from the
+def _join_and_capture_name(shell: Path | str, cwd: Path) -> str:
+    """Join via a fresh shell; return the created name from the
     [TAUT-8.2] creation member-object line (the one carrying ``token``)."""
     completed = _taut_via_shell(shell, "--json join general", cwd)
     assert completed.returncode == 0, completed.stderr
     for line in completed.stdout.strip().splitlines():
         obj = json.loads(line)
         if "token" in obj:
-            return str(obj["handle"])
+            return str(obj["name"])
     raise AssertionError(
         "join --json emitted no creation member-object line: " + completed.stdout
     )
@@ -100,7 +103,7 @@ def _whoami(shell: Path | str, cwd: Path) -> tuple[int, str | None]:
     if completed.returncode != 0:
         return completed.returncode, None
     line = completed.stdout.strip().splitlines()[-1]
-    return completed.returncode, json.loads(line).get("handle")
+    return completed.returncode, json.loads(line).get("name")
 
 
 _SHELL_BASENAMES = {"sh", "bash", "zsh", "dash", "ksh", "csh", "tcsh", "fish"}
@@ -117,15 +120,81 @@ def _anchor_argv0(shell: Path | str, cwd: Path) -> str:
     return str(argv[0]) if argv else str(anchor.get("exe") or "")
 
 
-def _expected_handle_from_anchor(argv0: str) -> str:
-    return normalize_handle_seed(Path(argv0).name, fallback="agent")
+def _expected_name_from_anchor(argv0: str) -> str:
+    return normalize_name_seed(Path(argv0).name, fallback="agent")
+
+
+def _capture(
+    *,
+    start_time: str = "start",
+    anchor: bool = True,
+) -> identity.IdentityCapture:
+    proc = identity.ProcessInfo(
+        pid=123,
+        ppid=1,
+        start_time=start_time,
+        exe="/usr/bin/codex",
+        argv=("codex", "--work"),
+        uid=501,
+        pgid=123,
+        session_id=456,
+        tty="ttys001",
+        cwd="/workspace",
+    )
+    return identity.IdentityCapture(
+        chain=(proc,),
+        host=identity.HostIdentity("host:test", "test-host"),
+        uid=501,
+        login="van",
+        anchor=proc if anchor else None,
+        kind="agent" if anchor else "human",
+        rule="test",
+    )
+
+
+def test_same_process_evidence_produces_same_claim_hash() -> None:
+    first = identity.claim_for_capture(_capture())
+    second = identity.claim_for_capture(_capture())
+
+    assert first.claim_hash == second.claim_hash
+    assert first.claim_hash.startswith("ic_")
+    assert len(first.claim_hash) == 55
+
+
+def test_display_name_material_does_not_change_claim_hash() -> None:
+    claim = identity.claim_for_capture(_capture())
+
+    assert "VanL" not in json.dumps(claim.evidence)
+    assert claim.claim_hash == identity.claim_for_capture(_capture()).claim_hash
+
+
+def test_different_process_start_token_changes_claim_hash() -> None:
+    first = identity.claim_for_capture(_capture(start_time="one"))
+    second = identity.claim_for_capture(_capture(start_time="two"))
+
+    assert first.claim_hash != second.claim_hash
+
+
+def test_human_session_claim_includes_host_and_uid() -> None:
+    claim = identity.claim_for_capture(_capture(anchor=False))
+
+    assert claim.claim_kind == "human_session"
+    assert claim.evidence["host_id"] == "host:test"
+    assert claim.evidence["uid"] == 501
+
+
+def test_random_member_id_is_opaque_and_name_free() -> None:
+    member_id = identity.random_member_id()
+
+    assert re.fullmatch(r"m_[a-z0-9]{26,52}", member_id)
+    assert "van" not in member_id
 
 
 def test_ps_argv_reconstruction_preserves_argv0_paths_with_spaces(
     tmp_path: Path,
 ) -> None:
-    """[TAUT-5.1]: fallback ``ps args=`` parsing may be whitespace-split, but
-    argv[0] must be reconstructed before handle generation sees it."""
+    """[IAN-3.2]: fallback ``ps args=`` parsing may be whitespace-split, but
+    argv[0] must be reconstructed before name generation sees it."""
     executable = tmp_path / "Application Support" / "Claude Code"
     executable.parent.mkdir()
     executable.write_text("#!/bin/sh\n", encoding="utf-8")
@@ -140,7 +209,7 @@ def test_ps_fallback_uses_reconstructed_argv0_before_truncated_comm(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """[TAUT-5.1]: fallback capture must not store truncatable ``comm=`` as
+    """[IAN-3.2]: fallback capture must not store truncatable ``comm=`` as
     executable evidence when reconstructed argv evidence exists."""
     executable = tmp_path / "Application Support" / "Claude Code"
     executable.parent.mkdir()
@@ -197,12 +266,12 @@ def test_psutil_terminal_falls_back_when_platform_lacks_terminal() -> None:
 @_POSIX_SHELL_PROCESS_TEST
 @pytest.mark.usefixtures("clean_env")
 def test_recognition_survives_fresh_shell_per_command(tmp_path: Path) -> None:
-    """[TAUT-5.3]: the same member must resolve across separate shell
+    """[IAN-3.3]: the same member must resolve across separate shell
     invocations — the headline recognition feature for per-command agents."""
     shell = shutil.which("bash") or "/bin/sh"
     _init_db(tmp_path)
 
-    created = _join_and_capture_handle(shell, tmp_path)
+    created = _join_and_capture_name(shell, tmp_path)
 
     # A *new* shell wrapper: different pid, same durable ancestry.
     rc, resolved = _whoami(shell, tmp_path)
@@ -212,21 +281,21 @@ def test_recognition_survives_fresh_shell_per_command(tmp_path: Path) -> None:
     )
     assert resolved == created
 
-    # Same-handle alone can be masked by a live shell higher in the test
+    # Same-name alone can be masked by a live shell higher in the test
     # runner's own ancestry: the anchor must never be a shell at all
-    # ([TAUT-5.2] — shells are skipped, not anchored).
+    # ([IAN-3.2] — shells are skipped, not anchored).
     anchor_argv0 = _anchor_argv0(shell, tmp_path)
     assert Path(anchor_argv0).name.lower() not in _SHELL_BASENAMES, (
         f"anchor landed on a shell process ({anchor_argv0}); the walk must "
         "skip shells even when the captured executable name is truncated"
     )
-    assert created == _expected_handle_from_anchor(anchor_argv0)
+    assert created == _expected_name_from_anchor(anchor_argv0)
 
 
 @_POSIX_SHELL_PROCESS_TEST
 @pytest.mark.usefixtures("clean_env")
 def test_shell_skip_survives_long_executable_paths(tmp_path: Path) -> None:
-    """[TAUT-5.1]/[TAUT-5.2]: shell classification must not depend on a
+    """[IAN-3.2]: shell classification must not depend on a
     truncatable executable field. Regression for the macOS ``ps`` 16-char
     clip that anchored identities on ``bash -c`` wrappers."""
     src = shutil.which("bash") or "/bin/sh"
@@ -239,8 +308,8 @@ def test_shell_skip_survives_long_executable_paths(tmp_path: Path) -> None:
     workdir.mkdir()
     _init_db(workdir)
 
-    created = _join_and_capture_handle(shell, workdir)
-    # The handle must come from a durable ancestor, never from the shell
+    created = _join_and_capture_name(shell, workdir)
+    # The name must come from a durable ancestor, never from the shell
     # wrapper itself (truncated or not).
     assert created not in {"bash", "sh", "bi"}
 
@@ -259,7 +328,7 @@ def test_shell_skip_survives_long_executable_paths(tmp_path: Path) -> None:
     assert anchor_argv0 != str(shell), (
         "anchor landed on the disposable long-path wrapper itself"
     )
-    assert created == _expected_handle_from_anchor(anchor_argv0)
+    assert created == _expected_name_from_anchor(anchor_argv0)
 
 
 @_POSIX_SHELL_PROCESS_TEST
@@ -267,7 +336,7 @@ def test_shell_skip_survives_long_executable_paths(tmp_path: Path) -> None:
 def test_token_acts_as_unanchored_member_despite_different_live_anchor(
     tmp_path: Path,
 ) -> None:
-    """[TAUT-5.8]/[TAUT-11]: a continuity token bypasses process-tree
+    """[IAN-3.3]/[TAUT-11]: a continuity token bypasses process-tree
     heuristics, even when the live chain would resolve another member."""
     shell = shutil.which("bash") or "/bin/sh"
     _init_db(tmp_path)
@@ -295,4 +364,4 @@ def test_token_acts_as_unanchored_member_despite_different_live_anchor(
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert json.loads(completed.stdout.strip())["handle"] == "van"
+    assert json.loads(completed.stdout.strip())["name"] == "van"

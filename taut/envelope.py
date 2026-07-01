@@ -1,7 +1,8 @@
-"""Envelope v1 encode/decode.
+"""Taut chat envelope encode/decode.
 
 Spec references:
 - docs/specs/02-taut-core.md [TAUT-6]
+- docs/specs/03-identity-addressing-notifications.md [IAN-4.5]
 """
 
 from __future__ import annotations
@@ -18,7 +19,8 @@ DecodedKind = Literal["message", "notice", "foreign"]
 class DecodedEnvelope:
     """A body decoded into taut's rendering contract."""
 
-    from_handle: str
+    from_id: str | None
+    from_name: str
     kind: DecodedKind
     text: str
     raw: str
@@ -29,13 +31,19 @@ class DecodedEnvelope:
         return self.kind == "foreign"
 
 
-def encode_envelope(*, from_handle: str, kind: EnvelopeKind, text: str) -> str:
-    """Encode a taut v1 envelope."""
+def encode_envelope(
+    *,
+    from_id: str,
+    from_name: str,
+    kind: EnvelopeKind,
+    text: str,
+) -> str:
+    """Encode a taut chat envelope."""
 
     if kind not in ("message", "notice"):
         raise ValueError("kind must be 'message' or 'notice'")
     return json.dumps(
-        {"v": 1, "from": from_handle, "kind": kind, "text": text},
+        {"from_id": from_id, "from": from_name, "kind": kind, "text": text},
         ensure_ascii=False,
         separators=(",", ":"),
     )
@@ -52,29 +60,21 @@ def decode_envelope(body: str) -> DecodedEnvelope:
     if not isinstance(parsed, dict):
         return _foreign(body)
 
-    version = parsed.get("v")
-    if isinstance(version, int) and version > 1:
-        return _foreign(
-            body,
-            warning=(
-                f"message uses taut envelope v{version}; upgrade taut to render it"
-            ),
-        )
-    if version != 1:
-        return _foreign(body)
-
-    from_handle = parsed.get("from")
+    from_id = parsed.get("from_id")
+    from_name = parsed.get("from")
     kind = parsed.get("kind")
     text = parsed.get("text")
     if (
-        not isinstance(from_handle, str)
+        not isinstance(from_id, str)
+        or not isinstance(from_name, str)
         or kind not in ("message", "notice")
         or not isinstance(text, str)
     ):
         return _foreign(body)
 
     return DecodedEnvelope(
-        from_handle=from_handle,
+        from_id=from_id,
+        from_name=from_name,
         kind=kind,
         text=text,
         raw=body,
@@ -83,7 +83,8 @@ def decode_envelope(body: str) -> DecodedEnvelope:
 
 def _foreign(body: str, *, warning: str | None = None) -> DecodedEnvelope:
     return DecodedEnvelope(
-        from_handle="?",
+        from_id=None,
+        from_name="?",
         kind="foreign",
         text=body,
         raw=body,
