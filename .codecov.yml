@@ -1,0 +1,32 @@
+coverage:
+  status:
+    project:
+      default:
+        # Compare against the base commit and allow up to a 10% drop per change.
+        target: auto
+        threshold: 10%
+        base: auto
+        if_not_found: success
+        if_ci_failed: error
+        informational: false
+        only_pulls: false
+
+# Comment configuration
+comment:
+  layout: "reach,diff,flags,files,footer"
+  behavior: default
+  require_changes: false
+  require_base: false
+  require_head: true
+
+# Ignore certain files/patterns from coverage
+ignore:
+  - "**/__pycache__"
+  - "**/tests/**"
+  - "**/test_*.py"
+  - "**/*_test.py"
+  - "**/conftest.py"
+  - "setup.py"
+  - "**/examples/**"
+  - "**/agent_history/**"
+  - "**/weft/**"
