@@ -10,6 +10,16 @@ coverage:
         if_ci_failed: error
         informational: false
         only_pulls: false
+    patch:
+      default:
+        # Changed lines should stay above half covered.
+        target: 51%
+        threshold: 0%
+        base: auto
+        if_not_found: success
+        if_ci_failed: error
+        informational: false
+        only_pulls: false
 
 # Comment configuration
 comment:
