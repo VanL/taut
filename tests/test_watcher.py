@@ -77,6 +77,13 @@ def _drain_unread(client: TautClient, thread: str | None = None) -> None:
         pass
 
 
+def _thread_is_read(client: TautClient, thread: str) -> bool:
+    for item in client.list_threads(all_threads=True):
+        if item.name == thread:
+            return not item.unread
+    return False
+
+
 def _white_box_watcher_cls(
     watcher_cls: type[_TautWatcherT],
     client: TautClient,
@@ -152,6 +159,7 @@ def test_client_watch_filter_delivers_selected_threads_only(tmp_path: Path) -> N
 
         _wait_until(lambda: ("bar", "visible") in seen)
         assert ("foo", "hidden") not in seen
+        _wait_until(lambda: _thread_is_read(van, "bar"))
         with pytest.raises(EmptyResultError):
             van.read("bar")
         assert [message.text for message in van.read("foo")] == ["hidden"]
@@ -192,6 +200,7 @@ def test_live_watch_filter_drops_left_thread_without_killing_watcher(
 
         _wait_until(lambda: ("bar", "still watching") in seen)
         assert ("foo", "should not display") not in seen
+        _wait_until(lambda: _thread_is_read(van, "bar"))
         with pytest.raises(EmptyResultError):
             van.read("bar")
         assert thread.is_alive()
@@ -401,7 +410,7 @@ def test_live_watcher_does_not_redispatch_after_cursor_advance(
 
         message = bob.say("foo", "once")
         _wait_until(lambda: seen.count(message.ts) == 1)
-        time.sleep(0.2)
+        _wait_until(lambda: _thread_is_read(van, "foo"))
 
         assert seen.count(message.ts) == 1
         with pytest.raises(EmptyResultError):
