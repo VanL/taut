@@ -9,14 +9,17 @@ from simplebroker import Queue
 import taut.identity as identity
 from taut._constants import META_QUEUE_NAME
 from taut._exceptions import (
+    AmbiguousMessageError,
     EmptyResultError,
     IdentityError,
+    MembershipError,
     NotFoundError,
     NotInitializedError,
     TautError,
     ThreadNameError,
 )
 from taut.client import TautClient
+from taut.envelope import encode_envelope
 from taut.state import SQLITE_SQL_DIALECT, SqlSidecarTautState
 
 pytestmark = pytest.mark.sqlite_only
@@ -60,6 +63,18 @@ def test_join_starts_at_now_and_other_member_message_is_unread(tmp_path: Path) -
         claude.read("general")
 
 
+def test_read_without_thread_reads_all_membership_unread(tmp_path: Path) -> None:
+    van = client(tmp_path, "van")
+    van.join("general")
+    bob = existing_client(tmp_path, "bob")
+    bob.join("general")
+
+    bob.say("general", "broadcast")
+    unread = van.read()
+
+    assert [message.text for message in unread] == ["bob joined", "broadcast"]
+
+
 def test_sender_cursor_advances_when_caught_up(tmp_path: Path) -> None:
     van = client(tmp_path, "van")
     van.join("general")
@@ -98,6 +113,21 @@ def test_say_unjoined_channel_does_not_create_member(tmp_path: Path) -> None:
     assert [member.name for member in van.who()] == ["bob"]
 
 
+def test_say_does_not_advance_cursor_when_sender_has_unread(tmp_path: Path) -> None:
+    van = client(tmp_path, "van")
+    van.join("general")
+    bob = existing_client(tmp_path, "bob")
+    bob.join("general")
+
+    van.say("general", "pending")
+    bob.say("general", "response")
+
+    assert [message.text for message in bob.read("general")] == [
+        "pending",
+        "response",
+    ]
+
+
 def test_reply_full_id_creates_subthread(tmp_path: Path) -> None:
     van = client(tmp_path, "van")
     van.join("general")
@@ -107,6 +137,67 @@ def test_reply_full_id_creates_subthread(tmp_path: Path) -> None:
 
     assert reply.thread == f"general.{first.ts}"
     assert van.log(reply.thread)[0].text == "threaded"
+
+
+def test_parent_member_can_read_subthread_without_explicit_subthread_join(
+    tmp_path: Path,
+) -> None:
+    van = client(tmp_path, "van")
+    van.join("general")
+    bob = existing_client(tmp_path, "bob")
+    bob.join("general")
+    root = van.say("general", "root")
+    reply = van.reply("general", str(root.ts), "threaded")
+
+    assert [message.text for message in bob.read(reply.thread)] == ["threaded"]
+
+
+def test_reply_requires_parent_thread_membership(tmp_path: Path) -> None:
+    bob = client(tmp_path, "bob")
+    bob.join("general")
+    root = bob.say("general", "root")
+    van = existing_client(tmp_path, "van")
+    van.join("ops")
+
+    with pytest.raises(MembershipError):
+        van.reply("general", str(root.ts), "not a member")
+
+
+def test_reply_rejects_missing_short_and_ambiguous_message_ids(
+    tmp_path: Path,
+) -> None:
+    van = client(tmp_path, "van")
+    van.join("general")
+    queue = van.queue("general")
+    queue.insert_messages(
+        [
+            (
+                encode_envelope(
+                    from_id=van.whoami().member_id,
+                    from_name="van",
+                    kind="message",
+                    text="first collision",
+                ),
+                1000000000000004321,
+            ),
+            (
+                encode_envelope(
+                    from_id=van.whoami().member_id,
+                    from_name="van",
+                    kind="message",
+                    text="second collision",
+                ),
+                2000000000000004321,
+            ),
+        ]
+    )
+
+    with pytest.raises(NotFoundError, match="suffix must be at least 4 digits"):
+        van.reply("general", "123", "bad")
+    with pytest.raises(NotFoundError, match="message not found"):
+        van.reply("general", "1234567890123456789", "missing")
+    with pytest.raises(AmbiguousMessageError, match="ambiguous message id suffix"):
+        van.reply("general", "4321", "ambiguous")
 
 
 def test_guest_read_only_resolution_does_not_generate_timestamp(tmp_path: Path) -> None:
@@ -223,6 +314,24 @@ def test_direct_message_queue_is_stable_across_name_change(tmp_path: Path) -> No
     assert set(listed.members) == {van.whoami().member_id, bob.whoami().member_id}
 
 
+def test_direct_message_reply_keeps_existing_unread_cursor(tmp_path: Path) -> None:
+    van = client(tmp_path, "van")
+    bob = existing_client(tmp_path, "bob")
+    van.join("general")
+    bob.join("general")
+
+    first = van.say("@bob", "first")
+    second = bob.say("@van", "second")
+
+    assert first.thread == second.thread
+    listed = next(
+        thread
+        for thread in bob.list_threads(all_threads=True)
+        if thread.name == first.thread
+    )
+    assert listed.unread_count == 2
+
+
 def test_self_dm_is_rejected(tmp_path: Path) -> None:
     van = client(tmp_path, "van")
     van.join("general")
@@ -257,6 +366,16 @@ def test_mention_notification_is_claimed_without_touching_chat_history(
     with pytest.raises(EmptyResultError):
         bob.inbox()
     assert message.text in [item.text for item in bob.log("general")]
+
+
+def test_self_and_unknown_mentions_do_not_create_notifications(tmp_path: Path) -> None:
+    van = client(tmp_path, "van")
+    van.join("general")
+
+    van.say("general", "hello @van and @missing")
+
+    with pytest.raises(EmptyResultError):
+        van.inbox()
 
 
 def test_malformed_notification_does_not_crash_inbox(tmp_path: Path) -> None:
@@ -319,6 +438,23 @@ def test_unregistered_broker_queues_are_invisible_to_list(tmp_path: Path) -> Non
     )
 
     assert [thread.name for thread in van.list_threads(all_threads=True)] == ["general"]
+
+
+def test_log_validates_limit_since_and_empty_result(tmp_path: Path) -> None:
+    van = client(tmp_path, "van")
+    notice = van.join("general")
+
+    with pytest.raises(ValueError, match="limit must be positive"):
+        van.log("general", limit=0)
+    with pytest.raises(ValueError):
+        van.log("general", since="not-a-timestamp")
+    with pytest.raises(EmptyResultError, match="empty"):
+        van.log("general", since=notice.ts)
+
+    van.say("general", "one")
+    van.say("general", "two")
+
+    assert [message.text for message in van.log("general", limit=1)] == ["two"]
 
 
 def test_rename_channel_moves_messages_and_subthreads(tmp_path: Path) -> None:

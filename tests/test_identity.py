@@ -29,13 +29,19 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import cast
+from types import SimpleNamespace, TracebackType
+from typing import Any, cast
 
 import psutil
 import pytest
 
 import taut.identity as identity
-from taut._constants import normalize_name_seed
+from taut._constants import (
+    HISTORICAL_NAME_POOL,
+    PER_BASENAME_NAME_POOLS,
+    normalize_name_seed,
+)
+from taut.state import MemberRow
 
 pytestmark = pytest.mark.sqlite_only
 
@@ -150,6 +156,751 @@ def _capture(
         kind="agent" if anchor else "human",
         rule="test",
     )
+
+
+def _member_row(
+    *,
+    member_id: str = "m_" + "a" * 26,
+    display_name: str = "ada",
+    kind: str = "agent",
+    host_id: str = "host:test",
+    anchor_pid: int | None = 123,
+    anchor_start_time: str | None = "start",
+    fingerprint: str | None = None,
+    last_active_ts: int = 1,
+) -> MemberRow:
+    return {
+        "member_id": member_id,
+        "display_name": display_name,
+        "name_key": display_name.lower(),
+        "kind": kind,
+        "uid": 501,
+        "host_id": host_id,
+        "host_label": "test-host",
+        "anchor_pid": anchor_pid,
+        "anchor_start_time": anchor_start_time,
+        "fingerprint": fingerprint,
+        "token": None,
+        "meta": {},
+        "created_ts": 1,
+        "last_active_ts": last_active_ts,
+    }
+
+
+def test_process_info_basename_and_classification_use_argv_before_exe() -> None:
+    proc = identity.ProcessInfo(
+        pid=1,
+        exe="/usr/bin/python",
+        argv=("/opt/Codex CLI",),
+    )
+    duplicate = identity.ProcessInfo(
+        pid=2,
+        exe="/usr/bin/codex",
+        argv=("/opt/codex",),
+    )
+    anonymous = identity.ProcessInfo(pid=3)
+
+    assert proc.basename == "codex cli"
+    assert proc.classification_basenames == ("codex cli", "python")
+    assert duplicate.classification_basenames == ("codex",)
+    assert anonymous.basename == "process"
+    assert anonymous.classification_basenames == ("process",)
+
+
+def test_capture_identity_selects_agent_anchor_from_captured_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proc = identity.ProcessInfo(
+        pid=123,
+        ppid=1,
+        start_time="start",
+        exe="/usr/bin/codex",
+        argv=("codex",),
+    )
+
+    monkeypatch.setattr(
+        identity,
+        "capture_host_identity",
+        lambda: identity.HostIdentity("host:test", "test-host"),
+    )
+    monkeypatch.setattr(identity.os, "getuid", lambda: 501, raising=False)
+    monkeypatch.setattr(identity.os, "getppid", lambda: 123)
+    monkeypatch.setattr(identity, "capture_process_chain", lambda _pid: [proc])
+    monkeypatch.setattr(identity, "_login_name", lambda _uid: "van")
+
+    capture = identity.capture_identity()
+
+    assert capture.host.host_id == "host:test"
+    assert capture.uid == 501
+    assert capture.login == "van"
+    assert capture.anchor == proc
+    assert capture.kind == "agent"
+
+
+def test_capture_host_identity_prefers_linux_machine_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(identity.sys, "platform", "linux")
+    monkeypatch.setattr(identity.socket, "gethostname", lambda: "workstation")
+
+    def fake_read_text(self: Path, **_kwargs: Any) -> str:
+        if str(self) == "/etc/machine-id":
+            return "machine-123\n"
+        raise OSError("missing")
+
+    monkeypatch.setattr(identity.Path, "read_text", fake_read_text)
+
+    host = identity.capture_host_identity()
+
+    assert host == identity.HostIdentity("machine-id:machine-123", "workstation")
+
+
+def test_capture_host_identity_uses_macos_platform_uuid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(identity.sys, "platform", "darwin")
+    monkeypatch.setattr(identity.socket, "gethostname", lambda: "mac")
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        assert cmd == ["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"]
+        assert kwargs["timeout"] == 2
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            '    | |   "IOPlatformUUID" = "ABC-123"\n',
+            "",
+        )
+
+    monkeypatch.setattr(identity.subprocess, "run", fake_run)
+
+    host = identity.capture_host_identity()
+
+    assert host == identity.HostIdentity("ioplatformuuid:ABC-123", "mac")
+
+
+def test_capture_host_identity_falls_back_to_hostname(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(identity.sys, "platform", "darwin")
+    monkeypatch.setattr(identity.socket, "gethostname", lambda: "fallback-host")
+
+    def fake_run(_cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        raise OSError("ioreg unavailable")
+
+    monkeypatch.setattr(identity.subprocess, "run", fake_run)
+
+    host = identity.capture_host_identity()
+
+    assert host == identity.HostIdentity("hostname:fallback-host", "fallback-host")
+
+
+def test_capture_process_chain_stops_at_missing_or_self_parent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    processes = {
+        10: identity.ProcessInfo(pid=10, ppid=11),
+        11: identity.ProcessInfo(pid=11, ppid=11),
+    }
+
+    monkeypatch.setattr(identity, "capture_process", lambda pid: processes.get(pid))
+
+    assert [proc.pid for proc in identity.capture_process_chain(10)] == [10, 11]
+    assert identity.capture_process_chain(99) == []
+
+
+def test_capture_process_prefers_psutil_then_platform_fallbacks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    psutil_proc = identity.ProcessInfo(pid=1)
+    linux_proc = identity.ProcessInfo(pid=2)
+    ps_proc = identity.ProcessInfo(pid=3)
+
+    monkeypatch.setattr(identity, "_capture_psutil_process", lambda _pid: psutil_proc)
+    assert identity.capture_process(1) == psutil_proc
+
+    monkeypatch.setattr(identity, "_capture_psutil_process", lambda _pid: None)
+    monkeypatch.setattr(identity.sys, "platform", "linux")
+    monkeypatch.setattr(identity, "_capture_linux_process", lambda _pid: linux_proc)
+    assert identity.capture_process(2) == linux_proc
+
+    monkeypatch.setattr(identity.sys, "platform", "darwin")
+    monkeypatch.setattr(identity, "_capture_ps_process", lambda _pid: ps_proc)
+    assert identity.capture_process(3) == ps_proc
+
+
+def test_select_anchor_skips_wrappers_and_explains_human_fallbacks() -> None:
+    shell = identity.ProcessInfo(
+        pid=1,
+        start_time="shell-start",
+        exe="/bin/bash",
+        argv=("bash",),
+    )
+    codex = identity.ProcessInfo(
+        pid=2,
+        start_time="codex-start",
+        exe="/usr/bin/codex",
+        argv=("codex",),
+    )
+    tmux = identity.ProcessInfo(
+        pid=3,
+        start_time="tmux-start",
+        exe="/usr/bin/tmux",
+        argv=("tmux",),
+    )
+    no_start = identity.ProcessInfo(pid=4, exe="/usr/bin/codex", argv=("codex",))
+
+    assert identity.select_anchor((shell, codex)) == (
+        codex,
+        "agent anchor selected at codex",
+    )
+    assert identity.select_anchor((tmux,)) == (
+        None,
+        "human fallback at infrastructure process tmux",
+    )
+    assert identity.select_anchor((no_start,)) == (
+        None,
+        "human fallback because codex has no start-time token",
+    )
+    assert identity.select_anchor(()) == (
+        None,
+        "human fallback at top of readable process chain",
+    )
+
+
+def test_fingerprint_and_token_claims_do_not_store_secret_material() -> None:
+    token_claim = identity.claim_for_token("secret-token")
+
+    assert identity.fingerprint_for_process(None) is None
+    assert token_claim.claim_kind == "continuity_token"
+    assert token_claim.host_id is None
+    assert token_claim.evidence["claim_kind"] == "continuity_token"
+    assert "secret-token" not in json.dumps(token_claim.evidence)
+
+
+def test_explain_capture_summarizes_anchor_and_chain() -> None:
+    capture = _capture()
+
+    explanation = identity.explain_capture(capture, "identity claim")
+
+    assert explanation["host_id"] == "host:test"
+    assert explanation["rule"] == "identity claim"
+    assert explanation["anchor"]["pid"] == 123
+    assert explanation["chain"][0]["argv"] == ["codex", "--work"]
+
+
+def test_match_anchor_returns_nearest_matching_member() -> None:
+    capture = identity.IdentityCapture(
+        chain=(
+            identity.ProcessInfo(pid=122, start_time=None),
+            identity.ProcessInfo(pid=123, start_time="start"),
+        ),
+        host=identity.HostIdentity("host:test", "test-host"),
+        uid=501,
+        login="van",
+        anchor=None,
+        kind="human",
+        rule="test",
+    )
+    host_mismatch = _member_row(host_id="host:other")
+    match = _member_row(display_name="match")
+
+    assert identity.match_anchor(capture, [host_mismatch, match]) == match
+    assert identity.match_anchor(capture, [host_mismatch]) is None
+
+
+def test_anchor_claimant_requires_start_time_and_matching_host() -> None:
+    member = _member_row()
+
+    assert (
+        identity.anchor_claimant(
+            [member],
+            host_id="host:test",
+            anchor=identity.ProcessInfo(pid=123, start_time="start"),
+        )
+        == member
+    )
+    assert (
+        identity.anchor_claimant(
+            [member],
+            host_id="host:test",
+            anchor=identity.ProcessInfo(pid=123, start_time=None),
+        )
+        is None
+    )
+    assert (
+        identity.anchor_claimant(
+            [member],
+            host_id="host:other",
+            anchor=identity.ProcessInfo(pid=123, start_time="start"),
+        )
+        is None
+    )
+
+
+def test_member_presence_distinguishes_human_remote_here_and_gone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        identity,
+        "capture_process",
+        lambda pid: (
+            identity.ProcessInfo(pid=pid, start_time="start") if pid == 123 else None
+        ),
+    )
+
+    assert identity.member_presence(_member_row(kind="human"), "host:test") == "active"
+    assert (
+        identity.member_presence(_member_row(host_id="host:remote"), "host:test")
+        == "remote"
+    )
+    assert (
+        identity.member_presence(
+            _member_row(anchor_pid=999, anchor_start_time="start"),
+            "host:test",
+        )
+        == "gone"
+    )
+    assert identity.member_presence(_member_row(), "host:test") == "here"
+
+
+def test_choose_name_uses_seed_pool_history_then_numeric_suffix() -> None:
+    assert identity.choose_name(seed="New Agent", taken=set()) == "new-agent"
+    assert (
+        identity.choose_name(seed="codex", taken={"codex"})
+        == (PER_BASENAME_NAME_POOLS["codex"][0])
+    )
+
+    taken = {"agent", *HISTORICAL_NAME_POOL}
+
+    assert identity.choose_name(seed=None, taken=taken) == "agent-2"
+
+
+def test_rank_candidates_scores_matching_process_fingerprints() -> None:
+    capture = _capture()
+    full_match = _member_row(
+        display_name="ada",
+        fingerprint=json.dumps(
+            {
+                "exe": "/usr/bin/codex",
+                "cwd": "/workspace",
+                "tty": "ttys001",
+                "session_id": 456,
+            }
+        ),
+        last_active_ts=1,
+    )
+    exe_only = _member_row(
+        member_id="m_" + "b" * 26,
+        display_name="bob",
+        fingerprint=json.dumps({"exe": "/usr/bin/codex"}),
+        last_active_ts=99,
+    )
+    ignored = [
+        _member_row(member_id="m_" + "c" * 26, kind="human", fingerprint="{}"),
+        _member_row(member_id="m_" + "d" * 26, fingerprint=None),
+        _member_row(member_id="m_" + "e" * 26, fingerprint="{not json"),
+        _member_row(
+            member_id="m_" + "f" * 26,
+            fingerprint=json.dumps({"exe": "/usr/bin/other"}),
+        ),
+    ]
+
+    ranked = identity.rank_candidates(capture, [exe_only, *ignored, full_match])
+
+    assert ranked == [
+        (
+            full_match,
+            ["same executable", "same cwd", "same tty", "same session"],
+        ),
+        (exe_only, ["same executable"]),
+    ]
+    assert identity.rank_candidates(_capture(anchor=False), [full_match]) == []
+
+
+def test_capture_linux_process_reads_procfs_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stat_fields = ["S", "1", "123", "456", "0", *("0" for _ in range(14)), "98765"]
+    stat = "123 (codex) " + " ".join(stat_fields)
+
+    def fake_read_text(self: Path, **_kwargs: Any) -> str:
+        path = str(self)
+        if path == "/proc/123/stat":
+            return stat
+        if path == "/proc/123/status":
+            return "Name:\tcodex\nUid:\t501\t501\t501\t501\n"
+        raise OSError("missing")
+
+    def fake_read_bytes(self: Path) -> bytes:
+        if str(self) == "/proc/123/cmdline":
+            return b"codex\0--work\0"
+        raise OSError("missing")
+
+    def fake_readlink(self: Path) -> Path:
+        if str(self) == "/proc/123/exe":
+            return Path("/usr/bin/codex")
+        if str(self) == "/proc/123/cwd":
+            return Path("/workspace")
+        raise OSError("missing")
+
+    monkeypatch.setattr(identity.Path, "read_text", fake_read_text)
+    monkeypatch.setattr(identity.Path, "read_bytes", fake_read_bytes)
+    monkeypatch.setattr(identity.Path, "readlink", fake_readlink)
+
+    proc = identity._capture_linux_process(123)
+
+    assert proc == identity.ProcessInfo(
+        pid=123,
+        ppid=1,
+        start_time="98765",
+        exe="/usr/bin/codex",
+        argv=("codex", "--work"),
+        uid=501,
+        pgid=123,
+        session_id=456,
+        tty=None,
+        cwd="/workspace",
+    )
+
+
+def test_capture_linux_process_returns_none_for_missing_or_malformed_stat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def missing_read_text(self: Path, **_kwargs: Any) -> str:
+        assert str(self) == "/proc/123/stat"
+        raise OSError("missing")
+
+    monkeypatch.setattr(identity.Path, "read_text", missing_read_text)
+    assert identity._capture_linux_process(123) is None
+
+    def malformed_read_text(self: Path, **_kwargs: Any) -> str:
+        assert str(self) == "/proc/123/stat"
+        return "not proc stat"
+
+    monkeypatch.setattr(identity.Path, "read_text", malformed_read_text)
+    assert identity._capture_linux_process(123) is None
+
+
+def test_capture_psutil_process_reads_best_effort_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeOneshot:
+        def __enter__(self) -> FakeOneshot:
+            return self
+
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            tb: TracebackType | None,
+        ) -> None:
+            return None
+
+    class FakeProcess:
+        def oneshot(self) -> FakeOneshot:
+            return FakeOneshot()
+
+        def ppid(self) -> int:
+            return 1
+
+        def create_time(self) -> float:
+            return 123.456
+
+        def exe(self) -> str:
+            return "/usr/bin/codex"
+
+        def cmdline(self) -> list[str]:
+            return ["codex", "--work"]
+
+        def cwd(self) -> str:
+            return "/workspace"
+
+        def uids(self) -> SimpleNamespace:
+            return SimpleNamespace(real=501)
+
+        def terminal(self) -> str:
+            return "ttys001"
+
+    monkeypatch.setattr(identity.psutil, "Process", lambda _pid: FakeProcess())
+    monkeypatch.setattr(identity, "_native_start_time", lambda _pid: None)
+    monkeypatch.setattr(identity, "_safe_getpgid", lambda _pid: 123)
+    monkeypatch.setattr(identity, "_safe_getsid", lambda _pid: 456)
+
+    proc = identity._capture_psutil_process(123)
+
+    assert proc == identity.ProcessInfo(
+        pid=123,
+        ppid=1,
+        start_time="psutil:123.456000",
+        exe="/usr/bin/codex",
+        argv=("codex", "--work"),
+        uid=501,
+        pgid=123,
+        session_id=456,
+        tty="ttys001",
+        cwd="/workspace",
+    )
+
+
+def test_capture_psutil_process_returns_none_when_psutil_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def raise_process(_pid: int) -> object:
+        raise psutil.Error("missing")
+
+    monkeypatch.setattr(identity.psutil, "Process", raise_process)
+    assert identity._capture_psutil_process(123) is None
+
+    class BrokenOneshot:
+        def __enter__(self) -> BrokenOneshot:
+            raise psutil.Error("gone")
+
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            tb: TracebackType | None,
+        ) -> None:
+            return None
+
+    class BrokenProcess:
+        def oneshot(self) -> BrokenOneshot:
+            return BrokenOneshot()
+
+    monkeypatch.setattr(identity.psutil, "Process", lambda _pid: BrokenProcess())
+    assert identity._capture_psutil_process(123) is None
+
+
+def test_ps_fallback_rejects_missing_short_or_malformed_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def check_metadata(metadata: str | None) -> None:
+        def fake_ps_output(_pid: int, *fields: str) -> str | None:
+            if fields == ("pid=", "ppid=", "pgid=", "sess=", "uid=", "lstart="):
+                return metadata
+            return None
+
+        monkeypatch.setattr(identity, "_ps_output", fake_ps_output)
+
+        assert identity._capture_ps_process(123) is None
+
+    for metadata in (
+        None,
+        "123 1",
+        "not-int 1 123 456 501 Fri Jun 12 18:00:00 2026",
+    ):
+        check_metadata(metadata)
+
+
+def test_ps_output_returns_stripped_stdout_or_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def successful_run(
+        cmd: list[str],
+        **kwargs: Any,
+    ) -> subprocess.CompletedProcess[str]:
+        assert cmd[:4] == ["ps", "-ww", "-p", "123"]
+        assert kwargs["timeout"] == 2
+        return subprocess.CompletedProcess(cmd, 0, " value \n", "")
+
+    monkeypatch.setattr(identity.subprocess, "run", successful_run)
+    assert identity._ps_output(123, "args=") == "value"
+
+    def empty_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(cmd, 0, "\n", "")
+
+    monkeypatch.setattr(identity.subprocess, "run", empty_run)
+    assert identity._ps_output(123, "args=") is None
+
+    def failing_run(
+        _cmd: list[str], **_kwargs: Any
+    ) -> subprocess.CompletedProcess[str]:
+        raise subprocess.SubprocessError("ps failed")
+
+    monkeypatch.setattr(identity.subprocess, "run", failing_run)
+    assert identity._ps_output(123, "args=") is None
+
+
+def test_native_start_time_uses_platform_specific_reader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(identity.sys, "platform", "linux")
+    monkeypatch.setattr(identity, "_read_linux_start_time", lambda _pid: "linux-start")
+    assert identity._native_start_time(123) == "linux-start"
+
+    monkeypatch.setattr(identity.sys, "platform", "darwin")
+    monkeypatch.setattr(identity, "_read_ps_lstart", lambda _pid: "ps-start")
+    assert identity._native_start_time(123) == "ps-start"
+
+
+def test_read_linux_start_time_parses_proc_stat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stat_fields = ["S", "1", "123", "456", "0", *("0" for _ in range(14)), "98765"]
+
+    def valid_read_text(self: Path, **_kwargs: Any) -> str:
+        assert str(self) == "/proc/123/stat"
+        return "123 (codex) " + " ".join(stat_fields)
+
+    monkeypatch.setattr(identity.Path, "read_text", valid_read_text)
+    assert identity._read_linux_start_time(123) == "98765"
+
+    def missing_read_text(_self: Path, **_kwargs: Any) -> str:
+        raise OSError("missing")
+
+    monkeypatch.setattr(identity.Path, "read_text", missing_read_text)
+    assert identity._read_linux_start_time(123) is None
+
+    def short_read_text(_self: Path, **_kwargs: Any) -> str:
+        return "123 (codex) S"
+
+    monkeypatch.setattr(identity.Path, "read_text", short_read_text)
+    assert identity._read_linux_start_time(123) is None
+
+
+def test_psutil_field_helpers_return_empty_values_on_psutil_errors() -> None:
+    class FailingProcess:
+        def ppid(self) -> int:
+            raise psutil.Error("ppid")
+
+        def create_time(self) -> float:
+            raise psutil.Error("start")
+
+        def exe(self) -> str:
+            raise OSError("exe")
+
+        def cmdline(self) -> list[str]:
+            raise psutil.Error("argv")
+
+        def cwd(self) -> str:
+            raise OSError("cwd")
+
+        def uids(self) -> SimpleNamespace:
+            raise psutil.Error("uids")
+
+        def terminal(self) -> str:
+            raise psutil.Error("tty")
+
+    proc = cast(psutil.Process, FailingProcess())
+
+    assert identity._psutil_ppid(proc) is None
+    assert identity._psutil_start_time(proc) is None
+    assert identity._psutil_exe(proc) is None
+    assert identity._psutil_argv(proc) == ()
+    assert identity._psutil_cwd(proc) is None
+    assert identity._psutil_uid(proc) is None
+    assert identity._psutil_terminal(proc) is None
+
+
+def test_safe_process_group_helpers_return_none_on_os_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def raise_os_error(_pid: int) -> int:
+        raise OSError("missing")
+
+    monkeypatch.setattr(identity.os, "getpgid", raise_os_error, raising=False)
+    monkeypatch.setattr(identity.os, "getsid", raise_os_error, raising=False)
+
+    assert identity._safe_getpgid(123) is None
+    assert identity._safe_getsid(123) is None
+
+
+def test_capture_cwd_with_lsof_reads_name_record(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def successful_run(
+        cmd: list[str],
+        **kwargs: Any,
+    ) -> subprocess.CompletedProcess[str]:
+        assert cmd == ["lsof", "-a", "-d", "cwd", "-p", "123", "-Fn"]
+        assert kwargs["timeout"] == 2
+        return subprocess.CompletedProcess(cmd, 0, "p123\nn/workspace\n", "")
+
+    monkeypatch.setattr(identity.subprocess, "run", successful_run)
+    assert identity._capture_cwd_with_lsof(123) == "/workspace"
+
+    def failing_return(
+        cmd: list[str],
+        **_kwargs: Any,
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(cmd, 1, "", "denied")
+
+    monkeypatch.setattr(identity.subprocess, "run", failing_return)
+    assert identity._capture_cwd_with_lsof(123) is None
+
+    def no_name_record(
+        cmd: list[str],
+        **_kwargs: Any,
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(cmd, 0, "p123\n", "")
+
+    monkeypatch.setattr(identity.subprocess, "run", no_name_record)
+    assert identity._capture_cwd_with_lsof(123) is None
+
+    def raise_subprocess(
+        _cmd: list[str],
+        **_kwargs: Any,
+    ) -> subprocess.CompletedProcess[str]:
+        raise subprocess.SubprocessError("lsof failed")
+
+    monkeypatch.setattr(identity.subprocess, "run", raise_subprocess)
+    assert identity._capture_cwd_with_lsof(123) is None
+
+
+def test_linux_proc_helpers_tolerate_missing_or_bad_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proc_dir = Path("/proc/123")
+
+    def missing_bytes(_self: Path) -> bytes:
+        raise OSError("missing")
+
+    monkeypatch.setattr(identity.Path, "read_bytes", missing_bytes)
+    assert identity._read_linux_argv(proc_dir) == ()
+
+    def bad_uid_text(self: Path, **_kwargs: Any) -> str:
+        assert str(self) == "/proc/123/status"
+        return "Uid:\tnot-int\n"
+
+    monkeypatch.setattr(identity.Path, "read_text", bad_uid_text)
+    assert identity._read_linux_uid(proc_dir) is None
+
+    def no_uid_text(_self: Path, **_kwargs: Any) -> str:
+        return "Name:\tcodex\n"
+
+    monkeypatch.setattr(identity.Path, "read_text", no_uid_text)
+    assert identity._read_linux_uid(proc_dir) is None
+
+    def missing_status(_self: Path, **_kwargs: Any) -> str:
+        raise OSError("missing")
+
+    monkeypatch.setattr(identity.Path, "read_text", missing_status)
+    assert identity._read_linux_uid(proc_dir) is None
+
+    def missing_link(_self: Path) -> Path:
+        raise OSError("missing")
+
+    monkeypatch.setattr(identity.Path, "readlink", missing_link)
+    assert identity._safe_readlink(Path("/proc/123/exe")) is None
+
+
+def test_login_name_falls_back_to_platform_node(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakePwd:
+        @staticmethod
+        def getpwuid(_uid: int) -> object:
+            raise KeyError("missing")
+
+    monkeypatch.setattr(identity, "_PWD", FakePwd)
+    monkeypatch.setattr(
+        identity.getpass,
+        "getuser",
+        lambda: (_ for _ in ()).throw(RuntimeError("missing")),
+    )
+    monkeypatch.setattr(identity.platform, "node", lambda: "node-host")
+
+    assert identity._login_name(501) == "node-host"
 
 
 def test_same_process_evidence_produces_same_claim_hash() -> None:
