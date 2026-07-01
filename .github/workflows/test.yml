@@ -143,3 +143,55 @@ jobs:
           source /tmp/taut-wheel-smoke/bin/activate
           python -m pip install dist/*.whl
           taut --version
+
+  coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        timeout-minutes: 5
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        timeout-minutes: 5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        timeout-minutes: 5
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+
+      - name: Install dependencies
+        timeout-minutes: 10
+        run: |
+          uv pip install --system -e ".[dev]"
+
+      - name: Run tests with coverage
+        timeout-minutes: 20
+        env:
+          PYTEST_ADDOPTS: -ra -q --strict-markers -n auto --dist loadgroup
+          COVERAGE_PROCESS_START: ${{ github.workspace }}/pyproject.toml
+          COVERAGE_FILE: ${{ github.workspace }}/.coverage
+        run: |
+          uv run pytest --cov=taut --cov-report= -m "not slow"
+          if compgen -G ".coverage.*" > /dev/null; then
+            uv run coverage combine
+          fi
+          uv run coverage report --show-missing
+          uv run coverage xml
+
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f
+        with:
+          files: ./coverage.xml
+          flags: unittests
+          name: codecov-umbrella
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: VanL/taut

@@ -126,6 +126,7 @@ parallel = true
 concurrency = ["thread", "multiprocessing"]
 omit = [
     "*/tests/*",
+    "*/examples/*",
     "*/__pycache__/*",
     "*/site-packages/*",
 ]
@@ -141,3 +142,6 @@ exclude_lines = [
 ]
 show_missing = true
 skip_empty = true
+
+[tool.coverage.html]
+directory = "htmlcov"

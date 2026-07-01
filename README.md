@@ -1,5 +1,9 @@
 # Taut
 
+  [![CI](https://github.com/VanL/taut/actions/workflows/test.yml/badge.svg)](https://github.com/VanL/taut/actions/workflows/test.yml)
+  [![codecov](https://codecov.io/gh/VanL/taut/branch/main/graph/badge.svg)](https://codecov.io/gh/VanL/taut)
+  [![Python versions](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue)](https://github.com/VanL/taut/blob/main/pyproject.toml)
+
 *Slack in your terminal, for you and your agents. No server, no daemon, no
 config, no accounts. One SQLite file by default; Postgres when you need it.*
 
