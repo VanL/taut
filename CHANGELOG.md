@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.0 - 2026-07-01
+
+- Added stable member identity, aliases, direct-message routing by current
+  name, consumable mention/DM notifications, `inbox`, `set name`, `rejoin`,
+  and channel rename support.
+- Reworked `taut.client` into a package facade over concern-specific modules
+  while keeping `from taut.client import TautClient, Message, ...` as the
+  public import surface.
+- Replaced the old `schema.py` helper layer with `taut.state` and a SQL dialect
+  hook so sidecar ownership is explicit and tested across SQLite and Postgres.
+- Changed `TautWatcher` to depend on a `TautWatchRuntime` protocol. The normal
+  public API remains `TautClient.watch()`, and direct `TautWatcher(client, ...)`
+  construction is deprecated.
+- Updated Taut and `taut-pg` tests for the state adapter, public watcher
+  surface, and Postgres-visible behavior. The core package is `0.3.0`; the
+  current compatible `taut-pg` package remains `0.2.1`.
+- Cleaned project hygiene: `.envrc` is local-only, stale generated logo assets
+  are out of workflow gates, and private test coupling was reduced where the
+  public API gives the same proof.
+
 ## 0.2.1 - 2026-06-18
 
 - Fixed Postgres project-config and shared backend conformance coverage.

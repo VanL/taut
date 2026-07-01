@@ -19,12 +19,14 @@ schema and tables inside that database; it does not create the database.
 ## Installation
 
 Taut releases are GitHub-only until package-name clearance changes. Install the
-core package first, then inject the extension wheel from the matching GitHub
-Release into the same environment:
+core package first, then inject a compatible extension wheel from the extension
+GitHub Release into the same environment. `taut-pg` uses its own
+`taut_pg/vX.Y.Z` tag stream, so its version can differ from the core package
+version:
 
 ```bash
-pipx install "git+https://github.com/VanL/taut.git@v0.2.0"
-pipx inject taut ./taut_pg-0.2.0-py3-none-any.whl
+pipx install "git+https://github.com/VanL/taut.git@v0.3.0"
+pipx inject taut ./taut_pg-0.2.1-py3-none-any.whl
 ```
 
 Do not use a PyPI install command for `taut-pg` until the project documents

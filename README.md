@@ -3,7 +3,7 @@
 *Slack in your terminal, for you and your agents. No server, no daemon, no
 config, no accounts. One SQLite file by default; Postgres when you need it.*
 
-> **Status:** development branch. This README is the intended product
+> **Status:** alpha, GitHub-release only. This README is the intended product
 > contract, written first on purpose. The core specification lives in
 > [`docs/specs/02-taut-core.md`](docs/specs/02-taut-core.md); identity,
 > addressing, direct messages, and notifications are specified in
@@ -82,8 +82,8 @@ default, or a few machines through the Postgres extension.
 ## Installation
 
 ```bash
-pipx install "git+https://github.com/VanL/taut.git@main"       # CLI use
-uv add "taut @ git+https://github.com/VanL/taut.git@main"      # as a library
+pipx install "git+https://github.com/VanL/taut.git@v0.3.0"       # CLI use
+uv add "taut @ git+https://github.com/VanL/taut.git@v0.3.0"      # as a library
 ```
 
 Requirements: Python 3.11+. Runtime dependencies are `simplebroker`
@@ -96,12 +96,14 @@ name is cleared.
 
 `taut-pg` is a separate package. Install it into the same environment as
 `taut`; it brings in `simplebroker-pg` and the Postgres driver dependencies.
-Until PyPI clearance changes, use matching GitHub Release artifacts for the
-tag you are installing:
+Until PyPI clearance changes, install core from the desired Taut tag and
+inject a compatible extension wheel from the extension release stream. The
+extension uses its own `taut_pg/vX.Y.Z` tags, so its version does not have to
+match the core package version:
 
 ```bash
-pipx install "git+https://github.com/VanL/taut.git@vX.Y.Z"
-pipx inject taut ./taut_pg-X.Y.Z-py3-none-any.whl
+pipx install "git+https://github.com/VanL/taut.git@v0.3.0"
+pipx inject taut ./taut_pg-0.2.1-py3-none-any.whl
 ```
 
 The Postgres database must already exist. Create `.taut.toml` in the project
@@ -301,10 +303,11 @@ suggested `taut rejoin` command.
 ```
 
 From Python, the CLI's exact semantics are available as a library, plus a
-multi-thread watcher (peek-only, cursor-tracked, membership-aware):
+multi-thread watcher (peek-only for chat history, claim/read for notifications,
+cursor-tracked, membership-aware):
 
 ```python
-from taut import TautClient
+from taut import Message, TautClient
 
 client = TautClient()           # finds .taut.db like git finds .git
                                 # (or TautClient(db_path="…"))
@@ -315,8 +318,17 @@ print(message.ts)
 for msg in client.read():       # advances this member's cursors
     print(msg.thread, msg.from_id, msg.from_name, msg.text)
 
-watcher = client.watch(lambda m: print(m.text))
-watcher.run_in_thread()         # or run_forever()
+def handle(event):
+    if isinstance(event, Message):
+        print(event.thread, event.from_name, event.text)
+    else:
+        print("notification", event.type, event.thread)
+
+watcher = client.watch(handle)
+thread = watcher.start()        # or watcher.run_forever() to block
+# ...
+watcher.stop()
+thread.join(timeout=2)
 ```
 
 ## Trust Model (Read This Before Filing the Issue)
@@ -446,9 +458,11 @@ git clone git@github.com:VanL/taut.git && cd taut
 uv sync --all-extras
 uv run pytest
 uv run ./bin/pytest-pg --fast
-uv run ruff check taut tests bin
-uv run ruff format --check taut tests bin
-uv run mypy taut tests bin/release.py
+uv run ruff check taut tests bin extensions/taut_pg/taut_pg extensions/taut_pg/tests
+uv run ruff format --check taut tests bin extensions/taut_pg/taut_pg extensions/taut_pg/tests
+uv run --extra dev mypy taut tests bin/release.py extensions/taut_pg/taut_pg extensions/taut_pg/tests --config-file pyproject.toml
+uv build
+uv build extensions/taut_pg
 ```
 
 Tests follow the house anti-mocking rule: the broker is never mocked,
@@ -458,9 +472,9 @@ entry point.
 Release prep is local and GitHub-only:
 
 ```bash
-python bin/release.py --dry-run
-python bin/release.py --version X.Y.Z
-python bin/release.py --target pg --dry-run
+uv run python bin/release.py --dry-run
+uv run python bin/release.py --version X.Y.Z
+uv run python bin/release.py --target pg --dry-run
 ```
 
 The helper updates version files, runs the release gates, manages root
