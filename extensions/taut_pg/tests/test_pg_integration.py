@@ -29,8 +29,8 @@ def test_taut_init_and_messages_use_configured_postgres_project(
     monkeypatch.chdir(taut_pg_project)
 
     result = TautClient.init()
-    van = TautClient(as_handle="van")
-    bob = TautClient(as_handle="bob")
+    van = TautClient(as_name="van")
+    bob = TautClient(as_name="bob")
 
     van.join("general")
     bob.join("general")
@@ -51,8 +51,8 @@ def test_taut_client_discovers_postgres_project_from_nested_directory(
     monkeypatch.chdir(nested)
 
     TautClient.init()
-    van = TautClient(as_handle="van")
-    bob = TautClient(as_handle="bob")
+    van = TautClient(as_name="van")
+    bob = TautClient(as_name="bob")
     van.join("general")
     bob.join("general")
 
@@ -80,7 +80,7 @@ def test_taut_cli_uses_postgres_project_config(
         cwd=taut_pg_project,
     )
     assert rc == 0, err
-    assert json.loads(out.splitlines()[0])["handle"] == "van"
+    assert json.loads(out.splitlines()[0])["name"] == "van"
 
     rc, out, err = taut_cli(
         "--as",
