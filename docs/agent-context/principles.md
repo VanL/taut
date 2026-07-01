@@ -44,6 +44,10 @@ Common agent-confusing failure modes:
 - Avoid destructive commands unless explicitly requested.
 - Prefer extending the existing path over inventing a second one.
 - Update all producers and consumers together when changing a contract.
+- Agents suggest dependencies; humans add them. Do not introduce a new
+  dependency on your own — propose it with a justification (purpose, why the
+  standard library or an already-vendored dependency will not do, cost of
+  taking it on) and let the human decide whether it enters the manifest.
 
 ## Verification Standards
 

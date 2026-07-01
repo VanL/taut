@@ -15,3 +15,7 @@ __pycache__/
 .taut.lock
 .taut.db-wal
 .taut.db-shm
+.envrc
+.taut.toml
+.weft
+.broker*
