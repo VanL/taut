@@ -56,6 +56,12 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
     the task requires and don't let a formatter reflow untouched code. Keep
     formatting-only churn in its own change; if a line changed only because "I was
     in there," revert it.
+13. **Enumerable contracts get executable gates.** Any list a document asserts
+    — issue codes, exit codes, edge cases, config keys — must be mirrored by a
+    machine check that enumerates it (a firing test per element, a no-op
+    prevention test per key). Prose binds only what gets checked; agents
+    comply uniformly with gates and unevenly with everything else. (See
+    engineering-principles §12 and testing-patterns Pattern 6.)
 
 ## Project Lessons
 
@@ -122,6 +128,14 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   fail when the actual resolver changes; otherwise it creates false confidence
   while backend drift slips through. Shared conformance modules also need an
   explicit marker guard so PG coverage cannot silently collapse to SQLite-only.
+
+- 2026-07-02: Verification-lessons fold synced from agent-guidance
+  (2026-07-02 working tree; record the commit SHA when agent-guidance
+  commits). Landed here as Golden Rule 13, engineering-principles §12/§13
+  and the §8 reproduce-claims amendment, testing-patterns Patterns 5–6, the
+  adversarial-acceptance-probes runbook, the decision-hierarchy
+  baseline/deviation/claims additions, and the writing-plans deviation log.
+  Source incident record: the backstitch repo's `docs/lessons.md`.
 
 ## Starter Lessons
 

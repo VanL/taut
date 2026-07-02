@@ -70,6 +70,13 @@ available. The review is not complete until the authoring agent has considered
 each point and either updated the work or documented why the existing path
 remains correct.
 
+Review findings are claims, not facts: reproduce a finding before acting on
+it, and reproduce your own "done/passing" assertions before making them. The
+same discipline applies to status documents — a ledger that says "ship-ready"
+is a claim about the past; the evidence is a rerun in the present. Verifier
+error is real and its cost compounds, because a wrong finding acted on is a
+defect introduced with confidence.
+
 ## 9. Plan the Boundaries Before the Tasks
 
 Strong plans do not only describe the new behavior. They describe what must not
@@ -106,6 +113,36 @@ producer and consumer in the same change.
 
 A partial rename passes isolated checks and fails at runtime; the synchronized
 update is the fix.
+
+## 12. Enumerable Contracts Get Executable Gates
+
+Any list a document asserts — issue codes, exit codes, edge cases, config
+keys, CLI flags — must be mirrored by a machine check that enumerates it:
+a firing test per element, a no-op prevention test per behavior-affecting
+key.
+
+Prose binds only what gets checked. Given identical written guidance, agents
+comply uniformly with automated gates and unevenly with everything else — so
+a contract element without a gate is a contract element that will silently
+diverge. A declared element with no firing test is an untested contract and a
+verification failure, not a style nit.
+
+## 13. Variation Is Declared; Deficiency Is Gated
+
+Plans bend on contact with reality, and different pressures produce
+legitimately different designs. Do not build guardrails that force
+convergence; build floors that catch deficiency on any path:
+
+- record the baseline (spec version, contract SHA) the work was built against
+- log deviations from that baseline where a reviewer will find them —
+  deviation is legitimate, undeclared deviation is not
+- hold every result, regardless of design, to the invariant floors: no
+  crash reaches a user, exit codes and error messages tell the truth, the
+  advertised default invocation works, declared contracts have firing tests,
+  and the work's own status claims survive a rerun
+
+Divergence between attempts is often productive — harvest it. Deficiency is
+the failure mode, and it is orthogonal to which design was chosen.
 
 ## Warning Signs
 

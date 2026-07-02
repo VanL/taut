@@ -146,6 +146,26 @@ Call out what must stay true. At minimum, consider:
 State invariants before or alongside the task breakdown, not after it. If the
 plan only says what to build and not what must not move, it is not ready.
 
+### 4a. Deviation Log
+
+Every plan that implements against a spec carries a `## Deviation Log`
+section, empty at the start, appended to whenever implementation departs
+from the recorded baseline (see the decision hierarchy: deviation is
+legitimate; undeclared deviation is not). One row per departure:
+
+```markdown
+## Deviation Log
+
+| Spec ref | Planned behavior | Actual behavior | Rationale | Spec proposal |
+|----------|------------------|-----------------|-----------|---------------|
+```
+
+The `Spec proposal` column holds the pointer to the spec-revision slice or
+proposal that reconciles the deviation, or `pending` — it must not stay
+`pending` past the plan's completion gate. An empty deviation log at the end
+of a plan is a claim ("we built exactly what the baseline says"), and like
+any claim it should survive a spot-check against the diff.
+
 ### 5. Tasks
 
 Use a numbered, dependency-ordered checklist. Each task should be small enough

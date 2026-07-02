@@ -30,7 +30,7 @@ classifiers = [
     "Topic :: Utilities",
 ]
 dependencies = [
-    "simplebroker>=4.9.0",
+    "simplebroker>=4.10.0",
     "psutil>=6.0",
 ]
 

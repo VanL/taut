@@ -1,5 +1,5 @@
 schema_version: 1
-updated_at: 2026-04-07
+updated_at: 2026-07-02
 hub: docs/agent-context
 read_order:
   - docs/agent-context/decision-hierarchy.md
@@ -28,6 +28,8 @@ documents:
   - path: docs/agent-context/runbooks/writing-implementation-docs.md
     role: operational_runbook
   - path: docs/agent-context/runbooks/testing-patterns.md
+    role: operational_runbook
+  - path: docs/agent-context/runbooks/adversarial-acceptance-probes.md
     role: operational_runbook
   - path: docs/agent-context/runbooks/maintaining-traceability.md
     role: operational_runbook

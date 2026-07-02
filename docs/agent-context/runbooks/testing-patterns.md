@@ -97,6 +97,41 @@ Fix:
 - use bounded polling or the existing wait helper
 - do not rely on a single immediate read when behavior settles over time
 
+### Pattern 5: Prose Pinned Where Structure Is the Contract
+
+Symptoms:
+
+- tests assert rendered message text verbatim, so cosmetic rewording breaks CI
+- tests (or tools) parse structure back out of a message string, making the
+  message layout load-bearing
+- pinned text embeds environment wording (interpreter exception messages),
+  so a runtime upgrade breaks unrelated tests
+
+Fix:
+
+- pin structured fields exactly (codes, severities, paths, lines,
+  identifiers); assert message text by substring only
+- never parse a rendered message; if a consumer needs a value, it belongs in
+  a structured field
+- golden/freeze fixtures are for behavior deltas that must be reviewed, not
+  for wording; pair every golden with a documented regeneration command
+
+### Pattern 6: A Declared Contract with No Firing Test
+
+Symptoms:
+
+- an enumerable contract exists (issue codes, exit codes, config keys,
+  listed edge cases) and some elements are never exercised by any test
+- code paths for contract elements are unreachable or wrong without any
+  suite failure
+
+Fix:
+
+- for each enumerable contract, add a coverage gate: every element has at
+  least one test that proves it fires or applies
+- for config keys specifically, prove each behavior-affecting key changes
+  observable output versus the no-config baseline (no-op prevention)
+
 ## Verification Pattern
 
 For meaningful changes:
