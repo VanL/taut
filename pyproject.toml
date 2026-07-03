@@ -67,6 +67,7 @@ taut-pg = { path = "./extensions/taut_pg", editable = true }
 [tool.hatch.build]
 include = [
     "/taut/**/*.py",
+    "/taut/**/*.tcss",
     "/taut/py.typed",
     "/README.md",
     "/LICENSE",
