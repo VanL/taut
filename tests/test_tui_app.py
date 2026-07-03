@@ -636,3 +636,132 @@ class TestSliceReviewHardening:
         # expect it to be re-seen.
         with pytest.raises(EmptyResultError, match="nothing pending"):
             fresh.inbox()
+
+
+def seed_thread_project(tmp_path: Path) -> tuple[Path, int]:
+    """A channel with one sub-thread: root by van, two replies by claude."""
+
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    van = TautClient(db_path=db, as_name="van")
+    van.join("general")
+    claude = TautClient(db_path=db, as_name="claude")
+    claude.join("general")
+    root = van.say("general", "root-message")
+    claude.reply("general", str(root.ts), "first-reply")
+    claude.reply("general", str(root.ts), "second-reply")
+    return db, root.ts
+
+
+class TestInlineThreads:
+    """[TUI-7.1]/[TUI-7.2]: inline sub-threads, display-only folding."""
+
+    def test_inline_thread_renders_under_parent(self, tmp_path: Path) -> None:
+        db, root_ts = seed_thread_project(tmp_path)
+
+        async def scenario(app: TautApp, pilot: Pilot[int]) -> None:
+            app.select_target("general")
+            await pilot.pause()
+            transcript = app.query_one("#transcript")
+            stubs = list(transcript.query(TextStatic).filter(".thread-stub"))
+            assert len(stubs) == 1
+            assert f"general.{root_ts}" in stubs[0].renderable_text
+            assert "2" in stubs[0].renderable_text  # reply count
+            replies = [
+                row.renderable_text
+                for row in transcript.query(TextStatic).filter(".thread-reply")
+            ]
+            assert any("first-reply" in text for text in replies)
+            assert any("second-reply" in text for text in replies)
+            # The stub sits directly under its parent message (origin_ts).
+            rows = [
+                widget
+                for widget in transcript.query(TextStatic)
+                if widget.has_class("message") or widget.has_class("thread-stub")
+            ]
+            texts = [row.renderable_text for row in rows]
+            root_index = next(
+                i for i, text in enumerate(texts) if "root-message" in text
+            )
+            assert rows[root_index + 1].has_class("thread-stub")
+
+        run_app(db, scenario)
+
+    def test_fold_is_display_only(self, tmp_path: Path) -> None:
+        db, root_ts = seed_thread_project(tmp_path)
+        sub = f"general.{root_ts}"
+        observer = TautClient(db_path=db, as_name="van")
+
+        async def scenario(app: TautApp, pilot: Pilot[int]) -> None:
+            app.select_target("general")
+            await pilot.pause()
+            joined_before = {t.name for t in observer.joined_threads()}
+
+            await pilot.press("z")  # sole visible thread folds ([TUI-8.2])
+            await pilot.pause()
+            transcript = app.query_one("#transcript")
+            assert not list(transcript.query(TextStatic).filter(".thread-reply"))
+            stubs = list(transcript.query(TextStatic).filter(".thread-stub"))
+            assert stubs and "2" in stubs[0].renderable_text
+
+            await pilot.press("z")  # unfold restores the replies
+            await pilot.pause()
+            replies = list(transcript.query(TextStatic).filter(".thread-reply"))
+            assert len(replies) == 2
+
+            # Display-only ([TUI-7.2]): no membership or cursor movement.
+            assert {t.name for t in observer.joined_threads()} == joined_before
+            assert observer.read_cursor(sub) is None  # never joined it
+
+        run_app(db, scenario)
+
+
+class TestThreadPane:
+    """[TUI-7.3]: right-side thread pane borrows the presence column."""
+
+    def test_pane_opens_replies_and_closes(self, tmp_path: Path) -> None:
+        db, root_ts = seed_thread_project(tmp_path)
+        sub = f"general.{root_ts}"
+
+        async def scenario(app: TautApp, pilot: Pilot[int]) -> None:
+            app.select_target("general")
+            await pilot.pause()
+
+            await pilot.press("t")  # sole visible thread opens ([TUI-8.2])
+            await pilot.pause()
+            pane = app.query_one("#thread-pane")
+            assert pane.display
+            assert not app.query_one("#presence").display  # borrowed column
+            label = app.query_one("#thread-pane-label", TextStatic).renderable_text
+            assert sub in label and "reply" in label
+            pane_texts = [
+                row.renderable_text
+                for row in pane.query(TextStatic).filter(".thread-reply")
+            ]
+            assert any("first-reply" in text for text in pane_texts)
+            # Parent context is visible ([TUI-7.3]).
+            parent = app.query_one("#thread-pane-parent", TextStatic).renderable_text
+            assert "root-message" in parent
+            # INV-9: no nested thread affordance inside the pane.
+            assert not list(pane.query(TextStatic).filter(".thread-stub"))
+
+            # The pane composer sends via reply(parent, origin, text): the
+            # reply must land in the sub-thread (findings R3-5/R4-4 class).
+            pane_input = app.query_one("#thread-pane-input")
+            pane_input.focus()
+            await pilot.pause()
+            await pilot.press(*"from-pane")
+            await pilot.press("enter")
+            await pilot.pause()
+            checker = TautClient(db_path=db, as_name="van")
+            await wait_until(
+                pilot,
+                lambda: "from-pane" in [m.text for m in checker.history(sub)],
+            )
+
+            await pilot.press("escape")
+            await pilot.pause()
+            assert not app.query_one("#thread-pane").display
+            assert app.query_one("#presence").display
+
+        run_app(db, scenario)

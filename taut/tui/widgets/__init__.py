@@ -6,6 +6,7 @@ from taut.tui.widgets._shared import TextStatic
 from taut.tui.widgets.composer import Composer
 from taut.tui.widgets.navigation import NavigationPane, NavRow, NavSection
 from taut.tui.widgets.presence import PresencePane
+from taut.tui.widgets.thread_pane import ThreadPane
 from taut.tui.widgets.transcript import TranscriptView
 
 __all__ = [
@@ -15,5 +16,6 @@ __all__ = [
     "NavigationPane",
     "PresencePane",
     "TextStatic",
+    "ThreadPane",
     "TranscriptView",
 ]

@@ -20,7 +20,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
-from textual.widgets import ListView
+from textual.widgets import Input, ListView
 
 from taut._constants import WATCH_MEMBERSHIP_REFRESH_SECONDS
 from taut._exceptions import NotInitializedError, TautError
@@ -33,6 +33,7 @@ from taut.tui.widgets import (
     NavSection,
     PresencePane,
     TextStatic,
+    ThreadPane,
     TranscriptView,
 )
 
@@ -63,9 +64,19 @@ class TautApp(App[int]):
     .transcript-header { color: $text-muted; }
     .presence-header { color: $text-muted; }
     .error-banner { color: $error; }
+    .thread-stub { color: $warning; }
+    #thread-pane { width: 34; display: none; }
+    #thread-pane-label { height: 1; color: $text-muted; }
+    #thread-pane-parent { height: 2; color: $text-muted; }
+    #thread-pane-replies { height: 1fr; }
     """
 
-    BINDINGS = [Binding("q", "quit_app", "quit", show=False)]
+    BINDINGS = [
+        Binding("q", "quit_app", "quit", show=False),
+        Binding("z", "toggle_fold", "fold", show=False),
+        Binding("t", "toggle_thread_pane", "thread pane", show=False),
+        Binding("escape", "close_transient", "close", show=False, priority=True),
+    ]
 
     active_target: reactive[str | None] = reactive(None, init=False)
 
@@ -96,6 +107,11 @@ class TautApp(App[int]):
         # Watch/backfill dedup by (thread, ts) — display-layer only.
         self._seen: set[tuple[str, int]] = set()
         self.session_notifications: list[Notification] = []
+        # Inline thread display state ([TUI-7.2]: folding is display-only).
+        self._folded: set[str] = set()
+        self._channel_threads: dict[str, Thread] = {}
+        self._active_messages: list[Message] = []
+        self._pane_thread: str | None = None
 
     def compose(self) -> ComposeResult:
         yield TextStatic("taut", id="titlebar")
@@ -105,6 +121,7 @@ class TautApp(App[int]):
                 yield TranscriptView(id="transcript")
                 yield Composer(id="composer")
             yield PresencePane(id="presence")
+            yield ThreadPane(id="thread-pane")
         yield TextStatic(KEYBAR_TEXT, id="keybar")
 
     async def on_mount(self) -> None:
@@ -174,6 +191,84 @@ class TautApp(App[int]):
     async def action_quit_app(self) -> None:
         await self._stop_bridge()
         self.exit(0)
+
+    # -- threads ([TUI-7]) --------------------------------------------------
+
+    def _acted_on_thread(self) -> str | None:
+        """The 'active inline thread' for z/t: the sole visible sub-thread,
+        else the first (row-level selection arrives with the focus work)."""
+
+        names = list(self._channel_threads)
+        return names[0] if names else None
+
+    async def action_toggle_fold(self) -> None:
+        name = self._acted_on_thread()
+        if name is None or self.active_target is None:
+            return
+        # Display-only ([TUI-7.2]): no cursor, membership, or history change.
+        if name in self._folded:
+            self._folded.discard(name)
+        else:
+            self._folded.add(name)
+        await self._refresh_conversation(self.active_target)
+
+    async def action_toggle_thread_pane(self) -> None:
+        if self._pane_thread is not None:
+            await self._close_thread_pane()
+            return
+        name = self._acted_on_thread()
+        if name is not None:
+            await self._open_thread_pane(name)
+
+    async def action_close_transient(self) -> None:
+        if self._pane_thread is not None:
+            await self._close_thread_pane()
+
+    async def _open_thread_pane(self, name: str) -> None:
+        assert self.client is not None
+        sub = self._channel_threads.get(name)
+        parent_text = ""
+        if sub is not None and sub.origin_ts is not None:
+            parent = next(
+                (m for m in self._active_messages if m.ts == sub.origin_ts),
+                None,
+            )
+            if parent is not None:
+                parent_text = f'from "{parent.text}"'
+        replies = self.client.history(name, limit=HISTORY_LIMIT)
+        pane = self.query_one("#thread-pane", ThreadPane)
+        await pane.show_thread(name=name, parent_text=parent_text, replies=replies)
+        # The pane borrows the presence column (frame 1b, [TUI-7.3]).
+        self.query_one("#presence", PresencePane).display = False
+        pane.display = True
+        self._pane_thread = name
+
+    async def _close_thread_pane(self) -> None:
+        self.query_one("#thread-pane", ThreadPane).display = False
+        self.query_one("#presence", PresencePane).display = True
+        self._pane_thread = None
+
+    async def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "thread-pane-input" and self._pane_thread is not None:
+            sub = self._channel_threads.get(self._pane_thread)
+            text = event.value.strip()
+            if (
+                not text
+                or sub is None
+                or sub.parent is None
+                or sub.origin_ts is None
+                or self.client is None
+            ):
+                return
+            # The composer LABEL names the sub-thread; the CALL passes the
+            # parent channel + origin message id (finding R3-5).
+            try:
+                self.client.reply(sub.parent, str(sub.origin_ts), text)
+            except TautError as exc:
+                self.query_one("#thread-pane-label", TextStatic).update_text(f"⚠ {exc}")
+                return
+            event.input.value = ""
+            await self._open_thread_pane(self._pane_thread)
 
     async def on_unmount(self) -> None:
         await self._stop_bridge()
@@ -349,6 +444,20 @@ class TautApp(App[int]):
         # Viewing clears the session badge ([TUI-10.8]).
         self._unread_counts[target] = 0
         self._update_nav_label(target)
+        self._active_messages = messages
+
+        # Inline thread affordances come from channel_threads() — never
+        # from state reads or name parsing (Addition C; finding R3-3).
+        inline: list[Thread] = []
+        thread_replies: dict[str, list[Message]] = {}
+        if thread is None or thread.kind == "channel":
+            inline = self.client.channel_threads(target)
+            for sub in inline:
+                if sub.name not in self._folded:
+                    thread_replies[sub.name] = self.client.history(
+                        sub.name, limit=HISTORY_LIMIT
+                    )
+        self._channel_threads = {sub.name: sub for sub in inline}
 
         if thread is not None and thread.kind == "dm":
             other = self._dm_counterpart(thread)
@@ -372,6 +481,9 @@ class TautApp(App[int]):
             header=header,
             messages=messages,
             cursor=cursor,
+            inline_threads=inline,
+            folded=set(self._folded),
+            thread_replies=thread_replies,
         )
         self.query_one("#composer", Composer).set_target_label(composer_label)
         await self.query_one("#presence", PresencePane).show_members(
