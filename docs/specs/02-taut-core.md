@@ -832,7 +832,7 @@ invocations.
 ### [TAUT-12.4] TUI
 
 Per [TAUT-8.4]: a consumer of `TautClient` + `TautWatcher`, optional
-extra, own spec.
+extra. See `docs/specs/04-taut-tui.md` for the TUI behavior spec.
 
 ## Related Plans
 

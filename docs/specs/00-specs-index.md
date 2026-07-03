@@ -24,6 +24,9 @@ stay aligned instead of competing.
 3. `03-identity-addressing-notifications.md` - stable member identity,
    mutable names, reserved alias storage, `@name` direct messages, special
    queue namespaces, notification inboxes, and channel rename semantics
+4. `04-taut-tui.md` - Textual-based terminal UI spec: optional-extra
+   boundary, launch behavior, Slack-like console layout, thread handling,
+   responsive modes, recovery states, and verification expectations
 
 ## Naming
 
