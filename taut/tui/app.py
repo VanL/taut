@@ -13,6 +13,7 @@ separator anchors on that snapshot for the whole session.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from textual.app import App, ComposeResult
@@ -21,8 +22,10 @@ from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
 from textual.widgets import ListView
 
+from taut._constants import WATCH_MEMBERSHIP_REFRESH_SECONDS
 from taut._exceptions import NotInitializedError, TautError
-from taut.client import Member, TautClient, Thread
+from taut.client import Member, Message, Notification, TautClient, Thread
+from taut.tui._bridge import WatchBridge
 from taut.tui.widgets import (
     Composer,
     NavigationPane,
@@ -84,6 +87,15 @@ class TautApp(App[int]):
         self.cursor_snapshot: dict[str, int | None] = {}
         self._threads: dict[str, Thread] = {}
         self._members: dict[str, Member] = {}
+        self._bridge: WatchBridge | None = None
+        # Session display state ([TUI-10.8], INV-10 carve-out): unread
+        # badges seeded from stored counts at mount, then maintained from
+        # watch deliveries; never written back as cursors.
+        self._unread_counts: dict[str, int] = {}
+        self._mount_last_ts: dict[str, int] = {}
+        # Watch/backfill dedup by (thread, ts) — display-layer only.
+        self._seen: set[tuple[str, int]] = set()
+        self.session_notifications: list[Notification] = []
 
     def compose(self) -> ComposeResult:
         yield TextStatic("taut", id="titlebar")
@@ -117,9 +129,13 @@ class TautApp(App[int]):
             await self._show_fatal(str(exc))
             return
         self._threads = {thread.name: thread for thread in threads}
+        # [TUI-10.8]: snapshot strictly BEFORE the watcher exists — once it
+        # runs, deliveries advance stored cursors for every joined thread.
         self.cursor_snapshot = {
             name: self.client.read_cursor(name) for name in self._threads
         }
+        self._unread_counts = {thread.name: thread.unread_count for thread in threads}
+        self._mount_last_ts = {thread.name: thread.last_ts or 0 for thread in threads}
         self._members = {member.member_id: member for member in self.client.who()}
         self.query_one("#titlebar", TextStatic).update_text(
             f"taut · {self._project_label()}"
@@ -132,6 +148,11 @@ class TautApp(App[int]):
         )
         if default is not None:
             self.active_target = default
+        self._bridge = WatchBridge(client=self.client, deliver=self._deliver_from_watch)
+        self._bridge.start()
+        # Convergence fallback timer, aligned to the watcher's own refresh
+        # interval; the other trigger is an unknown-thread delivery (R3-8).
+        self.set_interval(WATCH_MEMBERSHIP_REFRESH_SECONDS, self._refresh_membership)
 
     # -- state ------------------------------------------------------------
 
@@ -150,8 +171,80 @@ class TautApp(App[int]):
         if isinstance(item, NavRow) and item.target != "inbox":
             self.select_target(item.target)
 
-    def action_quit_app(self) -> None:
+    async def action_quit_app(self) -> None:
+        await self._stop_bridge()
         self.exit(0)
+
+    async def on_unmount(self) -> None:
+        await self._stop_bridge()
+
+    async def _stop_bridge(self) -> None:
+        """Stop+join in an executor thread so the UI loop keeps servicing
+        any in-flight call_from_thread hand-off (no deadlock; finding 5)."""
+
+        bridge = self._bridge
+        self._bridge = None
+        if bridge is not None:
+            await asyncio.to_thread(bridge.stop)
+
+    # -- live updates -------------------------------------------------------
+
+    def _deliver_from_watch(self, item: Message | Notification) -> None:
+        """Runs on the watcher thread. Synchronous hand-off: blocks until
+        the UI applied the item; exceptions propagate so the watch runtime
+        does not ack an undisplayed chat message (finding 4)."""
+
+        # call_from_thread accepts async callables at runtime (it awaits
+        # them and returns the result), but its TypeVar-in-union signature
+        # defeats mypy's inference for coroutine arguments.
+        self.call_from_thread(self._apply_watch_item, item)  # type: ignore[arg-type]
+
+    async def _apply_watch_item(self, item: Message | Notification) -> None:
+        if isinstance(item, Notification):
+            # Claimed by the watch runtime already; accumulate for the
+            # inbox view (the sole notification consumer, finding R3-4).
+            self.session_notifications.append(item)
+            self._update_nav_label("inbox")
+            return
+        key = (item.thread, item.ts)
+        if key in self._seen:
+            return  # backfill/watch overlap renders once (finding 3)
+        self._seen.add(key)
+        if item.thread not in self._threads:
+            await self._refresh_membership()
+        if item.thread == self.active_target:
+            await self.query_one("#transcript", TranscriptView).append_message(item)
+            return
+        if item.ts > self._mount_last_ts.get(item.thread, 0):
+            # Backlog up to mount is already in the seeded count; only
+            # genuinely new arrivals increment the session badge.
+            self._unread_counts[item.thread] = (
+                self._unread_counts.get(item.thread, 0) + 1
+            )
+        self._update_nav_label(item.thread)
+
+    async def _refresh_membership(self) -> None:
+        """Convergence triggers (R3-8): unknown-thread delivery + interval.
+
+        The UI never drives membership; it re-reads what the watcher/client
+        already converged on. New threads get their separator anchor at
+        discovery time (setdefault — the mount snapshot is never mutated).
+        """
+
+        if self.client is None:
+            return
+        threads = self.client.joined_threads()
+        current = {thread.name: thread for thread in threads}
+        if set(current) == set(self._threads):
+            self._threads = current
+            return
+        for name in current:
+            if name not in self._threads:
+                self.cursor_snapshot.setdefault(name, self.client.read_cursor(name))
+                self._unread_counts.setdefault(name, current[name].unread_count)
+                self._mount_last_ts.setdefault(name, current[name].last_ts or 0)
+        self._threads = current
+        await self._rebuild_nav()
 
     # -- rendering --------------------------------------------------------
 
@@ -169,29 +262,57 @@ class TautApp(App[int]):
                 return self._members.get(member_id)
         return None
 
+    def _row_label(self, name: str) -> str:
+        """Navigation label for a target, from session unread state."""
+
+        if name == "inbox":
+            pending = len(self.session_notifications)
+            return f"⧉ inbox  {pending}" if pending else "⧉ inbox"
+        thread = self._threads.get(name)
+        count = self._unread_counts.get(name, 0)
+        suffix = f"  {count}" if count else ""
+        if thread is not None and thread.kind == "dm":
+            # DM identity comes from Thread.members + client.who() —
+            # never who(dm_name), which raises (finding R4-2).
+            other = self._dm_counterpart(thread)
+            other_name = other.name if other is not None else "unknown"
+            presence = other.presence if other is not None else "away"
+            dot = "●" if presence == "here" else "○"
+            return f"{dot} {other_name} {presence}{suffix}"
+        if thread is not None and thread.kind == "subthread":
+            return f"↳ {name}"
+        return f"# {name}{suffix}"
+
+    def _update_nav_label(self, name: str) -> None:
+        nav = self.query_one("#navigation", NavigationPane)
+        for row in nav.query(NavRow):
+            if row.target == name:
+                row.set_label(self._row_label(name))
+                return
+
     async def _rebuild_nav(self) -> None:
         channels = [t for t in self._threads.values() if t.kind == "channel"]
         dms = [t for t in self._threads.values() if t.kind == "dm"]
         subthreads = [t for t in self._threads.values() if t.kind == "subthread"]
         rows: list[NavRow | NavSection] = [NavSection("Channels")]
         for thread in channels:
-            label = f"# {thread.name}"
-            if thread.unread:
-                label += f"  {thread.unread_count}"
-            rows.append(NavRow(target=thread.name, label=label, classes="nav-channel"))
+            rows.append(
+                NavRow(
+                    target=thread.name,
+                    label=self._row_label(thread.name),
+                    classes="nav-channel",
+                )
+            )
         if dms:
             rows.append(NavSection("Direct"))
             for thread in dms:
-                # DM identity comes from Thread.members + client.who() —
-                # never who(dm_name), which raises (finding R4-2).
-                other = self._dm_counterpart(thread)
-                name = other.name if other is not None else "unknown"
-                presence = other.presence if other is not None else "away"
-                dot = "●" if presence == "here" else "○"
-                label = f"{dot} {name} {presence}"
-                if thread.unread:
-                    label += f"  {thread.unread_count}"
-                rows.append(NavRow(target=thread.name, label=label, classes="nav-dm"))
+                rows.append(
+                    NavRow(
+                        target=thread.name,
+                        label=self._row_label(thread.name),
+                        classes="nav-dm",
+                    )
+                )
         if subthreads:
             rows.append(NavSection("Threads"))
             for thread in subthreads:
@@ -203,7 +324,13 @@ class TautApp(App[int]):
                     )
                 )
         rows.append(NavSection("Inbox"))
-        rows.append(NavRow(target="inbox", label="⧉ inbox", classes="nav-inbox"))
+        rows.append(
+            NavRow(
+                target="inbox",
+                label=self._row_label("inbox"),
+                classes="nav-inbox",
+            )
+        )
         await self.query_one("#navigation", NavigationPane).set_rows(list(rows))
 
     async def _refresh_conversation(self, target: str) -> None:
@@ -211,6 +338,12 @@ class TautApp(App[int]):
         thread = self._threads.get(target)
         messages = self.client.history(target, limit=HISTORY_LIMIT)
         cursor = self.cursor_snapshot.get(target)
+        # Backfill/watch dedup: everything rendered here counts as seen so
+        # a drain of the same rows appends nothing (finding 3).
+        self._seen.update((target, message.ts) for message in messages)
+        # Viewing clears the session badge ([TUI-10.8]).
+        self._unread_counts[target] = 0
+        self._update_nav_label(target)
 
         if thread is not None and thread.kind == "dm":
             other = self._dm_counterpart(thread)

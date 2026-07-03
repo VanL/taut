@@ -11,16 +11,20 @@ substrings), never glyphs/colors ([TUI-6.3]; testing-patterns Pattern 5).
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
 
-from taut.client import TautClient
+from taut._exceptions import EmptyResultError
+from taut.client import Message, Notification, TautClient
 
 textual = pytest.importorskip("textual")
 
+from taut.tui._bridge import ShutdownNonAck, WatchBridge  # noqa: E402
 from taut.tui.app import TautApp  # noqa: E402
 from taut.tui.widgets import NavRow, NavSection, TextStatic  # noqa: E402
 
@@ -227,3 +231,261 @@ class TestUnreadSeparator:
             assert not list(transcript.query(TextStatic).filter(".separator"))
 
         run_app(db, scenario)
+
+
+async def wait_until(
+    pilot: Pilot[int],
+    predicate: Callable[[], bool],
+    *,
+    timeout: float = 10.0,
+) -> None:
+    """Bounded polling (testing-patterns Pattern 4): never a single read."""
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        await pilot.pause()
+        if predicate():
+            return
+        await asyncio.sleep(0.05)
+    raise AssertionError("condition not met within the bounded poll")
+
+
+class TestLiveUpdates:
+    """Task 4: real TautWatcher-backed live updates ([TUI-12])."""
+
+    def test_live_message_appears_exactly_once(self, tmp_path: Path) -> None:
+        db = seed_project(tmp_path)
+
+        async def scenario(app: TautApp, pilot: Pilot[int]) -> None:
+            app.select_target("general")
+            await pilot.pause()
+            transcript = app.query_one("#transcript")
+
+            def count() -> int:
+                return sum(
+                    "live-tail-1" in row.renderable_text
+                    for row in transcript.query(TextStatic).filter(".message")
+                )
+
+            claude = TautClient(db_path=db, as_name="claude")
+            claude.say("general", "live-tail-1")
+            await wait_until(pilot, lambda: count() >= 1)
+            await asyncio.sleep(0.3)
+            await pilot.pause()
+            assert count() == 1
+
+        run_app(db, scenario)
+
+    def test_backlog_overlap_renders_once(self, tmp_path: Path) -> None:
+        # The watcher seeds cursors from stored last_seen_ts, so an unread
+        # backlog message arrives via BOTH the history backfill and the
+        # initial drain; the transcript renders it once (finding 3).
+        db = tmp_path / ".taut.db"
+        TautClient.init(db_path=db)
+        van = TautClient(db_path=db, as_name="van")
+        van.join("general")
+        claude = TautClient(db_path=db, as_name="claude")
+        claude.join("general")
+        claude.say("general", "overlap-msg")  # unread for van at mount
+
+        async def scenario(app: TautApp, pilot: Pilot[int]) -> None:
+            app.select_target("general")
+            transcript = app.query_one("#transcript")
+
+            def count() -> int:
+                return sum(
+                    "overlap-msg" in row.renderable_text
+                    for row in transcript.query(TextStatic).filter(".message")
+                )
+
+            await wait_until(pilot, lambda: count() >= 1)
+            await asyncio.sleep(0.3)
+            await pilot.pause()
+            assert count() == 1
+
+        run_app(db, scenario)
+
+    def test_nav_badge_increments_for_background_channel(self, tmp_path: Path) -> None:
+        db = tmp_path / ".taut.db"
+        TautClient.init(db_path=db)
+        van = TautClient(db_path=db, as_name="van")
+        van.join("general")
+        van.join("ops")
+        claude = TautClient(db_path=db, as_name="claude")
+        claude.join("ops")
+        van.read()  # start the session with everything read
+
+        async def scenario(app: TautApp, pilot: Pilot[int]) -> None:
+            app.select_target("general")
+            await pilot.pause()
+            nav = app.query_one("#navigation")
+
+            def ops_badge() -> bool:
+                return any(
+                    row.target == "ops" and row.renderable_text.rstrip().endswith("1")
+                    for row in nav.query(NavRow)
+                )
+
+            claude.say("ops", "background-live")
+            await wait_until(pilot, ops_badge)
+
+        run_app(db, scenario)
+
+    def test_watcher_thread_stopped_after_exit(self, tmp_path: Path) -> None:
+        db = seed_project(tmp_path)
+        captured: list[threading.Thread] = []
+
+        async def scenario(app: TautApp, pilot: Pilot[int]) -> None:
+            assert app._bridge is not None
+            thread = app._bridge.thread
+            assert thread is not None and thread.is_alive()
+            captured.append(thread)
+
+        run_app(db, scenario)
+        # run_test teardown runs on_unmount -> bridge.stop(join) (finding 5).
+        assert captured and not captured[0].is_alive()
+
+    def test_one_shot_display_failure_redelivers(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # At-least-once for chat messages (findings 4 + R3-9): the primary
+        # assertion is RE-DELIVERY — the message ends up displayed exactly
+        # once after a one-shot UI failure, never silently dropped.
+        db = seed_project(tmp_path)
+        original = TautApp._apply_watch_item
+        state = {"failed": False}
+
+        async def flaky(self: TautApp, item: object) -> None:
+            from taut.client import Message as _Message
+
+            if (
+                isinstance(item, _Message)
+                and "flaky-once" in item.text
+                and not state["failed"]
+            ):
+                state["failed"] = True
+                raise RuntimeError("injected one-shot UI failure")
+            await original(self, item)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(TautApp, "_apply_watch_item", flaky)
+
+        async def scenario(app: TautApp, pilot: Pilot[int]) -> None:
+            app.select_target("general")
+            await pilot.pause()
+            transcript = app.query_one("#transcript")
+
+            def count() -> int:
+                return sum(
+                    "flaky-once" in row.renderable_text
+                    for row in transcript.query(TextStatic).filter(".message")
+                )
+
+            claude = TautClient(db_path=db, as_name="claude")
+            claude.say("general", "flaky-once")
+            await wait_until(pilot, lambda: count() >= 1)
+            assert state["failed"], "the injected failure never fired"
+            await asyncio.sleep(0.3)
+            await pilot.pause()
+            assert count() == 1
+
+        run_app(db, scenario)
+
+    def test_watch_implies_seen_semantics_and_snapshot_separator(
+        self, tmp_path: Path
+    ) -> None:
+        # The [TUI-10.8] firing test (finding R3-1): running the TUI
+        # consumes stored unread for a channel the user never opens — the
+        # decided contract, not an accident — while the mount snapshot
+        # keeps the separator correct for a late-opened thread.
+        db = tmp_path / ".taut.db"
+        TautClient.init(db_path=db)
+        van = TautClient(db_path=db, as_name="van")
+        van.join("general")
+        van.join("ops")
+        claude = TautClient(db_path=db, as_name="claude")
+        claude.join("ops")
+        van.read()  # caught up before the backlog arrives
+        backlog = claude.say("ops", "ops-backlog-unread")
+
+        async def scenario(app: TautApp, pilot: Pilot[int]) -> None:
+            app.select_target("general")
+            # Wait until the initial drain acked the ops backlog (stored
+            # cursor advanced past it) without the user ever opening ops.
+            await wait_until(
+                pilot,
+                lambda: (van.read_cursor("ops") or 0) >= backlog.ts,
+            )
+            # Late-opened thread: the separator still anchors on the mount
+            # snapshot even though the stored cursor already moved.
+            app.select_target("ops")
+            await pilot.pause()
+            transcript = app.query_one("#transcript")
+            rows = list(transcript.query(TextStatic).filter(".transcript-row"))
+            labels = [
+                "separator" if row.has_class("separator") else row.renderable_text
+                for row in rows
+            ]
+            sep_index = labels.index("separator")
+            after = " ".join(str(item) for item in labels[sep_index + 1 :])
+            assert "ops-backlog-unread" in after
+
+        run_app(db, scenario)
+        # After a clean session: everything delivered is seen ([TUI-10.8]).
+        fresh = TautClient(db_path=db, as_name="van")
+        with pytest.raises(EmptyResultError, match="no unread threads"):
+            fresh.list_threads()
+
+
+class TestWatchBridge:
+    """Bridge-level contract, no App required (plan Task 4)."""
+
+    def _message(self, thread: str = "general") -> Message:
+        return Message(
+            thread=thread,
+            ts=1_000_000_000_000_000_000,
+            from_id="m_x",
+            from_name="claude",
+            kind="message",
+            text="in flight",
+        )
+
+    def test_message_during_shutdown_raises_nonack(self, tmp_path: Path) -> None:
+        db = seed_project(tmp_path)
+        client = TautClient(db_path=db, as_name="van")
+        delivered: list[object] = []
+        bridge = WatchBridge(client=client, deliver=delivered.append)
+        bridge.start()
+        try:
+            bridge.stop(timeout=5.0)
+            delivered.clear()
+            # A Message fetched in the shutdown window must not be acked:
+            # the handler raises instead of returning (finding R2-1).
+            with pytest.raises(ShutdownNonAck):
+                bridge.handle(self._message())
+            assert delivered == []
+        finally:
+            bridge.stop(timeout=5.0)
+
+    def test_notification_failure_is_best_effort_history_durable(
+        self, tmp_path: Path
+    ) -> None:
+        # Notifications are consumed on read; a display failure is logged,
+        # never raised, and the source chat history stays readable — do
+        # NOT expect the notification to be re-seen (finding R2-2).
+        db = seed_project(tmp_path)
+        client = TautClient(db_path=db, as_name="van")
+
+        def deliver(item: object) -> None:
+            raise RuntimeError("injected notification render failure")
+
+        bridge = WatchBridge(client=client, deliver=deliver)
+        notification = Notification(
+            type="mention",
+            to_id="m_x",
+            actor_id="m_y",
+            actor_name="claude",
+            thread="general",
+            message_ts=123,
+        )
+        bridge.handle(notification)  # must not raise
+        assert [m.text for m in client.history("general")]

@@ -19,6 +19,10 @@ class NavRow(ListItem):
     def renderable_text(self) -> str:
         return self._label
 
+    def set_label(self, label: str) -> None:
+        self._label = label
+        self.query_one(TextStatic).update_text(label)
+
 
 class NavSection(ListItem):
     """A non-selectable section header row."""

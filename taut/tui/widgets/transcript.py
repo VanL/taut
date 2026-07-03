@@ -41,6 +41,12 @@ class TranscriptView(VerticalScroll):
             rows.append(TextStatic("no messages yet", classes="transcript-empty"))
         await self.mount_all(rows)
 
+    async def append_message(self, message: Message) -> None:
+        """Live tail: mount one row and keep the newest content visible."""
+
+        await self.mount(self._row(message))
+        self.scroll_end(animate=False)
+
     async def show_error(self, message: str) -> None:
         await self.remove_children()
         await self.mount(TextStatic(f"⚠ {message}", classes="error-banner"))
