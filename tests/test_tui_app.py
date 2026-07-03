@@ -489,3 +489,150 @@ class TestWatchBridge:
         )
         bridge.handle(notification)  # must not raise
         assert [m.text for m in client.history("general")]
+
+
+class TestSliceReviewHardening:
+    """Task 4 per-slice review findings (Codex, 2026-07-03)."""
+
+    def test_widget_failure_below_dedup_still_redelivers(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Slice-review finding 1: if the dedup key is registered BEFORE the
+        # UI mutation succeeds, the retry after a widget failure is
+        # swallowed as a duplicate and the cursor advances without display.
+        # Inject the failure INSIDE the widget, below _apply_watch_item.
+        from taut.tui.widgets import TranscriptView
+
+        db = seed_project(tmp_path)
+        original = TranscriptView.append_message
+        state = {"failed": False}
+
+        async def flaky(self: TranscriptView, message: Message) -> None:
+            if "deep-flaky" in message.text and not state["failed"]:
+                state["failed"] = True
+                raise RuntimeError("injected widget failure")
+            await original(self, message)
+
+        monkeypatch.setattr(TranscriptView, "append_message", flaky)
+
+        async def scenario(app: TautApp, pilot: Pilot[int]) -> None:
+            app.select_target("general")
+            await pilot.pause()
+            transcript = app.query_one("#transcript")
+
+            def count() -> int:
+                return sum(
+                    "deep-flaky" in row.renderable_text
+                    for row in transcript.query(TextStatic).filter(".message")
+                )
+
+            claude = TautClient(db_path=db, as_name="claude")
+            claude.say("general", "deep-flaky")
+            await wait_until(pilot, lambda: count() >= 1)
+            assert state["failed"]
+            await asyncio.sleep(0.3)
+            await pilot.pause()
+            assert count() == 1
+
+        run_app(db, scenario)
+
+    def test_shutdown_inflight_failure_never_acks_real_watcher(
+        self, tmp_path: Path
+    ) -> None:
+        # Slice-review finding 2: prove the shutdown contract through the
+        # REAL watcher — an in-flight message whose hand-off fails during
+        # stop is neither acked nor poison-advanced, and is re-seen by the
+        # next session (findings R2-1 + R3-9).
+        db = tmp_path / ".taut.db"
+        TautClient.init(db_path=db)
+        van = TautClient(db_path=db, as_name="van")
+        van.join("general")
+        claude = TautClient(db_path=db, as_name="claude")
+        claude.join("general")
+        van.read()
+
+        entered = threading.Event()
+        release = threading.Event()
+
+        def deliver(item: Message | Notification) -> None:
+            if isinstance(item, Message) and "in-flight" in item.text:
+                entered.set()
+                assert release.wait(timeout=10)
+                raise RuntimeError("UI tearing down")
+
+        bridge = WatchBridge(client=van, deliver=deliver)
+        bridge.start()
+        try:
+            message = claude.say("general", "in-flight-shutdown")
+            assert entered.wait(timeout=10), "message never reached the handler"
+            stopper = threading.Thread(target=bridge.stop)
+            stopper.start()
+            time.sleep(0.2)  # let the stop event land while deliver blocks
+            release.set()
+            stopper.join(timeout=10)
+            thread = bridge.thread
+            assert thread is not None and not thread.is_alive()
+            # Not acked, and only one failure — far from the 3-strikes
+            # poison advance; the stop event prevented any refetch.
+            assert (van.read_cursor("general") or 0) < message.ts
+        finally:
+            release.set()
+            bridge.stop()
+
+        # Next session re-sees the unacked message (at-least-once).
+        redelivered: list[str] = []
+
+        def record(item: Message | Notification) -> None:
+            if isinstance(item, Message):
+                redelivered.append(item.text)
+
+        second = WatchBridge(client=van, deliver=record)
+        second.start()
+        try:
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                if any("in-flight-shutdown" in text for text in redelivered):
+                    break
+                time.sleep(0.05)
+            assert any("in-flight-shutdown" in text for text in redelivered)
+        finally:
+            second.stop()
+
+    def test_notification_claim_loss_through_real_watcher(self, tmp_path: Path) -> None:
+        # Slice-review finding 3: the best-effort contract through the real
+        # READ-mode claim — a failed render loses the notification (never
+        # re-seen) while the source chat history stays durable (R2-2).
+        db = tmp_path / ".taut.db"
+        TautClient.init(db_path=db)
+        van = TautClient(db_path=db, as_name="van")
+        van.join("general")
+        claude = TautClient(db_path=db, as_name="claude")
+        claude.join("general")
+        van.read()
+
+        attempts: list[Notification] = []
+
+        def deliver(item: Message | Notification) -> None:
+            if isinstance(item, Notification):
+                attempts.append(item)
+                raise RuntimeError("injected notification render failure")
+
+        bridge = WatchBridge(client=van, deliver=deliver)
+        bridge.start()
+        try:
+            message = claude.say("general", "ping @van")
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and not attempts:
+                time.sleep(0.05)
+            assert attempts, "mention notification never delivered"
+            assert attempts[0].type == "mention"
+        finally:
+            bridge.stop()
+
+        fresh = TautClient(db_path=db, as_name="van")
+        # Source history is the durable record...
+        assert message.text in [m.text for m in fresh.history("general")]
+        # ...and the claimed notification is legitimately gone — do NOT
+        # expect it to be re-seen.
+        with pytest.raises(EmptyResultError, match="nothing pending"):
+            fresh.inbox()

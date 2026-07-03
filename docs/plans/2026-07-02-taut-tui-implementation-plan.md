@@ -1286,3 +1286,29 @@ fixed in the same slice (follow-up commit):
 
 Verdict after fixes: pass — `tests/test_tui_launch.py` +
 `tests/test_cli.py` green (46 tests), ruff/mypy clean.
+
+### Per-slice review — Task 4 watch bridge (Codex `codex exec`, 2026-07-03)
+
+Reviewed commit `27cff15` against the Task 4 acknowledgment contract.
+Three findings, all accepted and fixed in the same slice:
+
+1. **Real bug:** `_apply_watch_item` registered the dedup key *before* the
+   UI mutation, so a widget failure's redelivery was swallowed as a
+   duplicate and the cursor advanced without display — silently defeating
+   at-least-once on the retry path. The Task 4 one-shot test missed it
+   because its injection raised above the dedup. Fixed: the key is added
+   only after the UI accepts the item; a red-green regression injects the
+   failure inside `TranscriptView.append_message`, below the dedup.
+2. The shutdown non-ack test bypassed the real watcher (`bridge.handle`
+   called directly). Added a real-watcher deterministic test: an in-flight
+   message whose hand-off blocks, then fails during `stop()` — stored
+   cursor stays behind the message (no ack, no poison advance, either
+   interleaving of stop-event vs. release), and a second session re-sees
+   it.
+3. The notification best-effort test used a synthetic Notification. Added
+   the real path: a `@mention` claimed by the READ-mode watch queue whose
+   render fails — source history durable, `client.inbox()` afterwards
+   raises `EmptyResultError` (the claimed notification is legitimately
+   gone, per [IAN-7.4]).
+
+Verdict after fixes: pass — 19 TUI tests green, ruff/mypy clean.

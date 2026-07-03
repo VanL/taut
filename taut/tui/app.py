@@ -209,11 +209,15 @@ class TautApp(App[int]):
         key = (item.thread, item.ts)
         if key in self._seen:
             return  # backfill/watch overlap renders once (finding 3)
-        self._seen.add(key)
         if item.thread not in self._threads:
             await self._refresh_membership()
         if item.thread == self.active_target:
             await self.query_one("#transcript", TranscriptView).append_message(item)
+            # Register the dedup key only AFTER the UI accepted the item: a
+            # failed mutation must leave redelivery observable, or the retry
+            # is swallowed as a duplicate and the cursor advances without
+            # display (Task 4 slice-review finding 1).
+            self._seen.add(key)
             return
         if item.ts > self._mount_last_ts.get(item.thread, 0):
             # Backlog up to mount is already in the seeded count; only
@@ -222,6 +226,7 @@ class TautApp(App[int]):
                 self._unread_counts.get(item.thread, 0) + 1
             )
         self._update_nav_label(item.thread)
+        self._seen.add(key)
 
     async def _refresh_membership(self) -> None:
         """Convergence triggers (R3-8): unknown-thread delivery + interval.
