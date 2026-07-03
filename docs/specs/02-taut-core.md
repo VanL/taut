@@ -836,6 +836,11 @@ extra. See `docs/specs/04-taut-tui.md` for the TUI behavior spec.
 
 ## Related Plans
 
+- `docs/plans/2026-07-02-taut-tui-implementation-plan.md` — planned [TAUT-12.4]
+  first TUI (governed by `docs/specs/04-taut-tui.md`): consumes `TautClient` and
+  `TautClient.watch()` behind the `taut[tui]` extra and adds bare-`taut`
+  interactive launch without changing any CLI verb, `--json` shape, or exit-code
+  contract ([TAUT-8.1], [TAUT-8.2], [TAUT-8.3], [TAUT-8.4]).
 - `docs/plans/2026-06-30-client-module-split-plan.md` — structural
   refactor of `taut.client` from a single module into a package facade and
   concern-specific mixins while preserving the [TAUT-8.3] public import and

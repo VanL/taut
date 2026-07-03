@@ -172,6 +172,10 @@ Navigation rows show a stable target label and, when available, unread counts.
 Direct-message rows also show presence hints. The selected row is visibly
 distinct from unread styling.
 
+Unread counts and unread separators follow the watch-delivered read semantics
+in [TUI-10.8]: while the TUI runs they are session display state, and they do
+not persist across TUI sessions.
+
 The inbox appears as a navigation row in the first TUI. It should not become a
 dedicated pane unless notification traffic or design review shows that the row
 is insufficient.
@@ -420,11 +424,43 @@ optimistic state that can disagree with the client result.
 Long-running or retrying work should surface unobtrusive progress/status text
 without blocking unrelated navigation.
 
+### [TUI-10.8] Watch-Delivered Read Semantics
+
+A running TUI is a watch session. Live updates inherit the watch runtime's
+delivered-equals-seen contract from [TAUT-8.4]: when the watcher hands a chat
+message to the TUI and the hand-off succeeds, the acting member's stored read
+cursor for that thread advances. This applies to every joined conversation —
+including conversations not currently displayed — and to the backlog drained
+when the watcher starts.
+
+The first implementation must therefore treat unread presentation as session
+state:
+
+- Unread badges and unread separators are seeded from stored cursors captured
+  once at app start, before the watcher starts, and are maintained from watch
+  deliveries afterward. They are display bookkeeping over client/watch state,
+  never a second stored read cursor ([TUI-10.5]).
+- Unread state does not persist across TUI sessions for the acting member.
+  After a TUI session, `taut list` reports previously delivered messages as
+  read, including in conversations never opened on screen. This matches
+  leaving `taut watch` running, and it intentionally differs from Slack-style
+  persistent unread.
+- Cursor advancement is forward-only, so consumed unread state cannot be
+  restored per-message. A delivered-versus-viewed cursor split that would
+  provide Slack-style persistence is a core-spec change ([TAUT-7.2],
+  [TAUT-8.4]) and is explicitly out of scope for the first TUI.
+
+This tradeoff is intentional (maintainer decision, 2026-07-03). User-facing
+documentation — at minimum the README usage note — and the TUI implementation
+doc must state it plainly.
+
 ## Invariants [TUI-11]
 
 - Textual and TUI-only dependencies stay in `taut[tui]`.
 - CLI, Python API, and TUI share client-owned command semantics.
 - Live display uses the exported watch path; no watcher fork.
+- Unread badges and separators are session display state under [TUI-10.8];
+  the TUI stores no second read cursor.
 - Bare `taut` is safe for scripts and agents in non-tty contexts.
 - Existing CLI JSON and exit-code contracts do not drift.
 - Visual styling is not a public machine contract.
@@ -504,4 +540,9 @@ These design decisions are intentionally deferred from the first TUI:
 
 ## Related Plans
 
-None yet. The implementation plan should cite this spec after design review.
+- `docs/plans/2026-07-02-taut-tui-implementation-plan.md` — first Textual-based
+  TUI implementation plan: bare-`taut` interactive launch dispatch ([TUI-5]),
+  the three-pane layout of wireframe frame 2a ([TUI-6]), inline foldable threads
+  and side pane ([TUI-7]), watch-backed live updates ([TUI-8.4]/[TUI-10.5]),
+  responsive modes ([TUI-9]), and recovery states ([TUI-10]) — all as a pure
+  `TautClient` + `TautWatcher` consumer behind the `taut[tui]` extra.
