@@ -30,6 +30,11 @@ def run_tui(
     try:
         import textual  # noqa: F401  # probe only ([TUI-5.1])
     except ImportError as exc:
+        if exc.name != "textual":
+            # textual is installed but broken (e.g. a missing transitive
+            # dependency): a real bug, not a missing extra. The install
+            # hint would mislead (Task 1 slice-review finding).
+            raise
         raise MissingTuiExtraError(
             'TUI extra not installed. Install it with: pipx inject taut "taut[tui]"'
         ) from exc

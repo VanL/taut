@@ -1248,3 +1248,21 @@ No finding rejected. Round 4 changed no architecture: it named one public
 field, split one data mapping, corrected one stale current-state claim, and
 hardened the launch-decision seam against a parser fork. The standing
 per-slice reviews after Task 1 and Task 4 (§8) remain required.
+
+### Per-slice review — Task 1 launch dispatch (Codex `codex exec`, 2026-07-03)
+
+Reviewed commit `4b38572` against INV-1..4. Two findings, both accepted and
+fixed in the same slice (follow-up commit):
+
+1. The `run_tui` probe translated **any** `ImportError` into
+   `MissingTuiExtraError`, so a broken-but-installed Textual (e.g. missing
+   transitive dependency) would be mis-reported as a missing extra — the
+   R2-3 failure one level down. Fixed: translate only `exc.name ==
+   "textual"`; a broken-install regression test (fake `textual.py` that
+   dies on a missing dep) proves real failures propagate.
+2. The INV-4 excluded-flag firing tests covered `--json`/`-t`/`-q` but not
+   the `--timestamps`/`--quiet` long forms of the enumerable set. Fixed:
+   parametrize extended to all five spellings.
+
+Verdict after fixes: pass — `tests/test_tui_launch.py` +
+`tests/test_cli.py` green (46 tests), ruff/mypy clean.

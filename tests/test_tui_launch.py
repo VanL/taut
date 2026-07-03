@@ -72,6 +72,23 @@ class TestMissingExtra:
             run_tui()
         assert "taut[tui]" in str(excinfo.value)
 
+    def test_broken_textual_install_is_not_reported_as_missing_extra(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from taut.tui import run_tui
+
+        # Slice-review finding (Task 1): textual installed but broken — its
+        # import dies on a missing transitive dependency. That is a real
+        # bug, not a missing extra; the hint would send users on a useless
+        # reinstall. Python drops the failed module from sys.modules
+        # automatically, so the fake does not leak to other tests.
+        fake = tmp_path / "textual.py"
+        fake.write_text("import definitely_missing_dep_xyz\n")
+        monkeypatch.delitem(sys.modules, "textual", raising=False)
+        monkeypatch.syspath_prepend(str(tmp_path))
+        with pytest.raises(ModuleNotFoundError, match="definitely_missing_dep_xyz"):
+            run_tui()
+
     def test_missing_extra_error_is_not_an_importerror(self) -> None:
         from taut.tui._launch import MissingTuiExtraError
 
@@ -201,7 +218,7 @@ class TestLaunchDispatch:
         assert main(argv) == 0
         assert run_tui_spy.calls == [expected]
 
-    @pytest.mark.parametrize("flag", ["--json", "-t", "-q"])
+    @pytest.mark.parametrize("flag", ["--json", "-t", "--timestamps", "-q", "--quiet"])
     def test_output_only_flags_never_launch(
         self,
         tty: None,
