@@ -18,7 +18,7 @@ from pathlib import Path
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.reactive import reactive
 from textual.widgets import Input, ListView
 
@@ -43,6 +43,14 @@ KEYBAR_TEXT = (
 )
 
 HISTORY_LIMIT = 200
+
+HELP_TEXT = """taut TUI commands ([TUI-8.2])
+  arrows   move selection        enter  open conversation or thread
+  c        focus composer        z      fold/unfold inline thread
+  t        toggle thread pane    m      toggle members/presence
+  /        search conversation   g      goto conversation
+  i        open inbox            ?      this help
+  q        quit                  esc    close pane/overlay/search"""
 
 
 class TautApp(App[int]):
@@ -69,6 +77,11 @@ class TautApp(App[int]):
     #thread-pane-label { height: 1; color: $text-muted; }
     #thread-pane-parent { height: 2; color: $text-muted; }
     #thread-pane-replies { height: 1fr; }
+    #status-banner { height: 1; color: $warning; display: none; }
+    #search-input { display: none; }
+    #goto-input { display: none; }
+    #inbox-view { height: 1fr; display: none; }
+    #help-overlay { display: none; }
     """
 
     BINDINGS = [
@@ -76,6 +89,12 @@ class TautApp(App[int]):
         Binding("z", "toggle_fold", "fold", show=False),
         Binding("t", "toggle_thread_pane", "thread pane", show=False),
         Binding("escape", "close_transient", "close", show=False, priority=True),
+        Binding("c", "focus_composer", "compose", show=False),
+        Binding("m", "toggle_members", "members", show=False),
+        Binding("slash", "open_search", "search", show=False),
+        Binding("g", "open_goto", "goto", show=False),
+        Binding("i", "open_inbox", "inbox", show=False),
+        Binding("question_mark", "open_help", "help", show=False),
     ]
 
     active_target: reactive[str | None] = reactive(None, init=False)
@@ -112,13 +131,20 @@ class TautApp(App[int]):
         self._channel_threads: dict[str, Thread] = {}
         self._active_messages: list[Message] = []
         self._pane_thread: str | None = None
+        self._inbox_open = False
+        self._inbox_unseen = 0
 
     def compose(self) -> ComposeResult:
         yield TextStatic("taut", id="titlebar")
         with Horizontal(id="main"):
             yield NavigationPane(id="navigation")
             with Vertical(id="center"):
+                yield Input(placeholder="search", id="search-input")
+                yield Input(placeholder="goto", id="goto-input")
                 yield TranscriptView(id="transcript")
+                yield VerticalScroll(id="inbox-view")
+                yield TextStatic(HELP_TEXT, id="help-overlay")
+                yield TextStatic("", id="status-banner")
                 yield Composer(id="composer")
             yield PresencePane(id="presence")
             yield ThreadPane(id="thread-pane")
@@ -185,7 +211,11 @@ class TautApp(App[int]):
 
     async def on_list_view_selected(self, event: ListView.Selected) -> None:
         item = event.item
-        if isinstance(item, NavRow) and item.target != "inbox":
+        if not isinstance(item, NavRow):
+            return
+        if item.target == "inbox":
+            await self._open_inbox()
+        else:
             self.select_target(item.target)
 
     async def action_quit_app(self) -> None:
@@ -221,8 +251,151 @@ class TautApp(App[int]):
             await self._open_thread_pane(name)
 
     async def action_close_transient(self) -> None:
+        search = self.query_one("#search-input", Input)
+        if search.display:
+            search.display = False
+            search.value = ""
+            self._apply_search_filter("")
+            return
+        goto = self.query_one("#goto-input", Input)
+        if goto.display:
+            goto.display = False
+            goto.value = ""
+            return
+        help_overlay = self.query_one("#help-overlay", TextStatic)
+        if help_overlay.display:
+            help_overlay.display = False
+            return
+        if self._inbox_open:
+            self._close_inbox()
+            return
         if self._pane_thread is not None:
             await self._close_thread_pane()
+
+    # -- composer / toggles / overlays ([TUI-6.4], [TUI-6.5], [TUI-8.3]) ----
+
+    def action_focus_composer(self) -> None:
+        self.query_one("#composer-input", Input).focus()
+
+    def action_toggle_members(self) -> None:
+        if self._pane_thread is not None:
+            return  # the thread pane is borrowing the column ([TUI-7.3])
+        presence = self.query_one("#presence", PresencePane)
+        presence.display = not presence.display
+
+    def action_open_search(self) -> None:
+        box = self.query_one("#search-input", Input)
+        box.display = True
+        box.focus()
+
+    def action_open_goto(self) -> None:
+        box = self.query_one("#goto-input", Input)
+        box.display = True
+        box.value = ""
+        box.focus()
+
+    def action_open_help(self) -> None:
+        self.query_one("#help-overlay", TextStatic).display = True
+
+    async def action_open_inbox(self) -> None:
+        await self._open_inbox()
+
+    def _show_banner(self, text: str) -> None:
+        banner = self.query_one("#status-banner", TextStatic)
+        banner.update_text(text)
+        banner.display = True
+
+    def _apply_search_filter(self, query: str) -> None:
+        """[TUI-8.3]: search the active conversation's loaded content."""
+
+        transcript = self.query_one("#transcript", TranscriptView)
+        needle = query.strip().lower()
+        for row in transcript.query(TextStatic):
+            if row.has_class("transcript-header"):
+                continue
+            row.display = needle in row.renderable_text.lower() if needle else True
+
+    def _goto(self, query: str) -> None:
+        """[TUI-8.3]: switch among known targets; not a command palette."""
+
+        needle = query.strip().lower()
+        if not needle:
+            return
+        candidates: dict[str, str] = {name: name for name in self._threads}
+        for thread in self._threads.values():
+            if thread.kind == "dm":
+                other = self._dm_counterpart(thread)
+                if other is not None:
+                    candidates[other.name.lower()] = thread.name
+        exact = candidates.get(needle)
+        partial = next(
+            (target for alias, target in candidates.items() if needle in alias.lower()),
+            None,
+        )
+        match = exact or partial
+        if match is not None:
+            self.select_target(match)
+
+    async def _open_inbox(self) -> None:
+        """The inbox renders watch-accumulated notifications — the watch
+        runtime is the sole notification consumer; never client.inbox()
+        while the watcher runs (finding R3-4)."""
+
+        view = self.query_one("#inbox-view", VerticalScroll)
+        await view.remove_children()
+        rows: list[TextStatic] = [TextStatic("⧉ inbox", classes="transcript-header")]
+        if not self.session_notifications:
+            rows.append(TextStatic("no pending notifications", classes="inbox-empty"))
+        for notification in self.session_notifications:
+            actor = notification.actor_name or "?"
+            where = f"in #{notification.thread}" if notification.thread else ""
+            rows.append(
+                TextStatic(
+                    f"{notification.type} from {actor} {where}".strip(),
+                    classes="inbox-row",
+                )
+            )
+        await view.mount_all(rows)
+        self.query_one("#transcript", TranscriptView).display = False
+        view.display = True
+        self._inbox_open = True
+        self._inbox_unseen = 0
+        self._update_nav_label("inbox")
+
+    def _close_inbox(self) -> None:
+        self.query_one("#inbox-view", VerticalScroll).display = False
+        self.query_one("#transcript", TranscriptView).display = True
+        self._inbox_open = False
+
+    async def _send_from_composer(self, event: Input.Submitted) -> None:
+        text = event.value.strip()
+        if not text or self.client is None or self.active_target is None:
+            return
+        thread = self._threads.get(self.active_target)
+        warnings_before = len(self.client.last_notification_warnings)
+        try:
+            if thread is not None and thread.kind == "dm":
+                other = self._dm_counterpart(thread)
+                if other is None:
+                    self._show_banner("⚠ unknown DM counterpart")
+                    return
+                self.client.say(f"@{other.name}", text)
+            elif thread is not None and thread.kind == "subthread":
+                if thread.parent is None or thread.origin_ts is None:
+                    return
+                self.client.reply(thread.parent, str(thread.origin_ts), text)
+            else:
+                self.client.say(self.active_target, text)
+        except TautError as exc:
+            # [TUI-10.6] composer Error state: recoverable, non-blocking.
+            self._show_banner(f"⚠ send failed: {exc}")
+            return
+        event.input.value = ""
+        # The message itself appears via the watch path (INV-10). A
+        # notification-delivery warning is Partial, not failure (INV-12).
+        if len(self.client.last_notification_warnings) > warnings_before:
+            warning = self.client.last_notification_warnings[-1]
+            self._show_banner(f"⚠ {warning} (message sent)")
 
     async def _open_thread_pane(self, name: str) -> None:
         assert self.client is not None
@@ -248,7 +421,19 @@ class TautApp(App[int]):
         self.query_one("#presence", PresencePane).display = True
         self._pane_thread = None
 
+    async def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "search-input":
+            self._apply_search_filter(event.value)
+
     async def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "composer-input":
+            await self._send_from_composer(event)
+            return
+        if event.input.id == "goto-input":
+            self._goto(event.value)
+            event.input.display = False
+            event.input.value = ""
+            return
         if event.input.id == "thread-pane-input" and self._pane_thread is not None:
             sub = self._channel_threads.get(self._pane_thread)
             text = event.value.strip()
@@ -299,6 +484,8 @@ class TautApp(App[int]):
             # Claimed by the watch runtime already; accumulate for the
             # inbox view (the sole notification consumer, finding R3-4).
             self.session_notifications.append(item)
+            if not self._inbox_open:
+                self._inbox_unseen += 1
             self._update_nav_label("inbox")
             return
         key = (item.thread, item.ts)
@@ -366,7 +553,7 @@ class TautApp(App[int]):
         """Navigation label for a target, from session unread state."""
 
         if name == "inbox":
-            pending = len(self.session_notifications)
+            pending = self._inbox_unseen
             return f"⧉ inbox  {pending}" if pending else "⧉ inbox"
         thread = self._threads.get(name)
         count = self._unread_counts.get(name, 0)

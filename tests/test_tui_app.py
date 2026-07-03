@@ -24,6 +24,8 @@ from taut.client import Message, Notification, TautClient
 
 textual = pytest.importorskip("textual")
 
+from textual.widgets import Input  # noqa: E402
+
 from taut.tui._bridge import ShutdownNonAck, WatchBridge  # noqa: E402
 from taut.tui.app import TautApp  # noqa: E402
 from taut.tui.widgets import NavRow, NavSection, TextStatic  # noqa: E402
@@ -763,5 +765,227 @@ class TestThreadPane:
             await pilot.pause()
             assert not app.query_one("#thread-pane").display
             assert app.query_one("#presence").display
+
+        run_app(db, scenario)
+
+
+class TestComposer:
+    """[TUI-6.4]: sends go through the client; display via the watch path."""
+
+    def test_composer_send_appears_via_watch_exactly_once(self, tmp_path: Path) -> None:
+        db = seed_project(tmp_path)
+
+        async def scenario(app: TautApp, pilot: Pilot[int]) -> None:
+            app.select_target("general")
+            await pilot.pause()
+            await pilot.press("c")  # focus composer ([TUI-8.2])
+            await pilot.press(*"sent-from-composer")
+            await pilot.press("enter")
+            transcript = app.query_one("#transcript")
+
+            def count() -> int:
+                return sum(
+                    "sent-from-composer" in row.renderable_text
+                    for row in transcript.query(TextStatic).filter(".message")
+                )
+
+            # INV-10: no optimistic append — the message arrives through
+            # the watch path (which also proves the send succeeded).
+            await wait_until(pilot, lambda: count() >= 1)
+            await asyncio.sleep(0.3)
+            await pilot.pause()
+            assert count() == 1
+            composer_input = app.query_one("#composer-input", Input)
+            assert composer_input.value == ""
+
+        run_app(db, scenario)
+
+    def test_notification_warning_banner_send_still_succeeds(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # INV-12: an auxiliary notification-delivery warning surfaces as a
+        # banner without downgrading the successful send. The send stays
+        # real; only the warning is injected after it.
+        db = seed_project(tmp_path)
+        original_say = TautClient.say
+
+        def say_with_warning(self: TautClient, target: str, text: str) -> Message:
+            message = original_say(self, target, text)
+            self.last_notification_warnings.append("injected delivery warning")
+            return message
+
+        monkeypatch.setattr(TautClient, "say", say_with_warning)
+
+        async def scenario(app: TautApp, pilot: Pilot[int]) -> None:
+            app.select_target("general")
+            await pilot.pause()
+            await pilot.press("c")
+            await pilot.press(*"warned-send")
+            await pilot.press("enter")
+            transcript = app.query_one("#transcript")
+            await wait_until(
+                pilot,
+                lambda: any(
+                    "warned-send" in row.renderable_text
+                    for row in transcript.query(TextStatic).filter(".message")
+                ),
+            )
+            banner = app.query_one("#status-banner", TextStatic)
+            assert banner.display
+            assert "warning" in banner.renderable_text
+
+        run_app(db, scenario)
+
+
+class TestInbox:
+    """[TUI-6.2]/[IAN-7]: the watch runtime is the sole consumer (R3-4)."""
+
+    def test_inbox_shows_watch_claimed_mentions_exactly_once(
+        self, tmp_path: Path
+    ) -> None:
+        db = tmp_path / ".taut.db"
+        TautClient.init(db_path=db)
+        van = TautClient(db_path=db, as_name="van")
+        van.join("general")
+        claude = TautClient(db_path=db, as_name="claude")
+        claude.join("general")
+        van.read()
+        message = claude.say("general", "heads up @van")  # pending mention
+
+        async def scenario(app: TautApp, pilot: Pilot[int]) -> None:
+            # The initial drain claims and delivers the pending mention.
+            await wait_until(pilot, lambda: len(app.session_notifications) >= 1)
+            nav = app.query_one("#navigation")
+
+            def inbox_row() -> str:
+                for row in nav.query(NavRow):
+                    if row.target == "inbox":
+                        return row.renderable_text
+                return ""
+
+            assert inbox_row().rstrip().endswith("1")  # badge before open
+            await pilot.press("i")
+            await pilot.pause()
+            inbox_view = app.query_one("#inbox-view")
+            assert inbox_view.display
+            assert not app.query_one("#transcript").display
+            rows = [
+                row.renderable_text
+                for row in inbox_view.query(TextStatic).filter(".inbox-row")
+            ]
+            assert any("mention" in text and "claude" in text for text in rows)
+            assert not inbox_row().rstrip().endswith("1")  # cleared on open
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.query_one("#transcript").display
+            assert not app.query_one("#inbox-view").display
+
+        run_app(db, scenario)
+        # Claimed exactly once by the watch runtime: nothing left to claim,
+        # while the source chat history stays durable ([TAUT-10]).
+        fresh = TautClient(db_path=db, as_name="van")
+        with pytest.raises(EmptyResultError, match="nothing pending"):
+            fresh.inbox()
+        assert message.text in [m.text for m in fresh.history("general")]
+
+
+class TestToggles:
+    def test_members_toggle(self, tmp_path: Path) -> None:
+        db = seed_project(tmp_path)
+
+        async def scenario(app: TautApp, pilot: Pilot[int]) -> None:
+            app.select_target("general")
+            await pilot.pause()
+            assert app.query_one("#presence").display
+            await pilot.press("m")
+            assert not app.query_one("#presence").display
+            await pilot.press("m")
+            assert app.query_one("#presence").display
+
+        run_app(db, scenario)
+
+    def test_search_filters_and_escape_restores(self, tmp_path: Path) -> None:
+        db = seed_project(tmp_path)
+
+        async def scenario(app: TautApp, pilot: Pilot[int]) -> None:
+            app.select_target("general")
+            await pilot.pause()
+            await pilot.press("/")
+            await pilot.pause()
+            assert app.query_one("#search-input").display
+            await pilot.press(*"hello")
+            await pilot.pause()
+            transcript = app.query_one("#transcript")
+            visible = [
+                row.renderable_text
+                for row in transcript.query(TextStatic).filter(".message")
+                if row.display
+            ]
+            assert any("hello from claude" in text for text in visible)
+            # Non-matching rows (the join/create notices) are hidden.
+            hidden_notices = [
+                row
+                for row in transcript.query(TextStatic).filter(".notice")
+                if not row.display
+            ]
+            assert hidden_notices
+            await pilot.press("escape")
+            await pilot.pause()
+            assert not app.query_one("#search-input").display
+            all_rows = list(transcript.query(TextStatic).filter(".message"))
+            assert all(row.display for row in all_rows)
+
+        run_app(db, scenario)
+
+    def test_goto_switches_target(self, tmp_path: Path) -> None:
+        db = seed_project(tmp_path)
+
+        async def scenario(app: TautApp, pilot: Pilot[int]) -> None:
+            app.select_target("general")
+            await pilot.pause()
+            await pilot.press("g")
+            await pilot.pause()
+            assert app.query_one("#goto-input").display
+            await pilot.press(*"ops")
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app.active_target == "ops"
+            assert not app.query_one("#goto-input").display
+            label = app.query_one("#composer-label", TextStatic).renderable_text
+            assert "ops" in label
+
+        run_app(db, scenario)
+
+    def test_help_shows_full_commands_and_escape_keeps_target(
+        self, tmp_path: Path
+    ) -> None:
+        db = seed_project(tmp_path)
+
+        async def scenario(app: TautApp, pilot: Pilot[int]) -> None:
+            app.select_target("general")
+            await pilot.pause()
+            before = app.active_target
+            await pilot.press("?")
+            await pilot.pause()
+            overlay = app.query_one("#help-overlay", TextStatic)
+            assert overlay.display
+            text = overlay.renderable_text
+            # Help exposes the full active command set ([TUI-8.2]), even
+            # commands a narrow key bar would omit.
+            for fragment in (
+                "fold",
+                "thread",
+                "members",
+                "search",
+                "goto",
+                "inbox",
+                "help",
+                "quit",
+            ):
+                assert fragment in text
+            await pilot.press("escape")
+            await pilot.pause()
+            assert not app.query_one("#help-overlay", TextStatic).display
+            assert app.active_target == before
 
         run_app(db, scenario)
