@@ -47,6 +47,13 @@ cleanup.
 - Implementation docs explain the current rationale and ownership.
 - Code points back to governing specs when ownership would otherwise be
   ambiguous.
+- When a plan changes intended behavior, exact proposed spec sections live
+  in the plan for review; the **spec-promotion slice** applies them per a
+  named strategy (in-file text-first, atomic, new file under an in-flight
+  classification, or spec-authoring only). Prose `Status:` headers and
+  machine classification are different mechanisms. After promotion, the spec
+  tree is the single governing contract — not plan appendix text. See
+  `runbooks/writing-plans.md` §4b–4d.
 
 ## 6. Reuse Local Paths and Helpers Before Inventing New Ones
 

@@ -436,8 +436,9 @@ and text remain unchanged.
 Taut must use a public SimpleBroker queue-rename API for broker queue renames.
 Taut must not update SimpleBroker-owned message tables directly.
 
-Taut requires SimpleBroker `>=4.9.0` and `taut-pg` requires
-`simplebroker-pg>=2.4.0` so rename-capable backends are available. The
+Taut requires SimpleBroker `>=5.0.0` and `taut-pg` requires
+`simplebroker-pg>=3.0.0` so rename-capable backends and SimpleBroker 5.0's
+backend API handshake are available. The
 implementation must use `simplebroker.open_broker(...).rename_queue(...)`
 against Taut's resolved broker target; it must not assume `Queue.rename()` or a
 module-level `simplebroker.rename_queue()` exists.

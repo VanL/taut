@@ -15,7 +15,7 @@ authors = [
 ]
 dependencies = [
     "taut>=0.4.0",
-    "simplebroker-pg>=2.5.0",
+    "simplebroker-pg>=3.0.0",
 ]
 
 [project.optional-dependencies]

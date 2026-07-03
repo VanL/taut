@@ -20,6 +20,12 @@ Use this order whenever instructions or context seem inconsistent:
   "compliant" always means compliant with a fixed, named object: the commit
   SHA when the spec is committed; otherwise the file path plus worktree
   state and diff base; or an explicit "this change revises the spec itself".
+- When the plan includes a `## Proposed Spec Delta`, record both the **spec
+  baseline** (at plan start) and, after the **spec-promotion slice**, the
+  **promotion baseline identifier** (after the delta is applied to the spec
+  tree). Use a commit SHA when committed; otherwise diff base plus worktree
+  state. Mid-implementation claims are against the promotion baseline — not
+  plan appendix text and not the pre-promotion identifier.
 - Identify the active plan or create one if the change is non-trivial.
 - Identify the review agent or review path for non-trivial work.
 - Call out invariants that must not move.
@@ -41,6 +47,18 @@ Use this order whenever instructions or context seem inconsistent:
   revisions) edit specs as their primary work product and are governed by
   `runbooks/writing-specs.md`; they still record the baseline they started
   from for downstream implementers.
+- **Spec-changing implementation** (see `runbooks/writing-plans.md`
+  §4b–4d): the plan carries exact proposed sections for review; the
+  **spec-promotion slice** (early, not last) applies them per a named
+  strategy (A/B/C/D). Do not implement code that cites spec paths against
+  plan-only text while the spec tree still reflects the baseline.
+  **Exploration** (behavior undecided) is not implementation against a
+  governing spec — when behavior is decided, promote to the spec tree first,
+  then build. Prose `Status: Proposed` and machine classification are
+  different mechanisms — see §4d.
+- **Single governing contract:** after promotion, the spec tree is
+  canonical. The plan's delta is historical review material, not a parallel
+  source of truth.
 - If uncertainty remains on a high-impact change, ask once and narrowly.
 
 ## Completion Gate
@@ -55,3 +73,11 @@ A status document — a ledger, an execution log, a prior "passing" note, your
 own earlier summary — is a claim, not evidence. Every "done", "passing", or
 "ship-ready" assertion must cite a command rerun from the current state, not
 a document that says so.
+
+For spec-changing work, the final completion gate includes **traceability
+reconciliation**: the promoted spec, plan, implementation doc, and code form
+a closed chain, and any traceability or self-check command named in the plan
+has been rerun from the current state. Where the repo declares that gate
+mandatory (for example a zero-error, zero-warning self-corpus check), it is
+not waivable. Clearing reciprocal backlink debt and completing classification
+graduation (when strategy C was used) are part of done, not optional cleanup.

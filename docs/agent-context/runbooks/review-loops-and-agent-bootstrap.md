@@ -58,7 +58,8 @@ For large changes, run review:
 
 Always point the reviewer at:
 
-- the governing spec
+- the governing spec (baseline identifier) and, when present, the plan's
+  `## Proposed Spec Delta`
 - the active plan
 - the relevant implementation note
 - the current touched files
@@ -91,10 +92,12 @@ When the reviewer is a sandboxed CLI agent (for example `codex exec`):
 
 Use this or a close variant:
 
-> Read the plan at [path]. Carefully examine the plan and the associated code.
-> Look for errors, bad ideas, and latent ambiguities. Don't do any
-> implementation, but answer carefully: Could you implement this confidently and
-> correctly if asked?
+> Read the plan at [path] and its `## Proposed Spec Delta` (if present),
+> including the named promotion strategy. Carefully examine the plan, the
+> proposed spec text, and the associated code. Look for errors, bad ideas, and
+> latent ambiguities. Don't do any implementation, but answer carefully: Could
+> you implement this confidently and correctly against the delta as promoted,
+> if asked?
 
 If the review is for completed work rather than a plan draft, swap in the
 changed files and current verification evidence while keeping the same review

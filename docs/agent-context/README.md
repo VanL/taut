@@ -22,7 +22,9 @@ agents, and human contributors working in this repository.
 
 ## Runbooks
 
-- `writing-plans.md`: how to write executable implementation plans
+- `writing-plans.md`: how to write executable implementation plans (including
+  spec baseline, proposed spec delta, promotion slices, and status
+  mechanisms)
 - `hardening-plans.md`: required companion for risky or boundary-crossing plans
   that must survive review
 - `review-loops-and-agent-bootstrap.md`: how to bootstrap available agents and

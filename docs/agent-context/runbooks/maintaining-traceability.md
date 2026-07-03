@@ -13,13 +13,19 @@ Before editing:
 4. identify the relevant implementation doc or repository map
 5. identify the review agent or review path for non-trivial work
 6. identify the verification evidence that will prove the change
+7. if the plan changes intended spec behavior, confirm it has `## Spec
+   Baseline`, `## Proposed Spec Delta`, and an explicit promotion slice (see
+   `runbooks/writing-plans.md` §4b–4d)
 
 ## During Execution
 
 ### For Each Material Step
 
 - keep the plan current enough that another engineer can see what changed
-- if intended behavior changed, update the spec in the same change
+- if intended behavior changed, update the spec in the same change — for
+  implementation plans, that is the **spec-promotion slice** before code
+  cites new spec paths, unless the plan is typed exploration (no governing
+  spec yet)
 - if rationale, boundaries, or ownership changed, update the implementation doc
   in the same change
 - if new important modules or directories were introduced, update the relevant
@@ -56,6 +62,10 @@ Before calling the work done, check:
 - any central skill or runbook used during the work was evaluated for possible
   improvement
 - any residual risk or skipped verification is called out
+- for spec-changing work: promotion baseline identifier recorded; promotion
+  strategy executed; classification graduation (if any) completed with
+  citation updates; the repo's traceability or self-check gate rerun (named
+  command and result)
 
 ## Minimum Traceability Chain
 

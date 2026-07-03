@@ -129,7 +129,7 @@ def test_write_version_files_updates_pg_dependency_floor(
                 'version = "0.1.1"',
                 "dependencies = [",
                 '    "taut>=0.1.1",',
-                '    "simplebroker-pg>=2.2.1",',
+                '    "simplebroker-pg>=3.0.0",',
                 "]",
                 "",
             ]
