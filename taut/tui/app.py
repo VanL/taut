@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -82,6 +83,7 @@ class TautApp(App[int]):
     #goto-input { display: none; }
     #inbox-view { height: 1fr; display: none; }
     #help-overlay { display: none; }
+    #too-small { display: none; color: $warning; }
     """
 
     BINDINGS = [
@@ -98,6 +100,7 @@ class TautApp(App[int]):
     ]
 
     active_target: reactive[str | None] = reactive(None, init=False)
+    layout_mode: reactive[str] = reactive("wide", init=False)
 
     def __init__(
         self,
@@ -133,6 +136,8 @@ class TautApp(App[int]):
         self._pane_thread: str | None = None
         self._inbox_open = False
         self._inbox_unseen = 0
+        # None = the mode's default (wide shows presence, others hide).
+        self._presence_override: bool | None = None
 
     def compose(self) -> ComposeResult:
         yield TextStatic("taut", id="titlebar")
@@ -148,9 +153,14 @@ class TautApp(App[int]):
                 yield Composer(id="composer")
             yield PresencePane(id="presence")
             yield ThreadPane(id="thread-pane")
+        yield TextStatic(
+            "terminal too small — resize to at least 50×20 ([TUI-9.4])",
+            id="too-small",
+        )
         yield TextStatic(KEYBAR_TEXT, id="keybar")
 
     async def on_mount(self) -> None:
+        self.layout_mode = self._compute_mode(self.size.width, self.size.height)
         try:
             self.client = TautClient(
                 db_path=self._db_path,
@@ -196,6 +206,51 @@ class TautApp(App[int]):
         # Convergence fallback timer, aligned to the watcher's own refresh
         # interval; the other trigger is an unknown-thread delivery (R3-8).
         self.set_interval(WATCH_MEMBERSHIP_REFRESH_SECONDS, self._refresh_membership)
+
+    # -- responsive modes ([TUI-9]; plan Task 7 thresholds) -----------------
+
+    @staticmethod
+    def _compute_mode(width: int, height: int) -> str:
+        if width < 50 or height < 20:
+            return "too-small"
+        if width < 80:
+            return "narrow"
+        if width < 120:
+            return "medium"
+        return "wide"
+
+    def on_resize(self, event: events.Resize) -> None:
+        self.layout_mode = self._compute_mode(event.size.width, event.size.height)
+
+    def watch_layout_mode(self, mode: str) -> None:
+        hint = self.query_one("#too-small", TextStatic)
+        main = self.query_one("#main", Horizontal)
+        if mode == "too-small":
+            main.display = False
+            hint.display = True
+            return
+        hint.display = False
+        main.display = True
+        # Mode changes reset the members-toggle override to the mode default.
+        self._presence_override = None
+        nav = self.query_one("#navigation", NavigationPane)
+        nav.styles.width = 26 if mode in ("wide", "medium") else 8
+        self._apply_presence_visibility()
+
+    def _presence_default(self) -> bool:
+        return self.layout_mode == "wide"
+
+    def _apply_presence_visibility(self) -> None:
+        presence = self.query_one("#presence", PresencePane)
+        if self._pane_thread is not None:
+            presence.display = False  # the thread pane borrows the column
+            return
+        visible = (
+            self._presence_override
+            if self._presence_override is not None
+            else self._presence_default()
+        )
+        presence.display = visible
 
     # -- state ------------------------------------------------------------
 
@@ -280,8 +335,9 @@ class TautApp(App[int]):
     def action_toggle_members(self) -> None:
         if self._pane_thread is not None:
             return  # the thread pane is borrowing the column ([TUI-7.3])
-        presence = self.query_one("#presence", PresencePane)
-        presence.display = not presence.display
+        currently = self.query_one("#presence", PresencePane).display
+        self._presence_override = not currently
+        self._apply_presence_visibility()
 
     def action_open_search(self) -> None:
         box = self.query_one("#search-input", Input)
@@ -418,8 +474,8 @@ class TautApp(App[int]):
 
     async def _close_thread_pane(self) -> None:
         self.query_one("#thread-pane", ThreadPane).display = False
-        self.query_one("#presence", PresencePane).display = True
         self._pane_thread = None
+        self._apply_presence_visibility()
 
     async def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == "search-input":
