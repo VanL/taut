@@ -118,6 +118,79 @@ class ThreadsMixin(_ClientBase):
             raise EmptyResultError("no unread threads")
         return result
 
+    def joined_threads(self) -> list[Thread]:
+        """Every thread the acting member has joined, with unread state.
+
+        Unlike ``list_threads()``, this never raises on "everything read":
+        the TUI navigation must render quiet projects (spec 04 [TUI-6.2];
+        plan Task 2 Addition A). Read-only — no cursor moves. A guest with
+        no member row has joined nothing and gets ``[]``.
+        """
+
+        self._ensure_no_incomplete_channel_rename()
+        resolved = self._resolve_member(create=False, allow_guest=True)
+        if resolved.row is None:
+            return []
+        memberships = self._state.list_memberships(resolved.row["member_id"])
+        thread_names = {row["thread"] for row in memberships}
+        rows = [
+            row for row in self._state.list_threads() if row["name"] in thread_names
+        ]
+        by_thread = {row["thread"]: row for row in memberships}
+        return [self._thread_from_row(row, by_thread.get(row["name"])) for row in rows]
+
+    def read_cursor(self, thread: str) -> int | None:
+        """The acting member's stored ``last_seen_ts`` for ``thread``.
+
+        Anchors the TUI's unread separator (spec 04 [TUI-6.3], [TUI-10.8];
+        plan Task 2 Addition B). Read-only: never advances or writes the
+        cursor. Accepts any membership-bearing thread name — channels,
+        sub-threads, and ``dm.*`` rows — so the mount-time snapshot covers
+        every joined conversation. Returns ``None`` when the caller is not
+        a member (or the thread is unknown).
+        """
+
+        resolved = self._resolve_member(create=False, allow_guest=True)
+        if resolved.row is None:
+            return None
+        membership = self._state.get_membership(
+            thread=thread, member_id=resolved.row["member_id"]
+        )
+        if membership is None:
+            return None
+        return membership["last_seen_ts"]
+
+    def channel_threads(self, channel: str) -> list[Thread]:
+        """Every registered sub-thread of ``channel``, joined or not.
+
+        Feeds the TUI's inline thread affordances (spec 04 [TUI-7.1]; plan
+        Task 2 Addition C): each result carries ``origin_ts`` (the parent
+        message it hangs from) and ``reply_count`` (total sub-thread
+        message count — deliberately not the membership-relative
+        ``_unread_count``, which is 0 for non-joined sub-threads).
+        """
+
+        channel = addressing.validate_chat_thread_name(channel, allow_subthread=False)
+        self._ensure_no_incomplete_channel_rename()
+        if self._state.get_thread(channel) is None:
+            raise NotFoundError(f"channel not found: {channel}")
+        resolved = self._resolve_member(create=False, allow_guest=True)
+        member_id = resolved.row["member_id"] if resolved.row else None
+        rows = [
+            row
+            for row in self._state.list_threads()
+            if row["kind"] == "subthread" and row["parent"] == channel
+        ]
+        result: list[Thread] = []
+        for row in rows:
+            membership = (
+                self._state.get_membership(thread=row["name"], member_id=member_id)
+                if member_id
+                else None
+            )
+            result.append(self._thread_from_row(row, membership, with_reply_count=True))
+        return result
+
     def rename_channel(self, old_name: str, new_name: str) -> Thread:
         old_name = addressing.validate_chat_thread_name(old_name, allow_subthread=False)
         new_name = addressing.validate_chat_thread_name(new_name, allow_subthread=False)
@@ -227,6 +300,8 @@ class ThreadsMixin(_ClientBase):
         self,
         row: ThreadRow,
         membership: MembershipRow | None,
+        *,
+        with_reply_count: bool = False,
     ) -> Thread:
         queue = self.queue(row["name"])
         unread_count = self._unread_count(queue, membership)
@@ -244,10 +319,18 @@ class ThreadsMixin(_ClientBase):
             last_ts=self._last_message_ts(queue),
             unread_count=unread_count,
             members=members,
+            origin_ts=row["origin_ts"],
+            reply_count=self._total_count(queue) if with_reply_count else 0,
         )
 
     def _last_message_ts(self, queue: Queue) -> int | None:
         return queue.latest_pending_timestamp()
+
+    def _total_count(self, queue: Queue, *, cap: int = 1000) -> int:
+        """Total messages in a queue, saturating at ``cap`` (display-only)."""
+
+        rows = queue.peek_many(cap, with_timestamps=True, after_timestamp=0)
+        return len(rows)
 
     def _unread_count(
         self,

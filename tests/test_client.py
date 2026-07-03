@@ -1088,3 +1088,109 @@ def test_reply_suffix_prefers_in_window_match_over_evicted_older_message(
     reply = van.reply("general", "994321", "resolved to recent")
 
     assert reply.thread == f"general.{recent_ts}"
+# --- TUI read-only accessors (plan Task 2; [TUI-4.2] grow-the-client) ---
+
+
+def test_joined_threads_fully_read_project_does_not_raise(tmp_path: Path) -> None:
+    van = client(tmp_path, "van")
+    van.join("general")
+    van.join("ops")
+    claude = existing_client(tmp_path, "claude")
+    claude.join("side")  # registered, but van never joined it
+
+    threads = van.joined_threads()
+    assert {thread.name for thread in threads} == {"general", "ops"}
+    assert all(not thread.unread for thread in threads)
+    # The taut list exit-2 contract is untouched (INV-1).
+    with pytest.raises(EmptyResultError, match="no unread threads"):
+        van.list_threads()
+
+
+def test_joined_threads_reports_unread_and_includes_dms(tmp_path: Path) -> None:
+    van = client(tmp_path, "van")
+    van.join("general")
+    claude = existing_client(tmp_path, "claude")
+    claude.join("general")
+    claude.say("general", "ping")
+    claude.say("@van", "psst")
+
+    threads = van.joined_threads()
+    by_name = {thread.name: thread for thread in threads}
+    assert by_name["general"].unread
+    dm_threads = [thread for thread in threads if thread.kind == "dm"]
+    assert len(dm_threads) == 1
+    assert dm_threads[0].unread
+
+
+def test_read_cursor_reads_without_moving_anything(tmp_path: Path) -> None:
+    van = client(tmp_path, "van")
+    van.join("general")
+    claude = existing_client(tmp_path, "claude")
+    claude.join("general")
+    van.say("general", "one")
+    claude.read("general")  # advances claude's cursor past "one"
+
+    cursor = claude.read_cursor("general")
+    assert isinstance(cursor, int)
+
+    van.say("general", "two")
+    # Reading the cursor is a no-op: repeated reads return the same value
+    # and the new message stays unread (monotonic no-op).
+    assert claude.read_cursor("general") == cursor
+    assert claude.read_cursor("general") == cursor
+    unread = {t.name: t.unread for t in claude.joined_threads()}
+    assert unread["general"] is True
+
+    # Not a member / unknown thread: None, never an error.
+    assert claude.read_cursor("no-such-thread") is None
+
+
+def test_read_cursor_covers_dm_threads(tmp_path: Path) -> None:
+    van = client(tmp_path, "van")
+    van.join("general")
+    claude = existing_client(tmp_path, "claude")
+    claude.join("general")
+    message = van.say("@claude", "hello")
+
+    # The mount-time snapshot (plan Task 3) must cover DM rows too, so
+    # read_cursor accepts the dm.* name it got from joined_threads().
+    dm_name = message.thread
+    assert dm_name.startswith("dm.")
+    assert van.read_cursor(dm_name) is not None
+
+
+def test_channel_threads_reply_count_is_total_not_unread(tmp_path: Path) -> None:
+    van = client(tmp_path, "van")
+    van.join("general")
+    claude = existing_client(tmp_path, "claude")
+    claude.join("general")
+    root = van.say("general", "root message")
+    van.reply("general", str(root.ts), "first")
+    van.reply("general", str(root.ts), "second")
+
+    # Joined + fully read (reply() advanced van's own sub-thread cursor):
+    # the total must still be 2 while unread is 0 (finding R4-1).
+    [sub] = van.channel_threads("general")
+    assert sub.parent == "general"
+    assert sub.origin_ts == root.ts
+    assert sub.reply_count == 2
+    assert sub.unread_count == 0
+
+    # Non-joined viewer: claude never touched the sub-thread; the count
+    # must not collapse to 0 (the _unread_count failure mode).
+    [sub_for_claude] = claude.channel_threads("general")
+    assert sub_for_claude.reply_count == 2
+
+
+def test_channel_threads_scopes_to_channel_and_handles_empty(tmp_path: Path) -> None:
+    van = client(tmp_path, "van")
+    van.join("general")
+    van.join("ops")
+    root = van.say("general", "root")
+    van.reply("general", str(root.ts), "reply")
+
+    assert van.channel_threads("ops") == []
+    names = [thread.name for thread in van.channel_threads("general")]
+    assert names == [f"general.{root.ts}"]
+    with pytest.raises(NotFoundError):
+        van.channel_threads("missing")

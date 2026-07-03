@@ -23,7 +23,14 @@ class Member:
 
 @dataclass(frozen=True, slots=True)
 class Thread:
-    """Public thread object."""
+    """Public thread object.
+
+    ``origin_ts`` anchors a sub-thread to its parent message;
+    ``reply_count`` is the sub-thread's total message count (display-only,
+    capped; distinct from the membership-relative ``unread_count``). Both
+    are populated by ``channel_threads()`` for the TUI's inline thread
+    affordances (spec 04 [TUI-7.1]).
+    """
 
     name: str
     parent: str | None
@@ -32,6 +39,8 @@ class Thread:
     kind: str = "channel"
     unread_count: int = 0
     members: tuple[str, ...] = ()
+    origin_ts: int | None = None
+    reply_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
