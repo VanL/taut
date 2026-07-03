@@ -25,10 +25,11 @@ from taut.client import InitResult, Member, Message, Notification, TautClient, T
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = build_parser().parse_args(_hoist_global_options(list(argv or sys.argv[1:])))
+    # argv=[] means "bare taut"; only argv=None falls back to process argv.
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    args = build_parser().parse_args(_hoist_global_options(raw_argv))
     if not hasattr(args, "func"):
-        build_parser().print_help()
-        return 1
+        return _dispatch_no_verb(args)
     try:
         return int(args.func(args))
     except Exception as exc:
@@ -47,6 +48,51 @@ class _TautArgumentParser(argparse.ArgumentParser):
     def error(self, message: str) -> NoReturn:
         self.print_usage(sys.stderr)
         self.exit(1, f"{self.prog}: error: {message}\n")
+
+
+_MISSING_TUI_HINT = """\
+TUI extra not installed.
+Install it with: pipx inject taut "taut[tui]"
+Meanwhile the CLI works: taut list, taut watch."""
+
+
+def _dispatch_no_verb(args: argparse.Namespace) -> int:
+    """No-subcommand invocation: launch the TUI or print help ([TUI-5]).
+
+    All TUI imports stay inside this branch so pure CLI use never touches
+    taut.tui; only MissingTuiExtraError becomes the install hint — any
+    other failure from the TUI propagates as a real error.
+    """
+
+    from taut.tui import _launch
+
+    decision = _launch.decide(
+        has_verb=False,
+        db_path=args.db_path,
+        as_name=args.as_name,
+        token=args.auth_token,
+        json_flag=args.json,
+        timestamps=args.timestamps,
+        quiet=args.quiet,
+        stdin_isatty=_launch.stdin_isatty(),
+        stdout_isatty=_launch.stdout_isatty(),
+    )
+    if not decision.launch_tui:
+        build_parser().print_help()
+        return 1
+    try:
+        from taut.tui import run_tui
+
+        return int(
+            run_tui(
+                db_path=decision.db_path,
+                as_name=decision.as_name,
+                token=decision.token,
+            )
+        )
+    except _launch.MissingTuiExtraError:
+        print(_MISSING_TUI_HINT, file=sys.stderr)
+        return 1
 
 
 def build_parser() -> argparse.ArgumentParser:

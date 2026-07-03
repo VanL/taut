@@ -81,6 +81,176 @@ class TestMissingExtra:
         assert not issubclass(MissingTuiExtraError, ImportError)
 
 
+class _RunTuiSpy:
+    """Records run_tui invocations; the dispatch, not the app, is under test."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, str | None]] = []
+
+    def __call__(
+        self,
+        *,
+        db_path: str | None = None,
+        as_name: str | None = None,
+        token: str | None = None,
+    ) -> int:
+        self.calls.append({"db_path": db_path, "as_name": as_name, "token": token})
+        return 0
+
+
+@pytest.fixture
+def tty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make both stdio ends look interactive ([TUI-5.3] predicates)."""
+
+    monkeypatch.setattr("taut.tui._launch.stdin_isatty", lambda: True)
+    monkeypatch.setattr("taut.tui._launch.stdout_isatty", lambda: True)
+
+
+@pytest.fixture
+def run_tui_spy(monkeypatch: pytest.MonkeyPatch) -> _RunTuiSpy:
+    spy = _RunTuiSpy()
+    monkeypatch.setattr("taut.tui.run_tui", spy)
+    return spy
+
+
+class TestLaunchDispatch:
+    """[TUI-5] dispatch through the real main() entry (INV-1..4)."""
+
+    def test_verb_present_runs_cli_never_tui(
+        self, tty: None, run_tui_spy: _RunTuiSpy, tmp_path: Path
+    ) -> None:
+        from taut.cli import main
+
+        rc = main(["--db", str(tmp_path / "absent.db"), "list"])
+        assert rc != 0  # no db: the CLI errors, but through the CLI path
+        assert run_tui_spy.calls == []
+
+    @pytest.mark.parametrize("flag", ["--help", "--version"])
+    def test_help_and_version_stay_argparse_actions(
+        self, tty: None, run_tui_spy: _RunTuiSpy, flag: str
+    ) -> None:
+        from taut.cli import main
+
+        with pytest.raises(SystemExit) as excinfo:
+            main([flag])
+        assert excinfo.value.code == 0
+        assert run_tui_spy.calls == []
+
+    def test_main_empty_list_is_bare_taut(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from taut.cli import main
+
+        # Regression for review finding 1: `argv or sys.argv[1:]` leaked the
+        # process argv when argv == []. With a verb in sys.argv, main([])
+        # must still be a bare invocation (help + exit 1 in non-tty).
+        monkeypatch.setattr(sys, "argv", ["taut", "--version"])
+        monkeypatch.setattr("taut.tui._launch.stdin_isatty", lambda: False)
+        monkeypatch.setattr("taut.tui._launch.stdout_isatty", lambda: False)
+        rc = main([])
+        assert rc == 1
+        assert "usage: taut" in capsys.readouterr().out
+
+    def test_bare_tty_launches_tui_with_none_kwargs(
+        self, tty: None, run_tui_spy: _RunTuiSpy
+    ) -> None:
+        from taut.cli import main
+
+        assert main([]) == 0
+        assert run_tui_spy.calls == [{"db_path": None, "as_name": None, "token": None}]
+
+    @pytest.mark.parametrize("which", ["stdin", "stdout"])
+    def test_bare_non_tty_prints_help_exits_1(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        run_tui_spy: _RunTuiSpy,
+        capsys: pytest.CaptureFixture[str],
+        which: str,
+    ) -> None:
+        from taut.cli import main
+
+        # INV-3: agents never hang — either non-tty end forces the CLI path.
+        monkeypatch.setattr("taut.tui._launch.stdin_isatty", lambda: which != "stdin")
+        monkeypatch.setattr("taut.tui._launch.stdout_isatty", lambda: which != "stdout")
+        rc = main([])
+        assert rc == 1
+        assert "usage: taut" in capsys.readouterr().out
+        assert run_tui_spy.calls == []
+
+    @pytest.mark.parametrize(
+        ("argv", "expected"),
+        [
+            (["--db", "X"], {"db_path": "X", "as_name": None, "token": None}),
+            (["--db=X"], {"db_path": "X", "as_name": None, "token": None}),
+            (["--as", "van"], {"db_path": None, "as_name": "van", "token": None}),
+            (["--token", "T1"], {"db_path": None, "as_name": None, "token": "T1"}),
+        ],
+    )
+    def test_accepted_globals_launch_configured_tui(
+        self,
+        tty: None,
+        run_tui_spy: _RunTuiSpy,
+        argv: list[str],
+        expected: dict[str, str | None],
+    ) -> None:
+        from taut.cli import main
+
+        # INV-4 accepted set, one firing test per element (finding R3-11),
+        # plus the equals-form spelling argparse already accepts for verbs
+        # (finding R4-4).
+        assert main(argv) == 0
+        assert run_tui_spy.calls == [expected]
+
+    @pytest.mark.parametrize("flag", ["--json", "-t", "-q"])
+    def test_output_only_flags_never_launch(
+        self,
+        tty: None,
+        run_tui_spy: _RunTuiSpy,
+        capsys: pytest.CaptureFixture[str],
+        flag: str,
+    ) -> None:
+        from taut.cli import main
+
+        # INV-4 excluded set: output flags are meaningless interactively.
+        rc = main([flag])
+        assert rc == 1
+        assert "usage: taut" in capsys.readouterr().out
+        assert run_tui_spy.calls == []
+
+    def test_missing_extra_prints_hint_and_exits_1(
+        self,
+        tty: None,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from taut.cli import main
+
+        # Real run_tui, simulated absent textual: the probe raises
+        # MissingTuiExtraError, which is the only thing the CLI translates
+        # into the [TUI-5.1] hint.
+        monkeypatch.setitem(sys.modules, "textual", None)
+        rc = main([])
+        assert rc == 1
+        err = capsys.readouterr().err
+        for fragment in ("taut[tui]", "pipx inject", "taut list", "taut watch"):
+            assert fragment in err
+
+    def test_real_importerror_is_not_swallowed(
+        self, tty: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from taut.cli import main
+
+        # Negative test for finding R2-3: only MissingTuiExtraError becomes
+        # the install hint; a genuine ImportError from the TUI is a real bug
+        # and must propagate.
+        def broken(**_: object) -> int:
+            raise ImportError("broken taut.tui submodule")
+
+        monkeypatch.setattr("taut.tui.run_tui", broken)
+        with pytest.raises(ImportError, match="broken taut.tui submodule"):
+            main([])
+
+
 class TestPackaging:
     """INV-5: Textual stays behind the extras; build ships TUI files."""
 
