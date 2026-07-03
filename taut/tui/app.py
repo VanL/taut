@@ -97,6 +97,7 @@ class TautApp(App[int]):
         Binding("g", "open_goto", "goto", show=False),
         Binding("i", "open_inbox", "inbox", show=False),
         Binding("question_mark", "open_help", "help", show=False),
+        Binding("enter", "init_here", "init here", show=False, priority=True),
     ]
 
     active_target: reactive[str | None] = reactive(None, init=False)
@@ -138,6 +139,7 @@ class TautApp(App[int]):
         self._inbox_unseen = 0
         # None = the mode's default (wide shows presence, others hide).
         self._presence_override: bool | None = None
+        self._uninitialized = False
 
     def compose(self) -> ComposeResult:
         yield TextStatic("taut", id="titlebar")
@@ -161,6 +163,9 @@ class TautApp(App[int]):
 
     async def on_mount(self) -> None:
         self.layout_mode = self._compute_mode(self.size.width, self.size.height)
+        await self._bootstrap()
+
+    async def _bootstrap(self) -> None:
         try:
             self.client = TautClient(
                 db_path=self._db_path,
@@ -168,18 +173,21 @@ class TautApp(App[int]):
                 token=self._token,
             )
         except NotInitializedError:
-            # [TUI-10.1]: the app exists without a client; recovery task
-            # grows this into the init-here empty state.
+            # [TUI-10.1]: the app exists without a client. The empty state
+            # offers init-here (Enter) and the quit path (q).
+            self._uninitialized = True
             await self._show_fatal(
-                "no .taut.db here — this directory isn't a taut project yet. "
-                "run: taut init  ·  q quits"
+                "no .taut.db here — this directory isn't a taut project "
+                "yet. press enter to init here · q quits"
             )
             return
         try:
             self.me = self.client.whoami()
             threads = self.client.joined_threads()
         except TautError as exc:
-            await self._show_fatal(str(exc))
+            # [TUI-10.2]: identity errors surface from client rules; setup
+            # beyond init stays CLI-first in v1 (Task 8 decision).
+            await self._show_fatal(f"{exc} — join with: taut join CHANNEL · q quits")
             return
         self._threads = {thread.name: thread for thread in threads}
         # [TUI-10.8]: snapshot strictly BEFORE the watcher exists — once it
@@ -251,6 +259,21 @@ class TautApp(App[int]):
             else self._presence_default()
         )
         presence.display = visible
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action == "init_here":
+            return self._uninitialized
+        return True
+
+    async def action_init_here(self) -> None:
+        """[TUI-10.1]: initialize through the same client-owned path as
+        `taut init` (the classmethod needs no client), then bootstrap."""
+
+        if not self._uninitialized:
+            return
+        TautClient.init(db_path=self._db_path)
+        self._uninitialized = False
+        await self._bootstrap()
 
     # -- state ------------------------------------------------------------
 
@@ -581,6 +604,19 @@ class TautApp(App[int]):
         if set(current) == set(self._threads):
             self._threads = current
             return
+        removed = sorted(set(self._threads) - set(current))
+        if removed:
+            # [TUI-10.3]: the watcher already converged; the UI disables
+            # the conversation and keeps history. Rejoining is CLI-first.
+            names = ", ".join(f"#{name}" for name in removed)
+            self._show_banner(
+                f"⚠ lost membership in {names} — watcher removed it. "
+                f"history kept · rejoin with: taut join {removed[0]}"
+            )
+            if self.active_target in removed:
+                self.query_one("#composer", Composer).set_target_label(
+                    f"⚠ membership lost in {self.active_target} — read only"
+                )
         for name in current:
             if name not in self._threads:
                 self.cursor_snapshot.setdefault(name, self.client.read_cursor(name))
