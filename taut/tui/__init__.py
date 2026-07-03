@@ -38,6 +38,6 @@ def run_tui(
         raise MissingTuiExtraError(
             'TUI extra not installed. Install it with: pipx inject taut "taut[tui]"'
         ) from exc
-    raise NotImplementedError(
-        "taut TUI app arrives in a later implementation slice (plan Task 3)"
-    )
+    from taut.tui.app import run_app  # Textual present: the real import.
+
+    return run_app(db_path=db_path, as_name=as_name, token=token)
