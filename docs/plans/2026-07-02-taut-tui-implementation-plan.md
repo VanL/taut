@@ -556,9 +556,23 @@ method's behavior.
   Mirror the CLI's `_thread_object` field usage so display naming cannot
   drift.
 
+- **Addition D — `history()` for transcript backfill (implementation
+  finding I-1, discovered in the Task 3 slice).** The known-mappings row
+  below originally routed transcript backfill through `client.log()`, but
+  `log()` validates via `validate_chat_thread_name` (`_messaging.py:160`) —
+  the same `allow_dm=False` rule as `who(thread)` (finding R4-2) — so
+  `dm.*` rows can never backfill through it, and the only DM-reading path
+  (`read_unread`) advances cursors, which a transcript must never do
+  ([TAUT-7.2]). Added read-only `TautClient.history(thread, *, since=None,
+  limit=None)`: registry-validated (accepts channel/sub-thread/dm names),
+  moves no cursors, returns `[]` for an empty window (emptiness is a UI
+  state, [TUI-10.6]). `log()` is a thin wrapper over the shared internal
+  read — its name rules and `EmptyResultError` exit-2 contract are pinned
+  unchanged by tests (INV-1).
+
 - Known mappings that need **no** new API:
-  - transcript backfill ← `client.log(thread, limit=N)` (history, no cursor
-    move — [TAUT-7.2]); live tail ← the watch handler;
+  - transcript backfill ← `client.history(thread, limit=N)` (Addition D —
+    corrected from `log()`, finding I-1); live tail ← the watch handler;
   - presence + selected identity for **channels and sub-threads** ←
     `client.who(thread)` / `client.whoami()`
     → `Member.name/kind/presence/last_active_ts/member_id/persona`;
@@ -1248,6 +1262,12 @@ No finding rejected. Round 4 changed no architecture: it named one public
 field, split one data mapping, corrected one stale current-state claim, and
 hardened the launch-decision seam against a parser fork. The standing
 per-slice reviews after Task 1 and Task 4 (§8) remain required.
+
+### Implementation findings (logged as discovered, per deviation discipline)
+
+| # | Finding | Verified against | Resolution |
+|---|---------|------------------|------------|
+| I-1 | DM transcripts cannot backfill: `log()` validates names with `allow_dm=False` (`_messaging.py:160`) — the R4-2 failure class one method over, missed by all four review rounds — and `read_unread` advances cursors | `_messaging.py:160`, `addressing.py:78-86`; red test `taut log dm.d_*` → `ThreadNameError` | **Task 2 Addition D** (2026-07-03): read-only `history()` — registry-validated, no cursor moves, `[]` on empty; `log()` contract pinned unchanged by tests. |
 
 ### Per-slice review — Task 1 launch dispatch (Codex `codex exec`, 2026-07-03)
 

@@ -159,11 +159,47 @@ class MessagingMixin(_ClientBase):
     ) -> list[Message]:
         thread = addressing.validate_chat_thread_name(thread, allow_subthread=True)
         self._ensure_no_incomplete_channel_rename()
+        messages = self._read_history(thread, since=since, limit=limit)
+        if not messages:
+            raise EmptyResultError("empty")
+        return messages
+
+    def history(
+        self,
+        thread: str,
+        *,
+        since: str | int | None = None,
+        limit: int | None = None,
+    ) -> list[Message]:
+        """Read-only history for any registered chat thread, dm rows included.
+
+        The TUI's transcript backfill (plan Task 2 Addition D, finding I-1):
+        ``log()`` validates names with ``allow_dm=False`` so ``dm.*`` rows
+        can never backfill through it, and the only DM-reading path
+        (``read_unread``) advances cursors, which a transcript must never
+        do ([TAUT-7.2]). ``history()`` validates against the registry
+        instead of name shape, moves no cursors, and returns ``[]`` for an
+        empty window — emptiness is a UI state ([TUI-10.6]), not an error.
+        ``log()``'s name rules and EmptyResultError contract are unchanged.
+        """
+
+        self._ensure_no_incomplete_channel_rename()
+        return self._read_history(thread, since=since, limit=limit)
+
+    def _read_history(
+        self,
+        thread: str,
+        *,
+        since: str | int | None,
+        limit: int | None,
+    ) -> list[Message]:
         row = self._state.get_thread(thread)
         if row is None:
             raise NotFoundError(f"thread not found: {thread}")
         if row["kind"] == "notification":
             raise ThreadNameError("notification queues are read with inbox")
+        if row["kind"] not in ("channel", "subthread", "dm"):
+            raise ThreadNameError(f"not a chat thread: {thread}")
         if limit is not None and limit <= 0:
             raise ValueError("limit must be positive")
         after_timestamp = self._parse_since(since)
@@ -180,10 +216,7 @@ class MessagingMixin(_ClientBase):
         for result in generator:
             body, ts = cast(tuple[str, int], result)
             messages.append(message_from_body(thread, body, ts))
-        messages = sorted(messages, key=lambda message: message.ts)
-        if not messages:
-            raise EmptyResultError("empty")
-        return messages
+        return sorted(messages, key=lambda message: message.ts)
 
     def _say_chat_thread(
         self,

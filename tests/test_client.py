@@ -1194,3 +1194,42 @@ def test_channel_threads_scopes_to_channel_and_handles_empty(tmp_path: Path) -> 
     assert names == [f"general.{root.ts}"]
     with pytest.raises(NotFoundError):
         van.channel_threads("missing")
+
+
+def test_history_reads_dm_threads_without_moving_cursors(tmp_path: Path) -> None:
+    van = client(tmp_path, "van")
+    van.join("general")
+    claude = existing_client(tmp_path, "claude")
+    claude.join("general")
+    message = van.say("@claude", "dm hello")
+    dm_name = message.thread
+
+    # log() rejects dm.* names (allow_dm=False validation) — pinned so the
+    # taut log contract cannot drift (INV-1; implementation finding I-1).
+    with pytest.raises(ThreadNameError):
+        van.log(dm_name)
+
+    # history() is the TUI's transcript backfill: reads any registered chat
+    # thread, dm rows included, without touching cursors ([TAUT-7.2]).
+    texts = [m.text for m in claude.history(dm_name)]
+    assert "dm hello" in texts
+    dm_rows = [t for t in claude.joined_threads() if t.kind == "dm"]
+    assert dm_rows and dm_rows[0].unread  # still unread: nothing moved
+
+
+def test_history_matches_log_for_channels(tmp_path: Path) -> None:
+    van = client(tmp_path, "van")
+    van.join("general")
+    van.say("general", "one")
+    van.say("general", "two")
+
+    assert [m.ts for m in van.history("general")] == [m.ts for m in van.log("general")]
+    with pytest.raises(NotFoundError):
+        van.history("missing")
+
+    # Empty history is a state the TUI renders ([TUI-10.6]), not an error;
+    # log()'s EmptyResultError exit-2 contract stays as-is (INV-1).
+    last = van.say("general", "three")
+    assert van.history("general", since=last.ts) == []
+    with pytest.raises(EmptyResultError):
+        van.log("general", since=last.ts)
