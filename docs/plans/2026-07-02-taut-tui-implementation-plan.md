@@ -1312,3 +1312,29 @@ Three findings, all accepted and fixed in the same slice:
    gone, per [IAN-7.4]).
 
 Verdict after fixes: pass — 19 TUI tests green, ruff/mypy clean.
+
+### Completion review — full TUI surface (Codex `codex exec`, 2026-07-03)
+
+The §8 "once before completion" review, run against the finished diff
+(`e06167e..HEAD`) after all tasks landed. Two findings, both reproduced
+against source and fixed with regression tests in the same pass:
+
+1. **High:** `_bootstrap` caught only `NotInitializedError` on client
+   construction, so other failures — a backend/config `TautError` from
+   the install-hint path (`_base.py:40`) or a bare `RuntimeError` from
+   target resolution — escaped as an app crash instead of the clean
+   fatal state INV-11 requires for an invalid `--db`/backend. Fixed:
+   catch `(TautError, RuntimeError)` for a clean refuse-with-message that
+   does **not** offer init-here (init cannot fix a backend problem);
+   regression asserts the real cause shows and `init_here` stays gated
+   off.
+2. **Medium:** a notification arriving while the inbox was already open
+   was appended to session state but never rendered until close/reopen.
+   Fixed: the notification branch re-renders the inbox when it is open;
+   regression proves a live `@mention` appears in the open inbox without
+   reopening.
+
+Verdict after fixes: pass — full suite green (`uv run --extra dev
+pytest`), mypy/ruff clean over the full target list, `uv build`
+succeeds and the wheel ships `taut/tui/`. All ten tasks complete; the
+plan's invariants (INV-1..12, [TUI-10.8]) hold in the finished code.

@@ -181,6 +181,13 @@ class TautApp(App[int]):
                 "yet. press enter to init here · q quits"
             )
             return
+        except (TautError, RuntimeError) as exc:
+            # [TUI-10.6]/[INV-11]: any other construction failure (backend
+            # missing, invalid --db, config error) refuses cleanly rather
+            # than crashing — and does NOT offer init-here, which would not
+            # fix a backend or config problem (completion-review finding).
+            await self._show_fatal(f"{exc} · q quits")
+            return
         try:
             self.me = self.client.whoami()
             threads = self.client.joined_threads()
@@ -563,9 +570,13 @@ class TautApp(App[int]):
             # Already consumed by the watch runtime; accumulate for the
             # inbox view (the sole notification consumer, finding R3-4).
             self.session_notifications.append(item)
-            if not self._inbox_open:
+            if self._inbox_open:
+                # The inbox is a live surface: re-render so an arrival is
+                # visible without a close/reopen (completion-review finding).
+                await self._open_inbox()
+            else:
                 self._inbox_unseen += 1
-            self._update_nav_label("inbox")
+                self._update_nav_label("inbox")
             return
         key = (item.thread, item.ts)
         if key in self._seen:

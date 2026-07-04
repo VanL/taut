@@ -125,3 +125,79 @@ class TestLostMembership:
                 assert any("ops history stays" in text for text in texts)
 
         asyncio.run(_run())
+
+
+class TestCompletionReviewHardening:
+    """Completion-review findings (Codex, 2026-07-03)."""
+
+    def test_non_notinitialized_construction_error_shows_clean_fatal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Finding 1 (INV-11): a backend/config TautError from client
+        # construction must refuse cleanly, not crash the app — and must
+        # NOT offer init-here (init won't fix a backend problem).
+        from taut._exceptions import TautError
+
+        db = tmp_path / ".taut.db"
+        TautClient.init(db_path=db)
+
+        real_init = TautApp._bootstrap  # noqa: F841 (documentation)
+
+        def boom(*args: object, **kwargs: object) -> object:
+            raise TautError("postgres backend not available. install taut-pg")
+
+        monkeypatch.setattr("taut.tui.app.TautClient", boom)
+
+        async def _run() -> None:
+            app = TautApp(db_path=str(db), as_name="van", token=None)
+            async with app.run_test(size=(120, 34)) as pilot:
+                await pilot.pause()
+                transcript = app.query_one("#transcript")
+                banners = [
+                    row.renderable_text
+                    for row in transcript.query(TextStatic).filter(".error-banner")
+                ]
+                joined = " ".join(banners)
+                assert "postgres backend" in joined  # the real cause shows
+                assert not app._uninitialized  # no misleading init-here
+                # init-here is not offered for a non-init failure.
+                assert not app.check_action("init_here", ())
+
+        asyncio.run(_run())
+
+    def test_notification_while_inbox_open_renders_live(self, tmp_path: Path) -> None:
+        # Finding 2: the inbox is a live surface; a notification arriving
+        # while it is open must appear without a close/reopen.
+        db = tmp_path / ".taut.db"
+        TautClient.init(db_path=db)
+        van = TautClient(db_path=db, as_name="van")
+        van.join("general")
+        claude = TautClient(db_path=db, as_name="claude")
+        claude.join("general")
+        van.read()
+
+        async def _run() -> None:
+            app = TautApp(db_path=str(db), as_name="van", token=None)
+            async with app.run_test(size=(120, 34)) as pilot:
+                await pilot.pause()
+                await app._open_inbox()
+                await pilot.pause()
+                inbox_view = app.query_one("#inbox-view")
+
+                def mention_rows() -> int:
+                    return sum(
+                        "mention" in row.renderable_text
+                        for row in inbox_view.query(TextStatic).filter(".inbox-row")
+                    )
+
+                assert mention_rows() == 0
+                # A mention arrives live while the inbox is open.
+                claude.say("general", "live ping @van")
+                deadline = 0
+                while deadline < 200 and mention_rows() < 1:
+                    await asyncio.sleep(0.05)
+                    await pilot.pause()
+                    deadline += 1
+                assert mention_rows() == 1
+
+        asyncio.run(_run())
