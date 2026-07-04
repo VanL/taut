@@ -989,3 +989,50 @@ class TestToggles:
             assert app.active_target == before
 
         run_app(db, scenario)
+
+
+class TestAccessibility:
+    """[TUI-8.1]/[TUI-8.4]: keyboard-complete, deterministic focus."""
+
+    def test_tab_cycles_focus_through_pane_order(self, tmp_path: Path) -> None:
+        db = seed_project(tmp_path)
+
+        async def scenario(app: TautApp, pilot: Pilot[int]) -> None:
+            app.select_target("general")
+            await pilot.pause()
+            seen: list[str] = []
+            start = app.focused
+            assert start is not None  # exactly one focused pane, always
+            for _ in range(8):
+                await pilot.press("tab")
+                focused = app.focused
+                assert focused is not None
+                identity = focused.id or type(focused).__name__
+                if identity in seen and focused is start:
+                    break
+                seen.append(identity)
+            # The cycle walks the pane model: navigation, transcript,
+            # composer (and back) — deterministic order ([TUI-8.1]).
+            assert "navigation" in seen
+            assert "transcript" in seen
+            assert "composer-input" in seen
+            # Deterministic pane order: composer follows transcript.
+            assert seen.index("composer-input") > seen.index("transcript")
+
+        run_app(db, scenario)
+
+    def test_composer_label_stays_visible_with_content(self, tmp_path: Path) -> None:
+        db = seed_project(tmp_path)
+
+        async def scenario(app: TautApp, pilot: Pilot[int]) -> None:
+            app.select_target("general")
+            await pilot.pause()
+            await pilot.press("c")
+            await pilot.press(*"draft text")
+            await pilot.pause()
+            label = app.query_one("#composer-label", TextStatic)
+            assert label.display  # [TUI-8.4]: label visible with content
+            assert "general" in label.renderable_text
+            assert app.query_one("#composer-input", Input).value == "draft text"
+
+        run_app(db, scenario)

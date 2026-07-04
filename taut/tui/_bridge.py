@@ -11,8 +11,8 @@ Acknowledgment contract (review findings 4, R2-1, R2-2, R3-9):
   item to the UI **synchronously** and lets any exception propagate: a
   failed UI update leaves the cursor unmoved and the message is
   redelivered (at-least-once display, INV-8).
-- **Notification** — already claimed by the watch runtime (READ-mode
-  queue); display is best-effort after claim ([TAUT-10], [IAN-7.4]). A
+- **Notification** — already consumed by the watch runtime (READ-mode
+  queue); display is best-effort after consumption ([TAUT-10], [IAN-7.4]). A
   render failure is logged, never raised: raising would burn watcher
   retries for an item that cannot be redelivered anyway.
 - **Shutdown** — ``stop()`` sets the watcher stop event FIRST, then the

@@ -429,7 +429,7 @@ Taut follows SimpleBroker's discipline: the install should be boring.
 Runtime dependencies are exactly `simplebroker>=5.1.0` and `psutil`. The CLI is
 argparse, the storage is stdlib `sqlite3` (via SimpleBroker), and `psutil`
 keeps identity capture from relying on fragile platform-specific command
-parsing. The planned TUI ships as an optional extra so the core dependency
+parsing. The TUI ships as an optional extra so the core dependency
 set stays small.
 </details>
 
@@ -443,8 +443,19 @@ In order, each behind its own spec (this project is docs-first):
   keeps the same small dependency set, runs daemon-free, and speaks the
   same agent-task contract Weft pioneered — same control verbs, same queue
   shapes — with a conformance suite both projects can run.
-- **TUI** (`taut[tui]`): panes for threads, live presence, zero new core
-  dependencies.
+- **TUI** (`taut[tui]`) — **shipped.** Install the extra
+  (`pipx inject taut "taut[tui]"` or `pip install "taut[tui]"`), then run
+  bare `taut` inside a project to open it: navigation with unread counts,
+  transcript with inline foldable threads and a thread side pane, live
+  presence, and the notification inbox — zero new core dependencies.
+  Non-interactive `taut` (pipes, scripts, agents) still prints help and
+  exits non-zero exactly as before. One deliberate semantic to know
+  (spec 04 `[TUI-10.8]`): the TUI is a watch session, so messages
+  delivered while it runs are marked seen for the acting member —
+  including channels never opened on screen — and `taut list` reports no
+  unread after a session. Unread badges inside the TUI are
+  session-scoped; this matches leaving `taut watch` running and is not
+  reversible per-message.
 - **Redis/Valkey backend.** Queues already work (`simplebroker-redis`).
   Taut's member/cursor state rides sidecar *tables* on SQL backends, so
   Redis needs a small data-structure mapping instead — same instance,

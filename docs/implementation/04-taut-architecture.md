@@ -195,6 +195,7 @@ to the same runtime.
 | `taut/identity.py` | Process-chain capture, claim hashing, identity resolution evidence, presence |
 | `taut/client/` | Public API facade, shared base, value models, verb mixins, shared codecs, and watcher runtime adapter |
 | `taut/watcher.py` | Vendored multi-queue watcher, chat cursor watching, notification inbox integration |
+| `taut/tui/` | Optional Textual TUI: pure client/watch consumer; no state, envelope, cursor, or notification-consumption logic (gates below; `05-taut-tui-architecture.md`) |
 | `taut/cli.py` | Argparse tree, rendering, exit-code mapping |
 | `bin/release.py` | GitHub-only release helper and local release gates |
 | `bin/pytest-pg` | Docker-backed Postgres test runner for shared and extension suites |
@@ -235,7 +236,9 @@ over adding logic in the CLI or watcher.
 Before completion, run:
 
 ```bash
-uv run pytest
+uv run --extra dev pytest
+uv run --extra dev pytest tests/test_tui_launch.py tests/test_tui_app.py \
+  tests/test_tui_responsive.py tests/test_tui_recovery.py  # TUI tests ran, not skipped
 uv run pytest -m shared
 uv run ./bin/pytest-pg --fast
 uv run ruff check taut tests bin extensions/taut_pg/taut_pg extensions/taut_pg/tests
@@ -247,6 +250,14 @@ uv build extensions/taut_pg
 
 Then run the grep gates from the active plan for private imports, unexpected
 consuming broker APIs, SQL outside `taut/state/_sql.py`, and `Queue.write()`.
+TUI boundary gates (spec 04 [TUI-4]; each must return no hits):
+
+```bash
+grep -rln "import textual\|from textual" taut/ | grep -v "^taut/tui/"
+grep -rn --include="*.py" "Queue(\|insert_messages\|sidecar\|generate_timestamp\|encode_envelope" taut/tui/
+grep -rni --include="*.py" "claim\|advance_cursor\|last_seen_ts\|peek_many" taut/tui/
+```
+
 Expected exceptions: `taut/watcher.py` consumes notification queues during
 watch, `taut/client/_notifications.py::NotificationsMixin.inbox` claims notification pointers, and
 `taut/_scripts.py` may use `SELECT 1` only to validate a Postgres test DSN.
@@ -265,3 +276,4 @@ watch, `taut/client/_notifications.py::NotificationsMixin.inbox` claims notifica
 - `docs/plans/2026-07-01-taut-state-sql-dialect-plan.md`
 - `docs/plans/2026-07-01-taut-watch-runtime-plan.md`
 - `docs/plans/2026-07-06-evaluation-findings-remediation-plan.md`
+- `docs/plans/2026-07-02-taut-tui-implementation-plan.md`

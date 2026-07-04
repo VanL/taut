@@ -4,7 +4,7 @@ Spec: docs/specs/04-taut-tui.md — layout [TUI-6], keyboard [TUI-8],
 responsive modes [TUI-9], state/recovery [TUI-10], read semantics
 [TUI-10.8]. The app is a pure ``TautClient`` consumer ([TUI-4.2]): every
 read goes through client accessors; nothing here touches taut state, SQL,
-envelopes, cursors, or notification claims.
+envelopes, cursors, or notification consumption.
 
 Unread presentation is session state ([TUI-10.8]): per-thread cursors are
 snapshotted once at mount, before any watcher exists, and every unread
@@ -560,7 +560,7 @@ class TautApp(App[int]):
 
     async def _apply_watch_item(self, item: Message | Notification) -> None:
         if isinstance(item, Notification):
-            # Claimed by the watch runtime already; accumulate for the
+            # Already consumed by the watch runtime; accumulate for the
             # inbox view (the sole notification consumer, finding R3-4).
             self.session_notifications.append(item)
             if not self._inbox_open:

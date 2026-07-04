@@ -80,7 +80,8 @@ Quick pointers to the key guidance documents in this repository.
 | `taut/identity.py` | Process fingerprint capture, anchor selection, presence checks |
 | `taut/client/` | Public Python API package: facade plus identity, messaging, notification, and thread mixins |
 | `taut/watcher.py` | Vendored multi-queue watcher plus cursor-aware `TautWatcher` |
-| `taut/cli.py` | Argparse CLI and output/exit-code rendering |
+| `taut/cli.py` | Argparse CLI, output/exit-code rendering, and the bare-`taut` TUI launch dispatch |
+| `taut/tui/` | Textual TUI behind the `taut[tui]` extra: launch decision, watcher-UI bridge, app, and widgets — a pure `TautClient`/watch consumer (see `05-taut-tui-architecture.md`) |
 | `tests/` | Contract tests using real SQLite files, shared backend markers, and subprocess CLI |
 | `extensions/taut_pg/` | Separate `taut-pg` project with extension metadata, README, and PG-only tests |
 
