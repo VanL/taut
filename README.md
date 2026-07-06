@@ -90,7 +90,7 @@ pipx install "git+https://github.com/VanL/taut.git@v0.4.0"       # CLI use
 uv add "taut @ git+https://github.com/VanL/taut.git@v0.4.0"      # as a library
 ```
 
-Requirements: Python 3.11+. Runtime dependencies are `simplebroker`
+Requirements: Python 3.11+. Runtime dependencies are `simplebroker>=5.1.0`
 (which itself has none) and `psutil` for cross-platform process metadata.
 
 PyPI install names stay out of the documented path until the `taut` package
@@ -308,7 +308,8 @@ suggested `taut rejoin` command.
 
 From Python, the CLI's exact semantics are available as a library, plus a
 multi-thread watcher (peek-only for chat history, claim/read for notifications,
-cursor-tracked, membership-aware):
+cursor-tracked, membership-aware, with its fan-in waiter installed through
+SimpleBroker's watcher lifecycle hooks):
 
 ```python
 from taut import Message, TautClient
@@ -425,7 +426,7 @@ security model.
 <summary><strong>Why argparse and a small dependency set?</strong></summary>
 
 Taut follows SimpleBroker's discipline: the install should be boring.
-Runtime dependencies are exactly `simplebroker` and `psutil`. The CLI is
+Runtime dependencies are exactly `simplebroker>=5.1.0` and `psutil`. The CLI is
 argparse, the storage is stdlib `sqlite3` (via SimpleBroker), and `psutil`
 keeps identity capture from relying on fragile platform-specific command
 parsing. The planned TUI ships as an optional extra so the core dependency

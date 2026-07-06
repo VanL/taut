@@ -32,7 +32,6 @@ from simplebroker.ext import (
     BaseWatcher,
     BrokerError,
     PollingStrategy,
-    StopWatching,
     default_error_handler,
 )
 
@@ -288,8 +287,7 @@ class MultiQueueWatcher(BaseWatcher):
         self._multi_activity_waiter_signature = None
         if waiter is None:
             return
-        if getattr(self._strategy, "_activity_waiter", None) is waiter:
-            self._strategy._activity_waiter = None
+        self._strategy.detach_activity_waiter(expected=waiter)
         try:
             cast(Any, waiter).close()
         except (BrokerError, OSError, RuntimeError):
@@ -318,56 +316,13 @@ class MultiQueueWatcher(BaseWatcher):
             self._multi_activity_waiter = None
         return self._multi_activity_waiter
 
-    def _on_data_version_change(self, queue: Queue) -> None:
-        queue.refresh_last_ts()
-
-    def _start_strategy_for_configured_queues(self) -> None:
-        queue = self._get_queue_for_data_version()
-
-        def data_version_getter(q: Queue = queue) -> int | None:
-            return q.get_data_version()
-
-        try:
-            queue.refresh_last_ts()
-        except (BrokerError, OSError, RuntimeError):
-            logger.debug("initial last_ts refresh failed", exc_info=True)
-
-        def on_data_version_change(q: Queue = queue) -> None:
-            self._on_data_version_change(q)
-
-        self._strategy.start(
-            data_version_getter,
-            on_data_version_change=on_data_version_change,
-            activity_waiter=self._ensure_multi_activity_waiter(),
-        )
+    def _create_activity_waiter(self, queue: Queue) -> Any | None:
+        del queue
+        return self._ensure_multi_activity_waiter()
 
     def stop(self, *, join: bool = True, timeout: float = 2.0) -> None:
         self._reset_multi_activity_waiter()
         super().stop(join=join, timeout=timeout)
-
-    def _run_with_retries(self, max_retries: int = 3) -> None:
-        retry_count = 0
-        start_time = time.monotonic()
-        while retry_count < max_retries:
-            self._check_retry_timeout(start_time, retry_count)
-            try:
-                if hasattr(self._strategy, "start"):
-                    self._start_strategy_for_configured_queues()
-                self._in_initial_drain = True
-                try:
-                    self._drain_queue()
-                finally:
-                    self._in_initial_drain = False
-                self._process_messages()
-                break
-            except StopWatching:
-                break
-            except KeyboardInterrupt:
-                raise
-            except Exception as exc:
-                retry_count += 1
-                if not self._handle_retry(exc, retry_count, max_retries):
-                    break
 
     def _has_pending_messages(self) -> bool:
         return any(

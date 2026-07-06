@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Raised the SimpleBroker floor to 5.1.0. Taut's vendored Weft-style
+  `MultiQueueWatcher` now supplies its fan-in activity waiter through
+  SimpleBroker's watcher lifecycle hooks instead of cloning the watcher retry
+  loop.
+
 ## 0.4.0 - 2026-07-01
 
 - Added stable member identity, aliases, direct-message routing by current

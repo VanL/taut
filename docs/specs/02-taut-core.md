@@ -550,9 +550,9 @@ model). Public exports from `taut`: `TautClient`, `TautWatcher`,
 `Message`, `Thread`, `Member`, the exception hierarchy rooted at
 `TautError`, and `__version__`. The package ships typed (`py.typed`).
 
-Core runtime dependencies: exactly `simplebroker` and `psutil`. The optional
-`taut-pg` extension adds `simplebroker-pg` and its driver dependencies in the
-same environment as Taut. Python ≥ 3.11. The CLI uses argparse, not a CLI
+Core runtime dependencies: exactly `simplebroker>=5.1.0` and `psutil`. The
+optional `taut-pg` extension adds `simplebroker-pg` and its driver dependencies
+in the same environment as Taut. Python ≥ 3.11. The CLI uses argparse, not a CLI
 framework.
 
 ### [TAUT-8.4] Watcher
@@ -563,6 +563,8 @@ The preferred Python construction path is `TautClient.watch(...)`.
 `TautWatcher` remains exported for embedding and advanced construction; direct
 `TautWatcher(client, ...)` construction is a deprecated compatibility path that
 is converted to the same internal watch runtime used by `TautClient.watch()`.
+The vendored multi-queue watcher uses SimpleBroker's watcher lifecycle hook to
+install its fan-in activity waiter and must not clone SimpleBroker's retry loop.
 Contract:
 
 - All queues run in peek mode with a per-queue cursor: fetch is
@@ -589,12 +591,12 @@ Contract:
   display layer, liveness wins over completeness.
 - Membership changes apply while running via `add_queue`/`remove_queue`.
   The watcher re-checks the membership table when the backend reports
-  change (on SQLite, by extending the data-version callback — the
-  vendored watcher's own callback only refreshes `last_ts`, and sidecar
-  writes bump `PRAGMA data_version` because they share the file) and at
-  a bounded interval. The interval is the portable guarantee: backends
-  whose wake signals cover only queue writes ([TAUT-12.1]) still
-  converge on membership changes within the interval.
+  change (on SQLite, by extending SimpleBroker's data-version callback;
+  the base callback refreshes `last_ts`, and sidecar writes bump
+  `PRAGMA data_version` because they share the file) and at a bounded
+  interval. The interval is the portable guarantee: backends whose wake
+  signals cover only queue writes ([TAUT-12.1]) still converge on
+  membership changes within the interval.
 
 The TUI (future) is a consumer of `TautClient` + `TautWatcher`, ships as
 the optional extra `taut[tui]`, and adds no new runtime dependency to the

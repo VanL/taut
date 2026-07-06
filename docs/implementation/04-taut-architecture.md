@@ -37,8 +37,8 @@ message writes, notification writes, and read cursor semantics. The CLI only
 parses arguments and renders results. This keeps one operational path for every
 verb and prevents CLI behavior from drifting away from the Python API.
 
-Runtime dependencies are intentionally bounded to `simplebroker` and `psutil`.
-SimpleBroker owns the storage and queue substrate; `psutil` is scoped to
+Runtime dependencies are intentionally bounded to `simplebroker>=5.1.0` and
+`psutil`. SimpleBroker owns the storage and queue substrate; `psutil` is scoped to
 cross-platform process metadata for identity capture so taut does not rely on
 fragile platform-specific argv parsing for the core recognition path.
 `taut-pg` is a separate project under `extensions/taut_pg`; it installs
@@ -98,10 +98,12 @@ the peek behavior at the taut boundary for chat queues: fetch uses
 `has_pending(after_timestamp=cursor)`, and cursor advancement happens inside the
 taut handler wrapper after the user handler returns. Notification queues are a
 separate consumable inbox path and must not be forced through chat-history cursor
-semantics. Membership refresh is wired both to SimpleBroker's data-version
-callback and to a timer that deliberately counts as pending work, so an idle
-watcher still reaches the refresh code on backends whose native waiters only
-wake for queue writes.
+semantics. The vendored multi-queue watcher installs its fan-in activity waiter
+through SimpleBroker's watcher lifecycle hook rather than cloning the base retry
+loop. Membership refresh is wired both to SimpleBroker's data-version callback
+and to a timer that deliberately counts as pending work, so an idle watcher still
+reaches the refresh code on backends whose native waiters only wake for queue
+writes.
 
 `TautClient.watch()` builds a client-owned `TautWatchRuntime` adapter before it
 constructs `TautWatcher`. The watcher owns live-follow mechanics and local

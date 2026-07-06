@@ -3,8 +3,9 @@ from __future__ import annotations
 import logging
 import subprocess
 import sys
+import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -13,7 +14,12 @@ import pytest
 from taut._exceptions import EmptyResultError
 from taut.client import Message, Notification, TautClient
 from taut.client._watching import _watch_runtime_for_client
-from taut.watcher import QueueRuntimeConfig, TautWatcher
+from taut.watcher import (
+    MultiQueueWatcher,
+    QueueMessageContext,
+    QueueRuntimeConfig,
+    TautWatcher,
+)
 from tests.conftest import run_cli
 
 pytestmark = pytest.mark.sqlite_only
@@ -82,6 +88,121 @@ def _thread_is_read(client: TautClient, thread: str) -> bool:
         if item.name == thread:
             return not item.unread
     return False
+
+
+class FakeWaiter:
+    def __init__(self) -> None:
+        self.wait_calls: list[float | None] = []
+        self.close_calls = 0
+
+    def wait(self, timeout: float | None) -> bool:
+        self.wait_calls.append(timeout)
+        return False
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
+def test_multi_queue_watcher_uses_base_retry_loop() -> None:
+    assert "_run_with_retries" not in MultiQueueWatcher.__dict__
+
+
+def test_start_strategy_uses_multi_queue_activity_waiter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    received: dict[str, Any] = {}
+    fake_waiter = FakeWaiter()
+
+    def handler(
+        _message: str,
+        _timestamp: int,
+        _context: QueueMessageContext,
+    ) -> None:
+        pass
+
+    def fake_create(
+        queues: Sequence[Any],
+        *,
+        stop_event: threading.Event,
+    ) -> FakeWaiter:
+        received["queues"] = list(queues)
+        received["stop_event"] = stop_event
+        return fake_waiter
+
+    monkeypatch.setattr(
+        "taut.watcher.create_activity_waiter_for_queues",
+        fake_create,
+    )
+
+    watcher = MultiQueueWatcher(
+        queue_configs={
+            "strategy.one": {"handler": handler},
+            "strategy.two": {"handler": handler},
+        },
+        db=tmp_path / ".taut.db",
+    )
+
+    try:
+        watcher._start_strategy()
+
+        assert [queue.name for queue in received["queues"]] == [
+            "strategy.one",
+            "strategy.two",
+        ]
+        assert watcher._strategy.uses_native_activity() is True
+        assert (
+            watcher._strategy.detach_activity_waiter(
+                expected=fake_waiter,
+            )
+            is fake_waiter
+        )
+        assert fake_waiter.close_calls == 0
+    finally:
+        watcher.stop(join=False)
+
+
+def test_reset_multi_activity_waiter_detaches_strategy_waiter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_waiter = FakeWaiter()
+
+    def handler(
+        _message: str,
+        _timestamp: int,
+        _context: QueueMessageContext,
+    ) -> None:
+        pass
+
+    def fake_create(
+        _queues: Sequence[Any],
+        *,
+        stop_event: threading.Event,
+    ) -> FakeWaiter:
+        del stop_event
+        return fake_waiter
+
+    monkeypatch.setattr(
+        "taut.watcher.create_activity_waiter_for_queues",
+        fake_create,
+    )
+
+    watcher = MultiQueueWatcher(
+        queue_configs={"reset.one": {"handler": handler}},
+        db=tmp_path / ".taut.db",
+    )
+
+    try:
+        watcher._start_strategy()
+        assert watcher._strategy.uses_native_activity() is True
+
+        watcher._reset_multi_activity_waiter()
+
+        assert fake_waiter.close_calls == 1
+        assert watcher._strategy.uses_native_activity() is False
+    finally:
+        watcher.stop(join=False)
 
 
 def _white_box_watcher_cls(
