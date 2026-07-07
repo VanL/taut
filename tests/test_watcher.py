@@ -6,12 +6,15 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Sequence
+from functools import partial
 from pathlib import Path
 from typing import Any, TypeVar
 
+import psutil
 import pytest
+from simplebroker import Queue
 
-from taut._exceptions import EmptyResultError
+from taut._exceptions import EmptyResultError, MembershipError
 from taut.client import Message, Notification, TautClient
 from taut.client._watching import _watch_runtime_for_client
 from taut.watcher import (
@@ -647,6 +650,188 @@ def test_taut_watcher_client_constructor_warns_and_still_works(
         assert watcher.list_queues() == ["foo"]
     finally:
         watcher.stop()
+
+
+def _make_recording_handler(
+    name: str,
+    seen: list[tuple[str, str]],
+) -> Callable[[str, int, QueueMessageContext], None]:
+    def handler(
+        message: str,
+        _timestamp: int,
+        _context: QueueMessageContext,
+    ) -> None:
+        seen.append((name, message))
+
+    return handler
+
+
+def test_multi_queue_watcher_remove_first_queue_keeps_data_version_polling(
+    tmp_path: Path,
+) -> None:
+    """Removing the first configured queue must not close the shared
+    data-version queue (BaseWatcher._queue_obj) — see the vendor-header
+    deviation note in taut/watcher.py."""
+    seen: list[tuple[str, str]] = []
+    watcher = MultiQueueWatcher(
+        queue_configs={
+            "guard.first": {"handler": _make_recording_handler("guard.first", seen)},
+            "guard.second": {"handler": _make_recording_handler("guard.second", seen)},
+        },
+        db=tmp_path / ".taut.db",
+    )
+    thread = None
+    try:
+        first = watcher.get_queue("guard.first")
+        assert first is not None
+        # White-box: the first configured queue IS BaseWatcher's shared
+        # data-version queue — the exact object remove_queue must not close.
+        assert first is watcher._get_queue_for_data_version()
+
+        watcher.remove_queue("guard.first")
+
+        # White-box (labeled): dispatch alone can be masked by the live
+        # multi-queue activity waiter, so pin data-version polling directly:
+        # the shared first queue must still answer get_data_version().
+        assert isinstance(watcher._get_queue_for_data_version().get_data_version(), int)
+        # White-box (labeled): Queue.close() detaches the finalizer; a live
+        # finalizer proves the data-version queue was not closed.
+        assert first._finalizer.alive
+
+        thread = watcher.start()
+        _wait_until(thread.is_alive)
+
+        with Queue("guard.second", db_path=str(tmp_path / ".taut.db")) as writer:
+            writer.write("still alive")
+
+        _wait_until(lambda: ("guard.second", "still alive") in seen)
+        assert not any(name == "guard.first" for name, _ in seen)
+    finally:
+        watcher.stop()
+        if thread is not None:
+            thread.join(timeout=2)
+            assert not thread.is_alive()
+
+
+def test_multi_queue_watcher_remove_non_data_version_queue_closes_it(
+    tmp_path: Path,
+) -> None:
+    seen: list[tuple[str, str]] = []
+    watcher = MultiQueueWatcher(
+        queue_configs={
+            "close.first": {"handler": _make_recording_handler("close.first", seen)},
+            "close.second": {"handler": _make_recording_handler("close.second", seen)},
+        },
+        db=tmp_path / ".taut.db",
+    )
+    thread = None
+    try:
+        second = watcher.get_queue("close.second")
+        assert second is not None
+        assert second is not watcher._get_queue_for_data_version()
+
+        watcher.remove_queue("close.second")
+
+        # White-box (labeled): Queue.close() detaches the finalizer, so a
+        # dead finalizer is the deterministic "this queue was closed" signal.
+        assert second._finalizer.alive is False
+        # The shared data-version queue is untouched by the close.
+        assert isinstance(watcher._get_queue_for_data_version().get_data_version(), int)
+
+        thread = watcher.start()
+        _wait_until(thread.is_alive)
+
+        with Queue("close.first", db_path=str(tmp_path / ".taut.db")) as writer:
+            writer.write("first still watched")
+
+        _wait_until(lambda: ("close.first", "first still watched") in seen)
+    finally:
+        watcher.stop()
+        if thread is not None:
+            thread.join(timeout=2)
+            assert not thread.is_alive()
+
+
+def test_watch_filter_naming_unjoined_thread_raises_membership_error(
+    tmp_path: Path,
+) -> None:
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    client = TautClient(db_path=tmp_path / ".taut.db", as_name="van")
+    client.join("foo")
+
+    with pytest.raises(MembershipError, match="ghost"):
+        client.watch(lambda _item: None, threads=["foo", "ghost"])
+
+
+def _open_db_handle_count(db_path: Path) -> int | None:
+    """Count this process's open file handles on the taut db (plus -wal/-shm).
+
+    Returns None where psutil cannot enumerate open files reliably.
+    """
+    prefix = str(db_path.resolve())
+    try:
+        open_files = psutil.Process().open_files()
+    except (psutil.Error, NotImplementedError, OSError):
+        return None
+    return sum(1 for item in open_files if item.path.startswith(prefix))
+
+
+def test_taut_watcher_membership_churn_does_not_leak_db_handles(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / ".taut.db"
+    TautClient.init(db_path=db_path)
+    van = TautClient(db_path=db_path, as_name="van")
+    bob = TautClient(db_path=db_path, as_name="bob")
+    van.join("home")
+    bob.join("home")
+    seen: list[tuple[str, str]] = []
+    watcher = _white_box_watcher(
+        van,
+        _record_message_threads(seen),
+        membership_refresh_interval=0.05,
+    )
+    thread = watcher.start()
+    handles_observable = _open_db_handle_count(db_path) is not None
+    handle_counts: list[int] = []
+
+    def queue_listed(name: str) -> bool:
+        return name in watcher.list_queues()
+
+    def queue_absent(name: str) -> bool:
+        return name not in watcher.list_queues()
+
+    try:
+        _wait_until(thread.is_alive)
+
+        for cycle in range(10):
+            name = f"churn{cycle}"
+            van.join(name)
+            _wait_until(partial(queue_listed, name))
+            van.leave(name)
+            _wait_until(partial(queue_absent, name))
+            if handles_observable:
+                count = _open_db_handle_count(db_path)
+                assert count is not None
+                handle_counts.append(count)
+
+        # Functional assertion — unconditional on every platform: the
+        # watcher still delivers messages after ten join/leave cycles.
+        bob.say("home", "after churn")
+        _wait_until(lambda: ("home", "after churn") in seen)
+
+        if handles_observable:
+            # A per-cycle connection leak would grow the handle count
+            # monotonically with cycle count (~+1 per cycle); a bounded
+            # watcher stays flat.  Platform-skip: on platforms where
+            # psutil.Process().open_files() is unavailable or unreliable
+            # this block is skipped and the MultiQueueWatcher close
+            # assertions above carry the close-on-remove proof.
+            assert handle_counts[-1] - handle_counts[0] <= 2, handle_counts
+    finally:
+        watcher.stop()
+        thread.join(timeout=2)
+        assert not thread.is_alive()
 
 
 def test_watcher_runs_with_no_chat_threads_for_notification_inbox(

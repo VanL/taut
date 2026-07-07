@@ -154,6 +154,13 @@ not silently become Taut's public backend API. `.taut.toml` still wins through
 SimpleBroker project resolution. `TAUT_DB`, `TAUT_AS`, and `TAUT_TOKEN` are the
 only public environment knobs in the core CLI.
 
+Unknown keys in `.taut.toml` are ignored, not rejected — the same
+forward-compatibility posture SimpleBroker's project-config loader applies
+and that notification consumers apply to unknown payload fields
+([IAN-7.2]). A malformed file (invalid TOML) is a loud error naming the
+file; an unrecognized key is not. Tools must not depend on unknown keys
+being diagnosed.
+
 ### [TAUT-3.3] Sidecar schema
 
 Taut-owned tables are created through `Queue.sidecar(transaction=True)`
@@ -470,7 +477,10 @@ One executable, `taut`. Global options: `--db PATH`, `--as NAME_OR_ALIAS`,
 `--token TOKEN` (acts as the member selected by continuity token; the flag wins
 over the `TAUT_TOKEN` env var), `--json`, `-t/--timestamps` (show message ids in
 human output; `say` prints the new message's id), `-q/--quiet`, `--version`,
-`--help`.
+`--help`. A literal `--` ends option parsing: every later token is positional,
+so message text that looks like an option is sendable
+(`taut say general -- -q` posts the text `-q`). Global options may appear
+before or after the subcommand, but never after `--`.
 
 | Verb | Behavior | Exit codes |
 |---|---|---|
@@ -492,7 +502,11 @@ human output; `say` prints the new message's id), `-q/--quiet`, `--version`,
 
 Exit-code rule, matching SimpleBroker: 0 success, 1 error, 2 "empty /
 nothing matched / not found" — so `taut read -q && process_inbox` and
-polling loops compose in shell.
+polling loops compose in shell. Usage errors — unknown flags, unknown
+subcommands, missing or malformed arguments rejected by the parser — are
+errors and exit 1, never 2. Exit 2 is reserved for the empty/not-found
+class so that polling idioms like `taut read -q && handle_new` cannot
+mistake a typo for "nothing new". `--help` and `--version` exit 0.
 
 ### [TAUT-8.2] Output contract
 
@@ -846,12 +860,16 @@ extra, own spec.
   post-review hardening for missing-plugin errors, bounded `log --limit`,
   project-config proof strength, and expanded shared backend conformance.
 - `docs/plans/2026-06-18-simplebroker-latest-timestamp-plan.md` —
-  planned issue #3 fix: use SimpleBroker's indexed latest pending timestamp
-  API for `list` metadata instead of a full-history scan.
+  implemented issue #3 fix: use SimpleBroker's indexed latest pending
+  timestamp API for `list` metadata instead of a full-history scan.
 - `docs/plans/2026-07-01-taut-state-sql-dialect-plan.md` — implemented
   [TAUT-12.2] state-module refactor: introduce an internal `TautState`
   interface and `SqlDialect` seam while preserving current SQLite/Postgres
   behavior.
-- `docs/plans/2026-07-01-taut-watch-runtime-plan.md` — planned [TAUT-8.4]
-  follow-up: replace `TautWatcher` access to `TautClient` private state and
-  decoder methods with an internal `TautWatchRuntime` seam.
+- `docs/plans/2026-07-01-taut-watch-runtime-plan.md` — implemented
+  [TAUT-8.4] follow-up: replace `TautWatcher` access to `TautClient` private
+  state and decoder methods with an internal `TautWatchRuntime` seam.
+- `docs/plans/2026-07-06-evaluation-findings-remediation-plan.md` —
+  implemented evaluation-findings remediation: [TAUT-8.1] usage-error exit
+  codes and `--` end-of-options, channel-rename resume, error-path
+  hardening, and CLI-surface test-gap closure.

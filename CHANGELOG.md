@@ -6,6 +6,33 @@
   `MultiQueueWatcher` now supplies its fan-in activity waiter through
   SimpleBroker's watcher lifecycle hooks instead of cloning the watcher retry
   loop.
+- Changed CLI usage errors (unknown flags, unknown subcommands, malformed
+  arguments) to exit 1. Compatibility note: these previously exited with
+  argparse's 2, colliding with the exit-2 "empty / nothing matched" class
+  that shell polling loops key on.
+- Added `--` end-of-options handling so option-like message text is
+  sendable (`taut say general -- -q` posts the literal text `-q`).
+- Made interrupted channel renames resumable: rerunning the same
+  `taut rename OLD NEW` finishes the rename from its recovery marker, and
+  other commands name that exact command while a rename is incomplete.
+- Added anchor-match identity resolution ([IAN-3.3] step 4): an agent whose
+  anchor process changed working directory or other mutable claim inputs
+  still resolves to its existing member, and the resolver records the
+  current claim so later commands resolve by claim hash again.
+- Made concurrent first-contact joins retry auto-chosen names (bounded at
+  five attempts), re-minting name, member id, and token on each attempt.
+  Explicit `--as` names still fail loudly on collision.
+- Scoped direct-message mentions to the DM participants; mentioning any
+  other member in a DM no longer notifies them.
+- Hardened error paths: `init` into an unwritable directory fails fast with
+  a one-line diagnostic instead of stalling in lock retries; malformed
+  `.taut.toml` diagnostics name the offending file; non-UTF-8 bytes piped
+  to `say -` are reported as invalid stdin rather than a raw decode error.
+- Fixed the vendored multi-queue watcher to close removed queues'
+  connections instead of leaking them.
+- Added a documentation reference gate (`tests/test_docs_references.py`)
+  that fails the suite when docs cite nonexistent paths or unknown spec
+  codes.
 
 ## 0.4.0 - 2026-07-01
 

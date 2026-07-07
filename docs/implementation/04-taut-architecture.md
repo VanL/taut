@@ -70,11 +70,12 @@ uploads to PyPI.
 All production taut-owned relational state flows through `taut/state/`.
 `taut/state/__init__.py` exposes the internal `TautState` interface,
 `taut/state/_dialect.py` holds the minimal SQL dialect marker, and
-`taut/state/_sql.py` is the only production module with sidecar SQL.
-`taut/schema.py` remains as a compatibility forwarding module for historical
-helper imports and tests. That boundary matters because SQL sidecar tables are
-the current state mapping, while [TAUT-12.2] reserves a future non-SQL mapping
-behind the same state-access boundary.
+`taut/state/_sql.py` is the only production module with sidecar SQL. The
+historical schema compatibility shim has been retired
+(`docs/plans/2026-07-01-schema-shim-retirement-plan.md`); all callers,
+including tests, go through `taut/state/`. That boundary matters because SQL
+sidecar tables are the current state mapping, while [TAUT-12.2] reserves a
+future non-SQL mapping behind the same state-access boundary.
 
 Message writes use one path: `Queue.generate_timestamp()` followed by
 `Queue.insert_messages([(body, ts)])`. Taut never calls `Queue.write()` because
@@ -91,6 +92,45 @@ the resolved Taut target. Taut records a sidecar rename marker before broker
 queue renames, applies broker renames in deterministic channel-then-subthread
 order, and then updates `taut_threads` plus `taut_membership`. The code must not
 repair this by editing SimpleBroker-owned message tables.
+
+The rename marker is also the recovery contract ([IAN-8.3]). It is written
+before the first broker rename, carries the authoritative affected-queue
+list, and is cleared only by the sidecar apply step, so an interruption
+anywhere in the window leaves a marker naming exactly what was in flight.
+Recovery deliberately rides the same `taut rename OLD NEW` invocation
+instead of a repair verb: the marker already names the one legal operation,
+every other command refuses with that exact command line, and [TAUT-10]
+reserves general registry/queue divergence for a future `doctor` verb —
+resume must not grow into a divergence reporter. Resume decides each
+affected item from which of its two queue names currently exist rather than
+rerunning the fresh path's global target precheck, because resume's own
+partial progress legitimately produces already-renamed targets the precheck
+would refuse. Both names absent is the normal broker state for an empty
+queue and is skipped silently — the same posture as the fresh path's
+`queue_exists(old)` guard — while both names present means a foreign queue
+occupies the target and aborts loudly before any mutation.
+
+Identity resolution orders its evidence from explicit to inferred: explicit
+selection (`--as`), continuity token, claim-hash match, agent anchor match,
+then human host/uid fallback ([IAN-3.3]). The anchor-match step exists
+because the claim hash deliberately includes mutable process facts (working
+directory, tty, process group): a live agent that calls `chdir()`
+invalidates its own hash without restarting. The stable
+(`host_id`, `anchor_pid`, `anchor_start_time`) triple recovers that
+continuity — but only below claim-hash precedence, never under `join --new`,
+and never across hosts. An anchor match immediately records the current
+claim hash for the member ("healing"), which keeps the fallback
+self-limiting: the very next command resolves at the cheaper claim-hash
+step, and a healing race against a concurrent process is settled in favor
+of the claim-hash owner because step-3 semantics outrank the fallback.
+
+First contact retries auto-chosen names because `choose_name` is
+deterministic from the anchor basename seed — simultaneous first contacts
+collide by construction, not by accident. Each bounded retry re-mints all
+three unique values (name, member id, token) inside the loop body so a
+stale candidate can never be reused across attempts. Explicit `--as` names
+get exactly one attempt and fail loudly: a collision on a chosen name is a
+user decision to surface, not noise to retry through.
 
 `TautWatcher` subclasses a vendored Weft-style `MultiQueueWatcher`, but changes
 the peek behavior at the taut boundary for chat queues: fetch uses
@@ -152,7 +192,6 @@ to the same runtime.
 | `taut/_watch_runtime.py` | Internal watcher runtime protocol and watched-thread value object |
 | `taut/envelope.py` | Envelope encode/decode, `from_id`/`from` snapshot handling, and foreign fallback |
 | `taut/state/` | Internal state interface, row types, dialect marker, sidecar DDL, version gate, member, claim, alias, thread, membership, cursor, and rename-state queries |
-| `taut/schema.py` | Compatibility forwarding module for the historical state helper names |
 | `taut/identity.py` | Process-chain capture, claim hashing, identity resolution evidence, presence |
 | `taut/client/` | Public API facade, shared base, value models, verb mixins, shared codecs, and watcher runtime adapter |
 | `taut/watcher.py` | Vendored multi-queue watcher, chat cursor watching, notification inbox integration |
@@ -172,7 +211,7 @@ requirement or auditing implementation coverage.
 | Spec area | Primary code owners | Contract tests |
 |---|---|---|
 | [TAUT-3.2], project resolution and config | `taut/_constants.py::load_config`, `taut/client/_base.py::_ClientBase._resolve_target`, `taut/client/__init__.py::TautClient.init` | `tests/test_project_config.py`, `tests/test_cli.py::test_init_uses_project_config_postgres_backend` |
-| [TAUT-3.3], [TAUT-3.4], sidecar schema and version gate | `taut/state/_sql.py::SqlSidecarTautState.ensure_schema`, `taut/schema.py` compatibility wrappers | `tests/test_schema.py`, `tests/test_state_contract.py`, `tests/test_shared_contract.py` |
+| [TAUT-3.3], [TAUT-3.4], sidecar schema and version gate | `taut/state/_sql.py::SqlSidecarTautState.ensure_schema`, `taut/state/__init__.py::TautState` | `tests/test_state_contract.py`, `tests/test_shared_contract.py` |
 | [TAUT-4], channels, membership, replies, reads, logs, and listing | `taut/client/_threads.py::ThreadsMixin.join`, `leave`, `list_threads`; `taut/client/_messaging.py::MessagingMixin.say`, `reply`, `read_unread`, `log`; `taut/client/_identity.py::IdentityMixin.who` | `tests/test_client.py`, `tests/test_cli.py`, `tests/test_shared_contract.py` |
 | [TAUT-5], [IAN-3], identity claims, recognition, rejoin, and name changes | `taut/identity.py`, `taut/client/_identity.py::IdentityMixin._resolve_member`, `_create_member`, `rejoin`, `set_name` | `tests/test_identity.py`, `tests/test_client.py`, `tests/test_cli.py::test_rejoin_*` |
 | [TAUT-6], message envelopes and sender snapshots | `taut/envelope.py`, `taut/client/_codec.py::message_from_body`, `message_from_decoded`, `taut/client/_messaging.py::MessagingMixin._insert_message` | `tests/test_envelope.py`, `tests/test_client.py::test_set_name_changes_current_name_without_changing_member_id` |
@@ -180,7 +219,7 @@ requirement or auditing implementation coverage.
 | [TAUT-8.1], [TAUT-8.2], CLI behavior, rendering, JSON, and exit codes | `taut/cli.py` | `tests/test_cli.py`, `tests/test_public_api.py` |
 | [TAUT-8.3], Python API objects and verb semantics | `taut/client/__init__.py::TautClient`, `taut/client/_models.py`, and the client mixins | `tests/test_public_api.py`, `tests/test_client.py` |
 | [TAUT-8.4], watcher behavior | `taut/watcher.py`, `taut/_watch_runtime.py`, `taut/client/_watching.py`, `taut/client/__init__.py::TautClient.watch` | `tests/test_watcher.py`, `tests/test_shared_contract.py::test_project_watcher_receives_cli_write` |
-| [IAN-4], alias/name route namespace | `taut/state/_sql.py` member and alias helpers, `taut/schema.py` compatibility wrappers, `taut/_constants.py::route_key`, `validate_member_name` | `tests/test_schema.py::test_alias_key_conflicts_with_member_name_key`, `tests/test_state_contract.py`, `tests/test_client.py::test_set_name_changes_current_name_without_changing_member_id` |
+| [IAN-4], alias/name route namespace | `taut/state/_sql.py` member and alias helpers, `taut/_constants.py::route_key`, `validate_member_name` | `tests/test_state_contract.py`, `tests/test_client.py::test_set_name_changes_current_name_without_changing_member_id` |
 | [IAN-5], [IAN-6], addressing and special queue names | `taut/addressing.py`, `taut/client/_messaging.py::MessagingMixin.say`, `_say_dm`; `taut/client/_threads.py::_thread_from_row` | `tests/test_addressing.py`, `tests/test_client.py::test_direct_message_queue_is_stable_across_name_change`, `test_channel_names_reject_dots_and_reserved_words` |
 | [IAN-7], notification payloads and claiming | `taut/client/_messaging.py::_write_mention_notifications`; `taut/client/_codec.py::notification_from_body`; `taut/client/_notifications.py::_write_notification`, `inbox`; `taut/watcher.py` notification path | `tests/test_client.py::test_mention_notification_is_claimed_without_touching_chat_history`, `tests/test_watcher.py` |
 | [IAN-8], channel rename and partial-rename reporting | `taut/client/_threads.py::ThreadsMixin.rename_channel`, `taut/client/_base.py::_ClientBase._ensure_no_incomplete_channel_rename`; `taut/state/_sql.py` rename helpers | `tests/test_client.py::test_rename_channel_moves_messages_and_subthreads`, `test_incomplete_channel_rename_blocks_chat_history_operations`, `tests/test_state_contract.py`, shared rename tests |
@@ -207,8 +246,7 @@ uv build extensions/taut_pg
 ```
 
 Then run the grep gates from the active plan for private imports, unexpected
-consuming broker APIs, SQL outside `taut/state/_sql.py` and the compatibility
-wrappers in `taut/schema.py`, and `Queue.write()`.
+consuming broker APIs, SQL outside `taut/state/_sql.py`, and `Queue.write()`.
 Expected exceptions: `taut/watcher.py` consumes notification queues during
 watch, `taut/client/_notifications.py::NotificationsMixin.inbox` claims notification pointers, and
 `taut/_scripts.py` may use `SELECT 1` only to validate a Postgres test DSN.
@@ -223,5 +261,7 @@ watch, `taut/client/_notifications.py::NotificationsMixin.inbox` claims notifica
 - `docs/plans/2026-06-17-taut-pg-extension-plan.md`
 - `docs/plans/2026-06-17-implementation-review-followups-plan.md`
 - `docs/plans/2026-06-18-simplebroker-latest-timestamp-plan.md`
+- `docs/plans/2026-07-01-schema-shim-retirement-plan.md`
 - `docs/plans/2026-07-01-taut-state-sql-dialect-plan.md`
 - `docs/plans/2026-07-01-taut-watch-runtime-plan.md`
+- `docs/plans/2026-07-06-evaluation-findings-remediation-plan.md`

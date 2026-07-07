@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from simplebroker import Queue
+from simplebroker import Queue, open_broker
 
 import taut.identity as identity
+from taut import addressing
 from taut._constants import META_QUEUE_NAME
 from taut._exceptions import (
     AmbiguousMessageError,
@@ -512,3 +514,577 @@ def test_incomplete_channel_rename_blocks_chat_history_operations(
 
     with pytest.raises(TautError, match="incomplete channel rename"):
         van.log("general")
+
+
+def _start_rename_marker(
+    tmp_path: Path,
+    *,
+    old_name: str,
+    new_name: str,
+    affected: list[dict[str, str]],
+) -> None:
+    # White-box setup: public APIs never leave this crash-window marker behind.
+    # This simulates a rename interrupted between the broker queue-rename pass
+    # and the sidecar apply/complete transaction.
+    queue = Queue(META_QUEUE_NAME, db_path=str(tmp_path / ".taut.db"))
+    try:
+        state = SqlSidecarTautState(queue, SQLITE_SQL_DIALECT)
+        state.start_channel_rename(
+            old_name=old_name,
+            new_name=new_name,
+            affected=affected,
+            started_ts=queue.generate_timestamp(),
+        )
+    finally:
+        queue.close()
+
+
+def test_rename_resume_completes_interrupted_rename(tmp_path: Path) -> None:
+    van = client(tmp_path, "van")
+    van.join("general")
+    root = van.say("general", "root")
+    van.reply("general", str(root.ts), "threaded")
+    sub_old = f"general.{root.ts}"
+    sub_new = f"ops.{root.ts}"
+    affected = [
+        {"old": "general", "new": "ops"},
+        {"old": sub_old, "new": sub_new},
+    ]
+    _start_rename_marker(
+        tmp_path, old_name="general", new_name="ops", affected=affected
+    )
+    # Crash-window simulation, continued: only a strict subset of the affected
+    # queues was renamed before the interruption.
+    with open_broker(str(tmp_path / ".taut.db")) as broker:
+        broker.rename_queue("general", "ops", retarget_aliases=False)
+
+    blocked = "run 'taut rename general ops' to finish it"
+    with pytest.raises(TautError, match=blocked):
+        van.say("general", "blocked")
+    with pytest.raises(TautError, match=blocked):
+        van.join("elsewhere")
+    with pytest.raises(TautError, match=blocked):
+        van.list_threads()
+
+    renamed = van.rename_channel("general", "ops")
+
+    assert renamed.name == "ops"
+    # Full history is readable under the new name; message bodies untouched.
+    assert [message.text for message in van.log("ops")] == [
+        "van created #general",
+        "root",
+    ]
+    assert [message.text for message in van.log(sub_new)] == ["threaded"]
+    # Membership moved with the registry row: van posts without rejoining.
+    assert van.say("ops", "after recovery").thread == "ops"
+    # No marker left: rerunning the rename is a normal channel-not-found error.
+    with pytest.raises(NotFoundError, match="channel not found: general"):
+        van.rename_channel("general", "ops")
+
+
+def test_rename_resume_requires_matching_names(tmp_path: Path) -> None:
+    van = client(tmp_path, "van")
+    van.join("alpha")
+    _start_rename_marker(
+        tmp_path,
+        old_name="alpha",
+        new_name="beta",
+        affected=[{"old": "alpha", "new": "beta"}],
+    )
+
+    with pytest.raises(
+        TautError,
+        match=(
+            "incomplete channel rename exists: alpha -> beta; "
+            "run 'taut rename alpha beta' to finish it"
+        ),
+    ):
+        van.rename_channel("alpha", "gamma")
+
+
+def test_rename_resume_aborts_when_foreign_queue_occupies_target(
+    tmp_path: Path,
+) -> None:
+    van = client(tmp_path, "van")
+    van.join("general")
+    van.say("general", "root")
+    _start_rename_marker(
+        tmp_path,
+        old_name="general",
+        new_name="ops",
+        affected=[{"old": "general", "new": "ops"}],
+    )
+    # Crash-window simulation, continued: a foreign queue appears at the
+    # target name before recovery runs.
+    queue = Queue("ops", db_path=str(tmp_path / ".taut.db"))
+    try:
+        queue.write("foreign occupant")
+    finally:
+        queue.close()
+
+    with pytest.raises(TautError, match="target queue already exists: ops"):
+        van.rename_channel("general", "ops")
+
+    # Nothing merged or overwritten; the marker still blocks other commands.
+    with pytest.raises(TautError, match="run 'taut rename general ops'"):
+        van.say("general", "still blocked")
+
+
+def test_rename_resume_converges_registry_when_queues_are_absent(
+    tmp_path: Path,
+) -> None:
+    van = client(tmp_path, "van")
+    van.join("quiet")
+    # White-box setup: drain the channel queue so both the old and new queue
+    # names are absent (the normal broker state for an empty channel), then
+    # leave a crash-window marker behind.
+    queue = Queue("quiet", db_path=str(tmp_path / ".taut.db"))
+    try:
+        while queue.read_one() is not None:
+            pass
+    finally:
+        queue.close()
+    _start_rename_marker(
+        tmp_path,
+        old_name="quiet",
+        new_name="calm",
+        affected=[{"old": "quiet", "new": "calm"}],
+    )
+
+    renamed = van.rename_channel("quiet", "calm")
+
+    assert renamed.name == "calm"
+    assert van.say("calm", "hello").thread == "calm"
+    with pytest.raises(NotFoundError, match="channel not found: quiet"):
+        van.rename_channel("quiet", "calm")
+
+
+# ---------------------------------------------------------------------------
+# [IAN-3.3] step 4 (agent anchor match) and [IAN-9] first-contact retry.
+# Synthetic captures are injected only through the public
+# ``TautClient(identity_capture=...)`` seam.
+# ---------------------------------------------------------------------------
+
+
+def _anchor_capture(
+    *,
+    pid: int = 4242,
+    start_time: str = "anchor-start",
+    cwd: str = "/workspace/one",
+    host_id: str = "host:test",
+) -> identity.IdentityCapture:
+    process = identity.ProcessInfo(
+        pid=pid,
+        ppid=1,
+        start_time=start_time,
+        exe="/usr/local/bin/workerbot",
+        argv=("workerbot",),
+        uid=501,
+        pgid=pid,
+        session_id=99,
+        tty="ttys009",
+        cwd=cwd,
+    )
+    return identity.IdentityCapture(
+        chain=(process,),
+        host=identity.HostIdentity(host_id, "test-host"),
+        uid=501,
+        login="tester",
+        anchor=process,
+        kind="agent",
+        rule="test capture",
+    )
+
+
+def test_anchor_match_recovers_member_after_anchor_chdir(tmp_path: Path) -> None:
+    """[IAN-3.3] step 4: a live anchor that chdir()s keeps its member."""
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    db = tmp_path / ".taut.db"
+    before = _anchor_capture(cwd="/workspace/one")
+    after = _anchor_capture(cwd="/workspace/two")
+    established = TautClient(db_path=db, identity_capture=before)
+    established.join("general")
+    member = established.whoami()
+
+    moved = TautClient(db_path=db, identity_capture=after).whoami(explain=True)
+
+    assert moved.member_id == member.member_id
+    assert moved.explain is not None
+    assert moved.explain["rule"] == "anchor match"
+
+    # The healing claim was recorded: a subsequent client with the same
+    # post-chdir capture resolves at step 3 (identity claim), not step 4.
+    healed = TautClient(db_path=db, identity_capture=after).whoami(explain=True)
+    assert healed.member_id == member.member_id
+    assert healed.explain is not None
+    assert healed.explain["rule"] == "identity claim"
+
+
+def test_join_persona_applies_through_anchor_match(tmp_path: Path) -> None:
+    """``join --persona`` resolving via anchor match must set the persona."""
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    db = tmp_path / ".taut.db"
+    first = TautClient(db_path=db, identity_capture=_anchor_capture())
+    first.join("general")
+    member = first.whoami()
+
+    after = _anchor_capture(cwd="/workspace/two")
+    TautClient(db_path=db, identity_capture=after).join("general", persona="reviewer")
+
+    resolved = TautClient(db_path=db, identity_capture=after).whoami()
+    assert resolved.member_id == member.member_id
+    assert resolved.persona == "reviewer"
+
+
+def test_anchor_match_never_matches_across_hosts(tmp_path: Path) -> None:
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    db = tmp_path / ".taut.db"
+    established = TautClient(db_path=db, identity_capture=_anchor_capture())
+    established.join("general")
+    member = established.whoami()
+
+    other_host = _anchor_capture(cwd="/workspace/two", host_id="host:elsewhere")
+    with pytest.raises(IdentityError, match="unrecognized caller"):
+        TautClient(db_path=db, identity_capture=other_host).whoami()
+
+    stranger = TautClient(db_path=db, identity_capture=other_host)
+    stranger.join("general")
+    assert stranger.whoami().member_id != member.member_id
+
+
+def test_join_new_skips_anchor_match(tmp_path: Path) -> None:
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    db = tmp_path / ".taut.db"
+    established = TautClient(db_path=db, identity_capture=_anchor_capture())
+    established.join("general")
+    member = established.whoami()
+
+    fresh = TautClient(
+        db_path=db, identity_capture=_anchor_capture(cwd="/workspace/two")
+    )
+    fresh.join("general", new=True)
+
+    assert fresh.whoami().member_id != member.member_id
+
+
+def test_explicit_as_outranks_anchor_match(tmp_path: Path) -> None:
+    """Resolution precedence: an existing explicit ``--as`` wins over a
+    live anchor match."""
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    db = tmp_path / ".taut.db"
+    TautClient(db_path=db, identity_capture=_anchor_capture()).join("general")
+    TautClient(db_path=db, as_name="other").join("general")
+
+    after = _anchor_capture(cwd="/workspace/two")
+    resolved = TautClient(db_path=db, as_name="other", identity_capture=after).whoami(
+        explain=True
+    )
+
+    assert resolved.name == "other"
+    assert resolved.explain is not None
+    assert resolved.explain["rule"] == "explicit --as"
+
+
+def test_first_contact_join_retries_next_name_after_losing_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[IAN-9] first-contact retry, deterministic form.
+
+    This is the plan-named fallback for the racing-join proof (S3 in
+    docs/plans/2026-07-06-evaluation-findings-remediation-plan.md): forcing a
+    reliable 5-process overlap is inherently flaky, so the concurrent winner
+    is injected between the loser's name snapshot and its ``insert_member``
+    call through the real state API. The state layer is not mocked: the
+    wrapper delegates to the real ``member_names_in_use`` and the injected
+    winner performs a real ``join``.
+    """
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    db = tmp_path / ".taut.db"
+    winner = TautClient(
+        db_path=db, identity_capture=_anchor_capture(pid=101, start_time="w-start")
+    )
+    loser = TautClient(
+        db_path=db, identity_capture=_anchor_capture(pid=202, start_time="l-start")
+    )
+
+    original = SqlSidecarTautState.member_names_in_use
+    fired = {"done": False}
+
+    def racing(self: SqlSidecarTautState) -> set[str]:
+        names = original(self)
+        if self is loser._state and not fired["done"]:
+            fired["done"] = True
+            winner.join("general")
+        return names
+
+    monkeypatch.setattr(SqlSidecarTautState, "member_names_in_use", racing)
+
+    loser.join("general")
+
+    winner_member = winner.whoami()
+    loser_member = loser.whoami()
+    assert winner_member.member_id != loser_member.member_id
+    assert winner_member.name != loser_member.name
+
+
+def test_first_contact_retry_is_bounded_and_names_last_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The retry loop is bounded at 5 attempts and fails naming the last
+    auto-chosen candidate."""
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    db = tmp_path / ".taut.db"
+    joiner = TautClient(
+        db_path=db, identity_capture=_anchor_capture(pid=303, start_time="b-start")
+    )
+
+    original = SqlSidecarTautState.member_names_in_use
+    counter = {"ts": 1000}
+
+    def always_racing(self: SqlSidecarTautState) -> set[str]:
+        names = original(self)
+        # Steal exactly the candidate the joiner is about to choose, via the
+        # real state API, then hand back the now-stale snapshot.
+        candidate = identity.choose_name(
+            seed="workerbot", taken=names, fallback="agent"
+        )
+        counter["ts"] += 1
+        original_insert(
+            self,
+            member_id=identity.random_member_id(),
+            display_name=candidate,
+            kind="agent",
+            uid=501,
+            host_id="host:test",
+            host_label="test-host",
+            anchor_pid=None,
+            anchor_start_time=None,
+            fingerprint=None,
+            token=identity.mint_token(),
+            meta={},
+            created_ts=counter["ts"],
+        )
+        return names
+
+    original_insert = SqlSidecarTautState.insert_member
+    monkeypatch.setattr(SqlSidecarTautState, "member_names_in_use", always_racing)
+
+    with pytest.raises(IdentityError, match="last candidate"):
+        joiner.join("general")
+
+
+def test_explicit_name_collision_keeps_failing_loudly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The first-contact retry applies only to auto-chosen names: an explicit
+    ``--as`` name that loses the create race fails, never renames."""
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    db = tmp_path / ".taut.db"
+    winner = TautClient(
+        db_path=db,
+        as_name="dup",
+        identity_capture=_anchor_capture(pid=101, start_time="w-start"),
+    )
+    loser = TautClient(
+        db_path=db,
+        as_name="dup",
+        identity_capture=_anchor_capture(pid=202, start_time="l-start"),
+    )
+
+    original_insert = SqlSidecarTautState.insert_member
+    fired = {"done": False}
+
+    def racing_insert(self: SqlSidecarTautState, **kwargs: object) -> object:
+        # The winner claims the explicit name between the loser's
+        # route-availability check and its insert (real state API, no mock).
+        if not fired["done"]:
+            fired["done"] = True
+            winner.join("general")
+        return original_insert(self, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(SqlSidecarTautState, "insert_member", racing_insert)
+
+    with pytest.raises(IdentityError):
+        loser.join("general")
+
+    assert [member.name for member in winner.who()] == ["dup"]
+
+
+def test_dm_mention_of_non_participant_creates_no_notification(tmp_path: Path) -> None:
+    van = client(tmp_path, "van")
+    bob = existing_client(tmp_path, "bob")
+    carol = existing_client(tmp_path, "carol")
+    van.join("general")
+    bob.join("general")
+    carol.join("general")
+
+    van.say("@bob", "ask @carol about the rollout")
+
+    with pytest.raises(EmptyResultError):
+        carol.inbox()
+    assert [item.type for item in bob.inbox()] == ["dm_started"]
+
+
+def test_dm_first_message_mentioning_partner_notifies_mention_once(
+    tmp_path: Path,
+) -> None:
+    van = client(tmp_path, "van")
+    bob = existing_client(tmp_path, "bob")
+    van.join("general")
+    bob.join("general")
+
+    message = van.say("@bob", "ping @bob")
+
+    # A first DM message legitimately carries two notifications: the mention
+    # written during message insert plus dm_started after it — assert
+    # per-type counts, never a bare total.
+    notifications = bob.inbox()
+    mentions = [item for item in notifications if item.type == "mention"]
+    started = [item for item in notifications if item.type == "dm_started"]
+    assert len(mentions) == 1
+    assert mentions[0].message_ts == message.ts
+    assert len(started) == 1
+
+
+def test_dm_mentions_suppressed_when_registry_row_lacks_members_meta(
+    tmp_path: Path,
+) -> None:
+    van = client(tmp_path, "van")
+    bob = existing_client(tmp_path, "bob")
+    van.join("general")
+    bob.join("general")
+    van_id = van.whoami().member_id
+    bob_id = bob.whoami().member_id
+    thread = addressing.dm_queue_name(van_id, bob_id)
+
+    # White-box seeding (corrupted-registry simulation): the public API
+    # always writes members meta on DM registry rows; fabricate the DM row
+    # without it so the participant lookup has nothing to scope by.
+    queue = Queue(META_QUEUE_NAME, db_path=str(tmp_path / ".taut.db"))
+    try:
+        SqlSidecarTautState(queue, SQLITE_SQL_DIALECT).upsert_thread(
+            name=thread,
+            kind="dm",
+            parent=None,
+            origin_ts=None,
+            created_by=van_id,
+            meta={},
+            created_ts=queue.generate_timestamp(),
+        )
+    finally:
+        queue.close()
+
+    van.say("@bob", "hello @bob")
+
+    assert van.last_notification_warnings == [
+        "mention notifications suppressed: direct-message registry row for "
+        f"{thread} lacks participant metadata"
+    ]
+    with pytest.raises(EmptyResultError):
+        bob.inbox()
+
+
+@pytest.mark.parametrize(
+    "members_builder",
+    [
+        pytest.param(lambda van_id, bob_id, eve_id: [], id="zero-members"),
+        pytest.param(lambda van_id, bob_id, eve_id: [van_id], id="one-member"),
+        pytest.param(
+            lambda van_id, bob_id, eve_id: [van_id, bob_id, eve_id],
+            id="three-members",
+        ),
+        pytest.param(
+            lambda van_id, bob_id, eve_id: [van_id, van_id], id="duplicate-member"
+        ),
+    ],
+)
+def test_dm_mentions_suppressed_on_wrong_participant_cardinality(
+    tmp_path: Path,
+    members_builder: Callable[[str, str, str], list[str]],
+) -> None:
+    """[IAN-5.2]/[IAN-6.4]: a DM has exactly two distinct participants; any
+    other ``members`` cardinality is corrupt metadata and must scope every
+    mention out — a three-member list must not let the third id receive a
+    notification carrying the ``dm.d_*`` queue name."""
+
+    van = client(tmp_path, "van")
+    bob = existing_client(tmp_path, "bob")
+    eve = existing_client(tmp_path, "eve")
+    van.join("general")
+    bob.join("general")
+    eve.join("general")
+    van_id = van.whoami().member_id
+    bob_id = bob.whoami().member_id
+    eve_id = eve.whoami().member_id
+    thread = addressing.dm_queue_name(van_id, bob_id)
+
+    # White-box seeding (corrupted-registry simulation), as above.
+    queue = Queue(META_QUEUE_NAME, db_path=str(tmp_path / ".taut.db"))
+    try:
+        SqlSidecarTautState(queue, SQLITE_SQL_DIALECT).upsert_thread(
+            name=thread,
+            kind="dm",
+            parent=None,
+            origin_ts=None,
+            created_by=van_id,
+            meta={"members": members_builder(van_id, bob_id, eve_id)},
+            created_ts=queue.generate_timestamp(),
+        )
+    finally:
+        queue.close()
+
+    van.say("@bob", "hello @bob and @eve")
+
+    assert van.last_notification_warnings == [
+        "mention notifications suppressed: direct-message registry row for "
+        f"{thread} lacks participant metadata"
+    ]
+    with pytest.raises(EmptyResultError):
+        eve.inbox()
+    with pytest.raises(EmptyResultError):
+        bob.inbox()
+
+
+def test_reply_suffix_miss_names_the_scan_window(tmp_path: Path) -> None:
+    van = client(tmp_path, "van")
+    van.join("general")
+    van.say("general", "root")
+
+    with pytest.raises(
+        NotFoundError,
+        match="message not found in the most recent 1,000 messages of general; "
+        "use the full 19-digit id",
+    ):
+        van.reply("general", "1234509876", "missing")
+
+
+def test_reply_suffix_prefers_in_window_match_over_evicted_older_message(
+    tmp_path: Path,
+) -> None:
+    # [TAUT-8.1]: suffix resolution scans only the most recent 1,000 message
+    # ids, so a suffix shared by an evicted older message and an in-window
+    # recent message resolves to the recent one instead of raising ambiguity.
+    van = client(tmp_path, "van")
+    van.join("general")
+    member_id = van.whoami().member_id
+    old_ts = 1000000000000994321
+    recent_ts = 1200000000000994321
+
+    def envelope(text: str) -> str:
+        return encode_envelope(
+            from_id=member_id, from_name="van", kind="message", text=text
+        )
+
+    queue = van.queue("general")
+    queue.insert_messages([(envelope("old collision"), old_ts)])
+    queue.insert_messages(
+        [(envelope(f"filler {i}"), 1100000000000000000 + i) for i in range(1000)]
+    )
+    queue.insert_messages([(envelope("recent collision"), recent_ts)])
+
+    reply = van.reply("general", "994321", "resolved to recent")
+
+    assert reply.thread == f"general.{recent_ts}"

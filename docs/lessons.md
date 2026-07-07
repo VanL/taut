@@ -137,6 +137,17 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   baseline/deviation/claims additions, and the writing-plans deviation log.
   Source incident record: the backstitch repo's `docs/lessons.md`.
 
+- 2026-07-06: Cohesion beats file size; floors beat line counts. Do not
+  propose or perform a file split on size grounds alone, and do not treat
+  file size by itself as a review finding — a large cohesive module like
+  `taut/state/_sql.py` is a deliberate pre-joined index for grep-navigating
+  agents, not neglected debt. What is a finding, at any size: an implicit
+  coupling with no explicit marker at the edit point, or a live-state machine
+  (queue activity, cursors, stop ordering — e.g. `MultiQueueWatcher` in
+  `taut/watcher.py`) without a name and a firing contract test. Codified as
+  engineering-principles §14
+  (`docs/agent-context/engineering-principles.md`).
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

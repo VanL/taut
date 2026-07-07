@@ -28,6 +28,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace, TracebackType
 from typing import Any, cast
@@ -42,6 +43,7 @@ from taut._constants import (
     normalize_name_seed,
 )
 from taut.state import MemberRow
+from tests.conftest import build_cli_env
 
 pytestmark = pytest.mark.sqlite_only
 
@@ -406,35 +408,6 @@ def test_match_anchor_returns_nearest_matching_member() -> None:
 
     assert identity.match_anchor(capture, [host_mismatch, match]) == match
     assert identity.match_anchor(capture, [host_mismatch]) is None
-
-
-def test_anchor_claimant_requires_start_time_and_matching_host() -> None:
-    member = _member_row()
-
-    assert (
-        identity.anchor_claimant(
-            [member],
-            host_id="host:test",
-            anchor=identity.ProcessInfo(pid=123, start_time="start"),
-        )
-        == member
-    )
-    assert (
-        identity.anchor_claimant(
-            [member],
-            host_id="host:test",
-            anchor=identity.ProcessInfo(pid=123, start_time=None),
-        )
-        is None
-    )
-    assert (
-        identity.anchor_claimant(
-            [member],
-            host_id="host:other",
-            anchor=identity.ProcessInfo(pid=123, start_time="start"),
-        )
-        is None
-    )
 
 
 def test_member_presence_distinguishes_human_remote_here_and_gone(
@@ -1116,3 +1089,232 @@ def test_token_acts_as_unanchored_member_despite_different_live_anchor(
 
     assert completed.returncode == 0, completed.stderr
     assert json.loads(completed.stdout.strip())["name"] == "van"
+
+
+_CHDIR_HARNESS = '''
+"""Long-lived anchor harness: invokes taut, chdir()s, invokes taut twice.
+
+This process is a plain Python process (non-wrapper basename), so the
+anchor walk selects *it* as the anchor for every taut invocation below.
+"""
+
+import json
+import os
+import subprocess
+import sys
+
+db = sys.argv[1]
+workdir = sys.argv[2]
+otherdir = sys.argv[3]
+
+env = os.environ.copy()
+env["TAUT_DB"] = db
+
+
+def taut(*args):
+    completed = subprocess.run(
+        [sys.executable, "-m", "taut", *args],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=30,
+    )
+    return {
+        "rc": completed.returncode,
+        "stdout": completed.stdout,
+        "stderr": completed.stderr,
+    }
+
+
+os.chdir(workdir)
+results = {"join": taut("--json", "join", "general")}
+os.chdir(otherdir)
+results["whoami_after_chdir"] = taut("--json", "whoami", "--explain")
+results["whoami_after_heal"] = taut("--json", "whoami", "--explain")
+print(json.dumps(results))
+'''
+
+
+def _json_lines(stdout: str) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in stdout.strip().splitlines() if line.strip()]
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="POSIX process-chain ancestry is not a Windows process contract",
+)
+@pytest.mark.usefixtures("clean_env")
+def test_anchor_match_survives_anchor_chdir_in_real_chain(tmp_path: Path) -> None:
+    """[IAN-3.3] step 4, proven on a real process chain: a long-lived anchor
+    process that ``os.chdir()``s between taut invocations keeps resolving to
+    the same member. A shell cannot host this proof — ``select_anchor()``
+    skips shells — so the anchor is a small long-lived Python harness.
+
+    Three invocations are required: the second resolves via ``anchor match``
+    and writes the healing claim; only the third can witness that heal by
+    resolving via ``identity claim``.
+    """
+    workdir = tmp_path / "proj"
+    workdir.mkdir()
+    otherdir = tmp_path / "elsewhere"
+    otherdir.mkdir()
+    _init_db(workdir)
+    harness = tmp_path / "anchor_harness.py"
+    harness.write_text(_CHDIR_HARNESS, encoding="utf-8")
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(harness),
+            str(workdir / ".taut.db"),
+            str(workdir),
+            str(otherdir),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        # The harness invokes `python -m taut`; without the repo on
+        # PYTHONPATH it could import an installed taut and prove nothing
+        # about the working tree.
+        env=build_cli_env(),
+    )
+    assert completed.returncode == 0, completed.stderr
+    results = json.loads(completed.stdout.strip().splitlines()[-1])
+
+    join = results["join"]
+    assert join["rc"] == 0, join["stderr"]
+    creation = next(obj for obj in _json_lines(join["stdout"]) if "token" in obj)
+    member_id = creation["member_id"]
+
+    moved = results["whoami_after_chdir"]
+    assert moved["rc"] == 0, (
+        "caller unrecognized after the anchor chdir()ed — the mutable-cwd "
+        "claim orphaned a live anchor: " + moved["stderr"]
+    )
+    moved_obj = _json_lines(moved["stdout"])[-1]
+    assert moved_obj["member_id"] == member_id
+    assert moved_obj["explain"]["rule"] == "anchor match"
+
+    healed = results["whoami_after_heal"]
+    assert healed["rc"] == 0, healed["stderr"]
+    healed_obj = _json_lines(healed["stdout"])[-1]
+    assert healed_obj["member_id"] == member_id
+    assert healed_obj["explain"]["rule"] == "identity claim"
+
+
+_CONCURRENT_JOIN_WORKER = '''
+"""First-contact join worker: one synthetic agent capture per process.
+
+The capture is injected only through the public
+``TautClient(identity_capture=...)`` seam; the broker, sidecar, and state
+layer are all real, so the name race is a real cross-process race.
+"""
+
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+import taut.identity as identity
+from taut.client import TautClient
+
+db = sys.argv[1]
+barrier_dir = Path(sys.argv[2])
+worker = sys.argv[3]
+
+pid = os.getpid()
+process = identity.ProcessInfo(
+    pid=pid,
+    ppid=1,
+    start_time=f"start-{pid}",
+    exe="/usr/local/bin/workerbot",
+    argv=("workerbot",),
+    uid=501,
+    pgid=pid,
+    session_id=7,
+    tty=None,
+    cwd="/workspace",
+)
+capture = identity.IdentityCapture(
+    chain=(process,),
+    host=identity.HostIdentity("host:concurrency", "concurrency-host"),
+    uid=501,
+    login="tester",
+    anchor=process,
+    kind="agent",
+    rule="test capture",
+)
+client = TautClient(db_path=db, identity_capture=capture)
+
+(barrier_dir / f"ready-{worker}").touch()
+go = barrier_dir / "go"
+deadline = time.monotonic() + 60
+while not go.exists():
+    if time.monotonic() > deadline:
+        raise SystemExit(3)
+    time.sleep(0.001)
+
+client.join("general")
+member = client.whoami()
+print(json.dumps({"member_id": member.member_id, "name": member.name}))
+'''
+
+
+@pytest.mark.usefixtures("clean_env")
+def test_concurrent_first_contact_joins_all_get_distinct_names(
+    tmp_path: Path,
+) -> None:
+    """[IAN-9]: N simultaneous first-contact joins with the same name seed
+    must all succeed with distinct member ids and distinct names. Workers are
+    real separate processes synchronized on a file barrier so their
+    snapshot-then-insert windows overlap; the deterministic single-collision
+    proof lives in tests/test_client.py
+    (test_first_contact_join_retries_next_name_after_losing_race), because a
+    barrier cannot guarantee the overlap on every run.
+    """
+    _init_db(tmp_path)
+    barrier_dir = tmp_path / "barrier"
+    barrier_dir.mkdir()
+    worker_script = tmp_path / "join_worker.py"
+    worker_script.write_text(_CONCURRENT_JOIN_WORKER, encoding="utf-8")
+
+    count = 5
+    workers = [
+        subprocess.Popen(
+            [
+                sys.executable,
+                str(worker_script),
+                str(tmp_path / ".taut.db"),
+                str(barrier_dir),
+                str(index),
+            ],
+            env=build_cli_env(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for index in range(count)
+    ]
+    try:
+        deadline = time.monotonic() + 60
+        while len(list(barrier_dir.glob("ready-*"))) < count:
+            if time.monotonic() > deadline:
+                raise AssertionError("workers never reached the barrier")
+            time.sleep(0.01)
+        (barrier_dir / "go").touch()
+        outputs = [worker.communicate(timeout=120) for worker in workers]
+    finally:
+        for worker in workers:
+            if worker.poll() is None:
+                worker.kill()
+
+    failures = [
+        (worker.returncode, stderr)
+        for worker, (_stdout, stderr) in zip(workers, outputs, strict=True)
+        if worker.returncode != 0
+    ]
+    assert not failures, f"first-contact joins failed: {failures}"
+    members = [json.loads(stdout.strip().splitlines()[-1]) for stdout, _ in outputs]
+    assert len({member["member_id"] for member in members}) == count
+    assert len({member["name"] for member in members}) == count

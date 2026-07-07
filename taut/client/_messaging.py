@@ -379,9 +379,26 @@ class MessagingMixin(_ClientBase):
     def _write_mention_notifications(self, message: Message, text: str) -> None:
         if message.from_id is None:
             return
-        for key, matched in addressing.mentioned_route_keys(text):
+        mentions = addressing.mentioned_route_keys(text)
+        if not mentions:
+            return
+        participants: set[str] | None = None
+        if addressing.classify_registered_queue(message.thread) == "dm":
+            # [IAN-5.2]: DM mentions notify only the two participants; a DM
+            # must not leak its existence or queue name to non-participants.
+            participants = self._dm_participants(message.thread)
+            if participants is None:
+                self.last_notification_warnings.append(
+                    "mention notifications suppressed: direct-message "
+                    f"registry row for {message.thread} lacks participant "
+                    "metadata"
+                )
+                return
+        for key, matched in mentions:
             target = self._state.get_member_by_route_key(key)
             if target is None or target["member_id"] == message.from_id:
+                continue
+            if participants is not None and target["member_id"] not in participants:
                 continue
             self._write_notification(
                 to_id=target["member_id"],
@@ -395,6 +412,29 @@ class MessagingMixin(_ClientBase):
                     "matched": matched,
                 },
             )
+
+    def _dm_participants(self, thread: str) -> set[str] | None:
+        """Return the DM participant ids, or None when the registry row is
+        missing or its ``members`` meta is malformed ([IAN-5.2]).
+
+        A direct message has exactly two distinct participants ([IAN-6.4]);
+        any other cardinality is corrupt metadata and must scope everyone
+        out — treating a 3+-member list as valid would let a corrupted row
+        leak the DM's existence to a non-participant.
+        """
+
+        row = self._state.get_thread(thread)
+        if row is None:
+            return None
+        raw_members = row["meta"].get("members")
+        if not isinstance(raw_members, list) or not all(
+            isinstance(item, str) for item in raw_members
+        ):
+            return None
+        participants = set(raw_members)
+        if len(raw_members) != 2 or len(participants) != 2:
+            return None
+        return participants
 
     def _resolve_message_id(self, thread: str, msg_id: str) -> int:
         queue = self.queue(thread)
@@ -412,7 +452,10 @@ class MessagingMixin(_ClientBase):
             recent.append(ts)
         matches = [ts for ts in recent if str(ts).endswith(msg_id)]
         if not matches:
-            raise NotFoundError(f"message not found: {msg_id}")
+            raise NotFoundError(
+                f"message not found in the most recent 1,000 messages of {thread}; "
+                "use the full 19-digit id"
+            )
         if len(matches) > 1:
             raise AmbiguousMessageError(
                 "ambiguous message id suffix: " + ", ".join(str(ts) for ts in matches)

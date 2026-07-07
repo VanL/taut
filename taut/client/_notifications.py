@@ -29,4 +29,8 @@ class NotificationsMixin(_ClientBase):
             ts = queue.generate_timestamp()
             queue.insert_messages([(_json_dumps(payload), ts)])
         except Exception as exc:  # pragma: no cover - backend-specific warning path.
-            self.last_notification_warnings.append(str(exc))
+            # Entries carry their own context; the CLI renders each one
+            # verbatim under a bare "warning: " prefix.
+            self.last_notification_warnings.append(
+                f"notification delivery failed: {exc}"
+            )

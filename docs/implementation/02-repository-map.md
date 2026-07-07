@@ -47,6 +47,7 @@ Quick pointers to the key guidance documents in this repository.
 | `docs/specs/00-specs-index.md` | Numbered entry point for specs |
 | `docs/specs/01-development-documentation-operating-model.md` | Governing spec for the documentation workflow |
 | `docs/specs/02-taut-core.md` | Taut core spec: storage, threads, envelope, read model, surfaces, trust model |
+| `docs/specs/03-identity-addressing-notifications.md` | Identity, addressing, and notifications spec: member ids, names, DMs, queue namespace, rename |
 | `docs/plans/README.md` | Plan directory rules |
 | `docs/plans/2026-06-12-taut-foundation-plan.md` | Historical foundation implementation plan |
 | `docs/plans/2026-06-18-member-identity-addressing-plan.md` | Implemented plan for member ids, addressing, notifications, and channel rename |
@@ -54,6 +55,13 @@ Quick pointers to the key guidance documents in this repository.
 | `docs/plans/2026-06-17-github-release-helper-plan.md` | GitHub-only release-helper plan while PyPI name clearance is pending |
 | `docs/plans/2026-06-17-github-actions-release-workflows-plan.md` | GitHub Actions test and GitHub-only release workflow plan |
 | `docs/plans/2026-06-17-taut-pg-extension-plan.md` | Postgres extension plan covering `extensions/`, PG test harness, and GitHub-only release gates |
+| `docs/plans/2026-06-17-implementation-review-followups-plan.md` | Post-review hardening for missing-plugin errors, bounded `log --limit`, and shared backend conformance |
+| `docs/plans/2026-06-18-simplebroker-latest-timestamp-plan.md` | Implemented plan for indexed `list` metadata via SimpleBroker's latest pending timestamp API |
+| `docs/plans/2026-06-30-assets-reference-cleanup-plan.md` | Implemented cleanup of stale `assets/` and `generate_knot.py` lint references |
+| `docs/plans/2026-06-30-client-module-split-plan.md` | Implemented split of `taut.client` into a package facade and concern-specific mixins |
+| `docs/plans/2026-07-01-schema-shim-retirement-plan.md` | Implemented retirement of the historical schema compatibility shim in favor of `taut/state/` |
+| `docs/plans/2026-07-01-taut-state-sql-dialect-plan.md` | Implemented `TautState` interface and SQL dialect seam refactor |
+| `docs/plans/2026-07-01-taut-watch-runtime-plan.md` | Implemented `TautWatchRuntime` seam between `TautClient` and the watcher |
 | `docs/implementation/00-implementation-index.md` | Numbered entry point for implementation docs |
 | `docs/implementation/01-documentation-system.md` | Why the documentation system is shaped this way |
 | `docs/implementation/03-agent-inventory.md` | Current observed agent availability and review preference |
@@ -69,7 +77,6 @@ Quick pointers to the key guidance documents in this repository.
 | `taut/_scripts.py` | Importable developer-script helper logic, currently for `bin/pytest-pg` |
 | `taut/envelope.py` | Message envelope encode/decode and foreign-message fallback |
 | `taut/state/` | Internal Taut state interface, SQL dialect marker, and sidecar SQL adapter |
-| `taut/schema.py` | Compatibility forwarding module for historical sidecar helper imports |
 | `taut/identity.py` | Process fingerprint capture, anchor selection, presence checks |
 | `taut/client/` | Public Python API package: facade plus identity, messaging, notification, and thread mixins |
 | `taut/watcher.py` | Vendored multi-queue watcher plus cursor-aware `TautWatcher` |

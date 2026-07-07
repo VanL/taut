@@ -342,36 +342,11 @@ class SqlSidecarTautState:
             started_ts=started_ts,
         )
 
-    def mark_channel_rename_state(
-        self, *, old_name: str, state: str, updated_ts: int
-    ) -> None:
-        mark_channel_rename_state(
-            self.queue,
-            old_name=old_name,
-            state=state,
-            updated_ts=updated_ts,
-        )
-
     def get_channel_rename(self, old_name: str) -> ChannelRenameRow | None:
         return get_channel_rename(self.queue, old_name)
 
     def incomplete_channel_renames(self) -> list[ChannelRenameRow]:
         return incomplete_channel_renames(self.queue)
-
-    def apply_channel_rename_sidecar(
-        self,
-        *,
-        old_name: str,
-        new_name: str,
-        affected: list[dict[str, str]],
-        updated_ts: int,
-    ) -> None:
-        self.apply_channel_rename_state(
-            old_name=old_name,
-            new_name=new_name,
-            affected=affected,
-            updated_ts=updated_ts,
-        )
 
     def apply_channel_rename_state(
         self,
@@ -381,7 +356,7 @@ class SqlSidecarTautState:
         affected: list[dict[str, str]],
         updated_ts: int,
     ) -> None:
-        apply_channel_rename_sidecar(
+        apply_channel_rename_state(
             self.queue,
             old_name=old_name,
             new_name=new_name,
@@ -508,15 +483,16 @@ def update_member_activity(queue: Queue, member_id: str, active_ts: int) -> None
 def update_member_persona(
     queue: Queue, member_id: str, persona: str | None
 ) -> MemberRow | None:
-    member = get_member(queue, member_id)
-    if member is None:
-        return None
-    meta = dict(member["meta"])
-    if persona is None:
-        meta.pop("persona", None)
-    else:
-        meta["persona"] = persona
     with queue.sidecar(transaction=True) as session:
+        row = _one(session, _member_select("member_id = ?"), (member_id,))
+        member = _member_row(row)
+        if member is None:
+            return None
+        meta = dict(member["meta"])
+        if persona is None:
+            meta.pop("persona", None)
+        else:
+            meta["persona"] = persona
         session.run(
             "UPDATE taut_members SET meta = ? WHERE member_id = ?",
             (_json_dumps(meta), member_id),
@@ -952,24 +928,6 @@ def start_channel_rename(
     return row
 
 
-def mark_channel_rename_state(
-    queue: Queue,
-    *,
-    old_name: str,
-    state: str,
-    updated_ts: int,
-) -> None:
-    with queue.sidecar(transaction=True) as session:
-        session.run(
-            """
-            UPDATE taut_channel_renames
-            SET state = ?, updated_ts = ?
-            WHERE old_name = ?
-            """,
-            (state, updated_ts, old_name),
-        )
-
-
 def get_channel_rename(queue: Queue, old_name: str) -> ChannelRenameRow | None:
     with queue.sidecar() as session:
         row = _one(
@@ -998,7 +956,7 @@ def incomplete_channel_renames(queue: Queue) -> list[ChannelRenameRow]:
     return [_require_channel_rename_row(row) for row in rows]
 
 
-def apply_channel_rename_sidecar(
+def apply_channel_rename_state(
     queue: Queue,
     *,
     old_name: str,

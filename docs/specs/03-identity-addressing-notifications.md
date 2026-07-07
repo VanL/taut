@@ -141,9 +141,18 @@ Resolution order:
 2. Continuity token, if present, resolves to its member and records a
    `continuity_token` claim.
 3. Captured claim hash match resolves to the associated member.
-4. Human fallback resolves by local host id plus uid when an existing human
+4. Agent anchor match: when no claim hash matches and the capture is an
+   agent capture, resolution may match a stored member anchor by the stable
+   triple (`host_id`, `anchor_pid`, `anchor_start_time`) against the
+   captured ancestor chain. This recovers continuity when a live anchor
+   process changed mutable claim inputs (working directory, tty, process
+   group) without restarting. On a match, the resolver records the current
+   claim hash for that member so subsequent commands resolve at step 3.
+   Anchor match never applies under `join --new`, never overrides steps
+   1–3, and never matches across hosts.
+5. Human fallback resolves by local host id plus uid when an existing human
    member has that claim history.
-5. Otherwise the caller is unrecognized. Read-only commands may operate as
+6. Otherwise the caller is unrecognized. Read-only commands may operate as
    guests where the core spec allows that. State-changing commands create a new
    member only when the command can still succeed after creating that member.
    Membership-gated writes, such as channel `say` and `reply`, must not create
@@ -263,6 +272,10 @@ Rules:
 - Mentions inside foreign broker bodies are not parsed by Taut.
 - Mention routing uses the current name/alias route table at write time; later
   name changes do not retarget the old mention.
+- Mentions written into a direct-message queue notify only the two DM
+  participants. Mentioning any other member in a DM produces no
+  notification for them: a DM must not leak its existence, queue name, or
+  activity to non-participants.
 
 ## 6. Queue Namespace [IAN-6]
 
@@ -499,7 +512,9 @@ Required proofs:
   when an alias exists; public alias-management tests belong with the future
   alias command
 - a direct-message queue is stable across both participants changing names
-- mentions write exactly one notification per mentioned member per message
+- mentions write exactly one notification per mentioned member per message,
+  scoped to the DM participants when the source queue is a direct-message
+  queue
 - notification reads claim notifications and do not affect chat history
 - a second session for the same member can drain notifications; no per-device
   state exists
@@ -512,3 +527,7 @@ Required proofs:
 
 - `docs/plans/2026-06-18-member-identity-addressing-plan.md` - implemented
   migration from the current development implementation to this model.
+- `docs/plans/2026-07-06-evaluation-findings-remediation-plan.md` —
+  implemented [IAN-3.3] anchor-match resolution, [IAN-8.3] channel-rename
+  resume, first-contact naming retry, and direct-message mention
+  participant scoping.

@@ -9,11 +9,12 @@ from taut._exceptions import (
     EmptyResultError,
     MembershipError,
     NotFoundError,
+    TautError,
     ThreadNameError,
 )
-from taut.state import MembershipRow, ThreadRow
+from taut.state import ChannelRenameRow, MembershipRow, ThreadRow
 
-from ._base import _ClientBase
+from ._base import _ClientBase, _incomplete_channel_rename_message
 from ._models import Message, Thread
 
 
@@ -120,7 +121,12 @@ class ThreadsMixin(_ClientBase):
     def rename_channel(self, old_name: str, new_name: str) -> Thread:
         old_name = addressing.validate_chat_thread_name(old_name, allow_subthread=False)
         new_name = addressing.validate_chat_thread_name(new_name, allow_subthread=False)
-        self._ensure_no_incomplete_channel_rename()
+        incomplete = self._state.incomplete_channel_renames()
+        if incomplete:
+            marker = incomplete[0]
+            if marker["old_name"] == old_name and marker["new_name"] == new_name:
+                return self._resume_channel_rename(marker)
+            raise TautError(_incomplete_channel_rename_message(marker))
         old = self._state.get_thread(old_name)
         if old is None or old["kind"] != "channel":
             raise NotFoundError(f"channel not found: {old_name}")
@@ -168,6 +174,51 @@ class ThreadsMixin(_ClientBase):
             updated_ts=updated_ts,
         )
         renamed = self._state.get_thread(new_name)
+        if renamed is None:
+            raise RuntimeError("renamed channel could not be read back")
+        return self._thread_from_row(renamed, None)
+
+    def _resume_channel_rename(self, marker: ChannelRenameRow) -> Thread:
+        """Finish an interrupted rename from its marker ([IAN-8.3]).
+
+        The marker's affected list is authoritative — queues may already
+        reflect partial progress — so each item's action is decided by
+        which of its queue names exist instead of the fresh path's global
+        target precheck (which would refuse resume's own progress):
+
+        - old exists, new missing: the normal pending item; rename it.
+        - old missing, new exists: already completed; skip.
+        - both missing: the normal broker state for an empty channel or
+          drained sub-thread (queues exist only while non-empty); skip
+          silently, exactly as the fresh path's ``queue_exists(old)``
+          guard does, and let the sidecar apply converge the registry.
+        - both exist: a foreign queue occupies the target; abort loudly
+          before mutating anything ([IAN-8.3] "loudly reportable").
+        """
+
+        affected = marker["affected"]
+        with open_broker(self.target, config=self.config) as broker:
+            pending: list[dict[str, str]] = []
+            for item in affected:
+                old_exists = broker.queue_exists(item["old"])
+                if old_exists and broker.queue_exists(item["new"]):
+                    raise TautError(
+                        "cannot finish channel rename "
+                        f"{marker['old_name']} -> {marker['new_name']}: "
+                        f"target queue already exists: {item['new']}"
+                    )
+                if old_exists:
+                    pending.append(item)
+            for item in pending:
+                broker.rename_queue(item["old"], item["new"], retarget_aliases=False)
+        updated_ts = self._meta_queue.generate_timestamp()
+        self._state.apply_channel_rename_state(
+            old_name=marker["old_name"],
+            new_name=marker["new_name"],
+            affected=affected,
+            updated_ts=updated_ts,
+        )
+        renamed = self._state.get_thread(marker["new_name"])
         if renamed is None:
             raise RuntimeError("renamed channel could not be read back")
         return self._thread_from_row(renamed, None)

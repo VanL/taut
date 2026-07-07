@@ -6,9 +6,10 @@ This document explains why the repository is organized around shared agent
 context, specs, dated plans, implementation docs, reusable skills,
 independent reviews, and a lessons ledger.
 
-This file is part of the starter scaffold installed from the agent-guidance
-repository. Keep it project-owned and adapt it as real product code and
-repo-specific boundaries appear.
+This file started as the scaffold installed from the agent-guidance
+repository and is project-owned: the taut product code and its
+repo-specific boundaries are documented in
+`docs/implementation/04-taut-architecture.md`.
 
 ## Governing Spec References
 
@@ -77,7 +78,7 @@ These roles should stay distinct even as taut grows.
 
 ## Change Guidance
 
-When future work adds product code:
+When work changes product code or its governing boundaries:
 
 1. add or update the governing spec first
 2. create a dated plan for non-trivial work

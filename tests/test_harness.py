@@ -54,6 +54,23 @@ def test_run_cli_writes_pg_config_with_worker_schema(
     assert 'schema = "taut_pytest_gw0"' in config
 
 
+def test_run_cli_rejects_stdin_and_stdin_bytes_together(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        harness.run_cli("init", cwd=tmp_path, stdin="text", stdin_bytes=b"bytes")
+
+
+def test_run_cli_stdin_bytes_branch_returns_decoded_str(tmp_path: Path) -> None:
+    # Real subprocess: the binary-stdin branch must keep the (int, str, str)
+    # return contract even when stdin carries invalid UTF-8.
+    rc, out, err = harness.run_cli(
+        "--version", cwd=tmp_path, stdin_bytes=b"\xff\xfe not utf-8"
+    )
+
+    assert rc == 0
+    assert isinstance(out, str) and isinstance(err, str)
+    assert out.startswith("taut ")
+
+
 def test_shared_contract_filenames_require_shared_marker() -> None:
     assert harness._requires_explicit_shared_marker(Path("test_shared_contract.py"))
     assert not harness._requires_explicit_shared_marker(Path("test_client.py"))

@@ -171,6 +171,45 @@ class IdentityMixin(_ClientBase):
                     )
                 return _ResolvedMember(row, capture, claim, rule="identity claim")
 
+        if not force_new and capture.kind == "agent":
+            # [IAN-3.3] step 4: a live anchor that changed mutable claim
+            # inputs (cwd, tty, pgid) still matches by the stable
+            # (host_id, anchor_pid, anchor_start_time) triple.
+            row = identity.match_anchor(capture, self._state.list_members())
+            if row is not None:
+                active = next_active_ts()
+                try:
+                    # Heal: record the current claim so subsequent commands
+                    # resolve at step 3.
+                    self._record_claim(row, claim, active)
+                except IntegrityError:
+                    # Healing race: another process associated this claim
+                    # hash first. Step-3 semantics outrank anchor match, so
+                    # if the hash now belongs to a different member, that
+                    # owner wins with the full step-3 side effects.
+                    owner = self._state.get_member_by_claim_hash(claim.claim_hash)
+                    if owner is not None and owner["member_id"] != row["member_id"]:
+                        self._state.update_member_activity(owner["member_id"], active)
+                        if persona is not None:
+                            owner = (
+                                self._state.update_member_persona(
+                                    owner["member_id"], persona
+                                )
+                                or owner
+                            )
+                        return _ResolvedMember(
+                            owner, capture, claim, rule="identity claim"
+                        )
+                    # Same member or no owner: proceed with the anchor match
+                    # without the healing claim.
+                self._state.update_member_activity(row["member_id"], active)
+                if persona is not None:
+                    row = (
+                        self._state.update_member_persona(row["member_id"], persona)
+                        or row
+                    )
+                return _ResolvedMember(row, capture, claim, rule="anchor match")
+
         if capture.kind == "human" and not force_new:
             row = self._state.get_member_by_uid(
                 host_id=capture.host.host_id,
@@ -230,53 +269,77 @@ class IdentityMixin(_ClientBase):
         active_ts: int,
         force_new: bool,
     ) -> MemberRow:
-        taken = self._state.member_names_in_use()
-        if name is None:
-            seed = (
-                capture.anchor.basename if capture.anchor is not None else capture.login
-            )
-            fallback = "agent" if capture.kind == "agent" else "human"
-            name = identity.choose_name(seed=seed, taken=taken, fallback=fallback)
-        validate_member_name(name)
+        auto_named = name is None
         anchor = capture.anchor if capture.kind == "agent" else None
-        member_id = identity.random_member_id()
         meta = {"persona": persona} if persona is not None else {}
-        try:
-            member = self._state.insert_member(
-                member_id=member_id,
-                display_name=name,
-                kind=capture.kind,
-                uid=capture.uid,
-                host_id=capture.host.host_id,
-                host_label=capture.host.host_label,
-                anchor_pid=anchor.pid if anchor is not None else None,
-                anchor_start_time=anchor.start_time if anchor is not None else None,
-                fingerprint=identity.fingerprint_for_process(anchor),
-                token=identity.mint_token(),
-                meta=meta,
-                created_ts=active_ts,
-            )
-        except IntegrityError as exc:
-            resolved = (
-                None
-                if force_new
-                else self._state.get_member_by_claim_hash(claim.claim_hash)
-            )
-            if resolved is not None:
-                return resolved
-            raise IdentityError(str(exc)) from exc
-        self._ensure_notification_thread(member, active_ts)
-        if self._state.get_member_by_claim_hash(claim.claim_hash) is None:
+        # First contact may race another first contact on the same name seed
+        # ([IAN-9] deterministic fallback allows retry). Every retry re-mints
+        # all three unique values — name, member_id, and token — inside the
+        # loop body so a stale collision candidate can never be reused.
+        # Explicit names (from --as) keep fail-loud behavior: one attempt.
+        attempts = 5 if auto_named else 1
+        for attempt in range(attempts):
+            if name is not None:
+                candidate = name
+            else:
+                seed = (
+                    capture.anchor.basename
+                    if capture.anchor is not None
+                    else capture.login
+                )
+                fallback = "agent" if capture.kind == "agent" else "human"
+                candidate = identity.choose_name(
+                    seed=seed,
+                    taken=self._state.member_names_in_use(),
+                    fallback=fallback,
+                )
+            validate_member_name(candidate)
             try:
-                self._record_claim(member, claim, active_ts)
-            except IntegrityError:
-                if force_new:
-                    return member
-                resolved = self._state.get_member_by_claim_hash(claim.claim_hash)
+                member = self._state.insert_member(
+                    member_id=identity.random_member_id(),
+                    display_name=candidate,
+                    kind=capture.kind,
+                    uid=capture.uid,
+                    host_id=capture.host.host_id,
+                    host_label=capture.host.host_label,
+                    anchor_pid=anchor.pid if anchor is not None else None,
+                    anchor_start_time=(
+                        anchor.start_time if anchor is not None else None
+                    ),
+                    fingerprint=identity.fingerprint_for_process(anchor),
+                    token=identity.mint_token(),
+                    meta=meta,
+                    created_ts=active_ts,
+                )
+            except IntegrityError as exc:
+                resolved = (
+                    None
+                    if force_new
+                    else self._state.get_member_by_claim_hash(claim.claim_hash)
+                )
                 if resolved is not None:
                     return resolved
-                raise
-        return member
+                if not auto_named:
+                    raise IdentityError(str(exc)) from exc
+                if attempt + 1 >= attempts:
+                    raise IdentityError(
+                        f"could not create a member after {attempts} attempts; "
+                        f"last candidate: {candidate}"
+                    ) from exc
+                continue
+            self._ensure_notification_thread(member, active_ts)
+            if self._state.get_member_by_claim_hash(claim.claim_hash) is None:
+                try:
+                    self._record_claim(member, claim, active_ts)
+                except IntegrityError:
+                    if force_new:
+                        return member
+                    resolved = self._state.get_member_by_claim_hash(claim.claim_hash)
+                    if resolved is not None:
+                        return resolved
+                    raise
+            return member
+        raise AssertionError("unreachable: member-creation retry loop fell through")
 
     def _record_claim(
         self,

@@ -5,6 +5,16 @@ Vendored/adapted from:
 - path: weft/core/tasks/multiqueue_watcher.py
 - commit: 7612e972a75806b8165dbf18e6bbfcbb686f27ea
 
+Local deviations from the vendored source (reconcile on the next re-vendor):
+- `MultiQueueWatcher.remove_queue` closes the removed config's `Queue`
+  unless it is the shared data-version queue (`BaseWatcher._queue_obj`,
+  built from the first configured queue), so membership churn under a
+  running watcher does not leak broker connections.
+- `TautWatcher.__init__` no longer raises `EmptyResultError` for an empty
+  filtered membership set: `_current_memberships(strict=True)` already
+  raises `MembershipError` for any filtered thread the member has not
+  joined, so that branch was unreachable.
+
 Spec references:
 - docs/specs/02-taut-core.md [TAUT-8.4]
 """
@@ -41,7 +51,7 @@ from taut._constants import (
     WATCH_MEMBERSHIP_REFRESH_SECONDS,
     load_config,
 )
-from taut._exceptions import EmptyResultError, MembershipError
+from taut._exceptions import MembershipError
 from taut._watch_runtime import TautWatchRuntime, WatchedThread
 from taut.client import Message, Notification
 
@@ -202,9 +212,9 @@ class MultiQueueWatcher(BaseWatcher):
         self._reset_multi_activity_waiter()
 
     def remove_queue(self, queue_name: str) -> None:
-        if queue_name not in self._queues:
+        config = self._queues.pop(queue_name, None)
+        if config is None:
             return
-        del self._queues[queue_name]
         if queue_name in self._active_queues:
             self._active_queues = [q for q in self._active_queues if q != queue_name]
             self._queue_iterator = (
@@ -214,6 +224,15 @@ class MultiQueueWatcher(BaseWatcher):
             )
         self._queue_generation += 1
         self._reset_multi_activity_waiter()
+        # The first configured queue doubles as BaseWatcher's data-version
+        # queue (`_queue_obj`); closing it would kill data-version polling.
+        if config.queue is not self._get_queue_for_data_version():
+            try:
+                config.queue.close()
+            except (BrokerError, OSError, RuntimeError):
+                logger.debug(
+                    "failed to close removed queue '%s'", queue_name, exc_info=True
+                )
 
     def get_queue(self, queue_name: str) -> Queue | None:
         config = self._queues.get(queue_name)
@@ -518,8 +537,6 @@ class TautWatcher(MultiQueueWatcher):
         self._next_membership_refresh_at = time.monotonic()
         self._notification_queue_name = addressing.notification_queue_name(member_id)
         memberships = self._current_memberships(strict=True)
-        if not memberships and self._thread_filter is not None:
-            raise EmptyResultError("no joined threads to watch; run 'taut join THREAD'")
         queue_configs = {
             self._notification_queue_name: {
                 "handler": self._make_notification_handler(),

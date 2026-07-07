@@ -75,8 +75,13 @@ Requirements:
 - code should point back to the governing spec where ownership would otherwise
   be ambiguous
 
-_Implementation snapshot_: the current repository setup models this chain with
-the documentation system itself because product code has not been added yet.
+_Implementation snapshot_: the chain is live for product code. Taut behavior
+specs (`docs/specs/02-taut-core.md`,
+`docs/specs/03-identity-addressing-notifications.md`) backlink dated plans,
+`docs/implementation/04-taut-architecture.md` carries the spec-code trace
+table, module docstrings cite governing spec codes, and
+`tests/test_docs_references.py` gates path and spec-code references against
+drift.
 
 ## 5. Planning Standard [DOM-5]
 
@@ -282,7 +287,10 @@ Requirements:
 
 ## Related Plans
 
-- `docs/plans/2026-04-07-development-documentation-foundation-plan.md`
-- `docs/plans/2026-04-07-plan-hardening-guidance-plan.md`
-- `docs/plans/2026-04-07-review-skills-bootstrap-plan.md`
-- `docs/plans/2026-04-07-specs-index-renumbering-plan.md`
+- `docs/plans/2026-07-06-evaluation-findings-remediation-plan.md` — S8
+  reconciled this spec's stale snapshot and backlinks and added the
+  `tests/test_docs_references.py` reference gate.
+
+The original documentation-system bootstrap predates the retained plan
+archive; plans in `docs/plans/` cite this spec's [DOM-*] codes when they
+touch the operating model.

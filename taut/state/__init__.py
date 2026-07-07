@@ -150,22 +150,9 @@ class TautState(Protocol):
         started_ts: int,
     ) -> ChannelRenameRow: ...
 
-    def mark_channel_rename_state(
-        self, *, old_name: str, state: str, updated_ts: int
-    ) -> None: ...
-
     def get_channel_rename(self, old_name: str) -> ChannelRenameRow | None: ...
 
     def incomplete_channel_renames(self) -> list[ChannelRenameRow]: ...
-
-    def apply_channel_rename_sidecar(
-        self,
-        *,
-        old_name: str,
-        new_name: str,
-        affected: list[dict[str, str]],
-        updated_ts: int,
-    ) -> None: ...
 
     def apply_channel_rename_state(
         self,

@@ -9,6 +9,7 @@ Spec references:
 from __future__ import annotations
 
 import os
+import tomllib
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -23,10 +24,12 @@ from taut._constants import (
     META_QUEUE_NAME,
     load_config,
 )
+from taut._exceptions import TautError
 from taut.state import SqlSidecarTautState, dialect_for_taut_target
 
 from ._base import (
     _ClientBase,
+    _raise_invalid_project_config,
     _raise_with_backend_install_hint,
 )
 from ._identity import IdentityMixin
@@ -79,6 +82,8 @@ class TautClient(
         else:
             try:
                 target_obj = target_for_directory(Path.cwd(), config=config)
+            except tomllib.TOMLDecodeError as exc:
+                _raise_invalid_project_config(exc)
             except RuntimeError as exc:
                 _raise_with_backend_install_hint(exc)
             target = target_obj
@@ -86,6 +91,16 @@ class TautClient(
                 Path(target_obj.target) if target_obj.backend_name == "sqlite" else None
             )
         created = False if db_file is None else not db_file.exists()
+        if db_file is not None and created:
+            # Fail fast with a one-line diagnostic: without this check an
+            # unwritable target stalls for the full SimpleBroker setup
+            # phase-lock timeout (~60s) before surfacing a lock-centric
+            # error that buries the PermissionError.
+            parent = db_file.parent
+            if not parent.is_dir():
+                raise TautError(f"cannot create {db_file}: {parent} is not a directory")
+            if not os.access(parent, os.W_OK | os.X_OK):
+                raise TautError(f"cannot create {db_file}: {parent} is not writable")
         queue = Queue(META_QUEUE_NAME, db_path=target, config=config)
         try:
             SqlSidecarTautState(

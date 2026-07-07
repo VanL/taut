@@ -11,19 +11,14 @@ import json
 import sys
 from collections.abc import Sequence
 from datetime import datetime
-from typing import Any, TextIO
+from typing import Any, NoReturn, TextIO
 
 from taut._constants import __version__
 from taut._exceptions import (
-    AmbiguousMessageError,
-    BackendNotSupportedError,
     EmptyResultError,
     IdentityError,
     MembershipError,
     NotFoundError,
-    NotInitializedError,
-    TautError,
-    ThreadNameError,
     TokenError,
 )
 from taut.client import InitResult, Member, Message, Notification, TautClient, Thread
@@ -40,8 +35,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _handle_error(args, exc)
 
 
+class _TautArgumentParser(argparse.ArgumentParser):
+    """Parser whose usage errors exit 1, not argparse's default 2.
+
+    [TAUT-8.1]: exit 2 is reserved for the empty/nothing-new/not-found
+    class; a usage error (unknown flag, unknown subcommand, malformed
+    argument) is an error and must exit 1. `--help`/`--version` keep
+    argparse's exit-0 actions.
+    """
+
+    def error(self, message: str) -> NoReturn:
+        self.print_usage(sys.stderr)
+        self.exit(1, f"{self.prog}: error: {message}\n")
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="taut")
+    parser = _TautArgumentParser(prog="taut")
     parser.add_argument("--db", dest="db_path")
     parser.add_argument("--as", dest="as_name")
     parser.add_argument("--token", dest="auth_token")
@@ -50,7 +59,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("-q", "--quiet", action="store_true")
     parser.add_argument("--version", action="version", version=f"taut {__version__}")
 
-    sub = parser.add_subparsers(dest="command")
+    sub = parser.add_subparsers(dest="command", parser_class=_TautArgumentParser)
 
     p = sub.add_parser("init")
     p.set_defaults(func=_cmd_init)
@@ -98,7 +107,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=_cmd_inbox)
 
     p = sub.add_parser("set")
-    set_sub = p.add_subparsers(dest="set_command", required=True)
+    set_sub = p.add_subparsers(
+        dest="set_command", required=True, parser_class=_TautArgumentParser
+    )
     p_name = set_sub.add_parser("name")
     p_name.add_argument("name")
     p_name.set_defaults(func=_cmd_set_name)
@@ -288,7 +299,9 @@ def _emit_notification_warnings(
     if args.quiet:
         return
     for warning in client.last_notification_warnings:
-        print(f"warning: notification delivery failed: {warning}", file=sys.stderr)
+        # Entries are self-describing (constructed with their failure or
+        # suppression context in the client layer); render them verbatim.
+        print(f"warning: {warning}", file=sys.stderr)
 
 
 def _emit_messages(args: argparse.Namespace, messages: list[Message]) -> None:
@@ -484,52 +497,58 @@ def _format_unread_count(count: int) -> str:
 
 def _read_text_argument(text: str | None) -> str:
     if text == "-":
-        reader = sys.stdin.read
-        return reader()
+        return _read_stdin_text()
     if text is not None:
         return text
     if not sys.stdin.isatty():
-        reader = sys.stdin.read
-        return reader()
+        return _read_stdin_text()
     raise ValueError("message text required")
+
+
+def _read_stdin_text() -> str:
+    """Read piped message text, naming stdin in the undecodable-bytes
+    diagnostic (the raw codec error does not say which input failed)."""
+
+    reader = sys.stdin.read
+    try:
+        return reader()
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"stdin is not valid UTF-8: {exc}") from exc
 
 
 def _handle_error(args: argparse.Namespace, exc: Exception) -> int:
     if isinstance(exc, SystemExit):
         raise exc
-    code = _exit_code_for_exception(args, exc)
+    code = _exit_code_for_exception(exc)
     if not getattr(args, "quiet", False):
         print(str(exc), file=sys.stderr)
     return code
 
 
-def _exit_code_for_exception(args: argparse.Namespace, exc: Exception) -> int:
+def _exit_code_for_exception(exc: Exception) -> int:
     if isinstance(exc, TokenError):
         return 1
     if isinstance(exc, (EmptyResultError, NotFoundError, MembershipError)):
         return 2
     if isinstance(exc, IdentityError) and str(exc) == "unrecognized caller":
         return 2
-    if isinstance(
-        exc,
-        (
-            TautError,
-            ValueError,
-            TokenError,
-            ThreadNameError,
-            BackendNotSupportedError,
-            NotInitializedError,
-            AmbiguousMessageError,
-        ),
-    ):
-        return 1
     return 1
 
 
 def _hoist_global_options(argv: list[str]) -> list[str]:
-    """Allow global options before or after subcommands."""
+    """Allow global options before or after subcommands.
 
-    command = _first_command(argv)
+    A bare ``--`` ends option parsing ([TAUT-8.1]): only the tokens before
+    it are hoisted; the separator and everything after it pass through
+    untouched so argparse treats them as positionals.
+    """
+
+    if "--" in argv:
+        boundary = argv.index("--")
+        head, tail = argv[:boundary], argv[boundary:]
+    else:
+        head, tail = argv, []
+    command = _first_command(head)
     value_options = {"--db", "--as"}
     if command != "rejoin":
         value_options.add("--token")
@@ -537,14 +556,14 @@ def _hoist_global_options(argv: list[str]) -> list[str]:
     globals_: list[str] = []
     rest: list[str] = []
     i = 0
-    while i < len(argv):
-        token = argv[i]
+    while i < len(head):
+        token = head[i]
         if token in flag_options:
             globals_.append(token)
             i += 1
             continue
-        if token in value_options and i + 1 < len(argv):
-            globals_.extend([token, argv[i + 1]])
+        if token in value_options and i + 1 < len(head):
+            globals_.extend([token, head[i + 1]])
             i += 2
             continue
         if any(token.startswith(option + "=") for option in value_options):
@@ -553,7 +572,7 @@ def _hoist_global_options(argv: list[str]) -> list[str]:
             continue
         rest.append(token)
         i += 1
-    return [*globals_, *rest]
+    return [*globals_, *rest, *tail]
 
 
 def _first_command(argv: list[str]) -> str | None:
@@ -578,6 +597,8 @@ def _first_command(argv: list[str]) -> str | None:
     i = 0
     while i < len(argv):
         token = argv[i]
+        if token == "--":
+            return None
         if token in commands:
             return token
         if token in value_options:

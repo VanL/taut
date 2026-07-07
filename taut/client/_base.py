@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import tomllib
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,9 +13,15 @@ from typing import Any, NoReturn
 from simplebroker import BrokerTarget, Queue, resolve_broker_target
 
 import taut.identity as identity
-from taut._constants import META_QUEUE_NAME, NO_DATABASE_MESSAGE, load_config
+from taut._constants import (
+    META_QUEUE_NAME,
+    NO_DATABASE_MESSAGE,
+    PROJECT_CONFIG_NAME,
+    load_config,
+)
 from taut._exceptions import IdentityError, NotInitializedError, TautError
 from taut.state import (
+    ChannelRenameRow,
     MemberRow,
     SqlSidecarTautState,
     TautState,
@@ -27,6 +34,17 @@ _MISSING_POSTGRES_PLUGIN_ERROR = "Unknown backend plugin: postgres"
 _MISSING_POSTGRES_PLUGIN_HINT = (
     "Install taut-pg in the same environment as taut to enable Postgres project configs"
 )
+
+
+def _raise_invalid_project_config(exc: tomllib.TOMLDecodeError) -> NoReturn:
+    """Re-raise a project-config parse failure naming the offending file.
+
+    SimpleBroker's target resolution raises the raw ``TOMLDecodeError``
+    ("Invalid value (at line 1, column 12)") without saying which file it
+    was parsing; a CLI diagnostic must name the offending input.
+    """
+
+    raise TautError(f"invalid {PROJECT_CONFIG_NAME}: {exc}") from exc
 
 
 def _raise_with_backend_install_hint(exc: RuntimeError) -> NoReturn:
@@ -45,6 +63,17 @@ def _raise_with_backend_install_hint(exc: RuntimeError) -> NoReturn:
 
 def _json_dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _incomplete_channel_rename_message(rename: ChannelRenameRow) -> str:
+    """Actionable diagnostic naming the exact command that finishes a rename."""
+
+    old_name = rename["old_name"]
+    new_name = rename["new_name"]
+    return (
+        f"incomplete channel rename exists: {old_name} -> {new_name}; "
+        f"run 'taut rename {old_name} {new_name}' to finish it"
+    )
 
 
 @dataclass(slots=True)
@@ -111,6 +140,8 @@ class _ClientBase(ABC):
             return str(path)
         try:
             target = resolve_broker_target(Path.cwd(), config=self.config)
+        except tomllib.TOMLDecodeError as exc:
+            _raise_invalid_project_config(exc)
         except RuntimeError as exc:
             _raise_with_backend_install_hint(exc)
         if target is None:
@@ -133,11 +164,7 @@ class _ClientBase(ABC):
         renames = self._state.incomplete_channel_renames()
         if not renames:
             return
-        rename = renames[0]
-        raise TautError(
-            "incomplete channel rename exists: "
-            f"{rename['old_name']} -> {rename['new_name']}; resolve it first"
-        )
+        raise TautError(_incomplete_channel_rename_message(renames[0]))
 
     @abstractmethod
     def _resolve_member(

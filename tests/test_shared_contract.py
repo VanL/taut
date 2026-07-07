@@ -8,9 +8,16 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from simplebroker import open_broker
 
 import taut.identity as identity
-from taut._exceptions import EmptyResultError, MembershipError
+from taut._constants import META_QUEUE_NAME
+from taut._exceptions import (
+    EmptyResultError,
+    MembershipError,
+    NotFoundError,
+    TautError,
+)
 from taut.client import Message, Notification, TautClient
 from tests.conftest import build_cli_env, run_cli
 
@@ -406,3 +413,45 @@ def test_project_channel_rename_moves_subthreads_contract(
     assert [message.text for message in van.log(f"ops.{root.ts}")] == ["threaded"]
     with pytest.raises(EmptyResultError):
         van.log("general")
+
+
+def test_project_channel_rename_resume_contract(taut_project: Path) -> None:
+    TautClient.init()
+    van = TautClient(as_name="van")
+    van.join("general")
+    root = van.say("general", "root")
+    van.reply("general", str(root.ts), "threaded")
+    affected = [
+        {"old": "general", "new": "ops"},
+        {"old": f"general.{root.ts}", "new": f"ops.{root.ts}"},
+    ]
+    # White-box crash-window simulation (mirrors tests/test_client.py):
+    # public APIs never leave a 'started' marker behind. The marker is a
+    # sidecar row, so this recovery contract holds on every backend. Only a
+    # strict subset of the affected queues is renamed before the "crash".
+    meta_queue = van.queue(META_QUEUE_NAME)
+    try:
+        van._state.start_channel_rename(
+            old_name="general",
+            new_name="ops",
+            affected=affected,
+            started_ts=meta_queue.generate_timestamp(),
+        )
+    finally:
+        meta_queue.close()
+    with open_broker(van.target, config=van.config) as broker:
+        broker.rename_queue("general", "ops", retarget_aliases=False)
+
+    with pytest.raises(TautError, match="run 'taut rename general ops' to finish it"):
+        van.say("general", "blocked")
+
+    renamed = van.rename_channel("general", "ops")
+
+    assert renamed.name == "ops"
+    assert [message.text for message in van.log("ops")] == [
+        "van created #general",
+        "root",
+    ]
+    assert [message.text for message in van.log(f"ops.{root.ts}")] == ["threaded"]
+    with pytest.raises(NotFoundError, match="channel not found: general"):
+        van.rename_channel("general", "ops")

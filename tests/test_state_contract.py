@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -46,6 +47,66 @@ def test_dialect_for_taut_target_rejects_unknown_resolved_backend() -> None:
         dialect_for_taut_target(
             BrokerTarget(backend_name="unknown", target="unknown://example")
         )
+
+
+def test_update_member_persona_preserves_unknown_meta_keys(
+    taut_project: Path,
+) -> None:
+    """REGRESSION guard: persona updates merge into ``meta``, never clobber it.
+
+    Regression-only: this test passes both before and after the F10
+    transactional fix and does not prove the lost-update race is closed —
+    that proof is by inspection of ``update_member_persona``'s
+    single-transaction read-modify-write shape.  Its job is to pin
+    merge-preservation of unknown ``meta`` keys against future rewrites.
+    """
+    TautClient.init()
+    client = TautClient()
+    queue = Queue(META_QUEUE_NAME, db_path=client.target, config=client.config)
+    state = SqlSidecarTautState(
+        queue,
+        dialect_for_taut_target(client.target),
+    )
+    try:
+        state.ensure_schema()
+        member = state.insert_member(
+            member_id=identity.random_member_id(),
+            display_name="PersonaHolder",
+            kind="agent",
+            uid=1000,
+            host_id="host:test",
+            host_label="test-host",
+            anchor_pid=None,
+            anchor_start_time=None,
+            fingerprint=None,
+            token="persona-regression-token",
+            meta={},
+            created_ts=10,
+        )
+        member_id = member["member_id"]
+
+        # White-box seeding (labeled): write an unknown key straight into
+        # the member's meta JSON via a direct sidecar write, bypassing the
+        # persona API entirely.
+        with queue.sidecar(transaction=True) as session:
+            session.run(
+                "UPDATE taut_members SET meta = ? WHERE member_id = ?",
+                (json.dumps({"custom_flag": "kept"}), member_id),
+            )
+
+        updated = state.update_member_persona(member_id, "helper")
+        assert updated is not None
+        assert updated["meta"]["persona"] == "helper"
+        assert updated["meta"]["custom_flag"] == "kept"
+
+        cleared = state.update_member_persona(member_id, None)
+        assert cleared is not None
+        assert "persona" not in cleared["meta"]
+        assert cleared["meta"]["custom_flag"] == "kept"
+
+        assert state.update_member_persona("m_missing", "ghost") is None
+    finally:
+        queue.close()
 
 
 def test_state_contract_preserves_identity_membership_cursor_and_rename(
@@ -175,7 +236,7 @@ def test_state_contract_preserves_identity_membership_cursor_and_rename(
             started_ts=120,
         )
         assert state.incomplete_channel_renames()[0]["old_name"] == "general"
-        state.apply_channel_rename_sidecar(
+        state.apply_channel_rename_state(
             old_name="general",
             new_name="ops",
             affected=affected,

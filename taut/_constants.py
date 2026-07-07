@@ -1,8 +1,11 @@
 """Constants and SimpleBroker configuration translation for taut.
 
 Spec references:
-- docs/specs/02-taut-core.md [TAUT-3.2], [TAUT-4.1], [TAUT-5.2], [TAUT-5.4]
-- docs/specs/03-identity-addressing-notifications.md [IAN-3], [IAN-4], [IAN-6]
+- docs/specs/02-taut-core.md [TAUT-3.2] (config translation), [TAUT-4.1]
+  (naming), [TAUT-5] (identity and recognition, detailed in spec 03)
+- docs/specs/03-identity-addressing-notifications.md [IAN-3] (member-id and
+  claim-hash formats, anchor evidence), [IAN-4] (name validation and route
+  keys), [IAN-6] (reserved queue namespace)
 """
 
 from __future__ import annotations

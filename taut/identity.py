@@ -338,24 +338,6 @@ def match_anchor(
     return None
 
 
-def anchor_claimant(
-    members: list[MemberRow],
-    *,
-    host_id: str,
-    anchor: ProcessInfo,
-) -> MemberRow | None:
-    if anchor.start_time is None:
-        return None
-    for member in members:
-        if (
-            member["host_id"] == host_id
-            and member["anchor_pid"] == anchor.pid
-            and member["anchor_start_time"] == anchor.start_time
-        ):
-            return member
-    return None
-
-
 def member_presence(member: MemberRow, local_host_id: str) -> str:
     """Return a display presence value for one member."""
 
