@@ -643,7 +643,12 @@ class TautApp(App[int]):
         if key in self._seen:
             return  # backfill/watch overlap renders once (finding 3)
         if item.thread not in self._threads:
-            await self._refresh_membership()
+            refreshed = await self._refresh_membership()
+            if not refreshed or item.thread not in self._threads:
+                raise RuntimeError(
+                    f"watch delivered unknown thread that could not be displayed: "
+                    f"{item.thread}"
+                )
         if item.thread == self.active_target:
             await self.query_one("#transcript", TranscriptView).append_message(item)
             # Register the dedup key only AFTER the UI accepted the item: a
@@ -665,7 +670,7 @@ class TautApp(App[int]):
         self._update_nav_label(item.thread)
         self._seen.add(key)
 
-    async def _refresh_membership(self) -> None:
+    async def _refresh_membership(self) -> bool:
         """Convergence triggers (R3-8): unknown-thread delivery + interval.
 
         The UI never drives membership; it re-reads what the watcher/client
@@ -674,7 +679,7 @@ class TautApp(App[int]):
         """
 
         if self.client is None:
-            return
+            return False
         try:
             threads = self.client.joined_threads()
         except Exception as exc:
@@ -684,11 +689,11 @@ class TautApp(App[int]):
             # watcher and burn its retries toward a poison advance (review F2;
             # Codex adversarial finding).
             self._show_banner(f"⚠ membership refresh failed: {exc}")
-            return
+            return False
         current = {thread.name: thread for thread in threads}
         if set(current) == set(self._threads):
             self._threads = current
-            return
+            return True
         removed = sorted(set(self._threads) - set(current))
         if removed:
             # [TUI-10.3]: the watcher already converged; the UI disables
@@ -715,9 +720,10 @@ class TautApp(App[int]):
             self._members = {member.member_id: member for member in self.client.who()}
         except Exception as exc:
             self._show_banner(f"⚠ membership refresh failed: {exc}")
-            return
+            return False
         self._threads = current
         await self._rebuild_nav()
+        return True
 
     # -- rendering --------------------------------------------------------
 
@@ -794,7 +800,7 @@ class TautApp(App[int]):
                 rows.append(
                     NavRow(
                         target=thread.name,
-                        label=f"↳ {thread.name}",
+                        label=self._row_label(thread.name),
                         classes="nav-thread",
                     )
                 )

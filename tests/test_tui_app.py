@@ -1137,6 +1137,60 @@ class TestReviewFixes:
         app._unread_counts[name] = 0
         assert app._row_label(name) == f"↳ {name}"
 
+    def test_subthread_nav_rebuild_shows_unread_badge(self, tmp_path: Path) -> None:
+        # The actual failure path was _rebuild_nav(), not _row_label().
+        db = tmp_path / ".taut.db"
+        TautClient.init(db_path=db)
+        van = TautClient(db_path=db, as_name="van")
+        van.join("general")
+        root = van.say("general", "root")
+        van.reply("general", str(root.ts), "reply")
+
+        async def scenario(app: TautApp, pilot: Pilot[int]) -> None:
+            await pilot.pause()
+            name = f"general.{root.ts}"
+            app._threads[name] = Thread(
+                name=name,
+                parent="general",
+                unread=True,
+                unread_count=4,
+                last_ts=root.ts + 1,
+                kind="subthread",
+            )
+            app._unread_counts[name] = 4
+            await app._rebuild_nav()
+            nav = app.query_one("#navigation")
+            labels = [
+                row.renderable_text.rstrip()
+                for row in nav.query(NavRow)
+                if row.target == name
+            ]
+            assert labels == [f"↳ {name}  4"]
+
+        run_app(db, scenario)
+
+    def test_unknown_thread_refresh_failure_does_not_ack(self) -> None:
+        # A watch-delivered chat item for an unknown thread may be the only
+        # convergence trigger. If refresh fails, returning normally would let the
+        # watcher advance the cursor for a message that has no visible row.
+        app = TautApp()
+        message = Message(
+            thread="dm.missing",
+            ts=123,
+            from_id="m_other",
+            from_name="other",
+            kind="message",
+            text="hidden",
+        )
+
+        async def failed_refresh() -> bool:
+            return False
+
+        app._refresh_membership = failed_refresh  # type: ignore[method-assign]
+
+        with pytest.raises(RuntimeError, match="unknown thread"):
+            asyncio.run(app._apply_watch_item(message))
+
     def test_goto_inbox_opens_the_inbox(self, tmp_path: Path) -> None:
         # Review F5: the inbox is a documented goto target ([TUI-8.3]).
         db = seed_project(tmp_path)
