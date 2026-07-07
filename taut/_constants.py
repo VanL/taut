@@ -74,6 +74,21 @@ INFRASTRUCTURE_BASENAMES: Final[tuple[str, ...]] = (
     "alacritty",
     "kitty",
     "ghostty",
+    # Electron-editor integrated-terminal hosts (VS Code, Cursor, Windsurf): a
+    # terminal emulator like the entries above, not an agent. Role-suffix
+    # variants ("Code Helper (Renderer)" etc.) collapse to the base name via
+    # select_anchor's suffix strip. "code" is the Linux binary; "electron" is
+    # the dev/main process. Exact match, so the agent "codex" is unaffected.
+    # Note these host EDITORS, not their in-editor coding agents: a real agent
+    # (codex, claude, cursor-agent) runs as its own process below the host in
+    # the chain and is still selected first ([TUI]/[IAN]).
+    "code",
+    "code helper",
+    "electron",
+    "cursor",
+    "cursor helper",
+    "windsurf",
+    "windsurf helper",
     "launchd",
     "systemd",
     "init",

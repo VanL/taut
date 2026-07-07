@@ -13,6 +13,7 @@ import importlib
 import json
 import os
 import platform
+import re
 import secrets
 import socket
 import subprocess
@@ -189,6 +190,18 @@ def capture_process(pid: int) -> ProcessInfo | None:
     return _capture_ps_process(pid)
 
 
+# Electron editors append a role suffix to helper process names, e.g.
+# "Code Helper (Renderer)" / "(Plugin)" / "(GPU)". Stripping a single trailing
+# " (...)" group lets one "code helper" infrastructure entry cover every role
+# variant. Agent basenames (codex, claude, cursor-agent) carry no such suffix,
+# so this is a no-op for them.
+_ROLE_SUFFIX_RE = re.compile(r"\s*\([^)]*\)$")
+
+
+def _strip_role_suffix(name: str) -> str:
+    return _ROLE_SUFFIX_RE.sub("", name)
+
+
 def select_anchor(
     chain: tuple[ProcessInfo, ...] | list[ProcessInfo],
 ) -> tuple[ProcessInfo | None, str]:
@@ -199,7 +212,10 @@ def select_anchor(
         if any(name in SHELL_BASENAMES or name in WRAPPER_BASENAMES for name in names):
             continue
         name = proc.basename
-        if name in INFRASTRUCTURE_BASENAMES:
+        if (
+            name in INFRASTRUCTURE_BASENAMES
+            or _strip_role_suffix(name) in INFRASTRUCTURE_BASENAMES
+        ):
             return None, f"human fallback at infrastructure process {name}"
         if proc.start_time is None:
             return None, f"human fallback because {name} has no start-time token"

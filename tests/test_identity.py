@@ -369,6 +369,94 @@ def test_select_anchor_skips_wrappers_and_explains_human_fallbacks() -> None:
     )
 
 
+def test_select_anchor_treats_vscode_terminal_hosts_as_infrastructure() -> None:
+    # A human in a VS Code integrated terminal: chain is taut -> shell ->
+    # Code Helper. Code Helper is a terminal host like iTerm/tmux, so it must
+    # fall back to human, not be selected as an agent anchor.
+    shell = identity.ProcessInfo(
+        pid=1, start_time="shell-start", exe="/bin/zsh", argv=("zsh",)
+    )
+    code_helper = identity.ProcessInfo(
+        pid=2,
+        start_time="helper-start",
+        exe="/Applications/Visual Studio Code.app/Contents/Frameworks/"
+        "Code Helper.app/Contents/MacOS/Code Helper",
+        argv=("Code Helper",),
+    )
+    assert identity.select_anchor((shell, code_helper)) == (
+        None,
+        "human fallback at infrastructure process code helper",
+    )
+
+    # Electron helper role suffixes ("(Renderer)", "(Plugin)", "(GPU)") all
+    # collapse to the one "code helper" entry.
+    renderer = identity.ProcessInfo(
+        pid=3,
+        start_time="helper-start",
+        exe="/Applications/Visual Studio Code.app/Contents/Frameworks/"
+        "Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)",
+        argv=("Code Helper (Renderer)",),
+    )
+    anchor, rule = identity.select_anchor((shell, renderer))
+    assert anchor is None
+    assert "human fallback at infrastructure process code helper (renderer)" == rule
+
+    # The Linux binary ("code"), the dev/main process ("electron"), and the
+    # other Electron editors (Cursor, Windsurf) are all terminal hosts too.
+    for host_argv, host_exe in (
+        ("code", "/usr/share/code/code"),
+        ("electron", None),
+        ("cursor", "/usr/share/cursor/cursor"),
+        ("cursor helper", None),
+        ("windsurf", None),
+        ("windsurf helper", None),
+    ):
+        host = identity.ProcessInfo(
+            pid=4, start_time="host-start", exe=host_exe, argv=(host_argv,)
+        )
+        assert identity.select_anchor((shell, host)) == (
+            None,
+            f"human fallback at infrastructure process {host_argv}",
+        )
+
+
+def test_select_anchor_still_catches_agent_nested_under_vscode() -> None:
+    # A real agent (codex) running inside VS Code sits between taut and Code
+    # Helper, so it is selected first — the VS Code infra entry must not blind
+    # us to nested agents. Also pins that "codex" is not swallowed by the
+    # "code" entry (exact match) or the role-suffix strip.
+    shell = identity.ProcessInfo(
+        pid=1, start_time="shell-start", exe="/bin/zsh", argv=("zsh",)
+    )
+    codex = identity.ProcessInfo(
+        pid=2, start_time="codex-start", exe="/usr/bin/codex", argv=("codex",)
+    )
+    code_helper = identity.ProcessInfo(
+        pid=3, start_time="helper-start", exe=None, argv=("Code Helper",)
+    )
+    assert identity.select_anchor((shell, codex, code_helper)) == (
+        codex,
+        "agent anchor selected at codex",
+    )
+    assert identity.select_anchor((codex,)) == (
+        codex,
+        "agent anchor selected at codex",
+    )
+
+    # Cursor's in-editor coding agent ("cursor-agent") is an agent, not the
+    # "cursor" editor host: exact-match + suffix-strip must not swallow it.
+    cursor_agent = identity.ProcessInfo(
+        pid=4,
+        start_time="agent-start",
+        exe="/usr/local/bin/cursor-agent",
+        argv=("cursor-agent",),
+    )
+    assert identity.select_anchor((shell, cursor_agent)) == (
+        cursor_agent,
+        "agent anchor selected at cursor-agent",
+    )
+
+
 def test_fingerprint_and_token_claims_do_not_store_secret_material() -> None:
     token_claim = identity.claim_for_token("secret-token")
 
