@@ -480,10 +480,15 @@ caller as *unrecognized* ([IAN-3.3] resolution step 6), the TUI shows a
 first-join setup state instead of a fatal message.
 
 The trigger is the typed unrecognized-caller error contract in [IAN-3.3] —
-the TUI branches on the error type, never on message text. Identity errors
-that are not that type (claim conflicts, token mismatches, rejoin-shaped
-conditions) must not open this state; they surface as CLI-first guidance
-naming a concrete next command, for example `taut rejoin NAME` or
+the TUI branches on the error type, never on message text. One companion
+condition also opens this state: when `--as NAME` was given and read-only
+resolution reports that member as not found ([IAN-3.3] resolution step 1,
+surfaced as the member-not-found error from the identity read), the form
+opens with the name prefilled — the same "no identity exists here" situation
+entered through an explicit selector. Identity errors that are neither of
+those types (claim conflicts, token mismatches, rejoin-shaped conditions)
+must not open this state; they surface as CLI-first guidance naming a
+concrete next command, for example `taut rejoin NAME` or
 `taut --as NAME join CHANNEL`.
 
 **The form.** The state asks for exactly two values:
