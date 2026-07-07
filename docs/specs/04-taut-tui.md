@@ -639,3 +639,7 @@ These design decisions are intentionally deferred from the first TUI:
   and side pane ([TUI-7]), watch-backed live updates ([TUI-8.4]/[TUI-10.5]),
   responsive modes ([TUI-9]), and recovery states ([TUI-10]) — all as a pure
   `TautClient` + `TautWatcher` consumer behind the `taut[tui]` extra.
+- `docs/plans/2026-07-07-tui-first-join-flow-plan.md` — first-join setup flow
+  ([TUI-10.9]): the typed unrecognized-caller error ([IAN-3.3]), the modal
+  name+channel form, and the client-owned `--as NAME join CHANNEL` submit
+  path.
