@@ -50,7 +50,9 @@ non-active arrival, including the sender's own echoed message. Fix: skip when
 ### F4 — Sub-thread nav rows never show unread badge
 
 `taut/tui/app.py:_row_label`: the subthread branch returns before the unread
-suffix. Fix: append the suffix.
+suffix. Fix: append the suffix. Final follow-up: `_rebuild_nav()` also had to
+call `_row_label()` for sub-thread rows; otherwise mount and membership-refresh
+rebuilds still dropped the badge even though direct label updates worked.
 
 ### F5 — `goto inbox` dead + stale member cache on new DMs
 
@@ -83,6 +85,20 @@ leak). TUI reads its own joined DMs, so legit use is unaffected.
 - Bound `session_notifications` (session display state only).
 - Replace user-reachable `assert self.client is not None` with real guards.
 
+### F8 — Unknown-thread watch refresh must not ack undisplayed messages
+
+`taut/tui/app.py:_apply_watch_item`: an unknown-thread chat delivery triggers
+membership refresh. If that refresh failed, the earlier review-fix code showed a
+banner but still returned success from the watch handoff, then marked the
+message `_seen`. That allowed the watcher to advance the chat cursor for a
+message with no visible target, violating [TUI-10.4]'s "must not silently skip
+messages outside the watcher contract" rule.
+
+Fix: `_refresh_membership()` now returns a success flag. A chat delivery whose
+thread remains unknown after refresh raises, so the watcher does not ack it.
+Verification: regression test injects a failed refresh for an unknown-thread
+message and asserts `_apply_watch_item()` raises instead of returning normally.
+
 ## Deferred (design calls — recorded, not fixed here)
 
 - Per-conversation interleaving lock (backfill vs. watch delivery across
@@ -101,4 +117,6 @@ leak). TUI reads its own joined DMs, so legit use is unaffected.
 
 - `pytest tests/test_tui_app.py tests/test_tui_launch.py tests/test_tui_recovery.py tests/test_tui_responsive.py tests/test_client.py`
 - New regression tests for F1–F6.
+- Final follow-up regression tests for sub-thread nav rebuild badges and
+  unknown-thread watch refresh failure.
 - `ruff check` + `mypy` on changed files.
