@@ -5,7 +5,7 @@ from __future__ import annotations
 from textual.containers import VerticalScroll
 from textual.widget import Widget
 
-from taut.cli import _format_message_time
+from taut._format import format_message_time
 from taut.client import Message, Thread
 from taut.tui.widgets._shared import TextStatic
 
@@ -62,7 +62,7 @@ class TranscriptView(VerticalScroll):
                     for reply in thread_replies.get(sub.name, []):
                         rows.append(
                             TextStatic(
-                                f"    {_format_message_time(reply.ts)}  "
+                                f"    {format_message_time(reply.ts)}  "
                                 f"{reply.from_name}  {reply.text}",
                                 classes="thread-reply",
                             )
@@ -82,7 +82,7 @@ class TranscriptView(VerticalScroll):
         await self.mount(TextStatic(f"⚠ {message}", classes="error-banner"))
 
     def _row(self, message: Message) -> TextStatic:
-        stamp = _format_message_time(message.ts)
+        stamp = format_message_time(message.ts)
         if message.kind == "notice":
             return TextStatic(
                 f"{stamp}  · {message.text}",

@@ -1217,6 +1217,28 @@ def test_history_reads_dm_threads_without_moving_cursors(tmp_path: Path) -> None
     assert dm_rows and dm_rows[0].unread  # still unread: nothing moved
 
 
+def test_history_dm_read_requires_membership(tmp_path: Path) -> None:
+    # Review F6: DM history is participant-scoped. Prior public read paths
+    # kept DMs private (log() rejects dm names, read_unread is membership
+    # scoped); history() must not be a broader back door.
+    van = client(tmp_path, "van")
+    van.join("general")
+    claude = existing_client(tmp_path, "claude")
+    claude.join("general")
+    dm_name = van.say("@claude", "secret dm").thread
+
+    # Participants still read it (unchanged behavior).
+    assert any(m.text == "secret dm" for m in van.history(dm_name))
+    assert any(m.text == "secret dm" for m in claude.history(dm_name))
+
+    # A non-participant member cannot: NotFoundError (not a membership error)
+    # avoids leaking that the DM exists, matching the unknown-thread path.
+    dana = existing_client(tmp_path, "dana")
+    dana.join("general")
+    with pytest.raises(NotFoundError):
+        dana.history(dm_name)
+
+
 def test_history_matches_log_for_channels(tmp_path: Path) -> None:
     van = client(tmp_path, "van")
     van.join("general")

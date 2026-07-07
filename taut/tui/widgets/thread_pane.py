@@ -6,7 +6,7 @@ from textual.app import ComposeResult
 from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Input
 
-from taut.cli import _format_message_time
+from taut._format import format_message_time
 from taut.client import Message
 from taut.tui.widgets._shared import TextStatic
 
@@ -35,7 +35,7 @@ class ThreadPane(Vertical):
         await container.remove_children()
         rows = [
             TextStatic(
-                f"{_format_message_time(reply.ts)}  {reply.from_name}  {reply.text}",
+                f"{format_message_time(reply.ts)}  {reply.from_name}  {reply.text}",
                 classes="thread-reply",
             )
             for reply in replies

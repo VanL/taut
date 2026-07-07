@@ -23,7 +23,6 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.reactive import reactive
 from textual.widgets import Input, ListView
 
-from taut._constants import WATCH_MEMBERSHIP_REFRESH_SECONDS
 from taut._exceptions import NotInitializedError, TautError
 from taut.client import Member, Message, Notification, TautClient, Thread
 from taut.tui._bridge import WatchBridge
@@ -37,6 +36,26 @@ from taut.tui.widgets import (
     ThreadPane,
     TranscriptView,
 )
+
+# Responsive thresholds and pane widths (review F7): named once here, where
+# they were previously bare literals duplicated across _compute_mode, the CSS
+# block, and the too-small hint text.
+MIN_WIDTH = 50
+MIN_HEIGHT = 20
+NARROW_MAX = 80  # width < NARROW_MAX -> narrow
+MEDIUM_MAX = 120  # NARROW_MAX <= width < MEDIUM_MAX -> medium; >= -> wide
+NAV_WIDTH = 26  # wide/medium; mirrored by the #navigation CSS default
+NAV_WIDTH_NARROW = 8
+
+# Fallback membership-convergence poll for the TUI (review F7 / perf). The
+# primary convergence trigger is an unknown-thread watch delivery; this timer
+# only catches removals and other-client changes, so it runs far slower than
+# the watcher's own 0.5s cadence. Decoupled from WATCH_MEMBERSHIP_REFRESH_SECONDS
+# so the UI poll can be slowed without touching watcher timing.
+TUI_MEMBERSHIP_POLL_SECONDS = 5.0
+
+# Cap on retained session notifications (session display state only, review F7).
+MAX_SESSION_NOTIFICATIONS = 500
 
 KEYBAR_TEXT = (
     "↑↓ move · ⏎ open · c compose · z fold · t thread pane · m members · "
@@ -156,7 +175,8 @@ class TautApp(App[int]):
             yield PresencePane(id="presence")
             yield ThreadPane(id="thread-pane")
         yield TextStatic(
-            "terminal too small — resize to at least 50×20 ([TUI-9.4])",
+            f"terminal too small — resize to at least "
+            f"{MIN_WIDTH}×{MIN_HEIGHT} ([TUI-9.4])",
             id="too-small",
         )
         yield TextStatic(KEYBAR_TEXT, id="keybar")
@@ -216,21 +236,31 @@ class TautApp(App[int]):
         )
         if default is not None:
             self.active_target = default
+        else:
+            # A fresh project (e.g. straight after init-here) has no channel
+            # to select, so nothing would clear a prior fatal/empty transcript
+            # and success would look like failure (review F2). Show a neutral
+            # ready state instead.
+            await self.query_one("#transcript", TranscriptView).show_conversation(
+                header="── no channels yet — join with: taut join CHANNEL ──",
+                messages=[],
+                cursor=None,
+            )
         self._bridge = WatchBridge(client=self.client, deliver=self._deliver_from_watch)
         self._bridge.start()
-        # Convergence fallback timer, aligned to the watcher's own refresh
-        # interval; the other trigger is an unknown-thread delivery (R3-8).
-        self.set_interval(WATCH_MEMBERSHIP_REFRESH_SECONDS, self._refresh_membership)
+        # Convergence fallback timer (review F7/perf): a slow UI poll, since
+        # the primary trigger is an unknown-thread delivery (R3-8).
+        self.set_interval(TUI_MEMBERSHIP_POLL_SECONDS, self._refresh_membership)
 
     # -- responsive modes ([TUI-9]; plan Task 7 thresholds) -----------------
 
     @staticmethod
     def _compute_mode(width: int, height: int) -> str:
-        if width < 50 or height < 20:
+        if width < MIN_WIDTH or height < MIN_HEIGHT:
             return "too-small"
-        if width < 80:
+        if width < NARROW_MAX:
             return "narrow"
-        if width < 120:
+        if width < MEDIUM_MAX:
             return "medium"
         return "wide"
 
@@ -249,7 +279,7 @@ class TautApp(App[int]):
         # Mode changes reset the members-toggle override to the mode default.
         self._presence_override = None
         nav = self.query_one("#navigation", NavigationPane)
-        nav.styles.width = 26 if mode in ("wide", "medium") else 8
+        nav.styles.width = NAV_WIDTH if mode in ("wide", "medium") else NAV_WIDTH_NARROW
         self._apply_presence_visibility()
 
     def _presence_default(self) -> bool:
@@ -278,7 +308,13 @@ class TautApp(App[int]):
 
         if not self._uninitialized:
             return
-        TautClient.init(db_path=self._db_path)
+        try:
+            TautClient.init(db_path=self._db_path)
+        except (TautError, OSError, RuntimeError) as exc:
+            # The recovery screen must not crash the app ([TUI-10.1]/[TUI-10.6],
+            # review F2): a permission error or a bad --db dir stays a banner.
+            await self._show_fatal(f"init failed: {exc} · q quits")
+            return
         self._uninitialized = False
         await self._bootstrap()
 
@@ -391,6 +427,13 @@ class TautApp(App[int]):
         banner.update_text(text)
         banner.display = True
 
+    def _clear_banner(self) -> None:
+        # Nothing else hides the banner, so a stale "send failed" would linger
+        # for the whole session (review F7). Cleared on the next good send.
+        banner = self.query_one("#status-banner", TextStatic)
+        banner.update_text("")
+        banner.display = False
+
     def _apply_search_filter(self, query: str) -> None:
         """[TUI-8.3]: search the active conversation's loaded content."""
 
@@ -401,13 +444,16 @@ class TautApp(App[int]):
                 continue
             row.display = needle in row.renderable_text.lower() if needle else True
 
-    def _goto(self, query: str) -> None:
+    async def _goto(self, query: str) -> None:
         """[TUI-8.3]: switch among known targets; not a command palette."""
 
         needle = query.strip().lower()
         if not needle:
             return
+        # The inbox is a goto target too ([TUI-8.3]); it is not in _threads,
+        # so add it explicitly or `g inbox` is a no-op (review F5).
         candidates: dict[str, str] = {name: name for name in self._threads}
+        candidates["inbox"] = "inbox"
         for thread in self._threads.values():
             if thread.kind == "dm":
                 other = self._dm_counterpart(thread)
@@ -419,7 +465,9 @@ class TautApp(App[int]):
             None,
         )
         match = exact or partial
-        if match is not None:
+        if match == "inbox":
+            await self._open_inbox()
+        elif match is not None:
             self.select_target(match)
 
     async def _open_inbox(self) -> None:
@@ -477,6 +525,9 @@ class TautApp(App[int]):
             self._show_banner(f"⚠ send failed: {exc}")
             return
         event.input.value = ""
+        # A good send clears any stale error banner (review F7) before the
+        # partial-warning check below may set a fresh one.
+        self._clear_banner()
         # The message itself appears via the watch path (INV-10). A
         # notification-delivery warning is Partial, not failure (INV-12).
         if len(self.client.last_notification_warnings) > warnings_before:
@@ -484,7 +535,8 @@ class TautApp(App[int]):
             self._show_banner(f"⚠ {warning} (message sent)")
 
     async def _open_thread_pane(self, name: str) -> None:
-        assert self.client is not None
+        if self.client is None:
+            return
         sub = self._channel_threads.get(name)
         parent_text = ""
         if sub is not None and sub.origin_ts is not None:
@@ -494,7 +546,13 @@ class TautApp(App[int]):
             )
             if parent is not None:
                 parent_text = f'from "{parent.text}"'
-        replies = self.client.history(name, limit=HISTORY_LIMIT)
+        try:
+            replies = self.client.history(name, limit=HISTORY_LIMIT)
+        except Exception as exc:
+            # A thread-pane read must degrade to a banner, not crash ([TUI-10.4],
+            # review F2).
+            self._show_banner(f"⚠ could not open thread {name}: {exc}")
+            return
         pane = self.query_one("#thread-pane", ThreadPane)
         await pane.show_thread(name=name, parent_text=parent_text, replies=replies)
         # The pane borrows the presence column (frame 1b, [TUI-7.3]).
@@ -516,7 +574,7 @@ class TautApp(App[int]):
             await self._send_from_composer(event)
             return
         if event.input.id == "goto-input":
-            self._goto(event.value)
+            await self._goto(event.value)
             event.input.display = False
             event.input.value = ""
             return
@@ -570,6 +628,9 @@ class TautApp(App[int]):
             # Already consumed by the watch runtime; accumulate for the
             # inbox view (the sole notification consumer, finding R3-4).
             self.session_notifications.append(item)
+            if len(self.session_notifications) > MAX_SESSION_NOTIFICATIONS:
+                # Session display state only; bound the oldest away (review F7).
+                del self.session_notifications[0]
             if self._inbox_open:
                 # The inbox is a live surface: re-render so an arrival is
                 # visible without a close/reopen (completion-review finding).
@@ -591,9 +652,13 @@ class TautApp(App[int]):
             # display (Task 4 slice-review finding 1).
             self._seen.add(key)
             return
-        if item.ts > self._mount_last_ts.get(item.thread, 0):
+        me_id = self.me.member_id if self.me is not None else None
+        is_own = item.from_id is not None and item.from_id == me_id
+        if not is_own and item.ts > self._mount_last_ts.get(item.thread, 0):
             # Backlog up to mount is already in the seeded count; only
-            # genuinely new arrivals increment the session badge.
+            # genuinely new arrivals from OTHERS increment the session badge.
+            # The watcher echoes the user's own sends back (INV-10); those
+            # must not inflate the unread count (review F3).
             self._unread_counts[item.thread] = (
                 self._unread_counts.get(item.thread, 0) + 1
             )
@@ -610,7 +675,16 @@ class TautApp(App[int]):
 
         if self.client is None:
             return
-        threads = self.client.joined_threads()
+        try:
+            threads = self.client.joined_threads()
+        except Exception as exc:
+            # Reached on the watch handoff (unknown-thread trigger) and the
+            # timer. A read failure here (e.g. a concurrent rename guard or a
+            # locked DB) must degrade to a banner, never propagate into the
+            # watcher and burn its retries toward a poison advance (review F2;
+            # Codex adversarial finding).
+            self._show_banner(f"⚠ membership refresh failed: {exc}")
+            return
         current = {thread.name: thread for thread in threads}
         if set(current) == set(self._threads):
             self._threads = current
@@ -628,11 +702,20 @@ class TautApp(App[int]):
                 self.query_one("#composer", Composer).set_target_label(
                     f"⚠ membership lost in {self.active_target} — read only"
                 )
-        for name in current:
-            if name not in self._threads:
-                self.cursor_snapshot.setdefault(name, self.client.read_cursor(name))
-                self._unread_counts.setdefault(name, current[name].unread_count)
-                self._mount_last_ts.setdefault(name, current[name].last_ts or 0)
+        try:
+            for name in current:
+                if name not in self._threads:
+                    self.cursor_snapshot.setdefault(name, self.client.read_cursor(name))
+                    self._unread_counts.setdefault(name, current[name].unread_count)
+                    self._mount_last_ts.setdefault(name, current[name].last_ts or 0)
+            # A newly discovered thread may be a DM from a member created after
+            # mount; refresh the member cache so the counterpart resolves to a
+            # name (and replies are not blocked) instead of "unknown" (review
+            # F5; Codex structured finding).
+            self._members = {member.member_id: member for member in self.client.who()}
+        except Exception as exc:
+            self._show_banner(f"⚠ membership refresh failed: {exc}")
+            return
         self._threads = current
         await self._rebuild_nav()
 
@@ -670,7 +753,9 @@ class TautApp(App[int]):
             dot = "●" if presence == "here" else "○"
             return f"{dot} {other_name} {presence}{suffix}"
         if thread is not None and thread.kind == "subthread":
-            return f"↳ {name}"
+            # Sub-threads track unread like any joined thread; show the badge
+            # so a background reply is visible (review F4).
+            return f"↳ {name}{suffix}"
         return f"# {name}{suffix}"
 
     def _update_nav_label(self, name: str) -> None:
@@ -724,9 +809,38 @@ class TautApp(App[int]):
         await self.query_one("#navigation", NavigationPane).set_rows(list(rows))
 
     async def _refresh_conversation(self, target: str) -> None:
-        assert self.client is not None
+        if self.client is None:
+            return
         thread = self._threads.get(target)
-        messages = self.client.history(target, limit=HISTORY_LIMIT)
+        # Inline thread affordances come from channel_threads() — never
+        # from state reads or name parsing (Addition C; finding R3-3).
+        inline: list[Thread] = []
+        thread_replies: dict[str, list[Message]] = {}
+        try:
+            messages = self.client.history(target, limit=HISTORY_LIMIT)
+            if thread is None or thread.kind == "channel":
+                inline = self.client.channel_threads(target)
+                for sub in inline:
+                    if sub.name not in self._folded:
+                        thread_replies[sub.name] = self.client.history(
+                            sub.name, limit=HISTORY_LIMIT
+                        )
+            if thread is not None and thread.kind == "dm":
+                members = [
+                    member
+                    for member_id in thread.members
+                    if (member := self._members.get(member_id)) is not None
+                ]
+            else:
+                members = self.client.who(target)
+        except Exception as exc:
+            # A conversation read must degrade to a banner, never crash the app
+            # ([TUI-10.4], review F2). Backend errors (e.g. a locked DB in the
+            # multi-writer case taut exists for) are not all TautError, so catch
+            # broadly and surface the message — nothing is swallowed silently.
+            self._show_banner(f"⚠ could not open {target}: {exc}")
+            return
+
         cursor = self.cursor_snapshot.get(target)
         # Backfill/watch dedup: everything rendered here counts as seen so
         # a drain of the same rows appends nothing (finding 3).
@@ -735,18 +849,6 @@ class TautApp(App[int]):
         self._unread_counts[target] = 0
         self._update_nav_label(target)
         self._active_messages = messages
-
-        # Inline thread affordances come from channel_threads() — never
-        # from state reads or name parsing (Addition C; finding R3-3).
-        inline: list[Thread] = []
-        thread_replies: dict[str, list[Message]] = {}
-        if thread is None or thread.kind == "channel":
-            inline = self.client.channel_threads(target)
-            for sub in inline:
-                if sub.name not in self._folded:
-                    thread_replies[sub.name] = self.client.history(
-                        sub.name, limit=HISTORY_LIMIT
-                    )
         self._channel_threads = {sub.name: sub for sub in inline}
 
         if thread is not None and thread.kind == "dm":
@@ -754,13 +856,7 @@ class TautApp(App[int]):
             other_name = other.name if other is not None else "unknown"
             header = f"── @{other_name} ──"
             composer_label = f"message @{other_name}"
-            members = [
-                member
-                for member_id in thread.members
-                if (member := self._members.get(member_id)) is not None
-            ]
         else:
-            members = self.client.who(target)
             header = f"── #{target} ── {len(members)} members"
             if thread is not None and thread.kind == "subthread":
                 composer_label = f"reply in {target}"

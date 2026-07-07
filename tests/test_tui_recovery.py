@@ -201,3 +201,75 @@ class TestCompletionReviewHardening:
                 assert mention_rows() == 1
 
         asyncio.run(_run())
+
+
+class TestReviewFixes:
+    """Pre-PR review fixes for the recovery/membership paths (F2, F5)."""
+
+    def test_init_here_failure_shows_fatal_not_crash(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Review F2: the recovery screen must not crash. If init fails
+        # (permission error, bad --db dir), it stays a banner.
+        from taut._exceptions import TautError
+
+        db = tmp_path / ".taut.db"  # never created -> uninitialized state
+
+        def raise_init(**kwargs: object) -> object:
+            raise TautError("permission denied writing .taut.db")
+
+        monkeypatch.setattr("taut.tui.app.TautClient.init", raise_init)
+
+        async def _run() -> None:
+            app = TautApp(db_path=str(db), as_name="van", token=None)
+            async with app.run_test(size=(120, 34)) as pilot:
+                await pilot.pause()
+                assert app._uninitialized  # reached the empty state
+                await pilot.press("enter")  # action_init_here
+                await pilot.pause()
+                transcript = app.query_one("#transcript")
+                banners = [
+                    row.renderable_text
+                    for row in transcript.query(TextStatic).filter(".error-banner")
+                ]
+                joined = " ".join(banners)
+                assert "init failed" in joined
+                assert "permission denied" in joined  # the real cause shows
+                assert app.is_running  # did not crash
+                assert app._uninitialized  # init failed, still uninitialized
+
+        asyncio.run(_run())
+
+    def test_new_dm_member_resolves_after_membership_refresh(
+        self, tmp_path: Path
+    ) -> None:
+        # Review F5: a DM from a member created after mount must not render as
+        # "unknown"; the member cache is refreshed on membership change.
+        from taut.tui.widgets import NavRow
+
+        db = tmp_path / ".taut.db"
+        TautClient.init(db_path=db)
+        van = TautClient(db_path=db, as_name="van")
+        van.join("general")
+
+        async def _run() -> None:
+            app = TautApp(db_path=str(db), as_name="van", token=None)
+            async with app.run_test(size=(120, 34)) as pilot:
+                await pilot.pause()
+                # A brand-new member DMs van after the TUI mounted.
+                dana = TautClient(db_path=db, as_name="dana")
+                dana.join("general")
+                dana.say("@van", "hello van")
+                await app._refresh_membership()
+                await pilot.pause()
+                nav = app.query_one("#navigation")
+                dm_labels = [
+                    row.renderable_text
+                    for row in nav.query(NavRow)
+                    if row.target.startswith("dm.")
+                ]
+                assert dm_labels  # the DM was discovered
+                assert any("dana" in label for label in dm_labels)
+                assert not any("unknown" in label for label in dm_labels)
+
+        asyncio.run(_run())

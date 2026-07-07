@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from taut._exceptions import EmptyResultError
-from taut.client import Message, Notification, TautClient
+from taut.client import Message, Notification, TautClient, Thread
 
 textual = pytest.importorskip("textual")
 
@@ -1034,5 +1034,123 @@ class TestAccessibility:
             assert label.display  # [TUI-8.4]: label visible with content
             assert "general" in label.renderable_text
             assert app.query_one("#composer-input", Input).value == "draft text"
+
+        run_app(db, scenario)
+
+
+class TestMarkupInjection:
+    """Review F1: remote content is rendered literally, never as markup."""
+
+    def test_markup_payload_renders_literally_without_crashing(
+        self, tmp_path: Path
+    ) -> None:
+        # `[/]` is an unbalanced Rich close tag: with Static's default
+        # markup=True it raises MarkupError at render and, because history
+        # re-renders on launch, crash-loops the conversation. markup=False
+        # shows it literally.
+        db = tmp_path / ".taut.db"
+        TautClient.init(db_path=db)
+        van = TautClient(db_path=db, as_name="van")
+        van.join("general")
+        claude = TautClient(db_path=db, as_name="claude")
+        claude.join("general")
+        claude.say("general", "boom [/] and [bold]spoof[/] end")
+
+        async def scenario(app: TautApp, pilot: Pilot[int]) -> None:
+            app.select_target("general")
+            await pilot.pause()
+            transcript = app.query_one("#transcript")
+            texts = [
+                row.renderable_text
+                for row in transcript.query(TextStatic).filter(".message")
+            ]
+            # Rendered at all (no crash) and verbatim (markup not interpreted).
+            assert any("[/]" in t and "[bold]spoof[/]" in t for t in texts)
+            assert app.is_running
+
+        run_app(db, scenario)
+
+    def test_sanitize_text_strips_control_chars_keeps_layout(self) -> None:
+        from taut.tui.widgets._shared import sanitize_text
+
+        # ESC (ANSI/OSC) and BEL dropped; newline/tab preserved for labels.
+        assert sanitize_text("a\x1b[31mb\x07c") == "a[31mbc"
+        assert sanitize_text("line1\nline2\tend") == "line1\nline2\tend"
+
+
+class TestReviewFixes:
+    """Regression coverage for the pre-PR review fixes (F3-F5)."""
+
+    def test_own_message_does_not_badge_background_channel(
+        self, tmp_path: Path
+    ) -> None:
+        # Review F3: the watcher echoes the user's own sends back; a send to a
+        # background thread must not inflate its unread badge. Deterministic
+        # check: one own + one other message land, the badge shows 1 not 2.
+        db = tmp_path / ".taut.db"
+        TautClient.init(db_path=db)
+        van = TautClient(db_path=db, as_name="van")
+        van.join("general")
+        van.join("ops")
+        claude = TautClient(db_path=db, as_name="claude")
+        claude.join("ops")
+        van.read()  # start with everything read
+
+        async def scenario(app: TautApp, pilot: Pilot[int]) -> None:
+            app.select_target("general")  # ops stays in the background
+            await pilot.pause()
+            nav = app.query_one("#navigation")
+
+            def ops_label() -> str:
+                for row in nav.query(NavRow):
+                    if row.target == "ops":
+                        return row.renderable_text.rstrip()
+                return ""
+
+            van_bg = TautClient(db_path=db, as_name="van")
+            van_bg.say("ops", "my own note")  # own echo — must not badge
+            claude.say("ops", "their note")  # other — badges once
+            await wait_until(pilot, lambda: ops_label().endswith("1"))
+            await asyncio.sleep(0.3)
+            await pilot.pause()
+            # Still 1: the own echo did not add a second unread.
+            assert ops_label().endswith("1")
+
+        run_app(db, scenario)
+
+    def test_subthread_nav_row_shows_unread_badge(self) -> None:
+        # Review F4: sub-thread rows dropped the unread suffix. Pure label
+        # logic — no App runtime needed.
+        app = TautApp()
+        name = "general.123"
+        app._threads = {
+            name: Thread(
+                name=name,
+                parent="general",
+                unread=True,
+                last_ts=None,
+                kind="subthread",
+            )
+        }
+        app._unread_counts = {name: 3}
+        assert app._row_label(name).rstrip().endswith("3")
+        app._unread_counts[name] = 0
+        assert app._row_label(name) == f"↳ {name}"
+
+    def test_goto_inbox_opens_the_inbox(self, tmp_path: Path) -> None:
+        # Review F5: the inbox is a documented goto target ([TUI-8.3]).
+        db = seed_project(tmp_path)
+
+        async def scenario(app: TautApp, pilot: Pilot[int]) -> None:
+            app.select_target("general")
+            await pilot.pause()
+            await pilot.press("g")
+            await pilot.pause()
+            await pilot.press(*"inbox")
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app.query_one("#inbox-view").display
+            assert not app.query_one("#transcript").display
+            assert not app.query_one("#goto-input").display
 
         run_app(db, scenario)

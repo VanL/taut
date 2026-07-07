@@ -6,11 +6,14 @@ running App.
 
 Acknowledgment contract (review findings 4, R2-1, R2-2, R3-9):
 
-- **Message** — the watch runtime advances the chat cursor immediately
-  after the handler returns (``watcher.py:642``), so the handler hands the
-  item to the UI **synchronously** and lets any exception propagate: a
-  failed UI update leaves the cursor unmoved and the message is
-  redelivered (at-least-once display, INV-8).
+- **Message** — the watch runtime advances the chat cursor right after the
+  user handler returns (``TautWatcher``'s per-message handler), so the
+  handler hands the item to the UI **synchronously** and lets any exception
+  propagate: a failed UI update leaves the cursor unmoved and the message is
+  redelivered. Note this is redelivery, not an unconditional guarantee: the
+  watcher poison-advances after 3 consecutive delivery failures, so display
+  is *at-least-once up to that retry bound* (review F7 corrects the earlier
+  "at-least-once, INV-8" overclaim).
 - **Notification** — already consumed by the watch runtime (READ-mode
   queue); display is best-effort after consumption ([TAUT-10], [IAN-7.4]). A
   render failure is logged, never raised: raising would burn watcher
@@ -19,9 +22,9 @@ Acknowledgment contract (review findings 4, R2-1, R2-2, R3-9):
   ``stopping`` flag, then joins off the caller's thread budget. A Message
   arriving after ``stopping`` raises :class:`ShutdownNonAck` so an
   undisplayed message is never acked; stop-event-first ordering means the
-  loop exits via ``StopWatching`` instead of refetching, so the same
-  message cannot accumulate three raises and be poison-advanced
-  (``watcher.py:631-638``). Do not reorder.
+  loop exits via ``StopWatching`` instead of refetching, so the same message
+  cannot accumulate three raises and be poison-advanced (see the
+  poison-message branch in ``TautWatcher``'s handler). Do not reorder.
 """
 
 from __future__ import annotations

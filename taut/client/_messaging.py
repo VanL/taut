@@ -200,6 +200,19 @@ class MessagingMixin(_ClientBase):
             raise ThreadNameError("notification queues are read with inbox")
         if row["kind"] not in ("channel", "subthread", "dm"):
             raise ThreadNameError(f"not a chat thread: {thread}")
+        if row["kind"] == "dm":
+            # DM history is participant-scoped (review F6): a non-member must
+            # not read a private thread. Mirrors read_cursor/joined_threads,
+            # which resolve membership before returning DM state. Reached only
+            # via history() — log() rejects dm names at validation, so this
+            # never fires for the channel/sub-thread log() path. NotFoundError
+            # (not a membership error) avoids leaking the thread's existence.
+            resolved = self._resolve_member(create=False, allow_guest=True)
+            member_id = resolved.row["member_id"] if resolved.row else None
+            if member_id is None or (
+                self._state.get_membership(thread=thread, member_id=member_id) is None
+            ):
+                raise NotFoundError(f"thread not found: {thread}")
         if limit is not None and limit <= 0:
             raise ValueError("limit must be positive")
         after_timestamp = self._parse_since(since)

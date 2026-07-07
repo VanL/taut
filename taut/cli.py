@@ -10,7 +10,6 @@ import argparse
 import json
 import sys
 from collections.abc import Sequence
-from datetime import datetime
 from typing import Any, NoReturn, TextIO
 
 from taut._constants import __version__
@@ -21,6 +20,7 @@ from taut._exceptions import (
     NotFoundError,
     TokenError,
 )
+from taut._format import format_message_time as _format_message_time
 from taut.client import InitResult, Member, Message, Notification, TautClient, Thread
 
 
@@ -50,12 +50,6 @@ class _TautArgumentParser(argparse.ArgumentParser):
         self.exit(1, f"{self.prog}: error: {message}\n")
 
 
-_MISSING_TUI_HINT = """\
-TUI extra not installed.
-Install it with: pipx inject taut "taut[tui]"
-Meanwhile the CLI works: taut list, taut watch."""
-
-
 def _dispatch_no_verb(args: argparse.Namespace) -> int:
     """No-subcommand invocation: launch the TUI or print help ([TUI-5]).
 
@@ -64,9 +58,16 @@ def _dispatch_no_verb(args: argparse.Namespace) -> int:
     other failure from the TUI propagates as a real error.
     """
 
-    from taut.tui import _launch
+    from taut.tui import (
+        INSTALL_HINT,
+        MissingTuiExtraError,
+        decide,
+        run_tui,
+        stdin_isatty,
+        stdout_isatty,
+    )
 
-    decision = _launch.decide(
+    decision = decide(
         has_verb=False,
         db_path=args.db_path,
         as_name=args.as_name,
@@ -74,15 +75,13 @@ def _dispatch_no_verb(args: argparse.Namespace) -> int:
         json_flag=args.json,
         timestamps=args.timestamps,
         quiet=args.quiet,
-        stdin_isatty=_launch.stdin_isatty(),
-        stdout_isatty=_launch.stdout_isatty(),
+        stdin_isatty=stdin_isatty(),
+        stdout_isatty=stdout_isatty(),
     )
     if not decision.launch_tui:
         build_parser().print_help()
         return 1
     try:
-        from taut.tui import run_tui
-
         return int(
             run_tui(
                 db_path=decision.db_path,
@@ -90,8 +89,12 @@ def _dispatch_no_verb(args: argparse.Namespace) -> int:
                 token=decision.token,
             )
         )
-    except _launch.MissingTuiExtraError:
-        print(_MISSING_TUI_HINT, file=sys.stderr)
+    except MissingTuiExtraError:
+        # Compose around the shared hint (review F7) so the two never drift.
+        print(
+            f"{INSTALL_HINT}\nMeanwhile the CLI works: taut list, taut watch.",
+            file=sys.stderr,
+        )
         return 1
 
 
@@ -531,10 +534,6 @@ def _stream_can_encode(text: str, stream: TextIO) -> bool:
     except UnicodeEncodeError:
         return False
     return True
-
-
-def _format_message_time(ts: int) -> str:
-    return datetime.fromtimestamp(ts / 1_000_000_000).strftime("%H:%M")
 
 
 def _format_unread_count(count: int) -> str:

@@ -10,6 +10,11 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 
+# Single source for the missing-extra message (review F7): the exception is
+# raised with it and the CLI composes its own line around it, so the two
+# never drift.
+INSTALL_HINT = 'TUI extra not installed. Install it with: pipx inject taut "taut[tui]"'
+
 
 class MissingTuiExtraError(Exception):
     """The ``taut[tui]`` extra (Textual) is not installed ([TUI-5.1]).

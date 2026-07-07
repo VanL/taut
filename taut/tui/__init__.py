@@ -9,9 +9,27 @@ extra ([TUI-4.1]).
 
 from __future__ import annotations
 
-from taut.tui._launch import MissingTuiExtraError
+from taut.tui._launch import (
+    INSTALL_HINT,
+    LaunchDecision,
+    MissingTuiExtraError,
+    decide,
+    stdin_isatty,
+    stdout_isatty,
+)
 
-__all__ = ["MissingTuiExtraError", "run_tui"]
+# Public launch surface (review F7): the CLI depends on decide()/LaunchDecision
+# and the tty probes, so re-export them here instead of importing the private
+# _launch module directly. This module stays Textual-free (INV-6).
+__all__ = [
+    "INSTALL_HINT",
+    "LaunchDecision",
+    "MissingTuiExtraError",
+    "decide",
+    "run_tui",
+    "stdin_isatty",
+    "stdout_isatty",
+]
 
 
 def run_tui(
@@ -35,9 +53,7 @@ def run_tui(
             # dependency): a real bug, not a missing extra. The install
             # hint would mislead (Task 1 slice-review finding).
             raise
-        raise MissingTuiExtraError(
-            'TUI extra not installed. Install it with: pipx inject taut "taut[tui]"'
-        ) from exc
+        raise MissingTuiExtraError(INSTALL_HINT) from exc
     from taut.tui.app import run_app  # Textual present: the real import.
 
     return run_app(db_path=db_path, as_name=as_name, token=token)

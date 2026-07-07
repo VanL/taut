@@ -119,8 +119,8 @@ class _RunTuiSpy:
 def tty(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make both stdio ends look interactive ([TUI-5.3] predicates)."""
 
-    monkeypatch.setattr("taut.tui._launch.stdin_isatty", lambda: True)
-    monkeypatch.setattr("taut.tui._launch.stdout_isatty", lambda: True)
+    monkeypatch.setattr("taut.tui.stdin_isatty", lambda: True)
+    monkeypatch.setattr("taut.tui.stdout_isatty", lambda: True)
 
 
 @pytest.fixture
@@ -162,8 +162,8 @@ class TestLaunchDispatch:
         # process argv when argv == []. With a verb in sys.argv, main([])
         # must still be a bare invocation (help + exit 1 in non-tty).
         monkeypatch.setattr(sys, "argv", ["taut", "--version"])
-        monkeypatch.setattr("taut.tui._launch.stdin_isatty", lambda: False)
-        monkeypatch.setattr("taut.tui._launch.stdout_isatty", lambda: False)
+        monkeypatch.setattr("taut.tui.stdin_isatty", lambda: False)
+        monkeypatch.setattr("taut.tui.stdout_isatty", lambda: False)
         rc = main([])
         assert rc == 1
         assert "usage: taut" in capsys.readouterr().out
@@ -187,8 +187,8 @@ class TestLaunchDispatch:
         from taut.cli import main
 
         # INV-3: agents never hang — either non-tty end forces the CLI path.
-        monkeypatch.setattr("taut.tui._launch.stdin_isatty", lambda: which != "stdin")
-        monkeypatch.setattr("taut.tui._launch.stdout_isatty", lambda: which != "stdout")
+        monkeypatch.setattr("taut.tui.stdin_isatty", lambda: which != "stdin")
+        monkeypatch.setattr("taut.tui.stdout_isatty", lambda: which != "stdout")
         rc = main([])
         assert rc == 1
         assert "usage: taut" in capsys.readouterr().out
