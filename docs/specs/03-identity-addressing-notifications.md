@@ -158,6 +158,17 @@ Resolution order:
    Membership-gated writes, such as channel `say` and `reply`, must not create
    throwaway members before failing membership or missing-target validation.
 
+When a command surfaces the unrecognized-caller condition of step 6 as an
+error (for example `whoami` with no resolvable member), it must be a distinct,
+machine-distinguishable error type — separate from identity-conflict
+conditions such as claim ownership conflicts or token mismatches. Consumers
+(CLI, TUI, scripts) must be able to branch on "no identity exists here" versus
+"an identity conflict needs explicit resolution" without parsing message text.
+Implementation: `UnrecognizedCallerError`, a subclass of the identity error
+type, raised only for step-6 unrecognized callers. Added 2026-07-07 for the
+TUI first-join flow ([TUI-10.9] in `docs/specs/04-taut-tui.md`); existing
+handlers that catch the parent identity error keep working unchanged.
+
 No resolution path silently changes a member name. Name changes are explicit
 through [IAN-4.4].
 

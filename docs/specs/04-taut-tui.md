@@ -377,6 +377,11 @@ init`.
 Identity errors surface from the same client rules as CLI commands. The TUI
 must not invent alternate member selection or alias rules.
 
+One identity condition gets a dedicated setup state instead of a fatal
+message: an unrecognized caller in an initialized project ([TUI-10.9]). Every
+other identity condition — conflicts, token mismatches, rejoin-shaped cases —
+remains CLI-first and surfaces as guidance naming a concrete next command.
+
 ### [TUI-10.3] Lost Membership
 
 If the active member loses membership in a conversation while the TUI is
@@ -410,6 +415,7 @@ The first implementation must define visible states for each major surface:
 | Presence | Loading members | No other members known | Presence unavailable | Member list and selected identity render | Presence summary shown when pane collapsed |
 | Inbox | Loading pending notifications | No pending notifications | Claim/read failed | Notifications shown and claimed per client semantics | Some notifications shown while source context is unavailable |
 | Thread pane | Loading parent/replies | Thread has no replies yet | Parent or thread target unavailable | Replies render and reply composer targets thread | Parent context shown but older replies remain unloaded |
+| First-join setup ([TUI-10.9]) | Joining as the entered name | Form with name/channel inputs and quit path | Inline validation error keeps form; identity conflict shows CLI-first guidance | Normal bootstrap as the new member | — |
 
 Each visible state should say what the user can do next. Empty and error states
 are part of the UI, not fallback exceptions.
@@ -454,6 +460,73 @@ This tradeoff is intentional (maintainer decision, 2026-07-03). User-facing
 documentation — at minimum the README usage note — and the TUI implementation
 doc must state it plainly.
 
+### [TUI-10.9] First-Join Setup Flow
+
+Revision slice added 2026-07-07. This narrows the v1 "setup beyond `init`
+stays CLI-first" scoping (the Task 8 decision recorded in [TUI-13] and
+[TUI-15]) for exactly one flow: a first-time interactive user in a project
+where the client does not recognize them. Everything else in [TUI-15]'s
+identity-management deferral stays deferred.
+
+**Design intent.** The TUI may help a first-time interactive user become
+usable, but it must not become a parallel identity-management system. The TUI
+only collects minimal input and calls existing `TautClient` operations with
+the same semantics as the CLI ([TUI-4.2]). Only the client decides what
+identity or member exists.
+
+**Trigger.** When bare interactive `taut` launches the TUI in an initialized
+project, client construction succeeds, and identity resolution reports the
+caller as *unrecognized* ([IAN-3.3] resolution step 6), the TUI shows a
+first-join setup state instead of a fatal message.
+
+The trigger is the typed unrecognized-caller error contract in [IAN-3.3] —
+the TUI branches on the error type, never on message text. Identity errors
+that are not that type (claim conflicts, token mismatches, rejoin-shaped
+conditions) must not open this state; they surface as CLI-first guidance
+naming a concrete next command, for example `taut rejoin NAME` or
+`taut --as NAME join CHANNEL`.
+
+**The form.** The state asks for exactly two values:
+
+- display name — prefilled from `--as NAME` when it was given but
+  unrecognized
+- channel name
+
+Submitting performs the client-owned equivalent of
+`taut --as NAME join CHANNEL`. Joining a channel that does not exist yet
+creates it — existing client semantics, sufficient for a brand-new project
+straight after [TUI-10.1] init-here. After success the TUI re-runs its normal
+bootstrap as that member; it must not fabricate an optimistic transcript
+([TUI-10.7]).
+
+**Failure rules.** A simple validation or membership error from `join()`
+shows an inline error and keeps the form open. Any other identity condition
+shows the CLI-first guidance above; the TUI must not invent recovery logic.
+
+**Interaction rules.**
+
+- This state appears only in an already initialized project; uninitialized
+  behavior remains [TUI-10.1].
+- Non-tty bare `taut` still prints help and exits ([TUI-5.3]); it never
+  prompts. `--json`, `--timestamps`, `--quiet`, `--help`, `--version`, and
+  all explicit verbs keep CLI behavior ([TUI-5.2], [TUI-5.4]).
+- The form is keyboard-complete ([TUI-8.1]). Enter submits the focused form
+  input and must not be swallowed by app-level priority bindings (the
+  [TUI-10.1] init-here binding is the known hazard; pinned by test).
+- Escape returns to the identity-guidance state; `q` still quits.
+
+**Non-goals.** The first implementation must not add in-TUI support for:
+rejoin, continuity tokens, `join --new`, persona selection, rename/name
+changes, resolving name collisions beyond surfacing the client error,
+choosing between identity candidates, or any TUI-only identity, membership,
+cursor, or presence semantics. Where one of those is needed, the TUI shows
+the concrete CLI command instead.
+
+**Invariants.** No direct SQL, queue, envelope, cursor, or membership
+mutation in `taut/tui` ([TUI-11]). No TUI-specific identity rules. No new
+persistent setup state. Existing CLI output, JSON shapes, and exit codes do
+not change.
+
 ## Invariants [TUI-11]
 
 - Textual and TUI-only dependencies stay in `taut[tui]`.
@@ -491,6 +564,14 @@ The first implementation plan must include these proof points:
   representative fixtures.
 - Recovery tests for missing optional extra, uninitialized project, lost
   membership, and recoverable runtime errors.
+- First-join setup tests ([TUI-10.9]): an unrecognized caller in an
+  initialized project opens the setup state; submitting name/channel goes
+  through the real client path and lands in the normal TUI; the created
+  member and join match `taut --as NAME join CHANNEL` semantics; a
+  conflict-shaped identity error shows CLI-first guidance instead of the
+  form and does not crash; Enter reaches the focused form input despite
+  app-level priority bindings; non-tty bare `taut` still never prompts; and
+  existing launch, missing-extra, and CLI verb tests are unchanged.
 - Accessibility inspection gates for keyboard-only operation, visible labels,
   non-color-only status, and contrast-sensitive dark terminal readability.
 
@@ -503,6 +584,10 @@ into that plan with an explicit decision owner:
   responsive modes?
 - Should `join` and identity-management flows exist in-app in the first
   version, or should setup beyond `init` remain CLI-first?
+  **Resolved in two steps:** v1 shipped CLI-first (Task 8 decision,
+  implementation plan). Revised 2026-07-07: the narrow first-join flow
+  (name + channel for an unrecognized caller) is now in-app per
+  [TUI-10.9]; all other identity management stays CLI-first per [TUI-15].
 
 ## User Journey [TUI-14]
 
@@ -534,7 +619,10 @@ These design decisions are intentionally deferred from the first TUI:
   proves the row insufficient.
 - Full in-app identity management: first version may initialize a project, but
   join/rejoin/name/persona management can remain CLI-first unless the
-  implementation plan explicitly pulls it in.
+  implementation plan explicitly pulls it in. **Narrowed 2026-07-07:** the
+  first-join flow for an unrecognized caller (name + channel) is now
+  specified in [TUI-10.9]. Rejoin, continuity tokens, `join --new`, persona
+  selection, and rename management remain deferred and CLI-first.
 - Mouse-first interaction: keyboard remains primary.
 - Recursive/nested thread UI: Taut supports one-level sub-threads only.
 
