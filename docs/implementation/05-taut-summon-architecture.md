@@ -377,14 +377,15 @@ summon-defined protocol.
 Before completion, run the extension gate block from the summon plan's §10
 (the extension suite, the core suite untouched-green, ruff/format/mypy over
 the extension paths, and `uv build extensions/taut_summon`). Keep the
-real-process and local-LLM lanes under xdist, but run them as one-worker lanes:
-they start multiple real processes against temporary SQLite sidecars, so worker
-fan-out tests host pressure more than summon behavior. Release prechecks also
-set `TAUT_SUMMON_LIVE_HARNESS_STRICT=1` locally so installed external provider
-CLIs fail instead of skipping when detached onboarding would otherwise be
-reported as not ready. The external-provider live lane proves detached
-readiness and injection catch-up; the local LLM lane is the deterministic
-sentinel-posting proof.
+deterministic process, external-live, and local-LLM lanes under xdist, but run
+them as separate one-worker pytest invocations: they start multiple real
+processes against temporary SQLite sidecars, so worker fan-out or one very long
+worker tests host storage pressure more than summon behavior. Release prechecks
+also set `TAUT_SUMMON_LIVE_HARNESS_STRICT=1` locally for the external-live lane
+so installed provider CLIs fail instead of skipping when detached onboarding
+would otherwise be reported as not ready. The external-provider live lane proves
+detached readiness and injection catch-up; the local LLM lane is the
+deterministic sentinel-posting proof.
 
 ## Related Plans
 

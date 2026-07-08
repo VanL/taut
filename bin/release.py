@@ -80,7 +80,27 @@ SUMMON_PROCESS_TEST_COMMAND: Final[Command] = (
     "pytest",
     "extensions/taut_summon/tests",
     "-m",
-    "xdist_group",
+    "xdist_group and not requires_live_harness and not requires_local_llm",
+    "-n",
+    "1",
+    "--dist",
+    "loadgroup",
+)
+SUMMON_LIVE_HARNESS_TEST_COMMAND: Final[Command] = (
+    "uv",
+    "run",
+    "pytest",
+    "extensions/taut_summon/tests/test_live_harness.py",
+    "-n",
+    "1",
+    "--dist",
+    "loadgroup",
+)
+SUMMON_LOCAL_LLM_TEST_COMMAND: Final[Command] = (
+    "uv",
+    "run",
+    "pytest",
+    "extensions/taut_summon/tests/test_live_local_llm.py",
     "-n",
     "1",
     "--dist",
@@ -89,6 +109,8 @@ SUMMON_PROCESS_TEST_COMMAND: Final[Command] = (
 SUMMON_TEST_COMMANDS: Final[tuple[Command, ...]] = (
     SUMMON_UNIT_TEST_COMMAND,
     SUMMON_PROCESS_TEST_COMMAND,
+    SUMMON_LIVE_HARNESS_TEST_COMMAND,
+    SUMMON_LOCAL_LLM_TEST_COMMAND,
 )
 RUFF_CHECK_PREFIX: Final[Command] = ("uv", "run", "--extra", "dev", "ruff", "check")
 RUFF_FORMAT_PREFIX: Final[Command] = (
@@ -1066,9 +1088,10 @@ def _precheck_env_overrides(
     local_llm_env: dict[str, str] | None = None,
 ) -> dict[str, str]:
     overrides = dict(PRECHECK_ENV_OVERRIDES)
-    if command == SUMMON_PROCESS_TEST_COMMAND:
-        overrides["TAUT_SUMMON_LOCAL_LLM"] = "1"
+    if command == SUMMON_LIVE_HARNESS_TEST_COMMAND:
         overrides["TAUT_SUMMON_LIVE_HARNESS_STRICT"] = "1"
+    if command == SUMMON_LOCAL_LLM_TEST_COMMAND:
+        overrides["TAUT_SUMMON_LOCAL_LLM"] = "1"
         if local_llm_env is not None:
             overrides.update(local_llm_env)
     return overrides
@@ -1091,7 +1114,7 @@ def run_prechecks_for_targets(
     try:
         for command in build_precheck_commands_for_targets(targets):
             local_llm_env: dict[str, str] | None = None
-            if command == SUMMON_PROCESS_TEST_COMMAND and local_llm is not None:
+            if command == SUMMON_LOCAL_LLM_TEST_COMMAND and local_llm is not None:
                 local_llm.wait_ready()
                 local_llm_env = local_llm.env_overrides
             run_command(

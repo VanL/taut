@@ -48,3 +48,12 @@ Taut's release boundary GitHub-only.
 - `uv run --extra dev ruff format --check bin/release.py tests/test_release_script.py tests/test_github_workflows.py`
 - `uv run --extra dev mypy bin/release.py tests/test_release_script.py tests/test_github_workflows.py --config-file pyproject.toml`
 - `uv run python bin/release.py all --dry-run --skip-checks`
+
+## Implementation Log
+
+- 2026-07-08: Release retry exposed intermittent SQLite malformed-page/disk I/O
+  failures when deterministic summon process tests, external live harnesses,
+  and the local-LLM PTY proof all ran inside one long one-worker xdist
+  invocation. The release helper now keeps local LLM preparation backgrounded
+  from the start, but splits summon checks into fresh one-worker pytest
+  invocations: unit, deterministic process, strict external-live, and local-LLM.

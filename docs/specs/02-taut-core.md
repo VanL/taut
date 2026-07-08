@@ -892,22 +892,23 @@ Helper obligations:
 - Run the relevant local gates before mutation unless `--skip-checks` is set:
   root pytest, `bin/pytest-pg --fast` for core or PG releases, the
   `extensions/taut_summon/tests` suite for core or summon releases split into
-  non-process and `xdist_group` process/live lanes, ruff over root plus touched
-  extension paths, and split mypy lanes so extension `conftest.py` modules do
-  not collide. The process/live lane is isolated from unrelated summon tests
-  because it drives multiple real processes against shared SQLite files; xdist
-  still schedules that lane with `-n 1 --dist loadgroup`, but it must not run
-  concurrently with the unit lane or unrelated process-heavy summon tests.
+  non-process, deterministic `xdist_group` process, strict external-live, and
+  local-LLM lanes, ruff over root plus touched extension paths, and split mypy
+  lanes so extension `conftest.py` modules do not collide. The process/live/LLM
+  lanes are isolated from unrelated summon tests because they drive multiple
+  real processes against shared SQLite files; xdist still schedules each lane
+  with `-n 1 --dist loadgroup`, but the lanes run as fresh pytest invocations
+  rather than one long worker.
 - For core or summon releases, require the summon local-LLM lane locally. The
   helper starts local LLM preparation at the beginning of prechecks so Docker
   image/model setup can overlap root and PG checks. It uses an existing
   loopback endpoint when the configured model is already listed; otherwise it
   starts a disposable loopback Ollama container with the same bounded model
-  shape as CI, waits for the served model, and runs the summon suite with
-  `TAUT_SUMMON_LOCAL_LLM=1`. The same local process lane runs installed
-  external harnesses in strict prewired mode
-  (`TAUT_SUMMON_LIVE_HARNESS_STRICT=1`) so local release checks do not pass
-  by skipping already-installed provider CLIs for onboarding.
+  shape as CI, waits for the served model only when the dedicated local-LLM lane
+  is reached, and runs that lane with `TAUT_SUMMON_LOCAL_LLM=1`. A separate
+  external-live lane runs installed external harnesses in strict prewired mode
+  (`TAUT_SUMMON_LIVE_HARNESS_STRICT=1`) so local release checks do not pass by
+  skipping already-installed provider CLIs for onboarding.
 - After version sync, build the selected package artifacts and run
   `uv lock` in `extensions/taut_summon` when the summon package is selected.
 

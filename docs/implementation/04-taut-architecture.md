@@ -62,9 +62,11 @@ the `taut` package-name request is unresolved. For core or summon releases, it
 also starts summon local-LLM preparation before the precheck sequence: reuse a
 configured loopback endpoint if it already serves the model; otherwise start a
 disposable loopback Ollama container and build the bounded served model while
-root and PG gates run. The summon suite waits on that endpoint and runs with
-`TAUT_SUMMON_LOCAL_LLM=1`, so a missing local model is a release failure rather
-than a hidden skip.
+root and PG gates run. The release helper waits on that endpoint at the
+dedicated local-LLM lane and runs it with `TAUT_SUMMON_LOCAL_LLM=1`, so a
+missing local model is a release failure rather than a hidden skip. External
+live harnesses run in a separate strict one-worker lane from the local-LLM lane
+to keep each SQLite process workload in a fresh pytest invocation.
 GitHub Actions mirrors that boundary: `.github/workflows/test.yml` owns normal
 push/PR gates and is reusable, `.github/workflows/release-gate.yml` runs on
 `v*` tags, reuses the root and PG test workflows, verifies that the tag still

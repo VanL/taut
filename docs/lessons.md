@@ -161,6 +161,14 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   multi-process SQLite/PTY tests that show corruption or load-sensitive
   failures need a separate command lane, not only a group marker.
 
+- 2026-07-08: A separate command lane may also need a fresh pytest invocation,
+  not just a one-worker xdist group. Long-lived workers that run deterministic
+  process tests, external live harnesses, and local-LLM PTY proofs back to back
+  can carry enough SQLite/WAL churn that a later test fails as storage noise.
+  Split materially different real-process workloads into fresh one-worker
+  invocations while still starting slow independent setup, such as local LLM
+  image/model preparation, in parallel at the beginning.
+
 - 2026-07-08: Do not pass intentionally large integration-test payloads as
   subprocess argv. Local hosts may tolerate a 200 KB argument, while GitHub
   Linux runners reject it with `E2BIG` once interpreter paths and environment
