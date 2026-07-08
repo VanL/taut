@@ -89,7 +89,10 @@ running three concurrent lanes that a cold reader must keep distinct:
    polling sees database-wide changes across all watched queues. It also uses
    non-persistent queue handles so the driver does not keep long-lived SQLite
    watcher connections open while control clients, provider events, and peer
-   CLI subprocesses are all writing the same fresh database.
+   CLI subprocesses are all writing the same fresh database. If the watcher
+   still exhausts its broker retry budget, the supervisor rebuilds the watcher
+   over the same live provider session; only pump exit or injection failure
+   spends the harness crash budget.
 2. **Event pump — a dedicated drain thread.** Consumes `events()` for the
    life of the child ([SUM-7.1]): session ids to the ledger, `activity` to
    member liveness via a rate-limited token-selected `whoami()` (the public
@@ -291,6 +294,12 @@ continuing on the same bad broker handle can make a live driver look silent.
 Rate-audit failures use the same recoverable boundary. The audit is a backstop,
 so a single skipped pass under heavy local process churn is logged and retried
 without making a live driver look control-dead.
+
+Core `TautWatcher` also retries the same known transient SQLite sidecar shapes
+around queue pending probes, message fetches, cursor advancement, and membership
+reads. The retry is local to those public broker operations and still lets
+non-transient errors escape; it exists to keep a false WAL-page read from
+collapsing a live summon provider into the harness-resume path.
 
 `taut-summon stop/status` use that same policy while resolving the current
 member name and while writing/reading control replies. If the bounded budget is

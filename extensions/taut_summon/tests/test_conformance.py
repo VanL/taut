@@ -110,7 +110,7 @@ from taut_summon._driver import format_injection
 
 from taut.client import Message, Notification, TautClient
 
-pytestmark = pytest.mark.xdist_group("process")
+pytestmark = [pytest.mark.xdist_group("process"), pytest.mark.sqlite_only]
 
 # --- the portable harness interface ------------------------------------------
 

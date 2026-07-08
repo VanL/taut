@@ -292,12 +292,14 @@ this handler — the member's own sends never reach the watch stream,
 - **Restart replay:** a new driver (or a fresh harness session after a
   crash) starts by injecting everything after each stored cursor — the
   chat history is the durable conversation ([SUM-7.3]).
-- **Watcher death is a resume signal:** if the watcher thread exits
+- **Watcher death is a watcher-rebuild signal:** if the watcher thread exits
   unexpectedly after startup (for example, after exhausting broker retry
   budget under host I/O pressure), the driver wakes the supervisor and
-  follows the same fresh-session/cursor-replay path as harness death.
-  A watcher must never be allowed to die silently while the foreground
-  driver waits forever and the member stops hearing chat.
+  rebuilds the watcher against the same live harness session first. It must
+  not consume harness crash backoff or interrupt the provider unless the
+  pump exits or injection itself fails. A watcher must never be allowed to die
+  silently while the foreground driver waits forever and the member stops
+  hearing chat.
 - **Backpressure:** if the harness stalls, `inject()` blocks or raises,
   cursors stop advancing, and unread accumulates honestly; `taut list`
   shows the member falling behind exactly as it would a person on
@@ -762,9 +764,10 @@ durable conversation; the harness session is an optimization of it.
   resume (session id, then cursor replay); repeated crashes back off and
   exit with the reason on ctrl_out and stderr. Never auto-posts to chat
   as the member.
-- Watcher crash: driver treats unexpected watcher-thread exit as harness
-  death for recovery purposes, so the next harness generation replays
-  from cursors instead of leaving a live-but-deaf member.
+- Watcher crash: driver rebuilds the watcher over the same live harness before
+  spending any harness crash budget. Repeated watcher rebuild failure is a
+  driver failure; pump exit or injection failure remains the harness-resume
+  path.
 - Driver crash: cursors and ledger make restart safe (at-least-once
   injection); the stale ledger claim is reclaimable by evidence.
 - Unroutable output ([SUM-6]) → driver log only.

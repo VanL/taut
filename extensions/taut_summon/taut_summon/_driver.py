@@ -109,6 +109,7 @@ _HEALTHY_RUN_SECONDS = 60.0
 _ACTIVITY_WINDOW_SECONDS = 10.0
 _HALT_ACK_TIMEOUT_SECONDS = 30.0
 _NAME_RETRY_ATTEMPTS = 5
+_WATCHER_RESTART_BACKOFF = (0.2, 0.5, 1.0, 2.0, 4.0, 8.0, 8.0, 8.0)
 
 
 class DriverError(Exception):
@@ -231,6 +232,8 @@ class SummonDriver:
         # directly on adapter death — the wedged-supervisor-safe halt
         # ([TAUT-8.4]: a per-message raise loop would poison-advance).
         self._watcher: Any | None = None
+        self._watcher_failed = threading.Event()
+        self._watcher_error: BaseException | None = None
         self._member_id: str | None = None
         self._exit_code: int | None = None
         self._queue: Queue | None = None
@@ -613,56 +616,11 @@ class SummonDriver:
                     pump.join(timeout=10.0)
                     raise DriverError(f"cannot orient the harness: {exc}") from exc
             try:
-                watcher = watch_client.watch(self._on_item)
-            except TautError as exc:
+                self._watch_until_wake(watch_client, boot, handle)
+            except Exception:
                 handle.close()
                 pump.join(timeout=10.0)
-                raise DriverError(f"cannot watch chat: {exc}") from exc
-            self._watcher = watcher
-            watcher_ready = threading.Event()
-            notify_ready = getattr(watcher, "notify_ready_after_initial_drain", None)
-            if callable(notify_ready):
-                notify_ready(watcher_ready)
-            else:  # pragma: no cover - TautClient.watch returns TautWatcher today
-                watcher_ready.set()
-            watcher_thread = self._start_watcher_thread(watcher)
-            deadline = time.monotonic() + 30.0
-            while (
-                not watcher_ready.is_set()
-                and not self._harness_dead.is_set()
-                and not self._shutdown.is_set()
-                and time.monotonic() < deadline
-            ):
-                watcher_ready.wait(timeout=0.05)
-            if (
-                not watcher_ready.is_set()
-                and not self._harness_dead.is_set()
-                and not self._shutdown.is_set()
-            ):
-                watcher.stop(join=False)
-                handle.close()
-                pump.join(timeout=10.0)
-                raise DriverError("cannot watch chat: watcher did not become ready")
-            if watcher_ready.is_set():
-                logger.info(
-                    "summoned '%s' (member %s, provider %s, threads %s)",
-                    boot.member_name,
-                    boot.member_id,
-                    boot.provider,
-                    ", ".join(request.threads),
-                )
-
-            self._await_wake()
-
-            # Shutdown ordering ([SUM-9]): stop injection, unblock any
-            # in-flight inject via interrupt, drain the pump, release.
-            watcher.stop(join=False)
-            self._halt_ack.set()
-            if self._shutdown.is_set():
-                handle.interrupt()
-                handle.close()
-            watcher_thread.join(timeout=30.0)
-            watcher.stop(join=True)
+                raise
 
             if self._shutdown.is_set():
                 return self._shutdown_current_generation(handle, pump, boot)
@@ -1007,6 +965,108 @@ class SummonDriver:
         assert self._evidence is not None
         return self._evidence
 
+    def _watch_until_wake(
+        self,
+        watch_client: TautClient,
+        boot: _BootstrapResult,
+        handle: AdapterHandle,
+    ) -> None:
+        """Keep the chat watcher alive until shutdown or harness death.
+
+        Watcher storage failures are not harness failures. Rebuild the
+        watcher against the same provider session first; the provider crash
+        budget belongs to pump exit and injection failure.
+        """
+
+        watcher_failures = 0
+        while not (self._shutdown.is_set() or self._harness_dead.is_set()):
+            try:
+                watcher = watch_client.watch(self._on_item)
+            except TautError as exc:
+                raise DriverError(f"cannot watch chat: {exc}") from exc
+            self._watcher = watcher
+            self._watcher_failed.clear()
+            self._watcher_error = None
+            self._halt_ack.clear()
+            watcher_ready = threading.Event()
+            notify_ready = getattr(watcher, "notify_ready_after_initial_drain", None)
+            if callable(notify_ready):
+                notify_ready(watcher_ready)
+            else:  # pragma: no cover - TautClient.watch returns TautWatcher today
+                watcher_ready.set()
+            watcher_thread = self._start_watcher_thread(watcher)
+            deadline = time.monotonic() + 30.0
+            while (
+                not watcher_ready.is_set()
+                and not self._watcher_failed.is_set()
+                and not self._harness_dead.is_set()
+                and not self._shutdown.is_set()
+                and time.monotonic() < deadline
+            ):
+                watcher_ready.wait(timeout=0.05)
+            if (
+                not watcher_ready.is_set()
+                and not self._watcher_failed.is_set()
+                and not self._harness_dead.is_set()
+                and not self._shutdown.is_set()
+            ):
+                self._halt_ack.set()
+                watcher.stop(join=False)
+                watcher_thread.join(timeout=30.0)
+                watcher.stop(join=True)
+                raise DriverError("cannot watch chat: watcher did not become ready")
+            if watcher_ready.is_set():
+                logger.info(
+                    "summoned '%s' (member %s, provider %s, threads %s)",
+                    boot.member_name,
+                    boot.member_id,
+                    boot.provider,
+                    ", ".join(self._request.threads),
+                )
+
+            self._await_wake()
+
+            # Shutdown ordering ([SUM-9]): stop injection, unblock any
+            # in-flight inject via interrupt, drain the pump, release.
+            self._halt_ack.set()
+            watcher.stop(join=False)
+            if self._shutdown.is_set():
+                handle.interrupt()
+                handle.close()
+            watcher_thread.join(timeout=30.0)
+            watcher.stop(join=True)
+            if self._watcher is watcher:
+                self._watcher = None
+
+            if (
+                self._watcher_failed.is_set()
+                and not self._shutdown.is_set()
+                and not self._harness_dead.is_set()
+            ):
+                watcher_failures += 1
+                if watcher_failures > len(_WATCHER_RESTART_BACKOFF):
+                    detail = (
+                        f": {self._watcher_error}"
+                        if self._watcher_error is not None
+                        else ""
+                    )
+                    raise DriverError(
+                        "watcher exited "
+                        f"{watcher_failures} times in a row{detail}; giving up"
+                    )
+                delay = _WATCHER_RESTART_BACKOFF[watcher_failures - 1]
+                logger.warning(
+                    "watcher exited; rebuilding in %.1fs (attempt %d/%d)",
+                    delay,
+                    watcher_failures,
+                    len(_WATCHER_RESTART_BACKOFF),
+                )
+                self._watcher_failed.clear()
+                self._watcher_error = None
+                self._shutdown.wait(timeout=delay)
+                continue
+            return
+
     def _start_control_thread(self, boot: _BootstrapResult) -> None:
         """Start the [SUM-9] control consumer + [SUM-10] rate backstop.
 
@@ -1042,18 +1102,29 @@ class SummonDriver:
         """Run the chat watcher and wake the supervisor if it exits early."""
 
         def _run_watcher() -> None:
+            failed = False
             try:
                 watcher.run()
-            except Exception:
-                if not self._shutdown.is_set() and not self._harness_dead.is_set():
-                    logger.exception("watcher failed; resuming harness from cursor")
+            except Exception as exc:
+                if (
+                    not self._shutdown.is_set()
+                    and not self._harness_dead.is_set()
+                    and not self._halt_ack.is_set()
+                ):
+                    failed = True
+                    self._watcher_error = exc
+                    self._watcher_failed.set()
+                    logger.exception("watcher failed; rebuilding watcher from cursor")
             finally:
                 if (
                     not self._shutdown.is_set()
                     and not self._harness_dead.is_set()
                     and not self._halt_ack.is_set()
                 ):
-                    self._harness_dead.set()
+                    if not failed:
+                        self._watcher_error = None
+                        self._watcher_failed.set()
+                        logger.warning("watcher exited; rebuilding watcher")
                     self._wake.set()
 
         thread = threading.Thread(
@@ -1092,7 +1163,11 @@ class SummonDriver:
             logger.error("could not release the driver slot: %s", exc)
 
     def _await_wake(self) -> None:
-        while not (self._shutdown.is_set() or self._harness_dead.is_set()):
+        while not (
+            self._shutdown.is_set()
+            or self._harness_dead.is_set()
+            or self._watcher_failed.is_set()
+        ):
             self._wake.wait(timeout=0.2)
             self._wake.clear()
 

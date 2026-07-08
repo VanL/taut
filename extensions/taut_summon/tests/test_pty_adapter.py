@@ -53,7 +53,7 @@ FAKE_TUI = Path(__file__).with_name("fixtures") / "fake_tui.py"
 # signal/close races, and fake TUI startup. They run under xdist, but in the
 # process-heavy group so host PTY/process pressure does not become the behavior
 # under test.
-pytestmark = pytest.mark.xdist_group("process")
+pytestmark = [pytest.mark.xdist_group("process"), pytest.mark.sqlite_only]
 
 
 class EventPump:

@@ -389,6 +389,13 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   silent under SQLite WAL churn; one lost STATUS/PING reply is recoverable, a
   repeated reply failure is degraded control health.
 
+- 2026-07-08: A watcher failure is not automatically a provider crash. Under
+  SQLite WAL churn, an exhausted watcher-side transient can make the ears lane
+  exit while the harness is still healthy; rebuilding the watcher over the same
+  live provider preserves the model session and avoids spending crash backoff
+  on a storage-side fault. Only pump exit and injection failure belong to the
+  harness-resume path.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

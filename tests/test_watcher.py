@@ -8,10 +8,11 @@ import time
 from collections.abc import Callable, Sequence
 from functools import partial
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 import pytest
 from simplebroker import Queue
+from simplebroker.ext import DatabaseError
 
 from taut._exceptions import EmptyResultError, MembershipError
 from taut.client import Message, Notification, TautClient
@@ -107,6 +108,59 @@ class FakeWaiter:
 
 def test_multi_queue_watcher_uses_base_retry_loop() -> None:
     assert "_run_with_retries" not in MultiQueueWatcher.__dict__
+
+
+def test_multi_queue_watcher_retries_transient_pending_probe(
+    tmp_path: Path,
+) -> None:
+    watcher = MultiQueueWatcher(
+        queue_configs={"retry.probe": {"handler": lambda _body, _ts: None}},
+        db=tmp_path / ".taut.db",
+    )
+    attempts = 0
+
+    class FlakyQueue:
+        def has_pending(self) -> bool:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise DatabaseError("database disk image is malformed")
+            return False
+
+    try:
+        assert watcher._queue_has_pending(cast(Any, FlakyQueue())) is False
+        assert attempts == 2
+    finally:
+        watcher.stop(join=False)
+
+
+def test_taut_watcher_keeps_memory_cursor_when_advance_exhausts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("taut.watcher._WATCHER_DB_RETRY_ATTEMPTS", 2)
+    monkeypatch.setattr("taut.watcher._WATCHER_DB_RETRY_DELAY_SECONDS", 0.0)
+    watcher = object.__new__(TautWatcher)
+    watcher._cursors = {"foo": 10}
+    watcher._stop_event = threading.Event()
+    watcher.member_id = "m_reviewer"
+
+    class FailingRuntime:
+        def advance_cursor(
+            self,
+            *,
+            thread: str,
+            member_id: str,
+            seen_ts: int,
+        ) -> None:
+            assert (thread, member_id, seen_ts) == ("foo", "m_reviewer", 11)
+            raise DatabaseError("database disk image is malformed")
+
+    cast(Any, watcher)._runtime = FailingRuntime()
+
+    with pytest.raises(DatabaseError, match="malformed"):
+        watcher._advance("foo", 11)
+
+    assert watcher._cursors["foo"] == 10
 
 
 def test_start_strategy_uses_multi_queue_activity_waiter(

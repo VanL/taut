@@ -619,11 +619,12 @@ Contract:
   `PRAGMA data_version` because they share the file) and at a bounded
   interval. The interval is the portable guarantee: backends whose wake
   signals cover only queue writes ([TAUT-12.1]) still converge on
-  membership changes within the interval. A known transient failure in the
-  data-version callback (SQLite lock/busy/malformed/disk I/O or the
-  corresponding timestamp row-shape misread) must fall back to a normal
-  pending scan instead of killing the watcher; non-transient exceptions
-  still surface.
+  membership changes within the interval. Known transient SQLite sidecar
+  reads (lock/busy/malformed/disk I/O or the corresponding timestamp
+  row-shape misread) must be retried on watcher queue probes, fetches, cursor
+  advancement, and membership reads. A transient data-version callback failure
+  falls back to a normal pending scan instead of killing the watcher;
+  non-transient exceptions still surface.
 - `TautWatcher` uses non-persistent SimpleBroker queue handles. The core
   `MultiQueueWatcher` still supports persistent handles when explicitly
   requested, but taut's chat watcher must keep SQLite handles short-lived:

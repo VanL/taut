@@ -30,7 +30,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from simplebroker import (
     BrokerTarget,
@@ -42,6 +42,7 @@ from simplebroker.ext import (
     BaseWatcher,
     BrokerError,
     PollingStrategy,
+    StopWatching,
     default_error_handler,
 )
 
@@ -60,6 +61,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_T = TypeVar("_T")
+
 _SQLITE_WATCHER_TRANSIENT_MARKERS = (
     "database is locked",
     "database table is locked",
@@ -70,6 +73,9 @@ _SQLITE_WATCHER_TRANSIENT_MARKERS = (
     "malformed",
     "disk i/o error",
 )
+_WATCHER_DB_RETRY_ATTEMPTS = 30
+_WATCHER_DB_RETRY_DELAY_SECONDS = 0.05
+_WATCHER_DB_RETRY_MAX_DELAY_SECONDS = 0.5
 
 
 class QueueMode(StrEnum):
@@ -374,11 +380,40 @@ class MultiQueueWatcher(BaseWatcher):
         if self._stop_event.is_set():
             return False
         try:
-            return queue.has_pending()
+            return self._retry_transient_db_op(queue.has_pending, what="has_pending")
         except BrokerError:
             if self._stop_event.is_set():
                 return False
             raise
+
+    def _retry_transient_db_op(
+        self,
+        fn: Callable[[], _T],
+        *,
+        what: str,
+    ) -> _T:
+        stop_event = getattr(self, "_stop_event", None)
+        delay = _WATCHER_DB_RETRY_DELAY_SECONDS
+        for attempt in range(1, _WATCHER_DB_RETRY_ATTEMPTS + 1):
+            try:
+                return fn()
+            except Exception as exc:
+                if stop_event is not None and stop_event.is_set():
+                    raise StopWatching from exc
+                if (
+                    attempt >= _WATCHER_DB_RETRY_ATTEMPTS
+                    or not _is_transient_watcher_db_error(exc)
+                ):
+                    raise
+                logger.debug(
+                    "transient watcher db error on %s; retrying: %s", what, exc
+                )
+                if stop_event is not None and stop_event.wait(timeout=delay):
+                    raise StopWatching from exc
+                if stop_event is None:
+                    time.sleep(delay)
+                delay = min(delay * 2, _WATCHER_DB_RETRY_MAX_DELAY_SECONDS)
+        raise AssertionError("unreachable watcher retry loop exit")
 
     def _update_active_queues(self) -> None:
         if self._stop_event.is_set():
@@ -417,20 +452,32 @@ class MultiQueueWatcher(BaseWatcher):
     def _fetch_next_message(self, config: QueueRuntimeConfig) -> tuple[str, int] | None:
         if config.mode is QueueMode.READ:
             return cast(
-                tuple[str, int] | None, config.queue.read_one(with_timestamps=True)
+                tuple[str, int] | None,
+                self._retry_transient_db_op(
+                    lambda: config.queue.read_one(with_timestamps=True),
+                    what=f"read {config.name}",
+                ),
             )
         if config.mode is QueueMode.PEEK:
             return cast(
-                tuple[str, int] | None, config.queue.peek_one(with_timestamps=True)
+                tuple[str, int] | None,
+                self._retry_transient_db_op(
+                    lambda: config.queue.peek_one(with_timestamps=True),
+                    what=f"peek {config.name}",
+                ),
             )
         if config.mode is QueueMode.RESERVE:
-            if not config.reserved_queue_name:
+            reserved_queue_name = config.reserved_queue_name
+            if not reserved_queue_name:
                 raise RuntimeError(f"queue '{config.name}' missing reserved queue")
             return cast(
                 tuple[str, int] | None,
-                config.queue.move_one(
-                    config.reserved_queue_name,
-                    with_timestamps=True,
+                self._retry_transient_db_op(
+                    lambda: config.queue.move_one(
+                        reserved_queue_name,
+                        with_timestamps=True,
+                    ),
+                    what=f"reserve {config.name}",
                 ),
             )
         raise ValueError(f"unsupported queue mode: {config.mode}")
@@ -610,7 +657,10 @@ class TautWatcher(MultiQueueWatcher):
             event.set()
 
     def _current_memberships(self, *, strict: bool) -> list[WatchedThread]:
-        rows = self._runtime.list_watched_threads(self.member_id)
+        rows = self._retry_transient_db_op(
+            lambda: self._runtime.list_watched_threads(self.member_id),
+            what="membership refresh",
+        )
         if self._thread_filter is None:
             return rows
         filtered = [row for row in rows if row.name in self._thread_filter]
@@ -658,13 +708,16 @@ class TautWatcher(MultiQueueWatcher):
 
     def _advance(self, thread: str, timestamp: int) -> None:
         current = self._cursors.get(thread, 0)
+        self._retry_transient_db_op(
+            lambda: self._runtime.advance_cursor(
+                thread=thread,
+                member_id=self.member_id,
+                seen_ts=timestamp,
+            ),
+            what=f"advance cursor {thread}",
+        )
         if timestamp > current:
             self._cursors[thread] = timestamp
-        self._runtime.advance_cursor(
-            thread=thread,
-            member_id=self.member_id,
-            seen_ts=timestamp,
-        )
 
     def _fetch_next_message(self, config: QueueRuntimeConfig) -> tuple[str, int] | None:
         if (
@@ -675,10 +728,13 @@ class TautWatcher(MultiQueueWatcher):
         cursor = self._cursors.get(config.name, 0)
         rows = cast(
             list[tuple[str, int]],
-            config.queue.peek_many(
-                1,
-                with_timestamps=True,
-                after_timestamp=cursor,
+            self._retry_transient_db_op(
+                lambda: config.queue.peek_many(
+                    1,
+                    with_timestamps=True,
+                    after_timestamp=cursor,
+                ),
+                what=f"peek {config.name}",
             ),
         )
         return rows[0] if rows else None
@@ -690,7 +746,10 @@ class TautWatcher(MultiQueueWatcher):
             return super()._queue_has_pending(queue)
         cursor = self._cursors.get(queue.name, 0)
         try:
-            return queue.has_pending(after_timestamp=cursor)
+            return self._retry_transient_db_op(
+                lambda: queue.has_pending(after_timestamp=cursor),
+                what=f"has_pending {queue.name}",
+            )
         except BrokerError:
             if self._stop_event.is_set():
                 return False

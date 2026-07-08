@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+import taut_summon._driver as driver_module
 from conftest import (
     _DEADLINE,
     DriverProcess,
@@ -48,7 +49,7 @@ from conftest import (
     wait_until,
 )
 from simplebroker import Queue
-from taut_summon._driver import SummonDriver, format_injection
+from taut_summon._driver import SummonDriver, _BootstrapResult, format_injection
 from taut_summon.cli import RunRequest
 
 from taut.client import Message, Notification, TautClient
@@ -59,7 +60,7 @@ pty = pytest.importorskip("pty", reason="POSIX PTY tests require the pty module"
 FAKE_TUI = Path(__file__).with_name("fixtures") / "fake_tui.py"
 PROCESS_XDIST_GROUP = pytest.mark.xdist_group("process")
 PTY_XDIST_GROUP = PROCESS_XDIST_GROUP
-pytestmark = PROCESS_XDIST_GROUP
+pytestmark = [PROCESS_XDIST_GROUP, pytest.mark.sqlite_only]
 
 # The real-process driver harness (DriverProcess), the peer-writer helpers
 # (taut_cli/say/summon_cli), the ledger/identity accessors
@@ -107,8 +108,56 @@ def _read_pty_until(fd: int, needle: bytes, *, timeout: float = 5.0) -> bytes:
 
 
 class _ExplodingWatcher:
+    stop_calls = 0
+
     def run(self) -> None:
         raise RuntimeError("watcher failed")
+
+    def stop(self, *, join: bool = True) -> None:
+        del join
+        self.stop_calls += 1
+
+
+class _ShutdownWatcher:
+    def __init__(self, driver: SummonDriver) -> None:
+        self._driver = driver
+        self.stop_calls = 0
+
+    def run(self) -> None:
+        self._driver._shutdown.set()
+        self._driver._wake.set()
+        while not self.stop_calls:
+            time.sleep(0.01)
+
+    def stop(self, *, join: bool = True) -> None:
+        del join
+        self.stop_calls += 1
+
+
+class _FakeWatchClient:
+    def __init__(self, driver: SummonDriver) -> None:
+        self._driver = driver
+        self.watchers: list[Any] = []
+
+    def watch(self, _handler: Callable[[Any], None]) -> Any:
+        if not self.watchers:
+            watcher: Any = _ExplodingWatcher()
+        else:
+            watcher = _ShutdownWatcher(self._driver)
+        self.watchers.append(watcher)
+        return watcher
+
+
+class _CountingHandle:
+    def __init__(self) -> None:
+        self.close_calls = 0
+        self.interrupt_calls = 0
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+    def interrupt(self) -> None:
+        self.interrupt_calls += 1
 
 
 class _AttachCapableAdapter:
@@ -142,19 +191,55 @@ def test_detached_pty_pump_starts_before_bootstrap() -> None:
     )
 
 
-def test_watcher_failure_wakes_driver_for_resume() -> None:
+def test_watcher_failure_wakes_driver_for_rebuild() -> None:
     driver = object.__new__(SummonDriver)
     driver._shutdown = threading.Event()
     driver._harness_dead = threading.Event()
     driver._halt_ack = threading.Event()
     driver._wake = threading.Event()
+    driver._watcher_failed = threading.Event()
+    driver._watcher_error = None
 
     thread = driver._start_watcher_thread(_ExplodingWatcher())
     thread.join(timeout=5.0)
 
     assert not thread.is_alive()
-    assert driver._harness_dead.is_set()
+    assert not driver._harness_dead.is_set()
+    assert driver._watcher_failed.is_set()
     assert driver._wake.is_set()
+
+
+def test_watcher_failure_rebuilds_without_closing_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(driver_module, "_WATCHER_RESTART_BACKOFF", (0.0,))
+    driver = object.__new__(SummonDriver)
+    driver._request = _run_request()
+    driver._shutdown = threading.Event()
+    driver._harness_dead = threading.Event()
+    driver._halt_ack = threading.Event()
+    driver._wake = threading.Event()
+    driver._watcher_failed = threading.Event()
+    driver._watcher_error = None
+    driver._watcher = None
+    watch_client = _FakeWatchClient(driver)
+    handle = _CountingHandle()
+
+    driver._watch_until_wake(
+        cast(Any, watch_client),
+        _BootstrapResult(
+            member_id="m_reviewer",
+            member_name="reviewer",
+            token="tok",
+            provider="scripted",
+            provider_session_id=None,
+        ),
+        cast(Any, handle),
+    )
+
+    assert len(watch_client.watchers) == 2
+    assert handle.close_calls == 1
+    assert handle.interrupt_calls == 1
 
 
 # --- [SUM-5.2] format golden tests -------------------------------------------
