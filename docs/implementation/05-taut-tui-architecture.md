@@ -4,6 +4,9 @@ Governing specs: `docs/specs/04-taut-tui.md` (all `[TUI-*]` sections),
 `docs/specs/02-taut-core.md` [TAUT-8.4], [TAUT-12.4].
 Implementing plan: `docs/plans/2026-07-02-taut-tui-implementation-plan.md`
 (four review rounds plus per-slice reviews; see its `## Review Log`).
+First-join extension:
+`docs/plans/2026-07-07-tui-first-join-flow-plan.md` ([TUI-10.9],
+[IAN-3.3]).
 
 This doc explains why the TUI is shaped the way it is — the boundaries,
 the threading contract, and the tradeoffs. The how lives in the code.
@@ -99,8 +102,30 @@ The client is constructed *inside* the App: `TautClient.__init__` raises
 `NotInitializedError` before a frame could otherwise exist, so `run_tui`
 must not build it eagerly. The uninitialized empty state offers an
 Enter-bound init-here action that calls the `TautClient.init` classmethod
-(the same path as `taut init`) and then re-bootstraps. Identity errors and
-membership loss surface with CLI-first guidance (`taut join …`);
+(the same path as `taut init`) and then re-bootstraps.
+
+First-join setup ([TUI-10.9]) is the one v1 exception to "setup stays
+CLI-first." If the identity read raises the typed
+`UnrecognizedCallerError`, or an explicit `--as NAME` read raises
+member-not-found, the app opens a modal name/channel form before any
+`WatchBridge` exists. The form validates with the same client-owned
+validators as the CLI and submits by constructing a one-shot
+`TautClient(..., as_name=name).join(channel)`, then discards that client
+and re-runs normal bootstrap as the new member. It does not write identity
+or membership state directly and does not fabricate optimistic transcript
+rows.
+
+The first-join branch is deliberately scoped to `whoami()`. Errors from
+`joined_threads()` are not setup triggers, because they can represent
+unrelated project or membership failures after identity is known. Other
+identity failures, including claim conflicts and token-shaped problems,
+leave the form and show CLI-first guidance such as `taut rejoin NAME` or
+`taut --as NAME join CHANNEL`. The modal gate blocks normal TUI surfaces
+(`c`, `/`, `g`, `i`, `?`, pane toggles) and hides navigation so Tab cannot
+leave the form, while keeping Escape and quit live; Escape cleans the form
+and returns to the identity-guidance state.
+
+Membership loss surfaces with CLI-first guidance (`taut join …`);
 membership loss disables the conversation and keeps history.
 
 ## Testing posture

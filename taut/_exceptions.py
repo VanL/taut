@@ -31,6 +31,10 @@ class IdentityError(TautError):
     """Raised when member identity cannot be resolved safely."""
 
 
+class UnrecognizedCallerError(IdentityError):
+    """No member resolves for the current caller ([IAN-3.3] step 6)."""
+
+
 class MembershipError(TautError):
     """Raised when a command requires thread membership."""
 

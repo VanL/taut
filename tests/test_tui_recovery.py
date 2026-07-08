@@ -7,17 +7,303 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
+from taut._exceptions import IdentityError, MembershipError, TautError, ThreadNameError
 from taut.client import TautClient
 
 textual = pytest.importorskip("textual")
 
+from textual.widgets import Input  # noqa: E402
+
 from taut.tui.app import TautApp  # noqa: E402
 from taut.tui.widgets import TextStatic  # noqa: E402
 
+if TYPE_CHECKING:
+    from textual.pilot import Pilot
+
 pytestmark = [pytest.mark.sqlite_only, pytest.mark.usefixtures("clean_env")]
+
+
+def _seed_initialized_project(tmp_path: Path) -> Path:
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    return db
+
+
+def _fatal_text(app: TautApp) -> str:
+    transcript = app.query_one("#transcript")
+    return " ".join(
+        row.renderable_text
+        for row in transcript.query(TextStatic).filter(".error-banner")
+    )
+
+
+def _first_join_values(app: TautApp) -> tuple[Input, Input, TextStatic]:
+    return (
+        app.query_one("#firstjoin-name", Input),
+        app.query_one("#firstjoin-channel", Input),
+        app.query_one("#firstjoin-error", TextStatic),
+    )
+
+
+async def _submit_first_join(
+    app: TautApp,
+    pilot: Pilot[int],
+    *,
+    name: str,
+    channel: str,
+) -> None:
+    name_input, channel_input, _error = _first_join_values(app)
+    name_input.value = name
+    channel_input.value = channel
+    channel_input.focus()
+    await pilot.press("enter")
+    await pilot.pause()
+
+
+class TestFirstJoinSetup:
+    def test_unrecognized_caller_opens_first_join_form(self, tmp_path: Path) -> None:
+        db = _seed_initialized_project(tmp_path)
+
+        async def _run() -> None:
+            app = TautApp(db_path=str(db), as_name=None, token=None)
+            async with app.run_test(size=(120, 34)) as pilot:
+                await pilot.pause()
+                name_input, _channel_input, error = _first_join_values(app)
+                assert app._first_join_active
+                assert app._bridge is None
+                assert name_input.display
+                assert app.focused is name_input
+                assert error.renderable_text == ""
+                assert not app.query_one("#transcript").display
+                assert not app.query_one("#composer").display
+                assert not _fatal_text(app)
+
+        asyncio.run(_run())
+
+    def test_submit_name_and_channel_bootstraps_working_tui(
+        self, tmp_path: Path
+    ) -> None:
+        db = _seed_initialized_project(tmp_path)
+
+        async def _run() -> None:
+            app = TautApp(db_path=str(db), as_name=None, token=None)
+            async with app.run_test(size=(120, 34)) as pilot:
+                await pilot.pause()
+                await _submit_first_join(app, pilot, name="van", channel="general")
+                assert not app._first_join_active
+                assert app._bridge is not None
+                assert app.me is not None
+                assert app.me.name == "van"
+                assert app.active_target == "general"
+                assert (
+                    "general"
+                    in app.query_one("#composer-label", TextStatic).renderable_text
+                )
+                assert app.query_one("#presence").display
+                assert "taut" in app.query_one("#titlebar", TextStatic).renderable_text
+
+        asyncio.run(_run())
+
+        cli_client = TautClient(db_path=db, as_name="van")
+        assert cli_client.whoami().name == "van"
+        assert [thread.name for thread in cli_client.joined_threads()] == ["general"]
+
+    def test_prefills_explicit_missing_as_name(self, tmp_path: Path) -> None:
+        db = _seed_initialized_project(tmp_path)
+
+        async def _run() -> None:
+            app = TautApp(db_path=str(db), as_name="newname", token=None)
+            async with app.run_test(size=(120, 34)) as pilot:
+                await pilot.pause()
+                name_input, channel_input, _error = _first_join_values(app)
+                assert app._first_join_active
+                assert name_input.value == "newname"
+                assert app.focused is channel_input
+
+        asyncio.run(_run())
+
+    def test_invalid_as_name_shows_cli_first_guidance(self, tmp_path: Path) -> None:
+        db = _seed_initialized_project(tmp_path)
+
+        async def _run() -> None:
+            app = TautApp(db_path=str(db), as_name="bad name", token=None)
+            async with app.run_test(size=(120, 34)) as pilot:
+                await pilot.pause()
+                assert not app._first_join_active
+                assert app._bridge is None
+                text = _fatal_text(app)
+                assert "name must match" in text
+                assert "taut --as NAME join CHANNEL" in text
+
+        asyncio.run(_run())
+
+    def test_validation_error_stays_inline_then_recovers(self, tmp_path: Path) -> None:
+        db = _seed_initialized_project(tmp_path)
+
+        async def _run() -> None:
+            app = TautApp(db_path=str(db), as_name=None, token=None)
+            async with app.run_test(size=(120, 34)) as pilot:
+                await pilot.pause()
+                await _submit_first_join(app, pilot, name="van", channel="UPPER")
+                _name_input, _channel_input, error = _first_join_values(app)
+                assert app._first_join_active
+                assert app._bridge is None
+                assert "channel must match" in error.renderable_text
+                await _submit_first_join(app, pilot, name="van", channel="general")
+                assert not app._first_join_active
+                assert app._bridge is not None
+
+        asyncio.run(_run())
+
+    @pytest.mark.parametrize(
+        ("exc", "inline", "snippet"),
+        [
+            (ThreadNameError("not a channel: x"), True, "not a channel"),
+            (MembershipError("membership failed"), True, "membership failed"),
+            (
+                IdentityError("current identity claim already belongs to van"),
+                False,
+                "taut rejoin",
+            ),
+            (TautError("recoverable join failure"), True, "recoverable join failure"),
+        ],
+    )
+    def test_submit_time_error_classes(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        exc: Exception,
+        inline: bool,
+        snippet: str,
+    ) -> None:
+        db = _seed_initialized_project(tmp_path)
+
+        def raise_join(self: TautClient, thread: str, **kwargs: object) -> object:
+            raise exc
+
+        monkeypatch.setattr("taut.tui.app.TautClient.join", raise_join)
+
+        async def _run() -> None:
+            app = TautApp(db_path=str(db), as_name=None, token=None)
+            async with app.run_test(size=(120, 34)) as pilot:
+                await pilot.pause()
+                await _submit_first_join(app, pilot, name="van", channel="general")
+                _name_input, _channel_input, error = _first_join_values(app)
+                if inline:
+                    assert app._first_join_active
+                    assert snippet in error.renderable_text
+                else:
+                    assert not app._first_join_active
+                    assert snippet in _fatal_text(app)
+
+        asyncio.run(_run())
+
+    def test_escape_clears_form_and_q_quits(self, tmp_path: Path) -> None:
+        db = _seed_initialized_project(tmp_path)
+
+        async def _run() -> None:
+            app = TautApp(db_path=str(db), as_name=None, token=None)
+            async with app.run_test(size=(120, 34)) as pilot:
+                await pilot.pause()
+                name_input, channel_input, error = _first_join_values(app)
+                name_input.value = "van"
+                channel_input.value = "general"
+                error.update_text("stale")
+                await pilot.press("escape")
+                await pilot.pause()
+                assert not app._first_join_active
+                assert app._bridge is None
+                assert not name_input.value
+                assert not channel_input.value
+                assert error.renderable_text == ""
+                assert app.query_one("#navigation").display  # restored
+                assert "taut join" in _fatal_text(app)
+                await app._show_first_join(prefill=None)
+                assert not name_input.value
+                assert not channel_input.value
+                assert app.check_action("quit_app", ())
+
+        asyncio.run(_run())
+
+    def test_escape_from_prefilled_form_returns_to_member_guidance(
+        self, tmp_path: Path
+    ) -> None:
+        db = _seed_initialized_project(tmp_path)
+
+        async def _run() -> None:
+            app = TautApp(db_path=str(db), as_name="newname", token=None)
+            async with app.run_test(size=(120, 34)) as pilot:
+                await pilot.pause()
+                assert app._first_join_active
+                await pilot.press("escape")
+                await pilot.pause()
+                assert not app._first_join_active
+                text = _fatal_text(app)
+                assert "member not found: newname" in text
+                assert "taut --as newname join CHANNEL" in text
+
+        asyncio.run(_run())
+
+    def test_modal_gate_keeps_focus_on_form(self, tmp_path: Path) -> None:
+        db = _seed_initialized_project(tmp_path)
+
+        async def _run() -> None:
+            app = TautApp(db_path=str(db), as_name=None, token=None)
+            async with app.run_test(size=(120, 34)) as pilot:
+                await pilot.pause()
+                name_input, channel_input, _error = _first_join_values(app)
+                assert app.focused is name_input
+                for key in ("c", "/", "g", "i", "?", "z", "t", "m"):
+                    await pilot.press(key)
+                    await pilot.pause()
+                    assert app.focused in (name_input, channel_input)
+                assert not app.query_one("#search-input").display
+                assert not app.query_one("#goto-input").display
+                assert not app.query_one("#inbox-view").display
+                assert not app.query_one("#help-overlay").display
+                assert not app.query_one("#thread-pane").display
+                assert not app.query_one("#presence").display
+                # Modal means modal: navigation is hidden too, so Tab cannot
+                # move focus to the empty list behind the form.
+                assert not app.query_one("#navigation").display
+                await pilot.press("tab")
+                await pilot.pause()
+                assert app.focused in (name_input, channel_input)
+                app.layout_mode = "medium"
+                app.layout_mode = "wide"
+                await pilot.pause()
+                assert not app.query_one("#presence").display
+                assert not app.query_one("#navigation").display
+                await _submit_first_join(app, pilot, name="van", channel="general")
+                assert not app._first_join_active
+                assert app.query_one("#navigation").display
+
+        asyncio.run(_run())
+
+    def test_bootstrap_identity_conflict_is_cli_first(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        db = _seed_initialized_project(tmp_path)
+
+        def raise_conflict(self: TautClient) -> object:
+            raise IdentityError("current identity claim already belongs to van")
+
+        monkeypatch.setattr("taut.tui.app.TautClient.whoami", raise_conflict)
+
+        async def _run() -> None:
+            app = TautApp(db_path=str(db), as_name=None, token=None)
+            async with app.run_test(size=(120, 34)) as pilot:
+                await pilot.pause()
+                assert not app._first_join_active
+                text = _fatal_text(app)
+                assert "current identity claim" in text
+                assert "taut rejoin" in text
+
+        asyncio.run(_run())
 
 
 class TestUninitializedProject:
@@ -43,18 +329,15 @@ class TestUninitializedProject:
                 await pilot.press("enter")
                 await pilot.pause()
                 assert db.exists()
-                # A fresh project has no members yet: identity guidance
-                # surfaces from client rules ([TUI-10.2]); join is
-                # CLI-first in v1 (Task 8 decision).
-                banners = [
-                    row.renderable_text
-                    for row in transcript.query(TextStatic).filter(".error-banner")
-                ]
-                assert any("taut join" in text for text in banners)
+                assert app._first_join_active
+                await _submit_first_join(app, pilot, name="van", channel="general")
+                assert not app._first_join_active
+                assert app._bridge is not None
+                assert app.active_target == "general"
 
         asyncio.run(_run())
         # The db is real and client-created: a client can open it.
-        TautClient(db_path=db)
+        assert TautClient(db_path=db, as_name="van").whoami().name == "van"
 
 
 class TestLostMembership:

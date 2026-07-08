@@ -19,7 +19,11 @@ from taut._constants import (
     PROJECT_CONFIG_NAME,
     load_config,
 )
-from taut._exceptions import IdentityError, NotInitializedError, TautError
+from taut._exceptions import (
+    NotInitializedError,
+    TautError,
+    UnrecognizedCallerError,
+)
 from taut.state import (
     ChannelRenameRow,
     MemberRow,
@@ -157,7 +161,7 @@ class _ClientBase(ABC):
 
     def _require_member(self, resolved: _ResolvedMember) -> MemberRow:
         if resolved.row is None:
-            raise IdentityError("unrecognized caller")
+            raise UnrecognizedCallerError("unrecognized caller")
         return resolved.row
 
     def _ensure_no_incomplete_channel_rename(self) -> None:

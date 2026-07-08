@@ -148,6 +148,13 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   engineering-principles §14
   (`docs/agent-context/engineering-principles.md`).
 
+- 2026-07-07: UI trigger contracts must be typed errors, never message-text
+  matches. The first-join TUI flow needed to branch on "no identity exists
+  here" while keeping identity conflicts CLI-first; the previous CLI
+  exit-code check had the same latent bug by matching
+  `"unrecognized caller"` text. Use a distinct exception type for any
+  consumer-visible branch and keep message wording non-load-bearing.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

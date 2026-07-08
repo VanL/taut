@@ -274,6 +274,25 @@ from [TUI-10.9] here, with rationale, as the TUI implementation plan did.)
   - R-7 (P2) missing Spec Baseline / Deviation Log / Related Plans backlink
     → all three added in this revision.
   - R-8 (P3) `validate_channel_name` line cite corrected (163 → 170).
+- 2026-07-07 — Independent completed-work review (Codex subagent, read-only).
+  Findings folded into the implementation before final gates:
+  - first-join success restored normal wide-mode presence visibility after
+    leaving the modal form;
+  - Escape from a prefilled `--as NAME` form now returns to member-not-found
+    guidance that names the selected member;
+  - modal-gate tests now exercise every enumerated blocked binding
+    (`c`, `/`, `g`, `i`, `?`, `z`, `t`, `m`) and verify resize cannot reveal
+    presence while first-join is active.
+- 2026-07-07 — Second pre-PR review (Claude, cross-family): verdict
+  ship-ready; four P3 cleanups applied afterward:
+  - stray out-of-scope `_bridge.py` docstring word-swap reverted;
+  - navigation hidden while the modal form is up (Tab could previously move
+    focus to the empty nav list) and restored on exit — pinned by tests
+    incl. resize-cannot-reveal and Tab-stays-on-form;
+  - `_bootstrap`'s `except ValueError` documented as scoped to the invalid
+    `--as` name source in `_resolve_member`;
+  - unreachable duplicate of the escape-guidance default in `__init__`
+    replaced with an empty sentinel plus an invariant comment.
 
 ## Risks / hardening notes
 

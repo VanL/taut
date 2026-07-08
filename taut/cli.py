@@ -15,10 +15,10 @@ from typing import Any, NoReturn, TextIO
 from taut._constants import __version__
 from taut._exceptions import (
     EmptyResultError,
-    IdentityError,
     MembershipError,
     NotFoundError,
     TokenError,
+    UnrecognizedCallerError,
 )
 from taut._format import format_message_time as _format_message_time
 from taut.client import InitResult, Member, Message, Notification, TautClient, Thread
@@ -575,7 +575,7 @@ def _exit_code_for_exception(exc: Exception) -> int:
         return 1
     if isinstance(exc, (EmptyResultError, NotFoundError, MembershipError)):
         return 2
-    if isinstance(exc, IdentityError) and str(exc) == "unrecognized caller":
+    if isinstance(exc, UnrecognizedCallerError):
         return 2
     return 1
 

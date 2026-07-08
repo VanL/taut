@@ -23,7 +23,16 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.reactive import reactive
 from textual.widgets import Input, ListView
 
-from taut._exceptions import NotInitializedError, TautError
+from taut._constants import validate_channel_name, validate_member_name
+from taut._exceptions import (
+    IdentityError,
+    MembershipError,
+    NotFoundError,
+    NotInitializedError,
+    TautError,
+    ThreadNameError,
+    UnrecognizedCallerError,
+)
 from taut.client import Member, Message, Notification, TautClient, Thread
 from taut.tui._bridge import WatchBridge
 from taut.tui.widgets import (
@@ -102,6 +111,11 @@ class TautApp(App[int]):
     #goto-input { display: none; }
     #inbox-view { height: 1fr; display: none; }
     #help-overlay { display: none; }
+    #firstjoin { display: none; height: 1fr; padding: 1 2; }
+    #firstjoin-hint { height: 1; color: $text-muted; }
+    #firstjoin-name { margin-top: 1; }
+    #firstjoin-channel { margin-top: 1; }
+    #firstjoin-error { height: 1; margin-top: 1; color: $error; }
     #too-small { display: none; color: $warning; }
     """
 
@@ -159,6 +173,10 @@ class TautApp(App[int]):
         # None = the mode's default (wide shows presence, others hide).
         self._presence_override: bool | None = None
         self._uninitialized = False
+        self._first_join_active = False
+        # Set by the _bootstrap trigger branch before _show_first_join runs;
+        # never read while empty (Escape is only reachable with the form up).
+        self._first_join_escape_message = ""
 
     def compose(self) -> ComposeResult:
         yield TextStatic("taut", id="titlebar")
@@ -170,6 +188,11 @@ class TautApp(App[int]):
                 yield TranscriptView(id="transcript")
                 yield VerticalScroll(id="inbox-view")
                 yield TextStatic(HELP_TEXT, id="help-overlay")
+                with Vertical(id="firstjoin"):
+                    yield TextStatic("", id="firstjoin-hint")
+                    yield Input(placeholder="display name", id="firstjoin-name")
+                    yield Input(placeholder="channel", id="firstjoin-channel")
+                    yield TextStatic("", id="firstjoin-error")
                 yield TextStatic("", id="status-banner")
                 yield Composer(id="composer")
             yield PresencePane(id="presence")
@@ -210,10 +233,35 @@ class TautApp(App[int]):
             return
         try:
             self.me = self.client.whoami()
+        except UnrecognizedCallerError:
+            self._first_join_escape_message = (
+                "unrecognized caller — join with: taut join CHANNEL · q quits"
+            )
+            await self._show_first_join(prefill=None)
+            return
+        except NotFoundError:
+            self._first_join_escape_message = (
+                f"member not found: {self._as_name} — join with: "
+                f"taut --as {self._as_name} join CHANNEL · q quits"
+            )
+            await self._show_first_join(prefill=self._as_name)
+            return
+        except ValueError as exc:
+            # The identity read's only ValueError source is
+            # validate_member_name rejecting an invalid --as name
+            # (_resolve_member, explicit branch). Not a first-join trigger:
+            # the user asked for a specific, invalid name (R-4). If another
+            # ValueError source ever appears in whoami(), re-scope this.
+            await self._show_fatal(
+                f"{exc} — use: taut --as NAME join CHANNEL · q quits"
+            )
+            return
+        except TautError as exc:
+            await self._show_fatal(self._identity_guidance(str(exc)))
+            return
+        try:
             threads = self.client.joined_threads()
         except TautError as exc:
-            # [TUI-10.2]: identity errors surface from client rules; setup
-            # beyond init stays CLI-first in v1 (Task 8 decision).
             await self._show_fatal(f"{exc} — join with: taut join CHANNEL · q quits")
             return
         self._threads = {thread.name: thread for thread in threads}
@@ -287,6 +335,9 @@ class TautApp(App[int]):
 
     def _apply_presence_visibility(self) -> None:
         presence = self.query_one("#presence", PresencePane)
+        if self._first_join_active:
+            presence.display = False
+            return
         if self._pane_thread is not None:
             presence.display = False  # the thread pane borrows the column
             return
@@ -298,6 +349,21 @@ class TautApp(App[int]):
         presence.display = visible
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if self._first_join_active:
+            if action in {"quit_app", "close_transient"}:
+                return True
+            if action in {
+                "toggle_fold",
+                "toggle_thread_pane",
+                "focus_composer",
+                "toggle_members",
+                "open_search",
+                "open_goto",
+                "open_inbox",
+                "open_help",
+                "init_here",
+            }:
+                return False
         if action == "init_here":
             return self._uninitialized
         return True
@@ -372,6 +438,10 @@ class TautApp(App[int]):
             await self._open_thread_pane(name)
 
     async def action_close_transient(self) -> None:
+        if self._first_join_active:
+            self._exit_first_join()
+            await self._show_fatal(self._first_join_escape_message)
+            return
         search = self.query_one("#search-input", Input)
         if search.display:
             search.display = False
@@ -570,6 +640,12 @@ class TautApp(App[int]):
             self._apply_search_filter(event.value)
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "firstjoin-name":
+            self.query_one("#firstjoin-channel", Input).focus()
+            return
+        if event.input.id == "firstjoin-channel":
+            await self._submit_first_join()
+            return
         if event.input.id == "composer-input":
             await self._send_from_composer(event)
             return
@@ -883,7 +959,89 @@ class TautApp(App[int]):
         )
 
     async def _show_fatal(self, message: str) -> None:
+        self.query_one("#transcript", TranscriptView).display = True
         await self.query_one("#transcript", TranscriptView).show_error(message)
+
+    def _identity_guidance(self, message: str) -> str:
+        return (
+            f"{message} — use: taut rejoin NAME  or: "
+            f"taut --as NAME join CHANNEL · q quits"
+        )
+
+    async def _show_first_join(self, *, prefill: str | None) -> None:
+        self._first_join_active = True
+        self.query_one("#search-input", Input).display = False
+        self.query_one("#goto-input", Input).display = False
+        self.query_one("#transcript", TranscriptView).display = False
+        self.query_one("#composer", Composer).display = False
+        self.query_one("#inbox-view", VerticalScroll).display = False
+        self.query_one("#help-overlay", TextStatic).display = False
+        self.query_one("#presence", PresencePane).display = False
+        self.query_one("#thread-pane", ThreadPane).display = False
+        # Modal means modal: hide navigation too, so Tab cannot move focus
+        # to the (empty) list behind the form (post-implementation review).
+        self.query_one("#navigation", NavigationPane).display = False
+        self._inbox_open = False
+        self._pane_thread = None
+
+        container = self.query_one("#firstjoin", Vertical)
+        hint = self.query_one("#firstjoin-hint", TextStatic)
+        name_input = self.query_one("#firstjoin-name", Input)
+        channel_input = self.query_one("#firstjoin-channel", Input)
+        error = self.query_one("#firstjoin-error", TextStatic)
+        hint.update_text(
+            "first time here — pick a name and a channel · esc back · q quits"
+        )
+        error.update_text("")
+        name_input.value = prefill or ""
+        channel_input.value = ""
+        container.display = True
+        if prefill:
+            channel_input.focus()
+        else:
+            name_input.focus()
+
+    def _exit_first_join(self) -> None:
+        self.query_one("#firstjoin-name", Input).value = ""
+        self.query_one("#firstjoin-channel", Input).value = ""
+        self.query_one("#firstjoin-error", TextStatic).update_text("")
+        self.query_one("#firstjoin", Vertical).display = False
+        self.query_one("#navigation", NavigationPane).display = True
+        self.query_one("#transcript", TranscriptView).display = True
+        self.query_one("#composer", Composer).display = True
+        self._first_join_active = False
+        self._apply_presence_visibility()
+
+    async def _submit_first_join(self) -> None:
+        name = self.query_one("#firstjoin-name", Input).value.strip()
+        channel = self.query_one("#firstjoin-channel", Input).value.strip()
+        error = self.query_one("#firstjoin-error", TextStatic)
+        if not name or not channel:
+            error.update_text("name and channel are required")
+            return
+        try:
+            validate_member_name(name)
+            validate_channel_name(channel)
+        except ValueError as exc:
+            error.update_text(str(exc))
+            return
+        try:
+            TautClient(db_path=self._db_path, as_name=name, token=self._token).join(
+                channel
+            )
+        except (ThreadNameError, MembershipError, ValueError) as exc:
+            error.update_text(str(exc))
+            return
+        except IdentityError as exc:
+            self._exit_first_join()
+            await self._show_fatal(self._identity_guidance(str(exc)))
+            return
+        except TautError as exc:
+            error.update_text(str(exc))
+            return
+        self._as_name = name
+        self._exit_first_join()
+        await self._bootstrap()
 
 
 def run_app(

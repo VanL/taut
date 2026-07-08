@@ -19,6 +19,7 @@ from taut._exceptions import (
     NotInitializedError,
     TautError,
     ThreadNameError,
+    UnrecognizedCallerError,
 )
 from taut.client import TautClient
 from taut.envelope import encode_envelope
@@ -293,8 +294,39 @@ def test_set_name_changes_current_name_without_changing_member_id(
 def test_set_name_requires_resolved_member(tmp_path: Path) -> None:
     TautClient.init(db_path=tmp_path / ".taut.db")
 
-    with pytest.raises(IdentityError, match="unrecognized caller"):
+    with pytest.raises(UnrecognizedCallerError, match="unrecognized caller") as caught:
         TautClient(db_path=tmp_path / ".taut.db").set_name("VanL")
+    assert isinstance(caught.value, IdentityError)
+
+
+def test_whoami_unrecognized_caller_uses_typed_error(tmp_path: Path) -> None:
+    TautClient.init(db_path=tmp_path / ".taut.db")
+
+    with pytest.raises(UnrecognizedCallerError, match="unrecognized caller") as caught:
+        TautClient(db_path=tmp_path / ".taut.db").whoami()
+    assert isinstance(caught.value, IdentityError)
+
+
+def test_whoami_explicit_unknown_and_invalid_as_are_distinct(
+    tmp_path: Path,
+) -> None:
+    TautClient.init(db_path=tmp_path / ".taut.db")
+
+    with pytest.raises(NotFoundError, match="member not found: missing"):
+        TautClient(db_path=tmp_path / ".taut.db", as_name="missing").whoami()
+    with pytest.raises(ValueError, match="name must match"):
+        TautClient(db_path=tmp_path / ".taut.db", as_name="bad name").whoami()
+
+
+def test_identity_conflict_is_not_unrecognized_caller(tmp_path: Path) -> None:
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    TautClient(db_path=tmp_path / ".taut.db", as_name="van").join("general")
+    bob = TautClient(db_path=tmp_path / ".taut.db", as_name="bob")
+    bob.join("general")
+
+    with pytest.raises(IdentityError) as caught:
+        bob.set_name("van")
+    assert not isinstance(caught.value, UnrecognizedCallerError)
 
 
 def test_direct_message_queue_is_stable_across_name_change(tmp_path: Path) -> None:
@@ -1088,6 +1120,8 @@ def test_reply_suffix_prefers_in_window_match_over_evicted_older_message(
     reply = van.reply("general", "994321", "resolved to recent")
 
     assert reply.thread == f"general.{recent_ts}"
+
+
 # --- TUI read-only accessors (plan Task 2; [TUI-4.2] grow-the-client) ---
 
 

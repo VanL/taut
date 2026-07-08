@@ -9,7 +9,12 @@ from simplebroker.ext import IntegrityError
 import taut.identity as identity
 from taut import addressing
 from taut._constants import route_key, validate_member_name
-from taut._exceptions import IdentityError, NotFoundError, TokenError
+from taut._exceptions import (
+    IdentityError,
+    NotFoundError,
+    TokenError,
+    UnrecognizedCallerError,
+)
 from taut.state import MemberRow
 
 from ._base import _ClientBase, _ResolvedMember
@@ -20,7 +25,7 @@ class IdentityMixin(_ClientBase):
     def whoami(self, *, explain: bool = False) -> Member:
         resolved = self._resolve_member(create=False)
         if resolved.row is None:
-            raise IdentityError("unrecognized caller")
+            raise UnrecognizedCallerError("unrecognized caller")
         return self._member_from_row(
             resolved.row,
             capture=resolved.capture,

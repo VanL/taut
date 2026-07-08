@@ -448,6 +448,9 @@ In order, each behind its own spec (this project is docs-first):
   bare `taut` inside a project to open it: navigation with unread counts,
   transcript with inline foldable threads and a thread side pane, live
   presence, and the notification inbox — zero new core dependencies.
+  The first interactive run in an initialized project can ask for a
+  display name and channel; rejoin, tokens, renames, and other identity
+  management stay CLI-first.
   Non-interactive `taut` (pipes, scripts, agents) still prints help and
   exits non-zero exactly as before. One deliberate semantic to know
   (spec 04 `[TUI-10.8]`): the TUI is a watch session, so messages
