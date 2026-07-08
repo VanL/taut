@@ -83,6 +83,10 @@ running three concurrent lanes that a cold reader must keep distinct:
    then does the driver log `summoned ...`. Tests and operators may use that log
    as a readiness marker because it is downstream of the consumer-ready event,
    not because logging itself synchronizes the watcher.
+   `TautWatcher` deliberately uses the core data-version polling path rather
+   than the broker-native multi-queue activity waiter: a native waiter can miss
+   a write that lands before the first wait call is armed, while data-version
+   polling sees database-wide changes across all watched queues.
 2. **Event pump — a dedicated drain thread.** Consumes `events()` for the
    life of the child ([SUM-7.1]): session ids to the ledger, `activity` to
    member liveness via a rate-limited token-selected `whoami()` (the public

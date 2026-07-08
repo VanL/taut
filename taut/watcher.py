@@ -570,6 +570,14 @@ class TautWatcher(MultiQueueWatcher):
             if name != self._notification_queue_name
         ]
 
+    def _activity_wait_configs(self) -> list[QueueRuntimeConfig]:
+        # Taut chat watchers use PRAGMA data_version polling instead of the
+        # broker-native multi-queue activity waiter. The native waiter can miss
+        # a write that lands in the startup gap after the initial drain but
+        # before the first wait call is armed; data_version polling gives the
+        # summon readiness barrier a stable consumer boundary.
+        return []
+
     def notify_ready_after_initial_drain(self, event: threading.Event) -> None:
         """Signal ``event`` once the watcher has started and completed one drain."""
 

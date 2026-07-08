@@ -205,6 +205,13 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   consumer-ready event, then wait on that log or event before asserting live
   message delivery.
 
+- 2026-07-08: Native activity waiters need an arming-point proof before they
+  are used as a readiness boundary. If a write can land after a consumer's
+  initial drain but before the first native wait is armed, a "ready" signal can
+  still precede a missed message. Prefer database-wide data-version polling for
+  readiness-sensitive multi-queue watchers unless the native waiter proves that
+  pre-wait writes are observed.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

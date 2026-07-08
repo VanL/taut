@@ -52,7 +52,7 @@ T = TypeVar("T")
 
 
 def _cli_retry(fn: Callable[[], T], *, what: str) -> T:
-    return broker_retry(fn, what=f"summon cli {what}")
+    return broker_retry(fn, what=f"summon cli {what}", attempts=30)
 
 
 class _SummonArgumentParser(argparse.ArgumentParser):
@@ -280,8 +280,12 @@ def _resolve_session(
         return None
     queue = client.queue(_LEDGER_QUEUE_NAME)
     try:
-        ensure_summon_schema(queue)
-        row = get_session(queue, member.member_id)
+
+        def _read_row() -> SummonSessionRow | None:
+            ensure_summon_schema(queue)
+            return get_session(queue, member.member_id)
+
+        row = _cli_retry(_read_row, what="resolve session")
     except SummonStateError:
         return None
     finally:
@@ -298,7 +302,13 @@ def _confirm_released(client: TautClient, member_id: str, *, timeout: float) -> 
     deadline = time.monotonic() + timeout
     try:
         while time.monotonic() < deadline:
-            row = get_session(queue, member_id)
+            try:
+                row = get_session(queue, member_id)
+            except Exception as exc:
+                if not is_transient_broker_error(exc):
+                    raise
+                time.sleep(0.05)
+                continue
             if row is None or row["driver_pid"] is None:
                 return True
             time.sleep(0.05)
@@ -312,7 +322,17 @@ def _cmd_stop(args: argparse.Namespace) -> int:
     if client is None:
         print(f"nothing summoned as '{args.name}'{_db_suffix(args)}", file=sys.stderr)
         return 2
-    resolved = _resolve_session(client, args.name)
+    try:
+        resolved = _resolve_session(client, args.name)
+    except Exception as exc:
+        if is_transient_broker_error(exc):
+            print(
+                f"could not resolve summoned member '{args.name}'{_db_suffix(args)}: "
+                f"{exc}",
+                file=sys.stderr,
+            )
+            return 1
+        raise
     if resolved is None or driver_liveness(resolved[1]) == "dead":
         print(f"nothing summoned as '{args.name}'{_db_suffix(args)}", file=sys.stderr)
         return 2
@@ -351,7 +371,17 @@ def _cmd_status(args: argparse.Namespace) -> int:
         return 2
     if args.name is None:
         return _status_all(client, args)
-    resolved = _resolve_session(client, args.name)
+    try:
+        resolved = _resolve_session(client, args.name)
+    except Exception as exc:
+        if is_transient_broker_error(exc):
+            print(
+                f"could not resolve summoned member '{args.name}'{_db_suffix(args)}: "
+                f"{exc}",
+                file=sys.stderr,
+            )
+            return 1
+        raise
     if resolved is None or driver_liveness(resolved[1]) == "dead":
         print(f"nothing summoned as '{args.name}'{_db_suffix(args)}", file=sys.stderr)
         return 2
