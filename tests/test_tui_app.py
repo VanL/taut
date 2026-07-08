@@ -1031,9 +1031,14 @@ class TestAccessibility:
             await pilot.press(*"draft text")
             await pilot.pause()
             label = app.query_one("#composer-label", TextStatic)
+            composer = app.query_one("#composer")
+            input_box = app.query_one("#composer-input", Input)
             assert label.display  # [TUI-8.4]: label visible with content
             assert "general" in label.renderable_text
-            assert app.query_one("#composer-input", Input).value == "draft text"
+            assert input_box.value == "draft text"
+            assert composer.region.height >= (
+                label.region.height + input_box.region.height
+            )
 
         run_app(db, scenario)
 

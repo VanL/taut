@@ -93,7 +93,7 @@ class TautApp(App[int]):
     #center { width: 1fr; }
     #presence { width: 28; }
     #transcript { height: 1fr; }
-    #composer { height: 2; }
+    #composer { height: 4; }
     #composer-label { height: 1; color: $text-muted; }
     .nav-section { color: $text-muted; }
     .notice { color: $text-muted; }
