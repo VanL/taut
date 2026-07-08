@@ -824,3 +824,7 @@ These design decisions are intentionally deferred from the first TUI:
   follow-up refinement for [TUI-10.9]: unknown-identity wording, lightweight
   existing-channel chooser, typing a new channel, and accurate text-input
   shortcut hints.
+- `docs/plans/2026-07-08-tui-channel-join-create-implementation-plan.md` —
+  planned implementation of the normal post-identity join/create surface
+  ([TUI-6.4a]) and the no-joined-channel/no-channels launch states
+  ([TUI-10.2a]).
