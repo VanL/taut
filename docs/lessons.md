@@ -169,6 +169,12 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   invocations while still starting slow independent setup, such as local LLM
   image/model preparation, in parallel at the beginning.
 
+- 2026-07-08: CI needs the same fresh-process boundary as the local release
+  helper. Running summon process tests as a separate `-n 1` pytest command is
+  not enough if that command sits after broad root and extension xdist suites in
+  the same CI job; give real-process SQLite/PTY lanes their own fresh job while
+  keeping the selector and coverage intact.
+
 - 2026-07-08: Release-helper lane splits must be mirrored in reusable CI
   workflows. Splitting summon local release gates is insufficient if the GitHub
   process matrix keeps the old broad selector and drives external live harness

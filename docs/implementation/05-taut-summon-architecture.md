@@ -405,7 +405,9 @@ also set `TAUT_SUMMON_LIVE_HARNESS_STRICT=1` locally for the external-live lane
 so installed provider CLIs fail instead of skipping when detached onboarding
 would otherwise be reported as not ready. The external-provider live lane proves
 detached readiness and injection catch-up; the local LLM lane is the
-deterministic sentinel-posting proof.
+deterministic sentinel-posting proof. CI mirrors this boundary by running the
+deterministic process selector in a fresh `taut-summon process` matrix job,
+rather than after the broad root and summon unit suites in the same runner.
 
 ## Related Plans
 

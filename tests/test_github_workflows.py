@@ -19,6 +19,14 @@ def test_test_workflow_is_reusable_and_runs_release_gates() -> None:
 
     assert "workflow_call:" in workflow
     assert "pytest -v --tb=short" in workflow
+    assert "summon-process:" in workflow
+    assert "name: taut-summon process" in workflow
+    assert "max-parallel: 1" in workflow
+    process_job_position = workflow.index("summon-process:")
+    process_command_position = workflow.index(
+        'pytest extensions/taut_summon/tests -v --tb=short -m "xdist_group and not requires_live_harness and not requires_local_llm" -n 1 --dist loadgroup'
+    )
+    assert process_job_position < process_command_position
     assert (
         'pytest extensions/taut_summon/tests -v --tb=short -m "xdist_group and not requires_live_harness and not requires_local_llm" -n 1 --dist loadgroup'
         in workflow

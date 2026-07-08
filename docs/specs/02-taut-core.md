@@ -917,10 +917,13 @@ Helper obligations:
   skipping already-installed provider CLIs for onboarding.
 - In `.github/workflows/test.yml`, keep summon's deterministic process lane
   aligned with the release helper selector:
-  `xdist_group and not requires_live_harness and not requires_local_llm`. The
-  local-LLM lane runs in its own CI job with a prepared loopback Ollama model.
-  External-provider live harnesses are a strict local release gate unless CI
-  grows explicit credentials/tooling for those provider CLIs.
+  `xdist_group and not requires_live_harness and not requires_local_llm`. Run
+  that lane as a dedicated fresh matrix job, still under `-n 1 --dist
+  loadgroup`, so it is not preceded by the broad root and summon unit suites in
+  the same runner environment. The local-LLM lane runs in its own CI job with a
+  prepared loopback Ollama model. External-provider live harnesses are a strict
+  local release gate unless CI grows explicit credentials/tooling for those
+  provider CLIs.
 - After version sync, build the selected package artifacts and run
   `uv lock` in `extensions/taut_summon` when the summon package is selected.
 

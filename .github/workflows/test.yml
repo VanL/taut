@@ -64,17 +64,56 @@ jobs:
         run: |
           pytest extensions/taut_summon/tests -v --tb=short -m "not xdist_group"
 
-      - name: Run taut-summon extension process tests
-        if: runner.os != 'Windows'
-        timeout-minutes: 15
-        run: |
-          pytest extensions/taut_summon/tests -v --tb=short -m "xdist_group and not requires_live_harness and not requires_local_llm" -n 1 --dist loadgroup
-
       - name: Test CLI installation
         timeout-minutes: 2
         run: |
           taut --version
           taut-summon --help
+
+  summon-process:
+    name: taut-summon process (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        exclude:
+          - os: macos-latest
+            python-version: "3.11"
+          - os: macos-latest
+            python-version: "3.12"
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        timeout-minutes: 5
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        timeout-minutes: 5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        timeout-minutes: 5
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+
+      - name: Install dependencies
+        timeout-minutes: 10
+        run: |
+          uv pip install --system -e ".[dev]" -e "./extensions/taut_summon[dev]"
+
+      - name: Run taut-summon extension process tests
+        timeout-minutes: 15
+        run: |
+          pytest extensions/taut_summon/tests -v --tb=short -m "xdist_group and not requires_live_harness and not requires_local_llm" -n 1 --dist loadgroup
 
   lint:
     runs-on: ubuntu-latest
