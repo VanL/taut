@@ -285,6 +285,13 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   to shorten `TautWatcher` queue handles, not to broaden retries or hide the
   lane behind skips.
 
+- 2026-07-08: A provider-agnostic conformance barrier is not enough for tests
+  that send summon control traffic. Presence plus a session row proves that the
+  provider joined; it does not prove the watcher has drained or the control
+  broker is accepting PING/STATUS/STOP. Scripted harnesses with a received-log
+  should reuse the full driver readiness barrier before the first control
+  round-trip, while live harnesses need an equivalent provider-specific proof.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

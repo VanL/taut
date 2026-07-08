@@ -182,11 +182,16 @@ class ConformanceHarness:
     def wait_ready(self, driver: DriverProcess) -> Any:
         """Block until the member exists, is present, and has a ledger row.
 
-        Provider-agnostic readiness: it reads presence and the session
-        ledger only, never the received-log, so a live-model harness can use
-        the same barrier.
+        The scripted conformance harness has a received-log, so it can use the
+        same full readiness barrier as the deep driver tests: provider start,
+        bootstrap, watcher initial drain, and a control PING. Future live
+        harness factories without a received-log keep the weaker portable
+        presence/session barrier and should add their own provider-specific
+        readiness proof before they send control traffic.
         """
 
+        if self.has_received_log:
+            driver.wait_for_start()
         wait_until(
             lambda: self._ready_member(driver.name) is not None,
             message=f"summoned member '{driver.name}'; stderr: {driver.stderr_tail()}",
