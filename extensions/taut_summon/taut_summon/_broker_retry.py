@@ -48,6 +48,7 @@ _LOCKED_MARKERS = (
     "database busy",
 )
 _MALFORMED_MARKER = "malformed"
+_CONNECTION_FAILURE_MARKER = "failed to get database connection:"
 
 
 def is_transient_broker_error(exc: Exception) -> bool:
@@ -58,10 +59,13 @@ def is_transient_broker_error(exc: Exception) -> bool:
     and the *false* ``database disk image is malformed`` page read
     (``DatabaseError`` — SQLITE_CORRUPT, which does **not** subclass
     ``OperationalError``, so simplebroker's own watcher-retry predicate
-    would miss it). Every other ``OperationalError``/``DatabaseError``,
-    and all ``IntegrityError``/``DataError``, surface immediately — a
-    generic operational failure or genuine corruption must not be masked.
-    An explicit ``retryable`` attribute (non-SQLite backends set it) wins.
+    would miss it). SimpleBroker can wrap the same connection-open blips in
+    ``RuntimeError("Failed to get database connection: ...")``; only that
+    wrapper prefix inherits the same narrow markers. Every other
+    ``OperationalError``/``DatabaseError``/``RuntimeError``, and all
+    ``IntegrityError``/``DataError``, surface immediately — a generic
+    operational failure or genuine corruption must not be masked. An explicit
+    ``retryable`` attribute (non-SQLite backends set it) wins.
     """
 
     retryable = getattr(exc, "retryable", None)
@@ -72,6 +76,10 @@ def is_transient_broker_error(exc: Exception) -> bool:
         return any(marker in message for marker in _LOCKED_MARKERS)
     if isinstance(exc, DatabaseError):
         return _MALFORMED_MARKER in message
+    if isinstance(exc, RuntimeError) and _CONNECTION_FAILURE_MARKER in message:
+        return _MALFORMED_MARKER in message or any(
+            marker in message for marker in _LOCKED_MARKERS
+        )
     return False
 
 

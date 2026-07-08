@@ -190,6 +190,13 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   xdist lane and pin test-only SQLite maintenance settings instead of treating
   load-sensitive timeouts as expected slowness.
 
+- 2026-07-08: Retry policies must cover the public wrapper shape of a transient,
+  not only the low-level exception. SimpleBroker can turn a transient SQLite
+  malformed-page read during connection setup into
+  `RuntimeError("Failed to get database connection: ...")`; a narrowly marked
+  wrapper retry is safer than broad RuntimeError retrying and prevents real
+  process gates from failing on a known WAL checkpoint blip.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

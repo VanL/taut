@@ -231,8 +231,11 @@ taut-summon policy (`is_transient_broker_error` + `broker_retry`) sits on top
 in `extensions/taut_summon/taut_summon/_broker_retry.py` — exactly as
 `simplebroker/helpers.py` layers its own policy over the same engine. The
 predicate is narrowed to the two known transients by message marker and
-honors the `retryable` attribute, so genuine corruption still surfaces and
-STATUS reports `control_health: degraded` rather than dying silent.
+honors the `retryable` attribute; it also recognizes SimpleBroker's
+connection-open `RuntimeError("Failed to get database connection: ...")`
+wrapper only when the wrapped message carries one of those same markers. Thus
+genuine corruption still surfaces and STATUS reports `control_health:
+degraded` rather than dying silent.
 
 ### SimpleBroker facade boundary
 

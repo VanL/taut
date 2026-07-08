@@ -102,6 +102,14 @@ def _make_loop(rate_limit: int) -> ControlLoop:
 def test_transient_predicate_retries_wal_blips_not_logic_faults() -> None:
     assert is_transient_broker_error(OperationalError("database is locked"))
     assert is_transient_broker_error(DatabaseError("database disk image is malformed"))
+    assert is_transient_broker_error(
+        RuntimeError(
+            "Failed to get database connection: database disk image is malformed"
+        )
+    )
+    assert is_transient_broker_error(
+        RuntimeError("Failed to get database connection: database is locked")
+    )
     # Genuine faults must surface immediately, and retryable=False is honored.
     assert not is_transient_broker_error(IntegrityError("UNIQUE constraint failed"))
     stop = OperationalError("interrupted")
@@ -115,6 +123,10 @@ def test_transient_predicate_is_narrow_not_whole_class() -> None:
     # NOT be retried (that would mask genuine corruption / real faults).
     assert not is_transient_broker_error(OperationalError("no such column: x"))
     assert not is_transient_broker_error(DatabaseError("disk I/O error"))
+    assert not is_transient_broker_error(
+        RuntimeError("Failed to get database connection: disk I/O error")
+    )
+    assert not is_transient_broker_error(RuntimeError("database is locked"))
     # An explicit retryable=True wins regardless of class/message.
     forced = DatabaseError("anything")
     forced.retryable = True  # type: ignore[attr-defined]
