@@ -19,11 +19,20 @@ from typing import Any, cast
 
 import pytest
 import taut_summon._control as control_module
-from simplebroker.ext import DatabaseError, IntegrityError, OperationalError
+from simplebroker import Queue
+from simplebroker.ext import (
+    BrokerError,
+    DatabaseError,
+    IntegrityError,
+    OperationalError,
+)
 from taut_summon._broker_retry import broker_retry, is_transient_broker_error
 from taut_summon._control import (
+    _CONTROL_DRAIN_RECOVERABLE_FAILURES_BEFORE_DEGRADED,
+    _RATE_AUDIT_RECOVERABLE_FAILURES_BEFORE_DEGRADED,
     ControlClient,
     ControlLoop,
+    _BrokerHandles,
     control_in_queue_name,
     control_out_queue_name,
     encode_control_command,
@@ -79,6 +88,28 @@ class _FakeControlQueues:
         )
 
 
+class _CloseableQueue:
+    def __init__(self) -> None:
+        self.closed = False
+        self.deleted = False
+
+    def close(self) -> None:
+        self.closed = True
+
+    def delete(self) -> None:
+        self.deleted = True
+
+
+def _fake_broker_handles() -> _BrokerHandles:
+    return _BrokerHandles(
+        client=cast(Any, object()),
+        ctl_in=cast(Queue, _CloseableQueue()),
+        ctl_out=cast(Queue, _CloseableQueue()),
+        ledger=cast(Queue, _CloseableQueue()),
+        thread_queues={"general": cast(Queue, _CloseableQueue())},
+    )
+
+
 def _make_loop(rate_limit: int) -> ControlLoop:
     # A control loop with no db handles (never .run()/._open()'d): enough to
     # exercise the pure in-memory rate-backstop and health logic. The audit
@@ -97,6 +128,10 @@ def _make_loop(rate_limit: int) -> ControlLoop:
         rate_limit=rate_limit,
         ledger_queue_name="taut_meta",
     )
+
+
+def _reopen_ok(_where: str, _exc: BrokerError) -> bool:
+    return True
 
 
 def test_transient_predicate_retries_wal_blips_not_logic_faults() -> None:
@@ -245,6 +280,124 @@ def test_status_reports_degraded_after_post_budget_failure() -> None:
     degraded = loop._status_snapshot().as_fields()
     assert degraded["control_health"] == "degraded"
     assert "disk I/O error" in degraded["health_detail"]
+
+
+def test_single_transient_rate_audit_failure_does_not_degrade_status() -> None:
+    # The rate audit is a safety backstop, not the STOP/STATUS control drain.
+    # One exhausted transient SQLite read pass under process churn should skip
+    # that audit and retry on the next cadence rather than permanently poison
+    # control health.
+    loop = _make_loop(rate_limit=60)
+    loop._reopen_broker_handles = _reopen_ok  # type: ignore[assignment,method-assign]
+
+    loop._mark_rate_audit_failure(DatabaseError("database disk image is malformed"))
+
+    healthy = loop._status_snapshot().as_fields()
+    assert healthy["control_health"] == "ok"
+    assert "health_detail" not in healthy
+
+
+def test_repeated_transient_rate_audit_failures_degrade_status() -> None:
+    loop = _make_loop(rate_limit=60)
+    loop._reopen_broker_handles = _reopen_ok  # type: ignore[assignment,method-assign]
+
+    for _ in range(_RATE_AUDIT_RECOVERABLE_FAILURES_BEFORE_DEGRADED):
+        loop._mark_rate_audit_failure(DatabaseError("database disk image is malformed"))
+
+    degraded = loop._status_snapshot().as_fields()
+    assert degraded["control_health"] == "degraded"
+    assert "consecutive recoverable broker failures" in degraded["health_detail"]
+
+
+def test_non_transient_rate_audit_failure_degrades_status_immediately() -> None:
+    loop = _make_loop(rate_limit=60)
+
+    loop._mark_rate_audit_failure(DatabaseError("disk I/O error"))
+
+    degraded = loop._status_snapshot().as_fields()
+    assert degraded["control_health"] == "degraded"
+    assert "disk I/O error" in degraded["health_detail"]
+
+
+def test_single_recoverable_control_drain_failure_reopens_without_degrading() -> None:
+    loop = _make_loop(rate_limit=60)
+    reopened: list[tuple[str, str]] = []
+
+    def reopen(where: str, exc: BrokerError) -> bool:
+        reopened.append((where, str(exc)))
+        return True
+
+    loop._reopen_broker_handles = reopen  # type: ignore[method-assign]
+
+    loop._mark_control_drain_failure(OperationalError("disk I/O error"))
+
+    healthy = loop._status_snapshot().as_fields()
+    assert healthy["control_health"] == "ok"
+    assert reopened == [("control drain", "disk I/O error")]
+
+
+def test_repeated_recoverable_control_drain_failures_degrade_status() -> None:
+    loop = _make_loop(rate_limit=60)
+
+    loop._reopen_broker_handles = _reopen_ok  # type: ignore[assignment,method-assign]
+
+    for _ in range(_CONTROL_DRAIN_RECOVERABLE_FAILURES_BEFORE_DEGRADED):
+        loop._mark_control_drain_failure(OperationalError("disk I/O error"))
+
+    degraded = loop._status_snapshot().as_fields()
+    assert degraded["control_health"] == "degraded"
+    assert "consecutive recoverable broker failures" in degraded["health_detail"]
+
+
+def test_failed_reopen_preserves_existing_control_handles() -> None:
+    loop = _make_loop(rate_limit=60)
+    old_handles = _fake_broker_handles()
+    old_ctl_in = cast(_CloseableQueue, old_handles.ctl_in)
+    loop._install_broker_handles(old_handles)
+
+    def fail_make() -> _BrokerHandles:
+        raise RuntimeError("schema unavailable")
+
+    loop._make_broker_handles = fail_make  # type: ignore[method-assign]
+
+    assert (
+        loop._reopen_broker_handles("control drain", OperationalError("disk I/O error"))
+        is False
+    )
+
+    assert loop._ctl_in is old_handles.ctl_in
+    assert loop._ctl_out is old_handles.ctl_out
+    assert loop._ledger is old_handles.ledger
+    assert loop._thread_queues == old_handles.thread_queues
+    assert old_ctl_in.closed is False
+    assert loop._unhealthy is not None
+    assert "schema unavailable" in loop._unhealthy
+
+
+def test_reopen_preserves_rate_audit_cursor_and_closes_old_handles() -> None:
+    loop = _make_loop(rate_limit=60)
+    old_handles = _fake_broker_handles()
+    new_handles = _fake_broker_handles()
+    old_ctl_in = cast(_CloseableQueue, old_handles.ctl_in)
+    old_ledger = cast(_CloseableQueue, old_handles.ledger)
+    loop._install_broker_handles(old_handles)
+    loop._audit_cursor["general"] = 123
+
+    def make_handles() -> _BrokerHandles:
+        return new_handles
+
+    loop._make_broker_handles = make_handles  # type: ignore[method-assign]
+
+    assert (
+        loop._reopen_broker_handles("rate audit", OperationalError("disk I/O error"))
+        is True
+    )
+
+    assert loop._ctl_in is new_handles.ctl_in
+    assert loop._audit_cursor["general"] == 123
+    assert old_ctl_in.closed is True
+    assert old_ledger.closed is True
+    assert old_ctl_in.deleted is False
 
 
 def test_queue_names_derive_from_member_id() -> None:

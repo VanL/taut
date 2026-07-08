@@ -77,6 +77,12 @@ def _status_field(status_text: str, key: str) -> str | None:
     return None
 
 
+def _file_tail(path: Path, limit: int = 2_000) -> str:
+    if not path.exists():
+        return ""
+    return path.read_text(encoding="utf-8", errors="replace")[-limit:]
+
+
 def _fatal_readiness_reason(status_text: str) -> str | None:
     if "awaiting_query=" in status_text:
         return (
@@ -88,7 +94,9 @@ def _fatal_readiness_reason(status_text: str) -> str | None:
         return f"driver status is unavailable: {error}"
     control_health = _status_field(status_text, "control_health")
     if control_health != "ok":
-        return f"driver control health is {control_health or 'missing'}"
+        detail = _status_field(status_text, "health_detail")
+        suffix = f": {detail}" if detail else ""
+        return f"driver control health is {control_health or 'missing'}{suffix}"
     return None
 
 
@@ -267,6 +275,9 @@ def test_live_pty_harness_reaches_ready_and_accepts_injection(
         encoding="utf-8",
     )
     env = _base_env()
+    env["TAUT_SUMMON_LOG"] = "DEBUG"
+    stderr_path = tmp_path / f"{provider}.err"
+    stderr_file = open(stderr_path, "w", encoding="utf-8")
     proc = subprocess.Popen(
         [
             sys.executable,
@@ -286,7 +297,7 @@ def test_live_pty_harness_reaches_ready_and_accepts_injection(
         cwd=tmp_path,
         env=env,
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
+        stderr=stderr_file,
         text=True,
     )
     try:
@@ -326,7 +337,8 @@ def test_live_pty_harness_reaches_ready_and_accepts_injection(
                 fatal_reason = _fatal_readiness_reason(status_out)
                 if fatal_reason is not None:
                     pytest.fail(
-                        f"{provider} did not reach a ready prompt: {fatal_reason}"
+                        f"{provider} did not reach a ready prompt: {fatal_reason}; "
+                        f"stderr: {_file_tail(stderr_path)}"
                     )
                 ready_status = status_out
                 break
@@ -360,7 +372,10 @@ def test_live_pty_harness_reaches_ready_and_accepts_injection(
             if rc == 0:
                 fatal_reason = _fatal_readiness_reason(status_out)
                 if fatal_reason is not None:
-                    pytest.fail(f"{provider} lost ready control status: {fatal_reason}")
+                    pytest.fail(
+                        f"{provider} lost ready control status: {fatal_reason}; "
+                        f"stderr: {_file_tail(stderr_path)}"
+                    )
                 if "lag=#general:0" in status_out:
                     break
             if status_err:
@@ -383,3 +398,4 @@ def test_live_pty_harness_reaches_ready_and_accepts_injection(
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait(timeout=10.0)
+        stderr_file.close()

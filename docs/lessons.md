@@ -212,6 +212,20 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   readiness-sensitive multi-queue watchers unless the native waiter proves that
   pre-wait writes are observed.
 
+- 2026-07-08: Health flags should distinguish non-recoverable control-path
+  failure from recoverable long-lived-handle failure and adjacent safety-audit
+  failure. A real STOP/STATUS drain fault can make the system uncontrollable
+  and should degrade immediately; a recoverable broker-handle read blip under
+  heavy SQLite process churn should close/reopen the handles, let clients retry,
+  and degrade only if it repeats. Otherwise a live process gets permanently
+  marked unhealthy for one skipped pass.
+
+- 2026-07-08: Read-before-insert uniqueness checks need an idempotent collision
+  path. Deterministic identity claims can be recorded by two processes at the
+  same time; if the insert loses the race, reread the unique key and accept it
+  only when it belongs to the same owner. Treating the primary-key collision as
+  fatal turns normal concurrent recognition into driver crashes.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

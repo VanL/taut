@@ -8,6 +8,7 @@ from simplebroker import BrokerTarget, Queue
 from simplebroker.ext import IntegrityError
 
 import taut.identity as identity
+import taut.state._sql as sql_state
 from taut._constants import META_QUEUE_NAME
 from taut.client import TautClient
 from taut.state import (
@@ -17,6 +18,7 @@ from taut.state import (
     SqlSidecarTautState,
     dialect_for_taut_target,
 )
+from taut.state._types import IdentityClaimRow
 
 pytestmark = pytest.mark.shared
 
@@ -105,6 +107,72 @@ def test_update_member_persona_preserves_unknown_meta_keys(
         assert cleared["meta"]["custom_flag"] == "kept"
 
         assert state.update_member_persona("m_missing", "ghost") is None
+    finally:
+        queue.close()
+
+
+def test_add_identity_claim_insert_race_is_idempotent(
+    taut_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    TautClient.init()
+    client = TautClient()
+    queue = Queue(META_QUEUE_NAME, db_path=client.target, config=client.config)
+    state = SqlSidecarTautState(
+        queue,
+        dialect_for_taut_target(client.target),
+    )
+    claim_hash = "ic_" + "r" * 52
+    original_get_identity_claim = sql_state.get_identity_claim
+    stale_reads = 1
+    try:
+        state.ensure_schema()
+        member = state.insert_member(
+            member_id=identity.random_member_id(),
+            display_name="RaceHolder",
+            kind="agent",
+            uid=1000,
+            host_id="host:test",
+            host_label="test-host",
+            anchor_pid=None,
+            anchor_start_time=None,
+            fingerprint=None,
+            token="contract-token-race-holder",
+            meta={},
+            created_ts=10,
+        )
+        state.add_identity_claim(
+            claim_hash=claim_hash,
+            member_id=member["member_id"],
+            claim_kind="agent_process",
+            host_id="host:test",
+            host_label="test-host",
+            evidence={"claim_kind": "agent_process", "host_id": "host:test"},
+            seen_ts=20,
+        )
+
+        def racing_get_identity_claim(
+            claim_queue: Queue, wanted: str
+        ) -> IdentityClaimRow | None:
+            nonlocal stale_reads
+            if wanted == claim_hash and stale_reads:
+                stale_reads -= 1
+                return None
+            return original_get_identity_claim(claim_queue, wanted)
+
+        monkeypatch.setattr(sql_state, "get_identity_claim", racing_get_identity_claim)
+
+        raced = state.add_identity_claim(
+            claim_hash=claim_hash,
+            member_id=member["member_id"],
+            claim_kind="agent_process",
+            host_id="host:test",
+            host_label="test-host",
+            evidence={"claim_kind": "agent_process", "host_id": "host:test"},
+            seen_ts=30,
+        )
+
+        assert raced["member_id"] == member["member_id"]
+        assert raced["last_seen_ts"] == 30
     finally:
         queue.close()
 

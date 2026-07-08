@@ -229,11 +229,13 @@ write.
 The rate backstop ([SUM-10]) is a circuit breaker, not a content policy: a
 driver-local audit cursor per thread counts `from_id == self` messages on the
 control cadence; a soft breach injects a nudge and logs, a hard breach
-interrupts the harness and reports on `ctrl_out` — never posting to chat. A
+interrupts the harness and surfaces through STATUS plus logs — never posting
+to chat and never leaving an unconsumed control reply. A
 documented limitation: coverage is the startup thread set (late-joined
 threads are not audited), because a per-tick `list_threads()` re-records the
 member's continuity claim and races the watcher on a UNIQUE constraint; the
-correct fix needs idempotent claim recording in frozen core.
+state layer now treats same-member claim insert races as idempotent, but
+late-join audit expansion remains deliberately out of scope for this release.
 
 ### The vendored retry: layering, not reaching ([TAUT-3.4])
 
@@ -251,8 +253,15 @@ predicate is narrowed to the two known transients by message marker and
 honors the `retryable` attribute; it also recognizes SimpleBroker's
 connection-open `RuntimeError("Failed to get database connection: ...")`
 wrapper only when the wrapped message carries one of those same markers. Thus
-genuine corruption still surfaces and STATUS reports `control_health:
-degraded` rather than dying silent.
+genuine corruption still surfaces rather than dying silent. Control-drain
+failures are split by recovery boundary: non-recoverable faults mark
+`control_health: degraded` immediately because STOP/STATUS/PING depend on that
+path; recoverable long-lived-handle faults close and reopen the driver's broker
+handles so queued requests can be consumed on the next cadence, and degrade
+only after repeated consecutive failures. Rate-audit failures use the same
+recoverable boundary. The audit is a backstop, so a single skipped pass under
+heavy local process churn is logged and retried without making a live driver
+look control-dead.
 
 `taut-summon stop/status` use that same policy while resolving the current
 member name and while writing/reading control replies. If the bounded budget is

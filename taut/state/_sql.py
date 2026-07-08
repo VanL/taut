@@ -673,44 +673,62 @@ def add_identity_claim(
     if existing is not None:
         if existing["member_id"] != member_id:
             raise IntegrityError("identity claim belongs to another member")
+        return _refresh_identity_claim(queue, claim_hash, seen_ts)
+    try:
         with queue.sidecar(transaction=True) as session:
             session.run(
                 """
-                UPDATE taut_identity_claims
-                SET last_seen_ts = CASE
-                    WHEN last_seen_ts < ? THEN ? ELSE last_seen_ts END
-                WHERE claim_hash = ?
+                INSERT INTO taut_identity_claims (
+                    claim_hash, member_id, claim_kind, host_id, host_label,
+                    evidence_json, first_seen_ts, last_seen_ts
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (seen_ts, seen_ts, claim_hash),
+                (
+                    claim_hash,
+                    member_id,
+                    claim_kind,
+                    host_id,
+                    host_label,
+                    _json_dumps(evidence),
+                    seen_ts,
+                    seen_ts,
+                ),
             )
-        refreshed = get_identity_claim(queue, claim_hash)
-        if refreshed is None:
-            raise RuntimeError("identity claim disappeared during update")
-        return refreshed
-    with queue.sidecar(transaction=True) as session:
-        session.run(
-            """
-            INSERT INTO taut_identity_claims (
-                claim_hash, member_id, claim_kind, host_id, host_label,
-                evidence_json, first_seen_ts, last_seen_ts
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                claim_hash,
-                member_id,
-                claim_kind,
-                host_id,
-                host_label,
-                _json_dumps(evidence),
-                seen_ts,
-                seen_ts,
-            ),
-        )
+    except IntegrityError as exc:
+        # Another process can insert the same deterministic claim between
+        # this function's read and insert. Treat that race as idempotent only
+        # when the row now belongs to the same member; ownership collisions
+        # still surface as integrity errors.
+        raced = get_identity_claim(queue, claim_hash)
+        if raced is None:
+            raise
+        if raced["member_id"] != member_id:
+            raise IntegrityError("identity claim belongs to another member") from exc
+        return _refresh_identity_claim(queue, claim_hash, seen_ts)
     claim = get_identity_claim(queue, claim_hash)
     if claim is None:
         raise RuntimeError("inserted identity claim could not be read back")
     return claim
+
+
+def _refresh_identity_claim(
+    queue: Queue, claim_hash: str, seen_ts: int
+) -> IdentityClaimRow:
+    with queue.sidecar(transaction=True) as session:
+        session.run(
+            """
+            UPDATE taut_identity_claims
+            SET last_seen_ts = CASE
+                WHEN last_seen_ts < ? THEN ? ELSE last_seen_ts END
+            WHERE claim_hash = ?
+            """,
+            (seen_ts, seen_ts, claim_hash),
+        )
+    refreshed = get_identity_claim(queue, claim_hash)
+    if refreshed is None:
+        raise RuntimeError("identity claim disappeared during update")
+    return refreshed
 
 
 def get_identity_claim(queue: Queue, claim_hash: str) -> IdentityClaimRow | None:

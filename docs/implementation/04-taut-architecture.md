@@ -185,6 +185,10 @@ to the same runtime.
 - Identity timestamps: broker timestamps are generated lazily, only once a
   command is known to create or update member state. Guest read-only commands
   must not move the broker timestamp high-water mark.
+- Identity claims: claim recording is idempotent under the read/insert race.
+  If another process inserts the same deterministic claim before this process
+  does, core rereads the row, refreshes `last_seen_ts` for the same member, and
+  still rejects claims owned by a different member.
 - Watcher refresh: explicit watch-thread validation is strict at construction.
   During refresh, missing filtered threads are convergence events and are
   dropped rather than treated as fatal errors. The interval refresh must remain

@@ -476,6 +476,19 @@ collide with snapshot keys (`driver`, `rate_limited`, `rate_breaches`,
 `health_detail`) or envelope keys (`command`, `status`, `request_id`).
 A collision is a programming error and is tested.
 
+`control_health` is the health of the control plane, not a catch-all
+latency signal. A non-recoverable control-drain broker fault degrades it
+immediately because STOP/STATUS/PING may be unreliable. A recoverable
+control-drain fault caused by a long-lived broker handle is handled by closing
+and reopening the driver's broker handles; STATUS/PING clients retry with the
+same request id, and STATUS reports `control_health=degraded` only if the
+recoverable drain failure repeats across consecutive cadences. The rate
+backstop audit shares the same thread but is a safety audit; non-recoverable
+audit faults degrade immediately, while recoverable audit faults also reopen
+the broker handles and must repeat before they poison `control_health`.
+Skipped passes stay visible in logs without permanently marking a live driver
+unhealthy for one local SQLite/process-churn blip.
+
 **Attach / detach.** Whether a human is bridged is decided by a durable
 `wired` flag, not by screen-readiness heuristics. First-ever summon of a
 not-wired member, when summon's stdin is a tty and not nested inside a

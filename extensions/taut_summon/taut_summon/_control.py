@@ -44,7 +44,7 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 from simplebroker import Queue
-from simplebroker.ext import BrokerError
+from simplebroker.ext import BrokerError, OperationalError
 
 from taut import TautClient, TautError
 from taut.envelope import decode_envelope
@@ -66,6 +66,8 @@ _STOP_ACK_TIMEOUT_SECONDS = 60.0
 _CONTROL_REPLY_RETRY_ATTEMPTS = 10
 _CONTROL_REQUEST_RETRY_INTERVAL_SECONDS = 5.0
 _IDEMPOTENT_RETRY_COMMANDS = frozenset({CONTROL_STATUS, CONTROL_PING})
+_RATE_AUDIT_RECOVERABLE_FAILURES_BEFORE_DEGRADED = 3
+_CONTROL_DRAIN_RECOVERABLE_FAILURES_BEFORE_DEGRADED = 3
 _STATUS_RESERVED_KEYS = frozenset(
     {
         "command",
@@ -82,6 +84,13 @@ _STATUS_RESERVED_KEYS = frozenset(
         "health_detail",
     }
 )
+
+
+def _is_recoverable_control_broker_error(exc: Exception) -> bool:
+    if is_transient_broker_error(exc):
+        return True
+    message = str(exc).lower()
+    return isinstance(exc, OperationalError) and "disk i/o error" in message
 
 
 # --- queue derivation (beside taut.addressing's shapes) -----------------------
@@ -201,6 +210,15 @@ class StatusSnapshot:
         return fields
 
 
+@dataclass(frozen=True)
+class _BrokerHandles:
+    client: TautClient
+    ctl_in: Queue
+    ctl_out: Queue
+    ledger: Queue
+    thread_queues: dict[str, Queue]
+
+
 class ControlLoop:
     """Driver-side control consumer + rate backstop, on one dedicated thread."""
 
@@ -250,6 +268,8 @@ class ControlLoop:
         self._nudged = False
         self._hard_breached = False
         self._hard_breach_count = 0
+        self._control_drain_recoverable_failures = 0
+        self._rate_audit_recoverable_failures = 0
         # All db handles are opened ON THIS THREAD in _open and reused for
         # the loop's life — no per-tick Queue/connection churn (which, under
         # WAL, provokes transient malformed-page reads across the process).
@@ -316,13 +336,18 @@ class ControlLoop:
         try:
             self._drain_commands()
         except BrokerError as exc:
-            self._mark_unhealthy("control drain", exc)
+            self._mark_control_drain_failure(exc)
+            return
+        else:
+            self._control_drain_recoverable_failures = 0
         if self._pending_stop_seen:
             return
         try:
             self._audit_pass()
         except BrokerError as exc:
-            self._mark_unhealthy("rate audit", exc)
+            self._mark_rate_audit_failure(exc)
+        else:
+            self._rate_audit_recoverable_failures = 0
 
     def _mark_unhealthy(self, where: str, exc: Exception) -> None:
         detail = f"{where}: {type(exc).__name__}: {exc}"
@@ -333,32 +358,150 @@ class ControlLoop:
             detail,
         )
 
+    def _mark_control_drain_failure(self, exc: BrokerError) -> None:
+        if not _is_recoverable_control_broker_error(exc):
+            self._mark_unhealthy("control drain", exc)
+            return
+
+        self._control_drain_recoverable_failures += 1
+        reopened = self._reopen_broker_handles("control drain", exc)
+        if (
+            self._control_drain_recoverable_failures
+            >= _CONTROL_DRAIN_RECOVERABLE_FAILURES_BEFORE_DEGRADED
+        ):
+            self._mark_unhealthy(
+                "control drain "
+                f"({self._control_drain_recoverable_failures} consecutive "
+                "recoverable broker failures)",
+                exc,
+            )
+            return
+
+        logger.warning(
+            "control drain skipped after recoverable broker error "
+            "(%d/%d, reopened=%s); STATUS/PING clients will retry: %s",
+            self._control_drain_recoverable_failures,
+            _CONTROL_DRAIN_RECOVERABLE_FAILURES_BEFORE_DEGRADED,
+            reopened,
+            exc,
+        )
+
+    def _mark_rate_audit_failure(self, exc: BrokerError) -> None:
+        if not _is_recoverable_control_broker_error(exc):
+            self._mark_unhealthy("rate audit", exc)
+            return
+
+        self._rate_audit_recoverable_failures += 1
+        self._reopen_broker_handles("rate audit", exc)
+        if (
+            self._rate_audit_recoverable_failures
+            >= _RATE_AUDIT_RECOVERABLE_FAILURES_BEFORE_DEGRADED
+        ):
+            self._mark_unhealthy(
+                "rate audit "
+                f"({self._rate_audit_recoverable_failures} consecutive "
+                "recoverable broker failures)",
+                exc,
+            )
+            return
+
+        logger.warning(
+            "rate audit skipped after recoverable broker errors survived the retry "
+            "budget (%d/%d); STATUS remains healthy unless this repeats: %s",
+            self._rate_audit_recoverable_failures,
+            _RATE_AUDIT_RECOVERABLE_FAILURES_BEFORE_DEGRADED,
+            exc,
+        )
+
     # --- setup / teardown -------------------------------------------------
 
     def _open(self) -> None:
-        self._client = TautClient(db_path=self._db_path, token=self._token)
-        self._ctl_in = self._client.queue(control_in_queue_name(self._member_id))
-        self._ctl_out = self._client.queue(control_out_queue_name(self._member_id))
-        self._ledger = self._client.queue(self._ledger_queue_name)
-        for thread in self._threads:
-            self._thread_queues[thread] = self._client.queue(thread)
+        self._install_broker_handles(self._make_broker_handles())
         self._init_audit_cursor()
 
     def _close(self) -> None:
+        self._close_handles(reap_control_queues=True)
+
+    def _reopen_broker_handles(self, where: str, exc: BrokerError) -> bool:
+        try:
+            handles = self._make_broker_handles()
+        except Exception as reopen_exc:  # noqa: BLE001 - STATUS should expose it
+            logger.exception(
+                "control broker handle reopen failed after %s error: %s",
+                where,
+                exc,
+            )
+            self._mark_unhealthy(f"{where} reopen", reopen_exc)
+            return False
+        old_ctl_in = self._ctl_in
+        old_ctl_out = self._ctl_out
+        old_ledger = self._ledger
+        old_thread_queues = dict(self._thread_queues)
+        self._install_broker_handles(handles)
+        self._close_queue_handles(
+            ctl_in=old_ctl_in,
+            ctl_out=old_ctl_out,
+            ledger=old_ledger,
+            thread_queues=old_thread_queues,
+            reap_control_queues=False,
+        )
+        return True
+
+    def _make_broker_handles(self) -> _BrokerHandles:
+        client = TautClient(db_path=self._db_path, token=self._token)
+        return _BrokerHandles(
+            client=client,
+            ctl_in=client.queue(control_in_queue_name(self._member_id)),
+            ctl_out=client.queue(control_out_queue_name(self._member_id)),
+            ledger=client.queue(self._ledger_queue_name),
+            thread_queues={thread: client.queue(thread) for thread in self._threads},
+        )
+
+    def _install_broker_handles(self, handles: _BrokerHandles) -> None:
+        self._client = handles.client
+        self._ctl_in = handles.ctl_in
+        self._ctl_out = handles.ctl_out
+        self._ledger = handles.ledger
+        self._thread_queues = handles.thread_queues
+
+    def _close_handles(self, *, reap_control_queues: bool) -> None:
+        self._close_queue_handles(
+            ctl_in=self._ctl_in,
+            ctl_out=self._ctl_out,
+            ledger=self._ledger,
+            thread_queues=self._thread_queues,
+            reap_control_queues=reap_control_queues,
+        )
+        self._client = None
+        self._ctl_in = None
+        self._ctl_out = None
+        self._ledger = None
+        self._thread_queues = {}
+
+    def _close_queue_handles(
+        self,
+        *,
+        ctl_in: Queue | None,
+        ctl_out: Queue | None,
+        ledger: Queue | None,
+        thread_queues: dict[str, Queue],
+        reap_control_queues: bool,
+    ) -> None:
         # Reap the driver's own control queues on the way out: hard-delete
         # anything left in ctl_in (a command that arrived during shutdown)
         # and the shared rsp queue (unused in the per-request-reply design,
         # but swept defensively) so no unclaimed control rows outlive the
         # driver in the member's durable sys.* namespace. Chat/ledger queues
         # are peek-mode and never deleted.
-        for reap in (self._ctl_in, self._ctl_out):
-            if reap is not None:
-                try:
-                    reap.delete()
-                except Exception:  # pragma: no cover - defensive
-                    logger.debug("control queue reap failed", exc_info=True)
-        queues: list[Queue | None] = [self._ctl_in, self._ctl_out, self._ledger]
-        queues.extend(self._thread_queues.values())
+        if reap_control_queues:
+            for reap in (ctl_in, ctl_out):
+                if reap is not None:
+                    try:
+                        reap.delete()
+                    except Exception:  # pragma: no cover - defensive
+                        logger.debug("control queue reap failed", exc_info=True)
+        queues: list[Queue | None] = [ctl_in, ctl_out, ledger]
+        queues.extend(thread_queues.values())
         for queue in queues:
             if queue is not None:
                 try:

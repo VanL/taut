@@ -252,7 +252,11 @@ one member id is the durable identity, each normalized current name or alias
 routes to at most one member, and each identity claim hash maps to at most one
 member. Member-creation paths must treat uniqueness violations as lost races,
 not ordinary user-facing errors: re-resolve and use the member the other
-process created when the conflict represents the same claim.
+process created when the conflict represents the same claim. Claim recording
+has the same race boundary: if the deterministic `claim_hash` appears between
+the pre-insert read and the insert, reread it; refresh `last_seen_ts` and
+return it when it belongs to the same member, but keep treating another member
+as an ownership collision.
 
 Schema evolution is additive within the current schema generation when possible
 (new tables, new nullable columns). Breaking changes bump `schema_version` and
