@@ -160,9 +160,7 @@ def test_broker_retry_does_not_retry_logic_faults() -> None:
 def test_control_client_retries_status_with_same_reply_route(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        control_module, "_CONTROL_REQUEST_RETRY_INTERVAL_SECONDS", 0.01
-    )
+    monkeypatch.setattr(control_module, "_CONTROL_REQUEST_RETRY_INTERVAL_SECONDS", 0.01)
     queues = _FakeControlQueues(reply_after_writes=2)
     client = ControlClient(cast(Any, queues.queue), "m_abc")
 
@@ -183,9 +181,7 @@ def test_control_client_retries_status_with_same_reply_route(
 def test_control_client_does_not_retry_stop_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        control_module, "_CONTROL_REQUEST_RETRY_INTERVAL_SECONDS", 0.01
-    )
+    monkeypatch.setattr(control_module, "_CONTROL_REQUEST_RETRY_INTERVAL_SECONDS", 0.01)
     queues = _FakeControlQueues(reply_after_writes=None)
     client = ControlClient(cast(Any, queues.queue), "m_abc")
 

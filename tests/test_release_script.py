@@ -532,9 +532,12 @@ def test_local_llm_model_probe_treats_startup_disconnect_as_not_ready(
 
     monkeypatch.setattr(release, "_read_json_url", disconnected)
 
-    assert release._endpoint_has_model(  # noqa: SLF001
-        "http://127.0.0.1:9999/v1", "local-test:latest"
-    ) is False
+    assert (
+        release._endpoint_has_model(  # noqa: SLF001
+            "http://127.0.0.1:9999/v1", "local-test:latest"
+        )
+        is False
+    )
 
 
 def test_prechecks_start_local_llm_before_other_release_gates(
