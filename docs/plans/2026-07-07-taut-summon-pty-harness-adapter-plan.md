@@ -1389,3 +1389,12 @@ _(appended as slices land)_
   XTVERSION and treats kitty/cursor mode sets as no-reply sequences. Control
   reply writes use a stronger transient-broker retry budget so loaded xdist
   runs do not silently lose STATUS replies.
+- 2026-07-08 — CI stabilization: GitHub runners exposed that detached/no-tty
+  PTY startup could leave the terminal-query responder behind `rejoin` and
+  thread bootstrap work, so a fake TUI timed out before orientation. The driver
+  now starts the pump immediately after spawn for detached/no-attach paths while
+  keeping the human attach path bridge-owned until detach. STOP/SIGINT also
+  interrupts the current handle immediately and treats orientation interruption
+  during shutdown as clean exit. Targeted proof:
+  `uv run pytest extensions/taut_summon/tests/test_driver.py::test_detached_pty_pump_starts_before_bootstrap extensions/taut_summon/tests/test_driver.py::test_pty_detached_orientation_is_injected_before_chat extensions/taut_summon/tests/test_driver.py::test_pty_status_reports_awaiting_query extensions/taut_summon/tests/test_driver.py::test_stop_from_another_terminal -n 1 --dist loadgroup -q`
+  → 4 passed.

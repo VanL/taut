@@ -544,12 +544,20 @@ its first action and checks `_master_closed` before its first read. Any
 span and re-raises, covering detached and attached pre-reader failures
 without leaking a master fd or zombie.
 
-Startup order per generation is fixed:
-`spawn → rejoin → ensure_threads → [first run only: attach → detach →
-set_wired(True)] → pump.start → settle → inject orientation → watcher`.
-`rejoin` anchors the member to the child before attach, so the member is
-present during onboarding; the watcher starts only after orientation is
-injected.
+Startup order per generation is fixed around PTY master ownership. In
+detached/no-tty/no-attach paths, the driver starts the pump immediately after
+spawn, before `rejoin` and `ensure_threads`, so the terminal-query responder is
+live while bootstrap work runs:
+`spawn → pump.start → rejoin → ensure_threads → settle → inject orientation →
+watcher`. In a real first-run attach path, the human bridge owns the PTY master
+until detach, so the pump starts only after the bridge hands ownership back:
+`spawn → rejoin → ensure_threads → attach → detach → set_wired(True) →
+pump.start → settle → inject orientation → watcher`. `--attach` follows the
+attach path. `rejoin` still anchors the member to the child before onboarding
+or detached operation; the watcher starts only after orientation is injected.
+The early-pump detached path is required because TUIs may emit DSR, XTVERSION,
+or kitty queries immediately after spawn and time out while the driver is doing
+SQLite or thread bootstrap work.
 
 **Ears and orientation.** In detached driver mode, `inject(text)` writes
 to the master under an inject lock. Payloads are canonicalized and
@@ -574,7 +582,10 @@ diagnostics, query response, and attach bridging only. Terminal mode is
 unsupported for PTY.
 
 Interrupt writes raw `\x03` for the harness key reader; shutdown escalates
-with SIGTERM/SIGKILL per the fd ownership rule. Session continuity follows
+with SIGTERM/SIGKILL per the fd ownership rule. STOP and SIGINT interrupt the
+current handle immediately, including during pre-watch settle/orientation. If
+shutdown races an orientation `inject()` and the adapter reports interruption,
+that is a clean stop rather than a startup failure. Session continuity follows
 [SUM-7.3]: PTY has no structured provider resume, so a fresh interactive
 session plus cursor replay recovers the conversation.
 

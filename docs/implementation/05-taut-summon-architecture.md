@@ -103,7 +103,9 @@ be mechanically inert.
 
 Shutdown ordering (shared by SIGINT and control STOP): stop injection →
 adapter interrupt (unblocks any in-flight `inject()`) → pump drains to `exit`
-or a bounded timeout → ownership-checked ledger release → exit 0.
+or a bounded timeout → ownership-checked ledger release → exit 0. The signal
+and control paths interrupt the current adapter handle immediately, before
+waiting for the main loop to reach a later shutdown checkpoint.
 
 ### PTY adapter: capable terminal, not screen parser ([SUM-7.4])
 
@@ -124,21 +126,31 @@ fabricated reply and instead surface `awaiting_query` through
 `AdapterHandle.status_fields()`. The control loop merges those fields into
 STATUS after checking reserved keys.
 
+The pump start point depends on who owns the PTY master. In detached/no-tty
+operation there is no human bridge reading the master, so the pump starts
+immediately after spawn, before `rejoin` and thread bootstrap. That keeps the
+terminal-query responder live while SQLite and queue setup run. In the first-run
+attach path, the attach bridge owns the master until the detach chord; only then
+does the driver start the pump. Keeping those paths distinct preserves the
+single-reader invariant while avoiding early TUI query timeouts.
+
 Injection is keyboard input, so it is sanitized before framing: CR/CRLF
 canonicalize to LF, C0 controls except LF are stripped, `DEL` and `ESC` are
 removed, and tab becomes a space. If the harness enabled bracketed paste, LF is
 preserved inside paste framing; otherwise LF collapses to spaces so one chat
 message is one submitted turn. Orientation is the first injected turn for PTY
 (`orientation_via_inject=True`), after the pump starts and settle observes the
-reader's `last_output_ts`, but before the watcher starts. Structured adapters
-keep the spawn-time system-prompt path.
+reader's `last_output_ts`, but before the watcher starts. If STOP or SIGINT
+races this pre-watch orientation step, the driver interrupts the handle and
+treats an interrupted `inject()` as a clean stop. Structured adapters keep the
+spawn-time system-prompt path.
 
 The fd lifecycle is the load-bearing boundary. `PtyHandle.close()` always
 signals and reaps the child, but closes the master only if no reader has
 started. Once the pump owns the master, the reader closes it on EOF/EIO. The
-driver guards the whole `spawn → pump.start` span with `handle.close()` on
-exception, so a failed rejoin or thread join cannot leak a master fd or leave a
-zombie.
+driver closes the handle and joins any already-started pump on exceptions
+through bootstrap and the pump hand-off, so a failed rejoin or thread join
+cannot leak a master fd or leave a zombie.
 
 ### Attach/detach and `wired` ([SUM-7.4], [SUM-8])
 

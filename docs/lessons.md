@@ -176,6 +176,14 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   retry with the same reply route so one transient lost reply does not turn a
   healthy driver into a false timeout.
 
+- 2026-07-08: Detached PTY startup cannot leave the terminal-query responder
+  behind bootstrap work. Interactive CLIs may emit DSR, XTVERSION, or kitty
+  queries immediately after spawn; if no human attach bridge owns the master,
+  start the pump first, then do rejoin and thread setup. Keep the human attach
+  path as the single-reader exception. STOP/SIGINT paths that race this
+  pre-watch phase must interrupt the current adapter immediately and classify an
+  orientation write interrupted by shutdown as clean exit.
+
 - 2026-07-08: Long-lived process supervisors must propagate owned-thread death
   as a first-class state transition. A child process can be healthy while its
   watcher thread has exhausted broker retries or exited; if the supervisor waits

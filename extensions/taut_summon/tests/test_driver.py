@@ -28,7 +28,7 @@ import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from conftest import (
@@ -48,6 +48,7 @@ from conftest import (
 )
 from simplebroker import Queue
 from taut_summon._driver import SummonDriver, format_injection
+from taut_summon.cli import RunRequest
 
 from taut.client import Message, Notification, TautClient
 from taut.identity import capture_process
@@ -78,8 +79,8 @@ def _fake_pty_env(
         "TAUT_SUMMON_PTY_ROWS": "24",
         "TAUT_SUMMON_PTY_COLS": "80",
         "TAUT_SUMMON_PTY_STALL_S": str(stall_s),
-        "TAUT_SUMMON_PTY_QUIET_MS": "50",
-        "TAUT_SUMMON_PTY_MAX_SETTLE_S": "0.5",
+        "TAUT_SUMMON_PTY_QUIET_MS": "250",
+        "TAUT_SUMMON_PTY_MAX_SETTLE_S": "2.0",
         "TAUT_FAKE_TUI_CONFIG": json.dumps(config),
         "TAUT_FAKE_TUI_LOG": str(log),
     }
@@ -107,6 +108,37 @@ def _read_pty_until(fd: int, needle: bytes, *, timeout: float = 5.0) -> bytes:
 class _ExplodingWatcher:
     def run(self) -> None:
         raise RuntimeError("watcher failed")
+
+
+class _AttachCapableAdapter:
+    supports_attach = True
+
+
+def _run_request(*, attach: bool = False, detach: bool = False) -> RunRequest:
+    return RunRequest(
+        name="ptybot",
+        threads=("general",),
+        provider="pty",
+        terminal=False,
+        persona=None,
+        system_prompt_file=None,
+        rate_limit=None,
+        db_path=None,
+        attach=attach,
+        detach=detach,
+    )
+
+
+def test_detached_pty_pump_starts_before_bootstrap() -> None:
+    driver = object.__new__(SummonDriver)
+    adapter = cast(Any, _AttachCapableAdapter())
+
+    assert driver._should_start_pump_before_bootstrap(
+        _run_request(detach=True), adapter
+    )
+    assert not driver._should_start_pump_before_bootstrap(
+        _run_request(attach=True), adapter
+    )
 
 
 def test_watcher_failure_wakes_driver_for_resume() -> None:

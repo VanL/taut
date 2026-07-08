@@ -263,6 +263,12 @@ class SummonDriver:
 
     def request_stop(self) -> None:
         self._shutdown.set()
+        handle = self._handle
+        if handle is not None:
+            try:
+                handle.interrupt()
+            except AdapterError:
+                logger.debug("adapter interrupt during stop failed", exc_info=True)
         self._wake.set()
 
     # --- bootstrap ([SUM-4]) ----------------------------------------------
@@ -545,7 +551,15 @@ class SummonDriver:
             self._harness_dead.clear()
             self._halt_ack.clear()
             self._exit_code = None
+            pump: threading.Thread | None = None
             try:
+                if self._should_start_pump_before_bootstrap(request, adapter):
+                    pump = self._start_pump(
+                        handle,
+                        mouth_client,
+                        boot.member_id,
+                        terminal_thread,
+                    )
                 self._rejoin(handle, boot)
                 self._ensure_threads(watch_client, boot.member_id)
                 if adapter.supports_attach:
@@ -569,23 +583,32 @@ class SummonDriver:
                         wired = True
                     if not wired and hasattr(handle, "mark_awaiting_onboarding"):
                         handle.mark_awaiting_onboarding()
-                pump = threading.Thread(
-                    target=self._pump,
-                    args=(handle, mouth_client, boot.member_id, terminal_thread),
-                    daemon=True,
-                    name="taut-summon-pump",
-                )
-                pump.start()
+                if pump is None:
+                    pump = self._start_pump(
+                        handle,
+                        mouth_client,
+                        boot.member_id,
+                        terminal_thread,
+                    )
             except Exception:
                 handle.close()
+                if pump is not None:
+                    pump.join(timeout=10.0)
                 raise
+            assert pump is not None
+            if self._shutdown.is_set():
+                return self._shutdown_current_generation(handle, pump, boot)
             if first_generation:
                 first_generation = False
             if adapter.orientation_via_inject:
                 try:
                     self._settle_for_orientation(handle)
+                    if self._shutdown.is_set():
+                        return self._shutdown_current_generation(handle, pump, boot)
                     handle.inject(system_prompt)
                 except AdapterError as exc:
+                    if self._shutdown.is_set():
+                        return self._shutdown_current_generation(handle, pump, boot)
                     handle.close()
                     pump.join(timeout=10.0)
                     raise DriverError(f"cannot orient the harness: {exc}") from exc
@@ -642,11 +665,7 @@ class SummonDriver:
             watcher.stop(join=True)
 
             if self._shutdown.is_set():
-                pump.join(timeout=5.0)
-                # Release + control-thread STOP ack are ordered by _run's
-                # finally ([SUM-9]); nothing to release here.
-                logger.info("dismissed '%s' cleanly", boot.member_name)
-                return 0
+                return self._shutdown_current_generation(handle, pump, boot)
 
             # Harness death ([SUM-11]): one resume attempt with the stored
             # session id; a failed spawn falls back to a fresh session
@@ -854,6 +873,51 @@ class SummonDriver:
         wait_until_quiet = getattr(handle, "wait_until_quiet", None)
         if callable(wait_until_quiet):
             wait_until_quiet()
+
+    def _should_start_pump_before_bootstrap(
+        self, request: RunRequest, adapter: ProviderAdapter
+    ) -> bool:
+        """Return whether no attach path can consume early provider terminal IO."""
+
+        if not adapter.supports_attach:
+            return False
+        if request.attach:
+            return False
+        if request.detach:
+            return True
+        if os.environ.get("TAUT_HOST_TUI") == "1":
+            return True
+        return not sys.stdin.isatty()
+
+    def _start_pump(
+        self,
+        handle: AdapterHandle,
+        mouth_client: TautClient,
+        member_id: str,
+        terminal_thread: str | None,
+    ) -> threading.Thread:
+        pump = threading.Thread(
+            target=self._pump,
+            args=(handle, mouth_client, member_id, terminal_thread),
+            daemon=True,
+            name="taut-summon-pump",
+        )
+        pump.start()
+        return pump
+
+    def _shutdown_current_generation(
+        self,
+        handle: AdapterHandle,
+        pump: threading.Thread,
+        boot: _BootstrapResult,
+    ) -> int:
+        handle.interrupt()
+        handle.close()
+        pump.join(timeout=5.0)
+        # Release + control-thread STOP ack are ordered by _run's finally
+        # ([SUM-9]); nothing to release here.
+        logger.info("dismissed '%s' cleanly", boot.member_name)
+        return 0
 
     def _attach_if_needed(
         self,
