@@ -47,6 +47,7 @@ from simplebroker.ext import (
 )
 
 from taut import addressing
+from taut._broker_retry import is_transient_broker_error
 from taut._constants import (
     QUEUE_PRIORITY_NORMAL,
     WATCH_MEMBERSHIP_REFRESH_SECONDS,
@@ -63,16 +64,6 @@ logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
 
-_SQLITE_WATCHER_TRANSIENT_MARKERS = (
-    "database is locked",
-    "database table is locked",
-    "database schema is locked",
-    "database is busy",
-    "database busy",
-    "database disk image is malformed",
-    "malformed",
-    "disk i/o error",
-)
 _WATCHER_DB_RETRY_ATTEMPTS = 30
 _WATCHER_DB_RETRY_DELAY_SECONDS = 0.05
 _WATCHER_DB_RETRY_MAX_DELAY_SECONDS = 0.5
@@ -129,12 +120,7 @@ def _detach_queue_stop_event(queue: Queue) -> None:
 
 
 def _is_transient_watcher_db_error(exc: Exception) -> bool:
-    message = str(exc).lower()
-    if isinstance(exc, ValueError):
-        return "invalid literal for int()" in message
-    if isinstance(exc, (BrokerError, RuntimeError)):
-        return any(marker in message for marker in _SQLITE_WATCHER_TRANSIENT_MARKERS)
-    return False
+    return is_transient_broker_error(exc)
 
 
 class MultiQueueWatcher(BaseWatcher):

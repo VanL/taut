@@ -78,6 +78,8 @@ Quick pointers to the key guidance documents in this repository.
 | Path | Purpose |
 |------|---------|
 | `taut/_constants.py` | Taut constants, config translation, name validation, and identity name pools |
+| `taut/_broker_retry.py` | Core bounded retry classifier for known transient SimpleBroker/SQLite open, page-read, and timestamp-parse faults |
+| `taut/_queue.py` | Taut-owned `RetryingQueue` wrapper used by `TautClient` for public queue and sidecar operations |
 | `taut/addressing.py` | Channel, sub-thread, DM, mention, and notification addressing helpers |
 | `taut/_scripts.py` | Importable developer-script helper logic, currently for `bin/pytest-pg` |
 | `taut/envelope.py` | Message envelope encode/decode and foreign-message fallback |

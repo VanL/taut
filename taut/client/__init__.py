@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING
 
 from simplebroker import (
     BrokerTarget,
-    Queue,
     target_for_directory,
 )
 
@@ -25,6 +24,7 @@ from taut._constants import (
     load_config,
 )
 from taut._exceptions import TautError
+from taut._queue import RetryingQueue
 from taut.state import SqlSidecarTautState, dialect_for_taut_target
 
 from ._base import (
@@ -101,7 +101,7 @@ class TautClient(
                 raise TautError(f"cannot create {db_file}: {parent} is not a directory")
             if not os.access(parent, os.W_OK | os.X_OK):
                 raise TautError(f"cannot create {db_file}: {parent} is not writable")
-        queue = Queue(META_QUEUE_NAME, db_path=target, config=config)
+        queue = RetryingQueue(META_QUEUE_NAME, db_path=target, config=config)
         try:
             SqlSidecarTautState(
                 queue,

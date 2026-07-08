@@ -20,6 +20,7 @@ from taut._constants import (
     load_config,
 )
 from taut._exceptions import IdentityError, NotInitializedError, TautError
+from taut._queue import RetryingQueue
 from taut.state import (
     ChannelRenameRow,
     MemberRow,
@@ -127,7 +128,7 @@ class _ClientBase(ABC):
     def queue(self, name: str, *, persistent: bool = False) -> Queue:
         """Return a queue bound to this client's resolved target."""
 
-        return Queue(
+        return RetryingQueue(
             name, db_path=self.target, persistent=persistent, config=self.config
         )
 

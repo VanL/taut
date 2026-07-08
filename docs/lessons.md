@@ -376,6 +376,11 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   wrong target still fails after the budget, but a transient header-page misread
   does not kill a healthy summon restart.
 
+- 2026-07-08: Retry public broker operations, not whole CLI commands. A
+  whole-command retry for `taut say` can duplicate a message if the insert
+  succeeded and a later cursor or notification step blipped. Put the bounded
+  transient retry at the queue/sidecar operation boundary instead.
+
 - 2026-07-08: PTY fake harnesses must model terminal input buffering while
   answering startup queries. Detached summon can inject orientation while a TUI
   is still probing cursor size or OSC colors; a real terminal does not discard

@@ -278,10 +278,12 @@ own watcher-retry predicate misses it too. Taut's facades-only rule forbids
 importing `simplebroker._retry`, so the generic engine is **vendored
 byte-identical** into `extensions/taut_summon/taut_summon/_retry.py` (its
 `__version__` documents the vendored version for re-vendoring), and the
-taut-summon policy (`is_transient_broker_error` + `broker_retry`) sits on top
-in `extensions/taut_summon/taut_summon/_broker_retry.py` — exactly as
+taut-summon retry wrapper sits on top in
+`extensions/taut_summon/taut_summon/_broker_retry.py` — exactly as
 `simplebroker/helpers.py` layers its own policy over the same engine. The
-predicate is narrowed to known SQLite transient markers (lock/busy,
+shared predicate lives in `taut/_broker_retry.py` so core `TautClient`,
+`TautWatcher`, and summon control/state paths classify the same public-wrapper
+failure shapes. It is narrowed to known SQLite transient markers (lock/busy,
 malformed-page false reads, and the SQLite `OperationalError("disk I/O error")`
 shape seen under WAL churn) and honors the `retryable` attribute; it also
 recognizes SimpleBroker's connection-open
@@ -305,6 +307,14 @@ around queue pending probes, message fetches, cursor advancement, and membership
 reads. The retry is local to those public broker operations and still lets
 non-transient errors escape; it exists to keep a false WAL-page read from
 collapsing a live summon provider into the harness-resume path.
+
+Core `TautClient` queue construction uses `taut/_queue.py`'s `RetryingQueue`
+wrapper for the same reason: a peer `taut say` subprocess is part of the
+summon process contract, and it must not fail merely because a driver/control
+process briefly exposed a retryable SQLite/WAL connection-open or timestamp
+parse transient. The wrapper retries public queue methods and sidecar SQL
+statements, not whole CLI commands, so it does not duplicate a message after a
+successful insert.
 
 `taut-summon stop/status` use that same policy while resolving the current
 member name and while writing/reading control replies. If the bounded budget is

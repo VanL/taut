@@ -273,6 +273,11 @@ an accident. Two consequences are binding:
   `simplebroker.ext` exports). No underscore-module imports, and no SQL
   against SimpleBroker's own tables — taut's SQL touches `taut_*` tables
   only.
+- Core `TautClient` queue access goes through Taut's public-API
+  `RetryingQueue` wrapper. The wrapper does not change storage shape or reach
+  into SimpleBroker internals; it applies a bounded retry policy around known
+  transient SQLite/WAL open, page-read, and timestamp-parse shapes on queue
+  operations and sidecar SQL statements. Non-transient errors still surface.
 - Taut must tolerate foreign writes: bodies that are not taut envelopes
   render as raw text ([TAUT-6.3]), and queues with no `taut_threads` row
   are invisible to `taut list` but must not break any command.
@@ -680,8 +685,9 @@ implied by docs or output.
   thread, and never a cursor pointing past messages that were skipped.
   Sidecar writes are idempotent upserts so retrying the command
   converges.
-- Locked/busy database: SimpleBroker's busy-timeout and retry discipline
-  apply; surfaced errors name the database path.
+- Locked/busy or transient WAL page-read database: SimpleBroker's busy-timeout
+  and Taut's bounded public-wrapper retry discipline apply; surfaced errors
+  name the database path when the budget is exhausted.
 - Identity claim collision at rejoin: refused with the conflicting member named
   ([IAN-3.4]).
 - Member whose process claim went stale: existing membership, history, direct

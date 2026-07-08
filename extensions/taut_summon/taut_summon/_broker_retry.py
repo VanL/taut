@@ -23,8 +23,7 @@ import logging
 from collections.abc import Callable
 from typing import TypeVar
 
-from simplebroker.ext import DatabaseError, OperationalError
-
+from taut._broker_retry import is_transient_broker_error
 from taut_summon._retry import execute_retry, expo, stop_after_attempt
 
 logger = logging.getLogger("taut_summon.broker")
@@ -34,67 +33,6 @@ T = TypeVar("T")
 _BROKER_RETRIES = 30
 _BROKER_RETRY_DELAY = 0.05
 _BROKER_RETRY_MAX_DELAY = 0.5
-
-# The narrow WAL-under-concurrency transients we ride out, matched by message
-# text so a genuinely broken DB is NOT masked. Lock/busy markers mirror
-# simplebroker's own ``_LOCKED_ERROR_MARKERS``; the malformed marker is the
-# *false* SQLITE_CORRUPT read a fresh reader can see while a writer checkpoints
-# (which clears on retry, unlike true corruption; a persistently malformed DB
-# still exhausts the bounded budget and re-raises). SQLite can also surface
-# the same transient churn as OperationalError("disk I/O error") or a wrapped
-# connection-open header check ("database magic string mismatch") while a fresh
-# read/write handle is opened under process load; these are bounded-retried only
-# for the shapes SQLite/SimpleBroker use for those failures.
-_LOCKED_MARKERS = (
-    "database is locked",
-    "database table is locked",
-    "database schema is locked",
-    "database is busy",
-    "database busy",
-)
-_MALFORMED_MARKER = "malformed"
-_DISK_IO_MARKER = "disk i/o error"
-_MAGIC_MISMATCH_MARKER = "database magic string mismatch"
-_CONNECTION_FAILURE_MARKER = "failed to get database connection:"
-
-
-def is_transient_broker_error(exc: Exception) -> bool:
-    """Whether a broker op failure is a retryable WAL-under-concurrency blip.
-
-    Narrow by design. Only specific transients qualify — lock/busy contention
-    (``OperationalError`` whose message is a known lock marker), SQLite's
-    transient ``OperationalError("disk I/O error")`` under heavy WAL churn,
-    and the *false* ``database disk image is malformed`` page read
-    (``DatabaseError`` — SQLITE_CORRUPT, which does **not** subclass
-    ``OperationalError``, so simplebroker's own watcher-retry predicate
-    would miss it). SimpleBroker can wrap the same connection-open blips in
-    ``RuntimeError("Failed to get database connection: ...")``; only that
-    wrapper prefix inherits the same narrow markers, including a transient
-    header-page misread reported as ``database magic string mismatch``. Every other
-    ``OperationalError``/``DatabaseError``/``RuntimeError``, and all
-    ``IntegrityError``/``DataError``, surface immediately — a generic
-    operational failure or genuine corruption must not be masked. An explicit
-    ``retryable`` attribute (non-SQLite backends set it) wins.
-    """
-
-    retryable = getattr(exc, "retryable", None)
-    if retryable is not None:
-        return bool(retryable)
-    message = str(exc).lower()
-    if isinstance(exc, OperationalError):
-        return _DISK_IO_MARKER in message or any(
-            marker in message for marker in _LOCKED_MARKERS
-        )
-    if isinstance(exc, DatabaseError):
-        return _MALFORMED_MARKER in message
-    if isinstance(exc, RuntimeError) and _CONNECTION_FAILURE_MARKER in message:
-        return (
-            _MALFORMED_MARKER in message
-            or _DISK_IO_MARKER in message
-            or _MAGIC_MISMATCH_MARKER in message
-            or any(marker in message for marker in _LOCKED_MARKERS)
-        )
-    return False
 
 
 def broker_retry(
