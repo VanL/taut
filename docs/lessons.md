@@ -356,6 +356,12 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   make a committed summon session row look absent in CI and hides the behavior
   the test is meant to prove.
 
+- 2026-07-08: Once a real-process startup barrier has read a summon session
+  row, reuse that row for the bootstrap control PING instead of doing a second
+  sidecar read. The PING is proving the control queue, not re-proving session
+  persistence; a redundant read can become the flaky surface under CI WAL
+  churn.
+
 - 2026-07-08: A PTY fake harness should write its `start` event to the same
   received-log readiness channel as scripted harnesses. A side log can prove
   PTY-specific bytes after the fact, but it cannot drive the shared

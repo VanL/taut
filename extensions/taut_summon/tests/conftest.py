@@ -236,40 +236,46 @@ def _ctl_out_messages(db: Path, member_id: str) -> list[dict[str, Any]]:
 
 
 def _control_request(
-    db: Path, member_id: str, command: str, *, timeout: float = 15.0
+    db: Path,
+    member_id: str,
+    command: str,
+    *,
+    timeout: float = 15.0,
+    session_row: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Send one control request from a client and await the correlated reply."""
 
     from taut_summon._control import ControlClient
 
     client = TautClient(db_path=db)
-    session_queue = Queue("taut_summon_test_reader", db_path=str(db))
-    row: dict[str, Any] | None = None
+    row = session_row
+    if row is None:
+        session_queue = Queue("taut_summon_test_reader", db_path=str(db))
 
-    def found_session_row() -> bool:
-        nonlocal row
-        row = _session_row_from_queue(session_queue, member_id)
-        return row is not None
+        def found_session_row() -> bool:
+            nonlocal row
+            row = _session_row_from_queue(session_queue, member_id)
+            return row is not None
 
-    try:
-        wait_until(
-            found_session_row,
-            timeout=timeout,
-            message="control session row",
-        )
-        assert row is not None
-        control = ControlClient(
-            client.queue,
-            member_id,
-            driver_pid=row["driver_pid"],
-            driver_start_time=row["driver_start_time"],
-        )
         try:
-            return control.request(command, timeout=timeout)
+            wait_until(
+                found_session_row,
+                timeout=timeout,
+                message="control session row",
+            )
         finally:
-            control.close()
+            session_queue.close()
+    assert row is not None
+    control = ControlClient(
+        client.queue,
+        member_id,
+        driver_pid=row["driver_pid"],
+        driver_start_time=row["driver_start_time"],
+    )
+    try:
+        return control.request(command, timeout=timeout)
     finally:
-        session_queue.close()
+        control.close()
 
 
 def _await_control_request(
@@ -280,6 +286,7 @@ def _await_control_request(
     timeout: float = _DEADLINE,
     request_timeout: float = 5.0,
     driver: Any | None = None,
+    session_row: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Wait until a control command completes a request/reply round trip."""
 
@@ -287,7 +294,13 @@ def _await_control_request(
     last_detail = "no attempts"
     while time.monotonic() < deadline:
         try:
-            reply = _control_request(db, member_id, command, timeout=request_timeout)
+            reply = _control_request(
+                db,
+                member_id,
+                command,
+                timeout=request_timeout,
+                session_row=session_row,
+            )
         except Exception as exc:  # noqa: BLE001 - diagnostic for CI contention
             last_detail = f"{type(exc).__name__}: {exc}"
         else:
@@ -420,7 +433,7 @@ class DriverProcess:
             message=f"summoned member; stderr: {self.stderr_tail()}",
         )
         assert member is not None
-        _wait_for_session_row(
+        session_row = _wait_for_session_row(
             self.db,
             member.member_id,
             timeout=timeout,
@@ -438,6 +451,7 @@ class DriverProcess:
             timeout=timeout,
             request_timeout=_CONTROL_BOOTSTRAP_REQUEST_TIMEOUT,
             driver=self,
+            session_row=session_row,
         )
 
     def wait_for_message(
