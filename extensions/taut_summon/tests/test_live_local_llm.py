@@ -404,8 +404,8 @@ def test_local_llm_pty_harness_posts_sentinel(
                 "TAUT_SUMMON_PTY_ARGV": json.dumps(
                     [sys.executable, str(LOCAL_LLM_TUI)]
                 ),
-                "TAUT_SUMMON_PTY_QUIET_MS": "50",
-                "TAUT_SUMMON_PTY_MAX_SETTLE_S": "0.5",
+                "TAUT_SUMMON_PTY_QUIET_MS": "250",
+                "TAUT_SUMMON_PTY_MAX_SETTLE_S": "5.0",
                 "TAUT_SUMMON_LOCAL_LLM_ENDPOINT": proxy.endpoint,
                 "TAUT_SUMMON_LOCAL_LLM_MODEL": model,
                 "TAUT_SUMMON_LOCAL_LLM_TARGET": "general",

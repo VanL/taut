@@ -194,6 +194,31 @@ def test_fake_tui_preserves_input_that_arrives_before_query_reply() -> None:
     )
 
 
+def test_wait_until_quiet_waits_for_first_output() -> None:
+    handle = object.__new__(PtyHandle)
+    handle._reader_started_event = threading.Event()
+    handle._reader_started_event.set()
+    handle._seen_output = threading.Event()
+    handle._last_output_ts = time.monotonic() - 10.0
+    handle._quiet_s = 0.01
+    handle._max_settle_s = 1.0
+    returned = threading.Event()
+
+    def wait_and_mark_returned() -> None:
+        handle.wait_until_quiet()
+        returned.set()
+
+    thread = threading.Thread(target=wait_and_mark_returned, daemon=True)
+    thread.start()
+    time.sleep(0.1)
+    assert not returned.is_set()
+
+    handle._last_output_ts = time.monotonic() - 10.0
+    handle._seen_output.set()
+    thread.join(timeout=1.0)
+    assert returned.is_set()
+
+
 def test_pty_responder_answers_startup_queries_and_clamps_size(
     tmp_path: Path,
 ) -> None:

@@ -396,6 +396,12 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   on a storage-side fault. Only pump exit and injection failure belong to the
   harness-resume path.
 
+- 2026-07-08: PTY "quiet" before first output is not readiness. A cold-start
+  PTY child can take long enough on CI that injecting orientation during
+  pre-output silence races process startup; wait for first observed output or a
+  bounded settle deadline before orientation, then keep the local-LLM settle
+  window generous enough to cover image/model cold start side effects.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

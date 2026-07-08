@@ -77,6 +77,11 @@ running three concurrent lanes that a cold reader must keep distinct:
    at-least-once to the process boundary. Adapter death is fatal-and-resume:
    the handler halts injection (blocking until the driver stops the watcher)
    so [TAUT-8.4]'s three-strikes poison advance can never skip live chat.
+   PTY orientation settling waits for the reader to observe at least one byte
+   from the child before treating a quiet interval as settled; if a harness
+   never prints a prompt, the bounded settle deadline remains the fallback.
+   This keeps slow-starting PTY children from losing orientation during process
+   startup while preserving a hard upper bound.
    The driver's readiness boundary is the watcher's initial drain, not thread
    construction: `TautWatcher.notify_ready_after_initial_drain()` signals after
    the polling strategy is started and the first drain has completed, and only

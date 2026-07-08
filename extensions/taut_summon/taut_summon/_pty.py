@@ -160,6 +160,7 @@ class PtyHandle:
         self._exit_emitted = False
         self._bracketed_paste = False
         self._last_output_ts = time.monotonic()
+        self._seen_output = threading.Event()
         self._awaiting_query: str | None = None
         self._awaiting_onboarding = False
         self._pending_events: queue.SimpleQueue[AdapterEvent] = queue.SimpleQueue()
@@ -191,7 +192,10 @@ class PtyHandle:
         self._reader_started_event.wait(timeout=self._max_settle_s)
         deadline = time.monotonic() + self._max_settle_s
         while time.monotonic() < deadline:
-            if time.monotonic() - self._last_output_ts >= self._quiet_s:
+            if (
+                self._seen_output.is_set()
+                and time.monotonic() - self._last_output_ts >= self._quiet_s
+            ):
                 return
             time.sleep(0.05)
 
@@ -343,6 +347,7 @@ class PtyHandle:
                 if not data:
                     break
                 self._last_output_ts = time.monotonic()
+                self._seen_output.set()
                 replies = self._responder.feed(data)
                 self._bracketed_paste = self._responder.bracketed_paste
                 for reply in replies:

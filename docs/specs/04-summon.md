@@ -560,6 +560,11 @@ or detached operation; the watcher starts only after orientation is injected.
 The early-pump detached path is required because TUIs may emit DSR, XTVERSION,
 or kitty queries immediately after spawn and time out while the driver is doing
 SQLite or thread bootstrap work.
+Settling must not treat pre-output silence as readiness: when a PTY reader has
+started but has not yet observed any child output, the driver waits for first
+output or the bounded settle deadline before injecting orientation. This keeps
+cold-start PTY children from losing orientation during process startup while
+still bounding harnesses that never print a prompt.
 
 **Ears and orientation.** In detached driver mode, `inject(text)` writes
 to the master under an inject lock. Payloads are canonicalized and
