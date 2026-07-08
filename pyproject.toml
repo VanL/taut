@@ -45,6 +45,7 @@ dev = [
     "pytest-xdist>=3.0",
     "ruff>=0.1.0",
     "simplebroker-pg>=3.0.0",
+    "taut-summon>=0.1.0",
     "types-psutil>=6.0",
 ]
 
@@ -59,6 +60,7 @@ Issues = "https://github.com/VanL/taut/issues"
 
 [tool.uv.sources]
 taut-pg = { path = "./extensions/taut_pg", editable = true }
+taut-summon = { path = "./extensions/taut_summon", editable = true }
 
 [tool.hatch.build]
 include = [

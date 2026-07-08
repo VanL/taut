@@ -7,6 +7,7 @@ Spec references:
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import sys
 from collections.abc import Sequence
@@ -25,7 +26,20 @@ from taut.client import InitResult, Member, Message, Notification, TautClient, T
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = build_parser().parse_args(_hoist_global_options(list(argv or sys.argv[1:])))
+    raw = list(argv or sys.argv[1:])
+    command, boundary = _find_first_command(raw)
+    if command in _DELEGATED_VERBS:
+        # Delegation verbs ([TAUT-8.1] D4) hand their whole tail to the
+        # taut-summon extension verbatim ([SUM-3]) — including tokens
+        # that spell core globals, so the split happens on the RAW argv
+        # before any hoisting; only the pre-verb head is core's. (The
+        # tail is also kept away from argparse because REMAINDER
+        # mis-parses a leading option-like token.)
+        head = _hoist_global_options([*raw[:boundary], command])
+        args = build_parser().parse_args(head)
+        args.rest = raw[boundary + 1 :]
+    else:
+        args = build_parser().parse_args(_hoist_global_options(raw))
     if not hasattr(args, "func"):
         build_parser().print_help()
         return 1
@@ -131,6 +145,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("name_or_alias", nargs="?")
     p.add_argument("--token", dest="rejoin_token")
     p.set_defaults(func=_cmd_rejoin)
+
+    # Delegation verbs ([TAUT-8.1] D4, spec 04 [SUM-3]): the tail is
+    # captured whole and handed to the taut-summon extension. `main()`
+    # overrides the REMAINDER capture with a verbatim split (see there).
+    p = sub.add_parser("summon")
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p.set_defaults(func=_cmd_summon)
+
+    p = sub.add_parser("dismiss")
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p.set_defaults(func=_cmd_dismiss)
 
     return parser
 
@@ -252,6 +277,42 @@ def _cmd_set_name(args: argparse.Namespace) -> int:
     member = _client(args).set_name(args.name)
     _emit_members(args, [member])
     return 0
+
+
+# summon/dismiss ([TAUT-8.1] D4): thin hand-off to the taut-summon
+# extension — zero summon logic, zero new core dependency. The verbs map
+# argv verbatim onto the extension's entry points ([SUM-3]):
+# `taut summon X ...` == `taut-summon run X ...`; `taut dismiss X` ==
+# `taut-summon stop X`.
+_DELEGATED_VERBS = {"summon": "run", "dismiss": "stop"}
+
+
+def _cmd_summon(args: argparse.Namespace) -> int:
+    return _delegate_to_summon("summon", args)
+
+
+def _cmd_dismiss(args: argparse.Namespace) -> int:
+    return _delegate_to_summon("dismiss", args)
+
+
+def _delegate_to_summon(command: str, args: argparse.Namespace) -> int:
+    if importlib.util.find_spec("taut_summon") is None:
+        print(
+            f"taut {command} requires the taut-summon extension "
+            "(pipx inject taut taut-summon)",
+            file=sys.stderr,
+        )
+        return 1
+    from taut_summon.cli import main as summon_main
+
+    ext_argv = [_DELEGATED_VERBS[command]]
+    if args.db_path:
+        # Re-attach the hoisted global --db ahead of the verbatim tail —
+        # never after it, where a `--` in the tail would demote it to a
+        # positional.
+        ext_argv += ["--db", args.db_path]
+    ext_argv += list(args.rest)
+    return int(summon_main(ext_argv))
 
 
 def _cmd_rename(args: argparse.Namespace) -> int:
@@ -576,6 +637,16 @@ def _hoist_global_options(argv: list[str]) -> list[str]:
 
 
 def _first_command(argv: list[str]) -> str | None:
+    return _find_first_command(argv)[0]
+
+
+def _find_first_command(argv: list[str]) -> tuple[str | None, int]:
+    """Return the first subcommand token and its index, or (None, -1).
+
+    Value-option arguments are skipped so an option value that happens to
+    spell a command name is never mistaken for one.
+    """
+
     commands = {
         "init",
         "join",
@@ -592,20 +663,22 @@ def _first_command(argv: list[str]) -> str | None:
         "who",
         "whoami",
         "rejoin",
+        "summon",
+        "dismiss",
     }
     value_options = {"--db", "--as", "--token"}
     i = 0
     while i < len(argv):
         token = argv[i]
         if token == "--":
-            return None
+            return None, -1
         if token in commands:
-            return token
+            return token, i
         if token in value_options:
             i += 2
             continue
         i += 1
-    return None
+    return None, -1
 
 
 if __name__ == "__main__":  # pragma: no cover

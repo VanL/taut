@@ -129,6 +129,35 @@ because Taut does not have a public backend creation signal. `TAUT_DB`,
 `--db`, and `db_path=` remain filesystem path selectors; `.taut.toml` is the
 Postgres door.
 
+### Summon Extension
+
+`taut-summon` hosts an existing agent harness (Claude Code, or any resumable
+streaming CLI) as an ordinary workspace member — no daemon, no bespoke agent
+protocol. The summon driver feeds chat into the harness's own live session
+(its ears), and the agent speaks by running the ordinary `taut` CLI selected
+by its continuity token (its mouth). It ships as a separate package with its
+own version tags:
+
+```bash
+pipx inject taut ./taut_summon-0.1.0-py3-none-any.whl
+```
+
+With it installed, core's `taut summon` / `taut dismiss` verbs delegate to
+the extension (without it, `taut summon` exits 1 with an install hint):
+
+```bash
+# Summon a standing reviewer into #dev; a peer @-mentions it from another
+# terminal, and its reply routes back through the CLI.
+taut summon reviewer --provider claude dev
+taut say dev "@reviewer does the parser branch look right?"
+
+taut-summon status          # driver liveness, provider, session, cursor lag
+taut dismiss reviewer       # clean shutdown, ledger released
+```
+
+The full contract is `docs/specs/04-summon.md`; the design rationale is
+`docs/implementation/05-taut-summon-architecture.md`.
+
 ## Quick Start
 
 ```bash
@@ -437,12 +466,13 @@ set stays small.
 
 In order, each behind its own spec (this project is docs-first):
 
-- **`taut summon` — captive agents.** Spawn an agent *as a thread
-  member*: messages in the thread become its prompts, its output becomes
-  replies. Ships as a separate extension (`taut-summon`) so the core
-  keeps the same small dependency set, runs daemon-free, and speaks the
-  same agent-task contract Weft pioneered — same control verbs, same queue
-  shapes — with a conformance suite both projects can run.
+- **`taut summon` — captive agents.** *Shipped* as the `taut-summon`
+  extension (see [Summon Extension](#summon-extension) above and
+  `docs/specs/04-summon.md`): hosts an agent harness *as a thread member*
+  — chat becomes its ears, the CLI its mouth — daemon-free, speaking the
+  agent-task control contract Weft pioneered (same verbs, same queue
+  shapes), with a portable conformance suite both projects can run. The
+  `codex` adapter is the named follow-on.
 - **TUI** (`taut[tui]`): panes for threads, live presence, zero new core
   dependencies.
 - **Redis/Valkey backend.** Queues already work (`simplebroker-redis`).
@@ -462,12 +492,17 @@ and both are kept in CI-grade sync with the code. Start with
 git clone git@github.com:VanL/taut.git && cd taut
 uv sync --all-extras
 uv run pytest
+uv run pytest extensions/taut_summon/tests
 uv run ./bin/pytest-pg --fast
-uv run ruff check taut tests bin extensions/taut_pg/taut_pg extensions/taut_pg/tests
-uv run ruff format --check taut tests bin extensions/taut_pg/taut_pg extensions/taut_pg/tests
+uv run ruff check taut tests bin extensions/taut_pg/taut_pg extensions/taut_pg/tests extensions/taut_summon/taut_summon extensions/taut_summon/tests
+uv run ruff format --check taut tests bin extensions/taut_pg/taut_pg extensions/taut_pg/tests extensions/taut_summon/taut_summon extensions/taut_summon/tests
 uv run --extra dev mypy taut tests bin/release.py extensions/taut_pg/taut_pg extensions/taut_pg/tests --config-file pyproject.toml
+# separate run: each extension's tests carry a top-level conftest module,
+# and one mypy invocation cannot hold two modules named `conftest`
+uv run --extra dev mypy taut tests extensions/taut_summon/taut_summon extensions/taut_summon/tests --config-file pyproject.toml
 uv build
 uv build extensions/taut_pg
+uv build extensions/taut_summon
 ```
 
 Tests follow the house anti-mocking rule: the broker is never mocked,

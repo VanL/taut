@@ -24,6 +24,10 @@ stay aligned instead of competing.
 3. `03-identity-addressing-notifications.md` - stable member identity,
    mutable names, reserved alias storage, `@name` direct messages, special
    queue namespaces, notification inboxes, and channel rename semantics
+4. `04-summon.md` - the summon extension spec: hosting an existing agent
+   harness as an ordinary workspace member — injection ears, CLI mouth,
+   provider adapters, session ledger, control plane, persona, and
+   conformance suite
 
 ## Naming
 

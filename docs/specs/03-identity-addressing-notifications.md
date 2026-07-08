@@ -294,6 +294,15 @@ Taut-owned queues have one of these classes:
 All Taut-visible queues must have a sidecar registry row that records their
 class. Unknown broker queues remain invisible to Taut commands.
 
+Queues under the reserved `sys` prefix are extension-internal control
+queues; their derivation and bodies are defined by the extension spec
+that owns them (summon: [SUM-9]). They are deliberately **not
+registered**: the registry requirement above applies to queues core
+lists and routes, and `sys.*` extension queues remain invisible broker
+queues to every core command — exactly the treatment unknown broker
+queues already get. Core never routes chat to `sys.*`; only the owning
+extension reads or writes them.
+
 ### [IAN-6.2] Channel names
 
 Channel names match:

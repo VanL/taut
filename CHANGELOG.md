@@ -1,7 +1,26 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 - 2026-07-08
 
+- Added `taut summon` / `taut dismiss` as thin core delegation verbs that
+  hand off to the new **`taut-summon`** extension when installed, or exit 1
+  with a one-line install hint otherwise. The verbs carry no summon logic
+  and add no core dependency.
+- Added the `taut-summon` extension (separate package under
+  `extensions/taut_summon/`) that hosts an existing agent harness as an
+  ordinary workspace member — no daemon, no bespoke agent protocol. The
+  summon driver injects chat into the harness's live session (its ears) and
+  the agent speaks through the ordinary `taut` CLI selected by its
+  continuity token (its mouth). Ships the `run`/`stop`/`status` verbs, the
+  universal PTY adapter for interactive harnesses (`claude`, `codex`,
+  `coder`, `grok`, `qwen`, `kimi`, `opencode`, `pi`), the `claude-stream`
+  structured adapter, the `scripted` and fake-TUI test seams, a two-table
+  session ledger with a single-driver guard and PTY `wired` flag, a
+  weft-congruent `sys.*` control plane (STOP/STATUS/PING), a default persona
+  template with a rate backstop, a portable, parameterized cross-provider
+  conformance suite, local real-harness smoke tests, and a CI-safe
+  local-LLM PTY smoke backed by Ollama. See `docs/specs/04-summon.md` and
+  `docs/implementation/05-taut-summon-architecture.md`.
 - Raised the SimpleBroker floor to 5.1.0. Taut's vendored Weft-style
   `MultiQueueWatcher` now supplies its fan-in activity waiter through
   SimpleBroker's watcher lifecycle hooks instead of cloning the watcher retry

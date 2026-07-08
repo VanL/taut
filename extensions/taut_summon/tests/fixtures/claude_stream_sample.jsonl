@@ -1,0 +1,21 @@
+# Recorded Claude Code stream-json output lines (one JSON object per line).
+#
+# Provenance: captured 2026-07-07 from the installed Claude Code CLI
+# (claude 2.1.201) running
+#   claude -p --verbose --input-format stream-json --output-format stream-json
+# with one injected user event asking for a Bash `echo taut-probe` tool call
+# followed by a terse text reply. Every line below is a real recorded line;
+# bulky or machine-private fields (usage accounting, plugin/skill inventories,
+# local paths, hook payload bodies) were REDACTED or dropped, keys the
+# adapter reads (type, subtype, session_id, message.content) are verbatim.
+#
+# Lines starting with '#' are comments; the test replayer skips them.
+{"type":"system","subtype":"hook_started","hook_id":"f37a8ae7-6cbb-492c-86dc-728551c4c764","hook_name":"SessionStart:startup","hook_event":"SessionStart","uuid":"88a86364-3009-4eb8-8dc2-ccdce4472888","session_id":"4014b88f-c64b-4bdd-ac10-29e012e37cb8"}
+{"type":"system","subtype":"init","cwd":"/redacted","session_id":"4014b88f-c64b-4bdd-ac10-29e012e37cb8","tools":["Bash"],"model":"claude-opus-4-8[1m]","permissionMode":"acceptEdits","claude_code_version":"2.1.201","uuid":"548961c8-714e-4c25-a1b7-3da2bf12f53c"}
+{"type":"assistant","message":{"model":"claude-opus-4-8","id":"msg_011CcnnYxNWGXdWv5HLWuyv8","type":"message","role":"assistant","content":[{"type":"text","text":"I'll run the command."}],"stop_reason":null},"parent_tool_use_id":null,"session_id":"4014b88f-c64b-4bdd-ac10-29e012e37cb8","uuid":"073d2d26-08aa-4b9d-8383-d792aed90402"}
+{"type":"assistant","message":{"model":"claude-opus-4-8","id":"msg_011CcnnYxNWGXdWv5HLWuyv8","type":"message","role":"assistant","content":[{"type":"tool_use","id":"toolu_0151PEfKUWknFJY1PgaXhj7H","name":"Bash","input":{"command":"echo taut-probe","description":"Echo taut-probe"},"caller":{"type":"direct"}}],"stop_reason":null},"parent_tool_use_id":null,"session_id":"4014b88f-c64b-4bdd-ac10-29e012e37cb8","uuid":"3c8693c9-0c3d-48bc-81ae-f60b0aa11634"}
+{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","resetsAt":1783940400,"rateLimitType":"seven_day","utilization":0.62,"isUsingOverage":false},"uuid":"ad49c114-7370-40f5-80eb-398efc52bc65","session_id":"4014b88f-c64b-4bdd-ac10-29e012e37cb8"}
+{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_0151PEfKUWknFJY1PgaXhj7H","type":"tool_result","content":"taut-probe","is_error":false}]},"parent_tool_use_id":null,"session_id":"4014b88f-c64b-4bdd-ac10-29e012e37cb8","uuid":"2fac66e5-60aa-4560-af90-44c756cb1d86"}
+{"type":"assistant","message":{"model":"claude-opus-4-8","id":"msg_011CcnnZ8QFq5YbM8mcwdGzo","type":"message","role":"assistant","content":[{"type":"text","text":"done"}],"stop_reason":null},"parent_tool_use_id":null,"session_id":"4014b88f-c64b-4bdd-ac10-29e012e37cb8","uuid":"36d76972-3986-437e-942f-01e88d4b2069"}
+{"type":"system","subtype":"post_turn_summary","summarizes_uuid":"36d76972-3986-437e-942f-01e88d4b2069","status_category":"review_ready","status_detail":"running command","needs_action":"","uuid":"b3a90894-89de-4e40-8596-167587e0c63f","session_id":"4014b88f-c64b-4bdd-ac10-29e012e37cb8"}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":6204,"num_turns":2,"result":"done","session_id":"4014b88f-c64b-4bdd-ac10-29e012e37cb8","uuid":"d3561bf4-073d-4346-a325-8e3b0a4bcbaa"}

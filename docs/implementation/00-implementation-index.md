@@ -20,3 +20,4 @@ read order stay aligned instead of competing.
 2. `02-repository-map.md`
 3. `03-agent-inventory.md`
 4. `04-taut-architecture.md`
+5. `05-taut-summon-architecture.md`

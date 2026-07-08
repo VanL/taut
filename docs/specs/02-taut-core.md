@@ -499,6 +499,11 @@ before or after the subcommand, but never after `--`.
 | `who [THREAD]` | Members and presence (thread members, or all members when bare). | 0; 1 error; 2 no such thread |
 | `whoami [--explain]` | Resolved identity; with `--explain`, the evidence and rule. | 0 resolved; 1 error (incl. invalid token); 2 unrecognized |
 | `rejoin [NAME_OR_ALIAS] [--token TOKEN]` | Associate the current identity claim with the selected member ([IAN-3.4]). Target: name or alias if given, else `--token` (subcommand or global), else global `--as`; name/alias combined with any `--token` is an error. | 0; 1 error/collision/ambiguous selectors; 2 no such member/token |
+| `summon PROVIDER_OR_NAME [THREAD ...]` | Delegates to the `taut-summon` extension when installed (spec 04); without it, exit 1 with a one-line install hint. | per spec 04 |
+| `dismiss NAME` | Delegates likewise (summon `stop`). | per spec 04 |
+
+Delegation verbs carry no core logic and add no core dependency; their
+behavior contract lives entirely in the owning extension's spec.
 
 Exit-code rule, matching SimpleBroker: 0 success, 1 error, 2 "empty /
 nothing matched / not found" — so `taut read -q && process_inbox` and
@@ -794,10 +799,17 @@ whatever backend holds the queues holds the state.
 
 ### [TAUT-12.3] Captive agents (`summon`)
 
-Host an agent as a thread member: a supervised provider-CLI child
-process whose line-oriented IO is bridged to a thread — messages in as
-prompts, output back as messages — making "talk to the agent" literally
-chat.
+Host an existing agent harness as a thread member. Summon is the agent's
+terminal, not its runtime: the summon driver injects chat messages into
+the harness's own live session (its ears), and the agent speaks through
+the ordinary taut CLI, selected as its member by its continuity token
+— continuity, not authentication ([TAUT-5], [TAUT-9]) — (its mouth).
+There is no summon-defined agent protocol — adapters speak each
+provider's native streaming envelope. The full contract lives in
+`docs/specs/04-summon.md` ([SUM-1]–[SUM-12]); the 2026-06-12 shape
+decisions below stand, refined there: the "line-oriented IO bridged to a
+thread" sketch is superseded by the ears/mouth split, and the inbox queue
+role maps to the member's chat threads themselves.
 
 Shape decided 2026-06-12:
 
@@ -824,10 +836,8 @@ Shape decided 2026-06-12:
   its CI. Contract findings flow upstream as tests, not prose (the plan
   §9 discipline).
 
-Needs its own spec before implementation (agent lifecycle, provider lanes, and
-any summon-specific addressing rules). Core obligations: envelope readers ignore
-unknown fields ([TAUT-6.1]) and no code assumes members only speak via CLI
-invocations.
+Core obligations: envelope readers ignore unknown fields ([TAUT-6.1]) and no
+code assumes members only speak via CLI invocations.
 
 ### [TAUT-12.4] TUI
 

@@ -48,6 +48,7 @@ Quick pointers to the key guidance documents in this repository.
 | `docs/specs/01-development-documentation-operating-model.md` | Governing spec for the documentation workflow |
 | `docs/specs/02-taut-core.md` | Taut core spec: storage, threads, envelope, read model, surfaces, trust model |
 | `docs/specs/03-identity-addressing-notifications.md` | Identity, addressing, and notifications spec: member ids, names, DMs, queue namespace, rename |
+| `docs/specs/04-summon.md` | Summon extension spec: agent harness as member, injection ears, CLI mouth, adapters, session ledger, control plane |
 | `docs/plans/README.md` | Plan directory rules |
 | `docs/plans/2026-06-12-taut-foundation-plan.md` | Historical foundation implementation plan |
 | `docs/plans/2026-06-18-member-identity-addressing-plan.md` | Implemented plan for member ids, addressing, notifications, and channel rename |
@@ -62,10 +63,12 @@ Quick pointers to the key guidance documents in this repository.
 | `docs/plans/2026-07-01-schema-shim-retirement-plan.md` | Implemented retirement of the historical schema compatibility shim in favor of `taut/state/` |
 | `docs/plans/2026-07-01-taut-state-sql-dialect-plan.md` | Implemented `TautState` interface and SQL dialect seam refactor |
 | `docs/plans/2026-07-01-taut-watch-runtime-plan.md` | Implemented `TautWatchRuntime` seam between `TautClient` and the watcher |
+| `docs/plans/2026-07-06-taut-summon-plan.md` | Implemented `taut-summon` extension: delegation verbs, ledger, adapters, driver, control plane, conformance suite |
 | `docs/implementation/00-implementation-index.md` | Numbered entry point for implementation docs |
 | `docs/implementation/01-documentation-system.md` | Why the documentation system is shaped this way |
 | `docs/implementation/03-agent-inventory.md` | Current observed agent availability and review preference |
 | `docs/implementation/04-taut-architecture.md` | Taut implementation rationale, boundaries, dependencies, and key files |
+| `docs/implementation/05-taut-summon-architecture.md` | Summon extension rationale: ears/mouth split, three-thread driver, session ledger, control plane, vendored retry |
 | `docs/lessons.md` | Canonical lessons ledger |
 
 ## Product Code
@@ -83,6 +86,7 @@ Quick pointers to the key guidance documents in this repository.
 | `taut/cli.py` | Argparse CLI and output/exit-code rendering |
 | `tests/` | Contract tests using real SQLite files, shared backend markers, and subprocess CLI |
 | `extensions/taut_pg/` | Separate `taut-pg` project with extension metadata, README, and PG-only tests |
+| `extensions/taut_summon/` | Separate `taut-summon` project: the summon driver, adapters, ledger, control plane, persona, and real-process conformance suite |
 
 ## Skills
 

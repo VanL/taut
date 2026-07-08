@@ -7,6 +7,7 @@ import re
 import signal
 import subprocess
 import sys
+import sysconfig
 import threading
 from pathlib import Path
 from typing import TextIO, cast
@@ -21,7 +22,7 @@ from taut.cli import _format_unread_count
 from taut.client import Message
 from taut.envelope import encode_envelope
 from taut.state import SQLITE_SQL_DIALECT, SqlSidecarTautState
-from tests.conftest import build_cli_env, run_cli
+from tests.conftest import PROJECT_ROOT, build_cli_env, run_cli
 
 pytestmark = [pytest.mark.sqlite_only, pytest.mark.usefixtures("clean_env")]
 
@@ -847,3 +848,152 @@ def test_cli_say_without_text_posts_piped_stdin(tmp_path: Path) -> None:
 
     assert rc == 0, err
     assert "piped body" in _log_texts(tmp_path, "general")
+
+
+# --- summon/dismiss delegation verbs ([TAUT-8.1] D4, spec 04 [SUM-3]) ------
+#
+# The presence-path tests below require the taut-summon extension in the
+# dev environment (root dev extra + [tool.uv.sources]); reaching the
+# extension's S2 skeleton messages proves the argv round-trip through
+# core's delegation.
+
+
+def test_cli_summon_delegates_argv_to_extension(tmp_path: Path) -> None:
+    # An unknown provider token: 'claude' resolves to a real adapter since
+    # S5, so the round-trip proof rides the unknown-adapter error path.
+    rc, out, err = run_cli("summon", "zz-unknown", cwd=tmp_path)
+
+    assert rc == 1
+    assert "no adapter named 'zz-unknown'" in err
+    assert out == ""
+
+
+def test_cli_summon_provider_flag_round_trips_to_extension(tmp_path: Path) -> None:
+    # --provider is not a core flag: seeing it change the extension's
+    # resolution proves the tail passed through the delegation verbatim.
+    rc, _out, err = run_cli(
+        "summon", "reviewer", "--provider", "zz-unknown", "dev", cwd=tmp_path
+    )
+
+    assert rc == 1
+    assert "no adapter named 'zz-unknown'" in err
+
+
+def test_cli_summon_db_after_subcommand_reaches_extension(tmp_path: Path) -> None:
+    # The extension echoes the db it parsed on this error path; a dropped
+    # --db would still produce the generic error, so the echo is the
+    # propagation proof.
+    db = str(tmp_path / "x.taut.db")
+    rc, _out, err = run_cli("summon", "zz-unknown", "--db", db, cwd=tmp_path)
+
+    assert rc == 1
+    assert "no adapter named 'zz-unknown'" in err
+    assert f"db: {db}" in err
+
+
+def test_cli_summon_db_before_subcommand_reaches_extension(tmp_path: Path) -> None:
+    db = str(tmp_path / "x.taut.db")
+    rc, _out, err = run_cli("--db", db, "summon", "zz-unknown", cwd=tmp_path)
+
+    assert rc == 1
+    assert "no adapter named 'zz-unknown'" in err
+    assert f"db: {db}" in err
+
+
+def test_cli_dismiss_db_before_verb_reaches_extension(tmp_path: Path) -> None:
+    db = str(tmp_path / "x.taut.db")
+    rc, _out, err = run_cli("--db", db, "dismiss", "ghost", cwd=tmp_path)
+
+    assert rc == 2
+    assert "nothing summoned as 'ghost'" in err
+    assert f"db: {db}" in err
+
+
+def test_cli_summon_tail_keeps_core_global_lookalikes(tmp_path: Path) -> None:
+    # [SUM-3]: the tail after the verb is the extension's, verbatim —
+    # including tokens that spell core globals. The extension's own usage
+    # error naming the token proves it arrived instead of being hoisted.
+    rc, _out, err = run_cli("summon", "claude", "--json", cwd=tmp_path)
+
+    assert rc == 1
+    assert "--json" in err
+    assert "no adapter named" not in err
+
+
+def test_cli_summon_tail_keeps_value_option_lookalikes(tmp_path: Path) -> None:
+    rc, _out, err = run_cli("summon", "claude", "--as", "bob", cwd=tmp_path)
+
+    assert rc == 1
+    assert "--as" in err
+    assert "no adapter named" not in err
+
+
+def test_cli_summon_double_dash_tail_passes_through_verbatim(tmp_path: Path) -> None:
+    rc, _out, err = run_cli("summon", "--", "anything", cwd=tmp_path)
+
+    assert rc == 1
+    assert "no adapter named 'anything'" in err
+
+    # Even an option-shaped token after `--` reaches the extension as a
+    # positional ([TAUT-8.1]: `--` ends option parsing).
+    rc, _out, err = run_cli("summon", "--", "-q", cwd=tmp_path)
+
+    assert rc == 1
+    assert "no adapter named '-q'" in err
+
+
+def test_cli_dismiss_maps_to_extension_stop(tmp_path: Path) -> None:
+    rc, out, err = run_cli("dismiss", "claude", cwd=tmp_path)
+
+    assert rc == 2
+    assert "nothing summoned" in err
+    assert out == ""
+
+
+def test_cli_summon_without_extension_exits_1_with_install_hint(
+    tmp_path: Path,
+) -> None:
+    # Absence path via a real subprocess: `-S` disables site processing,
+    # so the editable taut_summon install (a site-packages .pth file)
+    # vanishes; taut and its regular dependencies stay importable via
+    # explicit PYTHONPATH entries, whose .pth files are never processed.
+    # No import mocking anywhere.
+    # purelib and platlib usually coincide; both are listed for the
+    # installs (e.g. C extensions) that land only in platlib.
+    site_dirs = list(
+        dict.fromkeys([sysconfig.get_path("purelib"), sysconfig.get_path("platlib")])
+    )
+    env = os.environ.copy()
+    env.pop("PYTHONHOME", None)
+    env["PYTHONPATH"] = os.pathsep.join([str(PROJECT_ROOT), *site_dirs])
+    env["PYTHONIOENCODING"] = "utf-8"
+
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-S",
+            "-c",
+            "import importlib.util; import sys; "
+            "sys.exit(3 if importlib.util.find_spec('taut_summon') else 0)",
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert probe.returncode == 0, "guard: taut_summon still importable under -S"
+
+    completed = subprocess.run(
+        [sys.executable, "-S", "-m", "taut", "summon", "claude"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+
+    assert completed.returncode == 1, completed.stderr
+    assert "taut summon requires the taut-summon extension" in completed.stderr
+    assert "pipx inject taut taut-summon" in completed.stderr
+    assert completed.stdout == ""

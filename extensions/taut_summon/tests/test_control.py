@@ -1,0 +1,192 @@
+"""Unit tests for the control-plane shapes ([SUM-9]).
+
+Contract under test: docs/specs/04-summon.md [SUM-9] — the ``sys.ctl_`` /
+``sys.rsp_`` queue derivation from the member id, the single-line JSON
+bodies keyed ``command``/``request_id``, and replies correlating by
+``request_id`` with a ``status`` field. The mirrored weft subset is
+copied by shape (../weft/weft/core/tasks/base.py), never by code.
+
+The driver-side loop and client round-trips against a *live* driver are
+exercised end-to-end in ``test_driver.py`` with the real scripted provider.
+"""
+
+from __future__ import annotations
+
+import json
+import threading
+
+import pytest
+from simplebroker.ext import DatabaseError, IntegrityError, OperationalError
+from taut_summon._broker_retry import broker_retry, is_transient_broker_error
+from taut_summon._control import (
+    ControlLoop,
+    control_in_queue_name,
+    control_out_queue_name,
+    encode_control_command,
+    encode_control_reply,
+    parse_control_request,
+)
+
+
+def _make_loop(rate_limit: int) -> ControlLoop:
+    # A control loop with no db handles (never .run()/._open()'d): enough to
+    # exercise the pure in-memory rate-backstop and health logic. The audit
+    # and reply paths tolerate the None handles defensively.
+    return ControlLoop(
+        member_id="m_" + "a" * 26,
+        db_path=None,
+        token="taut-tok",
+        provider="scripted",
+        threads=("general",),
+        handle_provider=lambda: None,
+        request_stop=lambda: None,
+        shutdown=threading.Event(),
+        shutdown_complete=threading.Event(),
+        release_confirmed=lambda: True,
+        rate_limit=rate_limit,
+        ledger_queue_name="taut_meta",
+    )
+
+
+def test_transient_predicate_retries_wal_blips_not_logic_faults() -> None:
+    assert is_transient_broker_error(OperationalError("database is locked"))
+    assert is_transient_broker_error(DatabaseError("database disk image is malformed"))
+    # Genuine faults must surface immediately, and retryable=False is honored.
+    assert not is_transient_broker_error(IntegrityError("UNIQUE constraint failed"))
+    stop = OperationalError("interrupted")
+    stop.retryable = False
+    assert not is_transient_broker_error(stop)
+
+
+def test_transient_predicate_is_narrow_not_whole_class() -> None:
+    # The predicate matches only the two known transients by message text —
+    # a generic operational failure or a non-malformed database error must
+    # NOT be retried (that would mask genuine corruption / real faults).
+    assert not is_transient_broker_error(OperationalError("no such column: x"))
+    assert not is_transient_broker_error(DatabaseError("disk I/O error"))
+    # An explicit retryable=True wins regardless of class/message.
+    forced = DatabaseError("anything")
+    forced.retryable = True  # type: ignore[attr-defined]
+    assert is_transient_broker_error(forced)
+
+
+def test_broker_retry_clears_a_transient_then_returns() -> None:
+    calls: list[int] = []
+
+    def flaky() -> str:
+        calls.append(1)
+        if len(calls) < 3:
+            raise DatabaseError("database disk image is malformed")
+        return "ok"
+
+    assert broker_retry(flaky, what="test") == "ok"
+    assert len(calls) == 3
+
+
+def test_broker_retry_reraises_persistent_failure_after_budget() -> None:
+    calls: list[int] = []
+
+    def always_malformed() -> str:
+        calls.append(1)
+        raise DatabaseError("database disk image is malformed")
+
+    with pytest.raises(DatabaseError):
+        broker_retry(always_malformed, what="test")
+    assert len(calls) >= 2  # bounded budget spent, then re-raised
+
+
+def test_broker_retry_does_not_retry_logic_faults() -> None:
+    calls: list[int] = []
+
+    def integrity_fault() -> str:
+        calls.append(1)
+        raise IntegrityError("UNIQUE constraint failed")
+
+    with pytest.raises(IntegrityError):
+        broker_retry(integrity_fault, what="test")
+    assert len(calls) == 1  # surfaced on the first try, no retries
+
+
+def test_rate_breaker_rearms_after_flood_subsides() -> None:
+    # [SUM-10] circuit-breaker: hard breach is not one-shot. Once the rate
+    # falls back under the limit the breaker re-arms and can trip again.
+    loop = _make_loop(rate_limit=2)
+    loop._own_posts.extend([0.0] * 6)  # 6 > 2*limit -> hard breach
+    loop._enforce()
+    assert loop._hard_breached is True
+
+    loop._own_posts.clear()  # flood subsided (rate back under limit)
+    loop._enforce()
+    assert loop._hard_breached is False  # re-armed
+    assert loop._nudged is False
+
+    loop._own_posts.extend([0.0] * 6)  # floods again
+    loop._enforce()
+    assert loop._hard_breached is True  # trips a second time
+
+
+def test_status_reports_degraded_after_post_budget_failure() -> None:
+    # A non-transient broker error that survives the retry budget marks the
+    # control plane unhealthy, and STATUS surfaces it ([SUM-9]) instead of
+    # the failure being swallowed.
+    loop = _make_loop(rate_limit=60)
+    healthy = loop._status_snapshot().as_fields()
+    assert healthy["control_health"] == "ok"
+    assert "health_detail" not in healthy
+
+    loop._mark_unhealthy("control drain", DatabaseError("disk I/O error"))
+    degraded = loop._status_snapshot().as_fields()
+    assert degraded["control_health"] == "degraded"
+    assert "disk I/O error" in degraded["health_detail"]
+
+
+def test_queue_names_derive_from_member_id() -> None:
+    assert control_in_queue_name("m_abc123") == "sys.ctl_m_abc123"
+    assert control_out_queue_name("m_abc123") == "sys.rsp_m_abc123"
+    # Both live under the reserved sys prefix ([TAUT-4.1]/D3).
+    assert control_in_queue_name("m_x").startswith("sys.")
+    assert control_out_queue_name("m_x").startswith("sys.")
+
+
+def test_parse_uppercases_command_and_keeps_request_id() -> None:
+    request = parse_control_request('{"command": "stop", "request_id": "r1"}')
+    assert request.command == "STOP"
+    assert request.request_id == "r1"
+
+
+def test_parse_tolerates_missing_request_id() -> None:
+    request = parse_control_request('{"command": "PING"}')
+    assert request.command == "PING"
+    assert request.request_id is None
+
+
+def test_parse_malformed_body_yields_empty_command() -> None:
+    # A non-JSON or non-object body must not raise: the loop drops it.
+    assert parse_control_request("not json at all").command == ""
+    assert parse_control_request("[1, 2, 3]").command == ""
+    assert parse_control_request('{"command": 5}').command == ""
+
+
+def test_encode_command_is_single_line_json() -> None:
+    body = encode_control_command("STATUS", "req-9")
+    assert "\n" not in body
+    assert json.loads(body) == {"command": "STATUS", "request_id": "req-9"}
+
+
+def test_encode_reply_carries_status_and_correlation() -> None:
+    body = encode_control_reply(
+        "STATUS", "ok", request_id="req-9", provider="scripted", thread_count=2
+    )
+    payload = json.loads(body)
+    assert payload["command"] == "STATUS"
+    assert payload["status"] == "ok"
+    assert payload["request_id"] == "req-9"
+    assert payload["provider"] == "scripted"
+    assert payload["thread_count"] == 2
+
+
+def test_encode_reply_omits_request_id_when_absent() -> None:
+    # An uncorrelated reply (request_id=None) omits the field entirely.
+    payload = json.loads(encode_control_reply("PING", "ok", request_id=None))
+    assert "request_id" not in payload
+    assert payload["status"] == "ok"

@@ -52,17 +52,23 @@ jobs:
       - name: Install dependencies
         timeout-minutes: 10
         run: |
-          uv pip install --system -e ".[dev]"
+          uv pip install --system -e ".[dev]" -e "./extensions/taut_summon[dev]"
 
       - name: Run tests with pytest
         timeout-minutes: 20
         run: |
           pytest -v --tb=short -m "not slow" --durations=100 --durations-min=0.5 -o faulthandler_timeout=720 --timeout=900 --timeout-method=thread --full-trace
 
+      - name: Run taut-summon extension tests
+        timeout-minutes: 10
+        run: |
+          pytest extensions/taut_summon/tests -v --tb=short
+
       - name: Test CLI installation
         timeout-minutes: 2
         run: |
           taut --version
+          taut-summon --help
 
   lint:
     runs-on: ubuntu-latest
@@ -90,22 +96,145 @@ jobs:
       - name: Install dependencies
         timeout-minutes: 10
         run: |
-          uv pip install --system -e ".[dev]"
+          uv pip install --system -e ".[dev]" -e "./extensions/taut_summon[dev]"
 
       - name: Run linting with ruff
         timeout-minutes: 5
         run: |
-          ruff check taut tests bin
+          ruff check taut tests bin extensions/taut_summon/taut_summon extensions/taut_summon/tests
 
       - name: Check formatting with ruff
         timeout-minutes: 5
         run: |
-          ruff format --check taut tests bin
+          ruff format --check taut tests bin extensions/taut_summon/taut_summon extensions/taut_summon/tests
 
       - name: Type check with mypy
         timeout-minutes: 10
         run: |
           mypy taut tests bin/release.py --config-file pyproject.toml
+          mypy extensions/taut_summon/taut_summon extensions/taut_summon/tests --config-file pyproject.toml
+
+  summon-local-llm:
+    name: taut-summon local LLM
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      OLLAMA_BASE_MODEL: qwen2.5:0.5b
+      OLLAMA_CONTEXT_LENGTH: "2048"
+      OLLAMA_NUM_PREDICT: "64"
+      OLLAMA_IMAGE: ollama/ollama@sha256:f1a705f2bd113fb8d15f85f7c217f0dc5f6bebda6b0cc42b82c3ad165ffcb9dc
+      TAUT_SUMMON_LOCAL_LLM_ENDPOINT: http://127.0.0.1:11434/v1
+      TAUT_SUMMON_LOCAL_LLM_MODEL: taut-summon-local-model:latest
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        timeout-minutes: 5
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        timeout-minutes: 5
+        with:
+          python-version: "3.14"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        timeout-minutes: 5
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+
+      - name: Start Ollama
+        timeout-minutes: 2
+        run: |
+          docker run -d \
+            --name taut-summon-llm \
+            -p 127.0.0.1:11434:11434 \
+            "${OLLAMA_IMAGE}"
+
+      - name: Wait for Ollama readiness
+        timeout-minutes: 3
+        run: |
+          for _ in $(seq 1 60); do
+            if curl -fsS "http://127.0.0.1:11434/" >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs taut-summon-llm || true
+          exit 1
+
+      - name: Pull base model and create bounded served model
+        timeout-minutes: 12
+        run: |
+          docker exec taut-summon-llm ollama pull "${OLLAMA_BASE_MODEL}"
+          cat > "${RUNNER_TEMP}/TautSummonModelfile" <<EOF
+          FROM ${OLLAMA_BASE_MODEL}
+          PARAMETER num_ctx ${OLLAMA_CONTEXT_LENGTH}
+          PARAMETER num_predict ${OLLAMA_NUM_PREDICT}
+          PARAMETER temperature 0
+          EOF
+          docker cp "${RUNNER_TEMP}/TautSummonModelfile" taut-summon-llm:/tmp/TautSummonModelfile
+          docker exec taut-summon-llm ollama create "${TAUT_SUMMON_LOCAL_LLM_MODEL}" -f /tmp/TautSummonModelfile
+
+      - name: Wait for served model
+        timeout-minutes: 3
+        run: |
+          for _ in $(seq 1 60); do
+            if python - <<'PY'
+          import json
+          import os
+          import sys
+          import urllib.request
+
+          endpoint = os.environ["TAUT_SUMMON_LOCAL_LLM_ENDPOINT"].rstrip("/") + "/models"
+          served = os.environ["TAUT_SUMMON_LOCAL_LLM_MODEL"]
+          try:
+              with urllib.request.urlopen(endpoint, timeout=5) as response:
+                  payload = json.load(response)
+          except Exception as exc:
+              print(f"waiting for model list: {exc}")
+              sys.exit(1)
+          ids = [
+              item.get("id")
+              for item in payload.get("data", [])
+              if isinstance(item, dict)
+          ]
+          if served in ids:
+              sys.exit(0)
+          print(f"waiting for {served!r}; saw ids: {ids}")
+          sys.exit(1)
+          PY
+            then
+              exit 0
+            fi
+            sleep 2
+          done
+          exit 1
+
+      - name: Install dependencies
+        timeout-minutes: 10
+        run: |
+          uv pip install --system -e ".[dev]" -e "./extensions/taut_summon[dev]"
+
+      - name: Run taut-summon local LLM live tests
+        timeout-minutes: 10
+        env:
+          TAUT_SUMMON_LOCAL_LLM: "1"
+        run: |
+          pytest extensions/taut_summon/tests/test_live_local_llm.py -v --tb=short
+
+      - name: Local LLM diagnostics
+        if: always()
+        run: |
+          free -m || true
+          df -h || true
+          docker logs taut-summon-llm 2>&1 | grep -Ei 'server|listen|model|pull|load|memory|error|ready' || true
+
+      - name: Stop Ollama
+        if: always()
+        run: docker stop taut-summon-llm || true
 
   packaging:
     runs-on: ubuntu-latest
@@ -134,6 +263,11 @@ jobs:
         timeout-minutes: 10
         run: |
           uv build
+
+      - name: Build taut-summon extension package
+        timeout-minutes: 10
+        run: |
+          uv build extensions/taut_summon
 
       - name: Smoke test built wheel
         shell: bash
@@ -170,7 +304,7 @@ jobs:
       - name: Install dependencies
         timeout-minutes: 10
         run: |
-          uv pip install --system -e ".[dev]"
+          uv pip install --system -e ".[dev]" -e "./extensions/taut_summon[dev]"
 
       - name: Run tests with coverage
         timeout-minutes: 20
