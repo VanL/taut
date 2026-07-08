@@ -137,6 +137,7 @@ def _reopen_ok(_where: str, _exc: BrokerError) -> bool:
 
 def test_transient_predicate_retries_wal_blips_not_logic_faults() -> None:
     assert is_transient_broker_error(OperationalError("database is locked"))
+    assert is_transient_broker_error(OperationalError("disk I/O error"))
     assert is_transient_broker_error(DatabaseError("database disk image is malformed"))
     assert is_transient_broker_error(
         RuntimeError(
@@ -146,6 +147,9 @@ def test_transient_predicate_retries_wal_blips_not_logic_faults() -> None:
     assert is_transient_broker_error(
         RuntimeError("Failed to get database connection: database is locked")
     )
+    assert is_transient_broker_error(
+        RuntimeError("Failed to get database connection: disk I/O error")
+    )
     # Genuine faults must surface immediately, and retryable=False is honored.
     assert not is_transient_broker_error(IntegrityError("UNIQUE constraint failed"))
     stop = OperationalError("interrupted")
@@ -154,14 +158,11 @@ def test_transient_predicate_retries_wal_blips_not_logic_faults() -> None:
 
 
 def test_transient_predicate_is_narrow_not_whole_class() -> None:
-    # The predicate matches only the two known transients by message text —
+    # The predicate matches only known SQLite transients by message text —
     # a generic operational failure or a non-malformed database error must
     # NOT be retried (that would mask genuine corruption / real faults).
     assert not is_transient_broker_error(OperationalError("no such column: x"))
     assert not is_transient_broker_error(DatabaseError("disk I/O error"))
-    assert not is_transient_broker_error(
-        RuntimeError("Failed to get database connection: disk I/O error")
-    )
     assert not is_transient_broker_error(RuntimeError("database is locked"))
     # An explicit retryable=True wins regardless of class/message.
     forced = DatabaseError("anything")
@@ -175,7 +176,9 @@ def test_broker_retry_clears_a_transient_then_returns() -> None:
     def flaky() -> str:
         calls.append(1)
         if len(calls) < 3:
-            raise DatabaseError("database disk image is malformed")
+            if len(calls) == 1:
+                raise DatabaseError("database disk image is malformed")
+            raise OperationalError("disk I/O error")
         return "ok"
 
     assert broker_retry(flaky, what="test") == "ok"
@@ -229,7 +232,7 @@ def test_control_client_retries_status_with_same_reply_route(
 
 def test_summon_tests_pin_sqlite_process_env() -> None:
     assert os.environ["BROKER_AUTO_VACUUM"] == "0"
-    assert os.environ["BROKER_SYNC_MODE"] == "NORMAL"
+    assert os.environ["BROKER_SYNC_MODE"] == "FULL"
 
 
 def test_control_client_does_not_retry_stop_timeout(

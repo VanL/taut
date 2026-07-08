@@ -35,12 +35,15 @@ _BROKER_RETRIES = 30
 _BROKER_RETRY_DELAY = 0.05
 _BROKER_RETRY_MAX_DELAY = 0.5
 
-# The two — and only two — WAL-under-concurrency transients we ride out,
-# matched by message text so a genuinely broken DB is NOT masked. Lock/busy
-# markers mirror simplebroker's own ``_LOCKED_ERROR_MARKERS``; the malformed
-# marker is the *false* SQLITE_CORRUPT read a fresh reader can see while a
-# writer checkpoints (which clears on retry, unlike true corruption — but a
-# persistently-malformed DB still exhausts the bounded budget and re-raises).
+# The narrow WAL-under-concurrency transients we ride out, matched by message
+# text so a genuinely broken DB is NOT masked. Lock/busy markers mirror
+# simplebroker's own ``_LOCKED_ERROR_MARKERS``; the malformed marker is the
+# *false* SQLITE_CORRUPT read a fresh reader can see while a writer checkpoints
+# (which clears on retry, unlike true corruption; a persistently malformed DB
+# still exhausts the bounded budget and re-raises). SQLite can also surface
+# the same transient churn as OperationalError("disk I/O error") while a fresh
+# read/write handle is opened under process load; that is bounded-retried only
+# for the OperationalError shape SQLite uses for SQLITE_IOERR.
 _LOCKED_MARKERS = (
     "database is locked",
     "database table is locked",
@@ -49,14 +52,16 @@ _LOCKED_MARKERS = (
     "database busy",
 )
 _MALFORMED_MARKER = "malformed"
+_DISK_IO_MARKER = "disk i/o error"
 _CONNECTION_FAILURE_MARKER = "failed to get database connection:"
 
 
 def is_transient_broker_error(exc: Exception) -> bool:
     """Whether a broker op failure is a retryable WAL-under-concurrency blip.
 
-    Narrow by design. Only two specific transients qualify — lock/busy
-    contention (``OperationalError`` whose message is a known lock marker)
+    Narrow by design. Only specific transients qualify — lock/busy contention
+    (``OperationalError`` whose message is a known lock marker), SQLite's
+    transient ``OperationalError("disk I/O error")`` under heavy WAL churn,
     and the *false* ``database disk image is malformed`` page read
     (``DatabaseError`` — SQLITE_CORRUPT, which does **not** subclass
     ``OperationalError``, so simplebroker's own watcher-retry predicate
@@ -74,12 +79,16 @@ def is_transient_broker_error(exc: Exception) -> bool:
         return bool(retryable)
     message = str(exc).lower()
     if isinstance(exc, OperationalError):
-        return any(marker in message for marker in _LOCKED_MARKERS)
+        return _DISK_IO_MARKER in message or any(
+            marker in message for marker in _LOCKED_MARKERS
+        )
     if isinstance(exc, DatabaseError):
         return _MALFORMED_MARKER in message
     if isinstance(exc, RuntimeError) and _CONNECTION_FAILURE_MARKER in message:
-        return _MALFORMED_MARKER in message or any(
-            marker in message for marker in _LOCKED_MARKERS
+        return (
+            _MALFORMED_MARKER in message
+            or _DISK_IO_MARKER in message
+            or any(marker in message for marker in _LOCKED_MARKERS)
         )
     return False
 

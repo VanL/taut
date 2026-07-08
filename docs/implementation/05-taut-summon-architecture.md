@@ -249,11 +249,13 @@ byte-identical** into `extensions/taut_summon/taut_summon/_retry.py` (its
 taut-summon policy (`is_transient_broker_error` + `broker_retry`) sits on top
 in `extensions/taut_summon/taut_summon/_broker_retry.py` — exactly as
 `simplebroker/helpers.py` layers its own policy over the same engine. The
-predicate is narrowed to the two known transients by message marker and
-honors the `retryable` attribute; it also recognizes SimpleBroker's
-connection-open `RuntimeError("Failed to get database connection: ...")`
-wrapper only when the wrapped message carries one of those same markers. Thus
-genuine corruption still surfaces rather than dying silent. Control-drain
+predicate is narrowed to known SQLite transient markers (lock/busy,
+malformed-page false reads, and the SQLite `OperationalError("disk I/O error")`
+shape seen under WAL churn) and honors the `retryable` attribute; it also
+recognizes SimpleBroker's connection-open
+`RuntimeError("Failed to get database connection: ...")` wrapper only when the
+wrapped message carries one of those same markers. Thus genuine corruption
+still surfaces rather than dying silent. Control-drain
 failures are split by recovery boundary: non-recoverable faults mark
 `control_health: degraded` immediately because STOP/STATUS/PING depend on that
 path; recoverable long-lived-handle faults close and reopen the driver's broker
@@ -268,6 +270,13 @@ member name and while writing/reading control replies. If the bounded budget is
 exhausted on a known transient, the CLI reports an exit-1 control failure rather
 than leaking a Python traceback; if the error is outside the narrow predicate,
 it still propagates.
+
+The real-process summon test lane uses a correctness-first SQLite posture:
+`BROKER_AUTO_VACUUM=0` removes test-only maintenance writes, while
+`BROKER_SYNC_MODE=FULL` keeps SQLite's default sync semantics. The lane is slow
+by design because it starts real driver/provider/CLI processes; downgrading sync
+to `NORMAL` made CI more likely to surface false malformed-page reads under WAL
+churn and hid the summon contract behind storage noise.
 
 ### SimpleBroker facade boundary
 

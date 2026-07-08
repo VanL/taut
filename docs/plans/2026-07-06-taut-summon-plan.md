@@ -1003,10 +1003,12 @@ agent directly:
   honest too.)
 - [P1] the retry could mask genuine corruption (predicate retried the
   whole `OperationalError`/`DatabaseError` classes; `_tick` swallowed the
-  post-budget reraise as debug) — **fixed**: predicate narrowed to the
-  two specific transients by message marker (lock/busy + malformed),
-  honoring the `retryable` attribute; `_tick` now marks control unhealthy
-  and STATUS reports `control_health: degraded` instead of dying silent.
+  post-budget reraise as debug) — **fixed**: predicate narrowed to known
+  SQLite transient markers (lock/busy, malformed false reads, and the
+  `OperationalError("disk I/O error")` shape surfaced by the later release
+  CI process lane), honoring the `retryable` attribute; `_tick` now marks
+  control unhealthy and STATUS reports `control_health: degraded` instead
+  of dying silent.
 - [P2] `_retry.py` was not pristine (my provenance paragraph) — **fixed**:
   restored byte-identical; provenance moved to `_broker_retry.py`.
 - [P2] concurrent control clients consumed each other's replies on the

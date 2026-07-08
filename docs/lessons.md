@@ -240,6 +240,13 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   Letting the callback exception escape can strand a live watcher as silent
   while the provider process remains healthy.
 
+- 2026-07-08: Do not trade SQLite sync semantics for speed in real-process
+  correctness lanes. Disabling test-only maintenance writes can reduce
+  irrelevant churn, but `BROKER_SYNC_MODE=NORMAL` made CI more likely to observe
+  false malformed-page reads under summon driver/provider/CLI WAL load. Keep the
+  slow lane correctness-first and overlap independent setup work, such as the
+  local LLM image/model preparation, instead of weakening storage guarantees.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

@@ -40,10 +40,12 @@ from taut.client import TautClient
 _SUMMON_SQLITE_TEST_ENV: dict[str, str] = {
     # The real-process harness is a high-churn SQLite workload: driver,
     # provider, and peer CLI subprocesses all share one temporary DB per test.
-    # Disable maintenance writes during those tests so CI timing does not
-    # decide whether the summon behavior under test is observable.
+    # Disable maintenance writes, but keep SQLite's default FULL sync semantics.
+    # NORMAL is faster locally but makes CI more likely to observe false
+    # malformed-page reads during WAL churn, which masks the summon behavior
+    # under test behind broker recovery noise.
     "BROKER_AUTO_VACUUM": "0",
-    "BROKER_SYNC_MODE": "NORMAL",
+    "BROKER_SYNC_MODE": "FULL",
 }
 
 EXTENSION_ROOT = Path(__file__).resolve().parents[1]
