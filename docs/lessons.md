@@ -312,6 +312,12 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   make test helpers that need a token wait for a stable session row instead of
   doing one post-readiness read.
 
+- 2026-07-08: Keep real-process control-test helpers on the same
+  transient-aware session-row path as readiness helpers. A direct
+  `get_session()` call inside a STATUS/PING helper can still surface the known
+  malformed-row transient after the driver is otherwise ready; wait for a
+  stable row before attaching driver evidence to control requests.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent
