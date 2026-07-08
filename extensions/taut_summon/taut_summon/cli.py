@@ -125,8 +125,13 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("name", metavar="NAME_OR_PROVIDER")
+def _add_run_arguments(
+    parser: argparse.ArgumentParser, *, require_name: bool = True
+) -> None:
+    if require_name:
+        parser.add_argument("name", metavar="NAME_OR_PROVIDER")
+    else:
+        parser.add_argument("name", metavar="NAME_OR_PROVIDER", nargs="?")
     parser.add_argument("threads", metavar="THREAD", nargs="*")
     parser.add_argument("--provider")
     parser.add_argument("--terminal", action="store_true")
@@ -147,6 +152,21 @@ def _parse_run_args(
 ) -> argparse.Namespace:
     parser = _SummonArgumentParser(prog="taut-summon run")
     _add_run_arguments(parser)
+    if "--" in args:
+        boundary = list(args).index("--")
+        head = list(args[:boundary])
+        tail = list(args[boundary + 1 :])
+        if not tail:
+            return parser.parse_args(list(args), namespace)
+        head_parser = _SummonArgumentParser(prog="taut-summon run")
+        _add_run_arguments(head_parser, require_name=False)
+        parsed = head_parser.parse_intermixed_args(head, namespace)
+        if parsed.name is None:
+            parsed.name = tail[0]
+            parsed.threads = tail[1:]
+        else:
+            parsed.threads = [*parsed.threads, *tail]
+        return parsed
     return parser.parse_intermixed_args(list(args), namespace)
 
 

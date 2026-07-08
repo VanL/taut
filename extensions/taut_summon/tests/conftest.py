@@ -148,6 +148,7 @@ def taut_cli(
     cwd: Path,
     as_name: str | None = None,
     token: str | None = None,
+    stdin: str | None = None,
 ) -> tuple[int, str, str]:
     """Run the real ``taut`` CLI in a subprocess (peer writer discipline)."""
 
@@ -163,13 +164,16 @@ def taut_cli(
         capture_output=True,
         text=True,
         encoding="utf-8",
+        input=stdin,
         timeout=30.0,
     )
     return completed.returncode, completed.stdout.strip(), completed.stderr.strip()
 
 
 def say(db: Path, cwd: Path, target: str, text: str, *, as_name: str = "van") -> None:
-    rc, _out, err = taut_cli("say", target, text, db=db, cwd=cwd, as_name=as_name)
+    rc, _out, err = taut_cli(
+        "say", target, "-", db=db, cwd=cwd, as_name=as_name, stdin=text
+    )
     assert rc == 0, f"taut say failed: {err}"
 
 

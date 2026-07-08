@@ -47,6 +47,26 @@ def test_run_provider_flag_wins_over_name() -> None:
     assert request.threads == ("dev",)
 
 
+def test_run_double_dash_preserves_option_shaped_name() -> None:
+    request = run_request(build_parser().parse_args(["run", "--", "-q"]))
+
+    assert request.name == "-q"
+    assert request.provider == "-q"
+    assert request.threads == ("general",)
+
+
+def test_run_double_dash_preserves_option_shaped_thread_tail() -> None:
+    request = run_request(
+        build_parser().parse_args(
+            ["run", "reviewer", "--provider", "claude", "--", "--as"]
+        )
+    )
+
+    assert request.name == "reviewer"
+    assert request.provider == "claude"
+    assert request.threads == ("--as",)
+
+
 def test_run_parses_placeholder_flags() -> None:
     request = run_request(
         build_parser().parse_args(

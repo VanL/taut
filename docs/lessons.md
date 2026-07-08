@@ -161,6 +161,13 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   multi-process SQLite/PTY tests that show corruption or load-sensitive
   failures need a separate command lane, not only a group marker.
 
+- 2026-07-08: Do not pass intentionally large integration-test payloads as
+  subprocess argv. Local hosts may tolerate a 200 KB argument, while GitHub
+  Linux runners reject it with `E2BIG` once interpreter paths and environment
+  size are included. When the production CLI supports stdin, real-process test
+  fixtures should use the public stdin path for large bodies and keep argv for
+  routing, flags, and small contract tokens.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent
