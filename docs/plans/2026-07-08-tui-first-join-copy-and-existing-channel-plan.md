@@ -3,7 +3,7 @@
 Date: 2026-07-08
 Owner: maintainer
 Spec: `docs/specs/04-taut-tui.md` [TUI-10.9]
-Status: draft implementation plan
+Status: independently reviewed (see Review Log); ready for implementation
 
 ## Context
 
@@ -70,7 +70,12 @@ Required behavior:
 
 - Use `self.client.list_threads(all_threads=True)` and filter `kind ==
   "channel"`. This is client-owned and already guest-safe when no member row
-  resolves.
+  resolves (verified: it resolves with `allow_guest=True`, which also covers
+  the `--as NAME` prefill case — the explicit branch returns a guest
+  resolution instead of raising `NotFoundError`; and the
+  `EmptyResultError("no unread threads")` raise fires only when
+  `not all_threads`, so an empty project returns `[]`). Guest resolution has
+  no side effects — no member creation, no activity write.
 - Catch `TautError`/`ValueError` and return `[]` plus a non-fatal inline setup
   note if useful. Failure to list existing channels must not prevent the user
   from manually entering a channel.
@@ -88,18 +93,38 @@ needed.
 Change the hint text from the current "first time here" string to
 identity-oriented copy.
 
+**Chooser focus contract (review finding, 2026-07-08).** The chooser is
+NON-focusable: render it as plain `TextStatic` rows with a selection
+highlight, never a `ListView` or other focusable widget. The shipped modal
+contract pins `app.focused in (name_input, channel_input)` after every key
+and Tab-cannot-leave-the-form (`test_modal_gate_keeps_focus_on_form`); a
+focusable chooser would break those tests or silently weaken the modal
+gate — the same bug class review round R-1 caught. Up/Down are handled by a
+key handler on the first-join container: Textual `Input` does not consume
+Up/Down, so they bubble to the container cleanly while printable keys stay
+with the focused input. The shipped focus-pin tests must remain green
+unmodified.
+
 If existing channels are available:
 
 - show the channel names in a lightweight chooser inside the first-join surface;
 - set the initial selected channel to the first channel in client order;
 - keep `#firstjoin-channel` as the submit source, setting its value to the
   selected channel as the user moves the selection;
-- Up/Down moves the selection while focus is on the channel field or channel
-  chooser;
+- Up/Down moves the selection while focus is on either form input (via the
+  container key handler above);
 - typing in `#firstjoin-channel` replaces the selected value with arbitrary
-  user input, allowing a new channel name;
+  user input, allowing a new channel name; the chooser highlight follows only
+  Up/Down, never the typed text (no fuzzy matching — out of scope);
 - hint should say no identity is recognized and that the user can pick an
   existing channel or type a new one.
+
+Prefill × chooser (review finding, 2026-07-08): with `--as NAME` unknown AND
+existing channels, both affordances apply simultaneously — name input
+prefilled with NAME, channel input pre-set to the first existing channel,
+focus on the channel input (the shipped prefill focus). Shipped prefill
+tests seed empty projects, so they stay green; the combined state gets its
+own test (Task 3 item 7).
 
 If no channels are available:
 
@@ -152,7 +177,28 @@ Add/adjust tests:
 
 6. Existing launch tests remain green:
    - non-tty launch tests remain unchanged;
-   - existing first-join success/failure tests remain green.
+   - existing first-join success/failure tests remain green;
+   - the shipped modal focus-pin tests (`test_modal_gate_keeps_focus_on_form`
+     asserting `app.focused in (name_input, channel_input)`) remain green
+     UNMODIFIED — this is the executable form of the non-focusable-chooser
+     contract in Task 2.
+
+7. Prefill × chooser combined state:
+   - seed a project with existing channels, launch with `--as newname`;
+   - name input prefilled with `newname`, channel input pre-set to the first
+     existing channel, focus on the channel input;
+   - submitting immediately joins that channel as that name through the real
+     client path.
+
+## Task 4 — Docs alignment
+
+Owner: `docs/implementation/05-taut-tui-architecture.md`.
+
+Update the first-join paragraphs: unrecognized-identity wording, the
+non-focusable channel chooser and its container-level Up/Down handling, the
+guest-safe `list_threads(all_threads=True)` discovery path (and why
+`joined_threads()` cannot answer it), and the corrected `esc then q` quit
+affordance. Doc alignment is part of the definition of done.
 
 ## Risks and Constraints
 
@@ -185,3 +231,25 @@ If implementation touches shared client behavior, broaden to full `uv run
 Revert the implementation commit. This slice only changes TUI display/default
 selection and tests; it adds no persistent state and changes no client
 semantics.
+
+## Review Log
+
+- 2026-07-08 — Independent plan review (Claude, cross-family; the spec/plan
+  refinement was authored by another agent). Verified against the code before
+  findings:
+  - `list_threads(all_threads=True)` guest-safety CONFIRMED, including the
+    `--as` prefill case and empty-project no-raise behavior (folded into
+    Task 1).
+  - The `q`-hint premise CONFIRMED as a real shipped bug: the `q` binding is
+    non-priority and a focused Input consumes printable keys; the shipped
+    test only asserted `check_action("quit_app")`, never the key path.
+  - Finding 1 (must fix): chooser focus contract unspecified — a focusable
+    chooser would break the shipped modal focus-pin tests
+    (`test_modal_gate_keeps_focus_on_form`). Resolved: non-focusable
+    `TextStatic` chooser + container-level Up/Down handling; shipped focus
+    tests must stay green unmodified (Task 2 + Task 3 item 6).
+  - Finding 2: prefill × chooser combined initial state undefined.
+    Resolved: name prefilled, first channel pre-set, focus on channel;
+    new Task 3 item 7.
+  - Finding 3: no docs task. Resolved: Task 4 added
+    (`docs/implementation/05-taut-tui-architecture.md`).
