@@ -68,7 +68,7 @@ jobs:
         if: runner.os != 'Windows'
         timeout-minutes: 15
         run: |
-          pytest extensions/taut_summon/tests -v --tb=short -m "xdist_group and not requires_local_llm" -n 1 --dist loadgroup
+          pytest extensions/taut_summon/tests -v --tb=short -m "xdist_group and not requires_live_harness and not requires_local_llm" -n 1 --dist loadgroup
 
       - name: Test CLI installation
         timeout-minutes: 2

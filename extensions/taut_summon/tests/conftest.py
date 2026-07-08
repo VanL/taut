@@ -236,9 +236,20 @@ def _control_request(
     """Send one control request from a client and await the correlated reply."""
 
     from taut_summon._control import ControlClient
+    from taut_summon._state import get_session
 
     client = TautClient(db_path=db)
-    control = ControlClient(client.queue, member_id)
+    ledger = client.queue("taut_summon_state")
+    try:
+        row = get_session(ledger, member_id)
+    finally:
+        ledger.close()
+    control = ControlClient(
+        client.queue,
+        member_id,
+        driver_pid=row["driver_pid"] if row is not None else None,
+        driver_start_time=row["driver_start_time"] if row is not None else None,
+    )
     try:
         return control.request(command, timeout=timeout)
     finally:

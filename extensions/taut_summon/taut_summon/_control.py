@@ -18,8 +18,8 @@ JSON subset; verbs STOP / STATUS / PING). Two roles live here:
   request carries a ``reply_to`` naming a per-request queue
   ``sys.rsp_<member-id>_<request_id>``, so any number of concurrent clients
   from different terminals get their own answers and never consume each
-  other's. The requester-less rate-backstop report falls back to the shared
-  ``sys.rsp_<member-id>`` queue.
+  other's. Requester-less rate-backstop breaches surface through logs and
+  later STATUS snapshots, not as unsolicited control replies.
 
 Control queues are deliberately **unregistered** plain broker queues
 ([IAN-6.1] as amended by D3): invisible to every core command, the same
@@ -118,6 +118,8 @@ class ControlRequest:
     command: str
     request_id: str | None
     reply_to: str | None
+    driver_pid: int | None
+    driver_start_time: str | None
     raw: str
 
 
@@ -142,27 +144,58 @@ def parse_control_request(body: str) -> ControlRequest:
     try:
         payload = json.loads(raw)
     except (json.JSONDecodeError, ValueError):
-        return ControlRequest(command="", request_id=None, reply_to=None, raw=raw)
+        return ControlRequest(
+            command="",
+            request_id=None,
+            reply_to=None,
+            driver_pid=None,
+            driver_start_time=None,
+            raw=raw,
+        )
     if not isinstance(payload, dict):
-        return ControlRequest(command="", request_id=None, reply_to=None, raw=raw)
+        return ControlRequest(
+            command="",
+            request_id=None,
+            reply_to=None,
+            driver_pid=None,
+            driver_start_time=None,
+            raw=raw,
+        )
     command_value = payload.get("command")
     command = command_value.strip().upper() if isinstance(command_value, str) else ""
+    driver_pid_value = payload.get("driver_pid")
+    driver_pid = (
+        driver_pid_value
+        if isinstance(driver_pid_value, int) and not isinstance(driver_pid_value, bool)
+        else None
+    )
     return ControlRequest(
         command=command,
         request_id=_opt_str(payload, "request_id"),
         reply_to=_opt_str(payload, "reply_to"),
+        driver_pid=driver_pid,
+        driver_start_time=_opt_str(payload, "driver_start_time"),
         raw=raw,
     )
 
 
 def encode_control_command(
-    command: str, request_id: str, *, reply_to: str | None = None
+    command: str,
+    request_id: str,
+    *,
+    reply_to: str | None = None,
+    driver_pid: int | None = None,
+    driver_start_time: str | None = None,
 ) -> str:
     """Serialize one request body ([SUM-9] client side)."""
 
     payload: dict[str, Any] = {"command": command, "request_id": request_id}
     if reply_to is not None:
         payload["reply_to"] = reply_to
+    if driver_pid is not None:
+        payload["driver_pid"] = driver_pid
+    if driver_start_time is not None:
+        payload["driver_start_time"] = driver_start_time
     return json.dumps(payload, separators=(",", ":"))
 
 
@@ -237,6 +270,8 @@ class ControlLoop:
         release_confirmed: Callable[[], bool],
         rate_limit: int | None,
         ledger_queue_name: str,
+        driver_pid: int,
+        driver_start_time: str,
     ) -> None:
         self._member_id = member_id
         self._db_path = db_path
@@ -250,6 +285,8 @@ class ControlLoop:
         self._release_confirmed = release_confirmed
         self._rate_limit = _DEFAULT_RATE_LIMIT if rate_limit is None else rate_limit
         self._ledger_queue_name = ledger_queue_name
+        self._driver_pid = driver_pid
+        self._driver_start_time = driver_start_time
         # The control/audit cadence. Kept gentle by default so the audit's
         # peeks do not add db contention; tests that exercise stop/status
         # latency or the rate backstop lower it via the env var.
@@ -420,7 +457,7 @@ class ControlLoop:
         self._init_audit_cursor()
 
     def _close(self) -> None:
-        self._close_handles(reap_control_queues=True)
+        self._close_handles()
 
     def _reopen_broker_handles(self, where: str, exc: BrokerError) -> bool:
         try:
@@ -443,7 +480,6 @@ class ControlLoop:
             ctl_out=old_ctl_out,
             ledger=old_ledger,
             thread_queues=old_thread_queues,
-            reap_control_queues=False,
         )
         return True
 
@@ -464,13 +500,12 @@ class ControlLoop:
         self._ledger = handles.ledger
         self._thread_queues = handles.thread_queues
 
-    def _close_handles(self, *, reap_control_queues: bool) -> None:
+    def _close_handles(self) -> None:
         self._close_queue_handles(
             ctl_in=self._ctl_in,
             ctl_out=self._ctl_out,
             ledger=self._ledger,
             thread_queues=self._thread_queues,
-            reap_control_queues=reap_control_queues,
         )
         self._client = None
         self._ctl_in = None
@@ -485,21 +520,11 @@ class ControlLoop:
         ctl_out: Queue | None,
         ledger: Queue | None,
         thread_queues: dict[str, Queue],
-        reap_control_queues: bool,
     ) -> None:
-        # Reap the driver's own control queues on the way out: hard-delete
-        # anything left in ctl_in (a command that arrived during shutdown)
-        # and the shared rsp queue (unused in the per-request-reply design,
-        # but swept defensively) so no unclaimed control rows outlive the
-        # driver in the member's durable sys.* namespace. Chat/ledger queues
-        # are peek-mode and never deleted.
-        if reap_control_queues:
-            for reap in (ctl_in, ctl_out):
-                if reap is not None:
-                    try:
-                        reap.delete()
-                    except Exception:  # pragma: no cover - defensive
-                        logger.debug("control queue reap failed", exc_info=True)
+        # Do not hard-delete sys.* queues during shutdown. Commands and replies
+        # that completed were already claim-consumed via read_one(); leftovers
+        # are invisible to core, and delete-all maintenance under high process
+        # churn is a worse failure mode than an inert stale control row.
         queues: list[Queue | None] = [ctl_in, ctl_out, ledger]
         queues.extend(thread_queues.values())
         for queue in queues:
@@ -524,6 +549,14 @@ class ControlLoop:
 
     def _dispatch(self, body: str) -> None:
         request = parse_control_request(body)
+        if request.command in _KNOWN_COMMANDS and not self._matches_driver(request):
+            logger.info(
+                "dropping stale control command %s for driver evidence %r/%r",
+                request.command,
+                request.driver_pid,
+                request.driver_start_time,
+            )
+            return
         if request.command == CONTROL_PING:
             self._reply(
                 encode_control_reply(
@@ -561,6 +594,12 @@ class ControlLoop:
                 ),
                 reply_to=request.reply_to,
             )
+
+    def _matches_driver(self, request: ControlRequest) -> bool:
+        return (
+            request.driver_pid == self._driver_pid
+            and request.driver_start_time == self._driver_start_time
+        )
 
     def _status_fields(self) -> dict[str, Any]:
         try:
@@ -768,9 +807,18 @@ class ControlLoop:
 class ControlClient:
     """Write a control request and await its correlated reply ([SUM-9])."""
 
-    def __init__(self, queue_factory: Callable[[str], Queue], member_id: str) -> None:
+    def __init__(
+        self,
+        queue_factory: Callable[[str], Queue],
+        member_id: str,
+        *,
+        driver_pid: int | None = None,
+        driver_start_time: str | None = None,
+    ) -> None:
         self._queue_factory = queue_factory
         self._member_id = member_id
+        self._driver_pid = driver_pid
+        self._driver_start_time = driver_start_time
         self._ctl_in = queue_factory(control_in_queue_name(member_id))
 
     def request(self, command: str, *, timeout: float) -> dict[str, Any] | None:
@@ -787,7 +835,13 @@ class ControlClient:
         request_id = secrets.token_hex(8)
         reply_to = f"{control_out_queue_name(self._member_id)}_{request_id}"
         reply_queue = self._queue_factory(reply_to)
-        body_out = encode_control_command(command, request_id, reply_to=reply_to)
+        body_out = encode_control_command(
+            command,
+            request_id,
+            reply_to=reply_to,
+            driver_pid=self._driver_pid,
+            driver_start_time=self._driver_start_time,
+        )
         try:
             broker_retry(lambda: self._ctl_in.write(body_out), what="control request")
             deadline = time.monotonic() + timeout
@@ -818,16 +872,9 @@ class ControlClient:
                     return payload
             return None
         finally:
-            # Explicitly delete the single-use reply queue — hard-remove any
-            # reply (read-and-claimed on success, or arrived-but-unread on
-            # timeout) so it never lingers as an unclaimed row that
-            # auto-vacuum cannot reclaim. Narrow residual: a driver reply
-            # written strictly after this delete orphans one row; the window
-            # is the few ms between the last read attempt and here.
-            try:
-                reply_queue.delete()
-            except Exception:  # pragma: no cover - defensive
-                logger.debug("reply queue delete failed", exc_info=True)
+            # Successful replies have already been claim-consumed by read_one().
+            # Timeout leftovers use a random per-request sys.* queue name and
+            # are inert; avoid delete-all maintenance in the hot control path.
             try:
                 reply_queue.close()
             except Exception:  # pragma: no cover - defensive

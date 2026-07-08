@@ -71,7 +71,10 @@ GitHub Actions mirrors that boundary: `.github/workflows/test.yml` owns normal
 push/PR gates and is reusable, `.github/workflows/release-gate.yml` runs on
 `v*` tags, reuses the root and PG test workflows, verifies that the tag still
 points at the tested commit, and calls `.github/workflows/release.yml` to build
-artifacts and create the GitHub Release. `.github/workflows/test-pg-extension.yml`
+artifacts and create the GitHub Release. The workflow's summon process matrix
+uses the same deterministic selector as the release helper
+(`xdist_group and not requires_live_harness and not requires_local_llm`), while
+the local-LLM proof runs in its own prepared CI job. `.github/workflows/test-pg-extension.yml`
 owns the Docker Postgres gate for `taut-pg`, and
 `.github/workflows/release-gate-pg.yml` publishes GitHub artifacts for
 `taut_pg/v*` tags through the same reusable release workflow.
@@ -157,7 +160,11 @@ and to a timer that deliberately counts as pending work, so an idle watcher stil
 reaches the refresh code on backends whose native waiters only wake for queue
 writes. The data-version callback is a wake hint, not a fatal boundary: known
 transient SQLite sidecar read failures mark the watcher for a full pending scan
-on the next drain, while unrelated exceptions still raise.
+on the next drain, while unrelated exceptions still raise. `TautWatcher` keeps
+its SimpleBroker queue handles non-persistent even though the underlying
+`MultiQueueWatcher` can run persistent: summon's driver tests proved that
+long-lived SQLite watcher handles add avoidable page/WAL churn when watcher,
+control, provider, and peer CLI subprocesses share one fresh database.
 
 `TautClient.watch()` builds a client-owned `TautWatchRuntime` adapter before it
 constructs `TautWatcher`. The watcher owns live-follow mechanics and local

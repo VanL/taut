@@ -20,7 +20,7 @@ def test_test_workflow_is_reusable_and_runs_release_gates() -> None:
     assert "workflow_call:" in workflow
     assert "pytest -v --tb=short" in workflow
     assert (
-        'pytest extensions/taut_summon/tests -v --tb=short -m "xdist_group and not requires_local_llm" -n 1 --dist loadgroup'
+        'pytest extensions/taut_summon/tests -v --tb=short -m "xdist_group and not requires_live_harness and not requires_local_llm" -n 1 --dist loadgroup'
         in workflow
     )
     assert (

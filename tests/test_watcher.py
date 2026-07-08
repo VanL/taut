@@ -247,6 +247,21 @@ def _white_box_watcher(
     )
 
 
+def test_taut_watcher_uses_ephemeral_queue_handles(tmp_path: Path) -> None:
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    van = TautClient(db_path=tmp_path / ".taut.db", as_name="van")
+    van.join("foo")
+
+    watcher = _white_box_watcher(van, lambda _item: None, threads=["foo"])
+    try:
+        queue = watcher.get_queue("foo")
+        assert queue is not None
+        assert watcher._persistent is False
+        assert queue.conn is None
+    finally:
+        watcher.stop()
+
+
 def test_taut_watcher_data_version_transient_falls_back_to_polling(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

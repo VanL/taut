@@ -1424,12 +1424,10 @@ def test_concurrent_status_clients_each_get_their_own_reply(
 def test_dismiss_leaves_no_unclaimed_control_rows(
     summon_db: Path, tmp_path: Path, driver_factory: Callable[..., DriverProcess]
 ) -> None:
-    # Lifecycle hygiene: control messages must not accumulate as unclaimed
-    # rows in the member's durable sys.* namespace (auto-vacuum reclaims
-    # only *claimed* rows). Per-request reply queues are client-deleted; the
-    # driver reaps ctl_in and the shared rsp queue on shutdown. After a
-    # full summon → several STATUS round-trips → dismiss, nothing pending
-    # remains in either control queue.
+    # Lifecycle hygiene: ordinary control messages are claim-consumed rather
+    # than left pending in the member's durable sys.* namespace. After a full
+    # summon → several STATUS round-trips → dismiss, nothing pending remains
+    # in either shared control queue.
     from taut_summon._control import control_in_queue_name, control_out_queue_name
 
     driver = driver_factory(
@@ -1605,15 +1603,27 @@ def test_rate_backstop_nudges_and_hard_breaches_on_flood(
         "scripted",
         "general",
         scenario={
-            "on_start": [
-                {"exec_taut": {"args": ["say", "general", "spam"], "count": 8}}
-            ]
+            "responses": [
+                [{"exec_taut": {"args": ["say", "general", "spam"], "count": 2}}],
+                [],
+                [{"exec_taut": {"args": ["say", "general", "spam"], "count": 3}}],
+            ],
+            "default_response": [],
         },
         extra_args=("--rate-limit", "1"),
         control_interval=0.1,
         tag="flood",
     )
     driver.wait_for_start()
+    say(summon_db, tmp_path, "general", "trigger soft flood")
+    wait_until(
+        lambda: (
+            "rate backstop:" in driver.stderr_tail()
+            and "nudging" in driver.stderr_tail()
+        ),
+        message="rate soft-breach nudge logged",
+    )
+    say(summon_db, tmp_path, "general", "trigger hard flood")
     member = _member_by_name(summon_db, "scripted")
     assert member is not None
 
@@ -1628,7 +1638,9 @@ def test_rate_backstop_nudges_and_hard_breaches_on_flood(
     assert status["rate_limited"] is True
     assert status["rate_breaches"] >= 1
     # The soft-breach nudge fired first and was logged by the backstop.
-    assert "rate backstop" in driver.stderr_tail()
+    stderr = driver.stderr_tail()
+    assert "nudging" in stderr
+    assert "HARD breach" in stderr
     # The breach is NOT written as an unconsumed control-queue message.
     assert _ctl_out_messages(summon_db, member.member_id) == []
 

@@ -624,6 +624,12 @@ Contract:
   corresponding timestamp row-shape misread) must fall back to a normal
   pending scan instead of killing the watcher; non-transient exceptions
   still surface.
+- `TautWatcher` uses non-persistent SimpleBroker queue handles. The core
+  `MultiQueueWatcher` still supports persistent handles when explicitly
+  requested, but taut's chat watcher must keep SQLite handles short-lived:
+  summon runs watcher, control, provider, and peer CLI processes against one
+  fresh database, and long-lived watcher handles have produced malformed-page
+  reads under that WAL churn.
 
 The TUI (future) is a consumer of `TautClient` + `TautWatcher`, ships as
 the optional extra `taut[tui]`, and adds no new runtime dependency to the
@@ -909,6 +915,12 @@ Helper obligations:
   external-live lane runs installed external harnesses in strict prewired mode
   (`TAUT_SUMMON_LIVE_HARNESS_STRICT=1`) so local release checks do not pass by
   skipping already-installed provider CLIs for onboarding.
+- In `.github/workflows/test.yml`, keep summon's deterministic process lane
+  aligned with the release helper selector:
+  `xdist_group and not requires_live_harness and not requires_local_llm`. The
+  local-LLM lane runs in its own CI job with a prepared loopback Ollama model.
+  External-provider live harnesses are a strict local release gate unless CI
+  grows explicit credentials/tooling for those provider CLIs.
 - After version sync, build the selected package artifacts and run
   `uv lock` in `extensions/taut_summon` when the summon package is selected.
 

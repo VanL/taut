@@ -578,7 +578,11 @@ class TautWatcher(MultiQueueWatcher):
             queue_configs,
             db=self._runtime.target,
             stop_event=stop_event,
-            persistent=True,
+            # Keep SQLite watcher handles short-lived. Summon driver tests run
+            # watcher, control, provider, and peer CLI subprocesses against one
+            # fresh database; persistent watcher handles made rare WAL/page
+            # corruption observable under that startup churn.
+            persistent=False,
             inactive_probe_interval=membership_refresh_interval,
             config=self._runtime.config,
         )

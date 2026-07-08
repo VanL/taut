@@ -696,6 +696,18 @@ durable conversation; the harness session is an optimization of it.
   rewrite the same idempotent request to the same per-request reply queue
   within their timeout budget; STOP is not retried because duplicate stop
   commands blur shutdown ownership.
+- Every STOP / STATUS / PING request carries the live driver evidence
+  (`driver_pid`, `driver_start_time`) the client resolved from the session
+  ledger. The driver drops commands whose evidence does not match its own
+  process. This generation fence makes stale commands left in the stable
+  `sys.ctl_<member-id>` queue inert, especially stale STOP rows from a previous
+  driver generation.
+- Control cleanup is consume-and-close, not delete-all. Commands and successful
+  replies are already removed by `read_one()`; timeout leftovers live on random
+  unregistered `sys.*` reply queues and are inert. The driver and clients must
+  not hard-delete control queues during shutdown, because delete-all maintenance
+  in the hot multi-process control path can add SQLite contention without
+  strengthening the command contract.
 - Divergences from Weft, each with its reason (the [TAUT-12.3]
   obligation): **(a)** the data lane is provider-native streaming plus
   chat threads, not execute/result work items — conversation is not a

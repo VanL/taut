@@ -86,7 +86,10 @@ running three concurrent lanes that a cold reader must keep distinct:
    `TautWatcher` deliberately uses the core data-version polling path rather
    than the broker-native multi-queue activity waiter: a native waiter can miss
    a write that lands before the first wait call is armed, while data-version
-   polling sees database-wide changes across all watched queues.
+   polling sees database-wide changes across all watched queues. It also uses
+   non-persistent queue handles so the driver does not keep long-lived SQLite
+   watcher connections open while control clients, provider events, and peer
+   CLI subprocesses are all writing the same fresh database.
 2. **Event pump — a dedicated drain thread.** Consumes `events()` for the
    life of the child ([SUM-7.1]): session ids to the ledger, `activity` to
    member liveness via a rate-limited token-selected `whoami()` (the public
@@ -237,6 +240,15 @@ unresponsive to the client. The control thread stays responsive while an
 `inject()` is blocked on a stalled harness because STOP's path closes the
 adapter handle, which the [SUM-7.1] contract requires to unblock the in-flight
 write.
+
+Control cleanup closes broker handles but does not hard-delete control queues.
+Completed commands and replies are already claim-consumed by `read_one`; every
+control request also carries the live `driver_pid`/`driver_start_time` resolved
+from the session ledger, and the driver drops commands whose evidence does not
+match its own process. Any timeout reply row is isolated on a random
+unregistered `sys.*` queue. That inert residue is preferable to running
+delete-all maintenance in the same high-churn SQLite window as driver, provider,
+and CLI subprocesses.
 
 The rate backstop ([SUM-10]) is a circuit breaker, not a content policy: a
 driver-local audit cursor per thread counts `from_id == self` messages on the

@@ -1015,6 +1015,7 @@ class SummonDriver:
         connection is shared across threads.
         """
 
+        driver_pid, driver_start_time = self._require_evidence()
         loop = ControlLoop(
             member_id=boot.member_id,
             db_path=self._request.db_path,
@@ -1028,6 +1029,8 @@ class SummonDriver:
             release_confirmed=lambda: self._release_confirmed,
             rate_limit=self._request.rate_limit,
             ledger_queue_name=_LEDGER_QUEUE_NAME,
+            driver_pid=driver_pid,
+            driver_start_time=driver_start_time,
         )
         thread = threading.Thread(
             target=loop.run, daemon=True, name="taut-summon-control"

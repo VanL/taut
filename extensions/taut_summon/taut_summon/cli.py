@@ -336,8 +336,13 @@ def _cmd_stop(args: argparse.Namespace) -> int:
     if resolved is None or driver_liveness(resolved[1]) == "dead":
         print(f"nothing summoned as '{args.name}'{_db_suffix(args)}", file=sys.stderr)
         return 2
-    member, _row = resolved
-    control = ControlClient(client.queue, member.member_id)
+    member, row = resolved
+    control = ControlClient(
+        client.queue,
+        member.member_id,
+        driver_pid=row["driver_pid"],
+        driver_start_time=row["driver_start_time"],
+    )
     try:
         try:
             control.request("STOP", timeout=_STOP_TIMEOUT_SECONDS)
@@ -385,8 +390,13 @@ def _cmd_status(args: argparse.Namespace) -> int:
     if resolved is None or driver_liveness(resolved[1]) == "dead":
         print(f"nothing summoned as '{args.name}'{_db_suffix(args)}", file=sys.stderr)
         return 2
-    member, _row = resolved
-    control = ControlClient(client.queue, member.member_id)
+    member, row = resolved
+    control = ControlClient(
+        client.queue,
+        member.member_id,
+        driver_pid=row["driver_pid"],
+        driver_start_time=row["driver_start_time"],
+    )
     try:
         try:
             reply = control.request("STATUS", timeout=_STATUS_TIMEOUT_SECONDS)

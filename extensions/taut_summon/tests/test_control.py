@@ -128,6 +128,8 @@ def _make_loop(rate_limit: int) -> ControlLoop:
         release_confirmed=lambda: True,
         rate_limit=rate_limit,
         ledger_queue_name="taut_meta",
+        driver_pid=123,
+        driver_start_time="driver-start",
     )
 
 
@@ -214,7 +216,12 @@ def test_control_client_retries_status_with_same_reply_route(
 ) -> None:
     monkeypatch.setattr(control_module, "_CONTROL_REQUEST_RETRY_INTERVAL_SECONDS", 0.01)
     queues = _FakeControlQueues(reply_after_writes=2)
-    client = ControlClient(cast(Any, queues.queue), "m_abc")
+    client = ControlClient(
+        cast(Any, queues.queue),
+        "m_abc",
+        driver_pid=123,
+        driver_start_time="driver-start",
+    )
 
     reply = client.request("STATUS", timeout=1.0)
 
@@ -228,6 +235,10 @@ def test_control_client_retries_status_with_same_reply_route(
     assert len(ctl_payloads) == 2
     assert ctl_payloads[0]["request_id"] == ctl_payloads[1]["request_id"]
     assert ctl_payloads[0]["reply_to"] == ctl_payloads[1]["reply_to"]
+    assert ctl_payloads[0]["driver_pid"] == 123
+    assert ctl_payloads[0]["driver_start_time"] == "driver-start"
+    assert queues.deleted == []
+    assert ctl_payloads[0]["reply_to"] in queues.closed
 
 
 def test_summon_tests_pin_sqlite_process_env() -> None:
@@ -240,7 +251,12 @@ def test_control_client_does_not_retry_stop_timeout(
 ) -> None:
     monkeypatch.setattr(control_module, "_CONTROL_REQUEST_RETRY_INTERVAL_SECONDS", 0.01)
     queues = _FakeControlQueues(reply_after_writes=None)
-    client = ControlClient(cast(Any, queues.queue), "m_abc")
+    client = ControlClient(
+        cast(Any, queues.queue),
+        "m_abc",
+        driver_pid=123,
+        driver_start_time="driver-start",
+    )
 
     assert client.request("STOP", timeout=0.08) is None
 
@@ -251,6 +267,8 @@ def test_control_client_does_not_retry_stop_timeout(
     ]
     assert len(ctl_payloads) == 1
     assert ctl_payloads[0]["command"] == "STOP"
+    assert queues.deleted == []
+    assert ctl_payloads[0]["reply_to"] in queues.closed
 
 
 def test_rate_breaker_rearms_after_flood_subsides() -> None:
@@ -404,6 +422,60 @@ def test_reopen_preserves_rate_audit_cursor_and_closes_old_handles() -> None:
     assert old_ctl_in.deleted is False
 
 
+def test_close_closes_control_handles_without_delete_all() -> None:
+    loop = _make_loop(rate_limit=60)
+    handles = _fake_broker_handles()
+    ctl_in = cast(_CloseableQueue, handles.ctl_in)
+    ctl_out = cast(_CloseableQueue, handles.ctl_out)
+    loop._install_broker_handles(handles)
+
+    loop._close()
+
+    assert ctl_in.closed is True
+    assert ctl_out.closed is True
+    assert ctl_in.deleted is False
+    assert ctl_out.deleted is False
+
+
+@pytest.mark.parametrize("command", ["STOP", "STATUS", "PING"])
+def test_stale_command_for_old_driver_evidence_is_dropped(command: str) -> None:
+    stops: list[bool] = []
+    loop = ControlLoop(
+        member_id="m_" + "a" * 26,
+        db_path=None,
+        token="taut-tok",
+        provider="scripted",
+        threads=("general",),
+        handle_provider=lambda: None,
+        request_stop=lambda: stops.append(True),
+        shutdown=threading.Event(),
+        shutdown_complete=threading.Event(),
+        release_confirmed=lambda: True,
+        rate_limit=60,
+        ledger_queue_name="taut_meta",
+        driver_pid=2,
+        driver_start_time="new-driver",
+    )
+    replies: list[tuple[str, str]] = []
+    loop._reply = lambda body, *, reply_to=None: replies.append(  # type: ignore[method-assign]
+        (body, reply_to or "")
+    )
+
+    loop._dispatch(
+        encode_control_command(
+            command,
+            "old",
+            reply_to="sys.rsp_m_old",
+            driver_pid=1,
+            driver_start_time="old-driver",
+        )
+    )
+
+    assert stops == []
+    assert loop._pending_stop_seen is False
+    assert replies == []
+
+
 def test_queue_names_derive_from_member_id() -> None:
     assert control_in_queue_name("m_abc123") == "sys.ctl_m_abc123"
     assert control_out_queue_name("m_abc123") == "sys.rsp_m_abc123"
@@ -413,9 +485,14 @@ def test_queue_names_derive_from_member_id() -> None:
 
 
 def test_parse_uppercases_command_and_keeps_request_id() -> None:
-    request = parse_control_request('{"command": "stop", "request_id": "r1"}')
+    request = parse_control_request(
+        '{"command": "stop", "request_id": "r1", '
+        '"driver_pid": 123, "driver_start_time": "abc"}'
+    )
     assert request.command == "STOP"
     assert request.request_id == "r1"
+    assert request.driver_pid == 123
+    assert request.driver_start_time == "abc"
 
 
 def test_parse_tolerates_missing_request_id() -> None:
@@ -432,9 +509,16 @@ def test_parse_malformed_body_yields_empty_command() -> None:
 
 
 def test_encode_command_is_single_line_json() -> None:
-    body = encode_control_command("STATUS", "req-9")
+    body = encode_control_command(
+        "STATUS", "req-9", driver_pid=123, driver_start_time="abc"
+    )
     assert "\n" not in body
-    assert json.loads(body) == {"command": "STATUS", "request_id": "req-9"}
+    assert json.loads(body) == {
+        "command": "STATUS",
+        "request_id": "req-9",
+        "driver_pid": 123,
+        "driver_start_time": "abc",
+    }
 
 
 def test_encode_reply_carries_status_and_correlation() -> None:

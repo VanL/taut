@@ -169,6 +169,21 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   invocations while still starting slow independent setup, such as local LLM
   image/model preparation, in parallel at the beginning.
 
+- 2026-07-08: Release-helper lane splits must be mirrored in reusable CI
+  workflows. Splitting summon local release gates is insufficient if the GitHub
+  process matrix keeps the old broad selector and drives external live harness
+  placeholders plus deterministic process tests through one long SQLite-heavy
+  worker. Guard the exact CI selector in workflow tests so local release
+  readiness and tag-gate readiness do not drift.
+
+- 2026-07-08: Ephemeral control queues should be made inert by naming and
+  correlation, not by sweeping them with delete-all on shutdown. In a real
+  driver test, hard-deleting `sys.*` queues during a flood added SQLite
+  maintenance pressure exactly when driver/provider/CLI subprocesses were all
+  active. Prefer `read_one()` consumption for completed commands/replies, random
+  per-request reply queues for timeout residue, a driver-evidence fence for
+  stable inbound queues, and handle close on shutdown.
+
 - 2026-07-08: Do not pass intentionally large integration-test payloads as
   subprocess argv. Local hosts may tolerate a 200 KB argument, while GitHub
   Linux runners reject it with `E2BIG` once interpreter paths and environment
@@ -262,6 +277,13 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   false malformed-page reads under summon driver/provider/CLI WAL load. Keep the
   slow lane correctness-first and overlap independent setup work, such as the
   local LLM image/model preparation, instead of weakening storage guarantees.
+
+- 2026-07-08: Treat SQLite `database disk image is malformed` in real-process
+  tests as a handle-lifetime bug until disproven. A summon failure recovered
+  `meta.value` rows from the SimpleBroker `messages` table, which pointed away
+  from control JSON logic and toward SQLite page/WAL churn. The useful fix was
+  to shorten `TautWatcher` queue handles, not to broaden retries or hide the
+  lane behind skips.
 
 ## Starter Lessons
 
