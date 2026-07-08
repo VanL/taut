@@ -462,17 +462,20 @@ doc must state it plainly.
 
 ### [TUI-10.9] First-Join Setup Flow
 
-Revision slice added 2026-07-07. This narrows the v1 "setup beyond `init`
-stays CLI-first" scoping (the Task 8 decision recorded in [TUI-13] and
-[TUI-15]) for exactly one flow: a first-time interactive user in a project
-where the client does not recognize them. Everything else in [TUI-15]'s
+Revision slice added 2026-07-07; copy/channel affordance refined 2026-07-08.
+This narrows the v1 "setup beyond `init` stays CLI-first" scoping (the Task 8
+decision recorded in [TUI-13] and [TUI-15]) for exactly one flow: an
+interactive caller in an initialized project where the client does not
+recognize the caller's identity. Everything else in [TUI-15]'s
 identity-management deferral stays deferred.
 
-**Design intent.** The TUI may help a first-time interactive user become
+**Design intent.** The TUI may help an unrecognized interactive caller become
 usable, but it must not become a parallel identity-management system. The TUI
 only collects minimal input and calls existing `TautClient` operations with
 the same semantics as the CLI ([TUI-4.2]). Only the client decides what
-identity or member exists.
+identity or member exists. The setup state should tell the user that no
+identity is recognized for this terminal/caller, then help them choose a
+display name and channel.
 
 **Trigger.** When bare interactive `taut` launches the TUI in an initialized
 project, client construction succeeds, and identity resolution reports the
@@ -497,12 +500,19 @@ concrete next command, for example `taut rejoin NAME` or
   unrecognized
 - channel name
 
-Submitting performs the client-owned equivalent of
-`taut --as NAME join CHANNEL`. Joining a channel that does not exist yet
-creates it — existing client semantics, sufficient for a brand-new project
-straight after [TUI-10.1] init-here. After success the TUI re-runs its normal
-bootstrap as that member; it must not fabricate an optimistic transcript
-([TUI-10.7]).
+When existing channel rows are visible through a client-owned read-only path,
+the form should include a lightweight channel chooser: list existing channels
+and allow arrow-key selection, while also allowing the user to type a new
+channel name. If no channel exists, the channel control is simply an empty
+field for a new channel name. Picking an existing channel and typing a new
+channel are both just ways to choose the `CHANNEL` argument for the same
+client-owned submit action.
+
+Submitting performs the client-owned equivalent of `taut --as NAME join
+CHANNEL`. Joining a channel that does not exist yet creates it — existing
+client semantics, sufficient for a brand-new project straight after
+[TUI-10.1] init-here. After success the TUI re-runs its normal bootstrap as
+that member; it must not fabricate an optimistic transcript ([TUI-10.7]).
 
 **Failure rules.** A simple validation or membership error from `join()`
 shows an inline error and keeps the form open. Any other identity condition
@@ -518,7 +528,14 @@ shows the CLI-first guidance above; the TUI must not invent recovery logic.
 - The form is keyboard-complete ([TUI-8.1]). Enter submits the focused form
   input and must not be swallowed by app-level priority bindings (the
   [TUI-10.1] init-here binding is the known hazard; pinned by test).
-- Escape returns to the identity-guidance state; `q` still quits.
+- When existing channels are listed, Up/Down moves among them without leaving
+  the setup state; typing in the channel field may replace the selected channel
+  with a new channel name. This is an affordance only, not a separate command
+  path.
+- While a text input is focused, printable keys belong to that input. The form
+  hint must not advertise bare `q` as an active quit shortcut in this state.
+  Escape returns to the identity-guidance state; from there `q` quits. A
+  concise hint such as "esc then q quits" is acceptable.
 
 **Non-goals.** The first implementation must not add in-TUI support for:
 rejoin, continuity tokens, `join --new`, persona selection, rename/name
@@ -575,8 +592,12 @@ The first implementation plan must include these proof points:
   member and join match `taut --as NAME join CHANNEL` semantics; a
   conflict-shaped identity error shows CLI-first guidance instead of the
   form and does not crash; Enter reaches the focused form input despite
-  app-level priority bindings; non-tty bare `taut` still never prompts; and
-  existing launch, missing-extra, and CLI verb tests are unchanged.
+  app-level priority bindings; existing-channel projects surface those
+  channels in a lightweight chooser and allow arrow-key selection; typing a
+  new channel still submits the same client-owned join path; the form hint
+  does not claim bare `q` quits while text input is focused; non-tty bare
+  `taut` still never prompts; and existing launch, missing-extra, and CLI verb
+  tests are unchanged.
 - Accessibility inspection gates for keyboard-only operation, visible labels,
   non-color-only status, and contrast-sensitive dark terminal readability.
 
@@ -643,3 +664,7 @@ These design decisions are intentionally deferred from the first TUI:
   ([TUI-10.9]): the typed unrecognized-caller error ([IAN-3.3]), the modal
   name+channel form, and the client-owned `--as NAME join CHANNEL` submit
   path.
+- `docs/plans/2026-07-08-tui-first-join-copy-and-existing-channel-plan.md` —
+  follow-up refinement for [TUI-10.9]: unknown-identity wording, lightweight
+  existing-channel chooser, typing a new channel, and accurate text-input
+  shortcut hints.
