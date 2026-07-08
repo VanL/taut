@@ -26,9 +26,15 @@ from simplebroker.ext import (
     IntegrityError,
     OperationalError,
 )
-from taut_summon._broker_retry import broker_retry, is_transient_broker_error
+from taut_summon._broker_retry import (
+    _BROKER_RETRIES,
+    broker_retry,
+    is_transient_broker_error,
+)
 from taut_summon._control import (
     _CONTROL_DRAIN_RECOVERABLE_FAILURES_BEFORE_DEGRADED,
+    _CONTROL_DRAIN_RETRY_ATTEMPTS,
+    _CONTROL_REPLY_RETRY_ATTEMPTS,
     _RATE_AUDIT_RECOVERABLE_FAILURES_BEFORE_DEGRADED,
     ControlClient,
     ControlLoop,
@@ -209,6 +215,30 @@ def test_broker_retry_does_not_retry_logic_faults() -> None:
     with pytest.raises(IntegrityError):
         broker_retry(integrity_fault, what="test")
     assert len(calls) == 1  # surfaced on the first try, no retries
+
+
+def test_control_drain_outlasts_normal_read_retry_budget() -> None:
+    class FlakyReadQueue:
+        def __init__(self, failures: int) -> None:
+            self.failures = failures
+            self.calls = 0
+
+        def read_one(self) -> str | None:
+            self.calls += 1
+            if self.calls <= self.failures:
+                raise DatabaseError("database disk image is malformed")
+            return None
+
+    queue = FlakyReadQueue(failures=_BROKER_RETRIES + 2)
+    loop = _make_loop(rate_limit=60)
+    loop._ctl_in = cast(Queue, queue)
+
+    with remove_backoff():
+        loop._drain_commands()
+
+    assert queue.calls == _BROKER_RETRIES + 3
+    assert _CONTROL_DRAIN_RETRY_ATTEMPTS > _BROKER_RETRIES
+    assert _CONTROL_REPLY_RETRY_ATTEMPTS > _CONTROL_DRAIN_RETRY_ATTEMPTS
 
 
 def test_control_client_retries_status_with_same_reply_route(

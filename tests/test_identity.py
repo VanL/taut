@@ -907,11 +907,22 @@ def test_human_session_claim_includes_host_and_uid() -> None:
     assert claim.evidence["uid"] == 501
 
 
-def test_random_member_id_is_opaque_and_name_free() -> None:
+def test_random_member_id_has_opaque_random_token_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    token_byte_sizes: list[int] = []
+
+    def token_bytes(size: int) -> bytes:
+        token_byte_sizes.append(size)
+        return b"\x00" * size
+
+    monkeypatch.setattr(identity.secrets, "token_bytes", token_bytes)
+
     member_id = identity.random_member_id()
 
+    assert token_byte_sizes == [20]
+    assert member_id == "m_" + "a" * 32
     assert re.fullmatch(r"m_[a-z0-9]{26,52}", member_id)
-    assert "van" not in member_id
 
 
 def test_ps_argv_reconstruction_preserves_argv0_paths_with_spaces(

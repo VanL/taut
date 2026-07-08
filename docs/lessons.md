@@ -318,6 +318,20 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   malformed-row transient after the driver is otherwise ready; wait for a
   stable row before attaching driver evidence to control requests.
 
+- 2026-07-08: Random opaque identifiers can legitimately contain human-looking
+  substrings. A test that asserts a random id does not include a name such as
+  `van` is probabilistic, not a privacy proof. Test opacity by controlling the
+  entropy source and checking the stable shape/source contract; test
+  name-derived behavior at the call sites that actually receive names.
+
+- 2026-07-08: Control-plane retry budgets must match the role of the operation,
+  and the spec needs an executable guard for that budget order. A dropped
+  STATUS/PING reply or a session-row read that exhausts the ordinary broker
+  budget can turn a healthy driver into a false timeout under tag-CI storage
+  load. Keep non-transient errors loud, but give control reply writes,
+  control-drain reads, and session-row readiness reads explicit budgets with
+  tests that outlast the normal broker retry count.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

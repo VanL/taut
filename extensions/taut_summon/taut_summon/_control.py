@@ -63,7 +63,8 @@ _KNOWN_COMMANDS = frozenset({CONTROL_STOP, CONTROL_STATUS, CONTROL_PING})
 _DEFAULT_RATE_LIMIT = 60
 _RATE_WINDOW_SECONDS = 60.0
 _STOP_ACK_TIMEOUT_SECONDS = 60.0
-_CONTROL_REPLY_RETRY_ATTEMPTS = 10
+_CONTROL_DRAIN_RETRY_ATTEMPTS = 90
+_CONTROL_REPLY_RETRY_ATTEMPTS = 120
 _CONTROL_REQUEST_RETRY_INTERVAL_SECONDS = 5.0
 _IDEMPOTENT_RETRY_COMMANDS = frozenset({CONTROL_STATUS, CONTROL_PING})
 _RATE_AUDIT_RECOVERABLE_FAILURES_BEFORE_DEGRADED = 3
@@ -540,7 +541,11 @@ class ControlLoop:
         ctl_in = self._ctl_in
         assert ctl_in is not None
         while not self._shutdown.is_set():
-            body = broker_retry(ctl_in.read_one, what="control read")
+            body = broker_retry(
+                ctl_in.read_one,
+                what="control read",
+                attempts=_CONTROL_DRAIN_RETRY_ATTEMPTS,
+            )
             if body is None:
                 return
             self._dispatch(body if isinstance(body, str) else str(body))

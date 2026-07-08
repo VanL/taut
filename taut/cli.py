@@ -245,6 +245,8 @@ def _cmd_watch(args: argparse.Namespace) -> int:
         watcher.run_forever()
     except KeyboardInterrupt:
         return 0
+    finally:
+        watcher.stop(join=True, timeout=5.0)
     return 0
 
 

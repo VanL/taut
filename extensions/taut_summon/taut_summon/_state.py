@@ -56,6 +56,7 @@ from taut_summon._broker_retry import broker_retry
 
 SUMMON_SCHEMA_VERSION = 2
 SUMMON_SCHEMA_VERSION_KEY = "summon_schema_version"
+_SESSION_READ_RETRY_ATTEMPTS = 90
 
 _META_DDL = """
 CREATE TABLE IF NOT EXISTS taut_meta (
@@ -419,7 +420,7 @@ def get_session(queue: Queue, member_id: str) -> SummonSessionRow | None:
             row = _one(session, _SESSION_SELECT, (member_id,))
         return _session_row(row)
 
-    return _state_retry(_op, what="get session")
+    return _state_retry(_op, what="get session", attempts=_SESSION_READ_RETRY_ATTEMPTS)
 
 
 def list_sessions(queue: Queue) -> list[SummonSessionRow]:
