@@ -514,7 +514,10 @@ def test_pty_terminal_mode_is_disabled_by_capability(
         message="pty session row",
     )
 
-    assert "not supported by provider 'pty'" in driver.stderr_tail()
+    wait_until(
+        lambda: "not supported by provider 'pty'" in driver.stderr_tail(),
+        message=f"terminal capability warning; stderr: {driver.stderr_tail()}",
+    )
     assert driver.stop() == 0
 
 
