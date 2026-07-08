@@ -100,6 +100,7 @@ from conftest import (
     _member_by_name,
     _member_token,
     _session_row,
+    _wait_for_session_row,
     say,
     summon_cli,
     taut_cli,
@@ -192,12 +193,28 @@ class ConformanceHarness:
 
         if self.has_received_log:
             driver.wait_for_start()
+        member = None
+
+        def present_member() -> bool:
+            nonlocal member
+            candidate = _member_by_name(self.summon_db, driver.name)
+            if candidate is None:
+                return False
+            if getattr(candidate, "presence", None) != "here":
+                return False
+            member = candidate
+            return True
+
         wait_until(
-            lambda: self._ready_member(driver.name) is not None,
+            present_member,
             message=f"summoned member '{driver.name}'; stderr: {driver.stderr_tail()}",
         )
-        member = self._ready_member(driver.name)
         assert member is not None
+        _wait_for_session_row(
+            self.summon_db,
+            member.member_id,
+            message=f"session row for '{driver.name}'",
+        )
         return member
 
     def _ready_member(self, name: str) -> Any | None:

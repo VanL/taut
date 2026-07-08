@@ -41,6 +41,7 @@ from conftest import (
     _member_by_name,
     _member_token,
     _session_row,
+    _wait_for_session_row,
     say,
     summon_cli,
     taut_cli,
@@ -567,6 +568,7 @@ def test_pty_detached_orientation_is_injected_before_chat(
         extra_env=_fake_pty_env(pty_log, {"queries": True, "modes": False}),
         tag="pty-orientation",
     )
+    driver.wait_for_start()
     wait_until(
         lambda: any(entry["event"] == "input" for entry in _fake_tui_entries(pty_log)),
         message=(
@@ -913,13 +915,25 @@ def test_step0_claim_collision_falls_back_for_implied_name(
         # bootstrap=False: the pool fallback means the final member name is
         # not the run argument; the wait below is this test's own barrier.
         driver.wait_for_start(bootstrap=False)
+        fallback = None
+
+        def _fallback_member_exists() -> bool:
+            nonlocal fallback
+            for member in _client(summon_db).who():
+                if member.name not in {"scripted", "van"}:
+                    fallback = member
+                    return True
+            return False
+
         wait_until(
-            lambda: any(
-                m.name != "scripted"
-                and _session_row(summon_db, m.member_id) is not None
-                for m in _client(summon_db).who()
-            ),
-            message="pool-fallback member with a session row",
+            _fallback_member_exists,
+            message="pool-fallback member",
+        )
+        assert fallback is not None
+        _wait_for_session_row(
+            summon_db,
+            fallback.member_id,
+            message="pool-fallback member session row",
         )
         assert _member_by_name(summon_db, "scripted") is None
         assert driver.stop() == 0

@@ -46,16 +46,16 @@ def _read_until(pattern: bytes, *, timeout: float = 5.0) -> bytes:
     return buf
 
 
-def _record(path: Path | None, event: str, **fields: Any) -> None:
-    if path is None:
-        return
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps({"event": event, **fields}, sort_keys=True) + "\n")
+def _record(paths: list[Path], event: str, **fields: Any) -> None:
+    payload = json.dumps({"event": event, **fields}, sort_keys=True) + "\n"
+    for path in paths:
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(payload)
 
 
 def _expect_reply(
     *,
-    record_path: Path | None,
+    record_paths: list[Path],
     name: str,
     query: bytes,
     expected: bytes,
@@ -64,7 +64,7 @@ def _expect_reply(
     _write(query)
     got = _read_until(expected, timeout=timeout)
     _record(
-        record_path,
+        record_paths,
         "query",
         name=name,
         query=query.decode("latin1"),
@@ -76,64 +76,64 @@ def _expect_reply(
         raise SystemExit(40)
 
 
-def _run_queries(record_path: Path | None, rows: int, cols: int) -> None:
+def _run_queries(record_paths: list[Path], rows: int, cols: int) -> None:
     pos = f"\x1b[{rows};{cols}R".encode()
     _expect_reply(
-        record_path=record_path,
+        record_paths=record_paths,
         name="absolute-size",
         query=b"\x1b[999;999H\x1b[6n",
         expected=pos,
     )
     _expect_reply(
-        record_path=record_path,
+        record_paths=record_paths,
         name="relative-size",
         query=b"\x1b[1;1H\x1b[9999C\x1b[9999B\x1b[6n",
         expected=pos,
     )
     _expect_reply(
-        record_path=record_path,
+        record_paths=record_paths,
         name="dsr-status",
         query=b"\x1b[5n",
         expected=b"\x1b[0n",
     )
     _expect_reply(
-        record_path=record_path,
+        record_paths=record_paths,
         name="primary-da",
         query=b"\x1b[c",
         expected=b"\x1b[?1;2c",
     )
     _expect_reply(
-        record_path=record_path,
+        record_paths=record_paths,
         name="secondary-da",
         query=b"\x1b[>c",
         expected=b"\x1b[>0;0;0c",
     )
     _expect_reply(
-        record_path=record_path,
+        record_paths=record_paths,
         name="decrqm",
         query=b"\x1b[?2004$p",
         expected=b"\x1b[?2004;0$y",
     )
     _expect_reply(
-        record_path=record_path,
+        record_paths=record_paths,
         name="xtversion",
         query=b"\x1b[>q",
         expected=b"\x1bP>|taut-summon(0)\x1b\\",
     )
     _expect_reply(
-        record_path=record_path,
+        record_paths=record_paths,
         name="osc-fg",
         query=b"\x1b]10;?\x07",
         expected=b"\x1b]10;rgb:",
     )
     _expect_reply(
-        record_path=record_path,
+        record_paths=record_paths,
         name="osc-bg",
         query=b"\x1b]11;?\x07",
         expected=b"\x1b]11;rgb:",
     )
     _expect_reply(
-        record_path=record_path,
+        record_paths=record_paths,
         name="kitty-keyboard",
         query=b"\x1b[?u",
         expected=b"\x1b[?0u",
@@ -176,20 +176,22 @@ def main() -> int:
     tty.setraw(sys.stdin.fileno())
     config = json.loads(os.environ.get("TAUT_FAKE_TUI_CONFIG", "{}"))
     REDRAW = bool(config.get("redraw", True))
-    record_path = (
-        Path(os.environ["TAUT_FAKE_TUI_LOG"])
-        if os.environ.get("TAUT_FAKE_TUI_LOG")
-        else None
-    )
+    record_paths = []
+    if os.environ.get("TAUT_FAKE_TUI_LOG"):
+        record_paths.append(Path(os.environ["TAUT_FAKE_TUI_LOG"]))
+    if os.environ.get("TAUT_SUMMON_RECEIVED_LOG"):
+        received_path = Path(os.environ["TAUT_SUMMON_RECEIVED_LOG"])
+        if received_path not in record_paths:
+            record_paths.append(received_path)
     rows = int(os.environ.get("TAUT_FAKE_TUI_ROWS", "24"))
     cols = int(os.environ.get("TAUT_FAKE_TUI_COLS", "80"))
 
     def _term(_signum: int, _frame: object) -> None:
-        _record(record_path, "signal", signal="term")
+        _record(record_paths, "signal", signal="term")
         raise SystemExit(0)
 
     signal.signal(signal.SIGTERM, _term)
-    _record(record_path, "start", pid=os.getpid())
+    _record(record_paths, "start", pid=os.getpid())
 
     if config.get("modes", True):
         _write(
@@ -199,17 +201,17 @@ def main() -> int:
             b"\x1b[?1006h\x1b[?1015h\x1b[?2004h\x1b[>1u"
         )
     if config.get("queries", True):
-        _run_queries(record_path, rows, cols)
+        _run_queries(record_paths, rows, cols)
     if unknown := config.get("unknown_query"):
         query = str(unknown).encode("ascii")
         if not query.startswith(ESC):
             query = ESC + query
         _write(query)
-        _record(record_path, "unknown_query", query=query.decode("latin1"))
+        _record(record_paths, "unknown_query", query=query.decode("latin1"))
         if config.get("unknown_blocks", False):
             got = _read_until(b"\x00", timeout=0.3)
             _record(
-                record_path,
+                record_paths,
                 "unknown_reply_window",
                 got=got.decode("latin1"),
             )
@@ -219,7 +221,7 @@ def main() -> int:
         _write(b"\r\nTrust this directory? Type yes and press enter.\r\n")
         onboarding = _read_line()
         _record(
-            record_path,
+            record_paths,
             "onboarding_input",
             raw=(onboarding or b"").decode("latin1"),
         )
@@ -229,9 +231,9 @@ def main() -> int:
         raw = _read_line()
         if raw is None:
             return 0
-        _record(record_path, "input", raw=raw.decode("latin1"))
+        _record(record_paths, "input", raw=raw.decode("latin1"))
         if raw == b"\x03":
-            _record(record_path, "interrupt")
+            _record(record_paths, "interrupt")
             _write(b"\r\ninterrupted\r\n")
             continue
         text = _command_text(raw)
@@ -244,7 +246,7 @@ def main() -> int:
                 timeout=30,
             )
             _record(
-                record_path,
+                record_paths,
                 "run",
                 returncode=result.returncode,
                 stdout=result.stdout,

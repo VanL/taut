@@ -344,6 +344,13 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   make a committed summon session row look absent in CI and hides the behavior
   the test is meant to prove.
 
+- 2026-07-08: A PTY fake harness should write its `start` event to the same
+  received-log readiness channel as scripted harnesses. A side log can prove
+  PTY-specific bytes after the fact, but it cannot drive the shared
+  `wait_for_start()` barrier; without that, CI failures collapse into "no
+  orientation input" instead of telling whether bootstrap, spawn, or injection
+  stalled.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent
