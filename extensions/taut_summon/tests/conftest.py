@@ -59,6 +59,11 @@ SummonCliRunner = Callable[..., tuple[int, str, str]]
 # require shared external resources must opt into narrower grouping rather
 # than making the whole suite serial.
 _DEADLINE = 90.0
+# One broker_retry call in the process harness can consume roughly 43 seconds
+# under SQLite WAL churn (90 attempts, capped exponential backoff). The
+# bootstrap PING barrier must outlast that single-operation budget so a healthy
+# driver is not reported silent while it is correctly riding out a transient.
+_CONTROL_BOOTSTRAP_REQUEST_TIMEOUT = 60.0
 
 
 def _run_summon_cli(
@@ -431,7 +436,7 @@ class DriverProcess:
             member.member_id,
             "PING",
             timeout=timeout,
-            request_timeout=5.0,
+            request_timeout=_CONTROL_BOOTSTRAP_REQUEST_TIMEOUT,
             driver=self,
         )
 

@@ -278,6 +278,12 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   slow lane correctness-first and overlap independent setup work, such as the
   local LLM image/model preparation, instead of weakening storage guarantees.
 
+- 2026-07-08: Readiness probes must outlast the retry budget they rely on. A
+  summon process-lane bootstrap PING with a 5s request timeout failed in CI while
+  the live driver was correctly riding out bounded SQLite transient retries;
+  size the probe timeout above one broker retry loop and keep the overall
+  readiness deadline bounded separately.
+
 - 2026-07-08: Treat SQLite `database disk image is malformed` in real-process
   tests as a handle-lifetime bug until disproven. A summon failure recovered
   `meta.value` rows from the SimpleBroker `messages` table, which pointed away

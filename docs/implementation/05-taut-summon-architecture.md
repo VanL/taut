@@ -303,7 +303,10 @@ The real-process summon test lane uses a correctness-first SQLite posture:
 `BROKER_SYNC_MODE=FULL` keeps SQLite's default sync semantics. The lane is slow
 by design because it starts real driver/provider/CLI processes; downgrading sync
 to `NORMAL` made CI more likely to surface false malformed-page reads under WAL
-churn and hid the summon contract behind storage noise.
+churn and hid the summon contract behind storage noise. Its bootstrap PING
+barrier uses a per-request timeout that exceeds one broker retry budget; a
+shorter probe can falsely report a live driver as silent while the control loop
+is correctly riding out a transient SQLite read/open failure.
 
 ### SimpleBroker facade boundary
 
