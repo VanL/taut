@@ -569,7 +569,10 @@ def test_pty_detached_orientation_is_injected_before_chat(
     )
     wait_until(
         lambda: any(entry["event"] == "input" for entry in _fake_tui_entries(pty_log)),
-        message="orientation input",
+        message=(
+            f"orientation input; entries={_fake_tui_entries(pty_log)!r}; "
+            f"stderr={driver.stderr_tail()}"
+        ),
     )
 
     say(summon_db, tmp_path, "general", "hello pty")
@@ -584,7 +587,10 @@ def test_pty_detached_orientation_is_injected_before_chat(
             )
             >= 2
         ),
-        message="chat input after orientation",
+        message=(
+            f"chat input after orientation; entries={_fake_tui_entries(pty_log)!r}; "
+            f"stderr={driver.stderr_tail()}"
+        ),
     )
     inputs = [
         entry for entry in _fake_tui_entries(pty_log) if entry["event"] == "input"

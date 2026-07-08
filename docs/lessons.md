@@ -338,6 +338,12 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   joins, or blocked injects adds sidecar pressure unrelated to the behavior
   under test and can turn a storage transient into a false timeout.
 
+- 2026-07-08: Real-process readiness helpers should reuse a session-reader
+  queue across a wait loop. Opening a fresh broker queue every 50 ms is not a
+  neutral poll under SQLite WAL pressure; it creates connection churn that can
+  make a committed summon session row look absent in CI and hides the behavior
+  the test is meant to prove.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

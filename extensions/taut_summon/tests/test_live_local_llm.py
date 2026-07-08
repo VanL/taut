@@ -238,6 +238,12 @@ def _sentinel_posted(db: Path, sentinel: str) -> bool:
     )
 
 
+def _tail(path: Path, *, limit: int = 4000) -> str:
+    if not path.exists():
+        return ""
+    return path.read_text(encoding="utf-8", errors="replace")[-limit:]
+
+
 def test_local_llm_runs_locally_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("TAUT_SUMMON_LOCAL_LLM", raising=False)
     monkeypatch.delenv("CI", raising=False)
@@ -304,6 +310,7 @@ def test_local_llm_pty_harness_posts_sentinel(
         encoding="utf-8",
     )
     tui_log = tmp_path / "local-llm-tui.jsonl"
+    driver_stderr = tmp_path / "local-llm-driver.err"
 
     with _CountingProxy(upstream) as proxy:
         env = _base_env()
@@ -321,6 +328,7 @@ def test_local_llm_pty_harness_posts_sentinel(
                 "TAUT_SUMMON_LOCAL_LLM_TUI_LOG": str(tui_log),
             }
         )
+        stderr_handle = driver_stderr.open("w", encoding="utf-8")
         proc = subprocess.Popen(
             [
                 sys.executable,
@@ -340,7 +348,7 @@ def test_local_llm_pty_harness_posts_sentinel(
             cwd=tmp_path,
             env=env,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
+            stderr=stderr_handle,
             text=True,
         )
         try:
@@ -349,16 +357,20 @@ def test_local_llm_pty_harness_posts_sentinel(
                 if _sentinel_posted(db, sentinel):
                     break
                 if proc.poll() is not None:
-                    stderr = proc.stderr.read() if proc.stderr is not None else ""
                     pytest.fail(
                         "local LLM summon driver exited before sentinel landed: "
-                        f"{stderr[-1000:]}"
+                        f"{_tail(driver_stderr)}"
                     )
                 time.sleep(0.5)
             else:
+                rc, out, err = summon_cli(
+                    "status", "local-llm", db=db, cwd=tmp_path, timeout=10.0
+                )
                 pytest.fail(
-                    "local LLM PTY harness did not post sentinel; log: "
-                    f"{_entries(tui_log)!r}"
+                    "local LLM PTY harness did not post sentinel; "
+                    f"driver_rc={proc.poll()!r}; "
+                    f"status_rc={rc}; status_out={out!r}; status_err={err!r}; "
+                    f"log={_entries(tui_log)!r}; stderr={_tail(driver_stderr)}"
                 )
         finally:
             summon_cli("stop", "local-llm", db=db, cwd=tmp_path, timeout=30.0)
@@ -369,6 +381,7 @@ def test_local_llm_pty_harness_posts_sentinel(
                 except subprocess.TimeoutExpired:
                     proc.kill()
                     proc.wait(timeout=10.0)
+            stderr_handle.close()
 
     assert proxy.request_bodies, "local LLM TUI did not call the counting proxy"
     bodies = [json.loads(body) for body in proxy.request_bodies]

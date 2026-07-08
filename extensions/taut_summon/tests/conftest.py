@@ -238,29 +238,33 @@ def _control_request(
     from taut_summon._control import ControlClient
 
     client = TautClient(db_path=db)
+    session_queue = Queue("taut_summon_test_reader", db_path=str(db))
     row: dict[str, Any] | None = None
 
     def found_session_row() -> bool:
         nonlocal row
-        row = _session_row(db, member_id)
+        row = _session_row_from_queue(session_queue, member_id)
         return row is not None
 
-    wait_until(
-        found_session_row,
-        timeout=timeout,
-        message="control session row",
-    )
-    assert row is not None
-    control = ControlClient(
-        client.queue,
-        member_id,
-        driver_pid=row["driver_pid"],
-        driver_start_time=row["driver_start_time"],
-    )
     try:
-        return control.request(command, timeout=timeout)
+        wait_until(
+            found_session_row,
+            timeout=timeout,
+            message="control session row",
+        )
+        assert row is not None
+        control = ControlClient(
+            client.queue,
+            member_id,
+            driver_pid=row["driver_pid"],
+            driver_start_time=row["driver_start_time"],
+        )
+        try:
+            return control.request(command, timeout=timeout)
+        finally:
+            control.close()
     finally:
-        control.close()
+        session_queue.close()
 
 
 def _await_control_request(
@@ -398,14 +402,22 @@ class DriverProcess:
         # startup, and the final "summoned ..." log. A message said before
         # the watcher starts is correctly invisible ([TAUT-7.4] "joining
         # starts you at now") — tests must not race that window.
-        def _bootstrapped() -> bool:
+        member = None
+
+        def _member_exists() -> bool:
+            nonlocal member
             member = _member_by_name(self.db, self.name)
-            if member is None:
-                return False
-            return _session_row(self.db, member.member_id) is not None
+            return member is not None
 
         wait_until(
-            lambda: _bootstrapped(),
+            _member_exists,
+            timeout=timeout,
+            message=f"summoned member; stderr: {self.stderr_tail()}",
+        )
+        assert member is not None
+        _wait_for_session_row(
+            self.db,
+            member.member_id,
             timeout=timeout,
             message=f"bootstrap completion; stderr: {self.stderr_tail()}",
         )
@@ -414,8 +426,6 @@ class DriverProcess:
             timeout=timeout,
             message=f"watch readiness; stderr: {self.stderr_tail()}",
         )
-        member = _member_by_name(self.db, self.name)
-        assert member is not None
         _await_control_request(
             self.db,
             member.member_id,
@@ -526,10 +536,9 @@ def _member_by_name(db: Path, name: str) -> Any | None:
     return None
 
 
-def _session_row(db: Path, member_id: str) -> dict[str, Any] | None:
+def _session_row_from_queue(queue: Queue, member_id: str) -> dict[str, Any] | None:
     from taut_summon._state import get_session
 
-    queue = Queue("taut_summon_test_reader", db_path=str(db))
     try:
         return get_session(queue, member_id)  # type: ignore[return-value]
     except OperationalError:
@@ -546,23 +555,45 @@ def _session_row(db: Path, member_id: str) -> dict[str, Any] | None:
         # polling, that means "try again"; true persistent corruption still
         # times out the readiness barrier instead of passing.
         return None
+
+
+def _session_row(db: Path, member_id: str) -> dict[str, Any] | None:
+    queue = Queue("taut_summon_test_reader", db_path=str(db))
+    try:
+        return _session_row_from_queue(queue, member_id)
     finally:
         queue.close()
+
+
+def _wait_for_session_row(
+    db: Path,
+    member_id: str,
+    *,
+    timeout: float = _DEADLINE,
+    message: str = "session row",
+) -> dict[str, Any]:
+    row: dict[str, Any] | None = None
+    queue = Queue("taut_summon_test_reader", db_path=str(db))
+
+    def found_session_row() -> bool:
+        nonlocal row
+        row = _session_row_from_queue(queue, member_id)
+        return row is not None
+
+    try:
+        wait_until(found_session_row, timeout=timeout, message=message)
+    finally:
+        queue.close()
+    assert row is not None, f"no {message}"
+    return row
 
 
 def _member_token(db: Path, name: str) -> str:
     member = _member_by_name(db, name)
     assert member is not None, f"no member named {name}"
-    row: dict[str, Any] | None = None
-
-    def found_session_row() -> bool:
-        nonlocal row
-        row = _session_row(db, member.member_id)
-        return row is not None
-
-    wait_until(
-        found_session_row,
+    row = _wait_for_session_row(
+        db,
+        member.member_id,
         message=f"session row for {name}",
     )
-    assert row is not None, f"no session row for {name}"
     return str(row["token"])
