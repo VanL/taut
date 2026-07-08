@@ -546,6 +546,16 @@ def _session_row(db: Path, member_id: str) -> dict[str, Any] | None:
 def _member_token(db: Path, name: str) -> str:
     member = _member_by_name(db, name)
     assert member is not None, f"no member named {name}"
-    row = _session_row(db, member.member_id)
+    row: dict[str, Any] | None = None
+
+    def found_session_row() -> bool:
+        nonlocal row
+        row = _session_row(db, member.member_id)
+        return row is not None
+
+    wait_until(
+        found_session_row,
+        message=f"session row for {name}",
+    )
     assert row is not None, f"no session row for {name}"
     return str(row["token"])

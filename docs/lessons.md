@@ -305,6 +305,13 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   production ledger still retries and fails closed; the test wait loop should
   not let one exhausted transient read escape while bootstrap is still racing.
 
+- 2026-07-08: Single-shot summon session-event writes need a larger bounded
+  retry budget than ordinary polling reads. A failed readiness read can simply
+  poll again, but a provider `SessionEvent` is the event pump's one chance to
+  persist the resume/status session id. Give that write extra retry room, and
+  make test helpers that need a token wait for a stable session row instead of
+  doing one post-readiness read.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

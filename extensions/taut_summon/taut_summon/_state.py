@@ -93,8 +93,10 @@ _DDL: tuple[str, ...] = (
 T = TypeVar("T")
 
 
-def _state_retry(fn: Callable[[], T], *, what: str) -> T:
-    return broker_retry(fn, what=f"summon state {what}")
+def _state_retry(fn: Callable[[], T], *, what: str, attempts: int | None = None) -> T:
+    if attempts is None:
+        return broker_retry(fn, what=f"summon state {what}")
+    return broker_retry(fn, what=f"summon state {what}", attempts=attempts)
 
 
 class SummonStateError(Exception):
@@ -488,7 +490,7 @@ def update_session(
             raise SummonStateError("updated session could not be read back")
         return stored
 
-    return _state_retry(_op, what="update session")
+    return _state_retry(_op, what="update session", attempts=90)
 
 
 def get_wired(queue: Queue, member_id: str) -> bool:

@@ -256,6 +256,56 @@ def test_update_session_changes_provider_session_id(state_queue: Queue) -> None:
     assert row["token"] == "taut-tok-1"
 
 
+def test_update_session_outlasts_normal_read_retry_budget(
+    state_queue: Queue, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ensure_summon_schema(state_queue)
+    record_session(
+        state_queue,
+        member_id="m_abc",
+        token="taut-tok-1",
+        provider="scripted",
+        provider_session_id="sess-1",
+        updated_ts=state_queue.generate_timestamp(),
+    )
+
+    real_one = state_module._one
+    malformed_reads = 0
+    malformed_read_limit = _BROKER_RETRIES + 2
+
+    def flaky_one(session: Any, sql: str, params: tuple[Any, ...] = ()) -> Any:
+        nonlocal malformed_reads
+        if (
+            "FROM taut_summon_sessions" in sql
+            and malformed_reads < malformed_read_limit
+        ):
+            malformed_reads += 1
+            return (
+                "m_abc",
+                "taut-tok-1",
+                "scripted",
+                "sess-1",
+                None,
+                None,
+                "runnervmkkn4f",
+                1,
+            )
+        return real_one(session, sql, params)
+
+    monkeypatch.setattr(state_module, "_one", flaky_one)
+
+    with remove_backoff():
+        row = update_session(
+            state_queue,
+            member_id="m_abc",
+            provider_session_id="sess-2",
+            updated_ts=state_queue.generate_timestamp(),
+        )
+
+    assert row["provider_session_id"] == "sess-2"
+    assert malformed_reads == malformed_read_limit
+
+
 def test_wired_round_trips_and_survives_driver_claim(state_queue: Queue) -> None:
     ensure_summon_schema(state_queue)
     record_session(
