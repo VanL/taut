@@ -6,7 +6,9 @@ Implementing plan: `docs/plans/2026-07-02-taut-tui-implementation-plan.md`
 (four review rounds plus per-slice reviews; see its `## Review Log`).
 First-join extension:
 `docs/plans/2026-07-07-tui-first-join-flow-plan.md` ([TUI-10.9],
-[IAN-3.3]).
+[IAN-3.3]) and
+`docs/plans/2026-07-08-tui-first-join-copy-and-existing-channel-plan.md`
+([TUI-10.9] chooser/copy refinement).
 
 This doc explains why the TUI is shaped the way it is — the boundaries,
 the threading contract, and the tradeoffs. The how lives in the code.
@@ -108,12 +110,32 @@ First-join setup ([TUI-10.9]) is the one v1 exception to "setup stays
 CLI-first." If the identity read raises the typed
 `UnrecognizedCallerError`, or an explicit `--as NAME` read raises
 member-not-found, the app opens a modal name/channel form before any
-`WatchBridge` exists. The form validates with the same client-owned
-validators as the CLI and submits by constructing a one-shot
-`TautClient(..., as_name=name).join(channel)`, then discards that client
-and re-runs normal bootstrap as the new member. It does not write identity
-or membership state directly and does not fabricate optimistic transcript
-rows.
+`WatchBridge` exists. The copy is identity-oriented: the project may already
+have channels, so the form says no identity is recognized for this
+terminal/caller rather than implying the user is first in the project.
+
+The channel affordance is still client-owned and lightweight. The TUI asks
+`client.list_threads(all_threads=True)` and filters to `kind == "channel"` to
+discover existing channels; this read is guest-safe and has no side effects.
+It deliberately does not call `joined_threads()` for this, because an
+unrecognized caller has no memberships and therefore cannot answer "which
+channels exist?" Discovery failure only leaves a manual channel field plus an
+inline note.
+
+When channels exist, the form renders a non-focusable chooser as plain
+`TextStatic` rows. Up/Down are handled at the first-join key layer and update
+the channel input, which remains the sole submit source; typing in that input
+clears the displayed selection and allows a new channel name. The chooser is
+not a `ListView` and never receives focus, preserving the modal guarantee
+that Tab and app shortcuts cannot escape the form. While a text input is
+focused, printable keys belong to that input, so the form advertises the real
+quit path as Escape back to guidance, then `q`.
+
+The form validates with the same client-owned validators as the CLI and
+submits by constructing a one-shot `TautClient(..., as_name=name).join(channel)`,
+then discards that client and re-runs normal bootstrap as the new member. It
+does not write identity or membership state directly and does not fabricate
+optimistic transcript rows.
 
 The first-join branch is deliberately scoped to `whoami()`. Errors from
 `joined_threads()` are not setup triggers, because they can represent

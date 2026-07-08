@@ -18,6 +18,7 @@ textual = pytest.importorskip("textual")
 
 from textual.widgets import Input  # noqa: E402
 
+from taut.identity import HostIdentity, IdentityCapture, ProcessInfo  # noqa: E402
 from taut.tui.app import TautApp  # noqa: E402
 from taut.tui.widgets import TextStatic  # noqa: E402
 
@@ -31,6 +32,37 @@ def _seed_initialized_project(tmp_path: Path) -> Path:
     db = tmp_path / ".taut.db"
     TautClient.init(db_path=db)
     return db
+
+
+def _identity_capture(name: str) -> IdentityCapture:
+    anchor = ProcessInfo(
+        pid=100_000 + abs(hash(name)) % 10_000,
+        ppid=1,
+        start_time=f"seed-{name}",
+        argv=(name,),
+        uid=90_000 + abs(hash(name)) % 1_000,
+        tty=f"/dev/seed-{name}",
+        cwd=f"/tmp/seed-{name}",
+    )
+    return IdentityCapture(
+        chain=(anchor,),
+        host=HostIdentity(host_id=f"seed-host-{name}", host_label="seed-host"),
+        uid=anchor.uid or 0,
+        login=name,
+        anchor=anchor,
+        kind="agent",
+        rule="test seed",
+    )
+
+
+def _seed_channels(db: Path, *channels: str) -> None:
+    owner = TautClient(
+        db_path=db,
+        as_name="owner",
+        identity_capture=_identity_capture("owner"),
+    )
+    for channel in channels:
+        owner.join(channel)
 
 
 def _fatal_text(app: TautApp) -> str:
@@ -47,6 +79,15 @@ def _first_join_values(app: TautApp) -> tuple[Input, Input, TextStatic]:
         app.query_one("#firstjoin-channel", Input),
         app.query_one("#firstjoin-error", TextStatic),
     )
+
+
+def _first_join_hint(app: TautApp) -> str:
+    return app.query_one("#firstjoin-hint", TextStatic).renderable_text
+
+
+def _first_join_channel_rows(app: TautApp) -> list[str]:
+    chooser = app.query_one("#firstjoin-channels")
+    return [row.renderable_text for row in chooser.query(TextStatic)]
 
 
 async def _submit_first_join(
@@ -78,6 +119,11 @@ class TestFirstJoinSetup:
                 assert name_input.display
                 assert app.focused is name_input
                 assert error.renderable_text == ""
+                assert "no identity recognized" in _first_join_hint(app)
+                assert "enter a name and channel" in _first_join_hint(app)
+                assert "esc then q" in _first_join_hint(app)
+                assert "· q quits" not in _first_join_hint(app)
+                assert _first_join_channel_rows(app) == []
                 assert not app.query_one("#transcript").display
                 assert not app.query_one("#composer").display
                 assert not _fatal_text(app)
@@ -112,6 +158,83 @@ class TestFirstJoinSetup:
         assert cli_client.whoami().name == "van"
         assert [thread.name for thread in cli_client.joined_threads()] == ["general"]
 
+    def test_existing_channels_are_listed_and_initially_selected(
+        self, tmp_path: Path
+    ) -> None:
+        db = _seed_initialized_project(tmp_path)
+        _seed_channels(db, "general", "ops")
+
+        async def _run() -> None:
+            app = TautApp(db_path=str(db), as_name=None, token=None)
+            async with app.run_test(size=(120, 34)) as pilot:
+                await pilot.pause()
+                _name_input, channel_input, _error = _first_join_values(app)
+                assert app._first_join_active
+                assert "no identity recognized" in _first_join_hint(app)
+                assert "pick a channel" in _first_join_hint(app)
+                assert "type a new one" in _first_join_hint(app)
+                assert "esc then q" in _first_join_hint(app)
+                assert channel_input.value == "general"
+                rows = _first_join_channel_rows(app)
+                assert rows == ["existing channels", "> general", "  ops"]
+
+        asyncio.run(_run())
+
+    def test_channel_arrows_pick_existing_channel(self, tmp_path: Path) -> None:
+        db = _seed_initialized_project(tmp_path)
+        _seed_channels(db, "general", "ops")
+
+        async def _run() -> None:
+            app = TautApp(db_path=str(db), as_name=None, token=None)
+            async with app.run_test(size=(120, 34)) as pilot:
+                await pilot.pause()
+                _name_input, channel_input, _error = _first_join_values(app)
+                channel_input.focus()
+                await pilot.press("down")
+                await pilot.pause()
+                assert channel_input.value == "ops"
+                assert _first_join_channel_rows(app) == [
+                    "existing channels",
+                    "  general",
+                    "> ops",
+                ]
+                await pilot.press("up")
+                await pilot.pause()
+                assert channel_input.value == "general"
+                await _submit_first_join(app, pilot, name="van", channel="ops")
+                assert not app._first_join_active
+
+        asyncio.run(_run())
+        assert [t.name for t in TautClient(db_path=db, as_name="van").joined_threads()] == [
+            "ops"
+        ]
+
+    def test_can_type_new_channel_with_existing_channels(
+        self, tmp_path: Path
+    ) -> None:
+        db = _seed_initialized_project(tmp_path)
+        _seed_channels(db, "general")
+
+        async def _run() -> None:
+            app = TautApp(db_path=str(db), as_name=None, token=None)
+            async with app.run_test(size=(120, 34)) as pilot:
+                await pilot.pause()
+                _name_input, channel_input, _error = _first_join_values(app)
+                channel_input.focus()
+                channel_input.value = "research"
+                await pilot.pause()
+                assert _first_join_channel_rows(app) == [
+                    "existing channels",
+                    "  general",
+                ]
+                await _submit_first_join(app, pilot, name="van", channel="research")
+                assert not app._first_join_active
+
+        asyncio.run(_run())
+        assert [
+            t.name for t in TautClient(db_path=db, as_name="van").joined_threads()
+        ] == ["research"]
+
     def test_prefills_explicit_missing_as_name(self, tmp_path: Path) -> None:
         db = _seed_initialized_project(tmp_path)
 
@@ -125,6 +248,30 @@ class TestFirstJoinSetup:
                 assert app.focused is channel_input
 
         asyncio.run(_run())
+
+    def test_prefill_with_existing_channels_focuses_channel_picker(
+        self, tmp_path: Path
+    ) -> None:
+        db = _seed_initialized_project(tmp_path)
+        _seed_channels(db, "general", "ops")
+
+        async def _run() -> None:
+            app = TautApp(db_path=str(db), as_name="newname", token=None)
+            async with app.run_test(size=(120, 34)) as pilot:
+                await pilot.pause()
+                name_input, channel_input, _error = _first_join_values(app)
+                assert app._first_join_active
+                assert name_input.value == "newname"
+                assert channel_input.value == "general"
+                assert app.focused is channel_input
+                await pilot.press("enter")
+                await pilot.pause()
+                assert not app._first_join_active
+
+        asyncio.run(_run())
+        assert [
+            t.name for t in TautClient(db_path=db, as_name="newname").joined_threads()
+        ] == ["general"]
 
     def test_invalid_as_name_shows_cli_first_guidance(self, tmp_path: Path) -> None:
         db = _seed_initialized_project(tmp_path)

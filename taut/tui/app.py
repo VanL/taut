@@ -115,6 +115,10 @@ class TautApp(App[int]):
     #firstjoin-hint { height: 1; color: $text-muted; }
     #firstjoin-name { margin-top: 1; }
     #firstjoin-channel { margin-top: 1; }
+    #firstjoin-channels { display: none; height: auto; max-height: 8; margin-top: 1; }
+    .firstjoin-channel-header { color: $text-muted; }
+    .firstjoin-channel-option { color: $text-muted; }
+    .firstjoin-channel-selected { color: $accent; }
     #firstjoin-error { height: 1; margin-top: 1; color: $error; }
     #too-small { display: none; color: $warning; }
     """
@@ -177,6 +181,9 @@ class TautApp(App[int]):
         # Set by the _bootstrap trigger branch before _show_first_join runs;
         # never read while empty (Escape is only reachable with the form up).
         self._first_join_escape_message = ""
+        self._first_join_channels: list[str] = []
+        self._first_join_selected_channel: int | None = None
+        self._first_join_syncing_channel = False
 
     def compose(self) -> ComposeResult:
         yield TextStatic("taut", id="titlebar")
@@ -192,6 +199,7 @@ class TautApp(App[int]):
                     yield TextStatic("", id="firstjoin-hint")
                     yield Input(placeholder="display name", id="firstjoin-name")
                     yield Input(placeholder="channel", id="firstjoin-channel")
+                    yield VerticalScroll(id="firstjoin-channels")
                     yield TextStatic("", id="firstjoin-error")
                 yield TextStatic("", id="status-banner")
                 yield Composer(id="composer")
@@ -638,6 +646,42 @@ class TautApp(App[int]):
     async def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == "search-input":
             self._apply_search_filter(event.value)
+            return
+        if (
+            event.input.id == "firstjoin-channel"
+            and self._first_join_active
+            and not self._first_join_syncing_channel
+        ):
+            if (
+                self._first_join_selected_channel is not None
+                and event.value
+                == self._first_join_channels[self._first_join_selected_channel]
+            ):
+                return
+            self._first_join_selected_channel = None
+            await self._render_first_join_channels()
+
+    async def on_key(self, event: events.Key) -> None:
+        if not self._first_join_active or event.key not in {"up", "down"}:
+            return
+        focused = self.focused
+        if focused not in (
+            self.query_one("#firstjoin-name", Input),
+            self.query_one("#firstjoin-channel", Input),
+        ):
+            return
+        if not self._first_join_channels:
+            return
+        event.stop()
+        event.prevent_default()
+        if self._first_join_selected_channel is None:
+            index = 0
+        else:
+            delta = -1 if event.key == "up" else 1
+            index = (
+                self._first_join_selected_channel + delta
+            ) % len(self._first_join_channels)
+        await self._select_first_join_channel(index)
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "firstjoin-name":
@@ -989,13 +1033,24 @@ class TautApp(App[int]):
         name_input = self.query_one("#firstjoin-name", Input)
         channel_input = self.query_one("#firstjoin-channel", Input)
         error = self.query_one("#firstjoin-error", TextStatic)
-        hint.update_text(
-            "first time here — pick a name and a channel · esc back · q quits"
-        )
         error.update_text("")
         name_input.value = prefill or ""
         channel_input.value = ""
         container.display = True
+        self._first_join_channels = self._existing_channel_names()
+        if self._first_join_channels:
+            hint.update_text(
+                "no identity recognized for this terminal — pick a channel "
+                "or type a new one · esc then q quits"
+            )
+            await self._select_first_join_channel(0)
+        else:
+            hint.update_text(
+                "no identity recognized for this terminal — enter a name "
+                "and channel · esc then q quits"
+            )
+            self._first_join_selected_channel = None
+            await self._render_first_join_channels()
         if prefill:
             channel_input.focus()
         else:
@@ -1005,12 +1060,60 @@ class TautApp(App[int]):
         self.query_one("#firstjoin-name", Input).value = ""
         self.query_one("#firstjoin-channel", Input).value = ""
         self.query_one("#firstjoin-error", TextStatic).update_text("")
+        self._first_join_channels = []
+        self._first_join_selected_channel = None
+        self.query_one("#firstjoin-channels", VerticalScroll).display = False
         self.query_one("#firstjoin", Vertical).display = False
         self.query_one("#navigation", NavigationPane).display = True
         self.query_one("#transcript", TranscriptView).display = True
         self.query_one("#composer", Composer).display = True
         self._first_join_active = False
         self._apply_presence_visibility()
+
+    def _existing_channel_names(self) -> list[str]:
+        if self.client is None:
+            return []
+        error = self.query_one("#firstjoin-error", TextStatic)
+        try:
+            threads = self.client.list_threads(all_threads=True)
+        except (TautError, ValueError) as exc:
+            error.update_text(f"could not list channels: {exc}")
+            return []
+        return [thread.name for thread in threads if thread.kind == "channel"]
+
+    async def _select_first_join_channel(self, index: int) -> None:
+        self._first_join_selected_channel = index
+        channel_input = self.query_one("#firstjoin-channel", Input)
+        self._first_join_syncing_channel = True
+        try:
+            channel_input.value = self._first_join_channels[index]
+        finally:
+            self._first_join_syncing_channel = False
+        await self._render_first_join_channels()
+
+    async def _render_first_join_channels(self) -> None:
+        chooser = self.query_one("#firstjoin-channels", VerticalScroll)
+        await chooser.remove_children()
+        if not self._first_join_channels:
+            chooser.display = False
+            return
+        chooser.display = True
+        rows: list[TextStatic] = [
+            TextStatic("existing channels", classes="firstjoin-channel-header")
+        ]
+        for index, channel in enumerate(self._first_join_channels):
+            selected = index == self._first_join_selected_channel
+            rows.append(
+                TextStatic(
+                    f"{'>' if selected else ' '} {channel}",
+                    classes=(
+                        "firstjoin-channel-option firstjoin-channel-selected"
+                        if selected
+                        else "firstjoin-channel-option"
+                    ),
+                )
+            )
+        await chooser.mount_all(rows)
 
     async def _submit_first_join(self) -> None:
         name = self.query_one("#firstjoin-name", Input).value.strip()
