@@ -22,6 +22,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+import psutil
 import pytest
 from taut_summon._adapter import (
     ActivityEvent,
@@ -101,6 +102,16 @@ def scripted_handle(
         yield handle
     finally:
         handle.close()
+
+
+def _process_exists(pid: int) -> bool:
+    if os.name == "nt":
+        return psutil.pid_exists(pid)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
 
 
 def test_registry_knows_scripted_and_rejects_unknown_names() -> None:
@@ -245,8 +256,10 @@ def test_close_reaps_the_child_process(tmp_path: Path) -> None:
 
     # close() ran on context exit: the child must be terminated AND reaped
     # (a zombie would still answer kill(pid, 0)).
-    with pytest.raises(ProcessLookupError):
-        os.kill(child_pid, 0)
+    deadline = time.monotonic() + 5.0
+    while _process_exists(child_pid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not _process_exists(child_pid)
 
 
 def test_unknown_event_shape_is_rejected_loudly(tmp_path: Path) -> None:

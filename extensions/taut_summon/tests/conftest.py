@@ -246,6 +246,7 @@ class DriverProcess:
         self.tag = tag
         self.db = db
         self.name = name
+        self.tmp_path = tmp_path
         scenario = scenario if scenario is not None else {}
         self.scenario_path = tmp_path / f"{tag}-scenario.json"
         self.scenario_path.write_text(json.dumps(scenario), encoding="utf-8")
@@ -369,7 +370,14 @@ class DriverProcess:
 
     def stop(self, *, timeout: float = _DEADLINE) -> int:
         if self.proc.poll() is None:
-            self.proc.send_signal(signal.SIGINT)
+            if os.name == "nt":
+                rc, _out, _err = summon_cli(
+                    "stop", self.name, db=self.db, cwd=self.tmp_path, timeout=timeout
+                )
+                if rc != 0 and self.proc.poll() is None:
+                    self.proc.terminate()
+            else:
+                self.proc.send_signal(signal.SIGINT)
         try:
             rc = self.proc.wait(timeout=timeout)
         finally:

@@ -420,7 +420,10 @@ def test_restart_resumes_stored_session(harness: ConformanceHarness) -> None:
         message="stored session id in the ledger",
     )
 
-    os.kill(driver.child_pid(), signal.SIGKILL)
+    if hasattr(signal, "SIGKILL"):
+        os.kill(driver.child_pid(), signal.SIGKILL)
+    else:
+        os.kill(driver.child_pid(), signal.SIGTERM)
     harness.peer_say("general", "after-crash")
 
     driver.wait_for_start(2)

@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import json
 import os
-import pty
 import re
 import select
 import signal
@@ -52,6 +51,8 @@ from taut_summon._driver import format_injection
 
 from taut.client import Message, Notification, TautClient
 from taut.identity import capture_process
+
+pty = pytest.importorskip("pty", reason="POSIX PTY tests require the pty module")
 
 FAKE_TUI = Path(__file__).with_name("fixtures") / "fake_tui.py"
 PROCESS_XDIST_GROUP = pytest.mark.xdist_group("process")

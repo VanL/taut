@@ -135,7 +135,10 @@ def _prewire_live_harness(db: Path, provider: str) -> None:
 def _finished_stderr_tail(proc: subprocess.Popen[str], *, limit: int = 500) -> str:
     if proc.stderr is None or proc.poll() is None:
         return ""
-    return proc.stderr.read()[-limit:]
+    tail = proc.stderr.read()
+    if not isinstance(tail, str):
+        return ""
+    return tail[-limit:]
 
 
 def test_live_harness_runs_locally_by_default(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -59,10 +59,16 @@ jobs:
         run: |
           pytest -v --tb=short -m "not slow" --durations=100 --durations-min=0.5 -o faulthandler_timeout=720 --timeout=900 --timeout-method=thread --full-trace
 
-      - name: Run taut-summon extension tests
+      - name: Run taut-summon extension unit tests
         timeout-minutes: 10
         run: |
-          pytest extensions/taut_summon/tests -v --tb=short
+          pytest extensions/taut_summon/tests -v --tb=short -m "not xdist_group"
+
+      - name: Run taut-summon extension process tests
+        if: runner.os != 'Windows'
+        timeout-minutes: 15
+        run: |
+          pytest extensions/taut_summon/tests -v --tb=short -m "xdist_group and not requires_local_llm"
 
       - name: Test CLI installation
         timeout-minutes: 2

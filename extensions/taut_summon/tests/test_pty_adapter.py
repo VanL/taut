@@ -9,14 +9,13 @@ from __future__ import annotations
 
 import json
 import os
-import pty
 import queue
 import select
 import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from taut_summon._adapter import (
@@ -28,7 +27,23 @@ from taut_summon._adapter import (
     adapter_names,
     get_adapter,
 )
-from taut_summon._pty import PtyAdapter, PtyHandle, PtySpec, _TerminalResponder
+
+pty = pytest.importorskip("pty", reason="POSIX PTY tests require the pty module")
+if TYPE_CHECKING:
+    from taut_summon._pty import (
+        PtyAdapter,
+        PtyHandle,
+        PtySpec,
+        _TerminalResponder,
+    )
+else:
+    _pty_module = pytest.importorskip(
+        "taut_summon._pty", reason="POSIX PTY tests require fcntl/termios"
+    )
+    PtyAdapter = _pty_module.PtyAdapter
+    PtyHandle = _pty_module.PtyHandle
+    PtySpec = _pty_module.PtySpec
+    _TerminalResponder = _pty_module._TerminalResponder
 
 FAKE_TUI = Path(__file__).with_name("fixtures") / "fake_tui.py"
 

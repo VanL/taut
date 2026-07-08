@@ -148,6 +148,19 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   engineering-principles §14
   (`docs/agent-context/engineering-principles.md`).
 
+- 2026-07-08: Release gates must prove the oldest supported parser/runtime
+  surface when CLI grammar changed. Python 3.14 accepted
+  `NAME --provider X THREAD` for a `nargs="*"` positional, while Python 3.11
+  rejected the trailing thread; use installed-style smoke tests on the oldest
+  supported Python for CLI parser changes, and treat local-vs-CI tool version
+  drift as a release-readiness bug.
+
+- 2026-07-08: `pytest-xdist` grouping is co-location, not isolation. A group
+  such as `xdist_group("process")` puts those tests on the same worker, but
+  unrelated tests still run on other workers at the same time. Real
+  multi-process SQLite/PTY tests that show corruption or load-sensitive
+  failures need a separate command lane, not only a group marker.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

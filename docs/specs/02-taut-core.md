@@ -883,9 +883,13 @@ Helper obligations:
   `extensions/taut_summon/uv.lock` for the summon extension.
 - Run the relevant local gates before mutation unless `--skip-checks` is set:
   root pytest, `bin/pytest-pg --fast` for core or PG releases, the
-  `extensions/taut_summon/tests` suite for core or summon releases, ruff over
-  root plus touched extension paths, and split mypy lanes so extension
-  `conftest.py` modules do not collide.
+  `extensions/taut_summon/tests` suite for core or summon releases split into
+  non-process and `xdist_group` process/live lanes, ruff over root plus touched
+  extension paths, and split mypy lanes so extension `conftest.py` modules do
+  not collide. The process/live lane is isolated from unrelated summon tests
+  because it drives multiple real processes against shared SQLite files; xdist
+  still schedules that lane, but it must not run concurrently with the unit
+  lane.
 - For core or summon releases, require the summon local-LLM lane locally. The
   helper starts local LLM preparation at the beginning of prechecks so Docker
   image/model setup can overlap root and PG checks. It uses an existing

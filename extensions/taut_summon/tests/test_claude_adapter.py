@@ -21,7 +21,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from taut_summon._adapter import (
@@ -34,8 +34,15 @@ from taut_summon._adapter import (
     get_adapter,
 )
 from taut_summon._claude import ClaudeAdapter, ClaudeHandle
-from taut_summon._pty import PtyAdapter
 from test_scripted_adapter import EventPump  # resolved by pytest's test-dir path
+
+if TYPE_CHECKING:
+    from taut_summon._pty import PtyAdapter
+else:
+    _pty_module = pytest.importorskip(
+        "taut_summon._pty", reason="POSIX PTY tests require fcntl/termios"
+    )
+    PtyAdapter = _pty_module.PtyAdapter
 
 FIXTURE = Path(__file__).with_name("fixtures") / "claude_stream_sample.jsonl"
 SCRIPTED_PROVIDER = (

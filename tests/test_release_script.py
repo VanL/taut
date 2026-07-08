@@ -460,7 +460,8 @@ def test_precheck_commands_include_typed_release_helper() -> None:
 
     assert ("uv", "run", "pytest") in commands
     assert ("uv", "run", "./bin/pytest-pg", "--fast") in commands
-    assert ("uv", "run", "pytest", "extensions/taut_summon/tests") in commands
+    assert release.SUMMON_UNIT_TEST_COMMAND in commands
+    assert release.SUMMON_PROCESS_TEST_COMMAND in commands
     assert any(
         command[:5] == ("uv", "run", "--extra", "dev", "ruff") for command in commands
     )
@@ -496,7 +497,8 @@ def test_summon_precheck_commands_include_extension_gate() -> None:
 
     commands = release.build_precheck_commands(release.SUMMON_TARGET)
 
-    assert ("uv", "run", "pytest", "extensions/taut_summon/tests") in commands
+    assert release.SUMMON_UNIT_TEST_COMMAND in commands
+    assert release.SUMMON_PROCESS_TEST_COMMAND in commands
     assert any("extensions/taut_summon/taut_summon" in command for command in commands)
     assert any("extensions/taut_summon/tests" in command for command in commands)
     assert all("pypi" not in " ".join(command).lower() for command in commands)
@@ -506,7 +508,7 @@ def test_summon_precheck_env_requires_local_llm() -> None:
     release = _load_release_module()
 
     env = release._precheck_env_overrides(  # noqa: SLF001
-        release.SUMMON_TEST_COMMAND,
+        release.SUMMON_PROCESS_TEST_COMMAND,
         local_llm_env={
             "TAUT_SUMMON_LOCAL_LLM_ENDPOINT": "http://127.0.0.1:9999/v1",
             "TAUT_SUMMON_LOCAL_LLM_MODEL": "local-test:latest",
@@ -527,7 +529,8 @@ def test_prechecks_start_local_llm_before_other_release_gates(
     commands = (
         ("root-tests",),
         release.PG_TEST_COMMAND,
-        release.SUMMON_TEST_COMMAND,
+        release.SUMMON_UNIT_TEST_COMMAND,
+        release.SUMMON_PROCESS_TEST_COMMAND,
         ("lint",),
     )
 
@@ -561,7 +564,7 @@ def test_prechecks_start_local_llm_before_other_release_gates(
         env_overrides: dict[str, str] | None = None,
     ) -> None:
         events.append(("run", command))
-        if command == release.SUMMON_TEST_COMMAND:
+        if command == release.SUMMON_PROCESS_TEST_COMMAND:
             assert env_overrides is not None
             assert env_overrides["TAUT_SUMMON_LOCAL_LLM"] == "1"
             assert (
@@ -587,8 +590,9 @@ def test_prechecks_start_local_llm_before_other_release_gates(
         ("start", None),
         ("run", ("root-tests",)),
         ("run", release.PG_TEST_COMMAND),
+        ("run", release.SUMMON_UNIT_TEST_COMMAND),
         ("wait", None),
-        ("run", release.SUMMON_TEST_COMMAND),
+        ("run", release.SUMMON_PROCESS_TEST_COMMAND),
         ("run", ("lint",)),
         ("close", None),
     ]

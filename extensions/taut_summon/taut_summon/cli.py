@@ -63,6 +63,27 @@ class _SummonArgumentParser(argparse.ArgumentParser):
         self.exit(1, f"{self.prog}: error: {message}\n")
 
 
+class _SummonRootArgumentParser(_SummonArgumentParser):
+    """Root parser that lets ``run`` intermix options and thread names.
+
+    Python 3.11/3.12 argparse leaves trailing positionals unparsed for
+    ``NAME THREAD... --provider X THREAD`` when ``THREAD`` uses ``nargs='*'``.
+    ``parse_intermixed_args`` fixes that shape, but cannot be used on a parser
+    with subparsers, so the root parser dispatches the ``run`` subcommand to a
+    standalone run parser.
+    """
+
+    def parse_args(  # type: ignore[override]
+        self,
+        args: Sequence[str] | None = None,
+        namespace: argparse.Namespace | None = None,
+    ) -> argparse.Namespace:
+        raw = list(args) if args is not None else sys.argv[1:]
+        if raw and raw[0] == "run":
+            return _parse_run_args(raw[1:], namespace=namespace)
+        return super().parse_args(raw, namespace)
+
+
 @dataclass(frozen=True)
 class RunRequest:
     """A parsed ``run`` invocation, resolved as far as [SUM-3] parsing goes."""
@@ -85,22 +106,11 @@ class RunRequest:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = _SummonArgumentParser(prog="taut-summon")
+    parser = _SummonRootArgumentParser(prog="taut-summon")
     sub = parser.add_subparsers(dest="command", parser_class=_SummonArgumentParser)
 
     p = sub.add_parser("run")
-    p.add_argument("name", metavar="NAME_OR_PROVIDER")
-    p.add_argument("threads", metavar="THREAD", nargs="*")
-    p.add_argument("--provider")
-    p.add_argument("--terminal", action="store_true")
-    p.add_argument("--attach", action="store_true")
-    p.add_argument("--detach", action="store_true")
-    p.add_argument("--takeover", action="store_true")
-    p.add_argument("--persona")
-    p.add_argument("--system-prompt-file", dest="system_prompt_file")
-    p.add_argument("--rate-limit", dest="rate_limit", type=int)
-    p.add_argument("--db", dest="db_path")
-    p.set_defaults(func=_cmd_run)
+    _add_run_arguments(p)
 
     p = sub.add_parser("stop")
     p.add_argument("name", metavar="NAME")
@@ -113,6 +123,31 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=_cmd_status)
 
     return parser
+
+
+def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("name", metavar="NAME_OR_PROVIDER")
+    parser.add_argument("threads", metavar="THREAD", nargs="*")
+    parser.add_argument("--provider")
+    parser.add_argument("--terminal", action="store_true")
+    parser.add_argument("--attach", action="store_true")
+    parser.add_argument("--detach", action="store_true")
+    parser.add_argument("--takeover", action="store_true")
+    parser.add_argument("--persona")
+    parser.add_argument("--system-prompt-file", dest="system_prompt_file")
+    parser.add_argument("--rate-limit", dest="rate_limit", type=int)
+    parser.add_argument("--db", dest="db_path")
+    parser.set_defaults(command="run", func=_cmd_run)
+
+
+def _parse_run_args(
+    args: Sequence[str],
+    *,
+    namespace: argparse.Namespace | None = None,
+) -> argparse.Namespace:
+    parser = _SummonArgumentParser(prog="taut-summon run")
+    _add_run_arguments(parser)
+    return parser.parse_intermixed_args(list(args), namespace)
 
 
 def run_request(args: argparse.Namespace) -> RunRequest:
