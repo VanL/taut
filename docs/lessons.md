@@ -351,6 +351,13 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   orientation input" instead of telling whether bootstrap, spawn, or injection
   stalled.
 
+- 2026-07-08: SimpleBroker connection-open WAL churn can surface as a wrapped
+  `RuntimeError("Failed to get database connection: Database magic string
+  mismatch ...")`, not only as `malformed` or `disk I/O error`. Treat the
+  connection-wrapper marker as retryable with the same bounded budget; a real
+  wrong target still fails after the budget, but a transient header-page misread
+  does not kill a healthy summon restart.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

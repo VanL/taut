@@ -158,6 +158,12 @@ def test_transient_predicate_retries_wal_blips_not_logic_faults() -> None:
     assert is_transient_broker_error(
         RuntimeError("Failed to get database connection: disk I/O error")
     )
+    assert is_transient_broker_error(
+        RuntimeError(
+            "Failed to get database connection: Database magic string mismatch. "
+            "Expected 'simplebroker-v1', found 'm_example'."
+        )
+    )
     # Genuine faults must surface immediately, and retryable=False is honored.
     assert not is_transient_broker_error(IntegrityError("UNIQUE constraint failed"))
     stop = OperationalError("interrupted")

@@ -41,9 +41,10 @@ _BROKER_RETRY_MAX_DELAY = 0.5
 # *false* SQLITE_CORRUPT read a fresh reader can see while a writer checkpoints
 # (which clears on retry, unlike true corruption; a persistently malformed DB
 # still exhausts the bounded budget and re-raises). SQLite can also surface
-# the same transient churn as OperationalError("disk I/O error") while a fresh
-# read/write handle is opened under process load; that is bounded-retried only
-# for the OperationalError shape SQLite uses for SQLITE_IOERR.
+# the same transient churn as OperationalError("disk I/O error") or a wrapped
+# connection-open header check ("database magic string mismatch") while a fresh
+# read/write handle is opened under process load; these are bounded-retried only
+# for the shapes SQLite/SimpleBroker use for those failures.
 _LOCKED_MARKERS = (
     "database is locked",
     "database table is locked",
@@ -53,6 +54,7 @@ _LOCKED_MARKERS = (
 )
 _MALFORMED_MARKER = "malformed"
 _DISK_IO_MARKER = "disk i/o error"
+_MAGIC_MISMATCH_MARKER = "database magic string mismatch"
 _CONNECTION_FAILURE_MARKER = "failed to get database connection:"
 
 
@@ -67,7 +69,8 @@ def is_transient_broker_error(exc: Exception) -> bool:
     ``OperationalError``, so simplebroker's own watcher-retry predicate
     would miss it). SimpleBroker can wrap the same connection-open blips in
     ``RuntimeError("Failed to get database connection: ...")``; only that
-    wrapper prefix inherits the same narrow markers. Every other
+    wrapper prefix inherits the same narrow markers, including a transient
+    header-page misread reported as ``database magic string mismatch``. Every other
     ``OperationalError``/``DatabaseError``/``RuntimeError``, and all
     ``IntegrityError``/``DataError``, surface immediately — a generic
     operational failure or genuine corruption must not be masked. An explicit
@@ -88,6 +91,7 @@ def is_transient_broker_error(exc: Exception) -> bool:
         return (
             _MALFORMED_MARKER in message
             or _DISK_IO_MARKER in message
+            or _MAGIC_MISMATCH_MARKER in message
             or any(marker in message for marker in _LOCKED_MARKERS)
         )
     return False
