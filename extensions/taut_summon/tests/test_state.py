@@ -22,6 +22,8 @@ from typing import Any
 import pytest
 import taut_summon._state as state_module
 from simplebroker import Queue
+from taut_summon._broker_retry import _BROKER_RETRIES
+from taut_summon._retry import remove_backoff
 from taut_summon._state import (
     SUMMON_SCHEMA_VERSION,
     SUMMON_SCHEMA_VERSION_KEY,
@@ -336,10 +338,14 @@ def test_get_session_retries_malformed_row_shape(
 
     real_one = state_module._one
     malformed_reads = 0
+    malformed_read_limit = _BROKER_RETRIES - 1
 
     def flaky_one(session: Any, sql: str, params: tuple[Any, ...] = ()) -> Any:
         nonlocal malformed_reads
-        if "FROM taut_summon_sessions" in sql and malformed_reads == 0:
+        if (
+            "FROM taut_summon_sessions" in sql
+            and malformed_reads < malformed_read_limit
+        ):
             malformed_reads += 1
             return (
                 "m_abc",
@@ -355,11 +361,12 @@ def test_get_session_retries_malformed_row_shape(
 
     monkeypatch.setattr(state_module, "_one", flaky_one)
 
-    row = get_session(state_queue, "m_abc")
+    with remove_backoff():
+        row = get_session(state_queue, "m_abc")
 
     assert row is not None
     assert row["member_id"] == "m_abc"
-    assert malformed_reads == 1
+    assert malformed_reads == malformed_read_limit
 
 
 # --- single-driver guard ([SUM-8]) ------------------------------------------

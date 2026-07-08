@@ -243,6 +243,41 @@ def _control_request(
         control.close()
 
 
+def _await_control_request(
+    db: Path,
+    member_id: str,
+    command: str,
+    *,
+    timeout: float = _DEADLINE,
+    request_timeout: float = 5.0,
+    driver: Any | None = None,
+) -> dict[str, Any]:
+    """Wait until a control command completes a request/reply round trip."""
+
+    deadline = time.monotonic() + timeout
+    last_detail = "no attempts"
+    while time.monotonic() < deadline:
+        try:
+            reply = _control_request(db, member_id, command, timeout=request_timeout)
+        except Exception as exc:  # noqa: BLE001 - diagnostic for CI contention
+            last_detail = f"{type(exc).__name__}: {exc}"
+        else:
+            last_detail = repr(reply)
+            if reply is not None:
+                return reply
+        time.sleep(0.05)
+
+    driver_detail = ""
+    if driver is not None:
+        driver_detail = (
+            f"; driver_rc={driver.proc.poll()!r}; stderr: {driver.stderr_tail()}"
+        )
+    raise AssertionError(
+        f"timed out waiting for {command.upper()} control round-trip; "
+        f"last={last_detail}{driver_detail}"
+    )
+
+
 class DriverProcess:
     """One real ``taut-summon run`` foreground driver under test control."""
 
@@ -358,6 +393,16 @@ class DriverProcess:
             lambda: self._summoned_log_count() >= count,
             timeout=timeout,
             message=f"watch readiness; stderr: {self.stderr_tail()}",
+        )
+        member = _member_by_name(self.db, self.name)
+        assert member is not None
+        _await_control_request(
+            self.db,
+            member.member_id,
+            "PING",
+            timeout=timeout,
+            request_timeout=5.0,
+            driver=self,
         )
 
     def wait_for_message(

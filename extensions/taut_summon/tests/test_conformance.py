@@ -95,8 +95,8 @@ from typing import Any
 import pytest
 from conftest import (
     DriverProcess,
+    _await_control_request,
     _base_env,
-    _control_request,
     _member_by_name,
     _member_token,
     _session_row,
@@ -253,7 +253,7 @@ class ConformanceHarness:
     def control(self, name: str, command: str) -> dict[str, Any] | None:
         member = _member_by_name(self.summon_db, name)
         assert member is not None, f"no member named {name}"
-        return _control_request(self.summon_db, member.member_id, command)
+        return _await_control_request(self.summon_db, member.member_id, command)
 
     def stop_via_cli(self, name: str) -> tuple[int, str, str]:
         return summon_cli("stop", name, db=self.summon_db, cwd=self.tmp_path)

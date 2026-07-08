@@ -226,6 +226,13 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   only when it belongs to the same owner. Treating the primary-key collision as
   fatal turns normal concurrent recognition into driver crashes.
 
+- 2026-07-08: Real-process test readiness should prove every plane the test
+  will use. A driver can have a provider child, a session row, presence, and a
+  watcher-ready log while its control consumer is still recovering from SQLite
+  sidecar contention. If a test will send PING/STATUS or rely on later control
+  health, include a bounded control round-trip in the readiness barrier and keep
+  the failure diagnostic tied to the driver stderr tail.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

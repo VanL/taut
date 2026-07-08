@@ -31,7 +31,7 @@ logger = logging.getLogger("taut_summon.broker")
 
 T = TypeVar("T")
 
-_BROKER_RETRIES = 12
+_BROKER_RETRIES = 30
 _BROKER_RETRY_DELAY = 0.05
 _BROKER_RETRY_MAX_DELAY = 0.5
 

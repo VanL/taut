@@ -39,6 +39,7 @@ from taut_summon._control import (
     encode_control_reply,
     parse_control_request,
 )
+from taut_summon._retry import remove_backoff
 
 
 class _FakeControlQueue:
@@ -188,7 +189,7 @@ def test_broker_retry_reraises_persistent_failure_after_budget() -> None:
         calls.append(1)
         raise DatabaseError("database disk image is malformed")
 
-    with pytest.raises(DatabaseError):
+    with remove_backoff(), pytest.raises(DatabaseError):
         broker_retry(always_malformed, what="test")
     assert len(calls) >= 2  # bounded budget spent, then re-raised
 
