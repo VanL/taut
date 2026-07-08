@@ -1409,9 +1409,29 @@ def test_dismiss_leaves_no_unclaimed_control_rows(
     member = _member_by_name(summon_db, "reviewer")
     assert member is not None
 
+    def _await_status_roundtrip(slot: int) -> dict[str, Any]:
+        deadline = time.monotonic() + _DEADLINE
+        last_detail = "no attempts"
+        while time.monotonic() < deadline:
+            try:
+                reply = _control_request(
+                    summon_db, member.member_id, "STATUS", timeout=5.0
+                )
+            except Exception as exc:  # noqa: BLE001 - diagnostic for CI flakes
+                last_detail = f"{type(exc).__name__}: {exc}"
+            else:
+                last_detail = repr(reply)
+                if reply is not None and reply.get("status") == "ok":
+                    return reply
+            time.sleep(0.05)
+        raise AssertionError(
+            f"timed out waiting for STATUS round-trip {slot}; "
+            f"last={last_detail}; driver_rc={driver.proc.poll()!r}; "
+            f"stderr: {driver.stderr_tail()}"
+        )
+
     for _ in range(3):
-        reply = _control_request(summon_db, member.member_id, "STATUS")
-        assert reply is not None and reply["status"] == "ok"
+        _await_status_roundtrip(_ + 1)
 
     assert driver.stop() == 0
 
