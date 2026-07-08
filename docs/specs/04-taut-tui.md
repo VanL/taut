@@ -214,10 +214,9 @@ channel-creation path or write channel/membership state directly.
 
 **Invocation.** The join surface is available from the main TUI whenever a
 member identity is resolved, including when the member already has joined
-channels. The baseline key is `j` unless a later keyboard review assigns a
-different non-conflicting key; whichever key is used must appear in the key bar
-when relevant and in `?` help. The surface must also be reachable from a
-no-joined-channel or no-channels empty state as that state's primary action.
+channels. The key binding is `j`; it must appear in the key bar when relevant
+and in `?` help. The surface must also be reachable from a no-joined-channel or
+no-channels empty state as that state's primary action.
 
 Opening the join surface is a transient/modal text-entry state. It must not
 change the active target, cursors, membership, or transcript until submit
@@ -234,7 +233,9 @@ threads are never join choices.
 If listing existing channels fails, the surface stays usable as a manual
 channel-name entry field and shows a non-fatal inline note. Listing failure must
 not block creating/joining a typed channel name, because `join CHANNEL` itself
-is the authoritative operation.
+is the authoritative operation. When the list is unavailable, the surface must
+use neutral action language such as join/create `#CHANNEL`; it must not claim
+the typed channel is definitely new until the client call succeeds.
 
 **Display and interaction.** The surface has:
 
@@ -261,8 +262,8 @@ channel name.
 2. The surface lists known joinable channels.
 3. Use Up/Down to select a channel, or type an exact existing channel name.
 4. Press Enter.
-5. The TUI validates the submitted text with the same channel-name validator
-   used by the client/CLI when available for fast feedback.
+5. The TUI validates the submitted text with the shared channel-name validator
+   used by the client/CLI before calling the client.
 6. The TUI calls `TautClient.join(CHANNEL)`.
 7. On success, it closes the surface, re-reads membership/navigation from the
    client, and makes the joined channel the active target.
@@ -273,16 +274,21 @@ channel name.
 
 1. Press `j` or choose the join/create action from an empty state.
 2. Type a valid channel name that does not match a known joinable channel.
-3. The surface clearly labels the pending action as create-and-join
-   `#CHANNEL`, because absent-channel creation is normal `join` semantics.
-4. Press Enter.
-5. If the create-and-join action was not already explicit in the focused
-   control, the TUI asks for a lightweight confirmation before calling the
-   client. Confirmation must be keyboard-only and cancellable with Escape.
-6. The TUI calls `TautClient.join(CHANNEL)`.
-7. On success, it closes the surface, re-reads membership/navigation from the
+3. The TUI validates the typed text with the shared channel-name validator used
+   by the client/CLI before offering the create-and-join action.
+4. The surface clearly labels the pending action as create-and-join `#CHANNEL`,
+   because absent-channel creation is normal `join` semantics. If the channel
+   list could not be loaded, the label uses neutral join/create language instead
+   of claiming the channel is new.
+5. Press Enter to move to a lightweight confirmation state. The confirmation
+   names the exact channel and action, keeps the typed value visible, and is
+   keyboard-only: Enter confirms, Escape cancels confirmation and returns to the
+   editable input without mutating client state.
+6. Press Enter from the confirmation state.
+7. The TUI calls `TautClient.join(CHANNEL)`.
+8. On success, it closes the surface, re-reads membership/navigation from the
    client, and makes the new channel the active target.
-8. The creation notice appears through the same client/watch/read path as other
+9. The creation notice appears through the same client/watch/read path as other
    messages; the TUI must not fabricate an optimistic transcript row.
 
 **Already-joined channels.** If the user types or selects a channel the member
@@ -312,8 +318,11 @@ until a dedicated identity/profile design exists.
   with keyboard controls;
 - typing a new valid name follows the create-and-join path and calls
   `TautClient.join()` rather than a TUI-specific creation path;
+- unmatched typed names require the confirmation state before the client call,
+  and Escape from confirmation returns to editable input without mutation;
 - already-joined channel input switches/selects without duplicate join;
-- listing failure leaves manual typed join usable;
+- listing failure leaves manual typed join usable and uses neutral join/create
+  language before the client resolves the result;
 - validation and client errors stay visible and recoverable;
 - successful join/create refreshes navigation from client state and selects the
   joined channel;
