@@ -106,10 +106,13 @@ PTY with `TERM=xterm-256color`, and the parent owns exactly one master fd.
 The PTY reader deliberately does not parse the TUI as speech. It reads raw
 bytes for three reasons only: finite terminal-query replies, coarse liveness,
 and diagnostics/STATUS. The responder answers known report-request families
-including cursor-position DSR with clamped cursor tracking; unknown
-report-shaped queries get no fabricated reply and instead surface
-`awaiting_query` through `AdapterHandle.status_fields()`. The control loop
-merges those fields into STATUS after checking reserved keys.
+including cursor-position DSR with clamped cursor tracking, parameterized
+XTVERSION, OSC color, and kitty keyboard query. Kitty keyboard mode sets and
+cursor-style sets are consumed as no-reply mode changes so they do not become
+false `awaiting_query` diagnostics. Unknown report-shaped queries get no
+fabricated reply and instead surface `awaiting_query` through
+`AdapterHandle.status_fields()`. The control loop merges those fields into
+STATUS after checking reserved keys.
 
 Injection is keyboard input, so it is sanitized before framing: CR/CRLF
 canonicalize to LF, C0 controls except LF are stripped, `DEL` and `ESC` are
@@ -198,10 +201,13 @@ a command lost to a driver crash is moot — STOP on a dead driver is
 meaningless, and STATUS/PING requesters retry). `TautClient.watch` is
 chat-only and knows nothing about `sys.*`. Replies go to a **per-request**
 queue `sys.rsp_<member-id>_<request_id>` so concurrent clients from different
-terminals never consume each other's answers. The control thread stays
-responsive while an `inject()` is blocked on a stalled harness because STOP's
-path closes the adapter handle, which the [SUM-7.1] contract requires to
-unblock the in-flight write.
+terminals never consume each other's answers. Reply writes use a larger
+transient-broker retry budget than ordinary reads/writes: dropping a STATUS
+reply after a short SQLite contention window makes a healthy driver look
+unresponsive to the client. The control thread stays responsive while an
+`inject()` is blocked on a stalled harness because STOP's path closes the
+adapter handle, which the [SUM-7.1] contract requires to unblock the in-flight
+write.
 
 The rate backstop ([SUM-10]) is a circuit breaker, not a content policy: a
 driver-local audit cursor per thread counts `from_id == self` messages on the
@@ -261,7 +267,9 @@ interrupt/close, single-consumer events) once.
   local-LLM live lane adds a real PTY child that calls a loopback
   OpenAI-compatible endpoint and then speaks through `taut say`, giving CI a
   credential-free transport proof without pretending to cover provider
-  onboarding.
+  onboarding. External PTY harnesses have a default local readiness probe and
+  an opt-in strict mode (`TAUT_SUMMON_LIVE_HARNESS_STRICT=1`) that prewires
+  the temp database and fails on missing sentinels.
 - **Weft congruence is contract, not code**: STOP/STATUS/PING verbs and
   queue roles per [SUM-9]; no weft imports, no vendored weft agent code.
 

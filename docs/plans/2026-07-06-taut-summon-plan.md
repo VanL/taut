@@ -1102,6 +1102,14 @@ the source (not masked):
   `taut tests extensions/taut_summon/...`; mypy clean (package 14 files;
   full package+tests 23 files); `uv build extensions/taut_summon` succeeds.
 
+  **Release-readiness follow-up (2026-07-08):** this gate posture is
+  superseded. The `claude` conformance placeholder parameter was removed:
+  portable conformance runs the real scripted harness unless another project
+  supplies an actual reusable harness factory. The summon extension pytest
+  config now defaults to `-n auto --dist loadgroup`, matching root Taut and
+  SimpleBroker. Live provider proof stays in `test_live_harness.py` and the
+  CI-safe local-LLM lane.
+
 **Closing summary.** All ten slices (S1–S10) are implemented, gate-green,
 and Codex-reviewed through Phase D; Phase E adds the portable [SUM-12]
 conformance suite and the documentation closeout. The extension is

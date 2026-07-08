@@ -28,9 +28,15 @@ from taut_summon._adapter import (
     adapter_names,
     get_adapter,
 )
-from taut_summon._pty import PtyAdapter, PtyHandle, PtySpec
+from taut_summon._pty import PtyAdapter, PtyHandle, PtySpec, _TerminalResponder
 
 FAKE_TUI = Path(__file__).with_name("fixtures") / "fake_tui.py"
+
+# These tests allocate real PTYs and intentionally exercise full input queues,
+# signal/close races, and fake TUI startup. They run under xdist, but in the
+# process-heavy group so host PTY/process pressure does not become the behavior
+# under test.
+pytestmark = pytest.mark.xdist_group("process")
 
 
 class EventPump:
@@ -172,7 +178,18 @@ def test_pty_responder_answers_startup_queries_and_clamps_size(
         assert "1;1R" not in by_name["relative-size"]["got"]
     finally:
         handle.close()
-    assert isinstance(pump.drain_until_exit(), ExitEvent)
+        assert isinstance(pump.drain_until_exit(), ExitEvent)
+
+
+def test_pty_responder_handles_live_observed_parameterized_queries() -> None:
+    responder = _TerminalResponder(rows=31, cols=97)
+
+    replies = responder.feed(b"\x1b[>0q\x1b[>7u\x1b[>1u\x1b[0 q\x1b[1 q")
+
+    assert replies == [
+        b"\x1bP>|taut-summon(0)\x1b\\",
+    ]
+    assert responder.outstanding_query is None
 
 
 def test_line_mode_inject_collapses_newlines_and_strips_controls(

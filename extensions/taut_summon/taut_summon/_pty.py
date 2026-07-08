@@ -153,6 +153,7 @@ class PtyHandle:
         self._events_lock = threading.Lock()
         self._inject_lock = threading.Lock()
         self._events_claimed = False
+        self._interrupt_requested = threading.Event()
         self._reader_started = False
         self._reader_started_event = threading.Event()
         self._master_closed = False
@@ -241,6 +242,8 @@ class PtyHandle:
                 if self._master_fd in ready:
                     try:
                         data = os.read(self._master_fd, 4096)
+                    except BlockingIOError:
+                        continue
                     except OSError:
                         result = "eof"
                         break
@@ -293,10 +296,12 @@ class PtyHandle:
         return self._event_stream()
 
     def interrupt(self) -> None:
+        self._interrupt_requested.set()
         if not self._write_interrupt_best_effort():
             self._signal_process_group(signal.SIGTERM)
 
     def close(self) -> None:
+        self._interrupt_requested.set()
         with self._lifecycle_lock:
             reader_started = self._reader_started
             master_closed = self._master_closed
@@ -331,6 +336,8 @@ class PtyHandle:
                     continue
                 try:
                     data = os.read(self._master_fd, 4096)
+                except BlockingIOError:
+                    continue
                 except OSError:
                     break
                 if not data:
@@ -379,18 +386,42 @@ class PtyHandle:
 
     def _write_all(self, data: bytes) -> None:
         offset = 0
-        while offset < len(data):
+        original_flags: int | None = None
+        fd: int | None = None
+        try:
             with self._lifecycle_lock:
                 if self._master_closed:
                     raise AdapterError("PTY master is closed")
+                if self._interrupt_requested.is_set():
+                    raise AdapterError("PTY write interrupted")
                 fd = self._master_fd
-            try:
-                written = os.write(fd, data[offset:])
-            except OSError as exc:
-                raise AdapterError(f"PTY write failed: {exc}") from exc
-            if written <= 0:
-                raise AdapterError("PTY write wrote no bytes")
-            offset += written
+            original_flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+            fcntl.fcntl(fd, fcntl.F_SETFL, original_flags | os.O_NONBLOCK)
+            while offset < len(data):
+                with self._lifecycle_lock:
+                    if self._master_closed:
+                        raise AdapterError("PTY master is closed")
+                    if self._interrupt_requested.is_set():
+                        raise AdapterError("PTY write interrupted")
+                    fd = self._master_fd
+                if self._proc.poll() is not None:
+                    raise AdapterError("PTY child exited during write")
+                try:
+                    written = os.write(fd, data[offset:])
+                except BlockingIOError:
+                    select.select([], [fd], [], 0.05)
+                    continue
+                except OSError as exc:
+                    raise AdapterError(f"PTY write failed: {exc}") from exc
+                if written <= 0:
+                    raise AdapterError("PTY write wrote no bytes")
+                offset += written
+        finally:
+            if fd is not None and original_flags is not None:
+                try:
+                    fcntl.fcntl(fd, fcntl.F_SETFL, original_flags)
+                except OSError:
+                    pass
 
     def _write_best_effort(self, data: bytes) -> None:
         try:
@@ -546,10 +577,14 @@ class _TerminalResponder:
         if final == b"p" and body.startswith(b"?") and body.endswith(b"$"):
             mode = body[1:-1] or b"0"
             return b"\x1b[?" + mode + b";0$y"
-        if final == b"q" and body == b">":
+        if final == b"q" and body.startswith(b">"):
             return b"\x1bP>|taut-summon(0)\x1b\\"
+        if final == b"q" and body.endswith(b" "):
+            return None
         if final == b"u" and body == b"?":
             return b"\x1b[?0u"
+        if final == b"u" and body.startswith(b">"):
+            return None
         if final in (b"p", b"q", b"u"):
             self._mark_report(seq)
         return None

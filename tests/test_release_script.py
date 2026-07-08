@@ -160,6 +160,85 @@ def test_write_version_files_updates_pg_dependency_floor(
     assert '"taut>=0.2.0",' in text
 
 
+def test_write_version_files_updates_summon_dependency_floor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _load_release_module()
+    pyproject_path = tmp_path / "extensions" / "taut_summon" / "pyproject.toml"
+    pyproject_path.parent.mkdir(parents=True)
+    pyproject_path.write_text(
+        "\n".join(
+            [
+                "[project]",
+                'name = "taut-summon"',
+                'version = "0.1.1"',
+                "dependencies = [",
+                '    "taut>=0.1.1",',
+                "]",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    target = release.ReleaseTarget(
+        name="summon",
+        package_name="taut-summon",
+        package_dir=Path("extensions/taut_summon"),
+        pyproject_path=pyproject_path,
+        constants_path=None,
+        tag_namespace="taut_summon",
+        github_release=True,
+        pypi_publish=False,
+    )
+
+    def fake_read_current_version(target: object = release.ROOT_TARGET) -> str:
+        assert target == release.ROOT_TARGET
+        return "0.5.0"
+
+    monkeypatch.setattr(release, "read_current_version", fake_read_current_version)
+
+    release.write_version_files("0.5.1", target)
+
+    text = pyproject_path.read_text(encoding="utf-8")
+    assert 'version = "0.5.1"' in text
+    assert '"taut>=0.5.0",' in text
+
+
+def test_sync_root_summon_dev_dependency_updates_root_floor(tmp_path: Path) -> None:
+    release = _load_release_module()
+    root_pyproject_path = tmp_path / "pyproject.toml"
+    summon_pyproject_path = tmp_path / "extensions" / "taut_summon" / "pyproject.toml"
+    summon_pyproject_path.parent.mkdir(parents=True)
+    root_pyproject_path.write_text(
+        "\n".join(
+            [
+                "[project]",
+                'name = "taut"',
+                'version = "0.4.0"',
+                "[project.optional-dependencies]",
+                "dev = [",
+                '    "taut-summon>=0.1.0",',
+                "]",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    summon_pyproject_path.write_text(
+        '[project]\nname = "taut-summon"\nversion = "0.5.0"\n',
+        encoding="utf-8",
+    )
+
+    updated_version = release.sync_root_summon_dev_dependency(
+        root_pyproject_path=root_pyproject_path,
+        summon_pyproject_path=summon_pyproject_path,
+    )
+
+    assert updated_version == "0.5.0"
+    assert '"taut-summon>=0.5.0",' in root_pyproject_path.read_text(encoding="utf-8")
+
+
 def test_root_target_uses_v_prefixed_github_tag() -> None:
     release = _load_release_module()
 
@@ -177,6 +256,20 @@ def test_pg_target_uses_namespaced_github_tag() -> None:
     assert release.PG_TARGET.tag_for_version("0.1.1") == "taut_pg/v0.1.1"
     assert release.PG_TARGET.github_release is True
     assert release.PG_TARGET.pypi_publish is False
+
+
+def test_summon_target_uses_namespaced_github_tag() -> None:
+    release = _load_release_module()
+
+    assert release.SUMMON_TARGET.package_name == "taut-summon"
+    assert release.SUMMON_TARGET.package_dir == Path("extensions/taut_summon")
+    assert release.SUMMON_TARGET.tag_for_version("0.1.1") == "taut_summon/v0.1.1"
+    assert release.SUMMON_TARGET.github_release is True
+    assert release.SUMMON_TARGET.pypi_publish is False
+    assert (
+        release.SUMMON_TARGET.release_workflow
+        == ".github/workflows/release-gate-summon.yml"
+    )
 
 
 def test_inspect_release_state_is_github_only(
@@ -366,18 +459,25 @@ def test_precheck_commands_include_typed_release_helper() -> None:
     commands = release.build_precheck_commands()
 
     assert ("uv", "run", "pytest") in commands
-    assert ("uv", "run", "ruff", "check", "taut", "tests", "bin") in commands
+    assert ("uv", "run", "./bin/pytest-pg", "--fast") in commands
+    assert ("uv", "run", "pytest", "extensions/taut_summon/tests") in commands
+    assert any(
+        command[:5] == ("uv", "run", "--extra", "dev", "ruff") for command in commands
+    )
+    assert any("extensions/taut_pg/taut_pg" in command for command in commands)
+    assert any("extensions/taut_summon/taut_summon" in command for command in commands)
     assert (
         "uv",
         "run",
-        "ruff",
-        "format",
-        "--check",
+        "--extra",
+        "dev",
+        "mypy",
         "taut",
         "tests",
-        "bin",
+        "bin/release.py",
+        "--config-file",
+        "pyproject.toml",
     ) in commands
-    assert ("uv", "run", "mypy", "taut", "tests", "bin/release.py") in commands
 
 
 def test_pg_precheck_commands_include_pg_gate_and_extension_checks() -> None:
@@ -386,10 +486,112 @@ def test_pg_precheck_commands_include_pg_gate_and_extension_checks() -> None:
     commands = release.build_precheck_commands(release.PG_TARGET)
 
     assert ("uv", "run", "./bin/pytest-pg", "--fast") in commands
-    assert ("uv", "build", "extensions/taut_pg") in commands
     assert any("extensions/taut_pg/taut_pg" in command for command in commands)
     assert any("taut/_scripts.py" in command for command in commands)
     assert all("pypi" not in " ".join(command).lower() for command in commands)
+
+
+def test_summon_precheck_commands_include_extension_gate() -> None:
+    release = _load_release_module()
+
+    commands = release.build_precheck_commands(release.SUMMON_TARGET)
+
+    assert ("uv", "run", "pytest", "extensions/taut_summon/tests") in commands
+    assert any("extensions/taut_summon/taut_summon" in command for command in commands)
+    assert any("extensions/taut_summon/tests" in command for command in commands)
+    assert all("pypi" not in " ".join(command).lower() for command in commands)
+
+
+def test_summon_precheck_env_requires_local_llm() -> None:
+    release = _load_release_module()
+
+    env = release._precheck_env_overrides(  # noqa: SLF001
+        release.SUMMON_TEST_COMMAND,
+        local_llm_env={
+            "TAUT_SUMMON_LOCAL_LLM_ENDPOINT": "http://127.0.0.1:9999/v1",
+            "TAUT_SUMMON_LOCAL_LLM_MODEL": "local-test:latest",
+        },
+    )
+
+    assert env["PYTEST_ADDOPTS"] == "-x --maxfail=1"
+    assert env["TAUT_SUMMON_LOCAL_LLM"] == "1"
+    assert env["TAUT_SUMMON_LOCAL_LLM_ENDPOINT"] == "http://127.0.0.1:9999/v1"
+    assert env["TAUT_SUMMON_LOCAL_LLM_MODEL"] == "local-test:latest"
+
+
+def test_prechecks_start_local_llm_before_other_release_gates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _load_release_module()
+    events: list[tuple[str, object]] = []
+    commands = (
+        ("root-tests",),
+        release.PG_TEST_COMMAND,
+        release.SUMMON_TEST_COMMAND,
+        ("lint",),
+    )
+
+    class FakeLocalLlmPreparation:
+        env_overrides = {
+            "TAUT_SUMMON_LOCAL_LLM": "1",
+            "TAUT_SUMMON_LOCAL_LLM_ENDPOINT": "http://127.0.0.1:9999/v1",
+            "TAUT_SUMMON_LOCAL_LLM_MODEL": "local-test:latest",
+        }
+
+        def __init__(self, *, dry_run: bool) -> None:
+            events.append(("init", dry_run))
+
+        def start(self) -> None:
+            events.append(("start", None))
+
+        def wait_ready(self) -> None:
+            events.append(("wait", None))
+
+        def close(self) -> None:
+            events.append(("close", None))
+
+    def fake_build_precheck_commands_for_targets(targets: tuple[object, ...]) -> Any:
+        assert targets == (release.ROOT_TARGET, release.SUMMON_TARGET)
+        return commands
+
+    def fake_run_command(
+        command: tuple[str, ...],
+        *,
+        dry_run: bool = False,
+        env_overrides: dict[str, str] | None = None,
+    ) -> None:
+        events.append(("run", command))
+        if command == release.SUMMON_TEST_COMMAND:
+            assert env_overrides is not None
+            assert env_overrides["TAUT_SUMMON_LOCAL_LLM"] == "1"
+            assert (
+                env_overrides["TAUT_SUMMON_LOCAL_LLM_ENDPOINT"]
+                == "http://127.0.0.1:9999/v1"
+            )
+
+    monkeypatch.setattr(release, "LocalLlmPreparation", FakeLocalLlmPreparation)
+    monkeypatch.setattr(
+        release,
+        "build_precheck_commands_for_targets",
+        fake_build_precheck_commands_for_targets,
+    )
+    monkeypatch.setattr(release, "run_command", fake_run_command)
+
+    release.run_prechecks_for_targets(
+        (release.ROOT_TARGET, release.SUMMON_TARGET),
+        dry_run=False,
+    )
+
+    assert events == [
+        ("init", False),
+        ("start", None),
+        ("run", ("root-tests",)),
+        ("run", release.PG_TEST_COMMAND),
+        ("wait", None),
+        ("run", release.SUMMON_TEST_COMMAND),
+        ("run", ("lint",)),
+        ("close", None),
+    ]
 
 
 def test_pg_postupdate_builds_extension_path() -> None:
@@ -400,13 +602,81 @@ def test_pg_postupdate_builds_extension_path() -> None:
     assert steps[0].command == ("uv", "build", "extensions/taut_pg")
 
 
+def test_summon_postupdate_locks_and_builds_extension() -> None:
+    release = _load_release_module()
+
+    steps = release.build_postupdate_steps(release.SUMMON_TARGET)
+
+    assert steps[0].command == ("uv", "lock")
+    assert steps[0].cwd == release.SUMMON_EXTENSION_DIR
+    assert steps[1].command == ("uv", "build", "extensions/taut_summon")
+
+
+def test_parse_args_accepts_positional_all_and_target_compat() -> None:
+    release = _load_release_module()
+
+    assert release.parse_args(["all"]).target == "all"
+    assert release.parse_args(["--target", "pg"]).target == "pg"
+    assert release.parse_args(["summon", "--skip-checks"]).target == "summon"
+
+    with pytest.raises(SystemExit):
+        release.parse_args(["pg", "--target", "summon"])
+
+
+def test_discover_unpublished_releases_filters_published_targets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _load_release_module()
+
+    def fake_read_target_version(target: Any) -> str:
+        versions = {
+            release.PG_TARGET: "0.5.0",
+            release.SUMMON_TARGET: "0.5.0",
+            release.ROOT_TARGET: "0.5.0",
+        }
+        return versions[target]
+
+    def fake_inspect_release_state(target: Any, version: str) -> Any:
+        assert version == "0.5.0"
+        return _release_state(
+            release,
+            target=target,
+            github_release_exists=target == release.PG_TARGET,
+        )
+
+    monkeypatch.setattr(release, "read_target_version", fake_read_target_version)
+    monkeypatch.setattr(release, "inspect_release_state", fake_inspect_release_state)
+
+    candidates = release.discover_unpublished_releases(
+        (release.PG_TARGET, release.SUMMON_TARGET, release.ROOT_TARGET)
+    )
+
+    assert [candidate.target for candidate in candidates] == [
+        release.SUMMON_TARGET,
+        release.ROOT_TARGET,
+    ]
+
+
+def test_release_file_paths_for_targets_dedupes_root_files() -> None:
+    release = _load_release_module()
+
+    paths = release._release_file_paths_for_targets(  # noqa: SLF001
+        (release.ROOT_TARGET, release.ROOT_TARGET, release.SUMMON_TARGET)
+    )
+
+    assert paths.count(release.PYPROJECT_PATH) == 1
+    assert release.CONSTANTS_PATH in paths
+    assert release.SUMMON_PYPROJECT_PATH in paths
+    assert release.SUMMON_UV_LOCK_PATH in paths
+
+
 def test_dry_run_publish_is_github_only_noop(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     release = _load_release_module()
 
     def fake_read_current_version(target: Any = release.ROOT_TARGET) -> str:
-        assert target == release.ROOT_TARGET
+        assert target in {release.ROOT_TARGET, release.SUMMON_TARGET}
         return "0.1.1"
 
     def fake_inspect_release_state(target: Any, version: str) -> Any:

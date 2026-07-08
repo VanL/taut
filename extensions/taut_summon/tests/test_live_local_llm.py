@@ -269,6 +269,7 @@ def test_local_llm_env_can_disable_local(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 @pytest.mark.requires_local_llm
+@pytest.mark.xdist_group("process")
 def test_local_llm_pty_harness_posts_sentinel(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

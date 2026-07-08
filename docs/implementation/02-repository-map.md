@@ -9,12 +9,13 @@ Quick pointers to the key guidance documents in this repository.
 | `AGENTS.md` | Canonical agent entry point |
 | `CLAUDE.md` | Alias for tools that expect Claude-style root guidance |
 | `README.md` | Product face and current CLI/API behavior contract (see `docs/specs/02-taut-core.md`) |
-| `bin/release.py` | GitHub-only release helper for version sync, release gates, and `vX.Y.Z` tags |
+| `bin/release.py` | GitHub-only release helper for version sync, release gates, summon local-LLM preparation, `vX.Y.Z`, `taut_pg/vX.Y.Z`, `taut_summon/vX.Y.Z`, and `all` release batches |
 | `bin/pytest-pg` | Docker-backed Postgres test runner for shared root tests and `taut-pg` tests |
 | `.github/workflows/test.yml` | Push/PR/reusable pytest, lint, type, and build gates |
 | `.github/workflows/test-pg-extension.yml` | Push/PR/reusable Docker Postgres gate for `taut-pg` |
 | `.github/workflows/release-gate.yml` | `v*` tag gate that runs tests, verifies tag stability, and publishes release artifacts |
 | `.github/workflows/release-gate-pg.yml` | `taut_pg/v*` tag gate for GitHub-only `taut-pg` release artifacts |
+| `.github/workflows/release-gate-summon.yml` | `taut_summon/v*` tag gate for GitHub-only `taut-summon` release artifacts |
 | `.github/workflows/release.yml` | Reusable GitHub Release artifact builder/uploader; no PyPI path |
 
 ## Shared Agent Context
@@ -56,6 +57,7 @@ Quick pointers to the key guidance documents in this repository.
 | `docs/plans/2026-06-17-github-release-helper-plan.md` | GitHub-only release-helper plan while PyPI name clearance is pending |
 | `docs/plans/2026-06-17-github-actions-release-workflows-plan.md` | GitHub Actions test and GitHub-only release workflow plan |
 | `docs/plans/2026-06-17-taut-pg-extension-plan.md` | Postgres extension plan covering `extensions/`, PG test harness, and GitHub-only release gates |
+| `docs/plans/2026-07-08-release-helper-simplebroker-port-plan.md` | SimpleBroker-style release helper target, batch, and summon release gate port plan |
 | `docs/plans/2026-06-17-implementation-review-followups-plan.md` | Post-review hardening for missing-plugin errors, bounded `log --limit`, and shared backend conformance |
 | `docs/plans/2026-06-18-simplebroker-latest-timestamp-plan.md` | Implemented plan for indexed `list` metadata via SimpleBroker's latest pending timestamp API |
 | `docs/plans/2026-06-30-assets-reference-cleanup-plan.md` | Implemented cleanup of stale `assets/` and `generate_knot.py` lint references |

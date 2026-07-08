@@ -54,9 +54,17 @@ watcher behavior.
 Release tooling lives in `bin/release.py`. Its boundary is repository hygiene,
 not runtime behavior: it verifies that `pyproject.toml` and
 `taut/_constants.py` stay in sync, runs the typed/lint/build release gates,
-plans root `vX.Y.Z` tag actions and extension `taut_pg/vX.Y.Z` tag actions, and
-checks GitHub Release state. It deliberately has no PyPI upload path while the
-`taut` package-name request is unresolved.
+plans root `vX.Y.Z` tag actions plus extension `taut_pg/vX.Y.Z` and
+`taut_summon/vX.Y.Z` tag actions, syncs first-party dependency floors, and
+checks GitHub Release state. It accepts `core`/`pg`/`summon` targets plus `all`
+for current unpublished versions. It deliberately has no PyPI upload path while
+the `taut` package-name request is unresolved. For core or summon releases, it
+also starts summon local-LLM preparation before the precheck sequence: reuse a
+configured loopback endpoint if it already serves the model; otherwise start a
+disposable loopback Ollama container and build the bounded served model while
+root and PG gates run. The summon suite waits on that endpoint and runs with
+`TAUT_SUMMON_LOCAL_LLM=1`, so a missing local model is a release failure rather
+than a hidden skip.
 GitHub Actions mirrors that boundary: `.github/workflows/test.yml` owns normal
 push/PR gates and is reusable, `.github/workflows/release-gate.yml` runs on
 `v*` tags, reuses the root and PG test workflows, verifies that the tag still
@@ -64,8 +72,10 @@ points at the tested commit, and calls `.github/workflows/release.yml` to build
 artifacts and create the GitHub Release. `.github/workflows/test-pg-extension.yml`
 owns the Docker Postgres gate for `taut-pg`, and
 `.github/workflows/release-gate-pg.yml` publishes GitHub artifacts for
-`taut_pg/v*` tags through the same reusable release workflow. No workflow
-uploads to PyPI.
+`taut_pg/v*` tags through the same reusable release workflow.
+`.github/workflows/release-gate-summon.yml` publishes GitHub artifacts for
+`taut_summon/v*` tags after the reusable root test workflow, which includes the
+summon extension and local-LLM lane. No workflow uploads to PyPI.
 
 All production taut-owned relational state flows through `taut/state/`.
 `taut/state/__init__.py` exposes the internal `TautState` interface,
@@ -196,9 +206,10 @@ to the same runtime.
 | `taut/client/` | Public API facade, shared base, value models, verb mixins, shared codecs, and watcher runtime adapter |
 | `taut/watcher.py` | Vendored multi-queue watcher, chat cursor watching, notification inbox integration |
 | `taut/cli.py` | Argparse tree, rendering, exit-code mapping |
-| `bin/release.py` | GitHub-only release helper and local release gates |
+| `bin/release.py` | GitHub-only release helper, target/tag planning, dependency sync, and local release gates |
 | `bin/pytest-pg` | Docker-backed Postgres test runner for shared and extension suites |
 | `extensions/taut_pg/` | Separate `taut-pg` package, docs, and PG-only tests |
+| `extensions/taut_summon/` | Separate `taut-summon` package, summon driver/adapters, docs, and real-process tests |
 | `.github/workflows/` | GitHub Actions test and GitHub-only release publication gates |
 | `tests/` | Contract tests against real SQLite files, shared backend tests, and subprocess CLI |
 
@@ -238,11 +249,14 @@ Before completion, run:
 uv run pytest
 uv run pytest -m shared
 uv run ./bin/pytest-pg --fast
-uv run ruff check taut tests bin extensions/taut_pg/taut_pg extensions/taut_pg/tests
-uv run ruff format --check taut tests bin extensions/taut_pg/taut_pg extensions/taut_pg/tests
+uv run pytest extensions/taut_summon/tests
+uv run ruff check taut tests bin extensions/taut_pg/taut_pg extensions/taut_pg/tests extensions/taut_summon/taut_summon extensions/taut_summon/tests
+uv run ruff format --check taut tests bin extensions/taut_pg/taut_pg extensions/taut_pg/tests extensions/taut_summon/taut_summon extensions/taut_summon/tests
 uv run --extra dev mypy taut tests bin/release.py extensions/taut_pg/taut_pg extensions/taut_pg/tests --config-file pyproject.toml
+uv run --extra dev mypy extensions/taut_summon/taut_summon extensions/taut_summon/tests --config-file pyproject.toml
 uv build
 uv build extensions/taut_pg
+uv build extensions/taut_summon
 ```
 
 Then run the grep gates from the active plan for private imports, unexpected

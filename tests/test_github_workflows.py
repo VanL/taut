@@ -30,7 +30,12 @@ def test_test_workflow_is_reusable_and_runs_release_gates() -> None:
 
 
 def test_setup_uv_steps_have_tight_timeouts() -> None:
-    for name in ("test.yml", "test-pg-extension.yml", "release.yml"):
+    for name in (
+        "test.yml",
+        "test-pg-extension.yml",
+        "release.yml",
+        "release-gate-summon.yml",
+    ):
         lines = _workflow(name).splitlines()
         setup_uv_lines = [
             index
@@ -38,6 +43,9 @@ def test_setup_uv_steps_have_tight_timeouts() -> None:
             if "uses: astral-sh/setup-uv@" in line
         ]
 
+        if name == "release-gate-summon.yml":
+            assert setup_uv_lines == []
+            continue
         assert setup_uv_lines, name
         for index in setup_uv_lines:
             step_header = lines[max(0, index - 2) : index + 2]
@@ -84,6 +92,21 @@ def test_pg_release_gate_is_github_only() -> None:
     assert "uses: ./.github/workflows/test-pg-extension.yml" in workflow
     assert "package_name: taut-pg" in workflow
     assert "package_dir: extensions/taut_pg" in workflow
+    assert "verify-tag-current:" in workflow
+    assert "uv publish" not in lower_workflow
+    assert "pypi" not in lower_workflow
+    assert "trusted-publishing" not in lower_workflow
+
+
+def test_summon_release_gate_is_github_only() -> None:
+    workflow = _workflow("release-gate-summon.yml")
+    lower_workflow = workflow.lower()
+
+    assert 'tags:\n      - "taut_summon/v*"' in workflow
+    assert "uses: ./.github/workflows/test.yml" in workflow
+    assert "uses: ./.github/workflows/test-pg-extension.yml" not in workflow
+    assert "package_name: taut-summon" in workflow
+    assert "package_dir: extensions/taut_summon" in workflow
     assert "verify-tag-current:" in workflow
     assert "uv publish" not in lower_workflow
     assert "pypi" not in lower_workflow

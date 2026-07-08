@@ -75,7 +75,9 @@ def is_transient_broker_error(exc: Exception) -> bool:
     return False
 
 
-def broker_retry(fn: Callable[[], T], *, what: str) -> T:
+def broker_retry(
+    fn: Callable[[], T], *, what: str, attempts: int = _BROKER_RETRIES
+) -> T:
     """Run a bare broker op, riding out transient WAL read errors.
 
     Bare ``read_one``/``write`` on the control queues go through this so a
@@ -93,6 +95,6 @@ def broker_retry(fn: Callable[[], T], *, what: str) -> T:
         retry_on=is_transient_broker_error,
         wait_gen=expo,
         wait_gen_kwargs={"base": 2, "factor": _BROKER_RETRY_DELAY},
-        stop=stop_after_attempt(_BROKER_RETRIES),
+        stop=stop_after_attempt(attempts),
         before_sleep=_log,
     )

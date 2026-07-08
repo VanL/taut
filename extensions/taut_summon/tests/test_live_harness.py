@@ -9,6 +9,7 @@ set ``TAUT_SUMMON_LIVE_HARNESS=0``.
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -17,7 +18,10 @@ from pathlib import Path
 
 import pytest
 from conftest import _base_env, summon_cli, taut_cli
+from simplebroker import Queue
+from taut_summon._state import ensure_summon_schema, record_session, set_wired
 
+from taut import identity
 from taut.client import TautClient
 
 _HARNESSES = (
@@ -46,6 +50,92 @@ def _live_harness_enabled() -> bool:
     if configured is not None:
         return configured.strip().lower() not in _FALSEY_ENV
     return not _env_truthy("CI")
+
+
+def _strict_live_harness() -> bool:
+    return _env_truthy("TAUT_SUMMON_LIVE_HARNESS_STRICT")
+
+
+def _live_harness_timeout() -> float:
+    return float(os.environ.get("TAUT_SUMMON_LIVE_HARNESS_TIMEOUT", "45.0"))
+
+
+def _not_ready_reason(status_text: str) -> str | None:
+    if "awaiting_onboarding=true" in status_text:
+        return (
+            "driver reports awaiting_onboarding=true; run "
+            "`taut summon --attach <name>` from a real terminal for this "
+            "provider/database before expecting detached live reachability"
+        )
+    return None
+
+
+def _fatal_readiness_reason(status_text: str) -> str | None:
+    if "awaiting_query=" in status_text:
+        return (
+            "driver reports an unanswered terminal query; the PTY responder "
+            f"needs coverage for this harness ({status_text})"
+        )
+    return None
+
+
+def _harness_capture(provider: str) -> identity.IdentityCapture:
+    process = identity.ProcessInfo(
+        pid=os.getpid(),
+        ppid=1,
+        start_time=f"live-harness-{provider}",
+        exe=f"/usr/local/bin/{provider}",
+        argv=(provider,),
+        uid=os.getuid() if hasattr(os, "getuid") else 0,
+        pgid=os.getpgrp() if hasattr(os, "getpgrp") else os.getpid(),
+        session_id=os.getsid(0) if hasattr(os, "getsid") else None,
+        tty=None,
+        cwd=f"/taut-live-harness/{provider}",
+    )
+    return identity.IdentityCapture(
+        chain=(process,),
+        host=identity.HostIdentity("host:taut-live-harness", "taut-live-harness"),
+        uid=process.uid or 0,
+        login="taut-live-harness",
+        anchor=process,
+        kind="agent",
+        rule="live harness test setup",
+    )
+
+
+def _prewire_live_harness(db: Path, provider: str) -> None:
+    client = TautClient(
+        db_path=db,
+        as_name=provider,
+        identity_capture=_harness_capture(provider),
+    )
+    client.join("general")
+    member = client.last_created_member or client.whoami()
+    assert member.token is not None
+    queue = Queue("taut_summon_state", db_path=str(db))
+    ensure_summon_schema(queue)
+    record_session(
+        queue,
+        member_id=member.member_id,
+        token=member.token,
+        provider=provider,
+        provider_session_id=None,
+        driver_pid=None,
+        driver_start_time=None,
+        updated_ts=queue.generate_timestamp(),
+    )
+    set_wired(
+        queue,
+        member_id=member.member_id,
+        value=True,
+        updated_ts=queue.generate_timestamp(),
+    )
+
+
+def _finished_stderr_tail(proc: subprocess.Popen[str], *, limit: int = 500) -> str:
+    if proc.stderr is None or proc.poll() is None:
+        return ""
+    return proc.stderr.read()[-limit:]
 
 
 def test_live_harness_runs_locally_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -80,7 +170,43 @@ def test_live_harness_env_can_disable_local(
     assert not _live_harness_enabled()
 
 
+def test_live_harness_strict_mode_is_explicit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("TAUT_SUMMON_LIVE_HARNESS_STRICT", raising=False)
+    assert not _strict_live_harness()
+
+    monkeypatch.setenv("TAUT_SUMMON_LIVE_HARNESS_STRICT", "1")
+    assert _strict_live_harness()
+
+
+def test_live_status_not_ready_reason_names_onboarding() -> None:
+    reason = _not_ready_reason(
+        "claude\tprovider=claude\tdriver=alive\tawaiting_onboarding=true"
+    )
+
+    assert reason is not None
+    assert "awaiting_onboarding=true" in reason
+    assert "taut summon --attach" in reason
+
+
+def test_live_status_not_ready_reason_names_query_gap() -> None:
+    reason = _fatal_readiness_reason("codex\tprovider=codex\tawaiting_query=[?15n")
+
+    assert reason is not None
+    assert "terminal query" in reason
+    assert "[?15n" in reason
+
+
+def test_live_status_not_ready_reason_allows_plain_alive_status() -> None:
+    assert (
+        _not_ready_reason("claude\tprovider=claude\tdriver=alive\tcontrol_health=ok")
+        is None
+    )
+
+
 @pytest.mark.requires_live_harness
+@pytest.mark.xdist_group("process")
 @pytest.mark.parametrize("provider", _HARNESSES)
 def test_live_pty_harness_posts_sentinel(tmp_path: Path, provider: str) -> None:
     if not _live_harness_enabled():
@@ -89,18 +215,25 @@ def test_live_pty_harness_posts_sentinel(tmp_path: Path, provider: str) -> None:
             "TAUT_SUMMON_LIVE_HARNESS=1 in CI or 0 to skip locally"
         )
     if shutil.which(provider) is None:
+        if _strict_live_harness():
+            pytest.fail(f"{provider} binary is absent")
         pytest.skip(f"{provider} binary is absent")
 
     db = tmp_path / ".taut.db"
     TautClient.init(db_path=db)
     rc, _out, err = taut_cli("join", "general", db=db, cwd=tmp_path, as_name="van")
     assert rc == 0, err
+    if _strict_live_harness():
+        _prewire_live_harness(db, provider)
 
     sentinel = f"live-sentinel-{provider}-{time.monotonic_ns()}"
+    say_command = (
+        f"{shlex.quote(sys.executable)} -m taut say general {shlex.quote(sentinel)}"
+    )
     prompt = tmp_path / "orientation.txt"
     prompt.write_text(
-        "You are a summoned taut member. Immediately run exactly this command "
-        f"and then wait: taut say general {sentinel!r}\n",
+        "You are a summoned taut member. Immediately run exactly this shell "
+        f"command once and then wait:\n{say_command}\n",
         encoding="utf-8",
     )
     env = _base_env()
@@ -127,7 +260,8 @@ def test_live_pty_harness_posts_sentinel(tmp_path: Path, provider: str) -> None:
         text=True,
     )
     try:
-        deadline = time.monotonic() + 120.0
+        deadline = time.monotonic() + _live_harness_timeout()
+        last_status = ""
 
         def _sentinel_posted() -> bool:
             return any(
@@ -137,15 +271,49 @@ def test_live_pty_harness_posts_sentinel(tmp_path: Path, provider: str) -> None:
 
         while time.monotonic() < deadline:
             if proc.poll() is not None:
-                stderr = proc.stderr.read() if proc.stderr is not None else ""
+                stderr = _finished_stderr_tail(proc)
+                if _strict_live_harness():
+                    pytest.fail(
+                        f"{provider} did not reach a ready detached session: "
+                        f"{stderr[-500:]}"
+                    )
                 pytest.skip(
                     f"{provider} did not reach a ready detached session: {stderr[-500:]}"
                 )
+            try:
+                rc, status_out, status_err = summon_cli(
+                    "status", provider, db=db, cwd=tmp_path, timeout=10.0
+                )
+            except subprocess.TimeoutExpired as exc:
+                detail = f"status command timed out after {exc.timeout}s"
+                if _strict_live_harness():
+                    pytest.fail(f"{provider} did not reach a ready prompt: {detail}")
+                pytest.skip(f"{provider} did not reach a ready prompt: {detail}")
+            if rc == 0:
+                last_status = status_out
+                reason = _not_ready_reason(status_out)
+                if reason is not None:
+                    if _strict_live_harness():
+                        pytest.fail(
+                            f"{provider} did not reach a ready prompt: {reason}"
+                        )
+                    pytest.skip(f"{provider} did not reach a ready prompt: {reason}")
+                fatal_reason = _fatal_readiness_reason(status_out)
+                if fatal_reason is not None:
+                    pytest.fail(
+                        f"{provider} did not reach a ready prompt: {fatal_reason}"
+                    )
+            elif status_err:
+                last_status = status_err
             if _sentinel_posted():
                 break
             time.sleep(0.5)
         else:
-            raise AssertionError(f"{provider} was ready but did not post {sentinel!r}")
+            stderr = _finished_stderr_tail(proc)
+            raise AssertionError(
+                f"{provider} did not post {sentinel!r}; "
+                f"last status: {last_status[-500:]}; stderr: {stderr[-500:]}"
+            )
     finally:
         summon_cli("stop", provider, db=db, cwd=tmp_path, timeout=30.0)
         if proc.poll() is None:

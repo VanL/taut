@@ -63,6 +63,7 @@ _KNOWN_COMMANDS = frozenset({CONTROL_STOP, CONTROL_STATUS, CONTROL_PING})
 _DEFAULT_RATE_LIMIT = 60
 _RATE_WINDOW_SECONDS = 60.0
 _STOP_ACK_TIMEOUT_SECONDS = 60.0
+_CONTROL_REPLY_RETRY_ATTEMPTS = 10
 _STATUS_RESERVED_KEYS = frozenset(
     {
         "command",
@@ -485,9 +486,13 @@ class ControlLoop:
         if reply_to is not None and client is not None:
             queue = client.queue(reply_to)
             try:
-                broker_retry(lambda: queue.write(body), what="control reply")
+                broker_retry(
+                    lambda: queue.write(body),
+                    what="control reply",
+                    attempts=_CONTROL_REPLY_RETRY_ATTEMPTS,
+                )
             except Exception as exc:  # noqa: BLE001 - a lost reply must not crash
-                logger.debug("per-request control reply failed: %s", exc)
+                logger.warning("per-request control reply failed: %s", exc)
             finally:
                 queue.close()
             return
@@ -495,9 +500,13 @@ class ControlLoop:
         if ctl_out is None:  # pragma: no cover - open() always runs first
             return
         try:
-            broker_retry(lambda: ctl_out.write(body), what="control reply")
+            broker_retry(
+                lambda: ctl_out.write(body),
+                what="control reply",
+                attempts=_CONTROL_REPLY_RETRY_ATTEMPTS,
+            )
         except Exception as exc:  # noqa: BLE001 - a lost reply must not crash
-            logger.debug("control reply write failed after retries: %s", exc)
+            logger.warning("control reply write failed after retries: %s", exc)
 
     # --- rate backstop ([SUM-10]) -----------------------------------------
     #

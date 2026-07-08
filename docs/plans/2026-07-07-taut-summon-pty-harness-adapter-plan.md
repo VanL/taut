@@ -959,8 +959,11 @@ hammer): full extension suite, core, ruff/format/mypy, `uv build`.
 - **Contracts protected:** attach bridges + detaches; orientation precedes chat;
   ears reach the agent; interrupt/shutdown leave no zombie and unblock inject;
   activity is coarse; the full ears→mouth loop (sentinel via `taut say`).
-- **Serial + `wait_until`** against observable state; never `time.sleep` sync;
-  no xdist.
+- **Release-readiness follow-up (2026-07-08):** the no-xdist posture is
+  superseded. The extension defaults to `-n auto --dist loadgroup`, matching
+  root Taut and SimpleBroker. Any truly incompatible live/resource-sharing test
+  must opt into a narrower group with a stated reason; expected local LLM image
+  and model setup cost is separate from test slowness.
 
 ## 9. Verification and Gates
 
@@ -1376,3 +1379,13 @@ _(appended as slices land)_
   sentinel posting. `.github/workflows/test.yml` now has a dedicated Ubuntu
   Ollama job that creates `taut-summon-local-model:latest` from
   `qwen2.5:0.5b` and runs this lane with `TAUT_SUMMON_LOCAL_LLM=1`.
+- 2026-07-08 — Release-readiness hardening: xdist is enabled for summon by
+  default with real PTY/driver/live subprocess tests grouped under a
+  process-heavy xdist group. External live harnesses now have two explicit
+  modes: default local readiness probes skip only with concrete setup reasons,
+  while `TAUT_SUMMON_LIVE_HARNESS_STRICT=1` prewires the temp session and
+  fails on missing binaries, readiness gaps, status timeouts, or missing
+  sentinels. The PTY responder now handles live-observed parameterized
+  XTVERSION and treats kitty/cursor mode sets as no-reply sequences. Control
+  reply writes use a stronger transient-broker retry budget so loaded xdist
+  runs do not silently lose STATUS replies.

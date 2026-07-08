@@ -761,8 +761,8 @@ Implementation boundaries:
 - Extension tests marked `pg_only` must prove package import, plugin
   availability, `.taut.toml` selection, sidecar compatibility, and cleanup
   against a real Docker Postgres database.
-- Release remains GitHub-only. Root releases use `vX.Y.Z`; extension releases
-  use `taut_pg/vX.Y.Z`.
+- Release remains GitHub-only and is governed by [TAUT-12.5]. Postgres
+  extension releases use `taut_pg/vX.Y.Z`.
 
 Binding obligations:
 
@@ -844,6 +844,74 @@ code assumes members only speak via CLI invocations.
 Per [TAUT-8.4]: a consumer of `TautClient` + `TautWatcher`, optional
 extra, own spec.
 
+### [TAUT-12.5] Release machinery
+
+Status: implemented as local helper plus GitHub Actions release gates.
+
+The repository release boundary is **GitHub-only** until package-name clearance
+changes this spec. `bin/release.py` coordinates local version sync, release
+prechecks, release-file commits, tag planning, and tag pushes; it never uploads
+to PyPI. `--publish` is a compatibility no-op and must say that pushing the tag
+is the publication boundary.
+
+Release targets:
+
+- `core` (aliases: `root`, `taut`) releases the root `taut` package with a
+  `vX.Y.Z` tag and `.github/workflows/release-gate.yml`.
+- `pg` releases `taut-pg` from `extensions/taut_pg` with a
+  `taut_pg/vX.Y.Z` tag and `.github/workflows/release-gate-pg.yml`.
+- `summon` releases `taut-summon` from `extensions/taut_summon` with a
+  `taut_summon/vX.Y.Z` tag and
+  `.github/workflows/release-gate-summon.yml`.
+- `all` releases every current package version that does not already have a
+  GitHub Release. `--version` is invalid with `all`; maintainers must edit
+  package version files first when preparing a multi-package version bump.
+
+Helper obligations:
+
+- Accept both positional target form (`bin/release.py pg`) and the older
+  `--target pg` form.
+- Before release, reject dirty worktrees unless `--dry-run` is set, reject
+  already-published GitHub Releases, and plan local/remote tag actions without
+  force-pushing tags. Retagging deletes the remote tag first and then pushes the
+  recreated tag.
+- Keep version files synchronized: root `pyproject.toml` and
+  `taut/_constants.py`; extension `pyproject.toml` files; each first-party
+  extension's `taut>=...` floor to the current root version; and the root dev
+  dependency `taut-summon>=...` to the current local `taut-summon` version.
+- Track generated release files when committing, including
+  `extensions/taut_summon/uv.lock` for the summon extension.
+- Run the relevant local gates before mutation unless `--skip-checks` is set:
+  root pytest, `bin/pytest-pg --fast` for core or PG releases, the
+  `extensions/taut_summon/tests` suite for core or summon releases, ruff over
+  root plus touched extension paths, and split mypy lanes so extension
+  `conftest.py` modules do not collide.
+- For core or summon releases, require the summon local-LLM lane locally. The
+  helper starts local LLM preparation at the beginning of prechecks so Docker
+  image/model setup can overlap root and PG checks. It uses an existing
+  loopback endpoint when the configured model is already listed; otherwise it
+  starts a disposable loopback Ollama container with the same bounded model
+  shape as CI, waits for the served model, and runs the summon suite with
+  `TAUT_SUMMON_LOCAL_LLM=1`.
+- After version sync, build the selected package artifacts and run
+  `uv lock` in `extensions/taut_summon` when the summon package is selected.
+
+Workflow obligations:
+
+- `.github/workflows/release-gate.yml` listens to `v*`, runs the reusable root
+  test workflow and the PG extension workflow, verifies the tag still points at
+  the tested commit, and calls the reusable release workflow for `taut`.
+- `.github/workflows/release-gate-pg.yml` listens to `taut_pg/v*`, runs the
+  reusable root test workflow and PG extension workflow, verifies the tag, and
+  calls the reusable release workflow for `taut-pg`.
+- `.github/workflows/release-gate-summon.yml` listens to `taut_summon/v*`, runs
+  the reusable root test workflow (which includes the summon extension and
+  local-LLM lane), verifies the tag, and calls the reusable release workflow for
+  `taut-summon`.
+- `.github/workflows/release.yml` is the only artifact publisher. It builds the
+  selected package directory and creates/uploads a GitHub Release. It must not
+  contain PyPI upload or Trusted Publishing steps.
+
 ## Related Plans
 
 - `docs/plans/2026-06-30-client-module-split-plan.md` — structural
@@ -862,6 +930,9 @@ extra, own spec.
   release helper while the PyPI `taut` package-name request is pending.
 - `docs/plans/2026-06-17-github-actions-release-workflows-plan.md` —
   GitHub Actions test and GitHub-only release publication workflows.
+- `docs/plans/2026-07-08-release-helper-simplebroker-port-plan.md` —
+  release-helper port to SimpleBroker-style targets, batch planning, summon
+  release gating, and GitHub-only release machinery documentation.
 - `docs/plans/2026-06-17-taut-pg-extension-plan.md` — implemented
   [TAUT-12.1] plan: separate `taut-pg` extension project,
   Postgres shared/PG-only test split, `bin/pytest-pg`, and GitHub-only

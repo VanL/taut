@@ -101,9 +101,9 @@ name is cleared.
 `taut-pg` is a separate package. Install it into the same environment as
 `taut`; it brings in `simplebroker-pg` and the Postgres driver dependencies.
 Until PyPI clearance changes, install core from the desired Taut tag and
-inject a compatible extension wheel from the extension release stream. The
-extension uses its own `taut_pg/vX.Y.Z` tags, so its version does not have to
-match the core package version:
+inject compatible extension wheels from their extension release streams.
+Extensions use their own tags (`taut_pg/vX.Y.Z`, `taut_summon/vX.Y.Z`), so
+their versions do not have to match the core package version:
 
 ```bash
 pipx install "git+https://github.com/VanL/taut.git@v0.4.0"
@@ -139,7 +139,7 @@ by its continuity token (its mouth). It ships as a separate package with its
 own version tags:
 
 ```bash
-pipx inject taut ./taut_summon-0.1.0-py3-none-any.whl
+pipx inject taut ./taut_summon-X.Y.Z-py3-none-any.whl
 ```
 
 With it installed, core's `taut summon` / `taut dismiss` verbs delegate to
@@ -514,13 +514,19 @@ Release prep is local and GitHub-only:
 ```bash
 uv run python bin/release.py --dry-run
 uv run python bin/release.py --version X.Y.Z
-uv run python bin/release.py --target pg --dry-run
+uv run python bin/release.py pg --dry-run
+uv run python bin/release.py summon --dry-run
+uv run python bin/release.py all --dry-run
 ```
 
 The helper updates version files, runs the release gates, manages root
-`vX.Y.Z` tags and extension `taut_pg/vX.Y.Z` tags, and pushes to GitHub. Tag
-pushes run the GitHub Actions release gate, which creates the GitHub Release
-and uploads the built source/wheel artifacts. It does not upload to PyPI.
+`vX.Y.Z` tags plus extension `taut_pg/vX.Y.Z` and `taut_summon/vX.Y.Z` tags,
+syncs first-party dependency floors, and pushes to GitHub. Core and summon
+release gates require the summon local-LLM smoke locally; the helper starts the
+loopback Ollama/model setup early and overlaps it with other checks when it
+cannot reuse an already-ready endpoint. Tag pushes run the GitHub Actions
+release gate, which creates the GitHub Release and uploads the built
+source/wheel artifacts. It does not upload to PyPI.
 
 ## License
 

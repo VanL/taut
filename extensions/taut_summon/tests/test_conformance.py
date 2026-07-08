@@ -5,8 +5,8 @@ This is the obligation [TAUT-12.3]/[SUM-12] name: the summon behaviors a
 expresses the six named [SUM-12] conformance items as tests written against
 a small, provider-agnostic :class:`ConformanceHarness` interface and
 parameterized over a harness *factory*, so the same assertions run against
-the ``scripted`` adapter today and slot a ``claude`` (or Weft) adapter in by
-supplying another factory.
+the ``scripted`` adapter today and slot a Weft adapter in by supplying another
+factory.
 
 The anti-mocking floor is inherited whole from the shared harness in
 ``conftest.py``: real ``taut-summon run`` subprocess driver, real
@@ -53,8 +53,10 @@ proofs — both drive the identical ``DriverProcess`` harness.
    - here: ``test_injection_format_is_stable`` (unit golden, provider-agnostic)
    - deep: ``test_driver.py`` format goldens + ``test_injection_round_trip_*``
 
-Live ``claude`` proof: ``test_claude_adapter.py::test_live_claude_smoke``
-(one prompt, one reply, resume) is the dedicated ``requires_claude`` smoke.
+Live provider proof belongs in dedicated live tests, not in a collected
+placeholder conformance parameter. The local-only PTY harness matrix lives in
+``test_live_harness.py``; the CI-safe local LLM lane lives in
+``test_live_local_llm.py``.
 
 What a second project (Weft) supplies to reuse this suite
 ---------------------------------------------------------
@@ -76,21 +78,12 @@ whose harness implements :class:`ConformanceHarness` against its agent lane:
   capability the harness lacks ``skip`` with a precise reason rather than
   weakening the assertion. The taut ``scripted`` harness supplies both; a
   Weft-style harness supplies whatever its agent lane can, and items it
-  cannot express skip themselves.
-
-The ``claude`` param is included to prove the factory abstraction accepts a
-second provider and is ``requires_claude``-gated (skipped when the CLI is
-absent — the CI case). It runs as a *portability placeholder*: live claude
-coverage is deliberately one smoke
-(``test_claude_adapter.py::test_live_claude_smoke``), so this heavy serial
-suite does not spin up N live model sessions, and the scripted adapter
-stays the blessed conformance seam ([SUM-12]).
+cannot express skip themselves.
 """
 
 from __future__ import annotations
 
 import os
-import shutil
 import signal
 import subprocess
 import sys
@@ -115,6 +108,8 @@ from conftest import (
 from taut_summon._driver import format_injection
 
 from taut.client import Message, Notification, TautClient
+
+pytestmark = pytest.mark.xdist_group("process")
 
 # --- the portable harness interface ------------------------------------------
 
@@ -142,8 +137,8 @@ class ConformanceHarness:
         if not self.supports_scenarios:
             pytest.skip(
                 f"the {self.provider!r} harness cannot script agent behavior; "
-                "the scripted adapter is the conformance seam and the live "
-                "claude proof is test_claude_adapter.py::test_live_claude_smoke"
+                "the scripted adapter is the conformance seam; live providers "
+                "belong in the dedicated live harness lanes"
             )
 
     def require_received_log(self) -> None:
@@ -282,31 +277,8 @@ def _scripted_harness(
     )
 
 
-def _claude_harness(
-    summon_db: Path,
-    tmp_path: Path,
-    driver_factory: Callable[..., DriverProcess],
-) -> ConformanceHarness:
-    if shutil.which("claude") is None:
-        pytest.skip("claude CLI is not installed")
-    # claude is present, but the conformance suite treats it as a
-    # portability placeholder rather than a live driver: a live model
-    # exposes neither a scripted-behavior seam nor an ears-observation seam,
-    # and the plan quarantines live claude coverage to exactly one smoke
-    # (test_claude_adapter.py::test_live_claude_smoke) to keep this heavy,
-    # serial suite from spinning up N live sessions. The scripted adapter is
-    # the blessed conformance seam ([SUM-12]); this param exists to prove the
-    # factory abstraction accepts a second provider (what Weft supplies).
-    pytest.skip(
-        "claude conformance runs as a portability placeholder; the live "
-        "claude proof is test_claude_adapter.py::test_live_claude_smoke and "
-        "the scripted adapter is the conformance seam ([SUM-12])"
-    )
-
-
 HARNESS_FACTORIES = [
     pytest.param(_scripted_harness, id="scripted"),
-    pytest.param(_claude_harness, id="claude", marks=pytest.mark.requires_claude),
 ]
 
 
@@ -382,7 +354,7 @@ def test_injection_format_is_stable() -> None:
 def test_control_responsive_when_idle(harness: ConformanceHarness) -> None:
     """[SUM-9]: the control plane answers while the harness sits idle.
 
-    Capability-free — runs against every provider, live claude included.
+    Capability-free for any real conformance harness factory.
     """
 
     driver = harness.start("reviewer", "general", control_interval=0.1)
@@ -535,7 +507,8 @@ def test_clean_shutdown_releases_and_no_double_speak(
 ) -> None:
     """[SUM-9]/[SUM-11]: stop is a clean shutdown — exit 0, ledger driver
     evidence cleared, presence ``gone``, and the driver posted nothing on the
-    member's behalf (no double-speak). Capability-free; runs live too."""
+    member's behalf (no double-speak). Capability-free for any real
+    conformance harness factory."""
 
     driver = harness.start("reviewer", "general", control_interval=0.1)
     member = harness.wait_ready(driver)
@@ -563,7 +536,7 @@ def test_clean_shutdown_releases_and_no_double_speak(
 def test_single_driver_guard_refuses_second(harness: ConformanceHarness) -> None:
     """[SUM-8]: a second summon of a live member is refused — two drivers
     injecting into two harness sessions as one member would double-speak.
-    Capability-free; runs live too."""
+    Capability-free for any real conformance harness factory."""
 
     first = harness.start("reviewer", "general")
     harness.wait_ready(first)

@@ -71,9 +71,10 @@ uv run pytest extensions/taut_summon/tests
 ```
 
 Local runs attempt the live PTY harness smoke matrix by default. A provider
-skips when its binary is absent or it cannot reach a usable detached session.
-CI skips the real-harness matrix unless `TAUT_SUMMON_LIVE_HARNESS=1` is set.
-For a fast local loop, use:
+skips with an explicit reason when its binary is absent, the fresh test
+database has not been onboarded with a real attach/detach cycle, or status
+cannot reach a usable detached session. CI skips the real-harness matrix
+unless `TAUT_SUMMON_LIVE_HARNESS=1` is set. For a fast local loop, use:
 
 ```bash
 TAUT_SUMMON_LIVE_HARNESS=0 uv run pytest extensions/taut_summon/tests
@@ -81,6 +82,13 @@ TAUT_SUMMON_LIVE_HARNESS=0 uv run pytest extensions/taut_summon/tests
 
 Run `taut summon --attach <name>` once for a provider that still needs trust,
 login, or model setup before expecting its detached live smoke to pass.
+For a hard local external-provider smoke, use strict mode. It prewires the
+temporary test session to model an already-onboarded provider and fails on
+missing binaries, readiness gaps, status timeouts, or missing sentinels:
+
+```bash
+TAUT_SUMMON_LIVE_HARNESS_STRICT=1 uv run pytest extensions/taut_summon/tests/test_live_harness.py
+```
 
 The local LLM smoke runs locally by default when a loopback OpenAI-compatible
 endpoint lists the served model, and it runs in CI through the dedicated

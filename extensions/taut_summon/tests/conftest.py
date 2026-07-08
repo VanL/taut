@@ -44,8 +44,9 @@ SummonCliRunner = Callable[..., tuple[int, str, str]]
 
 # Generous for slow CI runners: every use is a wait-until (cheap when
 # green), and each driver test runs a real three-process pipeline
-# (driver + provider + CLI writers). The suite is serial by design —
-# see the addopts note in extensions/taut_summon/pyproject.toml.
+# (driver + provider + CLI writers). xdist is the default; tests that
+# require shared external resources must opt into narrower grouping rather
+# than making the whole suite serial.
 _DEADLINE = 90.0
 
 
@@ -105,6 +106,26 @@ def _base_env() -> dict[str, str]:
         paths.append(existing)
     env["PYTHONPATH"] = os.pathsep.join(paths)
     return env
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Group real driver-process tests under xdist without disabling xdist.
+
+    The shared driver harness starts a foreground driver, a provider child,
+    and peer CLI subprocesses. Running many of those at once makes host process
+    scheduling the behavior under test and can starve the control loop.
+    """
+
+    for item in items:
+        fixture_names = set(getattr(item, "fixturenames", ()))
+        fixture_info = getattr(item, "_fixtureinfo", None)
+        if fixture_info is not None:
+            fixture_names.update(fixture_info.names_closure)
+        if "driver_factory" not in fixture_names:
+            continue
+        if item.get_closest_marker("xdist_group") is not None:
+            continue
+        item.add_marker(pytest.mark.xdist_group("process"))
 
 
 def wait_until(

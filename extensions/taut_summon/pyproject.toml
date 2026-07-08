@@ -45,11 +45,7 @@ include = [
 [tool.pytest.ini_options]
 minversion = "7.0"
 testpaths = ["tests"]
-# Deliberately serial (no -n): the driver tests each run a real
-# three-process pipeline (driver + scripted provider + CLI writers);
-# parallel workers oversubscribe the machine and starve the watchers'
-# poll cycles into wait-budget timeouts.
-addopts = "-ra -q --strict-markers"
+addopts = "-ra -q --strict-markers -n auto --dist loadgroup"
 markers = [
     "requires_claude: live smoke tests that spawn the installed claude CLI (skipped when absent)",
     "requires_live_harness: live PTY harness smoke tests; local by default, CI opt-in",
@@ -61,4 +57,5 @@ markers = [
     "requires_kimi: live smoke tests that spawn the installed kimi CLI",
     "requires_opencode: live smoke tests that spawn the installed opencode CLI",
     "requires_pi: live smoke tests that spawn the installed pi CLI",
+    "xdist_group: group tests that share global external resources",
 ]

@@ -430,12 +430,14 @@ never `999;999R`, a giant relative value, or a fake `1;1R`.
 Recognized families and replies: DSR status `ESC[5n` → `ESC[0n`;
 primary DA `ESC[c`/`ESC[0c` → `ESC[?1;2c`; secondary DA `ESC[>c` →
 `ESC[>0;0;0c`; DECRQM mode queries `ESC[?<n>$p` → `ESC[?<n>;0$y`;
-XTVERSION `ESC[>q` → `ESCP>|taut-summon(0)ESC\`; OSC foreground/background
-color queries `ESC]10;?`/`ESC]11;?` → default rgb replies; and kitty
-keyboard `ESC[?u` → `ESC[?0u`. Unknown sequences get no reply. The
-master reply channel is also the harness keyboard-input channel, so
-writing a guessed "benign no-op" injects spurious keystrokes and can
-corrupt the TUI worse than silence.
+XTVERSION `ESC[>q` and parameterized `ESC[><n>q` →
+`ESCP>|taut-summon(0)ESC\`; OSC foreground/background color queries
+`ESC]10;?`/`ESC]11;?` → default rgb replies; and kitty keyboard query
+`ESC[?u` → `ESC[?0u`. Kitty keyboard mode sets such as `ESC[><n>u` and
+cursor-style sets such as `ESC[<n> q` are handled as no-reply mode changes,
+not report requests. Unknown sequences get no reply. The master reply channel
+is also the harness keyboard-input channel, so writing a guessed "benign no-op"
+injects spurious keystrokes and can corrupt the TUI worse than silence.
 
 Responder completeness is a detached-mode risk. During attach, the real
 terminal answers queries, so attach proves nothing about summon's
@@ -651,6 +653,11 @@ durable conversation; the harness session is an optimization of it.
   cursor lag summary. PING is STATUS minus detail. Both work while the
   harness is mid-turn (control responsiveness during idle *and* busy is
   a conformance item).
+- Replies use a per-request queue `sys.rsp_<member-id>_<request_id>` so
+  concurrent control clients cannot consume each other's answers. Control
+  reply writes are retried with a stronger transient-broker budget than
+  ordinary control reads because losing the reply creates a false client
+  timeout even though the driver stayed healthy.
 - Divergences from Weft, each with its reason (the [TAUT-12.3]
   obligation): **(a)** the data lane is provider-native streaming plus
   chat threads, not execute/result work items — conversation is not a
@@ -719,15 +726,16 @@ durable conversation; the harness session is an optimization of it.
 - Anti-mocking floor unchanged: broker, sidecar, and CLI are never
   mocked. The provider seam is the `scripted` adapter — a **real
   subprocess speaking the real stream shapes**; only the model is fake.
-  One live smoke test against an installed Claude Code CLI ships marked
-  `requires_claude`, skipped when absent.
 - The **conformance suite** obligated by [TAUT-12.3] ships as tests
   parameterized over `ProviderAdapter` + driver, portable so Weft can
   run them against its agent lane. Named items: control responsiveness
   while idle and while mid-turn; restart with conversation scope intact
   (session resume and fresh-session replay both); backpressure when the
   agent is slower than the chat; clean shutdown on stop with no
-  double-speak; single-driver guard; injection format stability.
+  double-speak; single-driver guard; injection format stability. The
+  portable suite has no live-provider placeholder parameter: a provider
+  either supplies a real reusable harness factory with explicit capability
+  gates, or it belongs in the live lanes below.
 - Driver tests run real multi-process flows (a second CLI process
   writing to the watched thread), matching [TAUT-11] discipline.
 - Deterministic PTY lifecycle is proven against a fake interactive
@@ -738,9 +746,13 @@ durable conversation; the harness session is an optimization of it.
 - Live harness reachability is gated per registered PTY harness:
   `requires_<name>` tests summon the real CLI detached, assuming a
   pre-onboarded/authed harness, orient it to post a sentinel through
-  `taut say`, and assert the sentinel lands. The only skip gate is
-  binary absent or the harness not reaching a ready prompt; once it is
-  up, a missing sentinel is a failure, not an environment skip.
+  `taut say`, and assert the sentinel lands. Default local pytest probes
+  real binaries and may skip with an explicit onboarding/readiness reason,
+  because a fresh noninteractive test database cannot complete the human
+  attach chord. Strict local mode (`TAUT_SUMMON_LIVE_HARNESS_STRICT=1`)
+  prewires the temporary session row to model an already-onboarded harness;
+  in that mode, a missing binary, readiness gap, status timeout, or missing
+  sentinel is a failure.
 - A CI-safe local LLM lane uses a real PTY child and a loopback
   OpenAI-compatible model endpoint. The child must receive the summon
   orientation, call the local model endpoint, and post a sentinel through

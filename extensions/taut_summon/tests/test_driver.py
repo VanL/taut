@@ -31,6 +31,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import pytest
 from conftest import (
     _DEADLINE,
     DriverProcess,
@@ -53,6 +54,9 @@ from taut.client import Message, Notification, TautClient
 from taut.identity import capture_process
 
 FAKE_TUI = Path(__file__).with_name("fixtures") / "fake_tui.py"
+PROCESS_XDIST_GROUP = pytest.mark.xdist_group("process")
+PTY_XDIST_GROUP = PROCESS_XDIST_GROUP
+pytestmark = PROCESS_XDIST_GROUP
 
 # The real-process driver harness (DriverProcess), the peer-writer helpers
 # (taut_cli/say/summon_cli), the ledger/identity accessors
@@ -464,6 +468,7 @@ def test_terminal_mode_posts_assistant_text_to_single_thread(
     assert driver.stop() == 0
 
 
+@PTY_XDIST_GROUP
 def test_pty_terminal_mode_is_disabled_by_capability(
     summon_db: Path, tmp_path: Path, driver_factory: Callable[..., DriverProcess]
 ) -> None:
@@ -492,6 +497,7 @@ def test_pty_terminal_mode_is_disabled_by_capability(
     assert driver.stop() == 0
 
 
+@PTY_XDIST_GROUP
 def test_pty_detached_orientation_is_injected_before_chat(
     summon_db: Path, tmp_path: Path, driver_factory: Callable[..., DriverProcess]
 ) -> None:
@@ -537,6 +543,7 @@ def test_pty_detached_orientation_is_injected_before_chat(
     assert driver.stop() == 0
 
 
+@PTY_XDIST_GROUP
 def test_pty_status_reports_awaiting_query(
     summon_db: Path, tmp_path: Path, driver_factory: Callable[..., DriverProcess]
 ) -> None:
@@ -585,6 +592,7 @@ def test_pty_status_reports_awaiting_query(
     assert driver.stop() == 0
 
 
+@PTY_XDIST_GROUP
 def test_pty_detached_pre_pump_failure_reaps_child(
     summon_db: Path, tmp_path: Path, driver_factory: Callable[..., DriverProcess]
 ) -> None:
@@ -632,6 +640,7 @@ def test_pty_detached_pre_pump_failure_reaps_child(
     )
 
 
+@PTY_XDIST_GROUP
 def test_pty_first_run_attaches_until_chord_and_sets_wired(
     summon_db: Path, tmp_path: Path
 ) -> None:

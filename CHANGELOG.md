@@ -52,6 +52,10 @@
 - Added a documentation reference gate (`tests/test_docs_references.py`)
   that fails the suite when docs cite nonexistent paths or unknown spec
   codes.
+- Extended the GitHub-only release helper with SimpleBroker-style positional
+  targets, a `summon` release target, `all` batch release planning, release-file
+  tracking for the summon lockfile, local summon LLM gate preparation, and a
+  `taut_summon/vX.Y.Z` release gate.
 
 ## 0.4.0 - 2026-07-01
 
