@@ -24,12 +24,13 @@ import logging
 import os
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, NoReturn
+from typing import Any, NoReturn, TypeVar
 
 from taut import NotInitializedError, TautClient
 from taut_summon._adapter import UnknownAdapterError, get_adapter
+from taut_summon._broker_retry import broker_retry, is_transient_broker_error
 from taut_summon._control import ControlClient
 from taut_summon._state import (
     SummonSessionRow,
@@ -47,6 +48,11 @@ _LEDGER_QUEUE_NAME = "taut_summon_state"
 # is a false negative, not a truthful timeout.
 _STOP_TIMEOUT_SECONDS = 30.0
 _STATUS_TIMEOUT_SECONDS = 30.0
+T = TypeVar("T")
+
+
+def _cli_retry(fn: Callable[[], T], *, what: str) -> T:
+    return broker_retry(fn, what=f"summon cli {what}")
 
 
 class _SummonArgumentParser(argparse.ArgumentParser):
@@ -269,7 +275,7 @@ def _resolve_session(
 ) -> tuple[Any, SummonSessionRow] | None:
     """Resolve NAME → current member → durable session row ([SUM-8] lookup)."""
 
-    member = _find_member(client, name)
+    member = _cli_retry(lambda: _find_member(client, name), what="resolve member")
     if member is None:
         return None
     queue = client.queue(_LEDGER_QUEUE_NAME)
@@ -313,7 +319,17 @@ def _cmd_stop(args: argparse.Namespace) -> int:
     member, _row = resolved
     control = ControlClient(client.queue, member.member_id)
     try:
-        control.request("STOP", timeout=_STOP_TIMEOUT_SECONDS)
+        try:
+            control.request("STOP", timeout=_STOP_TIMEOUT_SECONDS)
+        except Exception as exc:
+            if is_transient_broker_error(exc):
+                print(
+                    f"'{member.name}' is summoned but its driver did not stop in time"
+                    f"{_db_suffix(args)}: {exc}",
+                    file=sys.stderr,
+                )
+                return 1
+            raise
     finally:
         control.close()
     if _confirm_released(client, member.member_id, timeout=_STOP_TIMEOUT_SECONDS):
@@ -342,7 +358,17 @@ def _cmd_status(args: argparse.Namespace) -> int:
     member, _row = resolved
     control = ControlClient(client.queue, member.member_id)
     try:
-        reply = control.request("STATUS", timeout=_STATUS_TIMEOUT_SECONDS)
+        try:
+            reply = control.request("STATUS", timeout=_STATUS_TIMEOUT_SECONDS)
+        except Exception as exc:
+            if is_transient_broker_error(exc):
+                print(
+                    f"'{member.name}' is summoned but its driver did not respond"
+                    f"{_db_suffix(args)}: {exc}",
+                    file=sys.stderr,
+                )
+                return 1
+            raise
     finally:
         control.close()
     if reply is None:
@@ -371,7 +397,10 @@ def _status_all(client: TautClient, args: argparse.Namespace) -> int:
     if not live:
         print(f"nothing summoned{_db_suffix(args)}", file=sys.stderr)
         return 2
-    names = {member.member_id: member.name for member in client.who()}
+    names = _cli_retry(
+        lambda: {member.member_id: member.name for member in client.who()},
+        what="list member names",
+    )
     for row in live:
         name = names.get(row["member_id"], row["member_id"])
         session = row["provider_session_id"] or "-"

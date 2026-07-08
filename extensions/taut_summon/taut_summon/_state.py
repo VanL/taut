@@ -45,12 +45,14 @@ Spec references:
 from __future__ import annotations
 
 import os
-from typing import Any, Literal, TypedDict, cast
+from collections.abc import Callable
+from typing import Any, Literal, TypedDict, TypeVar, cast
 
 from simplebroker import Queue
-from simplebroker.ext import IntegrityError, SidecarSession
+from simplebroker.ext import DatabaseError, IntegrityError, SidecarSession
 
 from taut.identity import capture_process
+from taut_summon._broker_retry import broker_retry
 
 SUMMON_SCHEMA_VERSION = 2
 SUMMON_SCHEMA_VERSION_KEY = "summon_schema_version"
@@ -86,6 +88,13 @@ _DDL: tuple[str, ...] = (
     )
     """,
 )
+
+
+T = TypeVar("T")
+
+
+def _state_retry(fn: Callable[[], T], *, what: str) -> T:
+    return broker_retry(fn, what=f"summon state {what}")
 
 
 class SummonStateError(Exception):
@@ -130,47 +139,53 @@ class SummonSessionRow(TypedDict):
 def ensure_summon_schema(queue: Queue) -> None:
     """Install or validate the summon sidecar schema (fail-closed gate)."""
 
-    with queue.sidecar(transaction=True) as session:
-        session.run(_META_DDL)
-        row = _one(
-            session,
-            "SELECT value FROM taut_meta WHERE key = ?",
-            (SUMMON_SCHEMA_VERSION_KEY,),
-        )
-        if row is not None:
-            version = int(row[0])
-            if version > SUMMON_SCHEMA_VERSION:
-                raise SummonSchemaVersionError(
-                    f"summon schema version {version} is newer than supported "
-                    f"version {SUMMON_SCHEMA_VERSION}; upgrade taut-summon"
-                )
-            if version < SUMMON_SCHEMA_VERSION:
-                raise SummonSchemaVersionError(
-                    f"summon schema version {version} is incompatible with "
-                    f"version {SUMMON_SCHEMA_VERSION}; recreate the "
-                    "development database"
-                )
+    def _op() -> None:
+        with queue.sidecar(transaction=True) as session:
+            session.run(_META_DDL)
+            row = _one(
+                session,
+                "SELECT value FROM taut_meta WHERE key = ?",
+                (SUMMON_SCHEMA_VERSION_KEY,),
+            )
+            if row is not None:
+                version = int(row[0])
+                if version > SUMMON_SCHEMA_VERSION:
+                    raise SummonSchemaVersionError(
+                        f"summon schema version {version} is newer than supported "
+                        f"version {SUMMON_SCHEMA_VERSION}; upgrade taut-summon"
+                    )
+                if version < SUMMON_SCHEMA_VERSION:
+                    raise SummonSchemaVersionError(
+                        f"summon schema version {version} is incompatible with "
+                        f"version {SUMMON_SCHEMA_VERSION}; recreate the "
+                        "development database"
+                    )
+                for statement in _DDL:
+                    session.run(statement)
+                return
             for statement in _DDL:
                 session.run(statement)
-            return
-        for statement in _DDL:
-            session.run(statement)
-        session.run(
-            "INSERT INTO taut_meta (key, value) VALUES (?, ?)",
-            (SUMMON_SCHEMA_VERSION_KEY, str(SUMMON_SCHEMA_VERSION)),
-        )
+            session.run(
+                "INSERT INTO taut_meta (key, value) VALUES (?, ?)",
+                (SUMMON_SCHEMA_VERSION_KEY, str(SUMMON_SCHEMA_VERSION)),
+            )
+
+    _state_retry(_op, what="ensure schema")
 
 
 def get_summon_schema_version(queue: Queue) -> int | None:
     """Return the stored summon schema version, if any."""
 
-    with queue.sidecar() as session:
-        row = _one(
-            session,
-            "SELECT value FROM taut_meta WHERE key = ?",
-            (SUMMON_SCHEMA_VERSION_KEY,),
-        )
-    return None if row is None else int(row[0])
+    def _op() -> int | None:
+        with queue.sidecar() as session:
+            row = _one(
+                session,
+                "SELECT value FROM taut_meta WHERE key = ?",
+                (SUMMON_SCHEMA_VERSION_KEY,),
+            )
+        return None if row is None else int(row[0])
+
+    return _state_retry(_op, what="get schema version")
 
 
 def capture_driver_evidence(pid: int | None = None) -> tuple[int, str]:
@@ -209,68 +224,74 @@ def claim_name(
     ``ClaimConflictError`` for the caller's [SUM-4] collision rule.
     """
 
-    with queue.sidecar(transaction=True) as session:
-        row = _one(
-            session,
-            """
-            SELECT name, provider, driver_pid, driver_start_time, claimed_ts
-            FROM taut_summon_claims
-            WHERE name = ? AND provider = ?
-            """,
-            (name, provider),
-        )
-        if row is not None:
-            held_pid = int(row[2])
-            held_start = cast(str, row[3])
-            if held_pid != driver_pid or held_start != driver_start_time:
-                liveness = _evidence_liveness(held_pid, held_start)
-                if liveness == "live":
-                    raise ClaimConflictError(
-                        f"summon of '{name}' ({provider}) is already in "
-                        f"flight: driver pid {held_pid} is live"
-                    )
-                if liveness == "indeterminate" and not takeover:
-                    raise ClaimConflictError(
-                        f"cannot verify the driver (pid {held_pid}) holding "
-                        f"the claim on '{name}' ({provider}); rerun with "
-                        "--takeover to replace it"
-                    )
-            session.run(
-                "DELETE FROM taut_summon_claims WHERE name = ? AND provider = ?",
+    def _op() -> SummonClaimRow:
+        with queue.sidecar(transaction=True) as session:
+            row = _one(
+                session,
+                """
+                SELECT name, provider, driver_pid, driver_start_time, claimed_ts
+                FROM taut_summon_claims
+                WHERE name = ? AND provider = ?
+                """,
                 (name, provider),
             )
-        try:
-            session.run(
-                """
-                INSERT INTO taut_summon_claims (
-                    name, provider, driver_pid, driver_start_time, claimed_ts
+            if row is not None:
+                held_pid = int(row[2])
+                held_start = cast(str, row[3])
+                if held_pid != driver_pid or held_start != driver_start_time:
+                    liveness = _evidence_liveness(held_pid, held_start)
+                    if liveness == "live":
+                        raise ClaimConflictError(
+                            f"summon of '{name}' ({provider}) is already in "
+                            f"flight: driver pid {held_pid} is live"
+                        )
+                    if liveness == "indeterminate" and not takeover:
+                        raise ClaimConflictError(
+                            f"cannot verify the driver (pid {held_pid}) holding "
+                            f"the claim on '{name}' ({provider}); rerun with "
+                            "--takeover to replace it"
+                        )
+                session.run(
+                    "DELETE FROM taut_summon_claims WHERE name = ? AND provider = ?",
+                    (name, provider),
                 )
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (name, provider, driver_pid, driver_start_time, claimed_ts),
-            )
-        except IntegrityError as exc:
-            raise ClaimConflictError(
-                f"summon of '{name}' ({provider}) is already in flight"
-            ) from exc
-    claim = get_claim(queue, name=name, provider=provider)
-    if claim is None:
-        raise SummonStateError("inserted claim could not be read back")
-    return claim
+            try:
+                session.run(
+                    """
+                    INSERT INTO taut_summon_claims (
+                        name, provider, driver_pid, driver_start_time, claimed_ts
+                    )
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (name, provider, driver_pid, driver_start_time, claimed_ts),
+                )
+            except IntegrityError as exc:
+                raise ClaimConflictError(
+                    f"summon of '{name}' ({provider}) is already in flight"
+                ) from exc
+        claim = get_claim(queue, name=name, provider=provider)
+        if claim is None:
+            raise SummonStateError("inserted claim could not be read back")
+        return claim
+
+    return _state_retry(_op, what="claim name")
 
 
 def get_claim(queue: Queue, *, name: str, provider: str) -> SummonClaimRow | None:
-    with queue.sidecar() as session:
-        row = _one(
-            session,
-            """
-            SELECT name, provider, driver_pid, driver_start_time, claimed_ts
-            FROM taut_summon_claims
-            WHERE name = ? AND provider = ?
-            """,
-            (name, provider),
-        )
-    return _claim_row(row)
+    def _op() -> SummonClaimRow | None:
+        with queue.sidecar() as session:
+            row = _one(
+                session,
+                """
+                SELECT name, provider, driver_pid, driver_start_time, claimed_ts
+                FROM taut_summon_claims
+                WHERE name = ? AND provider = ?
+                """,
+                (name, provider),
+            )
+        return _claim_row(row)
+
+    return _state_retry(_op, what="get claim")
 
 
 def release_claim(
@@ -288,34 +309,37 @@ def release_claim(
     driver's cleanup is a no-op returning ``False``.
     """
 
-    with queue.sidecar(transaction=True) as session:
-        row = _one(
-            session,
-            """
-            SELECT driver_pid, driver_start_time
-            FROM taut_summon_claims
-            WHERE name = ? AND provider = ?
-            """,
-            (name, provider),
-        )
-        if row is None or int(row[0]) != driver_pid or row[1] != driver_start_time:
-            return False
-        # Evidence predicates on the delete for read-committed backends
-        # (see release_driver).
-        session.run(
-            """
-            DELETE FROM taut_summon_claims
-            WHERE name = ? AND provider = ?
-              AND driver_pid = ? AND driver_start_time = ?
-            """,
-            (name, provider, driver_pid, driver_start_time),
-        )
-        confirm = _one(
-            session,
-            "SELECT 1 FROM taut_summon_claims WHERE name = ? AND provider = ?",
-            (name, provider),
-        )
-    return confirm is None
+    def _op() -> bool:
+        with queue.sidecar(transaction=True) as session:
+            row = _one(
+                session,
+                """
+                SELECT driver_pid, driver_start_time
+                FROM taut_summon_claims
+                WHERE name = ? AND provider = ?
+                """,
+                (name, provider),
+            )
+            if row is None or int(row[0]) != driver_pid or row[1] != driver_start_time:
+                return False
+            # Evidence predicates on the delete for read-committed backends
+            # (see release_driver).
+            session.run(
+                """
+                DELETE FROM taut_summon_claims
+                WHERE name = ? AND provider = ?
+                  AND driver_pid = ? AND driver_start_time = ?
+                """,
+                (name, provider, driver_pid, driver_start_time),
+            )
+            confirm = _one(
+                session,
+                "SELECT 1 FROM taut_summon_claims WHERE name = ? AND provider = ?",
+                (name, provider),
+            )
+        return confirm is None
+
+    return _state_retry(_op, what="release claim")
 
 
 # --- durable sessions ---------------------------------------------------------
@@ -334,84 +358,93 @@ def record_session(
 ) -> SummonSessionRow:
     """Idempotently upsert the member's durable session row."""
 
-    with queue.sidecar(transaction=True) as session:
-        row = _one(
-            session,
-            "SELECT member_id FROM taut_summon_sessions WHERE member_id = ?",
-            (member_id,),
-        )
-        if row is None:
-            session.run(
-                """
-                INSERT INTO taut_summon_sessions (
-                    member_id, token, provider, provider_session_id,
-                    driver_pid, driver_start_time, wired, updated_ts
+    def _op() -> SummonSessionRow:
+        with queue.sidecar(transaction=True) as session:
+            row = _one(
+                session,
+                "SELECT member_id FROM taut_summon_sessions WHERE member_id = ?",
+                (member_id,),
+            )
+            if row is None:
+                session.run(
+                    """
+                    INSERT INTO taut_summon_sessions (
+                        member_id, token, provider, provider_session_id,
+                        driver_pid, driver_start_time, wired, updated_ts
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        member_id,
+                        token,
+                        provider,
+                        provider_session_id,
+                        driver_pid,
+                        driver_start_time,
+                        0,
+                        updated_ts,
+                    ),
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    member_id,
-                    token,
-                    provider,
-                    provider_session_id,
-                    driver_pid,
-                    driver_start_time,
-                    0,
-                    updated_ts,
-                ),
-            )
-        else:
-            session.run(
-                """
-                UPDATE taut_summon_sessions
-                SET token = ?, provider = ?, provider_session_id = ?,
-                    driver_pid = ?, driver_start_time = ?, updated_ts = ?
-                WHERE member_id = ?
-                """,
-                (
-                    token,
-                    provider,
-                    provider_session_id,
-                    driver_pid,
-                    driver_start_time,
-                    updated_ts,
-                    member_id,
-                ),
-            )
-    stored = get_session(queue, member_id)
-    if stored is None:
-        raise SummonStateError("recorded session could not be read back")
-    return stored
+            else:
+                session.run(
+                    """
+                    UPDATE taut_summon_sessions
+                    SET token = ?, provider = ?, provider_session_id = ?,
+                        driver_pid = ?, driver_start_time = ?, updated_ts = ?
+                    WHERE member_id = ?
+                    """,
+                    (
+                        token,
+                        provider,
+                        provider_session_id,
+                        driver_pid,
+                        driver_start_time,
+                        updated_ts,
+                        member_id,
+                    ),
+                )
+        stored = get_session(queue, member_id)
+        if stored is None:
+            raise SummonStateError("recorded session could not be read back")
+        return stored
+
+    return _state_retry(_op, what="record session")
 
 
 def get_session(queue: Queue, member_id: str) -> SummonSessionRow | None:
-    with queue.sidecar() as session:
-        row = _one(session, _SESSION_SELECT, (member_id,))
-    return _session_row(row)
+    def _op() -> SummonSessionRow | None:
+        with queue.sidecar() as session:
+            row = _one(session, _SESSION_SELECT, (member_id,))
+        return _session_row(row)
+
+    return _state_retry(_op, what="get session")
 
 
 def list_sessions(queue: Queue) -> list[SummonSessionRow]:
     """Return every durable session row (the bare ``status`` listing)."""
 
-    with queue.sidecar() as session:
-        rows = list(
-            session.run(
-                """
-                SELECT member_id, token, provider, provider_session_id,
-                       driver_pid, driver_start_time, wired, updated_ts
-                FROM taut_summon_sessions
-                ORDER BY updated_ts DESC
-                """,
-                (),
-                fetch=True,
+    def _op() -> list[SummonSessionRow]:
+        with queue.sidecar() as session:
+            rows = list(
+                session.run(
+                    """
+                    SELECT member_id, token, provider, provider_session_id,
+                           driver_pid, driver_start_time, wired, updated_ts
+                    FROM taut_summon_sessions
+                    ORDER BY updated_ts DESC
+                    """,
+                    (),
+                    fetch=True,
+                )
             )
-        )
-    result: list[SummonSessionRow] = []
-    for row in rows:
-        parsed = _session_row(row)
-        if parsed is not None:
-            result.append(parsed)
-    return result
+        result: list[SummonSessionRow] = []
+        for row in rows:
+            parsed = _session_row(row)
+            if parsed is not None:
+                result.append(parsed)
+        return result
+
+    return _state_retry(_op, what="list sessions")
 
 
 def driver_liveness(row: SummonSessionRow) -> _Liveness:
@@ -437,22 +470,25 @@ def update_session(
 ) -> SummonSessionRow:
     """Update the provider session id (the event pump's ledger write)."""
 
-    with queue.sidecar(transaction=True) as session:
-        row = _one(session, _SESSION_SELECT, (member_id,))
-        if row is None:
-            raise SummonStateError(f"no summon session for member '{member_id}'")
-        session.run(
-            """
-            UPDATE taut_summon_sessions
-            SET provider_session_id = ?, updated_ts = ?
-            WHERE member_id = ?
-            """,
-            (provider_session_id, updated_ts, member_id),
-        )
-    stored = get_session(queue, member_id)
-    if stored is None:
-        raise SummonStateError("updated session could not be read back")
-    return stored
+    def _op() -> SummonSessionRow:
+        with queue.sidecar(transaction=True) as session:
+            row = _one(session, _SESSION_SELECT, (member_id,))
+            if row is None:
+                raise SummonStateError(f"no summon session for member '{member_id}'")
+            session.run(
+                """
+                UPDATE taut_summon_sessions
+                SET provider_session_id = ?, updated_ts = ?
+                WHERE member_id = ?
+                """,
+                (provider_session_id, updated_ts, member_id),
+            )
+        stored = get_session(queue, member_id)
+        if stored is None:
+            raise SummonStateError("updated session could not be read back")
+        return stored
+
+    return _state_retry(_op, what="update session")
 
 
 def get_wired(queue: Queue, member_id: str) -> bool:
@@ -473,22 +509,25 @@ def set_wired(
 ) -> SummonSessionRow:
     """Set the PTY onboarding flag; the only writer for ``wired`` ([SUM-8])."""
 
-    with queue.sidecar(transaction=True) as session:
-        row = _one(session, _SESSION_SELECT, (member_id,))
-        if row is None:
-            raise SummonStateError(f"no summon session for member '{member_id}'")
-        session.run(
-            """
-            UPDATE taut_summon_sessions
-            SET wired = ?, updated_ts = ?
-            WHERE member_id = ?
-            """,
-            (1 if value else 0, updated_ts, member_id),
-        )
-    stored = get_session(queue, member_id)
-    if stored is None:
-        raise SummonStateError("updated session could not be read back")
-    return stored
+    def _op() -> SummonSessionRow:
+        with queue.sidecar(transaction=True) as session:
+            row = _one(session, _SESSION_SELECT, (member_id,))
+            if row is None:
+                raise SummonStateError(f"no summon session for member '{member_id}'")
+            session.run(
+                """
+                UPDATE taut_summon_sessions
+                SET wired = ?, updated_ts = ?
+                WHERE member_id = ?
+                """,
+                (1 if value else 0, updated_ts, member_id),
+            )
+        stored = get_session(queue, member_id)
+        if stored is None:
+            raise SummonStateError("updated session could not be read back")
+        return stored
+
+    return _state_retry(_op, what="set wired")
 
 
 def claim_driver(
@@ -502,43 +541,46 @@ def claim_driver(
 ) -> SummonSessionRow:
     """Claim the single-driver slot on a session row ([SUM-8] guard)."""
 
-    with queue.sidecar(transaction=True) as session:
-        row = _one(session, _SESSION_SELECT, (member_id,))
-        stored = _session_row(row)
-        if stored is None:
-            raise SummonStateError(f"no summon session for member '{member_id}'")
-        held_pid = stored["driver_pid"]
-        held_start = stored["driver_start_time"]
-        held = held_pid is not None or held_start is not None
-        same_driver = held_pid == driver_pid and held_start == driver_start_time
-        if held and not same_driver:
-            if held_pid is None or held_start is None:
-                liveness: _Liveness = "indeterminate"
-            else:
-                liveness = _evidence_liveness(held_pid, held_start)
-            if liveness == "live":
-                raise DriverConflictError(
-                    f"member '{member_id}' already has a live summon driver "
-                    f"(pid {held_pid}); a member speaks from one place"
-                )
-            if liveness == "indeterminate" and not takeover:
-                raise DriverConflictError(
-                    f"cannot verify the existing driver (pid {held_pid}) for "
-                    f"member '{member_id}'; rerun with --takeover to "
-                    "replace it"
-                )
-        session.run(
-            """
-            UPDATE taut_summon_sessions
-            SET driver_pid = ?, driver_start_time = ?, updated_ts = ?
-            WHERE member_id = ?
-            """,
-            (driver_pid, driver_start_time, updated_ts, member_id),
-        )
-    claimed = get_session(queue, member_id)
-    if claimed is None:
-        raise SummonStateError("claimed session could not be read back")
-    return claimed
+    def _op() -> SummonSessionRow:
+        with queue.sidecar(transaction=True) as session:
+            row = _one(session, _SESSION_SELECT, (member_id,))
+            stored = _session_row(row)
+            if stored is None:
+                raise SummonStateError(f"no summon session for member '{member_id}'")
+            held_pid = stored["driver_pid"]
+            held_start = stored["driver_start_time"]
+            held = held_pid is not None or held_start is not None
+            same_driver = held_pid == driver_pid and held_start == driver_start_time
+            if held and not same_driver:
+                if held_pid is None or held_start is None:
+                    liveness: _Liveness = "indeterminate"
+                else:
+                    liveness = _evidence_liveness(held_pid, held_start)
+                if liveness == "live":
+                    raise DriverConflictError(
+                        f"member '{member_id}' already has a live summon driver "
+                        f"(pid {held_pid}); a member speaks from one place"
+                    )
+                if liveness == "indeterminate" and not takeover:
+                    raise DriverConflictError(
+                        f"cannot verify the existing driver (pid {held_pid}) for "
+                        f"member '{member_id}'; rerun with --takeover to "
+                        "replace it"
+                    )
+            session.run(
+                """
+                UPDATE taut_summon_sessions
+                SET driver_pid = ?, driver_start_time = ?, updated_ts = ?
+                WHERE member_id = ?
+                """,
+                (driver_pid, driver_start_time, updated_ts, member_id),
+            )
+        claimed = get_session(queue, member_id)
+        if claimed is None:
+            raise SummonStateError("claimed session could not be read back")
+        return claimed
+
+    return _state_retry(_op, what="claim driver")
 
 
 def release_driver(
@@ -557,29 +599,32 @@ def release_driver(
     live claim. The read and conditional write share one transaction.
     """
 
-    with queue.sidecar(transaction=True) as session:
-        row = _one(session, _SESSION_SELECT, (member_id,))
-        stored = _session_row(row)
-        if (
-            stored is None
-            or stored["driver_pid"] != driver_pid
-            or stored["driver_start_time"] != driver_start_time
-        ):
-            return False
-        # Evidence predicates on the write itself: SQLite's BEGIN IMMEDIATE
-        # already serializes read-and-write, but simplebroker-pg maps
-        # begin_immediate to plain BEGIN (read committed), where the read
-        # alone cannot exclude a concurrent takeover.
-        session.run(
-            """
-            UPDATE taut_summon_sessions
-            SET driver_pid = NULL, driver_start_time = NULL, updated_ts = ?
-            WHERE member_id = ? AND driver_pid = ? AND driver_start_time = ?
-            """,
-            (updated_ts, member_id, driver_pid, driver_start_time),
-        )
-        confirm = _session_row(_one(session, _SESSION_SELECT, (member_id,)))
-    return confirm is not None and confirm["driver_pid"] is None
+    def _op() -> bool:
+        with queue.sidecar(transaction=True) as session:
+            row = _one(session, _SESSION_SELECT, (member_id,))
+            stored = _session_row(row)
+            if (
+                stored is None
+                or stored["driver_pid"] != driver_pid
+                or stored["driver_start_time"] != driver_start_time
+            ):
+                return False
+            # Evidence predicates on the write itself: SQLite's BEGIN IMMEDIATE
+            # already serializes read-and-write, but simplebroker-pg maps
+            # begin_immediate to plain BEGIN (read committed), where the read
+            # alone cannot exclude a concurrent takeover.
+            session.run(
+                """
+                UPDATE taut_summon_sessions
+                SET driver_pid = NULL, driver_start_time = NULL, updated_ts = ?
+                WHERE member_id = ? AND driver_pid = ? AND driver_start_time = ?
+                """,
+                (updated_ts, member_id, driver_pid, driver_start_time),
+            )
+            confirm = _session_row(_one(session, _SESSION_SELECT, (member_id,)))
+        return confirm is not None and confirm["driver_pid"] is None
+
+    return _state_retry(_op, what="release driver")
 
 
 # --- helpers ------------------------------------------------------------------
@@ -623,25 +668,31 @@ def _one(
 def _claim_row(row: tuple[Any, ...] | None) -> SummonClaimRow | None:
     if row is None:
         return None
-    return {
-        "name": cast(str, row[0]),
-        "provider": cast(str, row[1]),
-        "driver_pid": int(row[2]),
-        "driver_start_time": cast(str, row[3]),
-        "claimed_ts": int(row[4]),
-    }
+    try:
+        return {
+            "name": cast(str, row[0]),
+            "provider": cast(str, row[1]),
+            "driver_pid": int(row[2]),
+            "driver_start_time": cast(str, row[3]),
+            "claimed_ts": int(row[4]),
+        }
+    except (IndexError, TypeError, ValueError) as exc:
+        raise DatabaseError("malformed summon claim row") from exc
 
 
 def _session_row(row: tuple[Any, ...] | None) -> SummonSessionRow | None:
     if row is None:
         return None
-    return {
-        "member_id": cast(str, row[0]),
-        "token": cast(str, row[1]),
-        "provider": cast(str, row[2]),
-        "provider_session_id": cast(str | None, row[3]),
-        "driver_pid": None if row[4] is None else int(row[4]),
-        "driver_start_time": cast(str | None, row[5]),
-        "wired": bool(int(row[6])),
-        "updated_ts": int(row[7]),
-    }
+    try:
+        return {
+            "member_id": cast(str, row[0]),
+            "token": cast(str, row[1]),
+            "provider": cast(str, row[2]),
+            "provider_session_id": cast(str | None, row[3]),
+            "driver_pid": None if row[4] is None else int(row[4]),
+            "driver_start_time": cast(str | None, row[5]),
+            "wired": bool(int(row[6])),
+            "updated_ts": int(row[7]),
+        }
+    except (IndexError, TypeError, ValueError) as exc:
+        raise DatabaseError("malformed summon session row") from exc

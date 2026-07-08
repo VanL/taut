@@ -338,14 +338,11 @@ class DriverProcess:
         if not bootstrap:
             return
 
-        # Barrier on bootstrap COMPLETION, not just provider start: the
-        # driver spawns the child before joining threads ([SUM-4] needs
-        # the child pid for the capture), so the provider's start line
-        # precedes the joins. A message said into a thread before the
-        # driver's join is correctly invisible ([TAUT-7.4] "joining
-        # starts you at now") — tests must not race that window. The
-        # session row is written by record_session, the last bootstrap
-        # step.
+        # Barrier on driver readiness, not just provider start: the
+        # provider's start line precedes rejoin, thread joins, watcher
+        # startup, and the final "summoned ..." log. A message said before
+        # the watcher starts is correctly invisible ([TAUT-7.4] "joining
+        # starts you at now") — tests must not race that window.
         def _bootstrapped() -> bool:
             member = _member_by_name(self.db, self.name)
             if member is None:
@@ -356,6 +353,11 @@ class DriverProcess:
             lambda: _bootstrapped(),
             timeout=timeout,
             message=f"bootstrap completion; stderr: {self.stderr_tail()}",
+        )
+        wait_until(
+            lambda: self._summoned_log_count() >= count,
+            timeout=timeout,
+            message=f"watch readiness; stderr: {self.stderr_tail()}",
         )
 
     def wait_for_message(
@@ -382,6 +384,12 @@ class DriverProcess:
         if not self.stderr_path.exists():
             return ""
         return self.stderr_path.read_text(encoding="utf-8")[-2000:]
+
+    def _summoned_log_count(self) -> int:
+        self._stderr_file.flush()
+        if not self.stderr_path.exists():
+            return 0
+        return self.stderr_path.read_text(encoding="utf-8").count(" summoned '")
 
     # --- lifecycle --------------------------------------------------------
 

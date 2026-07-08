@@ -174,6 +174,13 @@ that key. This is why a mid-run `taut set name` does not strand the control
 plane, and why re-summoning a renamed-away name creates a fresh member rather
 than adopting the old one.
 
+Every summon state helper wraps its complete sidecar operation in the
+extension's narrow broker retry policy. The retry boundary includes row parsing,
+not just SQL execution: a false SQLite malformed-page read can surface as a
+wrong-shaped row before SimpleBroker raises `DatabaseError`. The parser converts
+that shape failure into the same `malformed` `DatabaseError`, so it retries
+inside the bounded budget and still surfaces if the row is persistently broken.
+
 The bootstrap's six-step order ([SUM-4]) resolves three constraints at once:
 the token/env cycle (the token must exist before the child is spawned with
 it), the concurrent-summon race, and the never-touch-a-foreign-member rule.
@@ -236,6 +243,12 @@ connection-open `RuntimeError("Failed to get database connection: ...")`
 wrapper only when the wrapped message carries one of those same markers. Thus
 genuine corruption still surfaces and STATUS reports `control_health:
 degraded` rather than dying silent.
+
+`taut-summon stop/status` use that same policy while resolving the current
+member name and while writing/reading control replies. If the bounded budget is
+exhausted on a known transient, the CLI reports an exit-1 control failure rather
+than leaking a Python traceback; if the error is outside the narrow predicate,
+it still propagates.
 
 ### SimpleBroker facade boundary
 

@@ -17,8 +17,10 @@ import subprocess
 import sys
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
+import taut_summon._state as state_module
 from simplebroker import Queue
 from taut_summon._state import (
     SUMMON_SCHEMA_VERSION,
@@ -317,6 +319,47 @@ def test_get_session_missing_returns_none(state_queue: Queue) -> None:
     ensure_summon_schema(state_queue)
 
     assert get_session(state_queue, "m_missing") is None
+
+
+def test_get_session_retries_malformed_row_shape(
+    state_queue: Queue, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ensure_summon_schema(state_queue)
+    record_session(
+        state_queue,
+        member_id="m_abc",
+        token="taut-test-token",
+        provider="scripted",
+        provider_session_id="sess",
+        updated_ts=state_queue.generate_timestamp(),
+    )
+
+    real_one = state_module._one
+    malformed_reads = 0
+
+    def flaky_one(session: Any, sql: str, params: tuple[Any, ...] = ()) -> Any:
+        nonlocal malformed_reads
+        if "FROM taut_summon_sessions" in sql and malformed_reads == 0:
+            malformed_reads += 1
+            return (
+                "m_abc",
+                "taut-test-token",
+                "scripted",
+                "sess",
+                None,
+                None,
+                "runnervmkkn4f",
+                1,
+            )
+        return real_one(session, sql, params)
+
+    monkeypatch.setattr(state_module, "_one", flaky_one)
+
+    row = get_session(state_queue, "m_abc")
+
+    assert row is not None
+    assert row["member_id"] == "m_abc"
+    assert malformed_reads == 1
 
 
 # --- single-driver guard ([SUM-8]) ------------------------------------------

@@ -31,8 +31,9 @@ logger = logging.getLogger("taut_summon.broker")
 
 T = TypeVar("T")
 
-_BROKER_RETRIES = 8
+_BROKER_RETRIES = 12
 _BROKER_RETRY_DELAY = 0.05
+_BROKER_RETRY_MAX_DELAY = 0.5
 
 # The two — and only two — WAL-under-concurrency transients we ride out,
 # matched by message text so a genuinely broken DB is NOT masked. Lock/busy
@@ -102,7 +103,11 @@ def broker_retry(
         fn,
         retry_on=is_transient_broker_error,
         wait_gen=expo,
-        wait_gen_kwargs={"base": 2, "factor": _BROKER_RETRY_DELAY},
+        wait_gen_kwargs={
+            "base": 2,
+            "factor": _BROKER_RETRY_DELAY,
+            "max_value": _BROKER_RETRY_MAX_DELAY,
+        },
         stop=stop_after_attempt(attempts),
         before_sleep=_log,
     )
