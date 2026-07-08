@@ -532,6 +532,8 @@ class TautWatcher(MultiQueueWatcher):
         self._user_handler = handler
         self._cursors: dict[str, int] = {}
         self._failures: dict[tuple[str, int], int] = {}
+        self._ready_event: threading.Event | None = None
+        self._ready_after_initial_drain = False
         self._thread_filter = set(threads) if threads else None
         self._membership_refresh_interval = membership_refresh_interval
         self._next_membership_refresh_at = time.monotonic()
@@ -567,6 +569,13 @@ class TautWatcher(MultiQueueWatcher):
             for name in super().list_queues()
             if name != self._notification_queue_name
         ]
+
+    def notify_ready_after_initial_drain(self, event: threading.Event) -> None:
+        """Signal ``event`` once the watcher has started and completed one drain."""
+
+        self._ready_event = event
+        if self._ready_after_initial_drain:
+            event.set()
 
     def _current_memberships(self, *, strict: bool) -> list[WatchedThread]:
         rows = self._runtime.list_watched_threads(self.member_id)
@@ -673,6 +682,10 @@ class TautWatcher(MultiQueueWatcher):
             self._refresh_memberships()
             self._next_membership_refresh_at = now + self._membership_refresh_interval
         super()._drain_queue()
+        if not self._ready_after_initial_drain:
+            self._ready_after_initial_drain = True
+            if self._ready_event is not None:
+                self._ready_event.set()
 
     def _refresh_memberships(self) -> None:
         rows = self._current_memberships(strict=False)

@@ -231,6 +231,10 @@ and injects events into the harness session in **watcher delivery
 order** — the multi-queue watcher's merged order, which is per-thread
 chronological but makes no global cross-thread timestamp guarantee.
 Membership changes mid-run are picked up exactly as `taut watch` does.
+Driver readiness is downstream of the watcher's first drain: a session row,
+provider start, or watcher-thread start is not enough to prove the member is
+hearing chat. The driver may log `summoned ...` only after that
+consumer-ready boundary has fired.
 
 ### [SUM-5.2] Injection format
 

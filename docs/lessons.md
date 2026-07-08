@@ -198,11 +198,12 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   process gates from failing on a known WAL checkpoint blip.
 
 - 2026-07-08: Real-process readiness barriers must wait for the consumer, not
-  just the child process or ledger row. A summon provider can be spawned and its
-  session row recorded before the chat watcher is alive; tests that speak during
-  that gap create legitimate "message was before join" misses. Use an
-  observable post-consumer signal, such as the driver's final "summoned" log,
-  before asserting live message delivery.
+  just the child process, ledger row, or thread start. A summon provider can be
+  spawned and its session row recorded before the chat watcher has entered its
+  first drain; tests that speak during that gap create legitimate "message was
+  before join" misses. Make any readiness log downstream of an explicit
+  consumer-ready event, then wait on that log or event before asserting live
+  message delivery.
 
 ## Starter Lessons
 

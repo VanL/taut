@@ -77,6 +77,12 @@ running three concurrent lanes that a cold reader must keep distinct:
    at-least-once to the process boundary. Adapter death is fatal-and-resume:
    the handler halts injection (blocking until the driver stops the watcher)
    so [TAUT-8.4]'s three-strikes poison advance can never skip live chat.
+   The driver's readiness boundary is the watcher's initial drain, not thread
+   construction: `TautWatcher.notify_ready_after_initial_drain()` signals after
+   the polling strategy is started and the first drain has completed, and only
+   then does the driver log `summoned ...`. Tests and operators may use that log
+   as a readiness marker because it is downstream of the consumer-ready event,
+   not because logging itself synchronizes the watcher.
 2. **Event pump — a dedicated drain thread.** Consumes `events()` for the
    life of the child ([SUM-7.1]): session ids to the ledger, `activity` to
    member liveness via a rate-limited token-selected `whoami()` (the public

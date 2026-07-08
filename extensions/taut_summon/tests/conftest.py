@@ -371,7 +371,8 @@ class DriverProcess:
             lambda: any(text in m for m in self.messages(generation=generation)),
             timeout=timeout,
             message=f"injected message containing {text!r}; "
-            f"got {self.messages()!r}; stderr: {self.stderr_tail()}",
+            f"got {self.messages()!r}; driver_rc={self.proc.poll()!r}; "
+            f"stderr: {self.stderr_tail()}",
         )
 
     def child_pid(self) -> int:

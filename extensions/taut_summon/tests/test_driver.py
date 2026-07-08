@@ -598,6 +598,13 @@ def test_pty_status_reports_awaiting_query(
         lambda: _session_row(summon_db, member.member_id) is not None,
         message="pty session row",
     )
+    wait_until(
+        lambda: any(
+            entry["event"] == "unknown_query" and entry["query"].endswith("[?15n")
+            for entry in _fake_tui_entries(pty_log)
+        ),
+        message="fake TUI unknown query",
+    )
 
     def _status_has_query() -> bool:
         try:
@@ -606,7 +613,7 @@ def test_pty_status_reports_awaiting_query(
             return False
         return reply is not None and reply.get("awaiting_query") == "[?15n"
 
-    wait_until(_status_has_query, timeout=10.0, message="awaiting_query status")
+    wait_until(_status_has_query, message="awaiting_query status")
     rc, out, err = summon_cli("status", "ptybot", db=summon_db, cwd=tmp_path)
     assert rc == 0, err
     assert "awaiting_query=[?15n" in out

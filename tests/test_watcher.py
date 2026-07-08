@@ -545,6 +545,27 @@ def test_live_watcher_does_not_redispatch_after_cursor_advance(
         assert not thread.is_alive()
 
 
+def test_taut_watcher_ready_signal_fires_after_initial_drain(tmp_path: Path) -> None:
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    van = TautClient(db_path=tmp_path / ".taut.db", as_name="van")
+    bot = TautClient(db_path=tmp_path / ".taut.db", as_name="bot")
+    van.join("foo")
+    bot.join("foo")
+    van.say("foo", "before-ready")
+    seen: list[str] = []
+    ready = threading.Event()
+    watcher = bot.watch(_record_message_texts(seen))
+    watcher.notify_ready_after_initial_drain(ready)
+    thread = watcher.start()
+    try:
+        assert ready.wait(timeout=3.0)
+        assert "before-ready" in seen
+    finally:
+        watcher.stop()
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+
+
 def test_watcher_poison_message_advances_after_three_failures(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,

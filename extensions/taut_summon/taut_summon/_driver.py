@@ -596,14 +596,38 @@ class SummonDriver:
                 pump.join(timeout=10.0)
                 raise DriverError(f"cannot watch chat: {exc}") from exc
             self._watcher = watcher
+            watcher_ready = threading.Event()
+            notify_ready = getattr(watcher, "notify_ready_after_initial_drain", None)
+            if callable(notify_ready):
+                notify_ready(watcher_ready)
+            else:  # pragma: no cover - TautClient.watch returns TautWatcher today
+                watcher_ready.set()
             watcher_thread = self._start_watcher_thread(watcher)
-            logger.info(
-                "summoned '%s' (member %s, provider %s, threads %s)",
-                boot.member_name,
-                boot.member_id,
-                boot.provider,
-                ", ".join(request.threads),
-            )
+            deadline = time.monotonic() + 30.0
+            while (
+                not watcher_ready.is_set()
+                and not self._harness_dead.is_set()
+                and not self._shutdown.is_set()
+                and time.monotonic() < deadline
+            ):
+                watcher_ready.wait(timeout=0.05)
+            if (
+                not watcher_ready.is_set()
+                and not self._harness_dead.is_set()
+                and not self._shutdown.is_set()
+            ):
+                watcher.stop(join=False)
+                handle.close()
+                pump.join(timeout=10.0)
+                raise DriverError("cannot watch chat: watcher did not become ready")
+            if watcher_ready.is_set():
+                logger.info(
+                    "summoned '%s' (member %s, provider %s, threads %s)",
+                    boot.member_name,
+                    boot.member_id,
+                    boot.provider,
+                    ", ".join(request.threads),
+                )
 
             self._await_wake()
 
