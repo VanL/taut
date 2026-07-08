@@ -204,6 +204,57 @@ message target, for example `message #general` or `reply in parser`.
 Sending from the composer uses the same client-owned write path as `taut say`
 or `taut reply`, according to the active target.
 
+### [TUI-6.4a] Channel Join and Creation Surface
+
+The TUI must provide a normal interactive path to the client-owned
+`join CHANNEL` operation. Joining and channel creation are one client
+operation in Taut: `TautClient.join(CHANNEL)` joins an existing channel or
+creates the channel if it does not exist. The TUI must not invent a second
+channel-creation path or write channel/membership state directly.
+
+The join surface is available from the main TUI, including when the current
+member already has joined channels. It may be opened from the navigation pane,
+help/command surface, or a dedicated key binding, but the user path must be
+discoverable from keyboard help.
+
+Required user path for joining an existing channel:
+
+1. Open the join-channel surface.
+2. See existing project channels that the current member has not joined, using
+   a client-owned read-only listing path.
+3. Move through channels with the keyboard and/or type a channel name.
+4. Submit the selected existing channel.
+5. The TUI calls `TautClient.join(CHANNEL)`, rebuilds membership/navigation from
+   client reads, and makes the joined channel reachable without fabricating
+   optimistic transcript rows.
+
+Required user path for creating a new channel:
+
+1. Open the same join-channel surface.
+2. Type a valid new channel name.
+3. The TUI makes clear that submitting this unmatched name will create and join
+   `#CHANNEL` through normal `join` semantics.
+4. Submit/confirm.
+5. The TUI calls `TautClient.join(CHANNEL)`, then rebuilds membership/navigation
+   from client reads.
+
+The join surface must handle these states:
+
+- existing joinable channels are present: list them and allow typing a new
+  channel name;
+- no existing project channels are present: show an empty state whose primary
+  action is typing a new channel name;
+- the member already has joined channels: keep the current conversation open
+  unless the user successfully joins/creates another channel, then switch to
+  the joined channel or otherwise make the result obvious;
+- the member has no joined channels: present the join/create surface as the
+  primary next action after launch or first-join identity setup.
+
+`join --persona` and `join --new` are not part of this surface. They are
+identity/profile operations layered onto `join`, not normal channel membership
+selection, and remain governed by [TUI-10.9]'s identity-management deferral
+until a dedicated identity/profile design exists.
+
 ### [TUI-6.5] Presence Pane
 
 The presence pane shows active-context members and at least:
@@ -382,6 +433,27 @@ message: an unrecognized caller in an initialized project ([TUI-10.9]). Every
 other identity condition — conflicts, token mismatches, rejoin-shaped cases —
 remains CLI-first and surfaces as guidance naming a concrete next command.
 
+### [TUI-10.2a] Post-Identity Channel State
+
+After launch identity resolution succeeds, or after a first-join identity setup
+creates/resolves a member, the TUI decides the initial channel state from
+client-owned membership and thread reads.
+
+Required behavior:
+
+| Condition | TUI behavior |
+|---|---|
+| recognized member has one or more joined channels | Open the main TUI directly. Build navigation from joined threads, select a deterministic default joined channel, and show the transcript/composer for that target. No setup or join prompt appears. |
+| recognized member has joined channels with unread messages | Same as above, with unread badges and unread separators seeded from the session snapshot under [TUI-10.8]. The presence of unread messages must not change launch routing. |
+| recognized member has no joined channels, and project channels exist | Open the main TUI in a no-joined-channel state. The primary next action is the channel join surface from [TUI-6.4a], listing joinable existing channels and allowing a new channel name. |
+| recognized member has no joined channels, and no project channels exist | Open the main TUI in a no-channels state. The primary next action is the channel creation path from [TUI-6.4a]. |
+| identity is unrecognized | Enter first-join identity setup ([TUI-10.9]) before applying the no-joined-channel/no-channel routing above. |
+
+This table is the launch contract for a user who has already joined a channel
+before opening the TUI: they are taken straight to the normal chat surface.
+Channel joining is available as an explicit action, not as a blocking setup
+step.
+
 ### [TUI-10.3] Lost Membership
 
 If the active member loses membership in a conversation while the TUI is
@@ -474,8 +546,8 @@ usable, but it must not become a parallel identity-management system. The TUI
 only collects minimal input and calls existing `TautClient` operations with
 the same semantics as the CLI ([TUI-4.2]). Only the client decides what
 identity or member exists. The setup state should tell the user that no
-identity is recognized for this terminal/caller, then help them choose a
-display name and channel.
+identity is recognized for this terminal/caller, then collect only the minimum
+information needed to reach a normal TUI channel state.
 
 **Trigger.** When bare interactive `taut` launches the TUI in an initialized
 project, client construction succeeds, and identity resolution reports the
@@ -494,25 +566,36 @@ must not open this state; they surface as CLI-first guidance naming a
 concrete next command, for example `taut rejoin NAME` or
 `taut --as NAME join CHANNEL`.
 
-**The form.** The state asks for exactly two values:
+**The form.** The identity setup state asks for a display name, prefilled from
+`--as NAME` when it was given but unrecognized. Channel choice belongs to the
+normal join/create surface in [TUI-6.4a] once that surface exists.
 
-- display name — prefilled from `--as NAME` when it was given but
-  unrecognized
-- channel name
+Compatibility note for the narrow first implementation: while the TUI lacks a
+standalone main-surface join/create action, this setup state may ask for both
+display name and channel name so it can submit through the existing
+client-owned equivalent of `taut --as NAME join CHANNEL`. That compatibility
+shape is not the final product model; it is an implementation bridge.
 
-When existing channel rows are visible through a client-owned read-only path,
-the form should include a lightweight channel chooser: list existing channels
-and allow arrow-key selection, while also allowing the user to type a new
-channel name. If no channel exists, the channel control is simply an empty
-field for a new channel name. Picking an existing channel and typing a new
-channel are both just ways to choose the `CHANNEL` argument for the same
-client-owned submit action.
+When the compatibility form includes a channel control and existing channel
+rows are visible through a client-owned read-only path, it should include a
+lightweight channel chooser: list existing channels and allow arrow-key
+selection, while also allowing the user to type a new channel name. If no
+channel exists, the channel control is simply an empty field for a new channel
+name. Picking an existing channel and typing a new channel are both just ways
+to choose the `CHANNEL` argument for the same client-owned submit action.
 
-Submitting performs the client-owned equivalent of `taut --as NAME join
-CHANNEL`. Joining a channel that does not exist yet creates it — existing
-client semantics, sufficient for a brand-new project straight after
-[TUI-10.1] init-here. After success the TUI re-runs its normal bootstrap as
-that member; it must not fabricate an optimistic transcript ([TUI-10.7]).
+Submitting the compatibility form performs the client-owned equivalent of
+`taut --as NAME join CHANNEL`. Joining a channel that does not exist yet
+creates it — existing client semantics, sufficient for a brand-new project
+straight after [TUI-10.1] init-here. After success the TUI re-runs its normal
+bootstrap as that member; it must not fabricate an optimistic transcript
+([TUI-10.7]).
+
+When the final identity-only setup form is used, submitting the display name
+must create/resolve identity through client-owned semantics, then route through
+[TUI-10.2a]. If the resulting member has no joined channels, the TUI shows the
+normal join/create surface from [TUI-6.4a] rather than keeping channel choice
+inside identity setup.
 
 **Failure rules.** A simple validation or membership error from `join()`
 shows an inline error and keeps the form open. Any other identity condition
@@ -528,10 +611,10 @@ shows the CLI-first guidance above; the TUI must not invent recovery logic.
 - The form is keyboard-complete ([TUI-8.1]). Enter submits the focused form
   input and must not be swallowed by app-level priority bindings (the
   [TUI-10.1] init-here binding is the known hazard; pinned by test).
-- When existing channels are listed, Up/Down moves among them without leaving
-  the setup state; typing in the channel field may replace the selected channel
-  with a new channel name. This is an affordance only, not a separate command
-  path.
+- In the compatibility form, when existing channels are listed, Up/Down moves
+  among them without leaving the setup state; typing in the channel field may
+  replace the selected channel with a new channel name. This is an affordance
+  only, not a separate command path.
 - While a text input is focused, printable keys belong to that input. The form
   hint must not advertise bare `q` as an active quit shortcut in this state.
   Escape returns to the identity-guidance state; from there `q` quits. A
