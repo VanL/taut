@@ -212,48 +212,112 @@ operation in Taut: `TautClient.join(CHANNEL)` joins an existing channel or
 creates the channel if it does not exist. The TUI must not invent a second
 channel-creation path or write channel/membership state directly.
 
-The join surface is available from the main TUI, including when the current
-member already has joined channels. It may be opened from the navigation pane,
-help/command surface, or a dedicated key binding, but the user path must be
-discoverable from keyboard help.
+**Invocation.** The join surface is available from the main TUI whenever a
+member identity is resolved, including when the member already has joined
+channels. The baseline key is `j` unless a later keyboard review assigns a
+different non-conflicting key; whichever key is used must appear in the key bar
+when relevant and in `?` help. The surface must also be reachable from a
+no-joined-channel or no-channels empty state as that state's primary action.
 
-Required user path for joining an existing channel:
+Opening the join surface is a transient/modal text-entry state. It must not
+change the active target, cursors, membership, or transcript until submit
+succeeds. Escape closes it and returns focus to the pane that opened it.
 
-1. Open the join-channel surface.
-2. See existing project channels that the current member has not joined, using
-   a client-owned read-only listing path.
-3. Move through channels with the keyboard and/or type a channel name.
-4. Submit the selected existing channel.
-5. The TUI calls `TautClient.join(CHANNEL)`, rebuilds membership/navigation from
-   client reads, and makes the joined channel reachable without fabricating
-   optimistic transcript rows.
+**Data source.** Existing channels shown in the surface come from a
+client-owned read-only thread listing, filtered to top-level channels
+(`kind == "channel"`). The TUI must not read SQL or broker queues directly.
+The list is joinable-channel oriented: channels the current member has already
+joined may be omitted or shown as disabled/current, but they must not be
+submitted as a duplicate join. Sub-threads, DMs, notification queues, and system
+threads are never join choices.
 
-Required user path for creating a new channel:
+If listing existing channels fails, the surface stays usable as a manual
+channel-name entry field and shows a non-fatal inline note. Listing failure must
+not block creating/joining a typed channel name, because `join CHANNEL` itself
+is the authoritative operation.
 
-1. Open the same join-channel surface.
-2. Type a valid new channel name.
-3. The TUI makes clear that submitting this unmatched name will create and join
-   `#CHANNEL` through normal `join` semantics.
-4. Submit/confirm.
-5. The TUI calls `TautClient.join(CHANNEL)`, then rebuilds membership/navigation
-   from client reads.
+**Display and interaction.** The surface has:
 
-The join surface must handle these states:
+- a channel-name input;
+- a list of existing joinable channels when any are known;
+- inline status/error text;
+- an explicit hint for Escape/submit behavior.
 
-- existing joinable channels are present: list them and allow typing a new
-  channel name;
-- no existing project channels are present: show an empty state whose primary
-  action is typing a new channel name;
-- the member already has joined channels: keep the current conversation open
-  unless the user successfully joins/creates another channel, then switch to
-  the joined channel or otherwise make the result obvious;
-- the member has no joined channels: present the join/create surface as the
-  primary next action after launch or first-join identity setup.
+When known joinable channels exist, the first channel in client order is the
+initial selected candidate. Up/Down move the selection without leaving the
+surface and update the channel input to the selected channel. Typing in the
+channel input clears the selection highlight and treats the input as an
+arbitrary channel name. The surface is not a full command palette or fuzzy
+search; typed text is the `CHANNEL` argument, not a separate search query,
+unless a later spec explicitly adds filtering.
+
+When no joinable channels are known, the list area is absent or shows a compact
+empty state, and the input is blank. The primary action is typing a valid
+channel name.
+
+**Joining an existing channel: exact path.**
+
+1. Press `j` or choose the join-channel action from help/empty state.
+2. The surface lists known joinable channels.
+3. Use Up/Down to select a channel, or type an exact existing channel name.
+4. Press Enter.
+5. The TUI validates the submitted text with the same channel-name validator
+   used by the client/CLI when available for fast feedback.
+6. The TUI calls `TautClient.join(CHANNEL)`.
+7. On success, it closes the surface, re-reads membership/navigation from the
+   client, and makes the joined channel the active target.
+8. The join notice appears through the same client/watch/read path as other
+   messages; the TUI must not fabricate an optimistic transcript row.
+
+**Creating a new channel: exact path.**
+
+1. Press `j` or choose the join/create action from an empty state.
+2. Type a valid channel name that does not match a known joinable channel.
+3. The surface clearly labels the pending action as create-and-join
+   `#CHANNEL`, because absent-channel creation is normal `join` semantics.
+4. Press Enter.
+5. If the create-and-join action was not already explicit in the focused
+   control, the TUI asks for a lightweight confirmation before calling the
+   client. Confirmation must be keyboard-only and cancellable with Escape.
+6. The TUI calls `TautClient.join(CHANNEL)`.
+7. On success, it closes the surface, re-reads membership/navigation from the
+   client, and makes the new channel the active target.
+8. The creation notice appears through the same client/watch/read path as other
+   messages; the TUI must not fabricate an optimistic transcript row.
+
+**Already-joined channels.** If the user types or selects a channel the member
+has already joined, the TUI should not call `join` again. It should close the
+surface or show a concise inline note and switch to that already-joined channel.
+This keeps the action useful while avoiding duplicate join notices.
+
+**Errors and races.** Validation errors, `ThreadNameError`, membership errors,
+identity errors, backend errors, and channel-rename guard errors are shown
+inline or as a recoverable banner. The surface remains open for validation and
+join failures where retrying makes sense. If another process creates or joins
+the channel between listing and submit, the `TautClient.join()` result is
+authoritative: the TUI handles the returned notice and refreshed membership
+state, not its stale pre-submit classification. If a name looked creatable but
+now exists as a non-channel thread, the client error is surfaced.
 
 `join --persona` and `join --new` are not part of this surface. They are
 identity/profile operations layered onto `join`, not normal channel membership
 selection, and remain governed by [TUI-10.9]'s identity-management deferral
 until a dedicated identity/profile design exists.
+
+**Verification obligations.** Tests for this surface must prove:
+
+- a member with joined channels can open and cancel the surface without changing
+  active target or membership;
+- existing joinable channels are listed from client APIs and can be selected
+  with keyboard controls;
+- typing a new valid name follows the create-and-join path and calls
+  `TautClient.join()` rather than a TUI-specific creation path;
+- already-joined channel input switches/selects without duplicate join;
+- listing failure leaves manual typed join usable;
+- validation and client errors stay visible and recoverable;
+- successful join/create refreshes navigation from client state and selects the
+  joined channel;
+- no direct state/SQL/broker access is introduced under `taut/tui`.
 
 ### [TUI-6.5] Presence Pane
 
