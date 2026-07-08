@@ -233,6 +233,13 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   health, include a bounded control round-trip in the readiness barrier and keep
   the failure diagnostic tied to the driver stderr tail.
 
+- 2026-07-08: Watcher wake callbacks are hints, not delivery guarantees. If a
+  backend data-version callback hits a known transient SQLite sidecar read
+  failure, convert it into "poll soon" and keep the watcher alive; delivery
+  correctness belongs to the subsequent pending scan and cursor checks.
+  Letting the callback exception escape can strand a live watcher as silent
+  while the provider process remains healthy.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

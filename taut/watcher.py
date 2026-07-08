@@ -60,6 +60,17 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_SQLITE_WATCHER_TRANSIENT_MARKERS = (
+    "database is locked",
+    "database table is locked",
+    "database schema is locked",
+    "database is busy",
+    "database busy",
+    "database disk image is malformed",
+    "malformed",
+    "disk i/o error",
+)
+
 
 class QueueMode(StrEnum):
     """Supported queue processing behaviours."""
@@ -109,6 +120,15 @@ def _resolve_db_target(
 def _detach_queue_stop_event(queue: Queue) -> None:
     if hasattr(queue, "set_stop_event"):
         queue.set_stop_event(None)
+
+
+def _is_transient_watcher_db_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    if isinstance(exc, ValueError):
+        return "invalid literal for int()" in message
+    if isinstance(exc, (BrokerError, RuntimeError)):
+        return any(marker in message for marker in _SQLITE_WATCHER_TRANSIENT_MARKERS)
+    return False
 
 
 class MultiQueueWatcher(BaseWatcher):
@@ -681,8 +701,29 @@ class TautWatcher(MultiQueueWatcher):
         return super()._has_pending_messages()
 
     def _on_data_version_change(self, queue: Queue) -> None:
-        super()._on_data_version_change(queue)
-        self._refresh_memberships()
+        try:
+            super()._on_data_version_change(queue)
+        except Exception as exc:
+            if not _is_transient_watcher_db_error(exc):
+                raise
+            logger.debug(
+                "transient data-version callback failure; falling back to poll",
+                exc_info=True,
+            )
+            self._pending_messages_precheck_confirmed = True
+            self._next_inactive_probe_at = 0.0
+            self._strategy.notify_activity()
+            return
+        try:
+            self._refresh_memberships()
+        except Exception as exc:
+            if not _is_transient_watcher_db_error(exc):
+                raise
+            logger.debug(
+                "transient membership refresh failure; retrying on next drain",
+                exc_info=True,
+            )
+            self._next_membership_refresh_at = time.monotonic()
 
     def _drain_queue(self) -> None:
         now = time.monotonic()

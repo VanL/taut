@@ -390,7 +390,10 @@ def test_live_pty_harness_reaches_ready_and_accepts_injection(
                 f"last status: {last_status[-500:]}; stderr: {stderr[-500:]}"
             )
     finally:
-        summon_cli("stop", provider, db=db, cwd=tmp_path, timeout=30.0)
+        try:
+            summon_cli("stop", provider, db=db, cwd=tmp_path, timeout=30.0)
+        except subprocess.TimeoutExpired:
+            pass
         if proc.poll() is None:
             proc.terminate()
             try:

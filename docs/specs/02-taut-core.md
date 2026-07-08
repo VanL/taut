@@ -619,7 +619,11 @@ Contract:
   `PRAGMA data_version` because they share the file) and at a bounded
   interval. The interval is the portable guarantee: backends whose wake
   signals cover only queue writes ([TAUT-12.1]) still converge on
-  membership changes within the interval.
+  membership changes within the interval. A known transient failure in the
+  data-version callback (SQLite lock/busy/malformed/disk I/O or the
+  corresponding timestamp row-shape misread) must fall back to a normal
+  pending scan instead of killing the watcher; non-transient exceptions
+  still surface.
 
 The TUI (future) is a consumer of `TautClient` + `TautWatcher`, ships as
 the optional extra `taut[tui]`, and adds no new runtime dependency to the

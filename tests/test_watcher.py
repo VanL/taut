@@ -247,6 +247,50 @@ def _white_box_watcher(
     )
 
 
+def test_taut_watcher_data_version_transient_falls_back_to_polling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    van = TautClient(db_path=tmp_path / ".taut.db", as_name="van")
+    van.join("foo")
+    watcher = _white_box_watcher(van, lambda _item: None, threads=["foo"])
+    queue = watcher.get_queue("foo")
+    assert queue is not None
+
+    def fail_data_version(_self: MultiQueueWatcher, _queue: Queue) -> None:
+        raise ValueError("invalid literal for int() with base 10: 'van'")
+
+    monkeypatch.setattr(MultiQueueWatcher, "_on_data_version_change", fail_data_version)
+    watcher._pending_messages_precheck_confirmed = False
+    watcher._next_inactive_probe_at = time.monotonic() + 3600
+
+    watcher._on_data_version_change(queue)
+
+    assert watcher._pending_messages_precheck_confirmed is True
+    assert watcher._next_inactive_probe_at == 0.0
+    watcher.stop()
+
+
+def test_taut_watcher_data_version_nontransient_error_still_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    van = TautClient(db_path=tmp_path / ".taut.db", as_name="van")
+    van.join("foo")
+    watcher = _white_box_watcher(van, lambda _item: None, threads=["foo"])
+    queue = watcher.get_queue("foo")
+    assert queue is not None
+
+    def fail_data_version(_self: MultiQueueWatcher, _queue: Queue) -> None:
+        raise ValueError("not a database timestamp shape")
+
+    monkeypatch.setattr(MultiQueueWatcher, "_on_data_version_change", fail_data_version)
+
+    with pytest.raises(ValueError, match="not a database timestamp shape"):
+        watcher._on_data_version_change(queue)
+    watcher.stop()
+
+
 def test_explicit_watch_filter_drops_left_thread_on_refresh(tmp_path: Path) -> None:
     TautClient.init(db_path=tmp_path / ".taut.db")
     client = TautClient(db_path=tmp_path / ".taut.db", as_name="van")

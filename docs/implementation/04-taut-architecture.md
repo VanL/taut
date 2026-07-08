@@ -153,7 +153,9 @@ through SimpleBroker's watcher lifecycle hook rather than cloning the base retry
 loop. Membership refresh is wired both to SimpleBroker's data-version callback
 and to a timer that deliberately counts as pending work, so an idle watcher still
 reaches the refresh code on backends whose native waiters only wake for queue
-writes.
+writes. The data-version callback is a wake hint, not a fatal boundary: known
+transient SQLite sidecar read failures mark the watcher for a full pending scan
+on the next drain, while unrelated exceptions still raise.
 
 `TautClient.watch()` builds a client-owned `TautWatchRuntime` adapter before it
 constructs `TautWatcher`. The watcher owns live-follow mechanics and local
