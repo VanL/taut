@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import http.client
 import importlib.util
 import subprocess
 import sys
@@ -519,6 +520,21 @@ def test_summon_precheck_env_requires_local_llm() -> None:
     assert env["TAUT_SUMMON_LOCAL_LLM"] == "1"
     assert env["TAUT_SUMMON_LOCAL_LLM_ENDPOINT"] == "http://127.0.0.1:9999/v1"
     assert env["TAUT_SUMMON_LOCAL_LLM_MODEL"] == "local-test:latest"
+
+
+def test_local_llm_model_probe_treats_startup_disconnect_as_not_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _load_release_module()
+
+    def disconnected(_url: str, *, timeout: float) -> dict[str, object]:
+        raise http.client.RemoteDisconnected("Remote end closed connection")
+
+    monkeypatch.setattr(release, "_read_json_url", disconnected)
+
+    assert release._endpoint_has_model(  # noqa: SLF001
+        "http://127.0.0.1:9999/v1", "local-test:latest"
+    ) is False
 
 
 def test_prechecks_start_local_llm_before_other_release_gates(

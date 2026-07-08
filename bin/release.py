@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import re
@@ -131,6 +132,12 @@ LOCAL_LLM_HTTP_TIMEOUT_SECONDS: Final[float] = 10.0
 LOCAL_LLM_SERVER_WAIT_SECONDS: Final[float] = 180.0
 LOCAL_LLM_MODEL_WAIT_SECONDS: Final[float] = 180.0
 LOCAL_LLM_SETUP_COMMAND_TIMEOUT_SECONDS: Final[float] = 900.0
+LOCAL_LLM_RETRYABLE_HTTP_ERRORS: Final[tuple[type[BaseException], ...]] = (
+    urllib.error.URLError,
+    urllib.error.HTTPError,
+    TimeoutError,
+    http.client.RemoteDisconnected,
+)
 
 
 @dataclass(frozen=True)
@@ -503,7 +510,7 @@ def _endpoint_has_model(endpoint: str, model: str) -> bool:
             _joined_endpoint(endpoint, "models"),
             timeout=LOCAL_LLM_HTTP_TIMEOUT_SECONDS,
         )
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
+    except LOCAL_LLM_RETRYABLE_HTTP_ERRORS:
         return False
     raw_data = payload.get("data")
     if not isinstance(raw_data, list):
@@ -519,7 +526,7 @@ def _wait_for_http_endpoint(origin: str, *, timeout: float) -> None:
                 origin, timeout=LOCAL_LLM_HTTP_TIMEOUT_SECONDS
             ).close()
             return
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
+        except LOCAL_LLM_RETRYABLE_HTTP_ERRORS:
             time.sleep(2)
     fail(f"local LLM server did not become ready at {origin}")
 
