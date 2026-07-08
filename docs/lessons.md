@@ -292,6 +292,19 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   should reuse the full driver readiness barrier before the first control
   round-trip, while live harnesses need an equivalent provider-specific proof.
 
+- 2026-07-08: Do not make cross-platform CI depend on instantaneous
+  `psutil.open_files()` handle deltas for ephemeral SQLite queue tests. macOS,
+  Windows, Python version, and xdist scheduling can expose temporary handle
+  noise even when the queue lifecycle is correct. Assert the owned contract
+  instead: the watcher creates ephemeral queues (`conn is None`), calls
+  `Queue.close()` when membership churn removes a dynamic queue, and still
+  delivers messages after repeated churn.
+
+- 2026-07-08: Real-process readiness polling should classify the known summon
+  sidecar malformed-row read as "not ready yet" at the harness boundary. The
+  production ledger still retries and fails closed; the test wait loop should
+  not let one exhausted transient read escape while bootstrap is still racing.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

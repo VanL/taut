@@ -33,7 +33,7 @@ from typing import Any
 
 import pytest
 from simplebroker import Queue
-from simplebroker.ext import OperationalError
+from simplebroker.ext import DatabaseError, OperationalError
 
 from taut.client import TautClient
 
@@ -530,6 +530,14 @@ def _session_row(db: Path, member_id: str) -> dict[str, Any] | None:
         # barrier that reads during a bootstrap race can arrive before the
         # taut_summon_sessions table exists — that member simply has no
         # session row yet.
+        return None
+    except DatabaseError as exc:
+        if "malformed summon session row" not in str(exc):
+            raise
+        # High-churn real-process tests can briefly see a malformed sidecar
+        # read even after the bounded broker retry budget. In readiness
+        # polling, that means "try again"; true persistent corruption still
+        # times out the readiness barrier instead of passing.
         return None
     finally:
         queue.close()

@@ -10,7 +10,6 @@ from functools import partial
 from pathlib import Path
 from typing import Any, TypeVar
 
-import psutil
 import pytest
 from simplebroker import Queue
 
@@ -843,21 +842,8 @@ def test_watch_filter_naming_unjoined_thread_raises_membership_error(
         client.watch(lambda _item: None, threads=["foo", "ghost"])
 
 
-def _open_db_handle_count(db_path: Path) -> int | None:
-    """Count this process's open file handles on the taut db (plus -wal/-shm).
-
-    Returns None where psutil cannot enumerate open files reliably.
-    """
-    prefix = str(db_path.resolve())
-    try:
-        open_files = psutil.Process().open_files()
-    except (psutil.Error, NotImplementedError, OSError):
-        return None
-    return sum(1 for item in open_files if item.path.startswith(prefix))
-
-
-def test_taut_watcher_membership_churn_does_not_leak_db_handles(
-    tmp_path: Path,
+def test_taut_watcher_membership_churn_closes_removed_queues(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     db_path = tmp_path / ".taut.db"
     TautClient.init(db_path=db_path)
@@ -872,14 +858,23 @@ def test_taut_watcher_membership_churn_does_not_leak_db_handles(
         membership_refresh_interval=0.05,
     )
     thread = watcher.start()
-    handles_observable = _open_db_handle_count(db_path) is not None
-    handle_counts: list[int] = []
+    closed_queues: list[str] = []
+    real_close = Queue.close
+
+    def close_spy(queue: Queue) -> None:
+        closed_queues.append(queue.name)
+        real_close(queue)
+
+    monkeypatch.setattr(Queue, "close", close_spy)
 
     def queue_listed(name: str) -> bool:
         return name in watcher.list_queues()
 
     def queue_absent(name: str) -> bool:
         return name not in watcher.list_queues()
+
+    def queue_removed_and_closed(name: str) -> bool:
+        return queue_absent(name) and name in closed_queues
 
     try:
         _wait_until(thread.is_alive)
@@ -888,26 +883,16 @@ def test_taut_watcher_membership_churn_does_not_leak_db_handles(
             name = f"churn{cycle}"
             van.join(name)
             _wait_until(partial(queue_listed, name))
+            queue = watcher.get_queue(name)
+            assert queue is not None
+            assert queue.conn is None
             van.leave(name)
-            _wait_until(partial(queue_absent, name))
-            if handles_observable:
-                count = _open_db_handle_count(db_path)
-                assert count is not None
-                handle_counts.append(count)
+            _wait_until(partial(queue_removed_and_closed, name))
 
         # Functional assertion — unconditional on every platform: the
         # watcher still delivers messages after ten join/leave cycles.
         bob.say("home", "after churn")
         _wait_until(lambda: ("home", "after churn") in seen)
-
-        if handles_observable:
-            # A per-cycle connection leak would grow the handle count
-            # monotonically with cycle count (~+1 per cycle); a bounded
-            # watcher stays flat.  Platform-skip: on platforms where
-            # psutil.Process().open_files() is unavailable or unreliable
-            # this block is skipped and the MultiQueueWatcher close
-            # assertions above carry the close-on-remove proof.
-            assert handle_counts[-1] - handle_counts[0] <= 2, handle_counts
     finally:
         watcher.stop()
         thread.join(timeout=2)
