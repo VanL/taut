@@ -332,6 +332,12 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   control-drain reads, and session-row readiness reads explicit budgets with
   tests that outlast the normal broker retry count.
 
+- 2026-07-08: Do stable summon token lookups at the startup barrier, not inside
+  the churn window being tested. Once `wait_for_start()` has proven the durable
+  session row, the token is stable; rereading it after flood writes, mid-run
+  joins, or blocked injects adds sidecar pressure unrelated to the behavior
+  under test and can turn a storage transient into a false timeout.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

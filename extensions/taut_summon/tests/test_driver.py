@@ -342,6 +342,7 @@ def test_resummon_replays_tail_and_filters_own_messages(
 ) -> None:
     driver = driver_factory(summon_db, "scripted", "general", tag="gen-a")
     driver.wait_for_start()
+    token = _member_token(summon_db, "scripted")
     say(summon_db, tmp_path, "general", "seen-live")
     driver.wait_for_message("seen-live")
     member = _member_by_name(summon_db, "scripted")
@@ -350,7 +351,6 @@ def test_resummon_replays_tail_and_filters_own_messages(
 
     # While no driver runs: a peer writes, and the member itself speaks
     # through its mouth (token-selected CLI, [SUM-6]).
-    token = _member_token(summon_db, "scripted")
     say(summon_db, tmp_path, "general", "missed-while-down")
     rc, _out, err = taut_cli(
         "say",
@@ -791,14 +791,13 @@ def test_backpressure_blocked_inject_grows_unread_and_stop_still_works(
         scenario={"on_start": [{"stall": True}]},
     )
     driver.wait_for_start()
+    token = _member_token(summon_db, "scripted")
 
     # A message larger than the pipe buffer blocks the in-flight inject;
     # later messages accumulate as honest unread ([SUM-5.4]).
     say(summon_db, tmp_path, "general", "x" * 200_000)
     say(summon_db, tmp_path, "general", "tail-1")
     say(summon_db, tmp_path, "general", "tail-2")
-
-    token = _member_token(summon_db, "scripted")
 
     def _unread() -> int:
         client = TautClient(db_path=summon_db, token=token)
@@ -827,6 +826,7 @@ def test_midrun_join_injects_from_join_cursor(
 ) -> None:
     driver = driver_factory(summon_db, "scripted", "general")
     driver.wait_for_start()
+    token = _member_token(summon_db, "scripted")
     wait_until(
         lambda: _member_by_name(summon_db, "scripted") is not None,
         message="summoned member",
@@ -838,7 +838,6 @@ def test_midrun_join_injects_from_join_cursor(
 
     # The member itself joins mid-run through its mouth ([SUM-4] thread
     # membership is ordinary membership).
-    token = _member_token(summon_db, "scripted")
     rc, _out, err = taut_cli("join", "later", db=summon_db, cwd=tmp_path, token=token)
     assert rc == 0, err
 
@@ -1567,10 +1566,9 @@ def test_stop_while_inject_blocked_completes(
         tag="stalled-stop",
     )
     driver.wait_for_start()
+    token = _member_token(summon_db, "scripted")
     say(summon_db, tmp_path, "general", "x" * 200_000)
     say(summon_db, tmp_path, "general", "more")
-
-    token = _member_token(summon_db, "scripted")
 
     def _unread() -> int:
         client = TautClient(db_path=summon_db, token=token)
