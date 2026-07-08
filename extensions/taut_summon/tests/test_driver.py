@@ -47,7 +47,7 @@ from conftest import (
     wait_until,
 )
 from simplebroker import Queue
-from taut_summon._driver import format_injection
+from taut_summon._driver import SummonDriver, format_injection
 
 from taut.client import Message, Notification, TautClient
 from taut.identity import capture_process
@@ -102,6 +102,26 @@ def _read_pty_until(fd: int, needle: bytes, *, timeout: float = 5.0) -> bytes:
         if needle in out:
             return out
     return out
+
+
+class _ExplodingWatcher:
+    def run(self) -> None:
+        raise RuntimeError("watcher failed")
+
+
+def test_watcher_failure_wakes_driver_for_resume() -> None:
+    driver = object.__new__(SummonDriver)
+    driver._shutdown = threading.Event()
+    driver._harness_dead = threading.Event()
+    driver._halt_ack = threading.Event()
+    driver._wake = threading.Event()
+
+    thread = driver._start_watcher_thread(_ExplodingWatcher())
+    thread.join(timeout=5.0)
+
+    assert not thread.is_alive()
+    assert driver._harness_dead.is_set()
+    assert driver._wake.is_set()
 
 
 # --- [SUM-5.2] format golden tests -------------------------------------------

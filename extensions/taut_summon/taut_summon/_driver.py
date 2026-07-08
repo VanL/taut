@@ -596,7 +596,7 @@ class SummonDriver:
                 pump.join(timeout=10.0)
                 raise DriverError(f"cannot watch chat: {exc}") from exc
             self._watcher = watcher
-            watcher_thread = watcher.run_in_thread()
+            watcher_thread = self._start_watcher_thread(watcher)
             logger.info(
                 "summoned '%s' (member %s, provider %s, threads %s)",
                 boot.member_name,
@@ -946,6 +946,30 @@ class SummonDriver:
         )
         self._control_thread = thread
         thread.start()
+
+    def _start_watcher_thread(self, watcher: Any) -> threading.Thread:
+        """Run the chat watcher and wake the supervisor if it exits early."""
+
+        def _run_watcher() -> None:
+            try:
+                watcher.run()
+            except Exception:
+                if not self._shutdown.is_set() and not self._harness_dead.is_set():
+                    logger.exception("watcher failed; resuming harness from cursor")
+            finally:
+                if (
+                    not self._shutdown.is_set()
+                    and not self._harness_dead.is_set()
+                    and not self._halt_ack.is_set()
+                ):
+                    self._harness_dead.set()
+                    self._wake.set()
+
+        thread = threading.Thread(
+            target=_run_watcher, daemon=True, name="taut-summon-watcher"
+        )
+        thread.start()
+        return thread
 
     def _release(self) -> None:
         if self._member_id is None or self._evidence is None:

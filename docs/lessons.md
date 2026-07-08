@@ -176,6 +176,13 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   retry with the same reply route so one transient lost reply does not turn a
   healthy driver into a false timeout.
 
+- 2026-07-08: Long-lived process supervisors must propagate owned-thread death
+  as a first-class state transition. A child process can be healthy while its
+  watcher thread has exhausted broker retries or exited; if the supervisor waits
+  only on child death or explicit shutdown, the member becomes live-but-deaf and
+  tests fail as slow timeouts. Wrap watcher threads so unexpected exit wakes the
+  supervisor and drives the same replay/resume path as child failure.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent
