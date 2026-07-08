@@ -168,6 +168,14 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   fixtures should use the public stdin path for large bodies and keep argv for
   routing, flags, and small contract tokens.
 
+- 2026-07-08: Signal-driven shutdown must close blocked adapters before waiting
+  behind unrelated joins. A SIGINT handler that only sets an event is not enough
+  when another path is in a restartable syscall or a PTY child is waiting on a
+  terminal query; shutdown ordering should interrupt/close the adapter first,
+  then drain watchers and pumps. Idempotent control probes (STATUS/PING) should
+  retry with the same reply route so one transient lost reply does not turn a
+  healthy driver into a false timeout.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

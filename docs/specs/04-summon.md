@@ -657,7 +657,10 @@ durable conversation; the harness session is an optimization of it.
   concurrent control clients cannot consume each other's answers. Control
   reply writes are retried with a stronger transient-broker budget than
   ordinary control reads because losing the reply creates a false client
-  timeout even though the driver stayed healthy.
+  timeout even though the driver stayed healthy. STATUS/PING clients may
+  rewrite the same idempotent request to the same per-request reply queue
+  within their timeout budget; STOP is not retried because duplicate stop
+  commands blur shutdown ownership.
 - Divergences from Weft, each with its reason (the [TAUT-12.3]
   obligation): **(a)** the data lane is provider-native streaming plus
   chat threads, not execute/result work items — conversation is not a

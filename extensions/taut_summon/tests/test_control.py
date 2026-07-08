@@ -14,11 +14,14 @@ from __future__ import annotations
 
 import json
 import threading
+from typing import Any, cast
 
 import pytest
+import taut_summon._control as control_module
 from simplebroker.ext import DatabaseError, IntegrityError, OperationalError
 from taut_summon._broker_retry import broker_retry, is_transient_broker_error
 from taut_summon._control import (
+    ControlClient,
     ControlLoop,
     control_in_queue_name,
     control_out_queue_name,
@@ -26,6 +29,53 @@ from taut_summon._control import (
     encode_control_reply,
     parse_control_request,
 )
+
+
+class _FakeControlQueue:
+    def __init__(self, name: str, harness: _FakeControlQueues) -> None:
+        self.name = name
+        self._harness = harness
+
+    def write(self, body: str) -> None:
+        self._harness.writes.append((self.name, json.loads(body)))
+
+    def read_one(self) -> str | None:
+        return self._harness.read_reply(self.name)
+
+    def delete(self) -> None:
+        self._harness.deleted.append(self.name)
+
+    def close(self) -> None:
+        self._harness.closed.append(self.name)
+
+
+class _FakeControlQueues:
+    def __init__(self, *, reply_after_writes: int | None) -> None:
+        self.reply_after_writes = reply_after_writes
+        self.writes: list[tuple[str, dict[str, object]]] = []
+        self.deleted: list[str] = []
+        self.closed: list[str] = []
+
+    def queue(self, name: str) -> _FakeControlQueue:
+        return _FakeControlQueue(name, self)
+
+    def read_reply(self, name: str) -> str | None:
+        ctl_writes = [
+            payload
+            for queue_name, payload in self.writes
+            if queue_name.startswith("sys.ctl_")
+        ]
+        if self.reply_after_writes is None:
+            return None
+        if len(ctl_writes) < self.reply_after_writes:
+            return None
+        latest = ctl_writes[-1]
+        reply_to = latest.get("reply_to")
+        if reply_to != name:
+            return None
+        return encode_control_reply(
+            str(latest["command"]), "ok", request_id=str(latest["request_id"])
+        )
 
 
 def _make_loop(rate_limit: int) -> ControlLoop:
@@ -105,6 +155,49 @@ def test_broker_retry_does_not_retry_logic_faults() -> None:
     with pytest.raises(IntegrityError):
         broker_retry(integrity_fault, what="test")
     assert len(calls) == 1  # surfaced on the first try, no retries
+
+
+def test_control_client_retries_status_with_same_reply_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        control_module, "_CONTROL_REQUEST_RETRY_INTERVAL_SECONDS", 0.01
+    )
+    queues = _FakeControlQueues(reply_after_writes=2)
+    client = ControlClient(cast(Any, queues.queue), "m_abc")
+
+    reply = client.request("STATUS", timeout=0.2)
+
+    assert reply is not None
+    assert reply["status"] == "ok"
+    ctl_payloads = [
+        payload
+        for queue_name, payload in queues.writes
+        if queue_name == "sys.ctl_m_abc"
+    ]
+    assert len(ctl_payloads) == 2
+    assert ctl_payloads[0]["request_id"] == ctl_payloads[1]["request_id"]
+    assert ctl_payloads[0]["reply_to"] == ctl_payloads[1]["reply_to"]
+
+
+def test_control_client_does_not_retry_stop_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        control_module, "_CONTROL_REQUEST_RETRY_INTERVAL_SECONDS", 0.01
+    )
+    queues = _FakeControlQueues(reply_after_writes=None)
+    client = ControlClient(cast(Any, queues.queue), "m_abc")
+
+    assert client.request("STOP", timeout=0.08) is None
+
+    ctl_payloads = [
+        payload
+        for queue_name, payload in queues.writes
+        if queue_name == "sys.ctl_m_abc"
+    ]
+    assert len(ctl_payloads) == 1
+    assert ctl_payloads[0]["command"] == "STOP"
 
 
 def test_rate_breaker_rearms_after_flood_subsides() -> None:

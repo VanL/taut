@@ -613,12 +613,11 @@ class SummonDriver:
             self._halt_ack.set()
             if self._shutdown.is_set():
                 handle.interrupt()
+                handle.close()
             watcher_thread.join(timeout=30.0)
             watcher.stop(join=True)
 
             if self._shutdown.is_set():
-                pump.join(timeout=10.0)
-                handle.close()
                 pump.join(timeout=5.0)
                 # Release + control-thread STOP ack are ordered by _run's
                 # finally ([SUM-9]); nothing to release here.

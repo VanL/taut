@@ -64,6 +64,8 @@ _DEFAULT_RATE_LIMIT = 60
 _RATE_WINDOW_SECONDS = 60.0
 _STOP_ACK_TIMEOUT_SECONDS = 60.0
 _CONTROL_REPLY_RETRY_ATTEMPTS = 10
+_CONTROL_REQUEST_RETRY_INTERVAL_SECONDS = 5.0
+_IDEMPOTENT_RETRY_COMMANDS = frozenset({CONTROL_STATUS, CONTROL_PING})
 _STATUS_RESERVED_KEYS = frozenset(
     {
         "command",
@@ -637,6 +639,8 @@ class ControlClient:
         each other's ([SUM-9] "usable from any terminal").
         """
 
+        command = command.strip().upper()
+        retry_on_timeout = command in _IDEMPOTENT_RETRY_COMMANDS
         request_id = secrets.token_hex(8)
         reply_to = f"{control_out_queue_name(self._member_id)}_{request_id}"
         reply_queue = self._queue_factory(reply_to)
@@ -644,6 +648,7 @@ class ControlClient:
         try:
             broker_retry(lambda: self._ctl_in.write(body_out), what="control request")
             deadline = time.monotonic() + timeout
+            next_retry = time.monotonic() + _CONTROL_REQUEST_RETRY_INTERVAL_SECONDS
             while time.monotonic() < deadline:
                 try:
                     body = broker_retry(reply_queue.read_one, what="control reply read")
@@ -653,6 +658,13 @@ class ControlClient:
                     time.sleep(0.03)
                     continue
                 if body is None:
+                    now = time.monotonic()
+                    if retry_on_timeout and now >= next_retry:
+                        broker_retry(
+                            lambda: self._ctl_in.write(body_out),
+                            what="control request retry",
+                        )
+                        next_retry = now + _CONTROL_REQUEST_RETRY_INTERVAL_SECONDS
                     time.sleep(0.03)
                     continue
                 try:
