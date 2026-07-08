@@ -95,6 +95,18 @@ class TautApp(App[int]):
     #transcript { height: 1fr; }
     #composer { height: 4; }
     #composer-label { height: 1; color: $text-muted; }
+    #navigation,
+    #transcript,
+    #presence,
+    #inbox-view,
+    #composer,
+    #thread-pane { border-left: blank $surface; padding-left: 1; }
+    #navigation:focus,
+    #transcript:focus,
+    #presence:focus,
+    #inbox-view:focus,
+    #composer:focus-within,
+    #thread-pane:focus-within { border-left: thick $accent; }
     .nav-section { color: $text-muted; }
     .notice { color: $text-muted; }
     .separator { color: $warning; }

@@ -98,6 +98,16 @@ structural modes are the contract; the numbers are tunable and live in
 `TautApp._compute_mode`. Mode changes reset the members-toggle override;
 the thread pane always wins the presence column.
 
+## Focus affordance ([TUI-8.1], [TUI-8.4])
+
+The app keeps Textual's single focused widget model, but exposes focus at the
+pane level. Navigation, transcript, presence, inbox, composer, and thread pane
+reserve the same left rail and padding; focused panes switch that rail from
+blank to the accent treatment. Panes whose child input owns focus use
+`:focus-within` so the container is marked too. This avoids relying on subtle
+background shade changes, keeps text inside the marker, and keeps black
+transcript-like surfaces as clear as grey side panels.
+
 ## Recovery model ([TUI-10])
 
 The client is constructed *inside* the App: `TautClient.__init__` raises

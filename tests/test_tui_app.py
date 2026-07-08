@@ -24,6 +24,7 @@ from taut.client import Message, Notification, TautClient, Thread
 
 textual = pytest.importorskip("textual")
 
+from textual.widget import Widget  # noqa: E402
 from textual.widgets import Input  # noqa: E402
 
 from taut.tui._bridge import ShutdownNonAck, WatchBridge  # noqa: E402
@@ -994,6 +995,17 @@ class TestToggles:
 class TestAccessibility:
     """[TUI-8.1]/[TUI-8.4]: keyboard-complete, deterministic focus."""
 
+    @staticmethod
+    def _has_focus_rail(widget: Widget) -> bool:
+        return widget.styles.border.left[0] == "thick"
+
+    @staticmethod
+    def _has_reserved_focus_rail(widget: Widget) -> bool:
+        return (
+            widget.styles.border.left[0] == "blank"
+            and widget.styles.padding.left == 1
+        )
+
     def test_tab_cycles_focus_through_pane_order(self, tmp_path: Path) -> None:
         db = seed_project(tmp_path)
 
@@ -1018,6 +1030,35 @@ class TestAccessibility:
             assert "composer-input" in seen
             # Deterministic pane order: composer follows transcript.
             assert seen.index("composer-input") > seen.index("transcript")
+
+        run_app(db, scenario)
+
+    def test_focused_panes_have_structural_rail(self, tmp_path: Path) -> None:
+        db = seed_project(tmp_path)
+
+        async def scenario(app: TautApp, pilot: Pilot[int]) -> None:
+            app.select_target("general")
+            await pilot.pause()
+            nav = app.query_one("#navigation")
+            transcript = app.query_one("#transcript")
+            composer = app.query_one("#composer")
+            composer_input = app.query_one("#composer-input", Input)
+
+            assert app.focused is nav
+            assert self._has_focus_rail(nav)
+            assert self._has_reserved_focus_rail(transcript)
+
+            transcript.focus()
+            await pilot.pause()
+            assert app.focused is transcript
+            assert self._has_focus_rail(transcript)
+            assert self._has_reserved_focus_rail(nav)
+
+            composer_input.focus()
+            await pilot.pause()
+            assert app.focused is composer_input
+            assert self._has_focus_rail(composer)
+            assert self._has_reserved_focus_rail(transcript)
 
         run_app(db, scenario)
 
