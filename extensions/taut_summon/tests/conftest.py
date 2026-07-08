@@ -37,6 +37,15 @@ from simplebroker.ext import OperationalError
 
 from taut.client import TautClient
 
+_SUMMON_SQLITE_TEST_ENV: dict[str, str] = {
+    # The real-process harness is a high-churn SQLite workload: driver,
+    # provider, and peer CLI subprocesses all share one temporary DB per test.
+    # Disable maintenance writes during those tests so CI timing does not
+    # decide whether the summon behavior under test is observable.
+    "BROKER_AUTO_VACUUM": "0",
+    "BROKER_SYNC_MODE": "NORMAL",
+}
+
 EXTENSION_ROOT = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = EXTENSION_ROOT.parents[1]
 
@@ -60,6 +69,7 @@ def _run_summon_cli(
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUNBUFFERED"] = "1"
+    env.update(_SUMMON_SQLITE_TEST_ENV)
     # The package and core taut are importable from the repo checkout even
     # when neither is installed in the running environment.
     paths = [str(EXTENSION_ROOT), str(PROJECT_ROOT)]
@@ -92,6 +102,8 @@ def run_summon_cli() -> SummonCliRunner:
 def _clean_taut_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for key in ("TAUT_DB", "TAUT_AS", "TAUT_TOKEN"):
         monkeypatch.delenv(key, raising=False)
+    for key, value in _SUMMON_SQLITE_TEST_ENV.items():
+        monkeypatch.setenv(key, value)
 
 
 def _base_env() -> dict[str, str]:
@@ -100,6 +112,7 @@ def _base_env() -> dict[str, str]:
         env.pop(key, None)
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUNBUFFERED"] = "1"
+    env.update(_SUMMON_SQLITE_TEST_ENV)
     paths = [str(EXTENSION_ROOT), str(PROJECT_ROOT)]
     existing = env.get("PYTHONPATH")
     if existing:

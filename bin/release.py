@@ -81,6 +81,10 @@ SUMMON_PROCESS_TEST_COMMAND: Final[Command] = (
     "extensions/taut_summon/tests",
     "-m",
     "xdist_group",
+    "-n",
+    "1",
+    "--dist",
+    "loadgroup",
 )
 SUMMON_TEST_COMMANDS: Final[tuple[Command, ...]] = (
     SUMMON_UNIT_TEST_COMMAND,
@@ -1064,6 +1068,7 @@ def _precheck_env_overrides(
     overrides = dict(PRECHECK_ENV_OVERRIDES)
     if command == SUMMON_PROCESS_TEST_COMMAND:
         overrides["TAUT_SUMMON_LOCAL_LLM"] = "1"
+        overrides["TAUT_SUMMON_LIVE_HARNESS_STRICT"] = "1"
         if local_llm_env is not None:
             overrides.update(local_llm_env)
     return overrides

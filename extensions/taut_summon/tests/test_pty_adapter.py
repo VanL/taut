@@ -199,10 +199,11 @@ def test_pty_responder_answers_startup_queries_and_clamps_size(
 def test_pty_responder_handles_live_observed_parameterized_queries() -> None:
     responder = _TerminalResponder(rows=31, cols=97)
 
-    replies = responder.feed(b"\x1b[>0q\x1b[>7u\x1b[>1u\x1b[0 q\x1b[1 q")
+    replies = responder.feed(b"\x1b[>0q\x1b[>7u\x1b[>1u\x1b[0 q\x1b[1 q\x1b[?996n")
 
     assert replies == [
         b"\x1bP>|taut-summon(0)\x1b\\",
+        b"\x1b[?997;1n",
     ]
     assert responder.outstanding_query is None
 

@@ -9,7 +9,6 @@ set ``TAUT_SUMMON_LIVE_HARNESS=0``.
 from __future__ import annotations
 
 import os
-import shlex
 import shutil
 import subprocess
 import sys
@@ -70,12 +69,26 @@ def _not_ready_reason(status_text: str) -> str | None:
     return None
 
 
+def _status_field(status_text: str, key: str) -> str | None:
+    prefix = f"{key}="
+    for part in status_text.split("\t"):
+        if part.startswith(prefix):
+            return part.removeprefix(prefix)
+    return None
+
+
 def _fatal_readiness_reason(status_text: str) -> str | None:
     if "awaiting_query=" in status_text:
         return (
             "driver reports an unanswered terminal query; the PTY responder "
             f"needs coverage for this harness ({status_text})"
         )
+    error = _status_field(status_text, "error")
+    if error is not None:
+        return f"driver status is unavailable: {error}"
+    control_health = _status_field(status_text, "control_health")
+    if control_health != "ok":
+        return f"driver control health is {control_health or 'missing'}"
     return None
 
 
@@ -201,17 +214,35 @@ def test_live_status_not_ready_reason_names_query_gap() -> None:
     assert "[?15n" in reason
 
 
-def test_live_status_not_ready_reason_allows_plain_alive_status() -> None:
-    assert (
-        _not_ready_reason("claude\tprovider=claude\tdriver=alive\tcontrol_health=ok")
-        is None
+def test_live_status_fatal_reason_names_control_health_gap() -> None:
+    reason = _fatal_readiness_reason(
+        "codex\tprovider=codex\tdriver=alive\tcontrol_health=degraded"
     )
+
+    assert reason == "driver control health is degraded"
+
+
+def test_live_status_fatal_reason_names_status_error() -> None:
+    reason = _fatal_readiness_reason(
+        "codex\tprovider=codex\tdriver=alive\terror=status unavailable"
+    )
+
+    assert reason == "driver status is unavailable: status unavailable"
+
+
+def test_live_status_not_ready_reason_allows_plain_alive_status() -> None:
+    status = "claude\tprovider=claude\tdriver=alive\tcontrol_health=ok"
+
+    assert _fatal_readiness_reason(status) is None
+    assert _not_ready_reason(status) is None
 
 
 @pytest.mark.requires_live_harness
 @pytest.mark.xdist_group("process")
 @pytest.mark.parametrize("provider", _HARNESSES)
-def test_live_pty_harness_posts_sentinel(tmp_path: Path, provider: str) -> None:
+def test_live_pty_harness_reaches_ready_and_accepts_injection(
+    tmp_path: Path, provider: str
+) -> None:
     if not _live_harness_enabled():
         pytest.skip(
             "live harness tests run locally by default; set "
@@ -229,14 +260,10 @@ def test_live_pty_harness_posts_sentinel(tmp_path: Path, provider: str) -> None:
     if _strict_live_harness():
         _prewire_live_harness(db, provider)
 
-    sentinel = f"live-sentinel-{provider}-{time.monotonic_ns()}"
-    say_command = (
-        f"{shlex.quote(sys.executable)} -m taut say general {shlex.quote(sentinel)}"
-    )
     prompt = tmp_path / "orientation.txt"
     prompt.write_text(
-        "You are a summoned taut member. Immediately run exactly this shell "
-        f"command once and then wait:\n{say_command}\n",
+        "You are a summoned taut member. Stay idle and wait for chat. "
+        "Do not run shell commands for this reachability smoke.\n",
         encoding="utf-8",
     )
     env = _base_env()
@@ -265,12 +292,7 @@ def test_live_pty_harness_posts_sentinel(tmp_path: Path, provider: str) -> None:
     try:
         deadline = time.monotonic() + _live_harness_timeout()
         last_status = ""
-
-        def _sentinel_posted() -> bool:
-            return any(
-                message.text == sentinel
-                for message in TautClient(db_path=db).log("general")
-            )
+        ready_status = ""
 
         while time.monotonic() < deadline:
             if proc.poll() is not None:
@@ -306,15 +328,50 @@ def test_live_pty_harness_posts_sentinel(tmp_path: Path, provider: str) -> None:
                     pytest.fail(
                         f"{provider} did not reach a ready prompt: {fatal_reason}"
                     )
+                ready_status = status_out
+                break
             elif status_err:
                 last_status = status_err
-            if _sentinel_posted():
-                break
             time.sleep(0.5)
         else:
             stderr = _finished_stderr_tail(proc)
             raise AssertionError(
-                f"{provider} did not post {sentinel!r}; "
+                f"{provider} did not reach a ready detached session; "
+                f"last status: {last_status[-500:]}; stderr: {stderr[-500:]}"
+            )
+
+        assert f"{provider}\tprovider={provider}\tdriver=alive" in ready_status
+        probe = f"live-probe-{provider}-{time.monotonic_ns()}"
+        rc, _out, err = taut_cli(
+            "say",
+            "general",
+            "-",
+            db=db,
+            cwd=tmp_path,
+            as_name="van",
+            stdin=probe,
+        )
+        assert rc == 0, err
+        deadline = time.monotonic() + _live_harness_timeout()
+        while time.monotonic() < deadline:
+            rc, status_out, status_err = summon_cli(
+                "status", provider, db=db, cwd=tmp_path, timeout=10.0
+            )
+            if rc == 0:
+                fatal_reason = _fatal_readiness_reason(status_out)
+                if fatal_reason is not None:
+                    pytest.fail(f"{provider} lost ready control status: {fatal_reason}")
+                if "lag=#general:0" in status_out:
+                    break
+            if status_err:
+                last_status = status_err
+            elif status_out:
+                last_status = status_out
+            time.sleep(0.5)
+        else:
+            stderr = _finished_stderr_tail(proc)
+            raise AssertionError(
+                f"{provider} did not catch up after injected probe {probe!r}; "
                 f"last status: {last_status[-500:]}; stderr: {stderr[-500:]}"
             )
     finally:

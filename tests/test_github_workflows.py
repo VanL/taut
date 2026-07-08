@@ -19,6 +19,14 @@ def test_test_workflow_is_reusable_and_runs_release_gates() -> None:
 
     assert "workflow_call:" in workflow
     assert "pytest -v --tb=short" in workflow
+    assert (
+        'pytest extensions/taut_summon/tests -v --tb=short -m "xdist_group and not requires_local_llm" -n 1 --dist loadgroup'
+        in workflow
+    )
+    assert (
+        "pytest extensions/taut_summon/tests/test_live_local_llm.py -v --tb=short -n 1 --dist loadgroup"
+        in workflow
+    )
     assert "ruff check taut tests bin" in workflow
     assert "ruff format --check taut tests bin" in workflow
     # Guard against the stale-path regression: neither the removed generator script

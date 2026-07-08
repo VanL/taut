@@ -183,6 +183,13 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   tests fail as slow timeouts. Wrap watcher threads so unexpected exit wakes the
   supervisor and drives the same replay/resume path as child failure.
 
+- 2026-07-08: Real process tests can need narrower xdist topology without
+  opting out of xdist. When each test starts several subprocesses against a
+  shared temporary SQLite file, `xdist_group` co-locates items but does not
+  reduce the worker count or maintenance-write pressure. Use a one-worker
+  xdist lane and pin test-only SQLite maintenance settings instead of treating
+  load-sensitive timeouts as expected slowness.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

@@ -438,12 +438,13 @@ primary DA `ESC[c`/`ESC[0c` → `ESC[?1;2c`; secondary DA `ESC[>c` →
 `ESC[>0;0;0c`; DECRQM mode queries `ESC[?<n>$p` → `ESC[?<n>;0$y`;
 XTVERSION `ESC[>q` and parameterized `ESC[><n>q` →
 `ESCP>|taut-summon(0)ESC\`; OSC foreground/background color queries
-`ESC]10;?`/`ESC]11;?` → default rgb replies; and kitty keyboard query
-`ESC[?u` → `ESC[?0u`. Kitty keyboard mode sets such as `ESC[><n>u` and
-cursor-style sets such as `ESC[<n> q` are handled as no-reply mode changes,
-not report requests. Unknown sequences get no reply. The master reply channel
-is also the harness keyboard-input channel, so writing a guessed "benign no-op"
-injects spurious keystrokes and can corrupt the TUI worse than silence.
+`ESC]10;?`/`ESC]11;?` → default rgb replies; color-scheme query
+`ESC[?996n` → dark-mode `ESC[?997;1n`; and kitty keyboard query `ESC[?u` →
+`ESC[?0u`. Kitty keyboard mode sets such as `ESC[><n>u` and cursor-style sets
+such as `ESC[<n> q` are handled as no-reply mode changes, not report requests.
+Unknown sequences get no reply. The master reply channel is also the harness
+keyboard-input channel, so writing a guessed "benign no-op" injects spurious
+keystrokes and can corrupt the TUI worse than silence.
 
 Responder completeness is a detached-mode risk. During attach, the real
 terminal answers queries, so attach proves nothing about summon's
@@ -757,14 +758,16 @@ durable conversation; the harness session is an optimization of it.
   not a mocked PTY. This is the anti-mocking seam for [SUM-7.4].
 - Live harness reachability is gated per registered PTY harness:
   `requires_<name>` tests summon the real CLI detached, assuming a
-  pre-onboarded/authed harness, orient it to post a sentinel through
-  `taut say`, and assert the sentinel lands. Default local pytest probes
+  pre-onboarded/authed harness, and assert detached `STATUS` reaches a usable
+  state and catches up after a real chat injection. Default local pytest probes
   real binaries and may skip with an explicit onboarding/readiness reason,
   because a fresh noninteractive test database cannot complete the human
   attach chord. Strict local mode (`TAUT_SUMMON_LIVE_HARNESS_STRICT=1`)
   prewires the temporary session row to model an already-onboarded harness;
-  in that mode, a missing binary, readiness gap, status timeout, or missing
-  sentinel is a failure.
+  in that mode, a missing binary, readiness gap, status timeout, unanswered
+  terminal query, or injection catch-up failure is a failure. These tests do
+  not require hosted CLIs to auto-execute shell commands; the local LLM lane
+  below owns the deterministic sentinel-posting proof.
 - A CI-safe local LLM lane uses a real PTY child and a loopback
   OpenAI-compatible model endpoint. The child must receive the summon
   orientation, call the local model endpoint, and post a sentinel through

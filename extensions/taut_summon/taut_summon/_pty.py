@@ -565,6 +565,8 @@ class _TerminalResponder:
                 return f"\x1b[{self._row};{self._col}R".encode()
             if body == b"5":
                 return b"\x1b[0n"
+            if body == b"?996":
+                return b"\x1b[?997;1n"
             self._mark_report(seq)
             return None
         if final == b"c":

@@ -888,15 +888,18 @@ Helper obligations:
   extension paths, and split mypy lanes so extension `conftest.py` modules do
   not collide. The process/live lane is isolated from unrelated summon tests
   because it drives multiple real processes against shared SQLite files; xdist
-  still schedules that lane, but it must not run concurrently with the unit
-  lane.
+  still schedules that lane with `-n 1 --dist loadgroup`, but it must not run
+  concurrently with the unit lane or unrelated process-heavy summon tests.
 - For core or summon releases, require the summon local-LLM lane locally. The
   helper starts local LLM preparation at the beginning of prechecks so Docker
   image/model setup can overlap root and PG checks. It uses an existing
   loopback endpoint when the configured model is already listed; otherwise it
   starts a disposable loopback Ollama container with the same bounded model
   shape as CI, waits for the served model, and runs the summon suite with
-  `TAUT_SUMMON_LOCAL_LLM=1`.
+  `TAUT_SUMMON_LOCAL_LLM=1`. The same local process lane runs installed
+  external harnesses in strict prewired mode
+  (`TAUT_SUMMON_LIVE_HARNESS_STRICT=1`) so local release checks do not pass
+  by skipping already-installed provider CLIs for onboarding.
 - After version sync, build the selected package artifacts and run
   `uv lock` in `extensions/taut_summon` when the summon package is selected.
 

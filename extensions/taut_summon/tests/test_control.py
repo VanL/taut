@@ -13,6 +13,7 @@ exercised end-to-end in ``test_driver.py`` with the real scripted provider.
 from __future__ import annotations
 
 import json
+import os
 import threading
 from typing import Any, cast
 
@@ -164,7 +165,7 @@ def test_control_client_retries_status_with_same_reply_route(
     queues = _FakeControlQueues(reply_after_writes=2)
     client = ControlClient(cast(Any, queues.queue), "m_abc")
 
-    reply = client.request("STATUS", timeout=0.2)
+    reply = client.request("STATUS", timeout=1.0)
 
     assert reply is not None
     assert reply["status"] == "ok"
@@ -176,6 +177,11 @@ def test_control_client_retries_status_with_same_reply_route(
     assert len(ctl_payloads) == 2
     assert ctl_payloads[0]["request_id"] == ctl_payloads[1]["request_id"]
     assert ctl_payloads[0]["reply_to"] == ctl_payloads[1]["reply_to"]
+
+
+def test_summon_tests_pin_sqlite_process_env() -> None:
+    assert os.environ["BROKER_AUTO_VACUUM"] == "0"
+    assert os.environ["BROKER_SYNC_MODE"] == "NORMAL"
 
 
 def test_control_client_does_not_retry_stop_timeout(

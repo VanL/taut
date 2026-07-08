@@ -84,7 +84,10 @@ Run `taut summon --attach <name>` once for a provider that still needs trust,
 login, or model setup before expecting its detached live smoke to pass.
 For a hard local external-provider smoke, use strict mode. It prewires the
 temporary test session to model an already-onboarded provider and fails on
-missing binaries, readiness gaps, status timeouts, or missing sentinels:
+missing binaries, readiness gaps, status timeouts, unanswered terminal queries,
+or injection catch-up failures. The external-provider lane does not require
+hosted CLIs to auto-execute shell commands; the local LLM lane below owns the
+deterministic sentinel-posting proof.
 
 ```bash
 TAUT_SUMMON_LIVE_HARNESS_STRICT=1 uv run pytest extensions/taut_summon/tests/test_live_harness.py

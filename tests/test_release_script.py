@@ -500,6 +500,12 @@ def test_summon_precheck_commands_include_extension_gate() -> None:
 
     assert release.SUMMON_UNIT_TEST_COMMAND in commands
     assert release.SUMMON_PROCESS_TEST_COMMAND in commands
+    assert release.SUMMON_PROCESS_TEST_COMMAND[-4:] == (
+        "-n",
+        "1",
+        "--dist",
+        "loadgroup",
+    )
     assert any("extensions/taut_summon/taut_summon" in command for command in commands)
     assert any("extensions/taut_summon/tests" in command for command in commands)
     assert all("pypi" not in " ".join(command).lower() for command in commands)
@@ -518,6 +524,7 @@ def test_summon_precheck_env_requires_local_llm() -> None:
 
     assert env["PYTEST_ADDOPTS"] == "-x --maxfail=1"
     assert env["TAUT_SUMMON_LOCAL_LLM"] == "1"
+    assert env["TAUT_SUMMON_LIVE_HARNESS_STRICT"] == "1"
     assert env["TAUT_SUMMON_LOCAL_LLM_ENDPOINT"] == "http://127.0.0.1:9999/v1"
     assert env["TAUT_SUMMON_LOCAL_LLM_MODEL"] == "local-test:latest"
 
@@ -586,6 +593,7 @@ def test_prechecks_start_local_llm_before_other_release_gates(
         if command == release.SUMMON_PROCESS_TEST_COMMAND:
             assert env_overrides is not None
             assert env_overrides["TAUT_SUMMON_LOCAL_LLM"] == "1"
+            assert env_overrides["TAUT_SUMMON_LIVE_HARNESS_STRICT"] == "1"
             assert (
                 env_overrides["TAUT_SUMMON_LOCAL_LLM_ENDPOINT"]
                 == "http://127.0.0.1:9999/v1"

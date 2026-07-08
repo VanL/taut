@@ -269,7 +269,7 @@ interrupt/close, single-consumer events) once.
   credential-free transport proof without pretending to cover provider
   onboarding. External PTY harnesses have a default local readiness probe and
   an opt-in strict mode (`TAUT_SUMMON_LIVE_HARNESS_STRICT=1`) that prewires
-  the temp database and fails on missing sentinels.
+  the temp database and fails on readiness or injection catch-up gaps.
 - **Weft congruence is contract, not code**: STOP/STATUS/PING verbs and
   queue roles per [SUM-9]; no weft imports, no vendored weft agent code.
 
@@ -320,7 +320,15 @@ summon-defined protocol.
 
 Before completion, run the extension gate block from the summon plan's §10
 (the extension suite, the core suite untouched-green, ruff/format/mypy over
-the extension paths, and `uv build extensions/taut_summon`).
+the extension paths, and `uv build extensions/taut_summon`). Keep the
+real-process and local-LLM lanes under xdist, but run them as one-worker lanes:
+they start multiple real processes against temporary SQLite sidecars, so worker
+fan-out tests host pressure more than summon behavior. Release prechecks also
+set `TAUT_SUMMON_LIVE_HARNESS_STRICT=1` locally so installed external provider
+CLIs fail instead of skipping when detached onboarding would otherwise be
+reported as not ready. The external-provider live lane proves detached
+readiness and injection catch-up; the local LLM lane is the deterministic
+sentinel-posting proof.
 
 ## Related Plans
 

@@ -68,7 +68,7 @@ jobs:
         if: runner.os != 'Windows'
         timeout-minutes: 15
         run: |
-          pytest extensions/taut_summon/tests -v --tb=short -m "xdist_group and not requires_local_llm"
+          pytest extensions/taut_summon/tests -v --tb=short -m "xdist_group and not requires_local_llm" -n 1 --dist loadgroup
 
       - name: Test CLI installation
         timeout-minutes: 2
@@ -229,7 +229,7 @@ jobs:
         env:
           TAUT_SUMMON_LOCAL_LLM: "1"
         run: |
-          pytest extensions/taut_summon/tests/test_live_local_llm.py -v --tb=short
+          pytest extensions/taut_summon/tests/test_live_local_llm.py -v --tb=short -n 1 --dist loadgroup
 
       - name: Local LLM diagnostics
         if: always()
