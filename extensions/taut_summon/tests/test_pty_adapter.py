@@ -7,6 +7,7 @@ fake and deterministic.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import queue
@@ -14,6 +15,7 @@ import select
 import sys
 import threading
 import time
+import types
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -123,6 +125,15 @@ def _entries(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
+def _fake_tui_module() -> types.ModuleType:
+    spec = importlib.util.spec_from_file_location("taut_fake_tui", FAKE_TUI)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _wait_for(path: Path, event: str, *, timeout: float = 10.0) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -165,6 +176,22 @@ def test_registry_maps_named_harnesses_to_pty_specs() -> None:
         assert adapter.argv == (binary,)
     with pytest.raises(UnknownAdapterError, match="known adapters"):
         get_adapter("code")
+
+
+def test_fake_tui_preserves_input_that_arrives_before_query_reply() -> None:
+    fake_tui = _fake_tui_module()
+
+    prompt = b"orientation payload\r"
+    assert (
+        fake_tui._query_input_prefix(prompt + b"\x1b[24;80R", b"\x1b[24;80R") == prompt
+    )
+    assert (
+        fake_tui._query_input_prefix(
+            b"\x1b]10;rgb:ffff/ffff/ffff\x1b\\",
+            b"\x1b]10;rgb:",
+        )
+        == b""
+    )
 
 
 def test_pty_responder_answers_startup_queries_and_clamps_size(

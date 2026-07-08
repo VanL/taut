@@ -69,6 +69,7 @@ _CONTROL_REQUEST_RETRY_INTERVAL_SECONDS = 5.0
 _IDEMPOTENT_RETRY_COMMANDS = frozenset({CONTROL_STATUS, CONTROL_PING})
 _RATE_AUDIT_RECOVERABLE_FAILURES_BEFORE_DEGRADED = 3
 _CONTROL_DRAIN_RECOVERABLE_FAILURES_BEFORE_DEGRADED = 3
+_CONTROL_REPLY_RECOVERABLE_FAILURES_BEFORE_DEGRADED = 3
 _STATUS_RESERVED_KEYS = frozenset(
     {
         "command",
@@ -307,6 +308,7 @@ class ControlLoop:
         self._hard_breached = False
         self._hard_breach_count = 0
         self._control_drain_recoverable_failures = 0
+        self._control_reply_recoverable_failures = 0
         self._rate_audit_recoverable_failures = 0
         # All db handles are opened ON THIS THREAD in _open and reused for
         # the loop's life — no per-tick Queue/connection churn (which, under
@@ -451,6 +453,34 @@ class ControlLoop:
             exc,
         )
 
+    def _mark_control_reply_failure(self, exc: Exception) -> None:
+        if not _is_recoverable_control_broker_error(exc):
+            self._mark_unhealthy("control reply", exc)
+            return
+
+        self._control_reply_recoverable_failures += 1
+        reopened = self._reopen_broker_handles("control reply", exc)
+        if (
+            self._control_reply_recoverable_failures
+            >= _CONTROL_REPLY_RECOVERABLE_FAILURES_BEFORE_DEGRADED
+        ):
+            self._mark_unhealthy(
+                "control reply "
+                f"({self._control_reply_recoverable_failures} consecutive "
+                "recoverable broker failures)",
+                exc,
+            )
+            return
+
+        logger.warning(
+            "control reply skipped after recoverable broker error "
+            "(%d/%d, reopened=%s); idempotent STATUS/PING clients will retry: %s",
+            self._control_reply_recoverable_failures,
+            _CONTROL_REPLY_RECOVERABLE_FAILURES_BEFORE_DEGRADED,
+            reopened,
+            exc,
+        )
+
     # --- setup / teardown -------------------------------------------------
 
     def _open(self) -> None:
@@ -460,7 +490,7 @@ class ControlLoop:
     def _close(self) -> None:
         self._close_handles()
 
-    def _reopen_broker_handles(self, where: str, exc: BrokerError) -> bool:
+    def _reopen_broker_handles(self, where: str, exc: Exception) -> bool:
         try:
             handles = self._make_broker_handles()
         except Exception as reopen_exc:  # noqa: BLE001 - STATUS should expose it
@@ -673,17 +703,21 @@ class ControlLoop:
         # sys.rsp_<member> queue.
         client = self._client
         if reply_to is not None and client is not None:
-            queue = client.queue(reply_to)
+            queue: Queue | None = None
             try:
+                queue = client.queue(reply_to)
                 broker_retry(
                     lambda: queue.write(body),
                     what="control reply",
                     attempts=_CONTROL_REPLY_RETRY_ATTEMPTS,
                 )
+                self._control_reply_recoverable_failures = 0
             except Exception as exc:  # noqa: BLE001 - a lost reply must not crash
                 logger.warning("per-request control reply failed: %s", exc)
+                self._mark_control_reply_failure(exc)
             finally:
-                queue.close()
+                if queue is not None:
+                    queue.close()
             return
         ctl_out = self._ctl_out
         if ctl_out is None:  # pragma: no cover - open() always runs first
@@ -694,8 +728,10 @@ class ControlLoop:
                 what="control reply",
                 attempts=_CONTROL_REPLY_RETRY_ATTEMPTS,
             )
+            self._control_reply_recoverable_failures = 0
         except Exception as exc:  # noqa: BLE001 - a lost reply must not crash
             logger.warning("control reply write failed after retries: %s", exc)
+            self._mark_control_reply_failure(exc)
 
     # --- rate backstop ([SUM-10]) -----------------------------------------
     #

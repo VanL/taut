@@ -358,6 +358,25 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   wrong target still fails after the budget, but a transient header-page misread
   does not kill a healthy summon restart.
 
+- 2026-07-08: PTY fake harnesses must model terminal input buffering while
+  answering startup queries. Detached summon can inject orientation while a TUI
+  is still probing cursor size or OSC colors; a real terminal does not discard
+  bytes that arrive before the query reply. Preserve those bytes in the test
+  harness so CI catches responder races without inventing a stricter fake than
+  production.
+
+- 2026-07-08: CI-safe PTY local-LLM tests should prewire the synthetic harness
+  as already onboarded. An unwired detached PTY correctly reports
+  `awaiting_onboarding=true` and waits for a human attach path; that proves the
+  onboarding guard, not local model transport. The local-LLM lane's job is the
+  deterministic sentinel-posting proof.
+
+- 2026-07-08: A control reply write that exhausts the transient retry budget
+  should reopen broker handles before idempotent clients retry. Logging and
+  keeping the same handle can leave a healthy driver alive but apparently
+  silent under SQLite WAL churn; one lost STATUS/PING reply is recoverable, a
+  repeated reply failure is degraded control health.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

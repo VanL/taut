@@ -812,7 +812,8 @@ durable conversation; the harness session is an optimization of it.
   OpenAI-compatible model endpoint. The child must receive the summon
   orientation, call the local model endpoint, and post a sentinel through
   `taut say`. This proves local model transport plus PTY/mouth integration;
-  it does not replace the real-harness, local-only smoke matrix.
+  it prewires the synthetic PTY member as already onboarded, and it does not
+  replace the real-harness, local-only smoke matrix.
 
 ## Related Plans
 

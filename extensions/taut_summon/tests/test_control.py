@@ -21,7 +21,6 @@ import pytest
 import taut_summon._control as control_module
 from simplebroker import Queue
 from simplebroker.ext import (
-    BrokerError,
     DatabaseError,
     IntegrityError,
     OperationalError,
@@ -34,6 +33,7 @@ from taut_summon._broker_retry import (
 from taut_summon._control import (
     _CONTROL_DRAIN_RECOVERABLE_FAILURES_BEFORE_DEGRADED,
     _CONTROL_DRAIN_RETRY_ATTEMPTS,
+    _CONTROL_REPLY_RECOVERABLE_FAILURES_BEFORE_DEGRADED,
     _CONTROL_REPLY_RETRY_ATTEMPTS,
     _RATE_AUDIT_RECOVERABLE_FAILURES_BEFORE_DEGRADED,
     ControlClient,
@@ -107,6 +107,30 @@ class _CloseableQueue:
         self.deleted = True
 
 
+class _FailingReplyQueue:
+    def __init__(self, exc: Exception) -> None:
+        self.exc = exc
+        self.closed = False
+        self.writes = 0
+
+    def write(self, _body: str) -> None:
+        self.writes += 1
+        raise self.exc
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _ReplyClient:
+    def __init__(self, queue: _FailingReplyQueue) -> None:
+        self.queue_obj = queue
+        self.names: list[str] = []
+
+    def queue(self, name: str) -> _FailingReplyQueue:
+        self.names.append(name)
+        return self.queue_obj
+
+
 def _fake_broker_handles() -> _BrokerHandles:
     return _BrokerHandles(
         client=cast(Any, object()),
@@ -139,7 +163,7 @@ def _make_loop(rate_limit: int) -> ControlLoop:
     )
 
 
-def _reopen_ok(_where: str, _exc: BrokerError) -> bool:
+def _reopen_ok(_where: str, _exc: Exception) -> bool:
     return True
 
 
@@ -381,7 +405,7 @@ def test_single_recoverable_control_drain_failure_reopens_without_degrading() ->
     loop = _make_loop(rate_limit=60)
     reopened: list[tuple[str, str]] = []
 
-    def reopen(where: str, exc: BrokerError) -> bool:
+    def reopen(where: str, exc: Exception) -> bool:
         reopened.append((where, str(exc)))
         return True
 
@@ -405,6 +429,82 @@ def test_repeated_recoverable_control_drain_failures_degrade_status() -> None:
     degraded = loop._status_snapshot().as_fields()
     assert degraded["control_health"] == "degraded"
     assert "consecutive recoverable broker failures" in degraded["health_detail"]
+
+
+def test_single_recoverable_control_reply_failure_reopens_without_degrading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(control_module, "_CONTROL_REPLY_RETRY_ATTEMPTS", 1)
+    loop = _make_loop(rate_limit=60)
+    reply_queue = _FailingReplyQueue(DatabaseError("database disk image is malformed"))
+    loop._client = cast(Any, _ReplyClient(reply_queue))
+    reopened: list[tuple[str, str]] = []
+
+    def reopen(where: str, exc: Exception) -> bool:
+        reopened.append((where, str(exc)))
+        return True
+
+    loop._reopen_broker_handles = reopen  # type: ignore[method-assign]
+
+    loop._reply(
+        encode_control_reply("PING", "ok", request_id="req"),
+        reply_to="sys.rsp_m_abc_req",
+    )
+    loop._client = None
+
+    assert reopened == [("control reply", "database disk image is malformed")]
+    assert reply_queue.closed is True
+    assert loop._status_snapshot().as_fields()["control_health"] == "ok"
+
+
+def test_repeated_recoverable_control_reply_failures_degrade_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(control_module, "_CONTROL_REPLY_RETRY_ATTEMPTS", 1)
+    loop = _make_loop(rate_limit=60)
+    loop._reopen_broker_handles = _reopen_ok  # type: ignore[assignment,method-assign]
+
+    for _ in range(_CONTROL_REPLY_RECOVERABLE_FAILURES_BEFORE_DEGRADED):
+        reply_queue = _FailingReplyQueue(
+            DatabaseError("database disk image is malformed")
+        )
+        loop._client = cast(Any, _ReplyClient(reply_queue))
+        loop._reply(
+            encode_control_reply("PING", "ok", request_id="req"),
+            reply_to="sys.rsp_m_abc_req",
+        )
+
+    loop._client = None
+    degraded = loop._status_snapshot().as_fields()
+    assert degraded["control_health"] == "degraded"
+    assert "consecutive recoverable broker failures" in degraded["health_detail"]
+
+
+def test_wrapped_control_reply_connection_failure_reopens_without_degrading() -> None:
+    loop = _make_loop(rate_limit=60)
+    reopened: list[tuple[str, str]] = []
+
+    def reopen(where: str, exc: Exception) -> bool:
+        reopened.append((where, str(exc)))
+        return True
+
+    loop._reopen_broker_handles = reopen  # type: ignore[method-assign]
+
+    loop._mark_control_reply_failure(
+        RuntimeError(
+            "Failed to get database connection: Database magic string mismatch. "
+            "Expected 'simplebroker-v1', found 'm_example'."
+        )
+    )
+
+    assert reopened == [
+        (
+            "control reply",
+            "Failed to get database connection: Database magic string mismatch. "
+            "Expected 'simplebroker-v1', found 'm_example'.",
+        )
+    ]
+    assert loop._status_snapshot().as_fields()["control_health"] == "ok"
 
 
 def test_failed_reopen_preserves_existing_control_handles() -> None:

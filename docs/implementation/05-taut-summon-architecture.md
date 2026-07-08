@@ -284,10 +284,13 @@ failures are split by recovery boundary: non-recoverable faults mark
 `control_health: degraded` immediately because STOP/STATUS/PING depend on that
 path; recoverable long-lived-handle faults close and reopen the driver's broker
 handles so queued requests can be consumed on the next cadence, and degrade
-only after repeated consecutive failures. Rate-audit failures use the same
-recoverable boundary. The audit is a backstop, so a single skipped pass under
-heavy local process churn is logged and retried without making a live driver
-look control-dead.
+only after repeated consecutive failures. Control-reply writes use the same
+handle-reopen rule after their bounded retry budget: one lost STATUS/PING reply
+is recoverable because idempotent clients retry on the same reply route, but
+continuing on the same bad broker handle can make a live driver look silent.
+Rate-audit failures use the same recoverable boundary. The audit is a backstop,
+so a single skipped pass under heavy local process churn is logged and retried
+without making a live driver look control-dead.
 
 `taut-summon stop/status` use that same policy while resolving the current
 member name and while writing/reading control replies. If the bounded budget is
@@ -335,7 +338,9 @@ interrupt/close, single-consumer events) once.
   local-LLM live lane adds a real PTY child that calls a loopback
   OpenAI-compatible endpoint and then speaks through `taut say`, giving CI a
   credential-free transport proof without pretending to cover provider
-  onboarding. External PTY harnesses have a default local readiness probe and
+  onboarding; it prewires the synthetic PTY member as already onboarded so
+  detached CI tests injection and model transport rather than the human attach
+  chord. External PTY harnesses have a default local readiness probe and
   an opt-in strict mode (`TAUT_SUMMON_LIVE_HARNESS_STRICT=1`) that prewires
   the temp database and fails on readiness or injection catch-up gaps.
 - **Weft congruence is contract, not code**: STOP/STATUS/PING verbs and

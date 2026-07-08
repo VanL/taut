@@ -23,6 +23,7 @@ ESC = b"\x1b"
 BEL = b"\x07"
 ST = ESC + b"\\"
 REDRAW = True
+PENDING_INPUT = bytearray()
 
 
 def _write(data: bytes) -> None:
@@ -53,6 +54,19 @@ def _record(paths: list[Path], event: str, **fields: Any) -> None:
             handle.write(payload)
 
 
+def _query_input_prefix(got: bytes, expected: bytes) -> bytes:
+    """Return child input that arrived before a terminal-query reply."""
+
+    index = got.find(expected)
+    if index < 0:
+        return b""
+    return got[:index]
+
+
+def _buffer_query_input(got: bytes, expected: bytes) -> None:
+    PENDING_INPUT.extend(_query_input_prefix(got, expected))
+
+
 def _expect_reply(
     *,
     record_paths: list[Path],
@@ -74,6 +88,7 @@ def _expect_reply(
     )
     if expected not in got:
         raise SystemExit(40)
+    _buffer_query_input(got, expected)
 
 
 def _run_queries(record_paths: list[Path], rows: int, cols: int) -> None:
@@ -142,8 +157,16 @@ def _run_queries(record_paths: list[Path], rows: int, cols: int) -> None:
 
 def _read_line() -> bytes | None:
     fd = sys.stdin.fileno()
-    buf = b""
+    buf = bytes(PENDING_INPUT)
+    PENDING_INPUT.clear()
     while True:
+        if b"\x03" in buf:
+            return b"\x03"
+        if buf.startswith(b"\x1b[200~"):
+            if b"\x1b[201~\r" in buf or b"\x1b[201~\n" in buf:
+                return buf
+        elif b"\r" in buf or b"\n" in buf:
+            return buf
         ready, _, _ = select.select([fd], [], [], 0.05)
         if not ready:
             if REDRAW:
@@ -153,14 +176,6 @@ def _read_line() -> bytes | None:
         if not chunk:
             return None
         buf += chunk
-        if b"\x03" in chunk:
-            return b"\x03"
-        if buf.startswith(b"\x1b[200~"):
-            if b"\x1b[201~\r" in buf or b"\x1b[201~\n" in buf:
-                return buf
-            continue
-        if b"\r" in buf or b"\n" in buf:
-            return buf
 
 
 def _command_text(raw: bytes) -> str:

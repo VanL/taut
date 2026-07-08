@@ -23,7 +23,15 @@ from typing import Any
 
 import pytest
 from conftest import _base_env, summon_cli, taut_cli
+from simplebroker import Queue
+from taut_summon._state import (
+    ensure_summon_schema,
+    get_session,
+    record_session,
+    set_wired,
+)
 
+from taut import identity
 from taut.client import TautClient
 
 LOCAL_LLM_TUI = Path(__file__).with_name("fixtures") / "local_llm_tui.py"
@@ -244,6 +252,62 @@ def _tail(path: Path, *, limit: int = 4000) -> str:
     return path.read_text(encoding="utf-8", errors="replace")[-limit:]
 
 
+def _local_llm_capture() -> identity.IdentityCapture:
+    process = identity.ProcessInfo(
+        pid=os.getpid(),
+        ppid=1,
+        start_time="local-llm-live-test",
+        exe=str(LOCAL_LLM_TUI),
+        argv=(sys.executable, str(LOCAL_LLM_TUI)),
+        uid=os.getuid() if hasattr(os, "getuid") else 0,
+        pgid=os.getpgrp() if hasattr(os, "getpgrp") else os.getpid(),
+        session_id=os.getsid(0) if hasattr(os, "getsid") else None,
+        tty=None,
+        cwd="/taut-local-llm-live-test",
+    )
+    return identity.IdentityCapture(
+        chain=(process,),
+        host=identity.HostIdentity("host:taut-local-llm", "taut-local-llm"),
+        uid=process.uid or 0,
+        login="taut-local-llm",
+        anchor=process,
+        kind="agent",
+        rule="local LLM live test setup",
+    )
+
+
+def _prewire_local_llm(db: Path) -> None:
+    client = TautClient(
+        db_path=db,
+        as_name="local-llm",
+        identity_capture=_local_llm_capture(),
+    )
+    client.join("general")
+    member = client.last_created_member or client.whoami()
+    assert member.token is not None
+    queue = Queue("taut_summon_state", db_path=str(db))
+    try:
+        ensure_summon_schema(queue)
+        record_session(
+            queue,
+            member_id=member.member_id,
+            token=member.token,
+            provider="pty",
+            provider_session_id=None,
+            driver_pid=None,
+            driver_start_time=None,
+            updated_ts=queue.generate_timestamp(),
+        )
+        set_wired(
+            queue,
+            member_id=member.member_id,
+            value=True,
+            updated_ts=queue.generate_timestamp(),
+        )
+    finally:
+        queue.close()
+
+
 def test_local_llm_runs_locally_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("TAUT_SUMMON_LOCAL_LLM", raising=False)
     monkeypatch.delenv("CI", raising=False)
@@ -274,6 +338,26 @@ def test_local_llm_env_can_disable_local(monkeypatch: pytest.MonkeyPatch) -> Non
     assert not _local_llm_enabled()
 
 
+def test_local_llm_prewire_marks_pty_member_wired(tmp_path: Path) -> None:
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    taut_cli("join", "general", db=db, cwd=tmp_path, as_name="van")
+
+    _prewire_local_llm(db)
+
+    member = next(
+        member for member in TautClient(db_path=db).who() if member.name == "local-llm"
+    )
+    queue = Queue("taut_summon_state", db_path=str(db))
+    try:
+        row = get_session(queue, member.member_id)
+    finally:
+        queue.close()
+    assert row is not None
+    assert row["provider"] == "pty"
+    assert row["wired"] is True
+
+
 @pytest.mark.requires_local_llm
 @pytest.mark.xdist_group("process")
 def test_local_llm_pty_harness_posts_sentinel(
@@ -301,6 +385,7 @@ def test_local_llm_pty_harness_posts_sentinel(
     TautClient.init(db_path=db)
     rc, _out, err = taut_cli("join", "general", db=db, cwd=tmp_path, as_name="van")
     assert rc == 0, err
+    _prewire_local_llm(db)
 
     sentinel = f"local-llm-sentinel-{time.monotonic_ns()}"
     prompt = tmp_path / "orientation.txt"
