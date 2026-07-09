@@ -2,7 +2,7 @@
 
 Date: 2026-07-08
 Owner: maintainer
-Status: draft; pending independent review before implementation
+Status: independently reviewed; review findings folded in; ready for implementation
 Branch: `tui/channel-join-create`
 
 ## Goal
@@ -30,7 +30,10 @@ transcript rows.
 - `313343fafba53013eae0f8712d883bfd139d24a2` —
   `docs/specs/04-taut-tui.md` at plan authoring time.
 
-Plan type: implementation. No proposed spec delta is expected. If
+Plan type: implementation with review-fold-in clarification. The independent
+review fold-in adds `j` to the [TUI-8.2] command table so it matches the
+already-promoted [TUI-6.4a] join-surface requirement; it does not change the
+join/create behavior. No further proposed spec delta is expected. If
 implementation discovers that [TUI-6.4a] or [TUI-10.2a] cannot be implemented
 as written, add a row to the deviation log and promote the spec change before
 claiming compliance.
@@ -79,6 +82,10 @@ Important current behavior:
   client-owned read for the acting member's memberships.
 - The TUI already uses transient surfaces for search/goto/help/inbox and a
   modal first-join state. Preserve those focus and Escape conventions.
+- The app-level Enter binding for `init_here` is priority-bound and currently
+  neutralized by `check_action()` except in the uninitialized state. Any new
+  Enter-driven form must get a regression test proving focused inputs and
+  confirmation states receive Enter as intended.
 
 Comprehension checks before editing:
 
@@ -108,13 +115,22 @@ Comprehension checks before editing:
 - Confirmation: unmatched typed names require a keyboard confirmation state
   before the client call. Enter confirms from that state. Escape cancels
   confirmation and returns to editable input without mutation.
+- Submit classification: after validation, classify the submitted text in this
+  exact order:
+  1. exact match for an already-joined channel -> switch/select without
+     calling `join()`;
+  2. exact match for a known joinable channel -> join immediately with no
+     confirmation;
+  3. valid unmatched name, or listing unavailable -> enter the confirmation
+     state before any client call.
 - Transcript: successful join/create notices appear only through normal
   client/watch/history reads. Do not fabricate optimistic rows.
 - Navigation: after successful join/create, rebuild membership/navigation from
   client reads and make the joined channel the active target.
 - Focus: opening the surface preserves the current conversation until success.
   Escape closes it and restores focus to the opener. `j` must be documented in
-  keybar/help and must not be active while first-join identity setup owns the UI.
+  keybar/help for normal TUI states and must not be active or advertised while
+  first-join identity setup owns the UI.
 - Scope: no fuzzy search, no command palette, no persona/profile management,
   no `join --new`, no identity token/rejoin workflow, no CLI behavior changes.
 - No new runtime dependency.
@@ -123,6 +139,26 @@ Comprehension checks before editing:
 
 | Spec ref | Planned behavior | Actual behavior | Rationale | Spec proposal |
 |----------|------------------|-----------------|-----------|---------------|
+
+## Independent Review Notes
+
+An independent review on 2026-07-09 found seven plan-readiness issues. This
+revision folds them in before implementation:
+
+- F1: explicit typed-submit classification between existing joinable,
+  already-joined, and unmatched names.
+- F2: explicit `action_close_transient()` ordering and two-level Escape
+  behavior for confirmation.
+- F3: Enter priority-binding hazard called out with tests and `check_action()`
+  requirements.
+- F4: boundary grep gates added to verification.
+- F5: no-joined-channel/no-channels launch behavior decided as empty state plus
+  primary action, not auto-open modal.
+- F6: current first-join compatibility form always joins a channel, so the
+  post-first-join zero-membership branch is documented as future-facing until
+  the final identity-only form exists.
+- F7: normal keybar/help advertise `j`; first-join-owned UI must not advertise
+  or activate it, and the spec command table now includes `j`.
 
 ## Implementation Tasks
 
@@ -137,6 +173,9 @@ Required assertions:
 - The join surface appears without changing `active_target`, joined membership,
   or transcript contents.
 - The keybar/help includes `j` as the join action.
+- The [TUI-8.2] command table includes `j`.
+- While first-join setup is active, `j` is not advertised by the active keybar
+  or accepted by the app.
 - Escape closes the surface and returns focus to the pane/control that opened
   it.
 
@@ -148,7 +187,10 @@ Use a real initialized project and real `TautClient` seeds. Do not mock
 In `taut/tui/app.py`:
 
 - Add `Binding("j", "open_join_channel", "join", show=False)` and update
-  `KEYBAR_TEXT` and `HELP_TEXT`.
+  `KEYBAR_TEXT` and `HELP_TEXT` for normal TUI states. If `#keybar` remains
+  visible during first-join setup, it must use first-join-specific text that
+  does not advertise `j`; hiding it during first-join is also acceptable if the
+  first-join hint remains sufficient.
 - Add a general join/create container to `compose()`, separate from
   `#firstjoin`.
 - Add app state for the surface: active flag, opener focus/pane, channel list,
@@ -158,8 +200,17 @@ In `taut/tui/app.py`:
   - ignored or inline-noted while first-join is active;
   - requires resolved `self.client` and `self.me`;
   - opens from normal main TUI and from no-joined-channel/no-channels states.
+- Add `open_join_channel` to the `check_action()` disabled set while
+  `_first_join_active` is true. Keep `init_here` disabled outside the
+  uninitialized state so the priority Enter binding cannot swallow join-surface
+  input submission.
 - Hide or disable conflicting transient surfaces while the join surface is
   active, following existing transient/modal conventions.
+- Add a join-surface branch to `action_close_transient()` before search/goto/
+  help/inbox/thread-pane cleanup. If the join surface is in confirmation state,
+  Escape exits only confirmation and returns to editable input with no mutation;
+  if it is in editable/list state, Escape closes the surface and restores the
+  opener focus.
 
 Keep this slice non-mutating. Tests from Task 1 should pass after this slice.
 
@@ -186,11 +237,12 @@ Required behavior:
 Testing:
 
 - Existing unjoined channels are listed.
-- Already-joined channels are either omitted or shown disabled/current, but
-  cannot be submitted as duplicate joins. Pick one behavior and make tests pin
-  it. Recommended: show already-joined channels as current/disabled so users
-  understand why they are not join choices.
+- Already-joined channels are shown disabled/current for orientation and cannot
+  be submitted as duplicate joins.
 - Listing failure still leaves manual typed join/create usable.
+- Listing failure does not remove the already-joined duplicate guard; the guard
+  must use joined membership/navigation state, not only the possibly empty
+  project-channel list.
 
 ### Task 4 — Selection, Typing, and Validation
 
@@ -206,6 +258,10 @@ Implement interaction semantics:
 - Use `validate_channel_name()` before any join/create action.
 - If typed input exactly matches an already-joined channel, do not call
   `join()`: switch/select that channel and close or show a concise note.
+- If typed input exactly matches a known joinable channel, route to Task 5's
+  direct join path with no confirmation.
+- If typed input is valid and unmatched, or if listing failed so the TUI cannot
+  prove whether it exists, route to Task 6's confirmation path.
 
 Testing:
 
@@ -214,6 +270,10 @@ Testing:
 - Invalid uppercase/reserved/bad-character names produce recoverable inline
   errors and leave membership unchanged.
 - Already-joined input switches/selects without a new notice.
+- Exact typed joinable-channel input joins directly with one Enter and does not
+  show confirmation.
+- Unmatched typed input enters confirmation and does not call the client on the
+  first Enter.
 
 ### Task 5 — Existing-Channel Join Submit Path
 
@@ -236,6 +296,8 @@ Testing:
   `TautError` surfaces stay visible and leave the surface open when retrying is
   sensible. Use narrow monkeypatching only for failure injection, not for the
   success path.
+- Enter must reach the focused join input for this path despite the app-level
+  priority Enter binding for `init_here`.
 
 ### Task 6 — New-Channel Create-and-Join Confirmation
 
@@ -259,6 +321,8 @@ Testing:
 - Second Enter calls the real client path and creates/joins the channel.
 - Successful creation notice appears through normal read/watch refresh, not an
   optimistic row.
+- Enter must reach the confirmation state despite the app-level priority Enter
+  binding for `init_here`.
 
 ### Task 7 — Launch-State Routing for No Joined Channels
 
@@ -266,12 +330,20 @@ Bring [TUI-10.2a] launch behavior into alignment:
 
 - Recognized member with joined channels: current normal launch remains.
 - Recognized member with no joined channels and project channels exist: open
-  the main TUI in a no-joined-channel state with the join surface as the primary
-  action. Do not show first-join identity setup.
+  the main TUI in a no-joined-channel state. Do not auto-open the join surface;
+  show a visible primary action that opens it, and keep `j` available as the
+  same action. Do not show first-join identity setup.
 - Recognized member with no joined channels and no project channels exist: open
-  the main TUI in a no-channels state with the create path as primary action.
+  the main TUI in a no-channels state. Do not auto-open the join surface; show a
+  visible primary action that opens the same surface on its create path, and
+  keep `j` available as the same action.
 - Identity unrecognized: keep current first-join flow first, then route through
   the post-identity channel state.
+- Current compatibility note: the shipped [TUI-10.9] first-join form always
+  submits `join CHANNEL`, so the post-first-join zero-membership branch is not
+  reachable until the final identity-only setup form replaces the compatibility
+  name+channel form. Do not write an unreachable test for that branch in this
+  slice.
 
 Testing:
 
@@ -281,6 +353,7 @@ Testing:
   can press the primary action or `j`.
 - The no-channel empty state routes to the same confirmation-backed
   create-and-join path.
+- The no-joined-channel/no-channels states do not auto-open a modal at launch.
 - Existing first-join tests remain green and continue to submit through the
   first-join compatibility path until [TUI-10.9] final identity-only setup is
   implemented.
@@ -320,6 +393,8 @@ Minimum targeted verification:
 ```bash
 uv run --extra dev pytest tests/test_tui_app.py tests/test_tui_recovery.py
 uv run --extra dev ruff check taut/tui/app.py tests/test_tui_app.py tests/test_tui_recovery.py
+! grep -RIn "Queue(\\|insert_messages\\|sidecar\\|generate_timestamp\\|Envelope\\|encode_envelope" taut/tui/
+! grep -RIn "from taut\\.state\\|import taut\\.state\\|open_broker\\|advance_cursor\\|peek_many" taut/tui/
 git diff --check
 ```
 
@@ -349,9 +424,6 @@ handling.
 
 ## Open Questions
 
-- For already-joined channels, the spec allows omission or disabled/current
-  display. This plan recommends disabled/current display for orientation. If
-  review prefers omission, update Task 3 tests before implementation.
 - The no-joined-channel/no-channels empty-state copy should be concise and
   work-focused. Exact prose can be finalized during implementation, but it must
   not imply identity is unknown when identity has already resolved.

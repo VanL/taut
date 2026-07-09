@@ -416,6 +416,7 @@ The initial command surface is:
 | `/` | Search or find |
 | `g` | Go to conversation |
 | `i` | Open inbox |
+| `j` | Join or create a channel |
 | `?` | Open help |
 | `q` | Quit |
 | Escape | Close transient pane, modal, or search state |
