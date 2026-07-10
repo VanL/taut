@@ -37,12 +37,16 @@ message writes, notification writes, and read cursor semantics. The CLI only
 parses arguments and renders results. This keeps one operational path for every
 verb and prevents CLI behavior from drifting away from the Python API.
 
-Runtime dependencies are intentionally bounded to `simplebroker>=5.1.0` and
+The load-bearing supported SimpleBroker floor is 5.3.0; a release manifest may
+declare a stronger compatible floor. The other core runtime dependency is
 `psutil`. SimpleBroker owns the storage and queue substrate; `psutil` is scoped to
 cross-platform process metadata for identity capture so taut does not rely on
 fragile platform-specific argv parsing for the core recognition path.
 `taut-pg` is a separate project under `extensions/taut_pg`; it installs
 `simplebroker-pg` beside Taut but does not add a root runtime dependency.
+The private `taut._broker_retry` module remains only as an import-compatible,
+fail-closed shim for the immutable prior Summon wheel. It raises an upgrade
+diagnostic if called and contains no retry classifier or loop.
 
 Postgres support intentionally reuses the same core path. `.taut.toml` selects
 SimpleBroker's public `postgres` backend plugin, `TautClient` resolves that
@@ -81,6 +85,16 @@ owns the Docker Postgres gate for `taut-pg`, and
 `.github/workflows/release-gate-summon.yml` publishes GitHub artifacts for
 `taut_summon/v*` tags after the reusable root test workflow, which includes the
 summon extension and local-LLM lane. No workflow uploads to PyPI.
+
+Core and Summon are one paired reactor release boundary. The single owner of
+that proof is `bin/verify-reactor-release-artifacts.py`: it builds fresh core
+and Summon wheels in isolated temporary directories, then passes those exact
+artifacts to `bin/verify-reactor-artifact-compat.py`. Core and Summon release
+paths run the proof after builds and before any commit, tag, push, or publish,
+including `--skip-checks`; a PG-only release does not run it. The same owner
+checks the retained Summon lock's resolved SimpleBroker version and compiles
+the PG manifest into its temporary artifact root to prove the resolved
+`simplebroker-pg` floor. The repository does not retain a PG lockfile.
 
 All production taut-owned relational state flows through `taut/state/`.
 `taut/state/__init__.py` exposes the internal `TautState` interface,
@@ -147,7 +161,28 @@ stale candidate can never be reused across attempts. Explicit `--as` names
 get exactly one attempt and fail loudly: a collision on a chosen name is a
 user decision to surface, not noise to retry through.
 
-`TautWatcher` subclasses a vendored Weft-style `MultiQueueWatcher`, but changes
+`BaseReactor` is the shared lifecycle mechanism for Taut's long-lived queue
+owners. It follows SimpleBroker 5.2.0's executable reference-reactor pattern:
+one reactor instance claims one drive thread; inherited final templates own
+process, wait, stop signaling, joining, and exactly-once close. A foreign stop
+request only signals and wakes. The owner finalizes after a live turn unwinds.
+Fixed topology is the default; `TautWatcher` is the explicit owner-thread-only
+dynamic-topology policy. A constructor-time compatibility check rejects legacy
+subclasses that override lifecycle templates before queue construction while
+the `TautBaseWatcher` alias preserves import compatibility.
+
+Each reactor owns one optional native waiter through its `PollingStrategy`;
+the rule is per reactor, not process-global. Initial setup calls
+`PollingStrategy.start()` once. When the owner commits a later TautWatcher
+topology generation, it builds a candidate for the complete queue set and uses
+`replace_activity_waiter()` without restarting callback or local-wake state.
+Only after replacement succeeds does Taut publish its matching waiter cache and
+generation. Taut closes the returned displaced waiter once. Summon's separate
+fixed-topology control reactor keeps its own strategy and never needs this
+replacement path.
+
+`TautWatcher` subclasses `BaseReactor`, which itself extends a copied Weft
+`MultiQueueWatcher`, and changes
 the peek behavior at the taut boundary for chat queues: fetch uses
 `peek_many(..., after_timestamp=cursor)`, pending checks use
 `has_pending(after_timestamp=cursor)`, and cursor advancement happens inside the
@@ -158,13 +193,21 @@ through SimpleBroker's watcher lifecycle hook rather than cloning the base retry
 loop. Membership refresh is wired both to SimpleBroker's data-version callback
 and to a timer that deliberately counts as pending work, so an idle watcher still
 reaches the refresh code on backends whose native waiters only wake for queue
-writes. The data-version callback is a wake hint, not a fatal boundary: known
-transient SQLite sidecar read failures mark the watcher for a full pending scan
-on the next drain, while unrelated exceptions still raise. `TautWatcher` keeps
-its SimpleBroker queue handles non-persistent even though the underlying
-`MultiQueueWatcher` can run persistent: summon's driver tests proved that
-long-lived SQLite watcher handles add avoidable page/WAL churn when watcher,
-control, provider, and peer CLI subprocesses share one fresh database.
+writes. The copied watcher primitive is not edited for Taut cursor semantics;
+those adaptations live in `TautWatcher`. Its data-version callback is a wake
+hint and membership-refresh trigger, not a `last_ts` cache refresh, because
+delivery is governed by taut cursors. `TautWatcher`
+keeps persistent owned SimpleBroker queue handles because it is a long-lived
+actor that may be queried repeatedly. `TautClient.watch()` returns the exact
+instance later driven by `start()`; there is no background proxy or clone. Its
+watcher-owned runtime has a separate persistent metadata Queue and state
+adapter, so closing the source client cannot invalidate the live watcher and
+closing the watcher cannot close the source client. It closes removed
+membership handles with `Queue.close()` and closes all owned handles on the
+drive owner at watcher shutdown. One-shot
+CLI/client paths stay non-persistent. Taut does not add a retry classifier
+around queue operations; SimpleBroker owns lock/busy retry, and Taut owns only
+handle lifetime and taut-specific state.
 
 `TautClient.watch()` builds a client-owned `TautWatchRuntime` adapter before it
 constructs `TautWatcher`. The watcher owns live-follow mechanics and local
@@ -211,6 +254,7 @@ to the same runtime.
 | Path | Owner |
 |---|---|
 | `taut/_constants.py` | Version, config translation, name rules, identity constants |
+| `taut/_broker_retry.py` | Fail-closed prior-Summon import compatibility; no active retry behavior |
 | `taut/addressing.py` | Target parsing, channel/sub-thread validation, and internal queue naming |
 | `taut/_scripts.py` | Developer helper logic for `bin/pytest-pg` |
 | `taut/_exceptions.py` | Public exception hierarchy |
@@ -219,7 +263,7 @@ to the same runtime.
 | `taut/state/` | Internal state interface, row types, dialect marker, sidecar DDL, version gate, member, claim, alias, thread, membership, cursor, and rename-state queries |
 | `taut/identity.py` | Process-chain capture, claim hashing, identity resolution evidence, presence |
 | `taut/client/` | Public API facade, shared base, value models, verb mixins, shared codecs, and watcher runtime adapter |
-| `taut/watcher.py` | Vendored multi-queue watcher, chat cursor watching, notification inbox integration |
+| `taut/watcher.py` | Shared `BaseReactor`, vendored multi-queue scheduling, chat cursor watching, notification inbox integration |
 | `taut/cli.py` | Argparse tree, rendering, exit-code mapping |
 | `bin/release.py` | GitHub-only release helper, target/tag planning, dependency sync, and local release gates |
 | `bin/pytest-pg` | Docker-backed Postgres test runner for shared and extension suites |
@@ -244,7 +288,7 @@ requirement or auditing implementation coverage.
 | [TAUT-7], read cursors and chat-history peek discipline | `taut/client/_messaging.py::MessagingMixin.read_unread`, `_implicit_subthread_membership`, `taut/state/_sql.py` membership and cursor helpers | `tests/test_client.py`, `tests/test_state_contract.py`, `tests/test_shared_contract.py` |
 | [TAUT-8.1], [TAUT-8.2], CLI behavior, rendering, JSON, and exit codes | `taut/cli.py` | `tests/test_cli.py`, `tests/test_public_api.py` |
 | [TAUT-8.3], Python API objects and verb semantics | `taut/client/__init__.py::TautClient`, `taut/client/_models.py`, and the client mixins | `tests/test_public_api.py`, `tests/test_client.py` |
-| [TAUT-8.4], watcher behavior | `taut/watcher.py`, `taut/_watch_runtime.py`, `taut/client/_watching.py`, `taut/client/__init__.py::TautClient.watch` | `tests/test_watcher.py`, `tests/test_shared_contract.py::test_project_watcher_receives_cli_write` |
+| [TAUT-8.4], [TAUT-8.5], watcher behavior and shared reactor lifecycle | `taut/watcher.py::BaseReactor`, `taut/watcher.py::TautWatcher`, `taut/_watch_runtime.py`, `taut/client/_watching.py`, `taut/client/__init__.py::TautClient.watch` | `tests/test_watcher.py` ownership, stop, wake, cursor replay, ordering, and same-instance tests; `tests/test_architecture_boundaries.py::test_first_party_reactors_inherit_guarded_lifecycle_templates`; `tests/test_shared_contract.py::test_project_watcher_receives_cli_write`; `extensions/taut_pg/tests/test_reactor.py::test_taut_watcher_native_waiter_rebinds_on_membership_topology_change` |
 | [IAN-4], alias/name route namespace | `taut/state/_sql.py` member and alias helpers, `taut/_constants.py::route_key`, `validate_member_name` | `tests/test_state_contract.py`, `tests/test_client.py::test_set_name_changes_current_name_without_changing_member_id` |
 | [IAN-5], [IAN-6], addressing and special queue names | `taut/addressing.py`, `taut/client/_messaging.py::MessagingMixin.say`, `_say_dm`; `taut/client/_threads.py::_thread_from_row` | `tests/test_addressing.py`, `tests/test_client.py::test_direct_message_queue_is_stable_across_name_change`, `test_channel_names_reject_dots_and_reserved_words` |
 | [IAN-7], notification payloads and claiming | `taut/client/_messaging.py::_write_mention_notifications`; `taut/client/_codec.py::notification_from_body`; `taut/client/_notifications.py::_write_notification`, `inbox`; `taut/watcher.py` notification path | `tests/test_client.py::test_mention_notification_is_claimed_without_touching_chat_history`, `tests/test_watcher.py` |
@@ -282,6 +326,7 @@ watch, `taut/client/_notifications.py::NotificationsMixin.inbox` claims notifica
 
 ## Related Plans
 
+- `docs/plans/2026-07-10-taut-dynamic-native-waiter-replacement-plan.md`
 - `docs/plans/2026-06-18-member-identity-addressing-plan.md`
 - `docs/plans/2026-06-12-taut-foundation-plan.md`
 - `docs/plans/2026-06-12-taut-0.1.1-hardening-plan.md`
@@ -294,3 +339,4 @@ watch, `taut/client/_notifications.py::NotificationsMixin.inbox` claims notifica
 - `docs/plans/2026-07-01-taut-state-sql-dialect-plan.md`
 - `docs/plans/2026-07-01-taut-watch-runtime-plan.md`
 - `docs/plans/2026-07-06-evaluation-findings-remediation-plan.md`
+- `docs/plans/2026-07-09-taut-reactor-safety-plan.md`

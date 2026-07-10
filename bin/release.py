@@ -32,6 +32,9 @@ PG_PYPROJECT_PATH: Final[Path] = PG_EXTENSION_DIR / "pyproject.toml"
 SUMMON_EXTENSION_DIR: Final[Path] = PROJECT_ROOT / "extensions" / "taut_summon"
 SUMMON_PYPROJECT_PATH: Final[Path] = SUMMON_EXTENSION_DIR / "pyproject.toml"
 SUMMON_UV_LOCK_PATH: Final[Path] = SUMMON_EXTENSION_DIR / "uv.lock"
+REACTOR_RELEASE_ARTIFACT_VERIFIER: Final[Path] = (
+    PROJECT_ROOT / "bin" / "verify-reactor-release-artifacts.py"
+)
 
 ROOT_RELEASE_WORKFLOW: Final[str] = ".github/workflows/release-gate.yml"
 PG_RELEASE_WORKFLOW: Final[str] = ".github/workflows/release-gate-pg.yml"
@@ -430,6 +433,33 @@ def sync_root_summon_dev_dependency(
         return None
     root_pyproject_path.write_text(updated, encoding="utf-8")
     return summon_version
+
+
+def sync_summon_core_dependency(
+    *,
+    root_pyproject_path: Path = PYPROJECT_PATH,
+    summon_pyproject_path: Path = SUMMON_PYPROJECT_PATH,
+) -> str | None:
+    """Set Summon's taut floor to the exact local core version."""
+
+    root_version = _read_version(
+        root_pyproject_path,
+        PYPROJECT_VERSION_PATTERN,
+        display_path(root_pyproject_path),
+    )
+    text = summon_pyproject_path.read_text(encoding="utf-8")
+    updated, count = TAUT_DEPENDENCY_PATTERN.subn(
+        rf"\g<1>{root_version}\g<2>", text, count=1
+    )
+    if count != 1:
+        fail(
+            "Could not update taut-summon taut dependency in "
+            f"{display_path(summon_pyproject_path)}"
+        )
+    if updated == text:
+        return None
+    summon_pyproject_path.write_text(updated, encoding="utf-8")
+    return root_version
 
 
 def format_command(command: Command) -> str:
@@ -1049,7 +1079,7 @@ def build_postupdate_steps_for_targets(
 
     target_keys = {target.key for target in targets}
     steps: list[CommandStep] = []
-    if SUMMON_TARGET.key in target_keys:
+    if target_keys & {ROOT_TARGET.key, SUMMON_TARGET.key}:
         steps.append(
             CommandStep(
                 ("uv", "lock"),
@@ -1071,6 +1101,13 @@ def build_postupdate_steps_for_targets(
             CommandStep(
                 ("uv", "build", SUMMON_TARGET.package_dir.as_posix()),
                 "Build taut-summon source and wheel",
+            )
+        )
+    if target_keys & {ROOT_TARGET.key, SUMMON_TARGET.key}:
+        steps.append(
+            CommandStep(
+                (sys.executable, str(REACTOR_RELEASE_ARTIFACT_VERIFIER)),
+                "Verify fresh paired taut and taut-summon artifacts",
             )
         )
     return _unique_steps(tuple(steps))
@@ -1134,17 +1171,29 @@ def run_prechecks(target: ReleaseTarget, *, dry_run: bool) -> None:
     run_prechecks_for_targets((target,), dry_run=dry_run)
 
 
+def _run_postupdate_step(step: CommandStep, *, dry_run: bool) -> None:
+    print(step.description)
+    if dry_run and step.command == (
+        sys.executable,
+        str(REACTOR_RELEASE_ARTIFACT_VERIFIER),
+    ):
+        run_command((*step.command, "--dry-run"), cwd=step.cwd)
+        return
+    run_command(step.command, cwd=step.cwd, dry_run=dry_run)
+
+
 def run_postupdate_steps(target: ReleaseTarget, *, dry_run: bool) -> None:
     for step in build_postupdate_steps(target):
-        print(step.description)
-        run_command(step.command, cwd=step.cwd, dry_run=dry_run)
+        _run_postupdate_step(step, dry_run=dry_run)
 
 
 def _release_file_paths(target: ReleaseTarget) -> tuple[Path, ...]:
     paths = [target.pyproject_path]
     if target.constants_path is not None:
         paths.append(target.constants_path)
-    if target == SUMMON_TARGET and SUMMON_UV_LOCK_PATH.exists():
+    if target == ROOT_TARGET:
+        paths.append(SUMMON_PYPROJECT_PATH)
+    if target in {ROOT_TARGET, SUMMON_TARGET} and SUMMON_UV_LOCK_PATH.exists():
         paths.append(SUMMON_UV_LOCK_PATH)
     return tuple(paths)
 
@@ -1438,6 +1487,11 @@ def _sync_root_release_dependencies() -> None:
         print("Root dev dependency already matches taut-summon")
     else:
         print(f"Updated root dev dependency: taut-summon>={summon_dependency_version}")
+    core_dependency_version = sync_summon_core_dependency()
+    if core_dependency_version is None:
+        print("taut-summon dependency already matches taut")
+    else:
+        print(f"Updated taut-summon dependency: taut>={core_dependency_version}")
 
 
 def _require_command(name: str) -> None:
@@ -1503,8 +1557,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 def _dry_run_postupdate_steps(targets: tuple[ReleaseTarget, ...]) -> None:
     for step in build_postupdate_steps_for_targets(targets):
-        print(step.description)
-        run_command(step.command, cwd=step.cwd, dry_run=True)
+        _run_postupdate_step(step, dry_run=True)
 
 
 def _run_batch_release(args: argparse.Namespace) -> int:
@@ -1581,8 +1634,7 @@ def _run_batch_release(args: argparse.Namespace) -> int:
         _sync_root_release_dependencies()
 
     for step in build_postupdate_steps_for_targets(release_targets):
-        print(step.description)
-        run_command(step.command, cwd=step.cwd)
+        _run_postupdate_step(step, dry_run=False)
 
     release_commit_created = release_files_changed_for_targets(release_targets)
     if release_commit_created:

@@ -632,6 +632,107 @@ def test_probe_unknown_provider_fails_clean(tmp_path: Path) -> None:
     assert len(err.splitlines()) == 1
 
 
+def test_probe_malformed_pty_argv_fails_clean(summon_db: Path, tmp_path: Path) -> None:
+    env = _base_env()
+    env["TAUT_SUMMON_PTY_ARGV"] = "{"
+
+    rc, out, err = _run_summon(
+        "run",
+        "pty",
+        "--provider",
+        "pty",
+        "--db",
+        str(summon_db),
+        cwd=tmp_path,
+        env=env,
+    )
+
+    assert rc == 1
+    assert out == ""
+    assert "TAUT_SUMMON_PTY_ARGV" in err
+    assert _no_traceback(err)
+    assert len(err.splitlines()) == 1
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    (
+        ("TAUT_SUMMON_PTY_ARGV", ""),
+        ("TAUT_SUMMON_PTY_ARGV", "[]"),
+        ("TAUT_SUMMON_PTY_ROWS", "0"),
+        ("TAUT_SUMMON_PTY_ROWS", "65536"),
+        ("TAUT_SUMMON_PTY_COLS", "0"),
+        ("TAUT_SUMMON_PTY_COLS", "65536"),
+        ("TAUT_SUMMON_PTY_STALL_S", "0"),
+        ("TAUT_SUMMON_PTY_STALL_S", "nan"),
+        ("TAUT_SUMMON_PTY_STALL_S", str(10**400)),
+        ("TAUT_SUMMON_PTY_QUIET_MS", "-1"),
+        ("TAUT_SUMMON_PTY_QUIET_MS", str(10**400)),
+        ("TAUT_SUMMON_PTY_MAX_SETTLE_S", "-1"),
+        ("TAUT_SUMMON_PTY_MAX_SETTLE_S", "inf"),
+        ("TAUT_SUMMON_PTY_MAX_SETTLE_S", str(10**400)),
+    ),
+)
+def test_probe_unsafe_pty_config_fails_clean(
+    name: str, value: str, summon_db: Path, tmp_path: Path
+) -> None:
+    env = _base_env()
+    env["TAUT_SUMMON_PTY_ARGV"] = '["sh"]'
+    env[name] = value
+
+    rc, out, err = _run_summon(
+        "run",
+        "pty",
+        "--provider",
+        "pty",
+        "--db",
+        str(summon_db),
+        cwd=tmp_path,
+        env=env,
+    )
+
+    assert rc == 1
+    assert out == ""
+    assert name in err
+    assert _no_traceback(err)
+    assert len(err.splitlines()) == 1
+
+
+@pytest.mark.parametrize(
+    "name",
+    (
+        "TAUT_SUMMON_PTY_ROWS",
+        "TAUT_SUMMON_PTY_COLS",
+        "TAUT_SUMMON_PTY_STALL_S",
+        "TAUT_SUMMON_PTY_QUIET_MS",
+        "TAUT_SUMMON_PTY_MAX_SETTLE_S",
+    ),
+)
+def test_probe_malformed_pty_numeric_config_fails_clean(
+    name: str, summon_db: Path, tmp_path: Path
+) -> None:
+    env = _base_env()
+    env["TAUT_SUMMON_PTY_ARGV"] = '["sh"]'
+    env[name] = "not-a-number"
+
+    rc, out, err = _run_summon(
+        "run",
+        "pty",
+        "--provider",
+        "pty",
+        "--db",
+        str(summon_db),
+        cwd=tmp_path,
+        env=env,
+    )
+
+    assert rc == 1
+    assert out == ""
+    assert name in err
+    assert _no_traceback(err)
+    assert len(err.splitlines()) == 1
+
+
 def test_probe_garbage_scenario_file_fails_clean(
     summon_db: Path, tmp_path: Path
 ) -> None:

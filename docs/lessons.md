@@ -220,6 +220,53 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   tests fail as slow timeouts. Wrap watcher threads so unexpected exit wakes the
   supervisor and drives the same replay/resume path as child failure.
 
+- 2026-07-08: Correction to the same-day SQLite contention lessons:
+  SimpleBroker owns queue-operation retry; Taut must not layer a retry
+  classifier over SimpleBroker or retry `malformed`, magic mismatch, disk I/O,
+  timestamp row-shape, or taut-authored row-decode errors by substring.
+  Long-lived actors use persistent owned handles and close/reopen them on
+  surfaced broker faults. Transient CLI paths use non-persistent handles.
+  Readiness proves live correlated control, not repeated session-row polling.
+  Earlier 2026-07-08 notes recommending short-lived watcher handles, fresh
+  retrying readers, swallowed malformed session rows, or larger Taut retry
+  budgets are superseded by this rule.
+
+- 2026-07-08: The summon control proof isolated the SQLite churn root cause
+  below Taut: SimpleBroker 5.1.0 persistent SQLite sessions kept thread-local
+  cores across operations, which could leave long-lived control/watch readers
+  stale and then surface `database disk image is malformed` or `disk I/O error`
+  while `PRAGMA integrity_check` stayed `ok`. The fix is a SimpleBroker
+  release-path contract: retain the persistent queue lease, but disconnect the
+  operation's thread-local SQLite core after each operation. Taut's floor is
+  therefore `simplebroker>=5.1.1`; Taut must stay a thin layer and not add a
+  summon retry or cleanup policy for this class.
+
+- 2026-07-09: Correction to the preceding SimpleBroker 5.1.1 conclusion:
+  5.1.1's per-operation core-release mechanism was buggy. Taut requires
+  SimpleBroker 5.2.0 and follows its executable reference-reactor pattern:
+  persistent sessions are process-local, each drive owner uses its own
+  thread-local core, stop signaling is separate from close, and reactor
+  recovery replaces complete handle generations only after the current turn
+  unwinds. The 5.1.x runtime and its verification direction are unsupported.
+
+- 2026-07-10: Correction to the preceding supported-floor statement: 5.2.0
+  remains the provenance of the reactor ownership model, but 5.2.2 is the first
+  supported SimpleBroker release that passes the real multi-process control
+  visibility proof. Documentation and compatibility gates must distinguish a
+  design's reference version from the minimum runtime that passed acceptance.
+
+- 2026-07-10: A bounded thread join is not proof of teardown. A supervisor must
+  check that the worker actually stopped before starting the next generation,
+  retire a timed-out generation, and fence every external side effect on the
+  active generation. Otherwise a stale worker can corrupt session, presence,
+  chat, exit-code, and wake state after the next child starts.
+
+- 2026-07-10: Paired-package compatibility must verify fresh, explicitly
+  selected build outputs after normal builds and before any irreversible
+  release mutation. Reusing persistent `dist/` contents or making the gate a
+  skippable precheck can validate the wrong wheels while a release still
+  proceeds.
+
 - 2026-07-08: Real process tests can need narrower xdist topology without
   opting out of xdist. When each test starts several subprocesses against a
   shared temporary SQLite file, `xdist_group` co-locates items but does not
@@ -381,6 +428,12 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   succeeded and a later cursor or notification step blipped. Put the bounded
   transient retry at the queue/sidecar operation boundary instead.
 
+- 2026-07-08: Readiness pollers should reopen their broker reader between
+  probes under high SQLite churn. Holding one helper queue across a whole
+  session-row wait can turn an exhausted malformed-row read into a long false
+  timeout; a fresh retrying reader per probe better matches the intended
+  ephemeral SQLite posture.
+
 - 2026-07-08: PTY fake harnesses must model terminal input buffering while
   answering startup queries. Detached summon can inject orientation while a TUI
   is still probing cursor size or OSC colors; a real terminal does not discard
@@ -406,6 +459,15 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   live provider preserves the model session and avoids spending crash backoff
   on a storage-side fault. Only pump exit and injection failure belong to the
   harness-resume path.
+
+- 2026-07-08: Copied Weft primitives stay copied; Taut adaptation belongs in
+  subclasses. For `MultiQueueWatcher`, keep the copied add/remove/scheduling
+  behavior intact and put cursor-aware chat delivery, membership queue close,
+  summon control relevance, and SimpleBroker `last_ts` bypasses in `TautWatcher`
+  or the summon control reactor. A real-process churn proof that still surfaces
+  `disk I/O error` or connection-open `malformed` after that boundary is a
+  SimpleBroker/dependency issue to fix there, not a reason to restore a Taut
+  retry wrapper.
 
 - 2026-07-08: PTY "quiet" before first output is not readiness. A cold-start
   PTY child can take long enough on CI that injecting orientation during

@@ -23,7 +23,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
+import sqlite3
 import subprocess
 import sys
 import time
@@ -33,7 +35,7 @@ from typing import Any
 
 import pytest
 from simplebroker import Queue
-from simplebroker.ext import DatabaseError, OperationalError
+from simplebroker.ext import OperationalError
 
 from taut.client import TautClient
 
@@ -41,9 +43,8 @@ _SUMMON_SQLITE_TEST_ENV: dict[str, str] = {
     # The real-process harness is a high-churn SQLite workload: driver,
     # provider, and peer CLI subprocesses all share one temporary DB per test.
     # Disable maintenance writes, but keep SQLite's default FULL sync semantics.
-    # NORMAL is faster locally but makes CI more likely to observe false
-    # malformed-page reads during WAL churn, which masks the summon behavior
-    # under test behind broker recovery noise.
+    # NORMAL is faster locally but weakens the storage proof and can mask the
+    # summon behavior under test behind broker recovery noise.
     "BROKER_AUTO_VACUUM": "0",
     "BROKER_SYNC_MODE": "FULL",
 }
@@ -59,11 +60,13 @@ SummonCliRunner = Callable[..., tuple[int, str, str]]
 # require shared external resources must opt into narrower grouping rather
 # than making the whole suite serial.
 _DEADLINE = 90.0
-# One broker_retry call in the process harness can consume roughly 43 seconds
-# under SQLite WAL churn (90 attempts, capped exponential backoff). The
-# bootstrap PING barrier must outlast that single-operation budget so a healthy
-# driver is not reported silent while it is correctly riding out a transient.
+# Bootstrap PING is the live readiness authority. Keep the per-request timeout
+# generous enough for slow CI and loaded local runs without adding a Taut-level
+# broker retry loop.
 _CONTROL_BOOTSTRAP_REQUEST_TIMEOUT = 60.0
+_SUMMONED_MEMBER_RE = re.compile(
+    r"summoned '.*?' \(member (?P<member_id>[^,]+), provider "
+)
 
 
 def _run_summon_cli(
@@ -267,8 +270,9 @@ def _control_request(
             session_queue.close()
     assert row is not None
     control = ControlClient(
-        client.queue,
+        lambda name: client.queue(name),
         member_id,
+        reply_queue_factory=lambda name: client.queue(name),
         driver_pid=row["driver_pid"],
         driver_start_time=row["driver_start_time"],
     )
@@ -276,6 +280,7 @@ def _control_request(
         return control.request(command, timeout=timeout)
     finally:
         control.close()
+        client.close()
 
 
 def _await_control_request(
@@ -415,38 +420,25 @@ class DriverProcess:
         if not bootstrap:
             return
 
-        # Barrier on driver readiness, not just provider start: the
-        # provider's start line precedes rejoin, thread joins, watcher
-        # startup, and the final "summoned ..." log. A message said before
-        # the watcher starts is correctly invisible ([TAUT-7.4] "joining
-        # starts you at now") — tests must not race that window.
-        member = None
-
-        def _member_exists() -> bool:
-            nonlocal member
-            member = _member_by_name(self.db, self.name)
-            return member is not None
-
-        wait_until(
-            _member_exists,
-            timeout=timeout,
-            message=f"summoned member; stderr: {self.stderr_tail()}",
-        )
-        assert member is not None
-        session_row = _wait_for_session_row(
-            self.db,
-            member.member_id,
-            timeout=timeout,
-            message=f"bootstrap completion; stderr: {self.stderr_tail()}",
-        )
         wait_until(
             lambda: self._summoned_log_count() >= count,
             timeout=timeout,
             message=f"watch readiness; stderr: {self.stderr_tail()}",
         )
+        member_id = self._last_summoned_member_id()
+        assert member_id is not None, f"no summoned member id in {self.stderr_tail()}"
+        member = _member_by_name(self.db, self.name)
+        assert member is not None
+        assert member.member_id == member_id
+        session_row = _wait_for_session_row(
+            self.db,
+            member_id,
+            timeout=timeout,
+            message=f"bootstrap completion; stderr: {self.stderr_tail()}",
+        )
         _await_control_request(
             self.db,
-            member.member_id,
+            member_id,
             "PING",
             timeout=timeout,
             request_timeout=_CONTROL_BOOTSTRAP_REQUEST_TIMEOUT,
@@ -485,6 +477,17 @@ class DriverProcess:
         if not self.stderr_path.exists():
             return 0
         return self.stderr_path.read_text(encoding="utf-8").count(" summoned '")
+
+    def _last_summoned_member_id(self) -> str | None:
+        self._stderr_file.flush()
+        if not self.stderr_path.exists():
+            return None
+        matches = list(
+            _SUMMONED_MEMBER_RE.finditer(self.stderr_path.read_text(encoding="utf-8"))
+        )
+        if not matches:
+            return None
+        return matches[-1].group("member_id")
 
     # --- lifecycle --------------------------------------------------------
 
@@ -566,14 +569,6 @@ def _session_row_from_queue(queue: Queue, member_id: str) -> dict[str, Any] | No
         # taut_summon_sessions table exists — that member simply has no
         # session row yet.
         return None
-    except DatabaseError as exc:
-        if "malformed summon session row" not in str(exc):
-            raise
-        # High-churn real-process tests can briefly see a malformed sidecar
-        # read even after the bounded broker retry budget. In readiness
-        # polling, that means "try again"; true persistent corruption still
-        # times out the readiness barrier instead of passing.
-        return None
 
 
 def _session_row(db: Path, member_id: str) -> dict[str, Any] | None:
@@ -605,6 +600,16 @@ def _wait_for_session_row(
         queue.close()
     assert row is not None, f"no {message}"
     return row
+
+
+def sqlite_integrity_check(db: Path) -> str:
+    connection = sqlite3.connect(db)
+    try:
+        row = connection.execute("PRAGMA integrity_check").fetchone()
+    finally:
+        connection.close()
+    assert row is not None
+    return str(row[0])
 
 
 def _member_token(db: Path, name: str) -> str:

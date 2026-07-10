@@ -53,7 +53,11 @@ class TautState(Protocol):
     def update_member_activity(self, member_id: str, active_ts: int) -> None: ...
 
     def update_member_persona(
-        self, member_id: str, persona: str | None
+        self,
+        member_id: str,
+        persona: str | None,
+        *,
+        active_ts: int | None = None,
     ) -> MemberRow | None: ...
 
     def update_member_name(self, member_id: str, display_name: str) -> MemberRow: ...

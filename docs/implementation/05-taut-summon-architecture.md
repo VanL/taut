@@ -6,9 +6,9 @@ This document explains the implementation boundary of the `taut-summon`
 extension (`extensions/taut_summon/`): how a summoned agent harness is hosted
 as an ordinary workspace member without a daemon, a bespoke agent protocol, or
 any change to frozen core state. It covers the ears/mouth split, the
-captive-process/free-agent posture, the driver's three-thread runtime, the
-two-table session ledger, the `sys.*` control queues, the vendored broker
-retry, and the SimpleBroker-facade boundary the extension holds to.
+   captive-process/free-agent posture, the driver's three-thread runtime, the
+   two-table session ledger, the `sys.*` control queues, and the
+   SimpleBroker-handle ownership boundary the extension holds to.
 
 It does not restate the contract — that lives in the spec
 (`docs/specs/04-summon.md`, [SUM-1]–[SUM-12]). It explains *why* the code is
@@ -18,7 +18,17 @@ Implementation status: the extension ships `run`/`stop`/`status`, the
 scripted adapter, the universal PTY adapter for interactive harnesses, the
 `claude-stream` structured adapter, the driver (bootstrap, attach/detach,
 ears, event pump, resume, shutdown), the persona template, the control
-plane, and the rate backstop.
+plane, and the rate backstop. The control policy uses core's shared
+`BaseReactor` lifecycle and reports unexpected control-lane death to the
+foreground driver.
+
+Historical blocker note: the 2026-07-09 process-lane PING failure was traced to
+the dependency release rather than worked around with transient long-lived
+handles or per-turn cleanup. SimpleBroker 5.2.2 was the first release with the
+required persistent-session visibility behavior; 5.3.0 is the supported floor
+because the shared core reactor requires live waiter replacement. The 5.2.0 reactor
+example remains the ownership-model provenance, not the supported runtime
+floor.
 
 ## Governing Spec References
 
@@ -40,9 +50,12 @@ Summon does not build an agent loop. The harness (Claude Code, Codex CLI,
 any resumable streaming CLI) already owns tool dispatch, session state,
 interruption, and permissions. Summon is the agent's *terminal*: it feeds
 chat into the harness's own control loop (the **ears**) and lets the agent
-speak by running the ordinary `taut` CLI (the **mouth**). This is the single
-most load-bearing decision in the design, and it is why the extension needs
-no wire protocol and no core changes beyond two delegation verbs.
+speak by running the ordinary `taut` CLI (the **mouth**) in normal tool-using
+operation. Terminal mode is the narrow exception: parsed assistant text is
+posted through the driver-owned persistent mouth client because the harness has
+no separate tool path. This is the single most load-bearing decision in the
+design, and it is why the extension needs no general wire protocol and no core
+changes beyond two delegation verbs.
 
 The ears are an injected stream. `extensions/taut_summon/taut_summon/_driver.py`
 watches, over the public `TautClient.watch(...)` surface, every thread the
@@ -50,9 +63,11 @@ member has joined plus its notification inbox, and pushes each message into
 the child's stdin as a user-role event ([SUM-5]). The mouth is credential,
 not code: the child environment carries `TAUT_TOKEN` (the member's
 continuity token, [SUM-6]) and, on path-addressed backends, `TAUT_DB`; the
-agent runs `taut say ...` like a human. The driver never posts chat on the
-member's behalf outside terminal mode — a hard invariant, because two
-speakers under one identity is the double-speak failure ([SUM-6]/[SUM-9]).
+agent runs `taut say ...` like a human. Those CLI calls are transient broker
+clients. The terminal-mode mouth path is reactor-owned by the driver and uses
+the driver's persistent client. The driver never posts chat on the member's
+behalf outside terminal mode — a hard invariant, because two speakers under one
+identity is the double-speak failure ([SUM-6]/[SUM-9]).
 
 ### Captive process, free agent ([SUM-2])
 
@@ -88,23 +103,28 @@ running three concurrent lanes that a cold reader must keep distinct:
    then does the driver log `summoned ...`. Tests and operators may use that log
    as a readiness marker because it is downstream of the consumer-ready event,
    not because logging itself synchronizes the watcher.
-   `TautWatcher` deliberately uses the core data-version polling path rather
-   than the broker-native multi-queue activity waiter: a native waiter can miss
-   a write that lands before the first wait call is armed, while data-version
-   polling sees database-wide changes across all watched queues. It also uses
-   non-persistent queue handles so the driver does not keep long-lived SQLite
-   watcher connections open while control clients, provider events, and peer
-   CLI subprocesses are all writing the same fresh database. If the watcher
-   still exhausts its broker retry budget, the supervisor rebuilds the watcher
-   over the same live provider session; only pump exit or injection failure
-   spends the harness crash budget.
+   `TautWatcher` uses persistent owned queue handles because the watcher is a
+   long-lived actor that may be re-queried. It still spends little time in
+   locked database sections: reads and cursor writes are short SimpleBroker
+   operations, removed membership handles are closed with `Queue.close()`, and
+   shutdown closes the owned client. If the watcher exits, the supervisor
+   rebuilds the watcher over the same live provider session; only pump exit or
+   injection failure spends the harness crash budget. Transient CLI clients
+   remain non-persistent.
 2. **Event pump — a dedicated drain thread.** Consumes `events()` for the
    life of the child ([SUM-7.1]): session ids to the ledger, `activity` to
    member liveness via a rate-limited token-selected `whoami()` (the public
    [IAN-3.3] side effect — never a private `_state` reach), assistant text to
    the thread in terminal mode or the log otherwise, and `exit` to the
    [SUM-11] resume path. An undrained stream is a child-stdout deadlock; the
-   pump exists to prevent it and participates in shutdown ordering.
+   pump exists to prevent it and participates in shutdown ordering. Each pump
+   captures one immutable generation context; a lock-backed active-token check
+   is atomic with every ledger, control, presence, chat, driver-field, and wake
+   effect. A checked join retires the token and forbids the next spawn if the
+   pump remains alive. Adapter stream failure may use the provider resume path;
+   broker/storage failure is stored on the generation and transferred to the
+   foreground as a fatal driver error after teardown, never as an unhandled
+   thread exception or a provider crash.
 3. **Control plane — its own consumer thread.** See below.
 
 The backstop audit ([SUM-10]) rides the control thread, not the ears,
@@ -156,12 +176,26 @@ races this pre-watch orientation step, the driver interrupts the handle and
 treats an interrupted `inject()` as a clean stop. Structured adapters keep the
 spawn-time system-prompt path.
 
+PTY construction validates argv, unsigned-short terminal dimensions, and
+finite timing values before publishing a handle. Any setup or `Popen` failure
+closes both fds and becomes `AdapterError`, so malformed environment knobs
+cannot leak a master or escape the CLI as a traceback. The master is made
+nonblocking once before publication. All ordinary writers (injection, attach,
+and terminal replies) share one serializer and a method-entry write epoch;
+interrupt advances the epoch under the lifecycle lock, cancels active and
+queued old-epoch writes, and leaves the next epoch reusable. The epoch check,
+child poll, and each nonblocking `os.write` are one lock-protected action;
+readiness-wait errors from concurrent close are also normalized to
+`AdapterError`.
+
 The fd lifecycle is the load-bearing boundary. `PtyHandle.close()` always
 signals and reaps the child, but closes the master only if no reader has
 started. Once the pump owns the master, the reader closes it on EOF/EIO. The
 driver closes the handle and joins any already-started pump on exceptions
 through bootstrap and the pump hand-off, so a failed rejoin or thread join
-cannot leak a master fd or leave a zombie.
+cannot leak a master fd or leave a zombie. Stream and PTY handles publish their
+closing state before signaling, so injections that begin after close starts
+fail synchronously; concurrent close callers observe the same terminal result.
 
 ### Attach/detach and `wired` ([SUM-7.4], [SUM-8])
 
@@ -207,12 +241,14 @@ that key. This is why a mid-run `taut set name` does not strand the control
 plane, and why re-summoning a renamed-away name creates a fresh member rather
 than adopting the old one.
 
-Every summon state helper wraps its complete sidecar operation in the
-extension's narrow broker retry policy. The retry boundary includes row parsing,
-not just SQL execution: a false SQLite malformed-page read can surface as a
-wrong-shaped row before SimpleBroker raises `DatabaseError`. The parser converts
-that shape failure into the same `malformed` `DatabaseError`, so it retries
-inside the bounded budget and still surfaces if the row is persistently broken.
+Summon state helpers are a thin sidecar layer over SimpleBroker. SQL is fixed
+module-level template text with qmark parameters and one canonical session
+projection; there is no `SELECT *`, no runtime-assembled projection, and no
+taut retry wrapper around sidecar calls. Row-shape failures are Taut contract
+failures and surface immediately. Claim and driver ownership helpers keep
+SQLite write transactions short: they read evidence, release the operation,
+run process-liveness checks outside the write transaction, then perform a short
+predicate-guarded write that rechecks enough ownership to preserve race safety.
 
 The bootstrap's six-step order ([SUM-4]) resolves three constraints at once:
 the token/env cycle (the token must exist before the child is spawned with
@@ -225,9 +261,10 @@ join notice.
 ### Control plane: unregistered `sys.*` queues, weft-congruent verbs ([SUM-9])
 
 `extensions/taut_summon/taut_summon/_control.py` mirrors Weft's task
-control-queue contract by *shape*, never by code: verbs STOP / STATUS / PING,
+control-queue contract and reactor ownership shape: verbs STOP / STATUS / PING,
 single-line JSON bodies keyed `command`/`request_id`, replies correlating by
-`request_id` with a `status` field. The queues derive from the member id
+`request_id` with a `status` field, and a long-lived reactor owning persistent
+queue handles. The queues derive from the member id
 (`sys.ctl_<member-id>` in, `sys.rsp_<member-id>` out) under the `sys` prefix
 [TAUT-4.1] reserves, and are deliberately **unregistered** ([IAN-6.1] as
 amended by the plan's D3): they are invisible broker queues to every core
@@ -236,18 +273,47 @@ surface is exactly its own tables plus plain broker queues, needing no core
 seam. A debugging agent still finds them with `broker -f .taut.db list`
 ([TAUT-3.4]).
 
-The driver consumes control with its own `read_one` consumer (at-most-once:
-a command lost to a driver crash is moot — STOP on a dead driver is
-meaningless, and STATUS/PING requesters retry). `TautClient.watch` is
-chat-only and knows nothing about `sys.*`. Replies go to a **per-request**
-queue `sys.rsp_<member-id>_<request_id>` so concurrent clients from different
-terminals never consume each other's answers. Reply writes use a larger
-transient-broker retry budget than ordinary reads/writes: dropping a STATUS
-reply after a short SQLite contention window makes a healthy driver look
-unresponsive to the client. The control thread stays responsive while an
-`inject()` is blocked on a stalled harness because STOP's path closes the
-adapter handle, which the [SUM-7.1] contract requires to unblock the in-flight
-write.
+The extension sidecar uses the separate reserved broker queue
+`taut.summon_state`. The dot makes it invalid as a Taut chat-channel name, so
+the ledger cannot alias an audited chat queue. The pre-hardening
+`taut_summon_state` queue may remain as inert broker metadata after upgrade;
+the durable summon rows live in sidecar tables and require no row migration.
+
+The driver consumes control with fixed-topology `_ControlReactor`, a policy
+subclass of core's shared `BaseReactor`. It inherits the guarded process/wait/
+stop templates unchanged, owns persistent queue handles, and uses
+SimpleBroker 5.2.0's process-local session plus owner-thread-local core model.
+That preserves at-most-once command semantics: a
+command lost to a driver crash is moot, STOP on a dead driver is meaningless,
+and STATUS/PING requesters retry. `TautClient.watch` is chat-only and knows
+nothing about `sys.*`. Replies go to a **per-request** queue
+`sys.rsp_<member-id>_<request_id>` so concurrent clients from different
+terminals never consume each other's answers. Control reads and writes call
+SimpleBroker queues directly. The only retry Taut owns here is semantic:
+idempotent STATUS/PING clients may resend the same correlated request after no
+reply on the same reply queue. Broker exceptions are not retried by substring.
+The control thread stays responsive while an `inject()` is blocked on a stalled
+harness because STOP's path closes the adapter handle, which the [SUM-7.1]
+contract requires to unblock the in-flight write.
+
+`ControlLoop` is a thin supervisor around replaceable reactor generations.
+Dispatch, native wait, and rate-audit faults are recorded while their current
+stack is live, then classified only after the turn or wait unwinds. A pending
+recoverable fault gates the loop: it builds a complete persistent handle bundle
+off to the side, installs it atomically, closes the retired complete bundle,
+and continues from loop head so no method runs on the old reactor. Partial
+construction closes every resource already created. Failed replacement uses a
+stop-interruptible capped backoff and permits no further old-reactor turn;
+threshold exhaustion is fatal. The rate audit runs at the same between-turn
+seam before the wait timeout is computed, and the timeout is bounded by both
+the inactive probe and next audit deadline.
+
+The driver wraps the control thread with a separate failure event and primary
+exception. Initial open failure, programming failure, exhausted replacement,
+or an unexpected clean return stops the watcher, interrupts the adapter, wakes
+the foreground supervisor, and exits nonzero after normal release cleanup.
+Expected STOP and driver shutdown remain clean exits. Control failure never
+spends the watcher-rebuild or provider-resume budgets.
 
 Control cleanup closes broker handles but does not hard-delete control queues.
 Completed commands and replies are already claim-consumed by `read_one`; every
@@ -269,76 +335,53 @@ member's continuity claim and races the watcher on a UNIQUE constraint; the
 state layer now treats same-member claim insert races as idempotent, but
 late-join audit expansion remains deliberately out of scope for this release.
 
-### The vendored retry: layering, not reaching ([TAUT-3.4])
+### SimpleBroker handle ownership, not a Taut retry layer ([TAUT-3.4])
 
-The added control thread raised WAL concurrency enough to surface a *false*
-`malformed`-page read a fresh reader can see mid-checkpoint — a
-`DatabaseError` that does not subclass `OperationalError`, so SimpleBroker's
-own watcher-retry predicate misses it too. Taut's facades-only rule forbids
-importing `simplebroker._retry`, so the generic engine is **vendored
-byte-identical** into `extensions/taut_summon/taut_summon/_retry.py` (its
-`__version__` documents the vendored version for re-vendoring), and the
-taut-summon retry wrapper sits on top in
-`extensions/taut_summon/taut_summon/_broker_retry.py` — exactly as
-`simplebroker/helpers.py` layers its own policy over the same engine. The
-shared predicate lives in `taut/_broker_retry.py` so core `TautClient`,
-`TautWatcher`, and summon control/state paths classify the same public-wrapper
-failure shapes. It is narrowed to known SQLite transient markers (lock/busy,
-malformed-page false reads, and the SQLite `OperationalError("disk I/O error")`
-shape seen under WAL churn) and honors the `retryable` attribute; it also
-recognizes SimpleBroker's connection-open
-`RuntimeError("Failed to get database connection: ...")` wrapper only when the
-wrapped message carries one of those same markers. Thus genuine corruption
-still surfaces rather than dying silent. Control-drain
-failures are split by recovery boundary: non-recoverable faults mark
-`control_health: degraded` immediately because STOP/STATUS/PING depend on that
-path; recoverable long-lived-handle faults close and reopen the driver's broker
-handles so queued requests can be consumed on the next cadence, and degrade
-only after repeated consecutive failures. Control-reply writes use the same
-handle-reopen rule after their bounded retry budget: one lost STATUS/PING reply
-is recoverable because idempotent clients retry on the same reply route, but
-continuing on the same bad broker handle can make a live driver look silent.
-Rate-audit failures use the same recoverable boundary. The audit is a backstop,
-so a single skipped pass under heavy local process churn is logged and retried
-without making a live driver look control-dead.
+Summon follows the same ownership rule as Weft's `BaseTask`: SimpleBroker owns
+queue mechanics and retry; Taut owns domain state, control correlation, and
+handle lifetime. `TautClient.queue()` returns a plain `simplebroker.Queue`.
+Long-lived actors use persistent owned handles: the chat watcher, summon
+control loop, driver ledger client, watcher client, and terminal-mode mouth
+client. One-shot paths use transient handles: ordinary `taut say`, CLI
+`status`/`stop`, per-request reply queues, and short support reads outside
+loops. Owned lifetime ends with `Queue.close()` or `TautClient.close()`;
+`cleanup_connections()` is reserved for in-place recovery when the queue lease
+must remain alive.
 
-Core `TautWatcher` also retries the same known transient SQLite sidecar shapes
-around queue pending probes, message fetches, cursor advancement, and membership
-reads. The retry is local to those public broker operations and still lets
-non-transient errors escape; it exists to keep a false WAL-page read from
-collapsing a live summon provider into the harness-resume path.
+If a broker fault surfaces on a long-lived control path, summon records health
+detail and defers complete handle replacement to the control owner's
+between-turn seam. It never closes a reactor from its handler, error callback,
+or inherited wait template. It does not classify
+`malformed`, magic mismatch, disk I/O, timestamp row-shape, or
+`malformed summon session row` errors as transient in Taut. If SimpleBroker
+still leaks a lock/busy contention failure after its own budget, the fix belongs
+in SimpleBroker or the dependency selection, not in a second retry wrapper.
+SimpleBroker 5.3.0 is the minimum supported runtime. Its reference reactor and
+persistent session design provide one process-local session with
+owner-thread-local cores;
+the 5.1.x per-operation release pattern was buggy and is unsupported.
 
-Core `TautClient` queue construction uses `taut/_queue.py`'s `RetryingQueue`
-wrapper for the same reason: a peer `taut say` subprocess is part of the
-summon process contract, and it must not fail merely because a driver/control
-process briefly exposed a retryable SQLite/WAL connection-open or timestamp
-parse transient. The wrapper retries public queue methods and sidecar SQL
-statements, not whole CLI commands, so it does not duplicate a message after a
-successful insert.
-
-`taut-summon stop/status` use that same policy while resolving the current
-member name and while writing/reading control replies. If the bounded budget is
-exhausted on a known transient, the CLI reports an exit-1 control failure rather
-than leaking a Python traceback; if the error is outside the narrow predicate,
-it still propagates.
+The real-process test harness follows the same posture. Readiness is a
+correlated PING/STATUS reply from the expected driver evidence; session rows and
+logs are diagnostics. The harness must not hide a malformed session row as "not
+ready" and must not create tight fresh-client polling loops that amplify SQLite
+connection churn.
 
 The real-process summon test lane uses a correctness-first SQLite posture:
 `BROKER_AUTO_VACUUM=0` removes test-only maintenance writes, while
 `BROKER_SYNC_MODE=FULL` keeps SQLite's default sync semantics. The lane is slow
 by design because it starts real driver/provider/CLI processes; downgrading sync
-to `NORMAL` made CI more likely to surface false malformed-page reads under WAL
-churn and hid the summon contract behind storage noise. Its bootstrap PING
-barrier uses a per-request timeout that exceeds one broker retry budget; a
-shorter probe can falsely report a live driver as silent while the control loop
-is correctly riding out a transient SQLite read/open failure.
+to `NORMAL` made CI more likely to surface storage noise. Its bootstrap PING
+barrier is a live control proof with a separately bounded overall readiness
+deadline, not a ledger-polling loop.
 
 ### SimpleBroker facade boundary
 
 The extension holds to core's dependency posture: it imports from
-`simplebroker` and `simplebroker.ext` only (plus the one vendored engine
-above), runs no SQL against broker-owned tables, and touches core solely
-through public `TautClient`/`taut.identity` seams. The adapters supervise
-real child processes over real pipes; the shared stream-json plumbing lives
+`simplebroker` and `simplebroker.ext` only, runs no SQL against broker-owned
+tables, and touches core through the public `TautClient`, `taut.identity`,
+`taut.addressing`, `taut.envelope`, and `taut.watcher` seams. The adapters
+supervise real child processes over real pipes; the shared stream-json plumbing lives
 in `extensions/taut_summon/taut_summon/_stream.py` so both shipped adapters
 share the [SUM-7.1] handle mechanics (flushed inject, thread-safe
 interrupt/close, single-consumer events) once.
@@ -380,7 +423,7 @@ interrupt/close, single-consumer events) once.
 | `extensions/taut_summon/taut_summon/cli.py` | `run`/`stop`/`status` argparse, [SUM-3] name/provider resolution, exit-code mapping |
 | `extensions/taut_summon/taut_summon/_driver.py` | Bootstrap ([SUM-4]), ears watch handler, event pump, resume, shutdown; `format_injection` ([SUM-5.2]) |
 | `extensions/taut_summon/taut_summon/_state.py` | The two-table ledger, claim/session helpers, single-driver guard evidence ([SUM-8]) |
-| `extensions/taut_summon/taut_summon/_control.py` | Control loop + client, `sys.*` queue derivation, rate backstop ([SUM-9]/[SUM-10]) |
+| `extensions/taut_summon/taut_summon/_control.py` | Fixed `_ControlReactor`, between-turn replacement supervisor, client, `sys.*` queue derivation, rate backstop ([SUM-9]/[SUM-10]/[SUM-11]) |
 | `extensions/taut_summon/taut_summon/_adapter.py` | `ProviderAdapter` protocol, `AdapterEvent` union, adapter registry ([SUM-7.1]) |
 | `extensions/taut_summon/taut_summon/_stream.py` | Shared stream-json child-process handle mechanics for both adapters |
 | `extensions/taut_summon/taut_summon/_pty.py` | Universal interactive PTY adapter, terminal-query responder, attach bridge, and PTY fd lifecycle |
@@ -388,8 +431,6 @@ interrupt/close, single-consumer events) once.
 | `extensions/taut_summon/taut_summon/scripted_provider.py` | The scripted provider program spawned as the harness child |
 | `extensions/taut_summon/taut_summon/_claude.py` | The `claude-stream` adapter: headless stream-json, resume, event translation |
 | `extensions/taut_summon/taut_summon/_persona.py` | The default persona template ([SUM-10]) and env assembly |
-| `extensions/taut_summon/taut_summon/_retry.py` | Vendored byte-identical `simplebroker._retry` engine (re-vendor via `__version__`) |
-| `extensions/taut_summon/taut_summon/_broker_retry.py` | The taut-summon retry policy layered over the vendored engine |
 | `extensions/taut_summon/tests/conftest.py` | The shared real-process driver harness (`DriverProcess`) and fixtures |
 | `extensions/taut_summon/tests/test_conformance.py` | The portable, parameterized [SUM-12] conformance suite |
 | `extensions/taut_summon/tests/test_live_local_llm.py` | The CI-safe local-LLM PTY smoke: loopback model endpoint, counting proxy, orientation, and `taut say` sentinel |
@@ -405,7 +446,7 @@ interrupt/close, single-consumer events) once.
 | [SUM-7.1], [SUM-7.2], adapters | `extensions/taut_summon/taut_summon/_adapter.py`, `extensions/taut_summon/taut_summon/_stream.py`, `extensions/taut_summon/taut_summon/_pty.py`, `extensions/taut_summon/taut_summon/_scripted.py`, `extensions/taut_summon/taut_summon/_claude.py` | `extensions/taut_summon/tests/test_scripted_adapter.py`, `extensions/taut_summon/tests/test_claude_adapter.py`, `extensions/taut_summon/tests/test_pty_adapter.py` |
 | [SUM-7.4], PTY shell adapter | `extensions/taut_summon/taut_summon/_pty.py`, `extensions/taut_summon/taut_summon/_driver.py` | `extensions/taut_summon/tests/test_pty_adapter.py`, PTY cases in `extensions/taut_summon/tests/test_driver.py`, `extensions/taut_summon/tests/test_live_harness.py` |
 | [SUM-8], session ledger and guard | `extensions/taut_summon/taut_summon/_state.py` | `extensions/taut_summon/tests/test_state.py`, `extensions/taut_summon/tests/test_driver.py` |
-| [SUM-9], [SUM-10], control plane and backstop | `extensions/taut_summon/taut_summon/_control.py`, `extensions/taut_summon/taut_summon/_broker_retry.py`, `extensions/taut_summon/taut_summon/_retry.py` | `extensions/taut_summon/tests/test_control.py`, `extensions/taut_summon/tests/test_driver.py` |
+| [SUM-9], [SUM-10], [SUM-11], control lifecycle, backstop, recovery, and fatal supervision | `extensions/taut_summon/taut_summon/_control.py::_ControlReactor`, `extensions/taut_summon/taut_summon/_control.py::ControlLoop`, `extensions/taut_summon/taut_summon/_driver.py::SummonDriver._run_control_loop`, `_report_control_failure`, `_raise_if_control_failed` | `extensions/taut_summon/tests/test_control.py` fixed topology, ownership, native wake, inter-turn recovery, audit, partial-bundle, and close tests; `extensions/taut_summon/tests/test_driver.py::test_control_loop_exception_is_driver_fatal`, `test_unexpected_clean_control_loop_return_is_driver_fatal`, `test_initial_control_open_failure_is_driver_fatal`, and real-process fatal-control/STOP/PING cases |
 | [SUM-12], conformance | (all of the above) | `extensions/taut_summon/tests/test_conformance.py`, `extensions/taut_summon/tests/test_live_harness.py`, `extensions/taut_summon/tests/test_live_local_llm.py` |
 
 ## Change Guidance
@@ -435,9 +476,19 @@ rather than after the broad root and summon unit suites in the same runner.
 
 ## Related Plans
 
+- `docs/plans/2026-07-10-taut-dynamic-native-waiter-replacement-plan.md` — the
+  shared-core waiter replacement follow-on; Summon's control reactor remains
+  fixed-topology.
 - `docs/plans/2026-07-06-taut-summon-plan.md` — the implementing plan
   (spec promotion, extension package, delegation verbs, ledger, adapters,
   driver, control plane, conformance suite)
 - `docs/plans/2026-07-07-taut-summon-pty-harness-adapter-plan.md` — the
   universal PTY adapter, attach/detach, `wired` schema, provider registry, and
   live harness conformance plan
+- `docs/plans/2026-07-08-taut-sqlite-contention-hardening-plan.md` — the
+  SQLite contention hardening plan: live STATUS/readiness evidence,
+  SimpleBroker handle ownership, integrity probes, and watcher handle lifetime
+  proof
+- `docs/plans/2026-07-09-taut-reactor-safety-plan.md` — implemented shared
+  reactor lifecycle, Summon inter-turn recovery, native control wake, and
+  fatal control-lane supervision

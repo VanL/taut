@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 
 from simplebroker import (
     BrokerTarget,
+    Queue,
     target_for_directory,
 )
 
@@ -24,7 +25,6 @@ from taut._constants import (
     load_config,
 )
 from taut._exceptions import TautError
-from taut._queue import RetryingQueue
 from taut.state import SqlSidecarTautState, dialect_for_taut_target
 
 from ._base import (
@@ -101,7 +101,7 @@ class TautClient(
                 raise TautError(f"cannot create {db_file}: {parent} is not a directory")
             if not os.access(parent, os.W_OK | os.X_OK):
                 raise TautError(f"cannot create {db_file}: {parent} is not writable")
-        queue = RetryingQueue(META_QUEUE_NAME, db_path=target, config=config)
+        queue = Queue(META_QUEUE_NAME, db_path=target, config=config)
         try:
             SqlSidecarTautState(
                 queue,
@@ -119,6 +119,7 @@ class TautClient(
         handler: Callable[[Message | Notification], None],
         *,
         threads: list[str] | None = None,
+        persistent: bool = True,
     ) -> TautWatcher:
         from taut.client._watching import _watch_runtime_for_client
         from taut.watcher import TautWatcher
@@ -127,10 +128,11 @@ class TautClient(
         resolved = self._resolve_member(create=False)
         member = self._require_member(resolved)
         return TautWatcher(
-            _watch_runtime_for_client(self),
+            _watch_runtime_for_client(self, persistent=persistent),
             member["member_id"],
             handler,
             threads=threads,
+            persistent=persistent,
         )
 
 

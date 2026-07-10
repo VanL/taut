@@ -176,9 +176,18 @@ class SqlSidecarTautState:
         update_member_activity(self.queue, member_id, active_ts)
 
     def update_member_persona(
-        self, member_id: str, persona: str | None
+        self,
+        member_id: str,
+        persona: str | None,
+        *,
+        active_ts: int | None = None,
     ) -> MemberRow | None:
-        return update_member_persona(self.queue, member_id, persona)
+        return update_member_persona(
+            self.queue,
+            member_id,
+            persona,
+            active_ts=active_ts,
+        )
 
     def update_member_name(self, member_id: str, display_name: str) -> MemberRow:
         return update_member_name(self.queue, member_id, display_name)
@@ -481,7 +490,11 @@ def update_member_activity(queue: Queue, member_id: str, active_ts: int) -> None
 
 
 def update_member_persona(
-    queue: Queue, member_id: str, persona: str | None
+    queue: Queue,
+    member_id: str,
+    persona: str | None,
+    *,
+    active_ts: int | None = None,
 ) -> MemberRow | None:
     with queue.sidecar(transaction=True) as session:
         row = _one(session, _member_select("member_id = ?"), (member_id,))
@@ -493,11 +506,22 @@ def update_member_persona(
             meta.pop("persona", None)
         else:
             meta["persona"] = persona
-        session.run(
-            "UPDATE taut_members SET meta = ? WHERE member_id = ?",
-            (_json_dumps(meta), member_id),
-        )
-    return get_member(queue, member_id)
+        if active_ts is None:
+            session.run(
+                "UPDATE taut_members SET meta = ? WHERE member_id = ?",
+                (_json_dumps(meta), member_id),
+            )
+        else:
+            session.run(
+                """
+                UPDATE taut_members
+                SET meta = ?, last_active_ts = CASE
+                    WHEN last_active_ts < ? THEN ? ELSE last_active_ts END
+                WHERE member_id = ?
+                """,
+                (_json_dumps(meta), active_ts, active_ts, member_id),
+            )
+        return _member_row(_one(session, _member_select("member_id = ?"), (member_id,)))
 
 
 def update_member_name(queue: Queue, member_id: str, display_name: str) -> MemberRow:

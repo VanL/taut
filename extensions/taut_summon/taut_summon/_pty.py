@@ -11,6 +11,7 @@ from __future__ import annotations
 import errno
 import fcntl
 import logging
+import math
 import os
 import pty
 import queue
@@ -18,6 +19,7 @@ import select
 import signal
 import struct
 import subprocess
+import sys
 import termios
 import threading
 import time
@@ -57,7 +59,11 @@ _TTY_RESET = (
 
 @dataclass(frozen=True, slots=True)
 class PtySpec:
-    """One interactive harness launch shape."""
+    """One validated launch shape.
+
+    Dimensions must fit the unsigned-short PTY winsize fields. Stall and
+    settle deadlines are finite and positive; a zero quiet interval is valid.
+    """
 
     name: str
     argv: tuple[str, ...]
@@ -74,9 +80,11 @@ class PtyAdapter:
     supports_terminal_mode: bool = False
     supports_attach: bool = True
     orientation_via_inject: bool = True
+    emits_session_events: bool = False
 
     def __init__(self, spec: PtySpec | None = None) -> None:
         self._spec = spec or PtySpec(name="pty", argv=(os.environ.get("SHELL", "sh"),))
+        _validate_spec(self._spec)
         self.name = self._spec.name
 
     @property
@@ -92,12 +100,13 @@ class PtyAdapter:
     ) -> PtyHandle:
         del session_id, system_prompt
         master_fd, slave_fd = pty.openpty()
-        _set_winsize(slave_fd, self._spec.rows, self._spec.cols)
         child_env = dict(os.environ)
         child_env.update(env)
         child_env["TERM"] = "xterm-256color"
         child_env.setdefault("COLORTERM", "truecolor")
         try:
+            _set_winsize(slave_fd, self._spec.rows, self._spec.cols)
+            _set_nonblocking(master_fd)
             proc = subprocess.Popen(
                 list(self._spec.argv),
                 stdin=slave_fd,
@@ -107,9 +116,11 @@ class PtyAdapter:
                 close_fds=True,
                 start_new_session=True,
             )
-        except OSError as exc:
-            os.close(master_fd)
-            os.close(slave_fd)
+        except Exception as exc:
+            try:
+                os.close(master_fd)
+            except OSError as cleanup_exc:
+                exc.add_note(f"PTY master cleanup also failed: {cleanup_exc}")
             raise AdapterError(f"failed to spawn PTY harness: {exc}") from exc
         finally:
             try:
@@ -149,11 +160,15 @@ class PtyHandle:
         self._quiet_s = quiet_ms / 1000.0
         self._max_settle_s = max_settle_s
         self._responder = _TerminalResponder(rows=rows, cols=cols)
-        self._lifecycle_lock = threading.Lock()
+        self._lifecycle_lock = threading.RLock()
         self._events_lock = threading.Lock()
-        self._inject_lock = threading.Lock()
+        self._normal_writer_lock = threading.Lock()
         self._events_claimed = False
-        self._interrupt_requested = threading.Event()
+        self._write_epoch = 0
+        self._retired = False
+        self._close_condition = threading.Condition(self._lifecycle_lock)
+        self._close_state = "open"
+        self._close_error: str | None = None
         self._reader_started = False
         self._reader_started_event = threading.Event()
         self._master_closed = False
@@ -286,8 +301,7 @@ class PtyHandle:
             payload = ESC + b"[200~" + sanitized.encode() + ESC + b"[201~\r"
         else:
             payload = sanitized.replace("\n", " ").encode() + b"\r"
-        with self._inject_lock:
-            self._write_all(payload)
+        self._write_all(payload)
         self._pending_events.put(ActivityEvent(description="inject"))
 
     def events(self) -> Iterator[AdapterEvent]:
@@ -300,21 +314,74 @@ class PtyHandle:
         return self._event_stream()
 
     def interrupt(self) -> None:
-        self._interrupt_requested.set()
-        if not self._write_interrupt_best_effort():
+        with self._lifecycle_lock:
+            if self._retired or self._master_closed:
+                return
+            self._write_epoch += 1
+            wrote_interrupt = self._write_interrupt_unlocked()
+        if not wrote_interrupt:
             self._signal_process_group(signal.SIGTERM)
 
     def close(self) -> None:
-        self._interrupt_requested.set()
-        with self._lifecycle_lock:
-            reader_started = self._reader_started
-            master_closed = self._master_closed
-        self._write_interrupt_best_effort()
-        self._reap_child()
-        if not reader_started:
-            with self._lifecycle_lock:
-                if not master_closed:
-                    self._close_master_unlocked()
+        primary_error = sys.exception()
+        owns_close = False
+        with self._close_condition:
+            if self._close_state == "closed":
+                close_error = self._close_error
+            elif self._close_state == "closing":
+                self._close_condition.wait_for(lambda: self._close_state == "closed")
+                close_error = self._close_error
+            else:
+                self._close_state = "closing"
+                self._retired = True
+                self._write_epoch += 1
+                owns_close = True
+                close_error = None
+
+        if not owns_close:
+            self._raise_close_error(close_error, primary_error)
+            return
+
+        failure: AdapterError | None = None
+        try:
+            self._write_interrupt_best_effort()
+            self._reap_child()
+        except AdapterError as exc:
+            failure = exc
+        except Exception as exc:  # pragma: no cover - defensive Popen boundary
+            failure = AdapterError(f"PTY child cleanup failed: {exc}")
+            failure.__cause__ = exc
+        finally:
+            with self._close_condition:
+                try:
+                    if (
+                        failure is not None or not self._reader_started
+                    ) and not self._master_closed:
+                        self._close_master_unlocked()
+                except OSError as exc:
+                    cleanup_failure = AdapterError(f"PTY master cleanup failed: {exc}")
+                    cleanup_failure.__cause__ = exc
+                    if failure is None:
+                        failure = cleanup_failure
+                    else:
+                        failure.add_note(str(cleanup_failure))
+                close_error = str(failure) if failure is not None else None
+                self._close_error = close_error
+                self._close_state = "closed"
+                self._close_condition.notify_all()
+
+        self._raise_close_error(close_error, primary_error)
+
+    @staticmethod
+    def _raise_close_error(
+        close_error: str | None, primary_error: BaseException | None
+    ) -> None:
+        if close_error is None:
+            return
+        if primary_error is not None:
+            primary_error.add_note(f"adapter cleanup also failed: {close_error}")
+            return
+        raise AdapterError(close_error)
 
     def _event_stream(self) -> Iterator[AdapterEvent]:
         with self._lifecycle_lock:
@@ -384,6 +451,12 @@ class PtyHandle:
         if self._exit_emitted:
             return
         self._exit_emitted = True
+        with self._close_condition:
+            if self._close_state == "closing":
+                self._close_condition.wait_for(lambda: self._close_state == "closed")
+            close_error = self._close_error if self._close_state == "closed" else None
+        if close_error is not None:
+            raise AdapterError(close_error)
         if self._proc.poll() is None:
             self._reap_child()
         returncode = self._proc.returncode
@@ -391,42 +464,43 @@ class PtyHandle:
 
     def _write_all(self, data: bytes) -> None:
         offset = 0
-        original_flags: int | None = None
         fd: int | None = None
-        try:
+        with self._lifecycle_lock:
+            if self._retired or self._master_closed:
+                raise AdapterError("PTY master is closed")
+            write_epoch = self._write_epoch
+        with self._normal_writer_lock:
             with self._lifecycle_lock:
-                if self._master_closed:
+                if self._retired or self._master_closed:
                     raise AdapterError("PTY master is closed")
-                if self._interrupt_requested.is_set():
+                if write_epoch != self._write_epoch:
                     raise AdapterError("PTY write interrupted")
                 fd = self._master_fd
-            original_flags = fcntl.fcntl(fd, fcntl.F_GETFL)
-            fcntl.fcntl(fd, fcntl.F_SETFL, original_flags | os.O_NONBLOCK)
             while offset < len(data):
+                written: int | None
                 with self._lifecycle_lock:
-                    if self._master_closed:
+                    if self._retired or self._master_closed:
                         raise AdapterError("PTY master is closed")
-                    if self._interrupt_requested.is_set():
+                    if write_epoch != self._write_epoch:
                         raise AdapterError("PTY write interrupted")
                     fd = self._master_fd
-                if self._proc.poll() is not None:
-                    raise AdapterError("PTY child exited during write")
-                try:
-                    written = os.write(fd, data[offset:])
-                except BlockingIOError:
-                    select.select([], [fd], [], 0.05)
+                    if self._proc.poll() is not None:
+                        raise AdapterError("PTY child exited during write")
+                    try:
+                        written = os.write(fd, data[offset:])
+                    except BlockingIOError:
+                        written = None
+                    except OSError as exc:
+                        raise AdapterError(f"PTY write failed: {exc}") from exc
+                if written is None:
+                    try:
+                        select.select([], [fd], [], 0.05)
+                    except (OSError, ValueError) as exc:
+                        raise AdapterError(f"PTY write wait failed: {exc}") from exc
                     continue
-                except OSError as exc:
-                    raise AdapterError(f"PTY write failed: {exc}") from exc
                 if written <= 0:
                     raise AdapterError("PTY write wrote no bytes")
                 offset += written
-        finally:
-            if fd is not None and original_flags is not None:
-                try:
-                    fcntl.fcntl(fd, fcntl.F_SETFL, original_flags)
-                except OSError:
-                    pass
 
     def _write_best_effort(self, data: bytes) -> None:
         try:
@@ -436,19 +510,19 @@ class PtyHandle:
 
     def _write_interrupt_best_effort(self) -> bool:
         with self._lifecycle_lock:
-            if self._master_closed:
-                return False
-            fd = self._master_fd
+            return self._write_interrupt_unlocked()
+
+    def _write_interrupt_unlocked(self) -> bool:
+        """Write Ctrl-C while lifecycle ownership pins the master fd."""
+
+        if self._master_closed:
+            return False
+        fd = self._master_fd
         try:
-            flags = fcntl.fcntl(fd, fcntl.F_GETFL)
-            fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
-            try:
-                os.write(fd, b"\x03")
-            except BlockingIOError:
-                return False
-            finally:
-                fcntl.fcntl(fd, fcntl.F_SETFL, flags)
+            os.write(fd, b"\x03")
             return True
+        except BlockingIOError:
+            return False
         except OSError:
             return False
 
@@ -468,11 +542,12 @@ class PtyHandle:
     def _reap_child(self) -> None:
         if self._proc.poll() is not None:
             return
+        last_timeout: subprocess.TimeoutExpired | None = None
         try:
             self._proc.wait(timeout=0.3)
             return
-        except subprocess.TimeoutExpired:
-            pass
+        except subprocess.TimeoutExpired as exc:
+            last_timeout = exc
         for sig, timeout in ((signal.SIGTERM, 2.0), (signal.SIGKILL, 2.0)):
             if self._proc.poll() is not None:
                 return
@@ -480,16 +555,71 @@ class PtyHandle:
             try:
                 self._proc.wait(timeout=timeout)
                 return
-            except subprocess.TimeoutExpired:
+            except subprocess.TimeoutExpired as exc:
+                last_timeout = exc
                 continue
+        raise AdapterError("PTY child did not exit after SIGKILL") from last_timeout
 
     def _close_master_unlocked(self) -> None:
+        if self._master_closed:
+            return
         self._master_closed = True
         try:
             os.close(self._master_fd)
         except OSError as exc:
             if exc.errno != errno.EBADF:
                 raise
+
+
+def _validate_spec(spec: PtySpec) -> None:
+    """Validate the one central PTY construction boundary."""
+
+    if not spec.argv or not all(isinstance(item, str) and item for item in spec.argv):
+        raise AdapterError(
+            "argv (TAUT_SUMMON_PTY_ARGV) must be a non-empty string sequence"
+        )
+    for field, env_name, dimension_value in (
+        ("rows", "TAUT_SUMMON_PTY_ROWS", spec.rows),
+        ("cols", "TAUT_SUMMON_PTY_COLS", spec.cols),
+    ):
+        if (
+            isinstance(dimension_value, bool)
+            or not isinstance(dimension_value, int)
+            or not 1 <= dimension_value <= 65_535
+        ):
+            raise AdapterError(f"{field} ({env_name}) must be between 1 and 65535")
+    for field, env_name, timing_value in (
+        ("stall_s", "TAUT_SUMMON_PTY_STALL_S", spec.stall_s),
+        ("max_settle_s", "TAUT_SUMMON_PTY_MAX_SETTLE_S", spec.max_settle_s),
+    ):
+        if isinstance(timing_value, bool) or not isinstance(timing_value, (int, float)):
+            raise AdapterError(f"{field} ({env_name}) must be a finite positive number")
+        try:
+            finite_timing = float(timing_value)
+        except OverflowError as exc:
+            raise AdapterError(
+                f"{field} ({env_name}) must be a finite positive number"
+            ) from exc
+        if not math.isfinite(finite_timing) or finite_timing <= 0:
+            raise AdapterError(f"{field} ({env_name}) must be a finite positive number")
+    if (
+        isinstance(spec.quiet_ms, bool)
+        or not isinstance(spec.quiet_ms, int)
+        or spec.quiet_ms < 0
+    ):
+        raise AdapterError(
+            "quiet_ms (TAUT_SUMMON_PTY_QUIET_MS) must be a non-negative integer"
+        )
+    try:
+        quiet_seconds = spec.quiet_ms / 1000.0
+    except OverflowError as exc:
+        raise AdapterError(
+            "quiet_ms (TAUT_SUMMON_PTY_QUIET_MS) must produce finite seconds"
+        ) from exc
+    if not math.isfinite(quiet_seconds):
+        raise AdapterError(
+            "quiet_ms (TAUT_SUMMON_PTY_QUIET_MS) must produce finite seconds"
+        )
 
 
 class _TerminalResponder:
@@ -650,6 +780,11 @@ class _TerminalResponder:
 
 def _set_winsize(fd: int, rows: int, cols: int) -> None:
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+
+
+def _set_nonblocking(fd: int) -> None:
+    flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+    fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
 
 
 def _parse_int(raw: bytes, *, default: int) -> int:

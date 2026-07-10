@@ -16,6 +16,8 @@ concurrency:
 jobs:
   test:
     uses: ./.github/workflows/test.yml
+    with:
+      verify_paired_reactor_artifacts: true
     permissions:
       contents: read
 

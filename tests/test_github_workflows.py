@@ -18,6 +18,16 @@ def test_test_workflow_is_reusable_and_runs_release_gates() -> None:
     workflow = _workflow("test.yml")
 
     assert "workflow_call:" in workflow
+    assert "verify_paired_reactor_artifacts:" in workflow
+    assert "type: boolean" in workflow
+    assert "default: false" in workflow
+    assert "if: ${{ inputs.verify_paired_reactor_artifacts }}" in workflow
+    assert "python bin/verify-reactor-release-artifacts.py" in workflow
+    core_build = workflow.index("- name: Build package")
+    summon_build = workflow.index("- name: Build taut-summon extension package")
+    paired_verify = workflow.index("- name: Verify fresh paired reactor artifacts")
+    wheel_smoke = workflow.index("- name: Smoke test built wheel")
+    assert core_build < summon_build < paired_verify < wheel_smoke
     assert "pytest -v --tb=short" in workflow
     assert "summon-process:" in workflow
     assert "name: taut-summon process" in workflow
@@ -80,6 +90,7 @@ def test_release_gate_runs_tests_before_publishing() -> None:
 
     assert test_position < publish_position
     assert pg_test_position < publish_position
+    assert "verify_paired_reactor_artifacts: true" in workflow
     assert "verify-tag-current:" in workflow
     assert "expected: ${EXPECTED_SHA}" in workflow
 
@@ -112,6 +123,7 @@ def test_pg_release_gate_is_github_only() -> None:
     assert "uv publish" not in lower_workflow
     assert "pypi" not in lower_workflow
     assert "trusted-publishing" not in lower_workflow
+    assert "verify_paired_reactor_artifacts: true" not in workflow
 
 
 def test_summon_release_gate_is_github_only() -> None:
@@ -124,6 +136,7 @@ def test_summon_release_gate_is_github_only() -> None:
     assert "package_name: taut-summon" in workflow
     assert "package_dir: extensions/taut_summon" in workflow
     assert "verify-tag-current:" in workflow
+    assert "verify_paired_reactor_artifacts: true" in workflow
     assert "uv publish" not in lower_workflow
     assert "pypi" not in lower_workflow
     assert "trusted-publishing" not in lower_workflow

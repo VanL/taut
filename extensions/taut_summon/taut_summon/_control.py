@@ -3,11 +3,9 @@
 Congruent with Weft's task control-queue contract (``command``/``request_id``
 JSON subset; verbs STOP / STATUS / PING). Two roles live here:
 
-- **Driver side** (:class:`ControlLoop`): a dedicated consumer thread that
-  claim-consumes ``sys.ctl_<member-id>`` with the public ``simplebroker``
-  ``read_one`` (at-most-once — a command lost to a driver crash is moot:
-  STOP on a dead driver is meaningless, and STATUS/PING requesters retry on
-  timeout), dispatches the verbs, and replies on the requester's
+- **Driver side** (:class:`ControlLoop`): a reactor-owned consumer lane that
+  reads ``sys.ctl_<member-id>`` with the public ``simplebroker`` queue surface,
+  dispatches the verbs, and replies on the requester's
   **per-request** queue ``sys.rsp_<member-id>_<request_id>`` (see below).
   ``TautClient.watch`` is chat-only and knows nothing about ``sys.*``
   ([SUM-9]). The same thread runs the [SUM-10] rate backstop audit on its
@@ -44,13 +42,16 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 from simplebroker import Queue
-from simplebroker.ext import BrokerError, OperationalError
+from simplebroker.ext import BrokerError, StopWatching
 
 from taut import TautClient, TautError
 from taut.envelope import decode_envelope
+from taut.watcher import (
+    BaseReactor,
+    QueueMessageContext,
+    QueueMode,
+)
 from taut_summon._adapter import AdapterError, AdapterHandle
-from taut_summon._broker_retry import broker_retry, is_transient_broker_error
-from taut_summon._state import SummonStateError, get_session
 
 logger = logging.getLogger("taut_summon.control")
 
@@ -63,8 +64,6 @@ _KNOWN_COMMANDS = frozenset({CONTROL_STOP, CONTROL_STATUS, CONTROL_PING})
 _DEFAULT_RATE_LIMIT = 60
 _RATE_WINDOW_SECONDS = 60.0
 _STOP_ACK_TIMEOUT_SECONDS = 60.0
-_CONTROL_DRAIN_RETRY_ATTEMPTS = 90
-_CONTROL_REPLY_RETRY_ATTEMPTS = 120
 _CONTROL_REQUEST_RETRY_INTERVAL_SECONDS = 5.0
 _IDEMPOTENT_RETRY_COMMANDS = frozenset({CONTROL_STATUS, CONTROL_PING})
 _RATE_AUDIT_RECOVERABLE_FAILURES_BEFORE_DEGRADED = 3
@@ -86,13 +85,19 @@ _STATUS_RESERVED_KEYS = frozenset(
         "health_detail",
     }
 )
+_CONTROL_FAULT_PLANE_ATTR = "_taut_summon_control_fault_plane"
 
 
-def _is_recoverable_control_broker_error(exc: Exception) -> bool:
-    if is_transient_broker_error(exc):
-        return True
-    message = str(exc).lower()
-    return isinstance(exc, OperationalError) and "disk i/o error" in message
+def _tag_control_fault(exc: Exception, plane: str) -> Exception:
+    try:
+        setattr(exc, _CONTROL_FAULT_PLANE_ATTR, plane)
+    except Exception:  # pragma: no cover - unusual immutable exception object
+        logger.debug("could not tag control fault plane", exc_info=True)
+    return exc
+
+
+def _is_broker_surface_failure(exc: Exception) -> bool:
+    return isinstance(exc, (BrokerError, OSError))
 
 
 # --- queue derivation (beside taut.addressing's shapes) -----------------------
@@ -252,6 +257,66 @@ class _BrokerHandles:
     ctl_out: Queue
     ledger: Queue
     thread_queues: dict[str, Queue]
+    control_reactor: _ControlReactor | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingControlFault:
+    """A control-owner fault that may only be resolved between turns."""
+
+    where: str
+    primary: Exception
+    recoverable: bool
+
+
+class _ControlReactor(BaseReactor):
+    """BaseTask-shaped control reactor for one summon control queue."""
+
+    def __init__(
+        self,
+        owner: ControlLoop,
+        *,
+        db: Any,
+        config: dict[str, Any],
+    ) -> None:
+        self._owner = owner
+        self._queue_name = control_in_queue_name(owner._member_id)
+        super().__init__(
+            {
+                self._queue_name: {
+                    "handler": self._handle_control_message,
+                    "mode": QueueMode.READ,
+                    "error_handler": self._handle_control_error,
+                }
+            },
+            db=db,
+            stop_event=threading.Event(),
+            persistent=True,
+            inactive_probe_interval=owner._interval,
+            config=config,
+        )
+        self._queue(self._queue_name)
+
+    def _handle_control_message(
+        self, body: str, timestamp: int, context: QueueMessageContext
+    ) -> None:
+        self._owner._handle_control_message(body, timestamp, context)
+
+    def _handle_control_error(
+        self, exc: Exception, _message: str, _timestamp: int
+    ) -> bool | None:
+        return self._owner._handle_control_error(exc, _message, _timestamp)
+
+    def _drain_queue(self) -> None:
+        if self._owner._pending_stop_seen:
+            return
+        before_failures = self._owner._control_drain_recoverable_failures
+        super()._drain_queue()
+        if (
+            self._owner._control_drain_recoverable_failures == before_failures
+            and not self._owner._pending_stop_seen
+        ):
+            self._owner._control_drain_recoverable_failures = 0
 
 
 class ControlLoop:
@@ -274,6 +339,7 @@ class ControlLoop:
         ledger_queue_name: str,
         driver_pid: int,
         driver_start_time: str,
+        provider_session_id: str | None = None,
     ) -> None:
         self._member_id = member_id
         self._db_path = db_path
@@ -289,6 +355,8 @@ class ControlLoop:
         self._ledger_queue_name = ledger_queue_name
         self._driver_pid = driver_pid
         self._driver_start_time = driver_start_time
+        self._status_lock = threading.Lock()
+        self._provider_session_id = provider_session_id
         # The control/audit cadence. Kept gentle by default so the audit's
         # peeks do not add db contention; tests that exercise stop/status
         # latency or the rate backstop lower it via the env var.
@@ -303,30 +371,95 @@ class ControlLoop:
         # falls back under the limit, so a resumed harness that floods
         # again is interrupted again ([SUM-10] circuit-breaker intent).
         self._audit_cursor: dict[str, int] = {}
-        self._own_posts: deque[float] = deque()
+        self._own_posts: deque[int] = deque()
         self._nudged = False
         self._hard_breached = False
         self._hard_breach_count = 0
         self._control_drain_recoverable_failures = 0
         self._control_reply_recoverable_failures = 0
         self._rate_audit_recoverable_failures = 0
-        # All db handles are opened ON THIS THREAD in _open and reused for
-        # the loop's life — no per-tick Queue/connection churn (which, under
-        # WAL, provokes transient malformed-page reads across the process).
+        self._pending_control_fault: _PendingControlFault | None = None
+        self._next_rate_audit_at = 0.0
+        # All db handles are opened ON THIS THREAD in _open and reused for the
+        # loop's life. Queue-operation retry belongs to SimpleBroker; this loop
+        # owns only handle lifetime and live control state.
         self._client: TautClient | None = None
+        self._control_reactor: _ControlReactor | None = None
         self._ctl_in: Queue | None = None
         self._ctl_out: Queue | None = None
         self._ledger: Queue | None = None
         self._thread_queues: dict[str, Queue] = {}
 
+    def update_session_id(self, session_id: str | None) -> None:
+        """Record live provider session identity for future STATUS replies."""
+
+        with self._status_lock:
+            self._provider_session_id = session_id
+
     def run(self) -> None:
+        if self._db_path is None:
+            logger.warning("control loop exiting gracefully: no database target")
+            return
         try:
             self._open()
-            while not self._shutdown.is_set():
-                self._tick()
-                if self._pending_stop_seen:
-                    break
-                self._shutdown.wait(timeout=self._interval)
+            while not self._shutdown.is_set() and not self._pending_stop_seen:
+                if self._pending_control_fault is not None:
+                    if self._recover_pending_control_fault():
+                        # The local reactor snapshot, if any, is retired. Always
+                        # reacquire the installed generation at loop head.
+                        continue
+                    delay = min(
+                        5.0,
+                        max(self._interval, 0.25)
+                        * (
+                            2
+                            ** max(
+                                0,
+                                self._control_fault_failure_count() - 1,
+                            )
+                        ),
+                    )
+                    if self._shutdown.wait(delay):
+                        break
+                    continue
+
+                reactor = self._control_reactor
+                if reactor is None:
+                    raise RuntimeError("control reactor disappeared while running")
+                try:
+                    reactor.process_once()
+                except StopWatching:
+                    if self._pending_control_fault is not None:
+                        continue
+                    if self._shutdown.is_set() or self._pending_stop_seen:
+                        break
+                    raise
+                except (BrokerError, OSError) as exc:
+                    self._mark_control_drain_failure(exc)
+                    continue
+
+                if self._pending_control_fault is not None:
+                    continue
+                self._control_drain_recoverable_failures = 0
+
+                # Rate audit is control-owner policy. It runs only after the
+                # reactor turn has fully unwound and before the wait deadline
+                # is computed.
+                self._audit_if_due()
+                if self._pending_control_fault is not None:
+                    continue
+
+                try:
+                    reactor.wait_for_activity(timeout=self._next_control_wait_timeout())
+                except StopWatching:
+                    if self._pending_control_fault is not None:
+                        continue
+                    if self._shutdown.is_set() or self._pending_stop_seen:
+                        break
+                    raise
+                except (BrokerError, OSError) as exc:
+                    self._record_control_fault("control wait", exc, recoverable=True)
+                    continue
             if self._pending_stop_seen:
                 # A control STOP: wait for the clean-shutdown path to
                 # release the driver slot, then reply — so the stop client
@@ -338,7 +471,17 @@ class ControlLoop:
                 completed = self._shutdown_complete.wait(
                     timeout=_STOP_ACK_TIMEOUT_SECONDS
                 )
-                if completed and self._release_confirmed():
+                release_confirmed = False
+                release_error: str | None = None
+                if completed:
+                    try:
+                        release_confirmed = self._release_confirmed()
+                    except Exception as exc:
+                        release_error = (
+                            f"driver slot release confirmation failed: {exc}"
+                        )
+                        logger.error("%s", release_error)
+                if completed and release_confirmed:
                     self._reply(
                         encode_control_reply(
                             CONTROL_STOP, "ack", request_id=self._pending_stop
@@ -354,112 +497,173 @@ class ControlLoop:
                             error=(
                                 "shutdown timed out"
                                 if not completed
-                                else "driver slot release could not be confirmed"
+                                else (
+                                    release_error
+                                    or "driver slot release could not be confirmed"
+                                )
                             ),
                         ),
                         reply_to=self._pending_stop_reply_to,
                     )
-        except Exception:  # pragma: no cover - defensive: never kill the driver
-            logger.exception("control loop crashed")
         finally:
             self._close()
 
-    def _tick(self) -> None:
-        # One cadence step: drain commands, then run the audit. A transient
-        # WAL blip is already ridden out inside broker_retry; anything that
-        # reaches here is a *non-transient* error that survived the bounded
-        # retry budget — genuine corruption or a persistent operational
-        # fault. It must NOT be swallowed as debug (that would leave control
-        # silently dead while the driver runs): surface it loudly and mark
-        # control unhealthy so STATUS reports the degradation. The loop
-        # keeps running so that health stays reportable ([SUM-9]).
-        try:
-            self._drain_commands()
-        except BrokerError as exc:
-            self._mark_control_drain_failure(exc)
-            return
-        else:
-            self._control_drain_recoverable_failures = 0
+    def _audit_if_due(self) -> None:
         if self._pending_stop_seen:
             return
+        now = time.monotonic()
+        if now < self._next_rate_audit_at:
+            return
+        self._next_rate_audit_at = now + max(self._interval, 0.01)
         try:
             self._audit_pass()
-        except BrokerError as exc:
+        except (BrokerError, OSError) as exc:
             self._mark_rate_audit_failure(exc)
+        except Exception as exc:
+            self._record_control_fault("rate audit", exc, recoverable=False)
+            self._mark_unhealthy("rate audit", exc)
         else:
             self._rate_audit_recoverable_failures = 0
+
+    def _next_control_wait_timeout(self) -> float:
+        """Bound the inherited wait by both probe and audit deadlines."""
+
+        now = time.monotonic()
+        probe_bound = max(self._interval, 0.01)
+        audit_remaining = max(0.0, self._next_rate_audit_at - now)
+        if audit_remaining == 0.0:
+            # ``run`` calls ``_audit_if_due`` first. This floor makes a
+            # misconfigured zero interval fail safe without a hot loop.
+            return min(probe_bound, 0.01)
+        return min(probe_bound, audit_remaining)
+
+    def _handle_control_message(
+        self, body: str, timestamp: int, context: QueueMessageContext
+    ) -> None:
+        self._dispatch(body if isinstance(body, str) else str(body))
+        if context.mode is QueueMode.PEEK:
+            self._ack_control_message(context.queue, context.queue_name, timestamp)
+
+    def _ack_control_message(
+        self, queue: Queue, queue_name: str, timestamp: int
+    ) -> None:
+        try:
+            queue.delete(message_id=timestamp)
+        except (BrokerError, OSError, RuntimeError):
+            logger.debug(
+                "failed to acknowledge control message for %s",
+                queue_name,
+                exc_info=True,
+            )
+
+    def _handle_control_error(
+        self, exc: Exception, _message: str, _timestamp: int
+    ) -> bool | None:
+        if _is_broker_surface_failure(exc):
+            self._mark_control_drain_failure(exc)
+            return True
+        self._record_control_fault("control dispatch", exc, recoverable=False)
+        self._mark_unhealthy("control dispatch", exc)
+        logger.error(
+            "control dispatch failed with non-broker exception",
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        return False
 
     def _mark_unhealthy(self, where: str, exc: Exception) -> None:
         detail = f"{where}: {type(exc).__name__}: {exc}"
         self._unhealthy = detail
         logger.error(
-            "control plane degraded — %s survived the retry budget; "
-            "STATUS will report 'degraded'",
+            "control plane degraded — %s; STATUS will report 'degraded'",
             detail,
         )
 
-    def _mark_control_drain_failure(self, exc: BrokerError) -> None:
-        if not _is_recoverable_control_broker_error(exc):
-            self._mark_unhealthy("control drain", exc)
-            return
+    def _mark_control_drain_failure(self, exc: Exception) -> None:
+        self._record_control_fault("control drain", exc, recoverable=True)
 
-        self._control_drain_recoverable_failures += 1
-        reopened = self._reopen_broker_handles("control drain", exc)
-        if (
-            self._control_drain_recoverable_failures
-            >= _CONTROL_DRAIN_RECOVERABLE_FAILURES_BEFORE_DEGRADED
-        ):
-            self._mark_unhealthy(
-                "control drain "
-                f"({self._control_drain_recoverable_failures} consecutive "
-                "recoverable broker failures)",
-                exc,
+    def _mark_rate_audit_failure(self, exc: Exception) -> None:
+        self._record_control_fault("rate audit", exc, recoverable=True)
+
+    def _record_control_fault(
+        self,
+        where: str,
+        exc: Exception,
+        *,
+        recoverable: bool,
+    ) -> None:
+        """Record a primary fault without replacing live handles in-stack."""
+
+        if self._pending_control_fault is None:
+            self._pending_control_fault = _PendingControlFault(
+                where=where,
+                primary=exc,
+                recoverable=recoverable,
             )
-            return
+
+    def _control_fault_failure_count(self) -> int:
+        fault = self._pending_control_fault
+        if fault is not None and fault.where == "rate audit":
+            return self._rate_audit_recoverable_failures
+        return self._control_drain_recoverable_failures
+
+    def _recover_pending_control_fault(self) -> bool:
+        """Resolve one pending fault at the between-turn supervisor seam.
+
+        Returns ``True`` only after a complete replacement is installed. A
+        failed replacement leaves the old complete bundle installed and the
+        primary fault pending. Fatal faults and exhausted recovery propagate to
+        the driver wrapper.
+        """
+
+        fault = self._pending_control_fault
+        if fault is None:
+            return False
+        if not fault.recoverable:
+            self._pending_control_fault = None
+            raise fault.primary
+
+        if fault.where == "rate audit":
+            self._rate_audit_recoverable_failures += 1
+            failures = self._rate_audit_recoverable_failures
+            threshold = _RATE_AUDIT_RECOVERABLE_FAILURES_BEFORE_DEGRADED
+        else:
+            self._control_drain_recoverable_failures += 1
+            failures = self._control_drain_recoverable_failures
+            threshold = _CONTROL_DRAIN_RECOVERABLE_FAILURES_BEFORE_DEGRADED
+
+        if self._reopen_broker_handles(fault.where, fault.primary):
+            if fault.where == "rate audit":
+                self._rate_audit_recoverable_failures = 0
+            else:
+                self._control_drain_recoverable_failures = 0
+            if self._unhealthy is not None and self._unhealthy.startswith(
+                f"{fault.where} reopen:"
+            ):
+                self._unhealthy = None
+            self._pending_control_fault = None
+            return True
+
+        if failures >= threshold:
+            self._mark_unhealthy(
+                f"{fault.where} ({failures} consecutive broker failures)",
+                fault.primary,
+            )
+            self._pending_control_fault = None
+            raise RuntimeError(
+                f"{fault.where} recovery exhausted after {failures} attempts"
+            ) from fault.primary
 
         logger.warning(
-            "control drain skipped after recoverable broker error "
-            "(%d/%d, reopened=%s); STATUS/PING clients will retry: %s",
-            self._control_drain_recoverable_failures,
-            _CONTROL_DRAIN_RECOVERABLE_FAILURES_BEFORE_DEGRADED,
-            reopened,
-            exc,
+            "%s recovery failed (%d/%d); no further control turn will run: %s",
+            fault.where,
+            failures,
+            threshold,
+            fault.primary,
         )
-
-    def _mark_rate_audit_failure(self, exc: BrokerError) -> None:
-        if not _is_recoverable_control_broker_error(exc):
-            self._mark_unhealthy("rate audit", exc)
-            return
-
-        self._rate_audit_recoverable_failures += 1
-        self._reopen_broker_handles("rate audit", exc)
-        if (
-            self._rate_audit_recoverable_failures
-            >= _RATE_AUDIT_RECOVERABLE_FAILURES_BEFORE_DEGRADED
-        ):
-            self._mark_unhealthy(
-                "rate audit "
-                f"({self._rate_audit_recoverable_failures} consecutive "
-                "recoverable broker failures)",
-                exc,
-            )
-            return
-
-        logger.warning(
-            "rate audit skipped after recoverable broker errors survived the retry "
-            "budget (%d/%d); STATUS remains healthy unless this repeats: %s",
-            self._rate_audit_recoverable_failures,
-            _RATE_AUDIT_RECOVERABLE_FAILURES_BEFORE_DEGRADED,
-            exc,
-        )
+        return False
 
     def _mark_control_reply_failure(self, exc: Exception) -> None:
-        if not _is_recoverable_control_broker_error(exc):
-            self._mark_unhealthy("control reply", exc)
-            return
-
         self._control_reply_recoverable_failures += 1
-        reopened = self._reopen_broker_handles("control reply", exc)
         if (
             self._control_reply_recoverable_failures
             >= _CONTROL_REPLY_RECOVERABLE_FAILURES_BEFORE_DEGRADED
@@ -467,30 +671,38 @@ class ControlLoop:
             self._mark_unhealthy(
                 "control reply "
                 f"({self._control_reply_recoverable_failures} consecutive "
-                "recoverable broker failures)",
+                "broker failures)",
                 exc,
             )
             return
 
         logger.warning(
-            "control reply skipped after recoverable broker error "
-            "(%d/%d, reopened=%s); idempotent STATUS/PING clients will retry: %s",
+            "control reply skipped after broker error "
+            "(%d/%d); idempotent STATUS/PING clients will retry: %s",
             self._control_reply_recoverable_failures,
             _CONTROL_REPLY_RECOVERABLE_FAILURES_BEFORE_DEGRADED,
-            reopened,
             exc,
         )
 
     # --- setup / teardown -------------------------------------------------
 
     def _open(self) -> None:
+        logger.debug("control loop opening broker handles")
         self._install_broker_handles(self._make_broker_handles())
+        logger.debug("control loop initializing audit cursor")
         self._init_audit_cursor()
+        logger.debug("control loop open complete")
 
     def _close(self) -> None:
         self._close_handles()
 
     def _reopen_broker_handles(self, where: str, exc: Exception) -> bool:
+        old_client = self._client
+        old_reactor = self._control_reactor
+        old_ctl_in = self._ctl_in
+        old_ctl_out = self._ctl_out
+        old_ledger = self._ledger
+        old_thread_queues = dict(self._thread_queues)
         try:
             handles = self._make_broker_handles()
         except Exception as reopen_exc:  # noqa: BLE001 - STATUS should expose it
@@ -501,12 +713,10 @@ class ControlLoop:
             )
             self._mark_unhealthy(f"{where} reopen", reopen_exc)
             return False
-        old_ctl_in = self._ctl_in
-        old_ctl_out = self._ctl_out
-        old_ledger = self._ledger
-        old_thread_queues = dict(self._thread_queues)
         self._install_broker_handles(handles)
         self._close_queue_handles(
+            client=old_client,
+            control_reactor=old_reactor,
             ctl_in=old_ctl_in,
             ctl_out=old_ctl_out,
             ledger=old_ledger,
@@ -515,17 +725,40 @@ class ControlLoop:
         return True
 
     def _make_broker_handles(self) -> _BrokerHandles:
-        client = TautClient(db_path=self._db_path, token=self._token)
-        return _BrokerHandles(
-            client=client,
-            ctl_in=client.queue(control_in_queue_name(self._member_id)),
-            ctl_out=client.queue(control_out_queue_name(self._member_id)),
-            ledger=client.queue(self._ledger_queue_name),
-            thread_queues={thread: client.queue(thread) for thread in self._threads},
+        if self._db_path is None:
+            raise RuntimeError("control loop requires a database target")
+        client = TautClient(
+            db_path=self._db_path,
+            token=self._token,
+            persistent=True,
         )
+        reactor: _ControlReactor | None = None
+        try:
+            reactor = _ControlReactor(self, db=client.target, config=client.config)
+            return _BrokerHandles(
+                client=client,
+                control_reactor=reactor,
+                ctl_in=reactor._queue(control_in_queue_name(self._member_id)),
+                ctl_out=reactor._queue(control_out_queue_name(self._member_id)),
+                ledger=reactor._queue(self._ledger_queue_name),
+                thread_queues={
+                    thread: reactor._queue(thread) for thread in self._threads
+                },
+            )
+        except Exception:
+            if reactor is not None:
+                try:
+                    reactor.cleanup()
+                except Exception:
+                    logger.debug(
+                        "partial control reactor cleanup failed", exc_info=True
+                    )
+            client.close()
+            raise
 
     def _install_broker_handles(self, handles: _BrokerHandles) -> None:
         self._client = handles.client
+        self._control_reactor = handles.control_reactor
         self._ctl_in = handles.ctl_in
         self._ctl_out = handles.ctl_out
         self._ledger = handles.ledger
@@ -533,12 +766,15 @@ class ControlLoop:
 
     def _close_handles(self) -> None:
         self._close_queue_handles(
+            client=self._client,
+            control_reactor=self._control_reactor,
             ctl_in=self._ctl_in,
             ctl_out=self._ctl_out,
             ledger=self._ledger,
             thread_queues=self._thread_queues,
         )
         self._client = None
+        self._control_reactor = None
         self._ctl_in = None
         self._ctl_out = None
         self._ledger = None
@@ -547,6 +783,8 @@ class ControlLoop:
     def _close_queue_handles(
         self,
         *,
+        client: object | None,
+        control_reactor: _ControlReactor | None = None,
         ctl_in: Queue | None,
         ctl_out: Queue | None,
         ledger: Queue | None,
@@ -556,6 +794,20 @@ class ControlLoop:
         # that completed were already claim-consumed via read_one(); leftovers
         # are invisible to core, and delete-all maintenance under high process
         # churn is a worse failure mode than an inert stale control row.
+        if control_reactor is not None:
+            try:
+                control_reactor.cleanup()
+            except Exception:  # pragma: no cover - defensive
+                logger.debug("control reactor cleanup failed", exc_info=True)
+
+        close_client = getattr(client, "close", None)
+        if callable(close_client):
+            try:
+                close_client()
+                return
+            except Exception:  # pragma: no cover - defensive
+                logger.debug("control client close failed", exc_info=True)
+
         queues: list[Queue | None] = [ctl_in, ctl_out, ledger]
         queues.extend(thread_queues.values())
         for queue in queues:
@@ -565,25 +817,9 @@ class ControlLoop:
                 except Exception:  # pragma: no cover - defensive
                     logger.debug("control queue close failed", exc_info=True)
 
-    # --- command dispatch -------------------------------------------------
-
-    def _drain_commands(self) -> None:
-        ctl_in = self._ctl_in
-        assert ctl_in is not None
-        while not self._shutdown.is_set():
-            body = broker_retry(
-                ctl_in.read_one,
-                what="control read",
-                attempts=_CONTROL_DRAIN_RETRY_ATTEMPTS,
-            )
-            if body is None:
-                return
-            self._dispatch(body if isinstance(body, str) else str(body))
-            if self._pending_stop_seen:
-                return
-
     def _dispatch(self, body: str) -> None:
         request = parse_control_request(body)
+        logger.debug("control loop dispatching %s", request.command or "<invalid>")
         if request.command in _KNOWN_COMMANDS and not self._matches_driver(request):
             logger.info(
                 "dropping stale control command %s for driver evidence %r/%r",
@@ -615,8 +851,8 @@ class ControlLoop:
         elif request.command == CONTROL_STOP:
             self._pending_stop = request.request_id
             self._pending_stop_reply_to = request.reply_to
-            self._pending_stop_seen = True
             self._request_stop()
+            self._pending_stop_seen = True
         else:
             # Unknown or malformed verb: report, never crash ([IAN-9]).
             logger.warning("dropping unknown control body: %r", request.raw[:200])
@@ -637,23 +873,19 @@ class ControlLoop:
         )
 
     def _status_fields(self) -> dict[str, Any]:
-        try:
-            fields = self._status_snapshot().as_fields()
-            handle = self._handle_provider()
-            if handle is None:
-                return fields
-            adapter_fields = handle.status_fields()
-            collisions = _STATUS_RESERVED_KEYS.intersection(adapter_fields)
-            if collisions:
-                raise AdapterError(
-                    "adapter status field collides with reserved STATUS key: "
-                    + ", ".join(sorted(collisions))
-                )
-            fields.update(adapter_fields)
+        fields = self._status_snapshot().as_fields()
+        handle = self._handle_provider()
+        if handle is None:
             return fields
-        except Exception as exc:  # pragma: no cover - defensive snapshot boundary
-            logger.debug("status snapshot failed: %s", exc)
-            return {"driver": "alive", "error": "status unavailable"}
+        adapter_fields = handle.status_fields()
+        collisions = _STATUS_RESERVED_KEYS.intersection(adapter_fields)
+        if collisions:
+            raise AdapterError(
+                "adapter status field collides with reserved STATUS key: "
+                + ", ".join(sorted(collisions))
+            )
+        fields.update(adapter_fields)
+        return fields
 
     def _status_snapshot(self) -> StatusSnapshot:
         return StatusSnapshot(
@@ -668,14 +900,8 @@ class ControlLoop:
         )
 
     def _session_id(self) -> str | None:
-        ledger = self._ledger
-        if ledger is None:  # pragma: no cover - open() always runs first
-            return None
-        try:
-            row = get_session(ledger, self._member_id)
-        except SummonStateError:  # pragma: no cover - defensive
-            return None
-        return row["provider_session_id"] if row is not None else None
+        with self._status_lock:
+            return self._provider_session_id
 
     def _cursor_lag(self) -> dict[str, int]:
         client = self._client
@@ -705,33 +931,36 @@ class ControlLoop:
         if reply_to is not None and client is not None:
             queue: Queue | None = None
             try:
-                queue = client.queue(reply_to)
-                broker_retry(
-                    lambda: queue.write(body),
-                    what="control reply",
-                    attempts=_CONTROL_REPLY_RETRY_ATTEMPTS,
-                )
+                queue = client.queue(reply_to, persistent=False)
+                queue.write(body)
+                logger.debug("per-request control reply wrote to %s", reply_to)
                 self._control_reply_recoverable_failures = 0
-            except Exception as exc:  # noqa: BLE001 - a lost reply must not crash
+            except (BrokerError, OSError) as exc:
                 logger.warning("per-request control reply failed: %s", exc)
                 self._mark_control_reply_failure(exc)
+            except Exception as exc:
+                self._mark_unhealthy("control reply", exc)
+                raise
             finally:
                 if queue is not None:
-                    queue.close()
+                    try:
+                        queue.close()
+                    except Exception:  # pragma: no cover - defensive
+                        logger.debug("per-request reply close failed", exc_info=True)
             return
         ctl_out = self._ctl_out
         if ctl_out is None:  # pragma: no cover - open() always runs first
             return
         try:
-            broker_retry(
-                lambda: ctl_out.write(body),
-                what="control reply",
-                attempts=_CONTROL_REPLY_RETRY_ATTEMPTS,
-            )
+            ctl_out.write(body)
+            logger.debug("shared control reply wrote to %s", ctl_out.name)
             self._control_reply_recoverable_failures = 0
-        except Exception as exc:  # noqa: BLE001 - a lost reply must not crash
-            logger.warning("control reply write failed after retries: %s", exc)
+        except (BrokerError, OSError) as exc:
+            logger.warning("control reply write failed: %s", exc)
             self._mark_control_reply_failure(exc)
+        except Exception as exc:
+            self._mark_unhealthy("control reply", exc)
+            raise
 
     # --- rate backstop ([SUM-10]) -----------------------------------------
     #
@@ -753,35 +982,54 @@ class ControlLoop:
 
     def _latest_ts(self, queue: Queue) -> int:
         try:
-            rows = queue.peek_many(with_timestamps=True)
-        except BrokerError:
+            rows = self._audit_peek_many(queue, cursor=0, what="rate audit init")
+        except (BrokerError, OSError):
             return 0
         stamped = cast("list[tuple[str, int]]", rows)
         return max((ts for _body, ts in stamped), default=0)
 
     def _audit_pass(self) -> None:
-        now = time.monotonic()
+        ledger = self._ledger
+        if ledger is None:  # pragma: no cover - audit runs only after _open
+            raise RuntimeError("rate audit ledger is not open")
+        now_ts = ledger.generate_timestamp()
+        cutoff = now_ts - int(_RATE_WINDOW_SECONDS * 1_000_000_000)
         for thread, queue in self._thread_queues.items():
-            self._audit_thread(thread, queue, now)
-        self._prune(now)
+            self._audit_thread(thread, queue, cutoff)
+        self._prune(cutoff)
         self._enforce()
 
-    def _audit_thread(self, thread: str, queue: Queue, now: float) -> None:
+    def _audit_thread(self, thread: str, queue: Queue, cutoff: int) -> None:
         cursor = self._audit_cursor.get(thread, 0)
         highest = cursor
         # A direct log-semantics peek after the driver-local audit cursor —
         # never touching the member cursor ([SUM-10]/[TAUT-7.4]).
-        for row in queue.peek_generator(with_timestamps=True, after_timestamp=cursor):
+        rows = self._audit_peek_many(
+            queue, cursor=cursor, what=f"rate audit peek {thread}"
+        )
+        for row in rows:
             body, ts = cast("tuple[str, int]", row)
             highest = max(highest, ts)
-            if decode_envelope(body).from_id == self._member_id:
-                self._own_posts.append(now)
+            if ts >= cutoff and decode_envelope(body).from_id == self._member_id:
+                self._own_posts.append(ts)
         self._audit_cursor[thread] = highest
 
-    def _prune(self, now: float) -> None:
-        cutoff = now - _RATE_WINDOW_SECONDS
-        while self._own_posts and self._own_posts[0] < cutoff:
-            self._own_posts.popleft()
+    def _audit_peek_many(
+        self, queue: Queue, *, cursor: int, what: str
+    ) -> list[str] | list[tuple[str, int]]:
+        del what
+        return queue.peek_many(with_timestamps=True, after_timestamp=cursor)
+
+    def _prune(self, cutoff: int) -> None:
+        # Per-thread audit cursors are ordered within each thread, but the
+        # shared deque is appended in thread-iteration order. It is therefore
+        # not globally timestamp-sorted. Filter the complete window instead of
+        # stopping at the first retained timestamp.
+        retained = tuple(
+            timestamp for timestamp in self._own_posts if timestamp >= cutoff
+        )
+        self._own_posts.clear()
+        self._own_posts.extend(retained)
 
     def _enforce(self) -> None:
         count = len(self._own_posts)
@@ -853,10 +1101,13 @@ class ControlClient:
         queue_factory: Callable[[str], Queue],
         member_id: str,
         *,
+        reply_queue_factory: Callable[[str], Queue] | None = None,
+        owns_request_queue: bool = True,
         driver_pid: int | None = None,
         driver_start_time: str | None = None,
     ) -> None:
-        self._queue_factory = queue_factory
+        self._reply_queue_factory = reply_queue_factory or queue_factory
+        self._owns_request_queue = owns_request_queue
         self._member_id = member_id
         self._driver_pid = driver_pid
         self._driver_start_time = driver_start_time
@@ -875,7 +1126,7 @@ class ControlClient:
         retry_on_timeout = command in _IDEMPOTENT_RETRY_COMMANDS
         request_id = secrets.token_hex(8)
         reply_to = f"{control_out_queue_name(self._member_id)}_{request_id}"
-        reply_queue = self._queue_factory(reply_to)
+        reply_queue = self._reply_queue_factory(reply_to)
         body_out = encode_control_command(
             command,
             request_id,
@@ -884,24 +1135,24 @@ class ControlClient:
             driver_start_time=self._driver_start_time,
         )
         try:
-            broker_retry(lambda: self._ctl_in.write(body_out), what="control request")
+            try:
+                self._ctl_in.write(body_out)
+            except Exception as exc:
+                raise _tag_control_fault(exc, "control_write") from exc
             deadline = time.monotonic() + timeout
             next_retry = time.monotonic() + _CONTROL_REQUEST_RETRY_INTERVAL_SECONDS
             while time.monotonic() < deadline:
                 try:
-                    body = broker_retry(reply_queue.read_one, what="control reply read")
+                    body = reply_queue.read_one()
                 except Exception as exc:
-                    if not is_transient_broker_error(exc):
-                        raise
-                    time.sleep(0.03)
-                    continue
+                    raise _tag_control_fault(exc, "control_read") from exc
                 if body is None:
                     now = time.monotonic()
                     if retry_on_timeout and now >= next_retry:
-                        broker_retry(
-                            lambda: self._ctl_in.write(body_out),
-                            what="control request retry",
-                        )
+                        try:
+                            self._ctl_in.write(body_out)
+                        except Exception as exc:
+                            raise _tag_control_fault(exc, "control_write") from exc
                         next_retry = now + _CONTROL_REQUEST_RETRY_INTERVAL_SECONDS
                     time.sleep(0.03)
                     continue
@@ -922,6 +1173,8 @@ class ControlClient:
                 logger.debug("reply queue close failed", exc_info=True)
 
     def close(self) -> None:
+        if not self._owns_request_queue:
+            return
         try:
             self._ctl_in.close()
         except Exception:  # pragma: no cover - defensive

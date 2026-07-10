@@ -7,6 +7,12 @@ on:
     branches: [main, master]
   workflow_dispatch:
   workflow_call:
+    inputs:
+      verify_paired_reactor_artifacts:
+        description: Build and verify fresh paired taut and taut-summon wheels.
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -313,6 +319,11 @@ jobs:
         timeout-minutes: 10
         run: |
           uv build extensions/taut_summon
+
+      - name: Verify fresh paired reactor artifacts
+        if: ${{ inputs.verify_paired_reactor_artifacts }}
+        timeout-minutes: 20
+        run: python bin/verify-reactor-release-artifacts.py
 
       - name: Smoke test built wheel
         shell: bash

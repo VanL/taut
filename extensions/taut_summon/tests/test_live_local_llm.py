@@ -285,7 +285,7 @@ def _prewire_local_llm(db: Path) -> None:
     client.join("general")
     member = client.last_created_member or client.whoami()
     assert member.token is not None
-    queue = Queue("taut_summon_state", db_path=str(db))
+    queue = Queue("taut.summon_state", db_path=str(db))
     try:
         ensure_summon_schema(queue)
         record_session(
@@ -348,7 +348,7 @@ def test_local_llm_prewire_marks_pty_member_wired(tmp_path: Path) -> None:
     member = next(
         member for member in TautClient(db_path=db).who() if member.name == "local-llm"
     )
-    queue = Queue("taut_summon_state", db_path=str(db))
+    queue = Queue("taut.summon_state", db_path=str(db))
     try:
         row = get_session(queue, member.member_id)
     finally:

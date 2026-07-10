@@ -133,7 +133,7 @@ def _prewire_live_harness(db: Path, provider: str) -> None:
     client.join("general")
     member = client.last_created_member or client.whoami()
     assert member.token is not None
-    queue = Queue("taut_summon_state", db_path=str(db))
+    queue = Queue("taut.summon_state", db_path=str(db))
     ensure_summon_schema(queue)
     record_session(
         queue,

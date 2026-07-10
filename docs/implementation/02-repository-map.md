@@ -11,6 +11,8 @@ Quick pointers to the key guidance documents in this repository.
 | `README.md` | Product face and current CLI/API behavior contract (see `docs/specs/02-taut-core.md`) |
 | `bin/release.py` | GitHub-only release helper for version sync, release gates, summon local-LLM preparation, `vX.Y.Z`, `taut_pg/vX.Y.Z`, `taut_summon/vX.Y.Z`, and `all` release batches |
 | `bin/pytest-pg` | Docker-backed Postgres test runner for shared root tests and `taut-pg` tests |
+| `bin/verify-reactor-artifact-compat.py` | Isolated four-case core/Summon wheel compatibility verifier for the paired reactor release |
+| `bin/verify-reactor-release-artifacts.py` | Fresh-build owner that selects exactly one core wheel and one Summon wheel before invoking the paired compatibility verifier |
 | `.github/workflows/test.yml` | Push/PR/reusable pytest, lint, type, and build gates |
 | `.github/workflows/test-pg-extension.yml` | Push/PR/reusable Docker Postgres gate for `taut-pg` |
 | `.github/workflows/release-gate.yml` | `v*` tag gate that runs tests, verifies tag stability, and publishes release artifacts |
@@ -66,11 +68,12 @@ Quick pointers to the key guidance documents in this repository.
 | `docs/plans/2026-07-01-taut-state-sql-dialect-plan.md` | Implemented `TautState` interface and SQL dialect seam refactor |
 | `docs/plans/2026-07-01-taut-watch-runtime-plan.md` | Implemented `TautWatchRuntime` seam between `TautClient` and the watcher |
 | `docs/plans/2026-07-06-taut-summon-plan.md` | Implemented `taut-summon` extension: delegation verbs, ledger, adapters, driver, control plane, conformance suite |
+| `docs/plans/2026-07-10-taut-summon-quality-remediation-plan.md` | Active remediation plan for state, lifecycle, control, PTY, driver-generation, and paired-release findings |
 | `docs/implementation/00-implementation-index.md` | Numbered entry point for implementation docs |
 | `docs/implementation/01-documentation-system.md` | Why the documentation system is shaped this way |
 | `docs/implementation/03-agent-inventory.md` | Current observed agent availability and review preference |
 | `docs/implementation/04-taut-architecture.md` | Taut implementation rationale, boundaries, dependencies, and key files |
-| `docs/implementation/05-taut-summon-architecture.md` | Summon extension rationale: ears/mouth split, three-thread driver, session ledger, control plane, vendored retry |
+| `docs/implementation/05-taut-summon-architecture.md` | Summon extension rationale: ears/mouth split, three-thread driver, session ledger, control plane, and SimpleBroker handle ownership |
 | `docs/lessons.md` | Canonical lessons ledger |
 
 ## Product Code
@@ -78,15 +81,14 @@ Quick pointers to the key guidance documents in this repository.
 | Path | Purpose |
 |------|---------|
 | `taut/_constants.py` | Taut constants, config translation, name validation, and identity name pools |
-| `taut/_broker_retry.py` | Core bounded retry classifier for known transient SimpleBroker/SQLite open, page-read, and timestamp-parse faults |
-| `taut/_queue.py` | Taut-owned `RetryingQueue` wrapper used by `TautClient` for public queue and sidecar operations |
+| `taut/_broker_retry.py` | Import-only, fail-closed compatibility shim for the immutable prior Summon artifact; no retry policy |
 | `taut/addressing.py` | Channel, sub-thread, DM, mention, and notification addressing helpers |
 | `taut/_scripts.py` | Importable developer-script helper logic, currently for `bin/pytest-pg` |
 | `taut/envelope.py` | Message envelope encode/decode and foreign-message fallback |
 | `taut/state/` | Internal Taut state interface, SQL dialect marker, and sidecar SQL adapter |
 | `taut/identity.py` | Process fingerprint capture, anchor selection, presence checks |
-| `taut/client/` | Public Python API package: facade plus identity, messaging, notification, and thread mixins |
-| `taut/watcher.py` | Vendored multi-queue watcher plus cursor-aware `TautWatcher` |
+| `taut/client/` | Public Python API package: facade plus identity, messaging, notification, thread mixins, and plain SimpleBroker queue ownership |
+| `taut/watcher.py` | Shared `BaseReactor`, vendored multi-queue scheduling, and cursor-aware `TautWatcher` with persistent owned queue handles |
 | `taut/cli.py` | Argparse CLI and output/exit-code rendering |
 | `tests/` | Contract tests using real SQLite files, shared backend markers, and subprocess CLI |
 | `extensions/taut_pg/` | Separate `taut-pg` project with extension metadata, README, and PG-only tests |

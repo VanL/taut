@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Protocol
@@ -111,6 +112,26 @@ class AdapterHandle(Protocol):
         """Adapter-specific STATUS fields; empty for structured adapters."""
         ...
 
+    def wait_until_quiet(self) -> None:
+        """Wait for terminal startup output to settle, or return immediately."""
+        ...
+
+    def mark_awaiting_onboarding(self) -> None:
+        """Expose that an attached terminal is waiting on provider onboarding."""
+        ...
+
+    def attach(
+        self,
+        *,
+        wake: threading.Event,
+        shutdown: threading.Event,
+        input_fd: int = 0,
+        output_fd: int = 1,
+        detach_chord: bytes = b"\x1c\x1c",
+    ) -> str:
+        """Bridge a human terminal when supported, else raise AdapterError."""
+        ...
+
 
 class ProviderAdapter(Protocol):
     """One provider harness family (claude, scripted, codex...)."""
@@ -119,6 +140,7 @@ class ProviderAdapter(Protocol):
     supports_terminal_mode: bool
     supports_attach: bool
     orientation_via_inject: bool
+    emits_session_events: bool
 
     def spawn(
         self,
@@ -143,12 +165,33 @@ def _claude_factory() -> ProviderAdapter:
     return ClaudeAdapter()
 
 
+def _pty_int_env(name: str, default: str) -> int:
+    raw = os.environ.get(name, default)
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise AdapterError(f"{name} must be an integer, got {raw!r}") from exc
+
+
+def _pty_float_env(name: str, default: str) -> float:
+    raw = os.environ.get(name, default)
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise AdapterError(f"{name} must be a number, got {raw!r}") from exc
+
+
 def _pty_factory() -> ProviderAdapter:
     from taut_summon._pty import PtyAdapter, PtySpec
 
     raw_argv = os.environ.get("TAUT_SUMMON_PTY_ARGV")
-    if raw_argv:
-        parsed = json.loads(raw_argv)
+    if raw_argv is not None:
+        try:
+            parsed = json.loads(raw_argv)
+        except json.JSONDecodeError as exc:
+            raise AdapterError(
+                f"TAUT_SUMMON_PTY_ARGV must be valid JSON: {exc}"
+            ) from exc
         if not isinstance(parsed, list) or not all(
             isinstance(item, str) and item for item in parsed
         ):
@@ -156,11 +199,11 @@ def _pty_factory() -> ProviderAdapter:
         spec = PtySpec(
             name="pty",
             argv=tuple(parsed),
-            rows=int(os.environ.get("TAUT_SUMMON_PTY_ROWS", "24")),
-            cols=int(os.environ.get("TAUT_SUMMON_PTY_COLS", "80")),
-            stall_s=float(os.environ.get("TAUT_SUMMON_PTY_STALL_S", "10.0")),
-            quiet_ms=int(os.environ.get("TAUT_SUMMON_PTY_QUIET_MS", "500")),
-            max_settle_s=float(os.environ.get("TAUT_SUMMON_PTY_MAX_SETTLE_S", "10.0")),
+            rows=_pty_int_env("TAUT_SUMMON_PTY_ROWS", "24"),
+            cols=_pty_int_env("TAUT_SUMMON_PTY_COLS", "80"),
+            stall_s=_pty_float_env("TAUT_SUMMON_PTY_STALL_S", "10.0"),
+            quiet_ms=_pty_int_env("TAUT_SUMMON_PTY_QUIET_MS", "500"),
+            max_settle_s=_pty_float_env("TAUT_SUMMON_PTY_MAX_SETTLE_S", "10.0"),
         )
         return PtyAdapter(spec)
     return PtyAdapter()

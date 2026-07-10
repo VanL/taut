@@ -12,16 +12,19 @@ import json
 import os
 import queue
 import select
+import socket
+import subprocess
 import sys
 import threading
 import time
 import types
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from taut_summon._adapter import (
     ActivityEvent,
+    AdapterError,
     AdapterEvent,
     AdapterHandle,
     ExitEvent,
@@ -32,6 +35,7 @@ from taut_summon._adapter import (
 
 pty = pytest.importorskip("pty", reason="POSIX PTY tests require the pty module")
 if TYPE_CHECKING:
+    import taut_summon._pty as _pty_module
     from taut_summon._pty import (
         PtyAdapter,
         PtyHandle,
@@ -85,6 +89,63 @@ class EventPump:
             if isinstance(event, ExitEvent):
                 return event
         raise AssertionError("timed out waiting for PTY exit")
+
+
+class _ScheduledPtyProcess:
+    """Popen-shaped boundary fake for deterministic reap scheduling."""
+
+    pid = 999_999
+
+    def __init__(self) -> None:
+        self.returncode: int | None = None
+        self.wait_entered = threading.Event()
+        self.release_wait = threading.Event()
+        self.wait_calls = 0
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        del timeout
+        self.wait_calls += 1
+        self.wait_entered.set()
+        assert self.release_wait.wait(timeout=2.0)
+        self.returncode = 0
+        return 0
+
+    def send_signal(self, _signum: int) -> None:
+        pass
+
+
+class _NeverReapsPtyProcess(_ScheduledPtyProcess):
+    def wait(self, timeout: float | None = None) -> int:
+        self.wait_calls += 1
+        raise subprocess.TimeoutExpired("never-reaps-pty", timeout or 0.0)
+
+
+class _BlockingWriterLock:
+    def __init__(self) -> None:
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def __enter__(self) -> None:
+        self.entered.set()
+        assert self.release.wait(timeout=2.0)
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+
+def _boundary_pty_handle(proc: Any, master_fd: int) -> PtyHandle:
+    return PtyHandle(
+        proc,
+        master_fd=master_fd,
+        rows=24,
+        cols=80,
+        stall_s=1.0,
+        quiet_ms=10,
+        max_settle_s=1.0,
+    )
 
 
 def _spawn_fake(
@@ -174,6 +235,7 @@ def test_registry_maps_named_harnesses_to_pty_specs() -> None:
         assert isinstance(adapter, PtyAdapter)
         assert adapter.name == name
         assert adapter.argv == (binary,)
+        assert adapter.emits_session_events is False
     with pytest.raises(UnknownAdapterError, match="known adapters"):
         get_adapter("code")
 
@@ -219,6 +281,167 @@ def test_wait_until_quiet_waits_for_first_output() -> None:
     assert returned.is_set()
 
 
+def test_master_is_published_nonblocking_once_without_losing_flags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_openpty = pty.openpty
+    real_fcntl = _pty_module.fcntl.fcntl
+    set_calls: list[int] = []
+
+    def openpty_with_unrelated_flag() -> tuple[int, int]:
+        master_fd, slave_fd = real_openpty()
+        flags = real_fcntl(master_fd, _pty_module.fcntl.F_GETFL)
+        real_fcntl(
+            master_fd,
+            _pty_module.fcntl.F_SETFL,
+            flags | os.O_APPEND,
+        )
+        return master_fd, slave_fd
+
+    def recording_fcntl(fd: int, operation: int, argument: int = 0) -> int:
+        if operation == _pty_module.fcntl.F_SETFL:
+            set_calls.append(argument)
+        return int(real_fcntl(fd, operation, argument))
+
+    monkeypatch.setattr(pty, "openpty", openpty_with_unrelated_flag)
+    monkeypatch.setattr(_pty_module.fcntl, "fcntl", recording_fcntl)
+    handle, log = _spawn_fake(
+        tmp_path, {"queries": False, "modes": False, "redraw": False}
+    )
+    pump = EventPump(handle)
+    try:
+        _wait_for(log, "start")
+        handle.inject("hello")
+    finally:
+        handle.close()
+        pump.drain_until_exit(timeout=5.0)
+
+    assert len(set_calls) == 1
+    assert set_calls[0] & os.O_NONBLOCK
+    assert set_calls[0] & os.O_APPEND
+
+
+def test_spawn_failure_closes_master_and_slave_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    close_calls: list[int] = []
+    monkeypatch.setattr(pty, "openpty", lambda: (40, 41))
+    monkeypatch.setattr(_pty_module, "_set_winsize", lambda *_args: None)
+    monkeypatch.setattr(_pty_module, "_set_nonblocking", lambda _fd: None)
+    monkeypatch.setattr(
+        _pty_module.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("spawn failed")),
+    )
+    monkeypatch.setattr(_pty_module.os, "close", close_calls.append)
+
+    with pytest.raises(AdapterError, match="failed to spawn PTY harness"):
+        PtyAdapter(PtySpec(name="broken", argv=("broken",))).spawn(
+            session_id=None,
+            system_prompt="ignored",
+            env={},
+        )
+
+    assert close_calls == [40, 41]
+
+
+@pytest.mark.parametrize(
+    ("spec", "message"),
+    (
+        (PtySpec(name="bad", argv=()), "argv"),
+        (PtySpec(name="bad", argv=("sh",), rows=0), "rows"),
+        (PtySpec(name="bad", argv=("sh",), rows=65_536), "rows"),
+        (PtySpec(name="bad", argv=("sh",), cols=0), "cols"),
+        (PtySpec(name="bad", argv=("sh",), cols=65_536), "cols"),
+        (PtySpec(name="bad", argv=("sh",), stall_s=0.0), "stall_s"),
+        (PtySpec(name="bad", argv=("sh",), stall_s=float("nan")), "stall_s"),
+        (PtySpec(name="bad", argv=("sh",), stall_s=10**400), "stall_s"),
+        (PtySpec(name="bad", argv=("sh",), quiet_ms=-1), "quiet_ms"),
+        (PtySpec(name="bad", argv=("sh",), quiet_ms=10**400), "quiet_ms"),
+        (PtySpec(name="bad", argv=("sh",), max_settle_s=0.0), "max_settle_s"),
+        (
+            PtySpec(name="bad", argv=("sh",), max_settle_s=10**400),
+            "max_settle_s",
+        ),
+        (
+            PtySpec(name="bad", argv=("sh",), max_settle_s=float("inf")),
+            "max_settle_s",
+        ),
+    ),
+)
+def test_pty_spec_rejects_unsafe_spawn_and_timing_values(
+    spec: PtySpec, message: str
+) -> None:
+    with pytest.raises(AdapterError, match=message):
+        PtyAdapter(spec)
+
+
+def test_write_select_close_race_is_adapter_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    master_socket, peer_socket = socket.socketpair()
+    master_fd = master_socket.detach()
+    proc = _ScheduledPtyProcess()
+    handle = _boundary_pty_handle(proc, master_fd)
+
+    monkeypatch.setattr(
+        _pty_module.os,
+        "write",
+        lambda _fd, _data: (_ for _ in ()).throw(BlockingIOError()),
+    )
+    monkeypatch.setattr(
+        _pty_module.select,
+        "select",
+        lambda *_args: (_ for _ in ()).throw(ValueError("fd closed")),
+    )
+
+    try:
+        with pytest.raises(AdapterError, match="PTY write wait failed"):
+            handle.inject("race")
+    finally:
+        proc.returncode = 0
+        handle.close()
+        peer_socket.close()
+
+
+def test_failed_best_effort_query_reply_does_not_kill_event_pump(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handle, log = _spawn_fake(
+        tmp_path, {"queries": True, "modes": False, "redraw": False}
+    )
+    real_write = os.write
+    real_select = select.select
+    reply_blocked = threading.Event()
+    fail_reply_wait = True
+
+    def controlled_write(fd: int, data: bytes) -> int:
+        if fd == handle._master_fd and data.startswith(b"\x1b"):
+            reply_blocked.set()
+            raise BlockingIOError()
+        return real_write(fd, data)
+
+    def controlled_select(
+        readers: list[int], writers: list[int], errors: list[int], timeout: float
+    ) -> tuple[list[int], list[int], list[int]]:
+        nonlocal fail_reply_wait
+        if writers and fail_reply_wait:
+            fail_reply_wait = False
+            raise OSError("master closed during reply wait")
+        return real_select(readers, writers, errors, timeout)
+
+    monkeypatch.setattr(_pty_module.os, "write", controlled_write)
+    monkeypatch.setattr(_pty_module.select, "select", controlled_select)
+    pump = EventPump(handle)
+    assert reply_blocked.wait(timeout=2.0)
+    try:
+        _wait_for(log, "query")
+    finally:
+        handle.close()
+
+    assert isinstance(pump.drain_until_exit(timeout=5.0), ExitEvent)
+
+
 def test_pty_responder_answers_startup_queries_and_clamps_size(
     tmp_path: Path,
 ) -> None:
@@ -246,6 +469,59 @@ def test_pty_responder_answers_startup_queries_and_clamps_size(
     finally:
         handle.close()
         assert isinstance(pump.drain_until_exit(), ExitEvent)
+
+
+def test_query_reply_waits_for_partial_injection_writer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handle, log = _spawn_fake(
+        tmp_path,
+        {"queries": True, "modes": False, "redraw": False},
+    )
+    real_write = os.write
+    injection_started = threading.Event()
+    release_injection = threading.Event()
+    reply_reached_write = threading.Event()
+    first_injection_write = True
+
+    def controlled_write(fd: int, data: bytes) -> int:
+        nonlocal first_injection_write
+        if fd == handle._master_fd and data.startswith(b"serialize-me"):
+            if first_injection_write:
+                first_injection_write = False
+                written = real_write(fd, data[:1])
+                injection_started.set()
+                assert release_injection.wait(timeout=2.0)
+                return written
+        elif fd == handle._master_fd and data.startswith(b"\x1b"):
+            reply_reached_write.set()
+        return real_write(fd, data)
+
+    monkeypatch.setattr(_pty_module.os, "write", controlled_write)
+    failures: list[BaseException] = []
+
+    def inject() -> None:
+        try:
+            handle.inject("serialize-me")
+        except BaseException as exc:  # noqa: BLE001 - asserted below
+            failures.append(exc)
+
+    injector = threading.Thread(target=inject)
+    injector.start()
+    assert injection_started.wait(timeout=1.0)
+    pump = EventPump(handle)
+    reply_interleaved = reply_reached_write.wait(timeout=0.2)
+    release_injection.set()
+    injector.join(timeout=2.0)
+    try:
+        _wait_for(log, "query")
+    finally:
+        handle.close()
+        pump.drain_until_exit(timeout=5.0)
+
+    assert not injector.is_alive()
+    assert failures == []
+    assert not reply_interleaved, "terminal reply interleaved with partial injection"
 
 
 def test_pty_responder_handles_live_observed_parameterized_queries() -> None:
@@ -381,6 +657,317 @@ def test_close_does_not_block_behind_full_pty_input_queue(tmp_path: Path) -> Non
     assert not injector.is_alive()
 
 
+def test_close_rereads_reader_ownership_after_reap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    master_fd, writer_fd = os.pipe()
+    proc = _ScheduledPtyProcess()
+    handle = _boundary_pty_handle(proc, master_fd)
+    real_close = os.close
+    close_threads: list[threading.Thread] = []
+
+    def recording_close(fd: int) -> None:
+        if fd == master_fd:
+            close_threads.append(threading.current_thread())
+        real_close(fd)
+
+    monkeypatch.setattr(_pty_module.os, "close", recording_close)
+    failures: list[BaseException] = []
+
+    def close() -> None:
+        try:
+            handle.close()
+        except BaseException as exc:  # noqa: BLE001 - asserted below
+            failures.append(exc)
+
+    closer = threading.Thread(target=close, name="scheduled-closer")
+    closer.start()
+    assert proc.wait_entered.wait(timeout=1.0)
+    pump = EventPump(handle)
+    assert handle._reader_started_event.wait(timeout=1.0)
+    proc.release_wait.set()
+    closer.join(timeout=2.0)
+    exit_event = pump.drain_until_exit(timeout=2.0)
+    real_close(writer_fd)
+
+    assert not closer.is_alive()
+    assert failures == []
+    assert isinstance(exit_event, ExitEvent)
+    assert len(close_threads) == 1
+    assert close_threads[0] is not closer
+
+
+def test_concurrent_close_has_one_reap_and_fd_owner() -> None:
+    master_fd, writer_fd = os.pipe()
+    proc = _ScheduledPtyProcess()
+    handle = _boundary_pty_handle(proc, master_fd)
+    failures: list[BaseException] = []
+
+    def close() -> None:
+        try:
+            handle.close()
+        except BaseException as exc:  # noqa: BLE001 - asserted below
+            failures.append(exc)
+
+    first = threading.Thread(target=close)
+    second = threading.Thread(target=close)
+    first.start()
+    assert proc.wait_entered.wait(timeout=1.0)
+    second.start()
+    time.sleep(0.1)
+    proc.release_wait.set()
+    first.join(timeout=2.0)
+    second.join(timeout=2.0)
+    os.close(writer_fd)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert failures == []
+    assert proc.wait_calls == 1
+    assert handle._master_closed is True
+
+
+def test_inject_refuses_after_pty_close_publishes_closing() -> None:
+    master_socket, child_socket = socket.socketpair()
+    proc = _ScheduledPtyProcess()
+    handle = _boundary_pty_handle(proc, master_socket.detach())
+    closer = threading.Thread(target=handle.close)
+    closer.start()
+    assert proc.wait_entered.wait(timeout=1.0)
+
+    try:
+        with pytest.raises(AdapterError, match="closed"):
+            handle.inject("must not be delivered")
+        child_socket.settimeout(1.0)
+        assert child_socket.recv(4096) == b"\x03"
+    finally:
+        proc.release_wait.set()
+        closer.join(timeout=2.0)
+        child_socket.close()
+
+
+def test_queued_pty_inject_rechecks_retirement_under_serialization() -> None:
+    master_socket, child_socket = socket.socketpair()
+    proc = _ScheduledPtyProcess()
+    handle = _boundary_pty_handle(proc, master_socket.detach())
+    failures: list[BaseException] = []
+    gate = _BlockingWriterLock()
+    handle._normal_writer_lock = cast(Any, gate)  # noqa: SLF001
+
+    def inject() -> None:
+        try:
+            handle.inject("queued before close")
+        except BaseException as exc:  # noqa: BLE001 - asserted below
+            failures.append(exc)
+
+    injector = threading.Thread(target=inject)
+    injector.start()
+    assert gate.entered.wait(timeout=1.0)
+    closer = threading.Thread(target=handle.close)
+    closer.start()
+    assert proc.wait_entered.wait(timeout=1.0)
+    gate.release.set()
+    injector.join(timeout=2.0)
+    proc.release_wait.set()
+    closer.join(timeout=2.0)
+    child_socket.settimeout(1.0)
+    delivered = child_socket.recv(4096)
+    child_socket.close()
+
+    assert not injector.is_alive()
+    assert not closer.is_alive()
+    assert len(failures) == 1
+    assert isinstance(failures[0], AdapterError)
+    assert delivered == b"\x03"
+
+
+def test_interrupt_write_is_atomic_with_close_and_retirement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    master_socket, child_socket = socket.socketpair()
+    master_fd = master_socket.detach()
+    proc = _ScheduledPtyProcess()
+    proc.returncode = 0
+    handle = _boundary_pty_handle(proc, master_fd)
+    real_write = os.write
+    interrupt_at_write = threading.Event()
+    release_interrupt = threading.Event()
+
+    def controlled_write(fd: int, data: bytes) -> int:
+        if (
+            fd == master_fd
+            and data == b"\x03"
+            and threading.current_thread().name == "interruptor"
+        ):
+            interrupt_at_write.set()
+            assert release_interrupt.wait(timeout=2.0)
+        return real_write(fd, data)
+
+    monkeypatch.setattr(_pty_module.os, "write", controlled_write)
+    interruptor = threading.Thread(target=handle.interrupt, name="interruptor")
+    closer = threading.Thread(target=handle.close, name="closer")
+    interruptor.start()
+    assert interrupt_at_write.wait(timeout=1.0)
+    closer.start()
+    time.sleep(0.1)
+    close_waited_for_interrupt = closer.is_alive()
+    release_interrupt.set()
+    interruptor.join(timeout=2.0)
+    closer.join(timeout=2.0)
+    child_socket.close()
+
+    reuse_sender, reuse_peer = socket.socketpair()
+    reuse_sender_fd = reuse_sender.detach()
+    if reuse_sender_fd != master_fd:
+        os.dup2(reuse_sender_fd, master_fd)
+        os.close(reuse_sender_fd)
+    reuse_peer.settimeout(0.1)
+    handle.interrupt()
+    with pytest.raises(TimeoutError):
+        reuse_peer.recv(1)
+    os.close(master_fd)
+    reuse_peer.close()
+
+    assert close_waited_for_interrupt
+    assert not interruptor.is_alive()
+    assert not closer.is_alive()
+
+
+def test_interrupt_cannot_advance_epoch_between_write_check_and_write() -> None:
+    master_socket, child_socket = socket.socketpair()
+    master_fd = master_socket.detach()
+    proc = _ScheduledPtyProcess()
+    handle = _boundary_pty_handle(proc, master_fd)
+    checked_epoch = threading.Event()
+    release_write = threading.Event()
+    original_poll = proc.poll
+    first_inject_poll = True
+
+    def controlled_poll() -> int | None:
+        nonlocal first_inject_poll
+        if threading.current_thread().name == "injector" and first_inject_poll:
+            first_inject_poll = False
+            checked_epoch.set()
+            assert release_write.wait(timeout=2.0)
+        return original_poll()
+
+    proc.poll = controlled_poll  # type: ignore[method-assign]
+    failures: list[BaseException] = []
+
+    def inject() -> None:
+        try:
+            handle.inject("old-epoch")
+        except BaseException as exc:  # noqa: BLE001 - asserted below
+            failures.append(exc)
+
+    injector = threading.Thread(target=inject, name="injector")
+    interruptor = threading.Thread(target=handle.interrupt, name="interruptor")
+    injector.start()
+    assert checked_epoch.wait(timeout=1.0)
+    interruptor.start()
+    time.sleep(0.05)
+    interrupt_waited_for_checked_write = interruptor.is_alive()
+    release_write.set()
+    injector.join(timeout=2.0)
+    interruptor.join(timeout=2.0)
+    child_socket.settimeout(1.0)
+    received = child_socket.recv(4096)
+    proc.returncode = 0
+    handle.close()
+    child_socket.close()
+
+    assert interrupt_waited_for_checked_write
+    assert not injector.is_alive()
+    assert not interruptor.is_alive()
+    assert failures == []
+    assert received == b"old-epoch\r\x03"
+
+
+def test_final_reap_failure_retires_master_and_is_terminal() -> None:
+    master_socket, peer_socket = socket.socketpair()
+    master_fd = master_socket.detach()
+    proc = _NeverReapsPtyProcess()
+    handle = _boundary_pty_handle(proc, master_fd)
+
+    with pytest.raises(AdapterError, match="did not exit after SIGKILL"):
+        handle.close()
+    with pytest.raises(AdapterError, match="did not exit after SIGKILL"):
+        handle.close()
+
+    assert proc.wait_calls == 3
+    assert handle._master_closed is True
+    with pytest.raises(OSError):
+        os.fstat(master_fd)
+    peer_socket.close()
+
+
+def test_final_reap_failure_unblocks_reader_without_second_reap() -> None:
+    master_socket, peer_socket = socket.socketpair()
+    proc = _NeverReapsPtyProcess()
+    handle = _boundary_pty_handle(proc, master_socket.detach())
+    pump = EventPump(handle)
+    assert handle._reader_started_event.wait(timeout=1.0)
+
+    with pytest.raises(AdapterError, match="did not exit after SIGKILL"):
+        handle.close()
+    with pytest.raises(AdapterError, match="did not exit after SIGKILL"):
+        pump.drain_until_exit(timeout=2.0)
+
+    assert proc.wait_calls == 3
+    assert handle._master_closed is True
+    peer_socket.close()
+
+
+def test_final_reap_failure_does_not_mask_active_primary_error() -> None:
+    master_socket, peer_socket = socket.socketpair()
+    proc = _NeverReapsPtyProcess()
+    handle = _boundary_pty_handle(proc, master_socket.detach())
+    primary = RuntimeError("primary PTY failure")
+
+    try:
+        raise primary
+    except RuntimeError:
+        handle.close()
+
+    assert primary.__notes__ == [
+        "adapter cleanup also failed: PTY child did not exit after SIGKILL"
+    ]
+    assert proc.wait_calls == 3
+    assert handle._master_closed is True
+    peer_socket.close()
+
+
+def test_fd_cleanup_error_does_not_replace_reap_or_active_primary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    master_socket, peer_socket = socket.socketpair()
+    master_fd = master_socket.detach()
+    proc = _NeverReapsPtyProcess()
+    handle = _boundary_pty_handle(proc, master_fd)
+    real_close = os.close
+    primary = RuntimeError("primary PTY failure")
+
+    def failing_close(fd: int) -> None:
+        if fd == master_fd:
+            raise OSError("sentinel fd cleanup failure")
+        real_close(fd)
+
+    monkeypatch.setattr(_pty_module.os, "close", failing_close)
+    try:
+        try:
+            raise primary
+        except RuntimeError:
+            handle.close()
+    finally:
+        real_close(master_fd)
+        peer_socket.close()
+
+    assert primary.__notes__ == [
+        "adapter cleanup also failed: PTY child did not exit after SIGKILL"
+    ]
+    assert handle._close_error == "PTY child did not exit after SIGKILL"
+
+
 def test_interrupt_unblocks_full_pty_input_queue(tmp_path: Path) -> None:
     handle, log = _spawn_fake(
         tmp_path,
@@ -413,6 +1000,86 @@ def test_interrupt_unblocks_full_pty_input_queue(tmp_path: Path) -> None:
     assert not injector.is_alive()
     handle.close()
     pump.drain_until_exit(timeout=5.0)
+
+
+def test_interrupt_cancels_active_and_queued_writes_then_rearms(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handle, log = _spawn_fake(
+        tmp_path, {"queries": False, "modes": False, "redraw": False}
+    )
+    pump = EventPump(handle)
+    _wait_for(log, "start")
+    real_write = os.write
+    active_write_started = threading.Event()
+    release_active_write = threading.Event()
+    queued_call_started = threading.Event()
+    first_active_write = True
+
+    def controlled_write(fd: int, data: bytes) -> int:
+        nonlocal first_active_write
+        if (
+            fd == handle._master_fd
+            and data.startswith(b"old-active")
+            and first_active_write
+        ):
+            first_active_write = False
+            written = real_write(fd, data[:1])
+            active_write_started.set()
+            assert release_active_write.wait(timeout=2.0)
+            return written
+        return real_write(fd, data)
+
+    monkeypatch.setattr(_pty_module.os, "write", controlled_write)
+    failures: list[BaseException] = []
+
+    def inject(text: str, *, queued: bool = False) -> None:
+        if queued:
+            queued_call_started.set()
+        try:
+            handle.inject(text)
+        except BaseException as exc:  # noqa: BLE001 - asserted below
+            failures.append(exc)
+
+    active = threading.Thread(target=inject, args=("old-active",))
+    queued = threading.Thread(
+        target=inject, args=("old-queued",), kwargs={"queued": True}
+    )
+    active.start()
+    assert active_write_started.wait(timeout=1.0)
+    queued.start()
+    assert queued_call_started.wait(timeout=1.0)
+    time.sleep(0.05)
+    assert queued.is_alive()
+
+    interruptor = threading.Thread(target=handle.interrupt)
+    interruptor.start()
+    time.sleep(0.05)
+    assert interruptor.is_alive()
+    release_active_write.set()
+    interruptor.join(timeout=2.0)
+    active.join(timeout=2.0)
+    queued.join(timeout=2.0)
+    _wait_for(log, "interrupt")
+    try:
+        handle.inject("after-interrupt")
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            inputs = [entry for entry in _entries(log) if entry["event"] == "input"]
+            if any(entry["raw"] == "after-interrupt\r" for entry in inputs):
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError(f"new-epoch injection not observed: {_entries(log)!r}")
+    finally:
+        handle.close()
+        pump.drain_until_exit(timeout=5.0)
+
+    assert not active.is_alive()
+    assert not queued.is_alive()
+    assert not interruptor.is_alive()
+    assert len(failures) == 2
+    assert all(isinstance(exc, AdapterError) for exc in failures)
 
 
 def test_activity_is_coarse_not_per_redraw(tmp_path: Path) -> None:
@@ -508,6 +1175,81 @@ def test_attach_forwards_escape_prefixed_input(
         handle.close()
         os.close(user_master)
         os.close(user_slave)
+
+
+def test_attach_forwarding_serializes_with_injection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    handle, _log = _spawn_fake(
+        tmp_path, {"queries": False, "modes": False, "redraw": False}
+    )
+    user_master, user_slave = pty.openpty()
+    wake = threading.Event()
+    shutdown = threading.Event()
+    attach_result: list[str] = []
+    attach = threading.Thread(
+        target=lambda: attach_result.append(
+            handle.attach(
+                wake=wake,
+                shutdown=shutdown,
+                input_fd=user_slave,
+                output_fd=user_slave,
+            )
+        ),
+        daemon=True,
+    )
+    attach.start()
+    assert b"ready" in _read_fd_until(user_master, b"ready")
+
+    real_write = os.write
+    forwarding_started = threading.Event()
+    release_forwarding = threading.Event()
+    injection_reached_write = threading.Event()
+    first_forwarding_write = True
+
+    def controlled_write(fd: int, data: bytes) -> int:
+        nonlocal first_forwarding_write
+        if fd == handle._master_fd and data.startswith(b"human"):
+            if first_forwarding_write:
+                first_forwarding_write = False
+                written = real_write(fd, data[:1])
+                forwarding_started.set()
+                assert release_forwarding.wait(timeout=2.0)
+                return written
+        elif fd == handle._master_fd and data.startswith(b"agent"):
+            injection_reached_write.set()
+        return real_write(fd, data)
+
+    monkeypatch.setattr(_pty_module.os, "write", controlled_write)
+    failures: list[BaseException] = []
+
+    def inject() -> None:
+        try:
+            handle.inject("agent")
+        except BaseException as exc:  # noqa: BLE001 - asserted below
+            failures.append(exc)
+
+    injector = threading.Thread(target=inject)
+    try:
+        os.write(user_master, b"human\r")
+        assert forwarding_started.wait(timeout=1.0)
+        injector.start()
+        injection_interleaved = injection_reached_write.wait(timeout=0.2)
+        release_forwarding.set()
+        injector.join(timeout=2.0)
+        os.write(user_master, b"\x1c\x1c")
+        attach.join(timeout=2.0)
+    finally:
+        release_forwarding.set()
+        handle.close()
+        os.close(user_master)
+        os.close(user_slave)
+
+    assert not injector.is_alive()
+    assert not attach.is_alive()
+    assert attach_result == ["detached"]
+    assert failures == []
+    assert not injection_interleaved
 
 
 def test_attach_shutdown_wake_exits_bridge(

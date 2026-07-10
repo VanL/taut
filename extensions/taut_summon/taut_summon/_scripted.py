@@ -41,6 +41,7 @@ class ScriptedAdapter:
     supports_terminal_mode: bool = True
     supports_attach: bool = False
     orientation_via_inject: bool = False
+    emits_session_events: bool = True
 
     def spawn(
         self,

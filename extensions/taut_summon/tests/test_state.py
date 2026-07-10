@@ -15,15 +15,16 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import threading
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
 import pytest
 import taut_summon._state as state_module
 from simplebroker import Queue
-from taut_summon._broker_retry import _BROKER_RETRIES
-from taut_summon._retry import remove_backoff
+from simplebroker.ext import DatabaseError
 from taut_summon._state import (
     SUMMON_SCHEMA_VERSION,
     SUMMON_SCHEMA_VERSION_KEY,
@@ -34,11 +35,13 @@ from taut_summon._state import (
     capture_driver_evidence,
     claim_driver,
     claim_name,
+    driver_liveness,
     ensure_summon_schema,
     get_claim,
     get_session,
     get_summon_schema_version,
     get_wired,
+    list_sessions,
     record_session,
     release_claim,
     release_driver,
@@ -47,6 +50,8 @@ from taut_summon._state import (
 )
 
 from taut.client import TautClient
+
+pytestmark = pytest.mark.sqlite_only
 
 
 @pytest.fixture
@@ -62,7 +67,7 @@ def summon_db(tmp_path: Path) -> Path:
 def state_queue(summon_db: Path) -> Iterator[Queue]:
     """Return a broker queue handle bound to the test database."""
 
-    queue = Queue("taut_summon_state", db_path=str(summon_db))
+    queue = Queue("taut.summon_state", db_path=str(summon_db))
     try:
         yield queue
     finally:
@@ -256,10 +261,9 @@ def test_update_session_changes_provider_session_id(state_queue: Queue) -> None:
     assert row["token"] == "taut-tok-1"
 
 
-def test_update_session_outlasts_normal_read_retry_budget(
-    state_queue: Queue, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_session_round_trip_uses_canonical_projection(state_queue: Queue) -> None:
     ensure_summon_schema(state_queue)
+    pid, start = capture_driver_evidence()
     record_session(
         state_queue,
         member_id="m_abc",
@@ -268,45 +272,47 @@ def test_update_session_outlasts_normal_read_retry_budget(
         provider_session_id="sess-1",
         updated_ts=state_queue.generate_timestamp(),
     )
+    set_wired(
+        state_queue,
+        member_id="m_abc",
+        value=True,
+        updated_ts=state_queue.generate_timestamp(),
+    )
+    claimed = claim_driver(
+        state_queue,
+        member_id="m_abc",
+        driver_pid=pid,
+        driver_start_time=start,
+        updated_ts=state_queue.generate_timestamp(),
+    )
+    assert claimed["wired"] is True
 
-    real_one = state_module._one
-    malformed_reads = 0
-    malformed_read_limit = _BROKER_RETRIES + 2
-
-    def flaky_one(session: Any, sql: str, params: tuple[Any, ...] = ()) -> Any:
-        nonlocal malformed_reads
-        if (
-            "FROM taut_summon_sessions" in sql
-            and malformed_reads < malformed_read_limit
-        ):
-            malformed_reads += 1
-            return (
-                "m_abc",
-                "taut-tok-1",
-                "scripted",
-                "sess-1",
-                None,
-                None,
-                "runnervmkkn4f",
-                1,
-            )
-        return real_one(session, sql, params)
-
-    monkeypatch.setattr(state_module, "_one", flaky_one)
-
-    with remove_backoff():
-        row = update_session(
-            state_queue,
-            member_id="m_abc",
-            provider_session_id="sess-2",
-            updated_ts=state_queue.generate_timestamp(),
-        )
-
+    row = update_session(
+        state_queue,
+        member_id="m_abc",
+        provider_session_id="sess-2",
+        updated_ts=state_queue.generate_timestamp(),
+    )
     assert row["provider_session_id"] == "sess-2"
-    assert malformed_reads == malformed_read_limit
+    assert row["driver_pid"] == pid
+    assert row["driver_start_time"] == start
+    assert row["wired"] is True
+
+    assert release_driver(
+        state_queue,
+        member_id="m_abc",
+        driver_pid=pid,
+        driver_start_time=start,
+        updated_ts=state_queue.generate_timestamp(),
+    )
+    rows = list_sessions(state_queue)
+    assert len(rows) == 1
+    assert rows[0]["member_id"] == "m_abc"
+    assert rows[0]["provider_session_id"] == "sess-2"
+    assert rows[0]["driver_pid"] is None
 
 
-def test_get_session_outlasts_normal_read_retry_budget(
+def test_get_session_shifted_row_shape_fails_without_retry(
     state_queue: Queue, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     ensure_summon_schema(state_queue)
@@ -321,14 +327,10 @@ def test_get_session_outlasts_normal_read_retry_budget(
 
     real_one = state_module._one
     malformed_reads = 0
-    malformed_read_limit = _BROKER_RETRIES + 2
 
     def flaky_one(session: Any, sql: str, params: tuple[Any, ...] = ()) -> Any:
         nonlocal malformed_reads
-        if (
-            "FROM taut_summon_sessions" in sql
-            and malformed_reads < malformed_read_limit
-        ):
+        if "FROM taut_summon_sessions" in sql:
             malformed_reads += 1
             return (
                 "m_abc",
@@ -344,12 +346,10 @@ def test_get_session_outlasts_normal_read_retry_budget(
 
     monkeypatch.setattr(state_module, "_one", flaky_one)
 
-    with remove_backoff():
-        row = get_session(state_queue, "m_abc")
+    with pytest.raises(DatabaseError, match="malformed summon session row"):
+        get_session(state_queue, "m_abc")
 
-    assert row is not None
-    assert row["provider_session_id"] == "sess-1"
-    assert malformed_reads == malformed_read_limit
+    assert malformed_reads == 1
 
 
 def test_wired_round_trips_and_survives_driver_claim(state_queue: Queue) -> None:
@@ -419,50 +419,118 @@ def test_get_session_missing_returns_none(state_queue: Queue) -> None:
     assert get_session(state_queue, "m_missing") is None
 
 
-def test_get_session_retries_malformed_row_shape(
-    state_queue: Queue, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("driver_pid", "driver_start_time"),
+    ((123, None), (None, "start-token")),
+)
+def test_record_session_rejects_partial_driver_evidence(
+    state_queue: Queue,
+    driver_pid: int | None,
+    driver_start_time: str | None,
+) -> None:
+    ensure_summon_schema(state_queue)
+
+    with pytest.raises(SummonStateError, match="both set or both null"):
+        record_session(
+            state_queue,
+            member_id="m_abc",
+            token="taut-tok-1",
+            provider="claude",
+            driver_pid=driver_pid,
+            driver_start_time=driver_start_time,
+            updated_ts=state_queue.generate_timestamp(),
+        )
+
+    assert get_session(state_queue, "m_abc") is None
+
+
+def test_record_session_readback_failure_rolls_back_write(state_queue: Queue) -> None:
+    ensure_summon_schema(state_queue)
+    with state_queue.sidecar(transaction=True) as session:
+        session.run(
+            """
+            CREATE TRIGGER corrupt_summon_session_after_insert
+            AFTER INSERT ON taut_summon_sessions
+            BEGIN
+                UPDATE taut_summon_sessions
+                SET wired = 2
+                WHERE member_id = NEW.member_id;
+            END
+            """
+        )
+
+    with pytest.raises(DatabaseError, match="malformed summon session row"):
+        record_session(
+            state_queue,
+            member_id="m_abc",
+            token="taut-tok-1",
+            provider="claude",
+            driver_pid=None,
+            driver_start_time=None,
+            updated_ts=state_queue.generate_timestamp(),
+        )
+
+    with state_queue.sidecar() as session:
+        rows = list(
+            session.run(
+                "SELECT member_id FROM taut_summon_sessions WHERE member_id = ?",
+                ("m_abc",),
+                fetch=True,
+            )
+        )
+    assert rows == []
+
+
+@pytest.mark.parametrize(
+    ("driver_pid", "driver_start_time"),
+    ((123, None), (None, "start-token")),
+)
+def test_driver_liveness_classifies_partial_evidence_as_indeterminate(
+    state_queue: Queue,
+    driver_pid: int | None,
+    driver_start_time: str | None,
 ) -> None:
     ensure_summon_schema(state_queue)
     record_session(
         state_queue,
-        member_id="m_abc",
-        token="taut-test-token",
-        provider="scripted",
-        provider_session_id="sess",
+        member_id="m_legacy",
+        token="taut-tok-legacy",
+        provider="claude",
         updated_ts=state_queue.generate_timestamp(),
     )
-
-    real_one = state_module._one
-    malformed_reads = 0
-    malformed_read_limit = _BROKER_RETRIES - 1
-
-    def flaky_one(session: Any, sql: str, params: tuple[Any, ...] = ()) -> Any:
-        nonlocal malformed_reads
-        if (
-            "FROM taut_summon_sessions" in sql
-            and malformed_reads < malformed_read_limit
-        ):
-            malformed_reads += 1
-            return (
-                "m_abc",
-                "taut-test-token",
-                "scripted",
-                "sess",
-                None,
-                None,
-                "runnervmkkn4f",
-                1,
-            )
-        return real_one(session, sql, params)
-
-    monkeypatch.setattr(state_module, "_one", flaky_one)
-
-    with remove_backoff():
-        row = get_session(state_queue, "m_abc")
-
+    with state_queue.sidecar(transaction=True) as session:
+        session.run(
+            """
+            UPDATE taut_summon_sessions
+            SET driver_pid = ?, driver_start_time = ?
+            WHERE member_id = ?
+            """,
+            (driver_pid, driver_start_time, "m_legacy"),
+        )
+    row = get_session(state_queue, "m_legacy")
     assert row is not None
-    assert row["member_id"] == "m_abc"
-    assert malformed_reads == malformed_read_limit
+
+    assert driver_liveness(row) == "indeterminate"
+
+
+def test_session_sql_templates_are_static_and_canonical() -> None:
+    select_one = state_module._SESSION_SELECT_BY_MEMBER
+    select_all = state_module._SESSION_SELECT_ALL
+    expected_columns = " ".join(
+        (
+            "member_id, token, provider, provider_session_id,",
+            "driver_pid, driver_start_time, wired, updated_ts",
+        )
+    )
+    normalized_one = " ".join(select_one.split())
+    normalized_all = " ".join(select_all.split())
+
+    assert expected_columns in normalized_one
+    assert expected_columns in normalized_all
+    assert "SELECT *" not in select_one.upper()
+    assert "SELECT *" not in select_all.upper()
+    assert "WHERE member_id = ?" in select_one
+    assert "ORDER BY updated_ts DESC" in select_all
 
 
 # --- single-driver guard ([SUM-8]) ------------------------------------------
@@ -534,6 +602,191 @@ def test_claim_driver_allows_takeover_of_dead_claim(state_queue: Queue) -> None:
 
     assert row["driver_pid"] == my_pid
     assert row["driver_start_time"] == my_start
+
+
+@pytest.mark.parametrize(
+    ("held_pid", "held_start"),
+    ((123, None), (None, "legacy-start")),
+)
+def test_claim_driver_refuses_indeterminate_partial_evidence_without_takeover(
+    state_queue: Queue,
+    held_pid: int | None,
+    held_start: str | None,
+) -> None:
+    ensure_summon_schema(state_queue)
+    record_session(
+        state_queue,
+        member_id="m_abc",
+        token="taut-tok-1",
+        provider="claude",
+        updated_ts=state_queue.generate_timestamp(),
+    )
+    with state_queue.sidecar(transaction=True) as session:
+        session.run(
+            """
+            UPDATE taut_summon_sessions
+            SET driver_pid = ?, driver_start_time = ?
+            WHERE member_id = ?
+            """,
+            (held_pid, held_start, "m_abc"),
+        )
+    my_pid, my_start = capture_driver_evidence()
+
+    with pytest.raises(DriverConflictError, match="cannot verify"):
+        claim_driver(
+            state_queue,
+            member_id="m_abc",
+            driver_pid=my_pid,
+            driver_start_time=my_start,
+            updated_ts=state_queue.generate_timestamp(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("held_pid", "held_start"),
+    ((123, None), (None, "legacy-start")),
+)
+def test_claim_driver_takeover_replaces_partial_driver_evidence(
+    state_queue: Queue,
+    held_pid: int | None,
+    held_start: str | None,
+) -> None:
+    ensure_summon_schema(state_queue)
+    record_session(
+        state_queue,
+        member_id="m_abc",
+        token="taut-tok-1",
+        provider="claude",
+        updated_ts=state_queue.generate_timestamp(),
+    )
+    with state_queue.sidecar(transaction=True) as session:
+        session.run(
+            """
+            UPDATE taut_summon_sessions
+            SET driver_pid = ?, driver_start_time = ?
+            WHERE member_id = ?
+            """,
+            (held_pid, held_start, "m_abc"),
+        )
+    my_pid, my_start = capture_driver_evidence()
+
+    claimed = claim_driver(
+        state_queue,
+        member_id="m_abc",
+        driver_pid=my_pid,
+        driver_start_time=my_start,
+        updated_ts=state_queue.generate_timestamp(),
+        takeover=True,
+    )
+
+    assert claimed["driver_pid"] == my_pid
+    assert claimed["driver_start_time"] == my_start
+
+
+def test_claim_driver_rejects_zero_row_write_postcondition(
+    state_queue: Queue,
+) -> None:
+    ensure_summon_schema(state_queue)
+    dead_pid, dead_start = _dead_evidence()
+    record_session(
+        state_queue,
+        member_id="m_abc",
+        token="taut-tok-1",
+        provider="claude",
+        driver_pid=dead_pid,
+        driver_start_time=dead_start,
+        updated_ts=state_queue.generate_timestamp(),
+    )
+    with state_queue.sidecar(transaction=True) as session:
+        session.run(
+            """
+            CREATE TRIGGER ignore_driver_claim
+            BEFORE UPDATE OF driver_pid, driver_start_time
+            ON taut_summon_sessions
+            WHEN OLD.member_id = 'm_abc'
+            BEGIN
+                SELECT RAISE(IGNORE);
+            END
+            """
+        )
+    my_pid, my_start = capture_driver_evidence()
+
+    with pytest.raises(DriverConflictError, match="did not acquire"):
+        claim_driver(
+            state_queue,
+            member_id="m_abc",
+            driver_pid=my_pid,
+            driver_start_time=my_start,
+            updated_ts=state_queue.generate_timestamp(),
+            takeover=True,
+        )
+
+    stored = get_session(state_queue, "m_abc")
+    assert stored is not None
+    assert (stored["driver_pid"], stored["driver_start_time"]) == (
+        dead_pid,
+        dead_start,
+    )
+
+
+def test_claim_driver_race_has_exactly_one_owner(summon_db: Path) -> None:
+    setup_queue = Queue("taut.summon_state", db_path=str(summon_db))
+    children = [
+        subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        for _ in range(2)
+    ]
+    try:
+        ensure_summon_schema(setup_queue)
+        record_session(
+            setup_queue,
+            member_id="m_race",
+            token="taut-tok-race",
+            provider="claude",
+            updated_ts=setup_queue.generate_timestamp(),
+        )
+        evidence = [capture_driver_evidence(child.pid) for child in children]
+        barrier = threading.Barrier(2)
+
+        def race_claim(candidate: tuple[int, str]) -> tuple[int, str] | Exception:
+            queue = Queue("taut.summon_state", db_path=str(summon_db))
+            try:
+                barrier.wait(timeout=5)
+                claimed = claim_driver(
+                    queue,
+                    member_id="m_race",
+                    driver_pid=candidate[0],
+                    driver_start_time=candidate[1],
+                    updated_ts=queue.generate_timestamp(),
+                )
+                assert (
+                    claimed["driver_pid"],
+                    claimed["driver_start_time"],
+                ) == candidate
+                return candidate
+            except Exception as exc:  # returned for symmetric race assertions
+                return exc
+            finally:
+                queue.close()
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = list(pool.map(race_claim, evidence))
+
+        winners = [outcome for outcome in outcomes if isinstance(outcome, tuple)]
+        conflicts = [
+            outcome for outcome in outcomes if isinstance(outcome, DriverConflictError)
+        ]
+        assert len(winners) == 1
+        assert len(conflicts) == 1
+        assert winners[0] in evidence
+        stored = get_session(setup_queue, "m_race")
+        assert stored is not None
+        assert (stored["driver_pid"], stored["driver_start_time"]) == winners[0]
+    finally:
+        setup_queue.close()
+        for child in children:
+            if child.poll() is None:
+                child.kill()
+            child.wait()
 
 
 def test_claim_driver_reclaims_dead_evidence_without_takeover(
@@ -635,7 +888,8 @@ def test_release_driver_clears_evidence(state_queue: Queue) -> None:
 
 def test_release_driver_is_ownership_checked(state_queue: Queue) -> None:
     # A replaced driver's cleanup must never erase its successor's live
-    # claim: release with stale evidence is a no-op returning False.
+    # claim. The no-op returns True because complete different evidence
+    # confirms that the caller no longer owns the slot.
     ensure_summon_schema(state_queue)
     my_pid, my_start = capture_driver_evidence()
     record_session(
@@ -656,21 +910,75 @@ def test_release_driver_is_ownership_checked(state_queue: Queue) -> None:
         updated_ts=state_queue.generate_timestamp(),
     )
 
-    assert stale_release is False
+    assert stale_release is True
     row = get_session(state_queue, "m_abc")
     assert row is not None
     assert row["driver_pid"] == my_pid
     assert row["driver_start_time"] == my_start
 
-    # A released row is claimable by anyone without takeover.
-    claimed = claim_driver(
+
+def test_release_driver_rejects_zero_row_conditional_clear(state_queue: Queue) -> None:
+    ensure_summon_schema(state_queue)
+    my_pid, my_start = capture_driver_evidence()
+    record_session(
+        state_queue,
+        member_id="m_abc",
+        token="taut-tok-1",
+        provider="claude",
+        driver_pid=my_pid,
+        driver_start_time=my_start,
+        updated_ts=state_queue.generate_timestamp(),
+    )
+    with state_queue.sidecar(transaction=True) as session:
+        session.run(
+            """
+            CREATE TRIGGER ignore_driver_release
+            BEFORE UPDATE OF driver_pid ON taut_summon_sessions
+            WHEN NEW.driver_pid IS NULL
+            BEGIN
+                SELECT RAISE(IGNORE);
+            END
+            """
+        )
+
+    assert not release_driver(
         state_queue,
         member_id="m_abc",
         driver_pid=my_pid,
         driver_start_time=my_start,
         updated_ts=state_queue.generate_timestamp(),
     )
-    assert claimed["driver_pid"] == my_pid
+    row = get_session(state_queue, "m_abc")
+    assert row is not None
+    assert (row["driver_pid"], row["driver_start_time"]) == (my_pid, my_start)
+
+
+def test_release_driver_rejects_partial_confirmation(state_queue: Queue) -> None:
+    ensure_summon_schema(state_queue)
+    record_session(
+        state_queue,
+        member_id="m_abc",
+        token="taut-tok-1",
+        provider="claude",
+        updated_ts=state_queue.generate_timestamp(),
+    )
+    with state_queue.sidecar(transaction=True) as session:
+        session.run(
+            """
+            UPDATE taut_summon_sessions
+            SET driver_pid = ?, driver_start_time = NULL
+            WHERE member_id = ?
+            """,
+            (1234, "m_abc"),
+        )
+
+    assert not release_driver(
+        state_queue,
+        member_id="m_abc",
+        driver_pid=1234,
+        driver_start_time="unknown",
+        updated_ts=state_queue.generate_timestamp(),
+    )
 
 
 # --- claims table (bootstrap serialization) ---------------------------------
@@ -824,7 +1132,7 @@ def test_core_client_flow_is_oblivious_to_summon_state(summon_db: Path) -> None:
     notice ([SUM-8]; plan invariant "extension-owned state only").
     """
 
-    queue = Queue("taut_summon_state", db_path=str(summon_db))
+    queue = Queue("taut.summon_state", db_path=str(summon_db))
     try:
         core_version_before = _meta_value(queue, "schema_version")
         ensure_summon_schema(queue)
@@ -867,7 +1175,7 @@ def test_core_client_flow_is_oblivious_to_summon_state(summon_db: Path) -> None:
     assert van.whoami().name == "van"
 
     # Core's schema gate and version key are untouched by the extension.
-    verify = Queue("taut_summon_state", db_path=str(summon_db))
+    verify = Queue("taut.summon_state", db_path=str(summon_db))
     try:
         assert _meta_value(verify, "schema_version") == core_version_before
         assert _meta_value(verify, SUMMON_SCHEMA_VERSION_KEY) == str(

@@ -4,7 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "taut"
-version = "0.5.0"
+version = "0.5.1"
+
 description = "Private, no-config chat with agents and humans in your terminal"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -30,7 +31,7 @@ classifiers = [
     "Topic :: Utilities",
 ]
 dependencies = [
-    "simplebroker>=5.1.0",
+    "simplebroker>=5.3.0",
     "psutil>=6.0",
 ]
 
@@ -45,8 +46,8 @@ dev = [
     "pytest-xdist>=3.0",
     "pyyaml>=6.0",
     "ruff>=0.1.0",
-    "simplebroker-pg>=3.0.0",
-    "taut-summon>=0.5.0",
+    "simplebroker-pg>=3.2.0",
+    "taut-summon>=0.5.1",
     "types-psutil>=6.0",
 ]
 

@@ -24,15 +24,18 @@ import logging
 import os
 import sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, NoReturn, TypeVar
+from typing import Any, Literal, NoReturn, TypeVar, cast
+
+from simplebroker.ext import BrokerError
 
 from taut import NotInitializedError, TautClient
-from taut_summon._adapter import UnknownAdapterError, get_adapter
-from taut_summon._broker_retry import broker_retry, is_transient_broker_error
+from taut_summon._adapter import AdapterError, UnknownAdapterError, get_adapter
 from taut_summon._control import ControlClient
+from taut_summon._members import find_member as _resolve_member
 from taut_summon._state import (
+    LEDGER_QUEUE_NAME,
     SummonSessionRow,
     SummonStateError,
     driver_liveness,
@@ -41,18 +44,58 @@ from taut_summon._state import (
     list_sessions,
 )
 
-_LEDGER_QUEUE_NAME = "taut_summon_state"
+_LEDGER_QUEUE_NAME = LEDGER_QUEUE_NAME
 # Client-side patience for a control round-trip. A status client should wait
 # as patiently as a stop client: the driver may be loaded or mid-turn, so a
 # reply can take a control cadence or two: reporting "did not respond" early
 # is a false negative, not a truthful timeout.
 _STOP_TIMEOUT_SECONDS = 30.0
 _STATUS_TIMEOUT_SECONDS = 30.0
+_STATUS_FAULT_PLANE_ENV = "TAUT_SUMMON_STATUS_FAULT_PLANE"
+_CONTROL_FAULT_PLANE_ATTR = "_taut_summon_control_fault_plane"
+StatusFaultPlane = Literal[
+    "resolve_member",
+    "resolve_session",
+    "control_write",
+    "control_read",
+    "driver_snapshot",
+]
 T = TypeVar("T")
 
 
-def _cli_retry(fn: Callable[[], T], *, what: str) -> T:
-    return broker_retry(fn, what=f"summon cli {what}", attempts=30)
+def _emit_status_fault_plane(plane: StatusFaultPlane, exc: BaseException) -> None:
+    if not os.environ.get(_STATUS_FAULT_PLANE_ENV):
+        return
+    print(
+        f"status_fault_plane={plane} error={type(exc).__name__}: {exc}",
+        file=sys.stderr,
+    )
+
+
+def _with_status_fault_plane(plane: StatusFaultPlane, fn: Callable[[], T]) -> T:
+    try:
+        return fn()
+    except Exception as exc:
+        _emit_status_fault_plane(plane, exc)
+        raise
+
+
+def _control_fault_plane(exc: BaseException) -> StatusFaultPlane:
+    plane = getattr(exc, _CONTROL_FAULT_PLANE_ATTR, None)
+    if plane in ("control_write", "control_read"):
+        return cast(StatusFaultPlane, plane)
+    return "control_read"
+
+
+def _is_status_operational_error(exc: BaseException) -> bool:
+    if isinstance(exc, BrokerError):
+        return True
+    if getattr(exc, _CONTROL_FAULT_PLANE_ATTR, None) is not None:
+        return True
+    return (
+        isinstance(exc, RuntimeError)
+        and "failed to get database connection:" in str(exc).lower()
+    )
 
 
 class _SummonArgumentParser(argparse.ArgumentParser):
@@ -96,7 +139,6 @@ class RunRequest:
 
     name: str
     threads: tuple[str, ...]
-    provider: str
     terminal: bool
     persona: str | None
     system_prompt_file: str | None
@@ -190,7 +232,6 @@ def run_request(args: argparse.Namespace) -> RunRequest:
     return RunRequest(
         name=args.name,
         threads=tuple(args.threads) if args.threads else ("general",),
-        provider=args.provider if args.provider is not None else args.name,
         terminal=args.terminal,
         persona=args.persona,
         system_prompt_file=args.system_prompt_file,
@@ -204,9 +245,8 @@ def run_request(args: argparse.Namespace) -> RunRequest:
 
 
 def _db_suffix(args: argparse.Namespace) -> str:
-    # The skeleton echoes the db it parsed so delegation tests can prove
-    # --db propagation observably; the real driver replaces the echo
-    # with actual target resolution.
+    """Name an explicitly selected database in user-facing diagnostics."""
+
     return f" (db: {args.db_path})" if args.db_path else ""
 
 
@@ -260,14 +300,13 @@ def _open_client(args: argparse.Namespace) -> TautClient | None:
         return None
 
 
-def _find_member(client: TautClient, name: str) -> Any | None:
-    wanted = name.lower()
-    for member in client.who():
-        if member.name.lower() == wanted:
-            return member
-        if any(alias.lower() == wanted for alias in member.aliases):
-            return member
-    return None
+def _resolve_member_session(client: TautClient, member: Any) -> SummonSessionRow | None:
+    queue = client.queue(_LEDGER_QUEUE_NAME)
+    try:
+        ensure_summon_schema(queue)
+        return get_session(queue, member.member_id)
+    finally:
+        queue.close()
 
 
 def _resolve_session(
@@ -275,41 +314,54 @@ def _resolve_session(
 ) -> tuple[Any, SummonSessionRow] | None:
     """Resolve NAME → current member → durable session row ([SUM-8] lookup)."""
 
-    member = _cli_retry(lambda: _find_member(client, name), what="resolve member")
+    member = _resolve_member(client, name)
     if member is None:
         return None
-    queue = client.queue(_LEDGER_QUEUE_NAME)
-    try:
-
-        def _read_row() -> SummonSessionRow | None:
-            ensure_summon_schema(queue)
-            return get_session(queue, member.member_id)
-
-        row = _cli_retry(_read_row, what="resolve session")
-    except SummonStateError:
-        return None
-    finally:
-        queue.close()
+    row = _resolve_member_session(client, member)
     if row is None:
         return None
     return member, row
 
 
-def _confirm_released(client: TautClient, member_id: str, *, timeout: float) -> bool:
+def _release_is_confirmed(
+    row: Mapping[str, object] | None,
+    *,
+    driver_pid: int | None,
+    driver_start_time: str | None,
+) -> bool:
+    """Return whether current evidence proves the requested driver is gone."""
+
+    if row is None:
+        return True
+    stored_pid = row["driver_pid"]
+    stored_start = row["driver_start_time"]
+    if stored_pid is None and stored_start is None:
+        return True
+    if stored_pid is None or stored_start is None:
+        return False
+    return (stored_pid, stored_start) != (driver_pid, driver_start_time)
+
+
+def _confirm_released(
+    client: TautClient,
+    member_id: str,
+    *,
+    driver_pid: int | None,
+    driver_start_time: str | None,
+    timeout: float,
+) -> bool:
     """Poll the ledger until the driver evidence is cleared ([SUM-9] STOP)."""
 
     queue = client.queue(_LEDGER_QUEUE_NAME)
     deadline = time.monotonic() + timeout
     try:
         while time.monotonic() < deadline:
-            try:
-                row = get_session(queue, member_id)
-            except Exception as exc:
-                if not is_transient_broker_error(exc):
-                    raise
-                time.sleep(0.05)
-                continue
-            if row is None or row["driver_pid"] is None:
+            row = get_session(queue, member_id)
+            if _release_is_confirmed(
+                row,
+                driver_pid=driver_pid,
+                driver_start_time=driver_start_time,
+            ):
                 return True
             time.sleep(0.05)
         return False
@@ -323,9 +375,18 @@ def _cmd_stop(args: argparse.Namespace) -> int:
         print(f"nothing summoned as '{args.name}'{_db_suffix(args)}", file=sys.stderr)
         return 2
     try:
-        resolved = _resolve_session(client, args.name)
+        member = _with_status_fault_plane(
+            "resolve_member", lambda: _resolve_member(client, args.name)
+        )
+        row = (
+            None
+            if member is None
+            else _with_status_fault_plane(
+                "resolve_session", lambda: _resolve_member_session(client, member)
+            )
+        )
     except Exception as exc:
-        if is_transient_broker_error(exc):
+        if _is_status_operational_error(exc):
             print(
                 f"could not resolve summoned member '{args.name}'{_db_suffix(args)}: "
                 f"{exc}",
@@ -333,21 +394,21 @@ def _cmd_stop(args: argparse.Namespace) -> int:
             )
             return 1
         raise
-    if resolved is None or driver_liveness(resolved[1]) == "dead":
+    if member is None or row is None or driver_liveness(row) == "dead":
         print(f"nothing summoned as '{args.name}'{_db_suffix(args)}", file=sys.stderr)
         return 2
-    member, row = resolved
     control = ControlClient(
         client.queue,
         member.member_id,
         driver_pid=row["driver_pid"],
         driver_start_time=row["driver_start_time"],
     )
+    reply: dict[str, Any] | None
     try:
         try:
-            control.request("STOP", timeout=_STOP_TIMEOUT_SECONDS)
+            reply = control.request("STOP", timeout=_STOP_TIMEOUT_SECONDS)
         except Exception as exc:
-            if is_transient_broker_error(exc):
+            if _is_status_operational_error(exc):
                 print(
                     f"'{member.name}' is summoned but its driver did not stop in time"
                     f"{_db_suffix(args)}: {exc}",
@@ -357,9 +418,39 @@ def _cmd_stop(args: argparse.Namespace) -> int:
             raise
     finally:
         control.close()
-    if _confirm_released(client, member.member_id, timeout=_STOP_TIMEOUT_SECONDS):
-        print(f"stopped '{member.name}'{_db_suffix(args)}")
-        return 0
+    if reply is None:
+        print(
+            f"'{member.name}' is summoned but its driver did not acknowledge STOP"
+            f"{_db_suffix(args)}",
+            file=sys.stderr,
+        )
+        return 1
+    if reply.get("status") != "ack":
+        error = reply.get("error") or "driver rejected STOP"
+        print(
+            f"'{member.name}' is summoned but STOP failed{_db_suffix(args)}: {error}",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        if _confirm_released(
+            client,
+            member.member_id,
+            driver_pid=row["driver_pid"],
+            driver_start_time=row["driver_start_time"],
+            timeout=_STOP_TIMEOUT_SECONDS,
+        ):
+            print(f"stopped '{member.name}'{_db_suffix(args)}")
+            return 0
+    except Exception as exc:
+        if _is_status_operational_error(exc):
+            print(
+                f"'{member.name}' is summoned but its driver release could not be "
+                f"confirmed{_db_suffix(args)}: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+        raise
     print(
         f"'{member.name}' is summoned but its driver did not stop in time"
         f"{_db_suffix(args)}",
@@ -379,7 +470,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
     try:
         resolved = _resolve_session(client, args.name)
     except Exception as exc:
-        if is_transient_broker_error(exc):
+        if _is_status_operational_error(exc):
             print(
                 f"could not resolve summoned member '{args.name}'{_db_suffix(args)}: "
                 f"{exc}",
@@ -401,7 +492,8 @@ def _cmd_status(args: argparse.Namespace) -> int:
         try:
             reply = control.request("STATUS", timeout=_STATUS_TIMEOUT_SECONDS)
         except Exception as exc:
-            if is_transient_broker_error(exc):
+            _emit_status_fault_plane(_control_fault_plane(exc), exc)
+            if _is_status_operational_error(exc):
                 print(
                     f"'{member.name}' is summoned but its driver did not respond"
                     f"{_db_suffix(args)}: {exc}",
@@ -412,12 +504,17 @@ def _cmd_status(args: argparse.Namespace) -> int:
     finally:
         control.close()
     if reply is None:
+        _emit_status_fault_plane("control_read", TimeoutError("control reply timeout"))
         print(
             f"'{member.name}' is summoned but its driver did not respond"
             f"{_db_suffix(args)}",
             file=sys.stderr,
         )
         return 1
+    if reply.get("error") == "status unavailable":
+        _emit_status_fault_plane(
+            "driver_snapshot", RuntimeError(str(reply.get("error")))
+        )
     _print_status(member.name, reply)
     return 0
 
@@ -429,18 +526,13 @@ def _status_all(client: TautClient, args: argparse.Namespace) -> int:
     try:
         ensure_summon_schema(queue)
         rows = list_sessions(queue)
-    except SummonStateError:
-        rows = []
     finally:
         queue.close()
     live = [row for row in rows if driver_liveness(row) != "dead"]
     if not live:
         print(f"nothing summoned{_db_suffix(args)}", file=sys.stderr)
         return 2
-    names = _cli_retry(
-        lambda: {member.member_id: member.name for member in client.who()},
-        what="list member names",
-    )
+    names = {member.member_id: member.name for member in client.who()}
     for row in live:
         name = names.get(row["member_id"], row["member_id"])
         session = row["provider_session_id"] or "-"
@@ -483,7 +575,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not hasattr(args, "func"):
         build_parser().print_help()
         return 1
-    return int(args.func(args))
+    try:
+        return int(args.func(args))
+    except (AdapterError, BrokerError, SummonStateError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":  # pragma: no cover

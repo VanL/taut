@@ -273,11 +273,27 @@ an accident. Two consequences are binding:
   `simplebroker.ext` exports). No underscore-module imports, and no SQL
   against SimpleBroker's own tables — taut's SQL touches `taut_*` tables
   only.
-- Core `TautClient` queue access goes through Taut's public-API
-  `RetryingQueue` wrapper. The wrapper does not change storage shape or reach
-  into SimpleBroker internals; it applies a bounded retry policy around known
-  transient SQLite/WAL open, page-read, and timestamp-parse shapes on queue
-  operations and sidecar SQL statements. Non-transient errors still surface.
+- Core `TautClient` queue access returns a plain public
+  `simplebroker.Queue`. Taut does not layer its own retry classifier around
+  queue operations or sidecar SQL; SQLite lock/busy retry, connection setup,
+  and broker lifecycle semantics belong to SimpleBroker. Taut may add only
+  taut-specific state and ownership policy: transient handles for one-shot
+  CLI/client work, persistent owned handles for long-lived actors, and
+  `close()` at owned lifetime end.
+
+  The `simplebroker>=5.3.0` floor is load-bearing. Version 5.2.0 supplies the
+  reference ownership model, and 5.2.2 first passed Taut's persistent-owner
+  process/control proof, but 5.3.0 is the first supported release with the
+  public live activity-waiter replacement contract. Persistent Queue handles
+  for one resolved target share a process-local broker session; each driving
+  thread receives its own thread-local backend core. Releasing an ordinary operation
+  ends only its active-operation lease; it does not recycle the owning thread's
+  cached core or end the Queue lease. `Queue.cleanup_connections()` explicitly
+  recycles active handles while retaining the Queue lease, and `Queue.close()`
+  ends the owned persistent lifetime. Taut follows the 5.2.0 reference-reactor
+  rule: after drive begins, only the reactor owner performs normal Queue and
+  sidecar work. Taut does not recreate SimpleBroker connection release or retry
+  policy.
 - Taut must tolerate foreign writes: bodies that are not taut envelopes
   render as raw text ([TAUT-6.3]), and queues with no `taut_threads` row
   are invisible to `taut list` but must not break any command.
@@ -290,6 +306,13 @@ timestamp generated via `Queue.generate_timestamp()`. Taut never stores
 wall-clock times. This keeps every ordering question in one
 monotonic-per-database domain and makes any message id directly
 comparable to any cursor.
+
+The supported SimpleBroker hybrid encoding preserves the nanosecond magnitude
+of `time.time_ns()` while reserving low bits for logical ordering. A Taut
+time-window policy may therefore derive one raw inclusive cutoff as
+`Queue.generate_timestamp() - window_nanoseconds` and compare stored hybrid
+timestamps directly. It must not import a private decoder or convert stored
+timestamps into a second persisted clock domain.
 
 Write path: `Queue.write()` returns `None`, but taut always needs the id
 of the message it just wrote (cursor advance [TAUT-7.4], sub-thread
@@ -578,7 +601,14 @@ model). Public exports from `taut`: `TautClient`, `TautWatcher`,
 `Message`, `Thread`, `Member`, the exception hierarchy rooted at
 `TautError`, and `__version__`. The package ships typed (`py.typed`).
 
-Core runtime dependencies: exactly `simplebroker>=5.1.0` and `psutil`. The
+`TautClient.set_persona(persona: str | None) -> Member` resolves the client's
+selected identity, raises `IdentityError` when none resolves, and atomically
+updates activity plus the exact persona value (`None` clears it). It does not
+create, join, or leave a thread; write a notice; or alter membership/cursor
+state. This is the public embedding seam for persona-only updates such as
+Summon re-summon.
+
+Core runtime dependencies: exactly `simplebroker>=5.3.0` and `psutil`. The
 optional `taut-pg` extension adds `simplebroker-pg` and its driver dependencies
 in the same environment as Taut. Python ≥ 3.11. The CLI uses argparse, not a CLI
 framework.
@@ -586,7 +616,7 @@ framework.
 ### [TAUT-8.4] Watcher
 
 `TautWatcher` subclasses a taut-vendored copy of Weft's
-`MultiQueueWatcher` (adapted, attributed; taut must not depend on weft).
+`MultiQueueWatcher` (copied, attributed; taut must not depend on weft).
 The preferred Python construction path is `TautClient.watch(...)`.
 `TautWatcher` remains exported for embedding and advanced construction; direct
 `TautWatcher(client, ...)` construction is a deprecated compatibility path that
@@ -619,23 +649,83 @@ Contract:
   display layer, liveness wins over completeness.
 - Membership changes apply while running via `add_queue`/`remove_queue`.
   The watcher re-checks the membership table when the backend reports
-  change (on SQLite, by extending SimpleBroker's data-version callback;
-  the base callback refreshes `last_ts`, and sidecar writes bump
-  `PRAGMA data_version` because they share the file) and at a bounded
-  interval. The interval is the portable guarantee: backends whose wake
+  change and at a bounded interval. Taut's cursor-aware watcher treats
+  data-version as a wake hint; it does not refresh SimpleBroker `last_ts`
+  because chat delivery is governed by taut membership rows and
+  per-thread cursors. The interval is the portable guarantee: backends whose wake
   signals cover only queue writes ([TAUT-12.1]) still converge on
-  membership changes within the interval. Known transient SQLite sidecar
-  reads (lock/busy/malformed/disk I/O or the corresponding timestamp
-  row-shape misread) must be retried on watcher queue probes, fetches, cursor
-  advancement, and membership reads. A transient data-version callback failure
-  falls back to a normal pending scan instead of killing the watcher;
-  non-transient exceptions still surface.
-- `TautWatcher` uses non-persistent SimpleBroker queue handles. The core
-  `MultiQueueWatcher` still supports persistent handles when explicitly
-  requested, but taut's chat watcher must keep SQLite handles short-lived:
-  summon runs watcher, control, provider, and peer CLI processes against one
-  fresh database, and long-lived watcher handles have produced malformed-page
-  reads under that WAL churn.
+  membership changes within the interval. Watcher queue operations use
+  SimpleBroker's public `Queue` behavior directly. Taut does not retry
+  `malformed`, magic mismatch, disk I/O, timestamp row-shape, or application
+  row-decode errors by substring; those failures surface unless SimpleBroker
+  itself classifies a lock/busy contention case as retryable.
+
+`TautWatcher` uses the shared [TAUT-8.5] `BaseReactor` mechanism. The watcher
+returned by `TautClient.watch()` is the same instance driven by synchronous
+`run()` or background `start()`; it does not create a proxy/clone watcher.
+It owns persistent SimpleBroker Queue/runtime handles under the 5.2.0
+process-local-session and thread-local-core contract. While the owner thread
+is alive after drive begins, normal Queue operations, cursor writes, membership
+topology mutation, and handle close occur only on the drive owner. A foreign
+thread may request stop and inspect immutable queue-name snapshots, but it may
+not receive or use a live owned Queue. Removed membership handles close once;
+one-shot CLI/client paths remain transient.
+
+### [TAUT-8.5] Reactor lifecycle and ownership
+
+`BaseReactor`, derived from SimpleBroker 5.2.0's executable reference reactor,
+owns the process/wait/request-stop/stop mechanism shared by Taut's long-lived
+queue reactors. One reactor instance has exactly one drive-thread owner after
+its first driven turn. `process_once()`, waiting, scheduling-state mutation,
+and dynamic topology mutation must run on that owner; a second drive caller and
+a same-owner reentrant turn fail before touching a queue. Read-only inspection
+may cross threads only through an immutable synchronized queue-name/topology
+snapshot; a live Queue is owner-only after drive begins. First-party policy
+subclasses extend protected turn/resource hooks rather than replacing the public
+lifecycle templates. The strong `Thread` object is authoritative and its
+numeric ident is diagnostic. A temporary internal `TautBaseWatcher` alias
+preserves compatibility for separately packaged older Summon versions; it is
+the same class, not a second behavior path. A legacy subclass that overrides a
+public lifecycle template may import but must fail construction before broker
+I/O with an actionable extension-upgrade diagnostic rather than drive unsafely.
+
+Stop has two stages. `request_stop()` only sets stop state and wakes local and
+broker waits; it is safe from handlers, signals, and foreign threads.
+`stop(join=...)` may join an owner from another thread, but it must not close
+reactor-owned handles while that owner is driving. The drive finalizer runs
+only after the turn loop has unwound, and closes owned queues, waiters, strategy
+resources, and runtime state exactly once on clean stop, bounded-run return, or
+unexpected failure. A foreign caller may close only after the owner thread
+exits; an instance that was never driven may be closed by its caller.
+Unexpected exceptions remain observable after finalization.
+
+Polling/activity infrastructure initializes only after drive ownership is
+claimed. One shared wait template follows the reference reactor and waits
+through `PollingStrategy` only. The strategy owns an optional native
+multi-queue waiter when the backend supplies one; otherwise it uses
+SimpleBroker's data-version path. No caller consumes the native waiter directly.
+A fixed-topology reactor binds its waiter once. `PollingStrategy.start()` runs
+exactly once for initial lifecycle setup. After owner-thread dynamic topology
+mutation, the next owner wait builds an optional waiter for the new complete
+queue set and calls the public
+`PollingStrategy.replace_activity_waiter(ActivityWaiter | None)` interface.
+Live replacement must not reset the strategy's data-version callback or local
+activity state. The strategy remains the sole current-waiter and wait-path
+authority; Taut closes the displaced waiter returned by replacement exactly
+once. A topology change discovered inside the data-version callback is rebound
+after that strategy wait returns and before any second strategy wait. Broker
+activity, local activity, and stop are wake hints; after every wake the reactor
+rechecks authoritative pending/cursor state before dispatch. Taut does not wrap
+turns or queue operations in a second retry policy: SimpleBroker owns broker
+retry under [TAUT-3.4].
+
+A background `TautWatcher` drives the same instance returned by
+`TautClient.watch()`. Construction/configuration may precede drive with no
+concurrent use, as in the SimpleBroker reference; after ownership is claimed,
+only the live owner uses and closes its dedicated persistent handles. Its
+runtime does not share the source `TautClient` state handle; closing either
+object does not close the other. A removed membership queue is closed once.
+One-shot client and CLI paths remain transient.
 
 The TUI (future) is a consumer of `TautClient` + `TautWatcher`, ships as
 the optional extra `taut[tui]`, and adds no new runtime dependency to the
@@ -685,9 +775,10 @@ implied by docs or output.
   thread, and never a cursor pointing past messages that were skipped.
   Sidecar writes are idempotent upserts so retrying the command
   converges.
-- Locked/busy or transient WAL page-read database: SimpleBroker's busy-timeout
-  and Taut's bounded public-wrapper retry discipline apply; surfaced errors
-  name the database path when the budget is exhausted.
+- Locked/busy database: SimpleBroker's busy-timeout and retry discipline apply;
+  surfaced errors name the database path when the broker budget is exhausted.
+  Taut does not add a second retry wrapper for corruption-shaped page-read,
+  magic, disk I/O, timestamp row-shape, or application row-decode errors.
 - Identity claim collision at rejoin: refused with the conflicting member named
   ([IAN-3.4]).
 - Member whose process claim went stale: existing membership, history, direct
@@ -749,6 +840,20 @@ posture:
   `from_id`, sender-name snapshots, and foreign-body inputs.
 - Multi-process write/read interleaving over one database is exercised at
   least once (two writers, one reader, ordering by ts holds).
+- Persona-only update tests prove the member field changes while memberships
+  and cursors remain byte-for-byte unchanged; `None` clears it; unresolved
+  identity fails; and no notice is written.
+- Reactor lifecycle tests must prove single drive ownership, signal-only
+  in-turn stop, `stop(join=False)` without early close, manual and background
+  drive finalization, exceptional-exit cleanup with the primary exception
+  preserved, idempotent concurrent stop, rejection of same-thread reentrant
+  turns and foreign-thread waits, owner-created strategy/waiter setup and
+  owner-thread native-waiter rebinding after dynamic topology changes,
+  local/broker wake, and drive-thread-only dynamic membership mutation. Queue
+  close and handler overlap must be tested with real broker queues in a
+  temporary database; shared construction/drive/close and native-wake
+  conformance also run against Postgres. The broker and watcher core path are
+  not mocked.
 
 ## 12. Roadmap Commitments and Forward Compatibility [TAUT-12]
 
@@ -803,8 +908,8 @@ Binding obligations:
 
 Queues come from `simplebroker-redis` as-is. Taut's member/thread/cursor
 state does not ride along automatically: sidecar tables exist on SQL
-backends so embedded state can share the broker's single-file locking
-and retry discipline through one connection, and the Redis backend has
+backends so embedded state can share the broker's connection and locking
+discipline, and the Redis backend has
 no SQL storage (`Queue.sidecar()` raises `SidecarUnavailableError`
 there). On Redis none of that multiplexing is needed — taut state
 becomes a **second connection to the same Redis** under a `taut:*` key
@@ -950,8 +1055,41 @@ Workflow obligations:
   selected package directory and creates/uploads a GitHub Release. It must not
   contain PyPI upload or Trusted Publishing steps.
 
+Core and `taut-summon` reactor changes ship as a paired release. The release
+helper synchronizes the Summon `taut>=` floor to the exact new core version,
+refreshes every retained extension lock, and rejects any resolved
+`simplebroker<5.3.0` or `simplebroker-pg<3.2.0`. Release evidence includes an
+installed-artifact canary built from the paired wheels, not only source-tree
+tests. Core may publish first only as Summon's immediate dependency; neither
+package is announced until the paired canary passes.
+
+New core wheel metadata must contain one unmarked
+`simplebroker>=X.Y.Z` requirement with `X.Y.Z >= 5.3.0`; other operators,
+compound specifiers, markers, and weaker floors fail closed. New Summon
+metadata must retain one unmarked `taut>=<new-core-version>` requirement, so
+the supplied core wheel is admitted exactly rather than excluded by a
+superficially stronger floor.
+
+Every non-dry-run `core`, `summon`, or matching `all` release builds both
+wheels from the same checkout into a fresh temporary artifact root and runs
+the paired installed-artifact verifier with their explicit paths after both
+builds and before any release commit, tag, or push. The gate still runs under
+`--skip-checks`; dry-run prints the ordered build and verification commands.
+PG-only releases do not run it. The reusable test workflow exposes a default-
+false paired-verification input enabled by the core and Summon release gates;
+it verifies after both fresh builds and before either publication job can run.
+
 ## Related Plans
 
+- `docs/plans/2026-07-10-taut-dynamic-native-waiter-replacement-plan.md` —
+  active owner-thread live waiter replacement implementation and PostgreSQL
+  native-wake proof.
+- `docs/plans/2026-07-10-taut-summon-quality-remediation-plan.md` — approved
+  state, lifecycle, control, artifact-release, and documentation remediation
+  for the paired core/Summon surface.
+- `docs/plans/2026-07-09-taut-reactor-safety-plan.md` — planned reactor drive
+  ownership, shutdown ordering, fixed lifecycle templates, and
+  reference-reactor test ports.
 - `docs/plans/2026-06-30-client-module-split-plan.md` — structural
   refactor of `taut.client` from a single module into a package facade and
   concern-specific mixins while preserving the [TAUT-8.3] public import and
@@ -992,3 +1130,7 @@ Workflow obligations:
   implemented evaluation-findings remediation: [TAUT-8.1] usage-error exit
   codes and `--` end-of-options, channel-rename resume, error-path
   hardening, and CLI-surface test-gap closure.
+- `docs/plans/2026-07-08-taut-sqlite-contention-hardening-plan.md` —
+  planned [TAUT-3.4]/[TAUT-8.4]/[TAUT-12.3] hardening for SQLite
+  contention: live control evidence, SimpleBroker-owned retry, integrity
+  probes, and watcher handle-lifetime proof.

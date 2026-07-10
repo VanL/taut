@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from simplebroker import Queue, open_broker
+from simplebroker.ext import IntegrityError
 
 import taut.identity as identity
 from taut import addressing
@@ -165,6 +166,46 @@ def test_reply_requires_parent_thread_membership(tmp_path: Path) -> None:
         van.reply("general", str(root.ts), "not a member")
 
 
+def test_client_default_queue_handles_are_transient(tmp_path: Path) -> None:
+    van = client(tmp_path, "van")
+
+    first = van.queue("general")
+    second = van.queue("general")
+
+    assert first.__class__ is Queue
+    assert second.__class__ is Queue
+    assert first is not second
+    assert first._persistent is False
+    assert second._persistent is False
+
+
+def test_persistent_client_reuses_queue_handles_and_closes_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    van = TautClient(db_path=tmp_path / ".taut.db", as_name="van", persistent=True)
+    closed: list[str] = []
+    real_close = Queue.close
+
+    def close_spy(queue: Queue) -> None:
+        closed.append(queue.name)
+        real_close(queue)
+
+    monkeypatch.setattr(Queue, "close", close_spy)
+
+    first = van.queue("general")
+    second = van.queue("general")
+    first.has_pending()
+
+    assert first is second
+    assert first._persistent is True
+
+    van.close()
+
+    assert closed.count(META_QUEUE_NAME) == 1
+    assert closed.count("general") == 1
+
+
 def test_reply_rejects_missing_short_and_ambiguous_message_ids(
     tmp_path: Path,
 ) -> None:
@@ -295,6 +336,143 @@ def test_set_name_requires_resolved_member(tmp_path: Path) -> None:
 
     with pytest.raises(IdentityError, match="unrecognized caller"):
         TautClient(db_path=tmp_path / ".taut.db").set_name("VanL")
+
+
+def test_set_persona_by_token_updates_persona_and_activity(tmp_path: Path) -> None:
+    van = client(tmp_path, "van")
+    van.join("general")
+    created = van.last_created_member
+    assert created is not None
+    assert created.token is not None
+    before = van.whoami()
+
+    updated = TautClient(
+        db_path=tmp_path / ".taut.db", token=created.token
+    ).set_persona("reviewer")
+
+    assert updated.member_id == before.member_id
+    assert updated.persona == "reviewer"
+    assert updated.last_active_ts > before.last_active_ts
+
+
+def test_set_persona_updates_activity_once_in_the_persona_transaction(
+    tmp_path: Path,
+) -> None:
+    van = client(tmp_path, "van")
+    van.join("general")
+    created = van.last_created_member
+    assert created is not None
+    assert created.token is not None
+    with van._meta_queue.sidecar(transaction=True) as session:
+        session.run("CREATE TABLE persona_activity_audit (updates INTEGER NOT NULL)")
+        session.run("INSERT INTO persona_activity_audit (updates) VALUES (0)")
+        session.run(
+            f"""
+            CREATE TRIGGER audit_persona_activity
+            AFTER UPDATE OF last_active_ts ON taut_members
+            WHEN NEW.member_id = '{created.member_id}'
+            BEGIN
+                UPDATE persona_activity_audit SET updates = updates + 1;
+            END
+            """
+        )
+
+    TautClient(db_path=tmp_path / ".taut.db", token=created.token).set_persona(
+        "reviewer"
+    )
+
+    with van._meta_queue.sidecar() as session:
+        rows = list(
+            session.run(
+                "SELECT updates FROM persona_activity_audit",
+                fetch=True,
+            )
+        )
+    assert rows == [(1,)]
+
+
+def test_set_persona_failure_does_not_update_activity(tmp_path: Path) -> None:
+    van = client(tmp_path, "van")
+    van.join("general")
+    created = van.last_created_member
+    assert created is not None
+    assert created.token is not None
+    before = van._state.get_member(created.member_id)
+    assert before is not None
+    with van._meta_queue.sidecar(transaction=True) as session:
+        session.run(
+            """
+            CREATE TRIGGER reject_persona_update
+            BEFORE UPDATE OF meta ON taut_members
+            BEGIN
+                SELECT RAISE(ABORT, 'persona write blocked');
+            END
+            """
+        )
+
+    with pytest.raises(IntegrityError, match="persona write blocked"):
+        TautClient(db_path=tmp_path / ".taut.db", token=created.token).set_persona(
+            "reviewer"
+        )
+
+    after = van._state.get_member(created.member_id)
+    assert after is not None
+    assert after["last_active_ts"] == before["last_active_ts"]
+    assert after["meta"] == before["meta"]
+
+
+def test_set_persona_none_clears_persona(tmp_path: Path) -> None:
+    van = client(tmp_path, "van")
+    van.join("general", persona="reviewer")
+    created = van.last_created_member
+    assert created is not None
+    assert created.token is not None
+
+    cleared = TautClient(
+        db_path=tmp_path / ".taut.db", token=created.token
+    ).set_persona(None)
+
+    assert cleared.persona is None
+
+
+def test_set_persona_requires_resolved_member(tmp_path: Path) -> None:
+    TautClient.init(db_path=tmp_path / ".taut.db")
+
+    with pytest.raises(IdentityError, match="unrecognized caller"):
+        TautClient(db_path=tmp_path / ".taut.db").set_persona("reviewer")
+
+
+def test_set_persona_missing_named_selector_is_identity_error(tmp_path: Path) -> None:
+    TautClient.init(db_path=tmp_path / ".taut.db")
+
+    with pytest.raises(IdentityError, match="unrecognized caller"):
+        TautClient(db_path=tmp_path / ".taut.db", as_name="missing").set_persona(
+            "reviewer"
+        )
+
+
+def test_set_persona_does_not_change_membership_cursor_or_notices(
+    tmp_path: Path,
+) -> None:
+    van = client(tmp_path, "van")
+    van.join("general")
+    created = van.last_created_member
+    assert created is not None
+    assert created.token is not None
+    member_id = created.member_id
+    memberships_before = van._state.list_memberships(member_id)
+    messages_before = [
+        (message.ts, message.kind, message.text) for message in van.log("general")
+    ]
+
+    token_client = TautClient(db_path=tmp_path / ".taut.db", token=created.token)
+    token_client.set_persona("reviewer")
+
+    assert token_client._state.list_memberships(member_id) == memberships_before
+    assert [
+        (message.ts, message.kind, message.text)
+        for message in token_client.log("general")
+    ] == messages_before
 
 
 def test_direct_message_queue_is_stable_across_name_change(tmp_path: Path) -> None:

@@ -20,7 +20,6 @@ from taut._constants import (
     load_config,
 )
 from taut._exceptions import IdentityError, NotInitializedError, TautError
-from taut._queue import RetryingQueue
 from taut.state import (
     ChannelRenameRow,
     MemberRow,
@@ -100,6 +99,8 @@ class _ClientBase(ABC):
     last_candidates: list[tuple[str, list[str]]]
     last_notification_warnings: list[str]
     _meta_queue: Queue
+    _persistent: bool
+    _queue_cache: dict[str, Queue]
     _state: TautState
 
     def __init__(
@@ -109,12 +110,15 @@ class _ClientBase(ABC):
         as_name: str | None = None,
         token: str | None = None,
         identity_capture: identity.IdentityCapture | None = None,
+        persistent: bool = False,
     ) -> None:
         self.config = load_config()
         self.target = self._resolve_target(db_path)
         self.as_name = as_name or os.environ.get("TAUT_AS")
         self.token = token or os.environ.get("TAUT_TOKEN")
         self.identity_capture = identity_capture
+        self._persistent = persistent
+        self._queue_cache: dict[str, Queue] = {}
         self.last_created_member = None
         self.last_candidates = []
         self.last_notification_warnings = []
@@ -125,12 +129,41 @@ class _ClientBase(ABC):
         )
         self._state.ensure_schema()
 
-    def queue(self, name: str, *, persistent: bool = False) -> Queue:
+    def queue(self, name: str, *, persistent: bool | None = None) -> Queue:
         """Return a queue bound to this client's resolved target."""
 
-        return RetryingQueue(
-            name, db_path=self.target, persistent=persistent, config=self.config
+        use_persistent = self._persistent if persistent is None else persistent
+        if use_persistent:
+            cached = self._queue_cache.get(name)
+            if cached is not None:
+                return cached
+        queue = Queue(
+            name,
+            db_path=self.target,
+            persistent=use_persistent,
+            config=self.config,
         )
+        if use_persistent:
+            self._queue_cache[name] = queue
+        return queue
+
+    def close(self) -> None:
+        """Release queue handles owned by this client.
+
+        Ordinary queue operations release their broker operation lease inside
+        SimpleBroker. This method is lifecycle cleanup: it releases the
+        persistent queue/session ownership for handles cached by this client.
+        """
+
+        seen: set[int] = set()
+        queues = [self._meta_queue, *self._queue_cache.values()]
+        for queue in queues:
+            queue_id = id(queue)
+            if queue_id in seen:
+                continue
+            seen.add(queue_id)
+            queue.close()
+        self._queue_cache.clear()
 
     def _resolve_target(self, db_path: str | Path | None) -> BrokerTarget | str:
         explicit = db_path or os.environ.get("TAUT_DB")

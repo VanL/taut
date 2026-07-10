@@ -51,6 +51,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from simplebroker import Queue
+from simplebroker.ext import BrokerError
 
 from taut import (
     IdentityError,
@@ -80,8 +81,10 @@ from taut_summon._adapter import (
     get_adapter,
 )
 from taut_summon._control import ControlLoop
+from taut_summon._members import find_member
 from taut_summon._persona import render_default_persona
 from taut_summon._state import (
+    LEDGER_QUEUE_NAME,
     ClaimConflictError,
     DriverConflictError,
     SummonStateError,
@@ -103,10 +106,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("taut_summon.driver")
 
-_LEDGER_QUEUE_NAME = "taut_summon_state"
+_LEDGER_QUEUE_NAME = LEDGER_QUEUE_NAME
 _DEFAULT_RESUME_BACKOFF = (1.0, 2.0, 4.0)
 _HEALTHY_RUN_SECONDS = 60.0
 _ACTIVITY_WINDOW_SECONDS = 10.0
+_SESSION_BOOTSTRAP_WAIT_SECONDS = 5.0
+_PUMP_JOIN_TIMEOUT_SECONDS = 10.0
+_SHUTDOWN_PUMP_JOIN_TIMEOUT_SECONDS = 5.0
 _HALT_ACK_TIMEOUT_SECONDS = 30.0
 _NAME_RETRY_ATTEMPTS = 5
 _WATCHER_RESTART_BACKOFF = (0.2, 0.5, 1.0, 2.0, 4.0, 8.0, 8.0, 8.0)
@@ -161,6 +167,34 @@ class _BootstrapResult:
     token: str
     provider: str
     provider_session_id: str | None
+    resummon: bool = False
+
+
+@dataclass(slots=True)
+class _GenerationExit:
+    """Generation-local exit state; never reused by a later spawn."""
+
+    returncode: int | None = None
+
+
+@dataclass(slots=True)
+class _GenerationFailure:
+    """Fatal pump failure transferred from the worker to the foreground."""
+
+    error: BaseException | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _GenerationContext:
+    """All pump-written state for one immutable [SUM-11] spawn identity."""
+
+    token: int
+    completion: threading.Event
+    harness_dead: threading.Event
+    session_observed: threading.Event
+    wake: threading.Event
+    exit: _GenerationExit
+    failure: _GenerationFailure
 
 
 def _resume_backoff_from_env() -> tuple[float, ...]:
@@ -227,6 +261,10 @@ class SummonDriver:
         # flag). Set in _run's finally.
         self._control_stop = threading.Event()
         self._control_thread: threading.Thread | None = None
+        self._control_loop: ControlLoop | None = None
+        self._control_failed = threading.Event()
+        self._control_error: BaseException | None = None
+        self._control_failure_lock = threading.Lock()
         self._handle: AdapterHandle | None = None
         # The live watcher, published so the ears handler can stop it
         # directly on adapter death — the wedged-supervisor-safe halt
@@ -234,10 +272,16 @@ class SummonDriver:
         self._watcher: Any | None = None
         self._watcher_failed = threading.Event()
         self._watcher_error: BaseException | None = None
+        self._session_observed = threading.Event()
         self._member_id: str | None = None
         self._exit_code: int | None = None
+        self._generation_lock = threading.RLock()
+        self._generation_counter = 0
+        self._active_generation: _GenerationContext | None = None
+        self._shutdown_error: BaseException | None = None
         self._queue: Queue | None = None
         self._evidence: tuple[int, str] | None = None
+        self._owned_clients: list[TautClient] = []
 
     # --- public entry ----------------------------------------------------
 
@@ -260,7 +304,7 @@ class SummonDriver:
         except DriverError as exc:
             print(str(exc), file=sys.stderr)
             return 1
-        except (SummonStateError, AdapterError, TautError) as exc:
+        except (BrokerError, SummonStateError, AdapterError, TautError) as exc:
             print(str(exc), file=sys.stderr)
             return 1
 
@@ -274,41 +318,54 @@ class SummonDriver:
                 logger.debug("adapter interrupt during stop failed", exc_info=True)
         self._wake.set()
 
+    def _persistent_client(self, **kwargs: Any) -> TautClient:
+        client = TautClient(**kwargs, persistent=True)
+        self._owned_clients.append(client)
+        return client
+
+    def _close_owned_clients(self) -> None:
+        while self._owned_clients:
+            client = self._owned_clients.pop()
+            try:
+                client.close()
+            except Exception:  # pragma: no cover - defensive cleanup
+                logger.debug("taut client close failed", exc_info=True)
+
     # --- bootstrap ([SUM-4]) ----------------------------------------------
 
     def _run(self) -> int:
         request = self._request
-        client = TautClient(db_path=request.db_path)
+        client = self._persistent_client(db_path=request.db_path)
         db_display = database_path_from_target(client.target)
         self._queue = client.queue(_LEDGER_QUEUE_NAME)
         try:
             ensure_summon_schema(self._queue)
             self._evidence = capture_driver_evidence()
-            boot = self._bootstrap(client)
-            self._member_id = boot.member_id
             try:
+                boot = self._bootstrap(client)
+                self._member_id = boot.member_id
+                self._update_resummon_persona(boot)
                 return self._supervise(boot, db_display)
             finally:
                 # Ownership-checked release covering EVERY post-claim fatal
-                # path once member_id is set (bad --system-prompt-file,
-                # watch() failure, TautError in _ensure_threads, any error
-                # inside _supervise). Release BEFORE letting the control
-                # thread ack a STOP, so the stop client sees the reply only
-                # after the ledger is clear ([SUM-9]). Idempotent — a second
-                # release is a no-op.
+                # path, including a bootstrap failure after member_id becomes
+                # known. Release BEFORE letting the control thread ack a STOP,
+                # so the stop client sees the reply only after the ledger is
+                # clear ([SUM-9]). Idempotent — a second release is a no-op.
                 self._release()
                 self._shutdown_complete.set()
                 self._control_stop.set()
                 if self._control_thread is not None:
                     self._control_thread.join(timeout=_HALT_ACK_TIMEOUT_SECONDS)
+                self._control_loop = None
         finally:
-            self._queue.close()
+            self._close_owned_clients()
 
     def _bootstrap(self, client: TautClient) -> _BootstrapResult:
         request = self._request
         requested = request.name
         implied = request.provider_flag is None
-        member = self._find_member(client, requested)
+        member = find_member(client, requested)
         row = (
             get_session(self._ledger(), member.member_id)
             if member is not None
@@ -342,12 +399,14 @@ class SummonDriver:
                 )
             except DriverConflictError as exc:
                 raise DriverError(str(exc)) from exc
+            self._member_id = member.member_id
             return _BootstrapResult(
                 member_id=member.member_id,
                 member_name=member.name,
                 token=row["token"],
                 provider=row["provider"],
                 provider_session_id=row["provider_session_id"],
+                resummon=True,
             )
 
         # First summon (or a foreign, never-summoned member holds the
@@ -415,35 +474,26 @@ class SummonDriver:
         # driver-anchored agent capture. A fresh name cannot adopt;
         # creation is asserted via the public last_created_member signal.
         temp = f"{target[:48]}-{secrets.token_hex(4)}"
-        creator = TautClient(
-            db_path=self._request.db_path,
-            as_name=temp,
-            identity_capture=_agent_capture(
-                os.getpid(), rule="summon driver bootstrap anchor"
-            ),
-        )
-        first_thread = self._request.threads[0]
-        creator.join(first_thread, persona=self._request.persona)
-        created = creator.last_created_member
-        if created is None or created.token is None:
-            release_claim(
-                queue,
-                name=target,
-                provider=provider,
-                driver_pid=pid,
-                driver_start_time=start,
+        try:
+            creator = TautClient(
+                db_path=self._request.db_path,
+                as_name=temp,
+                identity_capture=_agent_capture(
+                    os.getpid(), rule="summon driver bootstrap anchor"
+                ),
+                persistent=True,
             )
-            raise DriverError("bootstrap failed: the temp-named member was not created")
-
-        # Step 2: take the target name (fail-loud core rename). A
-        # mid-bootstrap collision falls back for implied and chosen names
-        # alike ([SUM-4] round-13 rule) — refusal here would strand the
-        # temp-named member, fallback leaves no debris.
-        for _ in range(_NAME_RETRY_ATTEMPTS):
-            try:
-                creator.set_name(target)
-                break
-            except IdentityError:
+        except BaseException:
+            self._release_name_claim_after_failure(
+                queue, target=target, provider=provider, pid=pid, start=start
+            )
+            raise
+        created: Member | None = None
+        try:
+            first_thread = self._request.threads[0]
+            creator.join(first_thread, persona=self._request.persona)
+            created = creator.last_created_member
+            if created is None or created.token is None:
                 release_claim(
                     queue,
                     name=target,
@@ -451,59 +501,122 @@ class SummonDriver:
                     driver_pid=pid,
                     driver_start_time=start,
                 )
-                fallback = self._fallback_name(client, requested, attempted)
-                attempted.add(fallback)
-                logger.warning(
-                    "requested name '%s' was taken mid-summon; member will "
-                    "be '%s' — rename with 'taut set name' if needed",
-                    target,
-                    fallback,
+                raise DriverError(
+                    "bootstrap failed: the temp-named member was not created"
                 )
-                target = fallback
+
+            # Step 2: take the target name (fail-loud core rename). A
+            # mid-bootstrap collision falls back for implied and chosen names
+            # alike ([SUM-4] round-13 rule) — refusal here would strand the
+            # temp-named member, fallback leaves no debris.
+            for _ in range(_NAME_RETRY_ATTEMPTS):
                 try:
-                    claim_name(
+                    creator.set_name(target)
+                    break
+                except IdentityError:
+                    release_claim(
                         queue,
                         name=target,
                         provider=provider,
                         driver_pid=pid,
                         driver_start_time=start,
-                        claimed_ts=queue.generate_timestamp(),
                     )
-                except ClaimConflictError:
-                    continue
-        else:
-            raise DriverError(
-                f"could not settle a name for '{requested}' after "
-                f"{_NAME_RETRY_ATTEMPTS} attempts"
-            )
+                    collided_target = target
+                    while len(attempted) < _NAME_RETRY_ATTEMPTS:
+                        fallback = self._fallback_name(client, requested, attempted)
+                        attempted.add(fallback)
+                        try:
+                            claim_name(
+                                queue,
+                                name=fallback,
+                                provider=provider,
+                                driver_pid=pid,
+                                driver_start_time=start,
+                                claimed_ts=queue.generate_timestamp(),
+                            )
+                        except ClaimConflictError:
+                            continue
+                        target = fallback
+                        logger.warning(
+                            "requested name '%s' was taken mid-summon; member "
+                            "will be '%s' — rename with 'taut set name' if needed",
+                            collided_target,
+                            fallback,
+                        )
+                        break
+                    else:
+                        raise DriverError(
+                            f"could not settle a name for '{requested}' after "
+                            f"{_NAME_RETRY_ATTEMPTS} attempts"
+                        )
+            else:
+                raise DriverError(
+                    f"could not settle a name for '{requested}' after "
+                    f"{_NAME_RETRY_ATTEMPTS} attempts"
+                )
 
-        # Join the remaining threads BEFORE recording the session row.
-        # record_session is the readiness signal (stop/status resolve off
-        # it, and callers wait on it): a summon thread joined only later, in
-        # _supervise, would silently drop anything said into it between
-        # readiness and that join ([TAUT-7.4]: joining starts you at now).
-        # Idempotent (skips threads[0], already joined at creation).
-        self._ensure_threads(creator, created.member_id)
+            # Join the remaining threads BEFORE recording the session row.
+            # record_session is the readiness signal (stop/status resolve off
+            # it, and callers wait on it): a summon thread joined only later, in
+            # _supervise, would silently drop anything said into it between
+            # readiness and that join ([TAUT-7.4]: joining starts you at now).
+            # Idempotent (skips threads[0], already joined at creation).
+            self._ensure_threads(creator, created.member_id)
+        except BaseException:
+            self._release_name_claim_after_failure(
+                queue, target=target, provider=provider, pid=pid, start=start
+            )
+            raise
+        finally:
+            primary_error = sys.exception()
+            try:
+                creator.close()
+            except Exception:
+                if primary_error is not None:
+                    logger.debug(
+                        "creator close after bootstrap failure also failed",
+                        exc_info=True,
+                    )
+                else:
+                    self._release_name_claim_after_failure(
+                        queue,
+                        target=target,
+                        provider=provider,
+                        pid=pid,
+                        start=start,
+                    )
+                    raise
+        assert created is not None and created.token is not None
 
         # Step 3: record the durable session row, then release the claim —
         # old names free up the moment they stop being load-bearing.
-        record_session(
-            queue,
-            member_id=created.member_id,
-            token=created.token,
-            provider=provider,
-            provider_session_id=None,
-            driver_pid=pid,
-            driver_start_time=start,
-            updated_ts=queue.generate_timestamp(),
-        )
-        release_claim(
+        self._member_id = created.member_id
+        try:
+            record_session(
+                queue,
+                member_id=created.member_id,
+                token=created.token,
+                provider=provider,
+                provider_session_id=None,
+                driver_pid=pid,
+                driver_start_time=start,
+                updated_ts=queue.generate_timestamp(),
+            )
+        except BaseException:
+            self._release_name_claim_after_failure(
+                queue, target=target, provider=provider, pid=pid, start=start
+            )
+            raise
+        if not release_claim(
             queue,
             name=target,
             provider=provider,
             driver_pid=pid,
             driver_start_time=start,
-        )
+        ):
+            raise DriverError(
+                f"recorded session for '{target}' but could not release its name claim"
+            )
         return _BootstrapResult(
             member_id=created.member_id,
             member_name=target,
@@ -512,11 +625,27 @@ class SummonDriver:
             provider_session_id=None,
         )
 
+    def _update_resummon_persona(self, boot: _BootstrapResult) -> None:
+        persona = self._request.persona
+        if not boot.resummon or persona is None:
+            return
+        client = TautClient(db_path=self._request.db_path, token=boot.token)
+        try:
+            updated = client.set_persona(persona)
+        finally:
+            client.close()
+        if updated.member_id != boot.member_id:
+            raise DriverError(
+                "persona update resolved a different member than the driver claim"
+            )
+
     # --- supervision loop (steps 4-5, ears, pump, resume) ------------------
 
     def _supervise(self, boot: _BootstrapResult, db_display: str) -> int:
         request = self._request
         adapter = self._require_adapter(boot.provider)
+        if request.attach and not adapter.supports_attach:
+            raise DriverError(f"provider '{boot.provider}' does not support attach")
         env = {"TAUT_TOKEN": boot.token, "TAUT_DB": db_display}
         system_prompt = self._system_prompt(boot, db_display)
         terminal_thread = (
@@ -539,11 +668,6 @@ class SummonDriver:
                 "--terminal requires exactly one thread; assistant text "
                 "will go to the log"
             )
-        watch_client = TautClient(db_path=request.db_path, token=boot.token)
-        mouth_client = TautClient(db_path=request.db_path, token=boot.token)
-
-        self._start_control_thread(boot)
-
         session_id = boot.provider_session_id
         consecutive_crashes = 0
         first_generation = True
@@ -551,20 +675,25 @@ class SummonDriver:
             started_at = time.monotonic()
             handle = self._spawn(adapter, session_id, system_prompt, env)
             self._handle = handle
-            self._harness_dead.clear()
+            generation = self._activate_generation()
             self._halt_ack.clear()
-            self._exit_code = None
             pump: threading.Thread | None = None
             try:
                 if self._should_start_pump_before_bootstrap(request, adapter):
                     pump = self._start_pump(
+                        generation,
                         handle,
-                        mouth_client,
-                        boot.member_id,
-                        terminal_thread,
+                        db_path=request.db_path,
+                        token=boot.token,
+                        member_id=boot.member_id,
+                        terminal_thread=terminal_thread,
                     )
                 self._rejoin(handle, boot)
-                self._ensure_threads(watch_client, boot.member_id)
+                setup_client = TautClient(db_path=request.db_path, token=boot.token)
+                try:
+                    self._ensure_threads(setup_client, boot.member_id)
+                finally:
+                    setup_client.close()
                 if adapter.supports_attach:
                     wired = get_wired(self._ledger(), boot.member_id)
                     attach_result = self._attach_if_needed(
@@ -574,7 +703,7 @@ class SummonDriver:
                         first_generation=first_generation,
                     )
                     if attach_result == "shutdown":
-                        handle.close()
+                        self._teardown_generation(generation, handle, pump)
                         return 0
                     if attach_result == "detached":
                         set_wired(
@@ -584,52 +713,59 @@ class SummonDriver:
                             updated_ts=self._ledger().generate_timestamp(),
                         )
                         wired = True
-                    if not wired and hasattr(handle, "mark_awaiting_onboarding"):
+                    if not wired:
                         handle.mark_awaiting_onboarding()
                 if pump is None:
                     pump = self._start_pump(
+                        generation,
                         handle,
-                        mouth_client,
-                        boot.member_id,
-                        terminal_thread,
+                        db_path=request.db_path,
+                        token=boot.token,
+                        member_id=boot.member_id,
+                        terminal_thread=terminal_thread,
                     )
+                self._await_initial_session_event(adapter)
+                self._raise_if_pump_failed(generation)
+                self._start_control_thread(boot)
+                self._raise_if_control_failed()
             except Exception:
-                handle.close()
-                if pump is not None:
-                    pump.join(timeout=10.0)
+                self._teardown_generation(generation, handle, pump)
                 raise
             assert pump is not None
             if self._shutdown.is_set():
-                return self._shutdown_current_generation(handle, pump, boot)
+                return self._shutdown_current_generation(generation, handle, pump, boot)
             if first_generation:
                 first_generation = False
             if adapter.orientation_via_inject:
                 try:
                     self._settle_for_orientation(handle)
                     if self._shutdown.is_set():
-                        return self._shutdown_current_generation(handle, pump, boot)
+                        return self._shutdown_current_generation(
+                            generation, handle, pump, boot
+                        )
                     handle.inject(system_prompt)
                 except AdapterError as exc:
+                    self._raise_if_control_failed()
                     if self._shutdown.is_set():
-                        return self._shutdown_current_generation(handle, pump, boot)
-                    handle.close()
-                    pump.join(timeout=10.0)
+                        return self._shutdown_current_generation(
+                            generation, handle, pump, boot
+                        )
+                    self._teardown_generation(generation, handle, pump)
                     raise DriverError(f"cannot orient the harness: {exc}") from exc
             try:
-                self._watch_until_wake(watch_client, boot, handle)
+                self._watch_until_wake(boot, handle)
+                self._raise_if_pump_failed(generation)
             except Exception:
-                handle.close()
-                pump.join(timeout=10.0)
+                self._teardown_generation(generation, handle, pump)
                 raise
 
             if self._shutdown.is_set():
-                return self._shutdown_current_generation(handle, pump, boot)
+                return self._shutdown_current_generation(generation, handle, pump, boot)
 
             # Harness death ([SUM-11]): one resume attempt with the stored
             # session id; a failed spawn falls back to a fresh session
             # whose cursor replay recovers the conversation.
-            handle.close()
-            pump.join(timeout=10.0)
+            self._teardown_generation(generation, handle, pump)
             lived = time.monotonic() - started_at
             consecutive_crashes = (
                 1 if lived >= _HEALTHY_RUN_SECONDS else consecutive_crashes + 1
@@ -638,12 +774,12 @@ class SummonDriver:
                 raise DriverError(
                     f"harness for '{boot.member_name}' exited "
                     f"{consecutive_crashes} times in a row (last exit code "
-                    f"{self._exit_code}); giving up"
+                    f"{generation.exit.returncode}); giving up"
                 )
             delay = self._backoff[consecutive_crashes - 1]
             logger.warning(
                 "harness exited (code %s); resuming in %.1fs (attempt %d/%d)",
-                self._exit_code,
+                generation.exit.returncode,
                 delay,
                 consecutive_crashes,
                 len(self._backoff),
@@ -680,23 +816,20 @@ class SummonDriver:
     def _halt_and_raise(self, cause: Exception | None) -> None:
         """Adapter death is fatal-and-resume, never a per-message error.
 
-        Stop the watcher **directly** before raising, so re-delivery — and
-        with it [TAUT-8.4]'s 3-strikes poison advance — cannot happen even
-        if the supervisor is wedged and never acks. ``stop(join=False)``
-        only signals the stop event; it is safe to call from inside the
-        watcher's own handler thread and is idempotent. Then wake the
-        supervisor and raise so this delivery's cursor stays put for
-        re-injection on resume ([SUM-5.4]). The ``_halt_ack`` wait is a
-        courtesy for ordering, no longer the safety mechanism, so its
-        timeout firing early can never cause a poison advance.
+        Signal the watcher before raising so re-delivery, and with it
+        [TAUT-8.4]'s poison-advance budget, cannot run while the supervisor
+        unwinds the failed generation. Final close belongs to the watcher
+        drive owner; an in-handler callback must never close live reactor
+        resources ([SUM-9]). Then wake the supervisor and preserve this
+        delivery's cursor for re-injection on resume ([SUM-5.4]).
         """
 
         watcher = self._watcher
         if watcher is not None:
             try:
-                watcher.stop(join=False)
-            except Exception:  # pragma: no cover - defensive: stop is idempotent
-                logger.debug("watcher stop during halt failed", exc_info=True)
+                watcher.request_stop()
+            except Exception:  # pragma: no cover - defensive signal path
+                logger.debug("watcher stop request during halt failed", exc_info=True)
         self._harness_dead.set()
         self._wake.set()
         self._halt_ack.wait(timeout=_HALT_ACK_TIMEOUT_SECONDS)
@@ -704,26 +837,198 @@ class SummonDriver:
 
     # --- event pump ([SUM-7.1]) --------------------------------------------
 
+    def _activate_generation(self) -> _GenerationContext:
+        """Publish one spawn generation and retire any prior token atomically."""
+
+        with self._generation_lock:
+            self._generation_counter += 1
+            generation = _GenerationContext(
+                token=self._generation_counter,
+                completion=threading.Event(),
+                harness_dead=threading.Event(),
+                session_observed=threading.Event(),
+                wake=threading.Event(),
+                exit=_GenerationExit(),
+                failure=_GenerationFailure(),
+            )
+            self._active_generation = generation
+            # Compatibility aliases for the foreground/watch paths. A stale
+            # pump retains only its context objects and can never reach these
+            # aliases after the next generation is published.
+            self._harness_dead = generation.harness_dead
+            self._session_observed = generation.session_observed
+            self._wake = generation.wake
+            self._exit_code = None
+            return generation
+
+    def _retire_generation(self, generation: _GenerationContext) -> None:
+        """Fence a generation before its handle is abandoned or replaced."""
+
+        with self._generation_lock:
+            if self._active_generation is generation:
+                self._active_generation = None
+
+    def _finish_generation(self, generation: _GenerationContext) -> None:
+        """Publish pump completion only to the generation that produced it."""
+
+        generation.completion.set()
+        generation.harness_dead.set()
+        with self._generation_lock:
+            if self._active_generation is generation:
+                generation.wake.set()
+
+    def _report_pump_failure(
+        self,
+        generation: _GenerationContext,
+        error: BaseException,
+    ) -> None:
+        """Publish a storage/setup failure only to its still-active owner."""
+
+        with self._generation_lock:
+            if self._active_generation is not generation:
+                return
+            if generation.failure.error is None:
+                generation.failure.error = error
+            generation.harness_dead.set()
+            generation.wake.set()
+
+    def _raise_if_pump_failed(self, generation: _GenerationContext) -> None:
+        """Raise a worker failure on the foreground supervision lane."""
+
+        with self._generation_lock:
+            error = generation.failure.error
+        if error is None:
+            return
+        raise DriverError(f"event pump storage failed: {error}") from error
+
+    @staticmethod
+    def _add_cleanup_note(primary: BaseException, cleanup: BaseException) -> None:
+        note = f"cleanup also failed: {type(cleanup).__name__}: {cleanup}"
+        add_note = getattr(primary, "add_note", None)
+        if callable(add_note):
+            add_note(note)
+        logger.error(note)
+
+    def _join_pump(
+        self,
+        generation: _GenerationContext,
+        pump: threading.Thread,
+        *,
+        timeout: float,
+        primary: BaseException | None = None,
+    ) -> None:
+        """Retire and join one pump; timeout is fatal unless another error is primary."""
+
+        self._retire_generation(generation)
+        try:
+            pump.join(timeout=timeout)
+        except BaseException as cleanup:
+            if primary is not None:
+                self._add_cleanup_note(primary, cleanup)
+                return
+            raise
+        if not pump.is_alive():
+            return
+        error = DriverError(
+            f"event pump did not stop within {timeout:.1f}s; generation "
+            f"{generation.token} was retired"
+        )
+        self._shutdown_error = error
+        if primary is not None:
+            self._add_cleanup_note(primary, error)
+            return
+        raise error
+
+    def _teardown_generation(
+        self,
+        generation: _GenerationContext,
+        handle: AdapterHandle,
+        pump: threading.Thread | None,
+        *,
+        timeout: float | None = None,
+    ) -> None:
+        """Retire, close, and checked-join without replacing an active failure."""
+
+        if timeout is None:
+            timeout = _PUMP_JOIN_TIMEOUT_SECONDS
+        inherited = sys.exception()
+        close_error: BaseException | None = None
+        join_error: BaseException | None = None
+        self._retire_generation(generation)
+        try:
+            handle.close()
+        except BaseException as cleanup:
+            if inherited is None:
+                close_error = cleanup
+            else:
+                self._add_cleanup_note(inherited, cleanup)
+        if pump is not None:
+            try:
+                self._join_pump(
+                    generation,
+                    pump,
+                    timeout=timeout,
+                    primary=inherited,
+                )
+            except BaseException as cleanup:
+                if inherited is None:
+                    join_error = cleanup
+                else:
+                    self._add_cleanup_note(inherited, cleanup)
+        if inherited is not None:
+            if self._shutdown.is_set():
+                self._shutdown_error = inherited
+            return
+        if join_error is not None:
+            if close_error is not None:
+                self._add_cleanup_note(join_error, close_error)
+            if self._shutdown.is_set():
+                self._shutdown_error = join_error
+            raise join_error
+        if close_error is not None:
+            if self._shutdown.is_set():
+                self._shutdown_error = close_error
+            raise close_error
+
     def _pump(
         self,
+        generation: _GenerationContext,
         handle: AdapterHandle,
-        mouth: TautClient,
+        db_path: str | None,
+        token: str,
         member_id: str,
         terminal_thread: str | None,
     ) -> None:
-        queue = mouth.queue(_LEDGER_QUEUE_NAME)
+        mouth: TautClient | None = None
         last_activity = 0.0
         try:
+            with self._generation_lock:
+                if self._active_generation is not generation:
+                    return
+                mouth = TautClient(db_path=db_path, token=token, persistent=True)
+                queue = mouth.queue(_LEDGER_QUEUE_NAME)
             for event in handle.events():
                 last_activity = self._pump_event(
-                    event, queue, mouth, member_id, terminal_thread, last_activity
+                    event,
+                    queue,
+                    mouth,
+                    member_id,
+                    terminal_thread,
+                    last_activity,
+                    generation=generation,
                 )
         except AdapterError as exc:
             logger.error("adapter event stream failed: %s", exc)
+        except (BrokerError, TautError) as exc:
+            logger.error("event pump storage failed: %s", exc)
+            self._report_pump_failure(generation, exc)
         finally:
-            queue.close()
-            self._harness_dead.set()
-            self._wake.set()
+            if mouth is not None:
+                try:
+                    mouth.close()
+                except Exception:  # pragma: no cover - defensive cleanup
+                    logger.debug("event pump client close failed", exc_info=True)
+            self._finish_generation(generation)
 
     def _pump_event(
         self,
@@ -733,41 +1038,53 @@ class SummonDriver:
         member_id: str,
         terminal_thread: str | None,
         last_activity: float,
+        *,
+        generation: _GenerationContext,
     ) -> float:
-        if isinstance(event, SessionEvent):
-            logger.debug("session id: %s", event.session_id)
-            try:
-                update_session(
-                    queue,
-                    member_id=member_id,
-                    provider_session_id=event.session_id,
-                    updated_ts=queue.generate_timestamp(),
-                )
-            except SummonStateError as exc:
-                logger.error("could not record session id: %s", exc)
-        elif isinstance(event, ActivityEvent):
-            logger.debug("activity: %s", event.description)
-            now = time.monotonic()
-            if now - last_activity >= _ACTIVITY_WINDOW_SECONDS:
-                last_activity = now
+        # Hold the generation lock across the side effect. A check followed by
+        # an unlocked write would let retirement race between the two.
+        with self._generation_lock:
+            if self._active_generation is not generation:
+                return last_activity
+            if isinstance(event, SessionEvent):
+                logger.debug("session id: %s", event.session_id)
+                if self._control_loop is not None:
+                    self._control_loop.update_session_id(event.session_id)
                 try:
-                    # The public activity seam: token-selected whoami()
-                    # updates last_active_ts ([SUM-7.1]/[IAN-3.3]).
-                    mouth.whoami()
-                except TautError as exc:
-                    logger.debug("activity resolution failed: %s", exc)
-        elif isinstance(event, AssistantTextEvent):
-            if terminal_thread is not None:
-                try:
-                    mouth.say(terminal_thread, event.text)
-                except TautError as exc:
-                    logger.error("terminal-mode post failed: %s", exc)
-            else:
-                # stdout is diagnostics, not speech ([SUM-6]).
-                logger.info("assistant: %s", event.text)
-        elif isinstance(event, ExitEvent):
-            self._exit_code = event.returncode
-            logger.info("harness exited with code %s", event.returncode)
+                    update_session(
+                        queue,
+                        member_id=member_id,
+                        provider_session_id=event.session_id,
+                        updated_ts=queue.generate_timestamp(),
+                    )
+                except SummonStateError as exc:
+                    logger.error("could not record session id: %s", exc)
+                finally:
+                    generation.session_observed.set()
+            elif isinstance(event, ActivityEvent):
+                logger.debug("activity: %s", event.description)
+                now = time.monotonic()
+                if now - last_activity >= _ACTIVITY_WINDOW_SECONDS:
+                    last_activity = now
+                    try:
+                        # The public activity seam: token-selected whoami()
+                        # updates last_active_ts ([SUM-7.1]/[IAN-3.3]).
+                        mouth.whoami()
+                    except TautError as exc:
+                        logger.debug("activity resolution failed: %s", exc)
+            elif isinstance(event, AssistantTextEvent):
+                if terminal_thread is not None:
+                    try:
+                        mouth.say(terminal_thread, event.text)
+                    except TautError as exc:
+                        logger.error("terminal-mode post failed: %s", exc)
+                else:
+                    # stdout is diagnostics, not speech ([SUM-6]).
+                    logger.info("assistant: %s", event.text)
+            elif isinstance(event, ExitEvent):
+                generation.exit.returncode = event.returncode
+                self._exit_code = event.returncode
+                logger.info("harness exited with code %s", event.returncode)
         return last_activity
 
     # --- helpers ------------------------------------------------------------
@@ -816,6 +1133,8 @@ class SummonDriver:
             handle.close()
             # Release is centralized in _run's finally ([SUM-8] cleanup).
             raise DriverError(f"cannot re-anchor member: {exc}") from exc
+        finally:
+            rejoin_client.close()
 
     def _ensure_threads(self, client: TautClient, member_id: str) -> None:
         for thread in self._request.threads:
@@ -828,9 +1147,7 @@ class SummonDriver:
             client.join(thread, persona=self._request.persona)
 
     def _settle_for_orientation(self, handle: AdapterHandle) -> None:
-        wait_until_quiet = getattr(handle, "wait_until_quiet", None)
-        if callable(wait_until_quiet):
-            wait_until_quiet()
+        handle.wait_until_quiet()
 
     def _should_start_pump_before_bootstrap(
         self, request: RunRequest, adapter: ProviderAdapter
@@ -845,18 +1162,42 @@ class SummonDriver:
             return True
         if os.environ.get("TAUT_HOST_TUI") == "1":
             return True
-        return not sys.stdin.isatty()
+        return False
+
+    def _await_initial_session_event(self, adapter: ProviderAdapter) -> None:
+        if not adapter.emits_session_events:
+            return
+        if self._session_observed.is_set():
+            return
+        deadline = time.monotonic() + _SESSION_BOOTSTRAP_WAIT_SECONDS
+        while (
+            not self._session_observed.is_set()
+            and not self._harness_dead.is_set()
+            and not self._shutdown.is_set()
+            and time.monotonic() < deadline
+        ):
+            self._session_observed.wait(timeout=0.05)
 
     def _start_pump(
         self,
+        generation: _GenerationContext,
         handle: AdapterHandle,
-        mouth_client: TautClient,
+        *,
+        db_path: str | None,
+        token: str,
         member_id: str,
         terminal_thread: str | None,
     ) -> threading.Thread:
         pump = threading.Thread(
             target=self._pump,
-            args=(handle, mouth_client, member_id, terminal_thread),
+            args=(
+                generation,
+                handle,
+                db_path,
+                token,
+                member_id,
+                terminal_thread,
+            ),
             daemon=True,
             name="taut-summon-pump",
         )
@@ -865,13 +1206,27 @@ class SummonDriver:
 
     def _shutdown_current_generation(
         self,
+        generation: _GenerationContext,
         handle: AdapterHandle,
         pump: threading.Thread,
         boot: _BootstrapResult,
     ) -> int:
-        handle.interrupt()
-        handle.close()
-        pump.join(timeout=5.0)
+        try:
+            handle.interrupt()
+        except BaseException:
+            self._teardown_generation(
+                generation,
+                handle,
+                pump,
+                timeout=_SHUTDOWN_PUMP_JOIN_TIMEOUT_SECONDS,
+            )
+            raise
+        self._teardown_generation(
+            generation,
+            handle,
+            pump,
+            timeout=_SHUTDOWN_PUMP_JOIN_TIMEOUT_SECONDS,
+        )
         # Release + control-thread STOP ack are ordered by _run's finally
         # ([SUM-9]); nothing to release here.
         logger.info("dismissed '%s' cleanly", boot.member_name)
@@ -912,11 +1267,8 @@ class SummonDriver:
                     boot.provider,
                 )
             return None
-        attach = getattr(handle, "attach", None)
-        if not callable(attach):
-            raise DriverError(f"provider '{boot.provider}' does not support attach")
         logger.info("attaching '%s'; detach with Ctrl-\\ Ctrl-\\", boot.member_name)
-        return str(attach(wake=self._wake, shutdown=self._shutdown))
+        return str(handle.attach(wake=self._wake, shutdown=self._shutdown))
 
     def _system_prompt(self, boot: _BootstrapResult, db_display: str) -> str:
         override = self._request.system_prompt_file
@@ -932,15 +1284,6 @@ class SummonDriver:
             workspace=db_display,
             provider=boot.provider,
         )
-
-    def _find_member(self, client: TautClient, name: str) -> Member | None:
-        wanted = name.lower()
-        for member in client.who():
-            if member.name.lower() == wanted:
-                return member
-            if any(alias.lower() == wanted for alias in member.aliases):
-                return member
-        return None
 
     def _fallback_name(
         self, client: TautClient, requested: str, attempted: set[str]
@@ -961,13 +1304,37 @@ class SummonDriver:
         assert self._queue is not None
         return self._queue
 
+    def _release_name_claim_after_failure(
+        self,
+        queue: Queue,
+        *,
+        target: str,
+        provider: str,
+        pid: int,
+        start: str,
+    ) -> None:
+        """Best-effort claim cleanup that preserves the active bootstrap error."""
+
+        try:
+            release_claim(
+                queue,
+                name=target,
+                provider=provider,
+                driver_pid=pid,
+                driver_start_time=start,
+            )
+        except Exception:
+            logger.debug(
+                "name-claim cleanup after bootstrap failure failed",
+                exc_info=True,
+            )
+
     def _require_evidence(self) -> tuple[int, str]:
         assert self._evidence is not None
         return self._evidence
 
     def _watch_until_wake(
         self,
-        watch_client: TautClient,
         boot: _BootstrapResult,
         handle: AdapterHandle,
     ) -> None:
@@ -978,29 +1345,29 @@ class SummonDriver:
         budget belongs to pump exit and injection failure.
         """
 
+        self._raise_if_control_failed()
         watcher_failures = 0
-        while not (self._shutdown.is_set() or self._harness_dead.is_set()):
-            try:
-                watcher = watch_client.watch(self._on_item)
-            except TautError as exc:
-                raise DriverError(f"cannot watch chat: {exc}") from exc
-            self._watcher = watcher
+        while not (
+            self._shutdown.is_set()
+            or self._harness_dead.is_set()
+            or self._control_failed.is_set()
+        ):
             self._watcher_failed.clear()
             self._watcher_error = None
             self._halt_ack.clear()
             watcher_ready = threading.Event()
-            notify_ready = getattr(watcher, "notify_ready_after_initial_drain", None)
-            if callable(notify_ready):
-                notify_ready(watcher_ready)
-            else:  # pragma: no cover - TautClient.watch returns TautWatcher today
-                watcher_ready.set()
-            watcher_thread = self._start_watcher_thread(watcher)
+            watcher_thread = self._start_watcher_thread(
+                db_path=self._request.db_path,
+                token=boot.token,
+                ready_event=watcher_ready,
+            )
             deadline = time.monotonic() + 30.0
             while (
                 not watcher_ready.is_set()
                 and not self._watcher_failed.is_set()
                 and not self._harness_dead.is_set()
                 and not self._shutdown.is_set()
+                and not self._control_failed.is_set()
                 and time.monotonic() < deadline
             ):
                 watcher_ready.wait(timeout=0.05)
@@ -1009,11 +1376,16 @@ class SummonDriver:
                 and not self._watcher_failed.is_set()
                 and not self._harness_dead.is_set()
                 and not self._shutdown.is_set()
+                and not self._control_failed.is_set()
             ):
                 self._halt_ack.set()
-                watcher.stop(join=False)
+                watcher = self._watcher
+                if watcher is not None:
+                    watcher.stop(join=False)
                 watcher_thread.join(timeout=30.0)
-                watcher.stop(join=True)
+                watcher = self._watcher
+                if watcher is not None:
+                    watcher.stop(join=True)
                 raise DriverError("cannot watch chat: watcher did not become ready")
             if watcher_ready.is_set():
                 logger.info(
@@ -1029,14 +1401,18 @@ class SummonDriver:
             # Shutdown ordering ([SUM-9]): stop injection, unblock any
             # in-flight inject via interrupt, drain the pump, release.
             self._halt_ack.set()
-            watcher.stop(join=False)
+            watcher = self._watcher
+            if watcher is not None:
+                watcher.stop(join=False)
             if self._shutdown.is_set():
                 handle.interrupt()
                 handle.close()
             watcher_thread.join(timeout=30.0)
-            watcher.stop(join=True)
-            if self._watcher is watcher:
-                self._watcher = None
+            watcher = self._watcher
+            if watcher is not None:
+                watcher.stop(join=True)
+
+            self._raise_if_control_failed()
 
             if (
                 self._watcher_failed.is_set()
@@ -1066,6 +1442,7 @@ class SummonDriver:
                 self._shutdown.wait(timeout=delay)
                 continue
             return
+        self._raise_if_control_failed()
 
     def _start_control_thread(self, boot: _BootstrapResult) -> None:
         """Start the [SUM-9] control consumer + [SUM-10] rate backstop.
@@ -1075,7 +1452,17 @@ class SummonDriver:
         connection is shared across threads.
         """
 
+        if self._control_thread is not None and self._control_thread.is_alive():
+            return
+        self._raise_if_control_failed()
+
+        self._control_stop.clear()
         driver_pid, driver_start_time = self._require_evidence()
+        provider_session_id = (
+            self._handle.session_id
+            if self._handle is not None and self._handle.session_id is not None
+            else boot.provider_session_id
+        )
         loop = ControlLoop(
             member_id=boot.member_id,
             db_path=self._request.db_path,
@@ -1086,24 +1473,118 @@ class SummonDriver:
             request_stop=self.request_stop,
             shutdown=self._control_stop,
             shutdown_complete=self._shutdown_complete,
-            release_confirmed=lambda: self._release_confirmed,
+            release_confirmed=self._control_release_confirmed,
             rate_limit=self._request.rate_limit,
             ledger_queue_name=_LEDGER_QUEUE_NAME,
             driver_pid=driver_pid,
             driver_start_time=driver_start_time,
+            provider_session_id=provider_session_id,
         )
+        self._control_loop = loop
         thread = threading.Thread(
-            target=loop.run, daemon=True, name="taut-summon-control"
+            target=self._run_control_loop,
+            args=(loop,),
+            daemon=True,
+            name="taut-summon-control",
         )
         self._control_thread = thread
         thread.start()
 
-    def _start_watcher_thread(self, watcher: Any) -> threading.Thread:
-        """Run the chat watcher and wake the supervisor if it exits early."""
+    def _control_release_confirmed(self) -> bool:
+        """Tell a pending STOP whether teardown and claim release both succeeded."""
+
+        return self._release_confirmed and self._shutdown_error is None
+
+    def _run_control_loop(self, loop: ControlLoop) -> None:
+        """Transfer unexpected [SUM-9]/[SUM-11] control death to the owner."""
+
+        try:
+            loop.run()
+        except BaseException as exc:
+            if self._control_stop.is_set() or self._shutdown.is_set():
+                logger.debug(
+                    "control loop stopped during driver shutdown", exc_info=True
+                )
+                return
+            self._report_control_failure(exc)
+            return
+        if not (self._control_stop.is_set() or self._shutdown.is_set()):
+            self._report_control_failure(
+                RuntimeError("control loop exited unexpectedly without a stop request")
+            )
+
+    def _report_control_failure(self, error: BaseException) -> None:
+        """Publish the primary control error and wake the foreground supervisor."""
+
+        with self._control_failure_lock:
+            if self._control_failed.is_set():
+                return
+            self._control_error = error
+            self._control_failed.set()
+
+        watcher = self._watcher
+        if watcher is not None:
+            try:
+                watcher.request_stop()
+            except Exception:  # pragma: no cover - preserve the primary failure
+                logger.debug(
+                    "watcher stop request after control failure failed", exc_info=True
+                )
+        handle = self._handle
+        if handle is not None:
+            try:
+                handle.interrupt()
+            except Exception:  # pragma: no cover - preserve the primary failure
+                logger.debug(
+                    "adapter interrupt after control failure failed", exc_info=True
+                )
+        self._wake.set()
+
+    def _raise_if_control_failed(self) -> None:
+        if not self._control_failed.is_set():
+            return
+        error = self._control_error
+        if error is None:  # pragma: no cover - Event publication follows assignment
+            error = RuntimeError("control loop failed without a diagnostic")
+        raise DriverError(f"control loop failed: {error}") from error
+
+    def _stop_control_thread_for_handoff(self) -> None:
+        thread = self._control_thread
+        if thread is None:
+            return
+        self._control_stop.set()
+        thread.join(timeout=_HALT_ACK_TIMEOUT_SECONDS)
+        if thread.is_alive():
+            logger.warning("control thread did not stop during handoff")
+            return
+        self._control_thread = None
+        self._control_loop = None
+        self._control_stop.clear()
+
+    def _start_watcher_thread(
+        self,
+        *,
+        db_path: str | None,
+        token: str,
+        ready_event: threading.Event,
+    ) -> threading.Thread:
+        """Open and run the chat watcher on its owning thread."""
 
         def _run_watcher() -> None:
             failed = False
+            client: TautClient | None = None
+            watcher: Any | None = None
             try:
+                client = TautClient(db_path=db_path, token=token, persistent=True)
+                watcher = client.watch(self._on_item, persistent=True)
+                self._watcher = watcher
+                notify_ready = getattr(
+                    watcher, "notify_ready_after_initial_drain", None
+                )
+                if callable(notify_ready):
+                    notify_ready(ready_event)
+                else:  # pragma: no cover - TautClient.watch returns TautWatcher today
+                    ready_event.set()
                 watcher.run()
             except Exception as exc:
                 if (
@@ -1116,6 +1597,20 @@ class SummonDriver:
                     self._watcher_failed.set()
                     logger.exception("watcher failed; rebuilding watcher from cursor")
             finally:
+                if watcher is not None and self._watcher is watcher:
+                    self._watcher = None
+                if watcher is not None:
+                    try:
+                        watcher.stop(join=False)
+                    except Exception:  # pragma: no cover - defensive cleanup
+                        logger.debug(
+                            "watcher stop during cleanup failed", exc_info=True
+                        )
+                if client is not None:
+                    try:
+                        client.close()
+                    except Exception:  # pragma: no cover - defensive cleanup
+                        logger.debug("watcher client close failed", exc_info=True)
                 if (
                     not self._shutdown.is_set()
                     and not self._harness_dead.is_set()
@@ -1140,25 +1635,19 @@ class SummonDriver:
             return
         pid, start = self._evidence
         try:
-            release_driver(
+            self._release_confirmed = release_driver(
                 self._ledger(),
                 member_id=self._member_id,
                 driver_pid=pid,
                 driver_start_time=start,
                 updated_ts=self._ledger().generate_timestamp(),
             )
-            # release_driver returns True (we cleared it) or False (the row
-            # is no longer ours — already released or taken over). Either
-            # way the slot is not held by *us*, which is what STOP must
-            # confirm before the control loop acks ([SUM-9]).
-            self._release_confirmed = True
         except Exception as exc:  # noqa: BLE001 - cleanup must never crash exit
             # The ledger release is best-effort cleanup: a stale claim is
-            # reclaimable by evidence ([SUM-11]), so a transient broker
-            # failure here (e.g. a WAL malformed-page read under load) must
-            # not turn a clean shutdown into a non-zero exit. But we could
-            # NOT confirm the slot is clear, so a STOP ack must not claim it
-            # is — the control loop replies an error instead.
+            # reclaimable by evidence ([SUM-11]), so cleanup failure must not
+            # turn process exit into a second failure. But we could NOT confirm
+            # the slot is clear, so a STOP ack must not claim it is — the
+            # control loop replies an error instead.
             self._release_confirmed = False
             logger.error("could not release the driver slot: %s", exc)
 
@@ -1167,6 +1656,7 @@ class SummonDriver:
             self._shutdown.is_set()
             or self._harness_dead.is_set()
             or self._watcher_failed.is_set()
+            or self._control_failed.is_set()
         ):
             self._wake.wait(timeout=0.2)
             self._wake.clear()

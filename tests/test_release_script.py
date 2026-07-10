@@ -195,7 +195,7 @@ def test_write_version_files_updates_summon_dependency_floor(
 
     def fake_read_current_version(target: object = release.ROOT_TARGET) -> str:
         assert target == release.ROOT_TARGET
-        return "0.5.0"
+        return "0.5.1"
 
     monkeypatch.setattr(release, "read_current_version", fake_read_current_version)
 
@@ -203,7 +203,7 @@ def test_write_version_files_updates_summon_dependency_floor(
 
     text = pyproject_path.read_text(encoding="utf-8")
     assert 'version = "0.5.1"' in text
-    assert '"taut>=0.5.0",' in text
+    assert '"taut>=0.5.1",' in text
 
 
 def test_sync_root_summon_dev_dependency_updates_root_floor(tmp_path: Path) -> None:
@@ -238,6 +238,62 @@ def test_sync_root_summon_dev_dependency_updates_root_floor(tmp_path: Path) -> N
 
     assert updated_version == "0.5.0"
     assert '"taut-summon>=0.5.0",' in root_pyproject_path.read_text(encoding="utf-8")
+
+
+def test_sync_summon_core_dependency_updates_exact_root_floor(
+    tmp_path: Path,
+) -> None:
+    release = _load_release_module()
+    root_pyproject_path = tmp_path / "pyproject.toml"
+    summon_pyproject_path = tmp_path / "extensions" / "taut_summon" / "pyproject.toml"
+    summon_pyproject_path.parent.mkdir(parents=True)
+    root_pyproject_path.write_text(
+        '[project]\nname = "taut"\nversion = "0.6.0"\n',
+        encoding="utf-8",
+    )
+    summon_pyproject_path.write_text(
+        '[project]\nname = "taut-summon"\nversion = "0.5.1"\n'
+        'dependencies = [\n    "taut>=0.5.1",\n]\n',
+        encoding="utf-8",
+    )
+
+    updated_version = release.sync_summon_core_dependency(
+        root_pyproject_path=root_pyproject_path,
+        summon_pyproject_path=summon_pyproject_path,
+    )
+
+    assert updated_version == "0.6.0"
+    assert '"taut>=0.6.0",' in summon_pyproject_path.read_text(encoding="utf-8")
+
+
+def test_root_release_sync_updates_both_paired_dependency_directions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _load_release_module()
+    calls: list[str] = []
+
+    def sync_root_to_summon() -> str:
+        calls.append("root-to-summon")
+        return "0.5.1"
+
+    def sync_summon_to_root() -> str:
+        calls.append("summon-to-root")
+        return "0.6.0"
+
+    monkeypatch.setattr(
+        release,
+        "sync_root_summon_dev_dependency",
+        sync_root_to_summon,
+    )
+    monkeypatch.setattr(
+        release,
+        "sync_summon_core_dependency",
+        sync_summon_to_root,
+    )
+
+    release._sync_root_release_dependencies()  # noqa: SLF001
+
+    assert calls == ["root-to-summon", "summon-to-root"]
 
 
 def test_root_target_uses_v_prefixed_github_tag() -> None:
@@ -663,6 +719,252 @@ def test_summon_postupdate_locks_and_builds_extension() -> None:
     assert steps[0].command == ("uv", "lock")
     assert steps[0].cwd == release.SUMMON_EXTENSION_DIR
     assert steps[1].command == ("uv", "build", "extensions/taut_summon")
+    assert steps[2].command == (
+        sys.executable,
+        str(release.REACTOR_RELEASE_ARTIFACT_VERIFIER),
+    )
+
+
+def test_core_postupdate_verifies_fresh_paired_artifacts_after_normal_build() -> None:
+    release = _load_release_module()
+
+    steps = release.build_postupdate_steps(release.ROOT_TARGET)
+
+    assert [step.command for step in steps] == [
+        ("uv", "lock"),
+        ("uv", "build"),
+        (
+            sys.executable,
+            str(release.REACTOR_RELEASE_ARTIFACT_VERIFIER),
+        ),
+    ]
+    assert steps[0].cwd == release.SUMMON_EXTENSION_DIR
+
+
+def test_core_dry_run_executes_only_the_helpers_dry_run_plan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _load_release_module()
+    calls: list[tuple[tuple[str, ...], bool]] = []
+
+    def fake_run_command(
+        command: tuple[str, ...],
+        *,
+        cwd: Path = release.PROJECT_ROOT,
+        dry_run: bool = False,
+        **_kwargs: object,
+    ) -> None:
+        if command == ("uv", "lock"):
+            assert cwd == release.SUMMON_EXTENSION_DIR
+        else:
+            assert cwd == release.PROJECT_ROOT
+        calls.append((command, dry_run))
+
+    monkeypatch.setattr(release, "run_command", fake_run_command)
+
+    release.run_postupdate_steps(release.ROOT_TARGET, dry_run=True)
+
+    assert calls == [
+        (("uv", "lock"), True),
+        (("uv", "build"), True),
+        (
+            (
+                sys.executable,
+                str(release.REACTOR_RELEASE_ARTIFACT_VERIFIER),
+                "--dry-run",
+            ),
+            False,
+        ),
+    ]
+
+
+def test_pg_postupdate_skips_paired_artifact_verification() -> None:
+    release = _load_release_module()
+
+    steps = release.build_postupdate_steps(release.PG_TARGET)
+
+    assert [step.command for step in steps] == [("uv", "build", "extensions/taut_pg")]
+
+
+def test_matching_batch_verifies_once_after_all_normal_builds() -> None:
+    release = _load_release_module()
+
+    steps = release.build_postupdate_steps_for_targets(
+        (release.PG_TARGET, release.SUMMON_TARGET, release.ROOT_TARGET)
+    )
+
+    assert [step.command for step in steps] == [
+        ("uv", "lock"),
+        ("uv", "build"),
+        ("uv", "build", "extensions/taut_pg"),
+        ("uv", "build", "extensions/taut_summon"),
+        (sys.executable, str(release.REACTOR_RELEASE_ARTIFACT_VERIFIER)),
+    ]
+
+
+def test_verifier_failure_under_skip_checks_stops_release_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _load_release_module()
+    state = _release_state(release)
+    commands: list[tuple[str, ...]] = []
+
+    monkeypatch.setattr(release, "is_dirty_worktree", lambda: False)
+    monkeypatch.setattr(
+        release,
+        "resolve_target_version",
+        lambda _version, _target: ("0.1.1", "0.1.1", state),
+    )
+    monkeypatch.setattr(release, "current_head_commit", lambda: "head")
+    monkeypatch.setattr(release, "_require_command", lambda _name: None)
+    monkeypatch.setattr(release, "_sync_root_release_dependencies", lambda: None)
+    monkeypatch.setattr(
+        release,
+        "run_prechecks",
+        lambda *_args, **_kwargs: pytest.fail("--skip-checks must skip prechecks"),
+    )
+    monkeypatch.setattr(
+        release,
+        "release_files_changed",
+        lambda _target: pytest.fail("verification must precede release mutation"),
+    )
+    monkeypatch.setattr(
+        release,
+        "prepare_tag",
+        lambda *_args, **_kwargs: pytest.fail("verification must precede tags"),
+    )
+    monkeypatch.setattr(
+        release,
+        "push_current_branch",
+        lambda **_kwargs: pytest.fail("verification must precede pushes"),
+    )
+
+    def fake_run_command(
+        command: tuple[str, ...],
+        **_kwargs: object,
+    ) -> None:
+        commands.append(command)
+        if command == (
+            sys.executable,
+            str(release.REACTOR_RELEASE_ARTIFACT_VERIFIER),
+        ):
+            raise subprocess.CalledProcessError(1, command)
+
+    monkeypatch.setattr(release, "run_command", fake_run_command)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        release.main(["core", "--skip-checks"])
+
+    assert commands == [
+        ("uv", "lock"),
+        ("uv", "build"),
+        (sys.executable, str(release.REACTOR_RELEASE_ARTIFACT_VERIFIER)),
+    ]
+
+
+def test_version_changed_core_syncs_pair_before_verifier_failure_stops_git(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _load_release_module()
+    state = _release_state(release)
+    events: list[str] = []
+
+    monkeypatch.setattr(release, "is_dirty_worktree", lambda: False)
+    monkeypatch.setattr(
+        release,
+        "resolve_target_version",
+        lambda _version, _target: ("0.5.1", "0.6.0", state),
+    )
+    monkeypatch.setattr(release, "current_head_commit", lambda: "head")
+    monkeypatch.setattr(release, "_require_command", lambda _name: None)
+    monkeypatch.setattr(
+        release,
+        "write_version_files",
+        lambda version, target: events.append(f"write:{target.key}:{version}"),
+    )
+    monkeypatch.setattr(
+        release,
+        "_sync_root_release_dependencies",
+        lambda: events.append("sync-paired-floors"),
+    )
+    monkeypatch.setattr(
+        release,
+        "prepare_tag",
+        lambda *_args, **_kwargs: pytest.fail("verification must precede tags"),
+    )
+    monkeypatch.setattr(
+        release,
+        "push_current_branch",
+        lambda **_kwargs: pytest.fail("verification must precede pushes"),
+    )
+
+    def fake_run_command(command: tuple[str, ...], **_kwargs: object) -> None:
+        if command[:2] == ("git", "add") or command[:2] == ("git", "commit"):
+            pytest.fail("verification must precede release commits")
+        if command == (
+            sys.executable,
+            str(release.REACTOR_RELEASE_ARTIFACT_VERIFIER),
+        ):
+            events.append("verify")
+            raise subprocess.CalledProcessError(1, command)
+        events.append(":".join(command))
+
+    monkeypatch.setattr(release, "run_command", fake_run_command)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        release.main(["core", "--version", "0.6.0", "--skip-checks"])
+
+    assert events == [
+        "write:core:0.6.0",
+        "sync-paired-floors",
+        "uv:lock",
+        "uv:build",
+        "verify",
+    ]
+
+
+def test_version_changed_core_verifies_before_staging_paired_files(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _load_release_module()
+    state = _release_state(release)
+    events: list[tuple[str, ...]] = []
+
+    monkeypatch.setattr(release, "is_dirty_worktree", lambda: False)
+    monkeypatch.setattr(
+        release,
+        "resolve_target_version",
+        lambda _version, _target: ("0.5.1", "0.6.0", state),
+    )
+    monkeypatch.setattr(release, "current_head_commit", lambda: "head")
+    monkeypatch.setattr(release, "_require_command", lambda _name: None)
+    monkeypatch.setattr(release, "write_version_files", lambda *_args: None)
+    monkeypatch.setattr(release, "_sync_root_release_dependencies", lambda: None)
+    monkeypatch.setattr(
+        release,
+        "run_command",
+        lambda command, **_kwargs: events.append(command),
+    )
+    monkeypatch.setattr(
+        release,
+        "push_current_branch",
+        lambda **_kwargs: events.append(("push-current-branch",)),
+    )
+
+    assert release.main(["core", "--version", "0.6.0", "--skip-checks"]) == 0
+
+    verifier = (
+        sys.executable,
+        str(release.REACTOR_RELEASE_ARTIFACT_VERIFIER),
+    )
+    git_add = next(command for command in events if command[:2] == ("git", "add"))
+    assert events.index(verifier) < events.index(git_add)
+    assert release.display_path(release.SUMMON_PYPROJECT_PATH) in git_add
+    assert release.display_path(release.SUMMON_UV_LOCK_PATH) in git_add
+    assert events.index(git_add) < events.index(("git", "tag", "v0.1.1"))
+    assert events.index(("git", "tag", "v0.1.1")) < events.index(
+        ("push-current-branch",)
+    )
 
 
 def test_parse_args_accepts_positional_all_and_target_compat() -> None:
@@ -719,6 +1021,15 @@ def test_release_file_paths_for_targets_dedupes_root_files() -> None:
 
     assert paths.count(release.PYPROJECT_PATH) == 1
     assert release.CONSTANTS_PATH in paths
+    assert release.SUMMON_PYPROJECT_PATH in paths
+    assert release.SUMMON_UV_LOCK_PATH in paths
+
+
+def test_core_release_tracks_paired_summon_floor_and_retained_lock() -> None:
+    release = _load_release_module()
+
+    paths = release._release_file_paths(release.ROOT_TARGET)  # noqa: SLF001
+
     assert release.SUMMON_PYPROJECT_PATH in paths
     assert release.SUMMON_UV_LOCK_PATH in paths
 

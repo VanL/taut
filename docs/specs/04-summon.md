@@ -42,13 +42,15 @@ only), and any daemon.
 **Ears and mouth.** The summoned member's *ears* are an injected stream:
 the summon driver watches every thread the member has joined plus its
 notification inbox, and pushes each message into the harness's live
-session as it arrives. The member's *mouth and hands* are the taut CLI
+session as it arrives. The ordinary member *mouth and hands* are the taut CLI
 itself: the agent speaks by running `taut say <thread> ...` as an ordinary
 tool call, selected as its member by its continuity token ([TAUT-5]:
-continuity, not authentication). Summon never interprets
-or routes agent output (L1: explicit, inspectable actions; L2: a person
-chooses where to speak — nobody transcribes their mumbling into the right
-channel).
+continuity, not authentication). In terminal mode, parsed
+`AssistantTextEvent` speech is the narrow exception: it is posted by the
+driver-owned mouth client through the driver's persistent handle because the
+harness has no separate tool call path. Summon never otherwise interprets or
+routes agent output (L1: explicit, inspectable actions; L2: a person chooses
+where to speak — nobody transcribes their mumbling into the right channel).
 
 **The driver is a terminal emulator, not a manager.** One foreground
 process per summoned member, exactly like `taut watch`: it exists while
@@ -210,6 +212,12 @@ taut dismiss NAME
     Later summons resolve the current name to a member_id (public
     lookup), read the sessions row, and run exactly steps 4-5 — one
     shape for every summon, no private state calls anywhere.
+    When re-summon receives `--persona`, it updates the existing member through
+    a token-selected `TautClient.set_persona()` after the driver claim succeeds
+    and inside the release-protected bootstrap path, before spawning. The
+    returned member id must match the claimed session member. Claim loss never
+    mutates persona; update failure spawns no child and releases normally. The
+    update must not re-join a thread, write a notice, or move a cursor.
 - Evidence-based presence then works unchanged: `taut who` shows `here`
   while the harness runs and `gone` after it exits, with no
   summon-specific presence code (L2: presence means the same thing for
@@ -259,8 +267,9 @@ The driver injects **everything except the member's own messages**
 flagship reviewer case requires hearing other agents' status posts.
 Restraint about *responding* is persona policy ([SUM-10]), not input
 policy — a person hears the whole room and chooses when to speak (L2).
-Per-thread input filters (e.g. mention-only in a noisy channel) are a
-`run`-time option, off by default.
+Per-thread input filters are not part of the current `run` surface. Adding
+them requires a future spec and CLI revision; the present driver injects the
+complete non-self stream.
 
 ### [SUM-5.4] Cursor as injection ledger
 
@@ -293,9 +302,8 @@ this handler — the member's own sends never reach the watch stream,
   crash) starts by injecting everything after each stored cursor — the
   chat history is the durable conversation ([SUM-7.3]).
 - **Watcher death is a watcher-rebuild signal:** if the watcher thread exits
-  unexpectedly after startup (for example, after exhausting broker retry
-  budget under host I/O pressure), the driver wakes the supervisor and
-  rebuilds the watcher against the same live harness session first. It must
+  unexpectedly after startup, the driver wakes the supervisor and rebuilds the
+  watcher against the same live harness session first. It must
   not consume harness crash backoff or interrupt the provider unless the
   pump exits or injection itself fails. A watcher must never be allowed to die
   silently while the foreground driver waits forever and the member stops
@@ -346,6 +354,7 @@ class ProviderAdapter(Protocol):
     supports_terminal_mode: bool
     supports_attach: bool
     orientation_via_inject: bool
+    emits_session_events: bool
 
     def spawn(self, *, session_id: str | None, system_prompt: str,
               env: Mapping[str, str]) -> AdapterHandle: ...
@@ -388,6 +397,16 @@ idle TUI must not keep `last_active_ts` fresh forever. Member presence
 remains anchored to the harness child process being alive ([SUM-4]),
 independent of output.
 
+`emits_session_events` declares whether startup may wait for a `SessionEvent`;
+adapters that declare false never pay that wait. `interrupt()` aborts any
+adapter write already in flight. If the harness remains live, later `inject()`
+calls remain valid; interruption is not a permanent poison latch. Close remains
+the operation that retires a handle. For stream and PTY handles, `interrupt()`
+may re-enter the main thread at any point in `close()` and must not wait on a
+non-reentrant lock owned by the interrupted frame. Exactly one closer performs
+escalation, reap, and stream release; concurrent closers observe the same
+terminal result.
+
 Adapter capabilities are part of the interface. `supports_terminal_mode`
 controls whether `--terminal` may mirror parsed assistant text to chat.
 `supports_attach` controls whether the driver may bridge a human terminal
@@ -425,7 +444,14 @@ start_new_session=True, env=...)`; the parent closes the slave
 immediately and owns the master. The harness argv is its normal
 interactive launch. `TERM=xterm-256color` and a real window size
 (`TIOCSWINSZ`) are set; `TERM=dumb` is forbidden because it breaks these
-TUIs. The threaded driver must use `start_new_session=True`, never
+TUIs. PTY configuration is validated before fd publication: argv is a
+non-empty sequence of non-empty strings; rows and columns are integers in
+`1..65535`; stall and maximum-settle durations are finite positive numbers;
+and quiet milliseconds is a non-negative integer whose seconds conversion is
+finite. Timing values must be representable by the runtime float used for
+deadlines. Invalid configuration and
+any pre-publication setup/spawn exception close both PTY fds and surface as
+`AdapterError`. The threaded driver must use `start_new_session=True`, never
 `preexec_fn` or `pty.fork()`.
 
 **Terminal-query responder.** A reader over the master answers only a
@@ -478,18 +504,18 @@ collide with snapshot keys (`driver`, `rate_limited`, `rate_breaches`,
 `health_detail`) or envelope keys (`command`, `status`, `request_id`).
 A collision is a programming error and is tested.
 
-`control_health` is the health of the control plane, not a catch-all
-latency signal. A non-recoverable control-drain broker fault degrades it
-immediately because STOP/STATUS/PING may be unreliable. A recoverable
-control-drain fault caused by a long-lived broker handle is handled by closing
-and reopening the driver's broker handles; STATUS/PING clients retry with the
-same request id, and STATUS reports `control_health=degraded` only if the
-recoverable drain failure repeats across consecutive cadences. The rate
-backstop audit shares the same thread but is a safety audit; non-recoverable
-audit faults degrade immediately, while recoverable audit faults also reopen
-the broker handles and must repeat before they poison `control_health`.
-Skipped passes stay visible in logs without permanently marking a live driver
-unhealthy for one local SQLite/process-churn blip.
+`control_health` is the health of the control plane, not a catch-all latency
+signal. A broker fault on an owned long-lived control handle is handled by
+recording health detail, closing and reopening the driver's owned broker
+handles, and letting the next tick or idempotent STATUS/PING request proceed.
+Taut does not classify `malformed`, magic mismatch, disk I/O, or row-decode
+errors as transient by substring. STATUS reports
+`control_health=degraded` only if drain failures repeat across consecutive
+cadences. The rate backstop audit shares the same thread but is a safety audit;
+its broker faults use the same close/reopen discipline and must repeat before
+they poison `control_health`. Skipped passes stay visible in logs without
+permanently marking a live driver unhealthy for one local SQLite/process-churn
+blip.
 
 **Attach / detach.** Whether a human is bridged is decided by a durable
 `wired` flag, not by screen-readiness heuristics. First-ever summon of a
@@ -545,6 +571,25 @@ its first action and checks `_master_closed` before its first read. Any
 `handle.close()` on any exception in the universal `spawn → pump-started`
 span and re-raises, covering detached and attached pre-reader failures
 without leaking a master fd or zombie.
+
+The PTY master is configured nonblocking once before concurrent publication,
+preserving unrelated flags. No writer calls `F_SETFL` afterward. Injection,
+terminal-query replies, and attach-forwarded human input serialize through one
+normal-writer primitive. Every normal-write call snapshots the current epoch at
+method entry, before waiting for serialization, and checks it plus handle
+retirement before every `os.write`; active and queued calls from the old epoch
+abort. Interrupt is the sole out-of-band writer: it advances the epoch without
+acquiring the normal-writer lock and writes Ctrl-C nonblocking. Calls entering
+afterward capture the new epoch and remain valid. Query replies retain
+best-effort error reporting but use the same serializer and epoch checks.
+
+Close re-reads reader ownership after each reap outcome and makes the fd
+ownership decision atomically under the lifecycle lock. Spawn closes each fd
+once. Failure to reap after SIGKILL permanently retires the handle, unblocks
+readers and writers, releases the master exactly once through the terminal
+ownership path, and raises `AdapterError` after best-effort cleanup. Cleanup
+errors do not replace an existing primary exception; interrupt after retirement
+is a no-op and cannot touch a reused fd.
 
 Startup order per generation is fixed around PTY master ownership. In
 detached/no-tty/no-attach paths, the driver starts the pump immediately after
@@ -633,12 +678,23 @@ durable conversation; the harness session is an optimization of it.
   versioned under its own `taut_meta` key `summon_schema_version` so
   core and extension schemas evolve independently and core's version
   gate is untouched. Summon therefore requires a SQL-sidecar backend
-  (SQLite or Postgres); Redis waits on the [TAUT-12.2] state mapping.
+  (SQLite or Postgres); Redis waits on the [TAUT-12.2] state mapping. The
+  extension's SQL is fixed, module-level template text with qmark parameters;
+  reads use the canonical session projection rather than `SELECT *` or
+  runtime-assembled column lists.
 - **Single-driver guard:** `run` refuses when the ledger row shows a
   live driver (pid + start-time still alive, same evidence style as
   presence). Two drivers injecting into two harness sessions as one
   member would double-speak (L2: a person is in one place). `--takeover`
   replaces a dead or abandoned claim.
+  A claim succeeds only when a same-transaction readback carries the caller's
+  exact pid/start-time evidence. Predicated writes use null-safe expected
+  evidence, so partial-null corruption can be replaced only by explicit
+  takeover and can never return false success. Partial evidence is classified
+  indeterminate by readers. `record_session` accepts driver evidence only when
+  both values are null or both are non-null. Ordinary renewal requires both
+  stored values to null-safely match both expected values; takeover is the only
+  path that may replace a partial-null legacy row.
 - **Wired flag:** the per-(member, provider) `wired` flag ([SUM-7.4]) is
   durable state and a versioned ledger schema change. `SUMMON_SCHEMA_VERSION`
   is 2, and `taut_summon_sessions` includes
@@ -646,8 +702,8 @@ durable conversation; the harness session is an optimization of it.
   closed with the existing "recreate the development database" path; there
   is no `ALTER TABLE` migration for this uncommitted extension state. The
   typed session row carries `wired: bool`. The load-bearing column sites
-  are the shared `_SESSION_SELECT`, the separate inline `SELECT` in
-  `list_sessions`, the `INSERT` in `record_session`, and `_session_row`.
+  are `_SESSION_SELECT_BY_MEMBER`, `_SESSION_SELECT_ALL`, the `INSERT` in
+  `record_session`, and `_session_row`.
   `record_session` preserves `wired` on update. `claim_driver` and
   `release_driver` must not write `wired` because they run on re-summon and
   cleanup. The only writers are `set_wired(queue, member_id, value)` and
@@ -678,31 +734,84 @@ durable conversation; the harness session is an optimization of it.
   extension's write surface exactly its own tables plus plain broker
   queues (L1: an implementer needs no core seam; a debugging agent finds
   them with `broker -f .taut.db list`, which [TAUT-3.4] guarantees).
-- The driver consumes control queues with its **own consumer on a
-  dedicated thread**, over the public `simplebroker` Queue/watcher
-  surface — control commands are claim-consumed (they are commands, not
-  history), and `TautClient.watch(...)` deliberately knows nothing about
-  `sys.*`. Control must stay responsive while injection is blocked on a
-  stalled harness: STOP's shutdown path closes the adapter handle, and
-  `AdapterHandle.close()`/`interrupt()` are required to be thread-safe
-  and to **unblock any in-flight `inject()`** ([SUM-7.1] contract) — a
-  stuck harness can always be stopped.
+- The driver consumes control queues with a long-lived control reactor on a
+  dedicated thread, over public `simplebroker` Queue/watcher primitives.
+  The reactor owns persistent queue handles and uses the copied
+  `MultiQueueWatcher` scheduling path to claim-consume commands with
+  `read_one` (they are commands, not history). `TautClient.watch(...)`
+  deliberately knows nothing about `sys.*`. Control must stay responsive while
+  injection is blocked on a stalled harness: STOP's shutdown path closes the
+  adapter handle, and `AdapterHandle.close()`/`interrupt()` are required to be
+  thread-safe and to **unblock any in-flight `inject()`** ([SUM-7.1] contract)
+  — a stuck harness can always be stopped.
+  The control reactor follows SimpleBroker 5.2.0's reference
+  persistent-session and thread-local-core ownership model, with
+  SimpleBroker 5.3.0 or newer required for the supported reactor lane. Version
+  5.2.2 first proved persistent process visibility; operation
+  release ends only the active lease; the owner thread retains its core until
+  explicit cleanup or close.
+  Summon must not recreate that release policy in extension-specific retry or
+  cleanup code, and it must not run on SimpleBroker 5.1.x.
+
+The Summon control reactor is a fixed-topology policy subclass of the shared
+[TAUT-8.5] `BaseReactor`. It is constructed, driven, recovered, and closed on
+the dedicated control thread; its command topology is fixed for one driver
+generation; and its long-lived command, shared-reply, ledger, audit, and
+owner-client handles are persistent and owned. Per-request reply queues and
+one-shot control clients remain transient.
+
+`ControlLoop` is the thin context-specific supervisor for replaceable reactor
+instances. It invokes the shared public turn and wait templates, but regains
+control between them for audit, recovery, and fatal escalation. Control-handle
+recovery occurs only between turns. A handler, audit, or error callback may
+classify and record the failed turn, but it must not replace or close the
+reactor that remains on the dispatch stack. After the turn unwinds,
+`ControlLoop` may build a complete replacement handle set, atomically install
+it on the same owner thread, close the old set, and continue so the next loop
+iteration reacquires the installed reactor. Partial construction failure
+closes every new partial handle and leaves the old complete set installed. A
+failed replacement leaves the old set installed and reports degraded health.
+While the fault is pending, the supervisor retries replacement before any
+further process/audit/wait call on that old set, using the existing bounded,
+stop-interruptible backoff. Taut does not retry the consumed command or
+classify broker failures by message substring. Repeated replacement failure is
+bounded: once the existing control-drain failure threshold is reached without
+a successful complete replacement, the control loop reports a fatal
+control-plane failure to the driver supervisor. It must not remain alive
+indefinitely with unusable handles.
+
+Control waiting combines broker activity, local stop/wake activity, and the
+next rate-audit deadline. A due audit runs before timeout calculation, so a
+zero deadline cannot create a hot loop. A queued command can wake the loop
+before the audit cadence. The rate audit runs only at the between-turn
+supervisor seam, remains control-thread-owned, and preserves its in-memory
+cursor across successful handle replacement.
+
+Unexpected control-loop exit is a first-class driver failure. The control
+thread reports the failure to the foreground supervisor, which immediately
+interrupts the current adapter, stops the chat watcher, releases the driver
+claim, and exits nonzero. It must never leave a live harness without
+STOP/STATUS/PING, and it must not spend watcher-rebuild or harness-crash retry
+budgets. Expected STOP and driver shutdown remain clean exits and preserve the
+existing release-before-ack ordering.
 - `taut-summon stop NAME` writes STOP; the driver stops injection,
   interrupts the harness via the adapter (its own graceful path — the
   Ctrl-C analogy), waits bounded, posts nothing on the member's behalf,
   updates the ledger, exits 0. SIGINT to the driver is the same path.
 - STATUS returns driver liveness, provider, session id, thread count,
-  cursor lag summary. PING is STATUS minus detail. Both work while the
-  harness is mid-turn (control responsiveness during idle *and* busy is
-  a conformance item).
+  cursor lag summary. PING is STATUS minus detail. Primary fields come from
+  driver-owned memory and adapter status; the session ledger remains the
+  durable resume and generation-fence authority, but STATUS/PING must not read
+  the ledger just to answer a live correlated request. Both work while the
+  harness is mid-turn (control responsiveness during idle *and* busy is a
+  conformance item).
 - Replies use a per-request queue `sys.rsp_<member-id>_<request_id>` so
   concurrent control clients cannot consume each other's answers. Control
-  reply writes are retried with a stronger transient-broker budget than
-  ordinary control reads because losing the reply creates a false client
-  timeout even though the driver stayed healthy. STATUS/PING clients may
-  rewrite the same idempotent request to the same per-request reply queue
-  within their timeout budget; STOP is not retried because duplicate stop
-  commands blur shutdown ownership.
+  reads and writes call SimpleBroker directly; SQLite lock/busy retry belongs
+  to SimpleBroker, not to summon. STATUS/PING clients may rewrite the same
+  idempotent request to the same per-request reply queue after no reply within
+  their timeout budget. They do not retry broker exceptions by substring. STOP
+  is not retried because duplicate stop commands blur shutdown ownership.
 - Every STOP / STATUS / PING request carries the live driver evidence
   (`driver_pid`, `driver_start_time`) the client resolved from the session
   ledger. The driver drops commands whose evidence does not match its own
@@ -715,6 +824,21 @@ durable conversation; the harness session is an optimization of it.
   not hard-delete control queues during shutdown, because delete-all maintenance
   in the hot multi-process control path can add SQLite contention without
   strengthening the command contract.
+- Adapter STATUS-key collisions and other programming errors are fatal control
+  failures, not `status=ok` degradation. STOP replies success only after clean
+  shutdown and confirmation that the driver claim is absent or replaced;
+  cleanup/release exceptions and indeterminate confirmation reply
+  `status=error`. The stop CLI requires that correlated `status=ack` before it
+  polls evidence; no reply or `status=error` can become exit 0 merely because a
+  later row appears clear. Relative to the evidence placed in the request,
+  absent and both-null rows confirm release, complete different evidence
+  confirms replacement, and either partial-null orientation remains
+  indeterminate. Rate audit computes one inclusive raw cutoff for the pass as a
+  fresh public `Queue.generate_timestamp()` value minus the configured window
+  in nanoseconds, then compares each message's hybrid timestamp directly. This
+  relies on [TAUT-3.5]'s supported hybrid format rather than a private decoder.
+  Future timestamps count as current; old recovery backlog never receives a
+  new observation timestamp.
 - Divergences from Weft, each with its reason (the [TAUT-12.3]
   obligation): **(a)** the data lane is provider-native streaming plus
   chat threads, not execute/result work items — conversation is not a
@@ -762,6 +886,9 @@ durable conversation; the harness session is an optimization of it.
   For the PTY adapter, orientation is delivered as the first injected
   message ([SUM-7.4]), not a spawn-time system-prompt flag;
   `--system-prompt-file` overrides the orientation text either way.
+- A PTY hard breach cancels the current harness turn. It does not lazily poison
+  the handle or force a generation restart unless the child exits or later
+  adapter I/O fails independently.
 
 ## 11. Failure Modes [SUM-11]
 
@@ -780,7 +907,27 @@ durable conversation; the harness session is an optimization of it.
   it.
 - Storage gone / token invalid → driver exits loudly; nothing is
   consumed beyond claimed notifications already injected.
+- A broker/storage exception in the event-pump lane is recorded on that
+  generation and transferred to the foreground supervisor after checked
+  teardown. It must not escape as an unhandled thread traceback, spend the
+  provider crash budget, or permit generation N+1.
 - Two summons, one member → refused by the single-driver guard.
+- Control reactor failure: a surfaced broker fault may reopen the complete
+  owned handle set between turns and continue under [SUM-9]. An unexpected
+  control-thread exit, programming failure, or exhausted consecutive
+  replacement-failure threshold wakes the foreground supervisor, interrupts
+  the harness, stops ears, releases the driver slot, and exits loudly. A
+  live-but-uncontrollable provider is forbidden.
+- Every spawn owns an immutable generation context containing its token,
+  completion, exit, readiness, and wake state. The pump mutates only that local
+  context and, immediately before every shared or external side effect, proves
+  that its token is still active. A stale pump may not update driver fields,
+  durable ledger state, control session, presence, terminal-mode chat, or wake
+  state for any adapter event. The token is retired before a generation is
+  abandoned. One checked-join helper owns every pump join; timeout prevents
+  generation N+1. During normal STOP/resume it is the primary fatal error and
+  makes STOP reply error; during cleanup it is secondary and never masks the
+  original failure.
 
 ## 12. Verification Expectations [SUM-12]
 
@@ -822,9 +969,50 @@ durable conversation; the harness session is an optimization of it.
   `taut say`. This proves local model transport plus PTY/mouth integration;
   it prewires the synthetic PTY member as already onboarded, and it does not
   replace the real-harness, local-only smoke matrix.
+- Control-reactor tests are independent of core reactor tests. They must prove
+  fixed topology, control-thread ownership, persistent long-lived handles,
+  broker-activity wake before a long audit interval, no in-turn handle
+  close/reopen from dispatch or audit, cleanup of every partial
+  replacement-construction stage, no method call on a retired reactor, due-now
+  audit without spin, audit-cursor preservation across between-turn reopen, and
+  driver-visible initial-open/unexpected-return/fatal-exit cases. At least the
+  wake, STOP-during-blocked-inject, fatal-exit, and cleanup cases run through a
+  real SQLite broker and real driver/scripted-provider process; mocks may cover
+  only adapter or clock boundaries, never broker/control dispatch.
+- Installed-artifact compatibility must prove four combinations: the new core
+  alone; the new core with the previously published Summon package importing
+  successfully and reporting whether that immutable artifact exposes a legacy
+  reactor surface; the new core and new Summon package completing live control
+  operations; and dependency resolution rejecting new Summon with an older
+  core. When the prior artifact exports a legacy reactor class, constructing it
+  must fail with the upgrade diagnostic before broker I/O. When it exports no
+  such class, as `taut_summon/v0.5.0` does, the installed-artifact evidence must
+  record that absence rather than fabricate a construction proof.
+- Firing tests cover invalid partial record evidence, indeterminate takeover,
+  both partial-null takeover orientations, claim write postconditions,
+  mid-bootstrap fallback-claim collision, double SIGINT, PTY reply/inject and
+  attach-writer serialization, active-plus-queued write cancel,
+  inject-after-close-start fencing, reader-start-during-close, concurrent
+  close, post-interrupt reuse, readiness-wait close normalization, invalid PTY
+  configuration/fd cleanup, unreaped child cleanup/primary-error precedence,
+  stale-pump fencing for every event, foreground event-pump broker failure,
+  STOP cleanup/release error, missing/error ACK refusal, evidence-relative
+  release confirmation, fatal STATUS-key collision supervision,
+  old-backlog/exact-boundary rate audit, bare status success, dead-driver stop,
+  unknown-verb reply, persona re-summon, unsupported attach, malformed
+  ledger/configuration diagnostics, registry-wide session-event capability,
+  the 5.3.0 floor, and ordered release invocation with fresh built artifacts.
 
 ## Related Plans
 
+- `docs/plans/2026-07-10-taut-dynamic-native-waiter-replacement-plan.md` —
+  active shared-core waiter replacement and paired dependency-floor follow-on;
+  Summon's control topology remains fixed.
+- `docs/plans/2026-07-10-taut-summon-quality-remediation-plan.md` — approved
+  state, lifecycle, control, artifact-release, and documentation remediation.
+- `docs/plans/2026-07-09-taut-reactor-safety-plan.md` — planned control-reactor
+  ownership, inter-turn recovery, activity wake, and fatal control-thread
+  supervision hardening.
 - `docs/plans/2026-07-06-taut-summon-plan.md` — implementing plan: spec
   promotion and reference-gate extension, the `taut-summon` extension
   package, core delegation verbs, session ledger, adapters, driver,
@@ -832,3 +1020,7 @@ durable conversation; the harness session is an optimization of it.
 - `docs/plans/2026-07-07-taut-summon-pty-harness-adapter-plan.md` —
   implementation plan for the universal PTY adapter, attach/detach, the
   `wired` ledger flag, and live harness conformance.
+- `docs/plans/2026-07-08-taut-sqlite-contention-hardening-plan.md` —
+  hardening plan for SQLite contention robustness: live STATUS/readiness
+  evidence, SimpleBroker handle ownership, integrity probes, and watcher
+  handle-lifetime proof.

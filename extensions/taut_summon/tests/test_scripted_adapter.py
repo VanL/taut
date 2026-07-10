@@ -15,12 +15,14 @@ from __future__ import annotations
 import json
 import os
 import queue
+import subprocess
+import sys
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import psutil
 import pytest
@@ -37,6 +39,120 @@ from taut_summon._adapter import (
     get_adapter,
 )
 from taut_summon._scripted import ScriptedHandle
+
+
+class _CountingStream:
+    def __init__(self) -> None:
+        self.close_calls = 0
+        self.writes: list[str] = []
+        self.flush_calls = 0
+
+    def write(self, value: str) -> int:
+        self.writes.append(value)
+        return len(value)
+
+    def flush(self) -> None:
+        self.flush_calls += 1
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
+class _ReentrantInterruptProcess:
+    """Popen-shaped boundary fake for deterministic signal reentry."""
+
+    pid = 12345
+
+    def __init__(self) -> None:
+        self.stdin = _CountingStream()
+        self.stdout = _CountingStream()
+        self.returncode: int | None = None
+        self.signal_calls = 0
+        self.on_first_signal: Callable[[], None] | None = None
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def send_signal(self, _signum: int) -> None:
+        self.signal_calls += 1
+        self.returncode = 0
+        if self.signal_calls == 1 and self.on_first_signal is not None:
+            self.on_first_signal()
+
+    def wait(self, timeout: float | None = None) -> int:
+        del timeout
+        self.returncode = 0
+        return 0
+
+    def kill(self) -> None:
+        self.returncode = -9
+
+
+class _BlockingCloseProcess(_ReentrantInterruptProcess):
+    def __init__(self) -> None:
+        super().__init__()
+        self.wait_entered = threading.Event()
+        self.release_wait = threading.Event()
+        self.wait_calls = 0
+
+    def send_signal(self, _signum: int) -> None:
+        self.signal_calls += 1
+
+    def wait(self, timeout: float | None = None) -> int:
+        del timeout
+        self.wait_calls += 1
+        self.wait_entered.set()
+        assert self.release_wait.wait(timeout=2.0)
+        self.returncode = 0
+        return 0
+
+
+class _BlockingInjectLock:
+    """Expose the point where inject has entered its serialization gate."""
+
+    def __init__(self) -> None:
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def __enter__(self) -> None:
+        self.entered.set()
+        assert self.release.wait(timeout=2.0)
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+
+class _NeverReapsProcess(_ReentrantInterruptProcess):
+    def __init__(self) -> None:
+        super().__init__()
+        self.kill_calls = 0
+        self.wait_calls = 0
+
+    def send_signal(self, _signum: int) -> None:
+        self.signal_calls += 1
+
+    def wait(self, timeout: float | None = None) -> int:
+        self.wait_calls += 1
+        raise subprocess.TimeoutExpired("never-reaps", timeout or 0.0)
+
+    def kill(self) -> None:
+        self.kill_calls += 1
+
+
+class _InterruptDuringWaitProcess(_ReentrantInterruptProcess):
+    def __init__(self) -> None:
+        super().__init__()
+        self.on_wait: Callable[[], None] | None = None
+
+    def send_signal(self, _signum: int) -> None:
+        self.signal_calls += 1
+
+    def wait(self, timeout: float | None = None) -> int:
+        del timeout
+        if self.on_wait is not None:
+            self.on_wait()
+        self.returncode = 0
+        return 0
 
 
 class EventPump:
@@ -123,6 +239,18 @@ def test_registry_knows_scripted_and_rejects_unknown_names() -> None:
 
     with pytest.raises(UnknownAdapterError, match="scripted"):
         get_adapter("nope")
+
+
+def test_structured_handle_has_explicit_non_terminal_defaults() -> None:
+    proc = _ReentrantInterruptProcess()
+    handle = ScriptedHandle(cast(Any, proc), session_id=None)
+
+    handle.wait_until_quiet()
+    handle.mark_awaiting_onboarding()
+    with pytest.raises(AdapterError, match="does not support terminal attach"):
+        handle.attach(wake=threading.Event(), shutdown=threading.Event())
+
+    handle.close()
 
 
 def test_echo_round_trip_through_real_pipes(tmp_path: Path) -> None:
@@ -245,6 +373,202 @@ def test_interrupt_unblocks_blocked_inject(tmp_path: Path) -> None:
 
         exit_event = pump.next_of(ExitEvent)
         assert isinstance(exit_event, ExitEvent)
+
+
+def test_inject_refuses_after_close_publishes_closing() -> None:
+    proc = _BlockingCloseProcess()
+    handle = ScriptedHandle(cast(Any, proc), session_id=None)
+    closer = threading.Thread(target=handle.close)
+    closer.start()
+    assert proc.wait_entered.wait(timeout=1.0)
+
+    try:
+        with pytest.raises(AdapterError, match="closing"):
+            handle.inject("must not be delivered")
+        assert proc.stdin.writes == []
+        assert proc.stdin.flush_calls == 0
+    finally:
+        proc.release_wait.set()
+        closer.join(timeout=2.0)
+
+
+def test_queued_inject_rechecks_close_state_under_serialization() -> None:
+    proc = _BlockingCloseProcess()
+    handle = ScriptedHandle(cast(Any, proc), session_id=None)
+    gate = _BlockingInjectLock()
+    handle._inject_lock = cast(Any, gate)  # noqa: SLF001 - lifecycle race seam
+    failures: list[BaseException] = []
+
+    def inject() -> None:
+        try:
+            handle.inject("queued before close")
+        except BaseException as exc:  # noqa: BLE001 - asserted below
+            failures.append(exc)
+
+    injector = threading.Thread(target=inject)
+    injector.start()
+    assert gate.entered.wait(timeout=1.0)
+    closer = threading.Thread(target=handle.close)
+    closer.start()
+    assert proc.wait_entered.wait(timeout=1.0)
+    gate.release.set()
+    injector.join(timeout=2.0)
+    proc.release_wait.set()
+    closer.join(timeout=2.0)
+
+    assert not injector.is_alive()
+    assert not closer.is_alive()
+    assert len(failures) == 1
+    assert isinstance(failures[0], AdapterError)
+    assert "closing" in str(failures[0])
+    assert proc.stdin.writes == []
+    assert proc.stdin.flush_calls == 0
+
+
+def test_interrupt_can_reenter_close_while_lifecycle_state_is_owned() -> None:
+    proc = _ReentrantInterruptProcess()
+    handle = ScriptedHandle(cast(Any, proc), session_id=None)
+    proc.on_first_signal = handle.interrupt
+    failures: list[BaseException] = []
+
+    def close() -> None:
+        try:
+            handle.close()
+        except BaseException as exc:  # noqa: BLE001 - asserted below
+            failures.append(exc)
+
+    closer = threading.Thread(target=close, daemon=True)
+    closer.start()
+    closer.join(timeout=1.0)
+
+    assert not closer.is_alive(), "same-thread interrupt reentry deadlocked close"
+    assert failures == []
+
+
+def test_interrupt_can_reenter_close_during_process_wait() -> None:
+    proc = _InterruptDuringWaitProcess()
+    handle = ScriptedHandle(cast(Any, proc), session_id=None)
+    proc.on_wait = handle.interrupt
+    failures: list[BaseException] = []
+
+    def close() -> None:
+        try:
+            handle.close()
+        except BaseException as exc:  # noqa: BLE001 - asserted below
+            failures.append(exc)
+
+    closer = threading.Thread(target=close, daemon=True)
+    closer.start()
+    closer.join(timeout=1.0)
+
+    assert not closer.is_alive(), "same-thread interrupt reentry deadlocked wait"
+    assert failures == []
+    assert proc.signal_calls == 2
+
+
+def test_real_second_sigint_returns_while_close_waits() -> None:
+    runner = """
+import os
+import signal
+import subprocess
+import sys
+import threading
+import time
+from taut_summon._scripted import ScriptedHandle
+
+provider = subprocess.Popen(
+    [
+        sys.executable,
+        "-c",
+        "import signal,time; signal.signal(signal.SIGINT, signal.SIG_IGN); print('ready', flush=True); time.sleep(0.5)",
+    ],
+    stdin=subprocess.PIPE,
+    stdout=subprocess.PIPE,
+    text=True,
+)
+assert provider.stdout is not None
+assert provider.stdout.readline().strip() == "ready"
+handle = ScriptedHandle(provider, session_id=None)
+signal.signal(signal.SIGINT, lambda _signum, _frame: handle.interrupt())
+os.kill(os.getpid(), signal.SIGINT)
+threading.Thread(
+    target=lambda: (time.sleep(0.1), os.kill(os.getpid(), signal.SIGINT)),
+    daemon=True,
+).start()
+handle.close()
+print("closed", flush=True)
+"""
+
+    completed = subprocess.run(
+        [sys.executable, "-c", runner],
+        capture_output=True,
+        text=True,
+        timeout=2.0,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "closed"
+
+
+def test_concurrent_close_has_one_escalation_and_stream_closer() -> None:
+    proc = _BlockingCloseProcess()
+    handle = ScriptedHandle(cast(Any, proc), session_id=None)
+    failures: list[BaseException] = []
+
+    def close() -> None:
+        try:
+            handle.close()
+        except BaseException as exc:  # noqa: BLE001 - asserted below
+            failures.append(exc)
+
+    first = threading.Thread(target=close)
+    second = threading.Thread(target=close)
+    first.start()
+    assert proc.wait_entered.wait(timeout=1.0)
+    second.start()
+    proc.release_wait.set()
+    first.join(timeout=2.0)
+    second.join(timeout=2.0)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert failures == []
+    assert proc.signal_calls == 1
+    assert proc.wait_calls == 1
+    assert proc.stdin.close_calls == 1
+    assert proc.stdout.close_calls == 1
+
+
+def test_post_kill_timeout_is_one_terminal_adapter_error() -> None:
+    proc = _NeverReapsProcess()
+    handle = ScriptedHandle(cast(Any, proc), session_id=None)
+
+    with pytest.raises(AdapterError, match="did not exit after SIGKILL"):
+        handle.close()
+    with pytest.raises(AdapterError, match="did not exit after SIGKILL"):
+        handle.close()
+
+    assert proc.signal_calls == 1
+    assert proc.kill_calls == 1
+    assert proc.wait_calls == 2
+    assert proc.stdin.close_calls == 1
+    assert proc.stdout.close_calls == 1
+
+
+def test_close_failure_does_not_mask_an_active_primary_error() -> None:
+    proc = _NeverReapsProcess()
+    handle = ScriptedHandle(cast(Any, proc), session_id=None)
+    primary = RuntimeError("primary provider failure")
+
+    try:
+        raise primary
+    except RuntimeError:
+        handle.close()
+
+    assert primary.__notes__ == [
+        "adapter cleanup also failed: provider child did not exit after SIGKILL"
+    ]
 
 
 def test_close_reaps_the_child_process(tmp_path: Path) -> None:

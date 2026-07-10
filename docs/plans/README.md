@@ -41,3 +41,15 @@ Risky plans are blocked if they do not make explicit:
 - enough current-structure context to find the right edit point
 - what must stay real in tests
 - rollback or rollout sequencing when compatibility depends on it
+
+## Active Plans
+
+- `2026-07-10-taut-dynamic-native-waiter-replacement-plan.md` — narrow
+  SimpleBroker 5.3 live waiter-replacement correction for Taut's owner-thread
+  membership generations and taut-pg native acceptance proof.
+- `2026-07-10-taut-summon-quality-remediation-plan.md` — confirmed state,
+  lifecycle, control, CLI, artifact-release, coverage, and documentation
+  remediation for the paired core/Summon surface.
+- `2026-07-09-taut-reactor-safety-plan.md` — two-track core watcher and
+  Summon control-reactor lifecycle, ownership, wake, recovery, and supervision
+  hardening plan.

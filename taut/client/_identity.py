@@ -105,6 +105,24 @@ class IdentityMixin(_ClientBase):
         self.as_name = name
         return self._member_from_row(updated)
 
+    def set_persona(self, persona: str | None) -> Member:
+        try:
+            # [TAUT-8.3] Persona plus activity is one state transaction below.
+            # The normal resolver touches activity and may heal a claim, so this
+            # call must use its read-only selection mode.
+            resolved = self._resolve_member(create=False, _touch_activity=False)
+        except NotFoundError as exc:
+            raise IdentityError("unrecognized caller") from exc
+        member = self._require_member(resolved)
+        updated = self._state.update_member_persona(
+            member["member_id"],
+            persona,
+            active_ts=self._meta_queue.generate_timestamp(),
+        )
+        if updated is None:
+            raise IdentityError("unrecognized caller")
+        return self._member_from_row(updated)
+
     def _resolve_member(
         self,
         *,
@@ -112,7 +130,12 @@ class IdentityMixin(_ClientBase):
         force_new: bool = False,
         persona: str | None = None,
         allow_guest: bool = False,
+        _touch_activity: bool = True,
     ) -> _ResolvedMember:
+        if not _touch_activity and (create or persona is not None):
+            raise ValueError(
+                "read-only identity resolution cannot create or set persona"
+            )
         self.last_created_member = None
         self.last_candidates = []
         capture = self._capture()
@@ -143,32 +166,38 @@ class IdentityMixin(_ClientBase):
                     force_new=force_new,
                 )
                 return self._created_resolution(row, capture, claim, "explicit --as")
-            self._state.update_member_activity(row["member_id"], next_active_ts())
-            if persona is not None:
-                row = (
-                    self._state.update_member_persona(row["member_id"], persona) or row
-                )
-            return _ResolvedMember(row, capture, claim, rule="explicit --as")
-
-        if self.token:
-            row = self._state.get_member_by_token(self.token)
-            if row is None:
-                raise TokenError("TAUT_TOKEN does not match a taut member")
-            active = next_active_ts()
-            token_claim = identity.claim_for_token(self.token)
-            self._record_claim(row, token_claim, active)
-            self._state.update_member_activity(row["member_id"], active)
-            return _ResolvedMember(row, capture, claim, rule="continuity token")
-
-        if not force_new:
-            row = self._state.get_member_by_claim_hash(claim.claim_hash)
-            if row is not None:
+            if _touch_activity:
                 self._state.update_member_activity(row["member_id"], next_active_ts())
                 if persona is not None:
                     row = (
                         self._state.update_member_persona(row["member_id"], persona)
                         or row
                     )
+            return _ResolvedMember(row, capture, claim, rule="explicit --as")
+
+        if self.token:
+            row = self._state.get_member_by_token(self.token)
+            if row is None:
+                raise TokenError("TAUT_TOKEN does not match a taut member")
+            if _touch_activity:
+                active = next_active_ts()
+                token_claim = identity.claim_for_token(self.token)
+                self._record_claim(row, token_claim, active)
+                self._state.update_member_activity(row["member_id"], active)
+            return _ResolvedMember(row, capture, claim, rule="continuity token")
+
+        if not force_new:
+            row = self._state.get_member_by_claim_hash(claim.claim_hash)
+            if row is not None:
+                if _touch_activity:
+                    self._state.update_member_activity(
+                        row["member_id"], next_active_ts()
+                    )
+                    if persona is not None:
+                        row = (
+                            self._state.update_member_persona(row["member_id"], persona)
+                            or row
+                        )
                 return _ResolvedMember(row, capture, claim, rule="identity claim")
 
         if not force_new and capture.kind == "agent":
@@ -177,6 +206,13 @@ class IdentityMixin(_ClientBase):
             # (host_id, anchor_pid, anchor_start_time) triple.
             row = identity.match_anchor(capture, self._state.list_members())
             if row is not None:
+                if not _touch_activity:
+                    owner = self._state.get_member_by_claim_hash(claim.claim_hash)
+                    if owner is not None:
+                        return _ResolvedMember(
+                            owner, capture, claim, rule="identity claim"
+                        )
+                    return _ResolvedMember(row, capture, claim, rule="anchor match")
                 active = next_active_ts()
                 try:
                     # Heal: record the current claim so subsequent commands
@@ -216,6 +252,10 @@ class IdentityMixin(_ClientBase):
                 uid=capture.uid,
             )
             if row is not None:
+                if not _touch_activity:
+                    return _ResolvedMember(
+                        row, capture, claim, rule="human uid fallback"
+                    )
                 active = next_active_ts()
                 self._state.update_member_activity(row["member_id"], active)
                 self._record_claim(row, claim, active)

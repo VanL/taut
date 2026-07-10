@@ -1,11 +1,23 @@
 from __future__ import annotations
 
+import subprocess
+import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
 import psycopg
 import pytest
 from simplebroker.ext import IntegrityError
+from taut_summon._state import (
+    DriverConflictError,
+    capture_driver_evidence,
+    claim_driver,
+    ensure_summon_schema,
+    get_session,
+    record_session,
+)
 
 import taut.identity as identity
 from taut._constants import META_QUEUE_NAME
@@ -110,3 +122,71 @@ def test_taut_member_route_uniqueness_uses_postgres_constraints(
 
     assert first["display_name"] == "van"
     assert second["display_name"] == "van_copy"
+
+
+def test_summon_driver_claim_race_has_one_exact_postgres_owner(
+    taut_pg_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(taut_pg_project)
+    TautClient.init()
+    client = TautClient()
+    setup_queue = client.queue("taut.summon_state")
+    claimant_queues = [client.queue("taut.summon_state") for _ in range(2)]
+    children = [
+        subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        for _ in range(2)
+    ]
+    try:
+        ensure_summon_schema(setup_queue)
+        record_session(
+            setup_queue,
+            member_id="m_pg_race",
+            token="taut-tok-pg-race",
+            provider="claude",
+            updated_ts=setup_queue.generate_timestamp(),
+        )
+        evidence = [capture_driver_evidence(child.pid) for child in children]
+        barrier = threading.Barrier(2)
+
+        def race_claim(index: int) -> tuple[int, str] | Exception:
+            queue = claimant_queues[index]
+            candidate = evidence[index]
+            try:
+                barrier.wait(timeout=5)
+                claimed = claim_driver(
+                    queue,
+                    member_id="m_pg_race",
+                    driver_pid=candidate[0],
+                    driver_start_time=candidate[1],
+                    updated_ts=queue.generate_timestamp(),
+                )
+                assert (
+                    claimed["driver_pid"],
+                    claimed["driver_start_time"],
+                ) == candidate
+                return candidate
+            except Exception as exc:  # returned for symmetric race assertions
+                return exc
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = list(pool.map(race_claim, range(2)))
+
+        winners = [outcome for outcome in outcomes if isinstance(outcome, tuple)]
+        conflicts = [
+            outcome for outcome in outcomes if isinstance(outcome, DriverConflictError)
+        ]
+        assert len(winners) == 1
+        assert len(conflicts) == 1
+        assert winners[0] in evidence
+        stored = get_session(setup_queue, "m_pg_race")
+        assert stored is not None
+        assert (stored["driver_pid"], stored["driver_start_time"]) == winners[0]
+    finally:
+        setup_queue.close()
+        for queue in claimant_queues:
+            queue.close()
+        for child in children:
+            if child.poll() is None:
+                child.kill()
+            child.wait()

@@ -341,16 +341,16 @@ wheels = [
 
 [[package]]
 name = "simplebroker"
-version = "5.1.0"
+version = "5.3.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/8c/2b/5dffce503eb9c89c9b9fef92f11839bdbf5066ca895bb7700fe067006024/simplebroker-5.1.0.tar.gz", hash = "sha256:277002042d8058e71464fccfa8d8537ebfea8cf9331a26187decae6f8561ee6f", size = 193344, upload-time = "2026-07-06T19:36:30.037Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/79/b1/b5829b7a1aacf2be41224389eba9e6945d622fd615870713a89fb26f2cf4/simplebroker-5.3.0.tar.gz", hash = "sha256:9025163db8b240d0befe64c7f31b2a9aa613950645e237fab8e5d6c434501258", size = 202477, upload-time = "2026-07-10T19:43:36.128Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f7/ff/9d31425aaf2f7f5f21d668c130b53bc093140792dcba8e1a8efec5bb3291/simplebroker-5.1.0-py3-none-any.whl", hash = "sha256:d6dd16416c03db952866ea0ef1db039c858d86542a8938a7f7b2dc8bb19bad89", size = 213918, upload-time = "2026-07-06T19:36:28.452Z" },
+    { url = "https://files.pythonhosted.org/packages/78/6a/12ddabf7556b475403be4521c8cbc4c9a2fddba1fec268c4d615fde06c93/simplebroker-5.3.0-py3-none-any.whl", hash = "sha256:8128cbabf899931784be29b0605eee23493d96f2571d6ca2f98c544afcea75da", size = 223676, upload-time = "2026-07-10T19:43:34.579Z" },
 ]
 
 [[package]]
 name = "taut"
-version = "0.5.0"
+version = "0.5.1"
 source = { editable = "../../" }
 dependencies = [
     { name = "psutil" },
@@ -369,8 +369,8 @@ requires-dist = [
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.0" },
     { name = "pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
-    { name = "simplebroker", specifier = ">=5.1.0" },
-    { name = "simplebroker-pg", marker = "extra == 'dev'", specifier = ">=3.0.0" },
+    { name = "simplebroker", specifier = ">=5.3.0" },
+    { name = "simplebroker-pg", marker = "extra == 'dev'", specifier = ">=3.2.0" },
     { name = "taut-summon", marker = "extra == 'dev'", editable = "." },
     { name = "types-psutil", marker = "extra == 'dev'", specifier = ">=6.0" },
 ]
@@ -378,7 +378,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "taut-summon"
-version = "0.5.0"
+version = "0.5.1"
 source = { editable = "." }
 dependencies = [
     { name = "taut" },
