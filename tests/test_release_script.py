@@ -1034,6 +1034,19 @@ def test_core_release_tracks_paired_summon_floor_and_retained_lock() -> None:
     assert release.SUMMON_UV_LOCK_PATH in paths
 
 
+def test_pg_lockfile_is_not_retained_and_is_ignored() -> None:
+    release = _load_release_module()
+    pg_lock_path = release.PG_EXTENSION_DIR / "uv.lock"
+
+    assert not pg_lock_path.exists()
+    assert (
+        "extensions/taut_pg/uv.lock"
+        in (release.PROJECT_ROOT / ".gitignore")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+
+
 def test_dry_run_publish_is_github_only_noop(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

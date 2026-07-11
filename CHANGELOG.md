@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.2 - 2026-07-11
+
+- Coordinated the GitHub-only publication of `taut`, `taut-pg`, and
+  `taut-summon` from one tested commit after the extension 0.5.1 tags failed
+  before creating GitHub Releases. Core 0.5.2 is runtime-code-equivalent to
+  the successfully published core 0.5.1 package; the patch bump gives all
+  three packages a fresh, immutable release namespace without rewriting old
+  tags.
+- Carries the 0.5.1 lifecycle and release-gate corrections across the paired
+  core/Summon boundary: generation-safe shutdown, complete Windows process
+  fakes, test-owned control cleanup, and the fresh installed-artifact canary.
+
 ## 0.5.0 - 2026-07-08
 
 - Added `taut summon` / `taut dismiss` as thin core delegation verbs that

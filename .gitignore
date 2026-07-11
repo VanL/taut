@@ -21,3 +21,4 @@ __pycache__/
 .taut.toml
 .weft
 .broker*
+extensions/taut_pg/uv.lock
