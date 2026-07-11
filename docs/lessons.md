@@ -65,6 +65,15 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
 
 ## Project Lessons
 
+- 2026-07-11: A tight `pytest-timeout` marker under xdist thread mode is a
+  worker-kill boundary, not an ordinary failing assertion. On a saturated
+  Windows runner, a real queue-handle topology test exceeded its three-second
+  marker, killed the worker, and left xdist consuming the outer 20-minute job
+  timeout even though the same commit passed every parallel platform lane and
+  a failed-job-only rerun. Prefer deterministic call/step bounds for synthetic
+  reactor loops; when a wall-clock guard is unavoidable, isolate it from xdist
+  worker replacement and size it for the slow supported runner.
+
 - 2026-07-10: A cancellation epoch cannot share the lock held across the I/O it
   must cancel. For fd-backed concurrent writers, publish cancellation under a
   short reentrant lifecycle lock, pin write-side identity with duplicated-fd
