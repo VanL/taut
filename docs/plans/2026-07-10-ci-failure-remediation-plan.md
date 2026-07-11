@@ -1,7 +1,7 @@
 # CI Failure Remediation Plan
 
-Status: Implementation, local verification, and independent review complete;
-release resubmission authorized, with fresh GitHub Actions pending
+Status: First release resubmission exposed and corrected a Windows-only test
+boundary; second resubmission pending fresh GitHub Actions
 
 ## Goal
 
@@ -377,6 +377,8 @@ an explicit residual risk until Actions runs.
 | Watcher/clock implementation slice | independent overall reviewer | Frozen time needed a timeout; owner-thread cleanup, single construction, and final watcher clearing were not fully pinned. | Accepted. Added a 3-second timeout and explicit owner/construction/clear assertions. Follow-up CLEAR. |
 | Final whole-diff review | independent final reviewer | Concurrent reader close could outrank an already-published cancellation, and cancellation published after the last syscall check but before token retirement could be missed. | Accepted red-first. Epoch mismatch now has priority over closed state; final epoch validation and token retirement are one lifecycle-lock action. Added deterministic firing tests for both boundaries. |
 | Final whole-diff clearance | independent final reviewer | Re-review after both PTY boundary corrections and aligned docs. | CLEAR for code, tests, specs, and implementation docs. Fresh cross-platform Actions remain the post-push verification gate. |
+| First release resubmission | GitHub Actions Windows 3.11-3.14 matrix | Structured-adapter lifecycle fakes implemented POSIX `send_signal()` but not the Windows `Popen.terminate()` path; the real second-SIGINT probe also assumed POSIX signal semantics. | Accepted red-first. Added an isolated Windows-branch firing test, completed the Popen fake contract, and scoped the real signal probe to POSIX. |
+| Windows correction review | independent reviewer | The new dispatch proof observed only a shared signal counter and would not distinguish `terminate()` from an incorrect direct `send_signal()` call. | Accepted red-first. Added a separate terminate-call oracle; follow-up targeted pytest, Ruff, and mypy passed. |
 
 ## Verification Record
 
@@ -393,6 +395,10 @@ an explicit residual risk until Actions runs.
 - `gh run list --commit 22ed4c17a4a1d04b90dd498ce25300eadda43fa9`
   reports the four original failed workflows. Fresh Actions on the replacement
   tag remain required cross-platform proof.
+- Release Gate run `29134863827` passed packaging, paired artifacts, local LLM,
+  lint, PG, coverage, and non-Windows unit lanes but exposed the incomplete
+  Windows Popen fake contract in the Summon unit step.
+- `uv run --no-sync pytest extensions/taut_summon/tests/test_scripted_adapter.py -n 1 --dist loadgroup -q --tb=short` — 22 passed after the Windows boundary correction.
 
 The TDD and hardening runbooks exposed the missing completion-boundary firing
 case during final review. Their current guidance was sufficient; no reusable

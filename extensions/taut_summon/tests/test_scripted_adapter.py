@@ -15,10 +15,12 @@ from __future__ import annotations
 import json
 import os
 import queue
+import signal
 import subprocess
 import sys
 import threading
 import time
+import types
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -26,6 +28,7 @@ from typing import Any, cast
 
 import psutil
 import pytest
+from taut_summon import _stream as _stream_module
 from taut_summon._adapter import (
     ActivityEvent,
     AdapterError,
@@ -68,6 +71,7 @@ class _ReentrantInterruptProcess:
         self.stdout = _CountingStream()
         self.returncode: int | None = None
         self.signal_calls = 0
+        self.terminate_calls = 0
         self.on_first_signal: Callable[[], None] | None = None
 
     def poll(self) -> int | None:
@@ -78,6 +82,10 @@ class _ReentrantInterruptProcess:
         self.returncode = 0
         if self.signal_calls == 1 and self.on_first_signal is not None:
             self.on_first_signal()
+
+    def terminate(self) -> None:
+        self.terminate_calls += 1
+        self.send_signal(signal.SIGTERM)
 
     def wait(self, timeout: float | None = None) -> int:
         del timeout
@@ -251,6 +259,23 @@ def test_structured_handle_has_explicit_non_terminal_defaults() -> None:
         handle.attach(wake=threading.Event(), shutdown=threading.Event())
 
     handle.close()
+
+
+def test_windows_interrupt_uses_process_terminate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proc = _ReentrantInterruptProcess()
+    handle = ScriptedHandle(cast(Any, proc), session_id=None)
+    monkeypatch.setattr(
+        _stream_module,
+        "sys",
+        types.SimpleNamespace(platform="win32"),
+    )
+
+    handle.interrupt()
+
+    assert proc.terminate_calls == 1
+    assert proc.signal_calls == 1
 
 
 def test_echo_round_trip_through_real_pipes(tmp_path: Path) -> None:
@@ -466,6 +491,10 @@ def test_interrupt_can_reenter_close_during_process_wait() -> None:
     assert proc.signal_calls == 2
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="real SIGINT handler reentry is a POSIX process-signal proof",
+)
 def test_real_second_sigint_returns_while_close_waits() -> None:
     runner = """
 import os

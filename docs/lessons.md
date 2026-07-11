@@ -85,6 +85,13 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   index zero; otherwise Windows can place synthetic packages at the venv root
   and make a correct isolation verifier look broken.
 
+- 2026-07-10: A Popen-shaped boundary fake must implement every platform path
+  that CI can select. If production uses `send_signal()` on POSIX and
+  `terminate()` on Windows, a fake that implements only the developer-host path
+  creates a false product failure across the whole Windows matrix. Exercise the
+  alternate branch through a module-local platform binding, and keep real OS
+  signal probes scoped to operating systems that provide those semantics.
+
 - 2026-06-12: Type-check tests when they are the executable spec proof.
   A strict source tree with excluded tests leaves a blind spot in fixtures
   and helper contracts; use `mypy taut tests` when test code is part of
