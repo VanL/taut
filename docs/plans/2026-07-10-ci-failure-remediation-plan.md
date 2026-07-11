@@ -1,7 +1,7 @@
 # CI Failure Remediation Plan
 
-Status: Second release resubmission exposed and isolated a macOS-only cleanup
-coupling; third resubmission pending fresh GitHub Actions
+Status: Complete; `v0.5.1` published successfully from
+`1ad3e346e04579cf1c3772ec54d791e05c5ebfa9`
 
 ## Goal
 
@@ -380,6 +380,7 @@ an explicit residual risk until Actions runs.
 | First release resubmission | GitHub Actions Windows 3.11-3.14 matrix | Structured-adapter lifecycle fakes implemented POSIX `send_signal()` but not the Windows `Popen.terminate()` path; the real second-SIGINT probe also assumed POSIX signal semantics. | Accepted red-first. Added an isolated Windows-branch firing test, completed the Popen fake contract, and scoped the real signal probe to POSIX. |
 | Windows correction review | independent reviewer | The new dispatch proof observed only a shared signal counter and would not distinguish `terminate()` from an incorrect direct `send_signal()` call. | Accepted red-first. Added a separate terminate-call oracle; follow-up targeted pytest, Ruff, and mypy passed. |
 | Second release resubmission | GitHub Actions macOS 3.13 process lane | The flood/ledger test completed its owned assertions, then its generic cleanup added an unrelated POSIX SIGINT delivery boundary and timed out once; macOS 3.14 and every Ubuntu process lane passed. | Accepted as a test-boundary correction. The flood test now uses product control STOP and still waits for clean driver exit; more than two dozen other process tests retain real SIGINT cleanup coverage. Independent follow-up review: CLEAR. |
+| Third release resubmission | GitHub Actions full release matrix | Re-run after the Windows fake-contract and flood-test ownership corrections. | CLEAR. Release Gate `29136154853`, main Test `29136154502`, and main PG `29136154501` all passed; `v0.5.1` was published with wheel and source artifacts. |
 
 ## Verification Record
 
@@ -406,6 +407,15 @@ an explicit residual risk until Actions runs.
 - Updated flood test through product control STOP — 20 consecutive integrated
   runs passed; independent review confirmed the shared teardown remains covered
   and dedicated POSIX signal coverage is retained elsewhere.
+- Release Gate `29136154853` — success across packaging, paired-artifact
+  verification, local LLM, lint, coverage, PG 3.11/3.13/3.14, unit tests on
+  Ubuntu/macOS/Windows, and the 169-test process selector on Ubuntu 3.11-3.14
+  plus macOS 3.13-3.14. Both tag-stability checks and GitHub Release upload
+  passed.
+- Main Test `29136154502` and Test Postgres Extension `29136154501` — success.
+- GitHub Release `v0.5.1` — public at
+  `https://github.com/VanL/taut/releases/tag/v0.5.1`; uploaded
+  `taut-0.5.1-py3-none-any.whl` and `taut-0.5.1.tar.gz`.
 
 The TDD and hardening runbooks exposed the missing completion-boundary firing
 case during final review. Their current guidance was sufficient; no reusable
