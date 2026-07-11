@@ -1510,7 +1510,12 @@ def test_event_pump_survives_flood_and_updates_session_ledger(
     say(summon_db, tmp_path, "general", "post-flood")
     driver.wait_for_message("post-flood")
 
-    assert driver.stop() == 0
+    # This test owns pump throughput and ledger persistence, not POSIX signal
+    # delivery. Use the product STOP path so cleanup exercises the same shared
+    # teardown without adding an unrelated runner-sensitive signal boundary.
+    rc, _out, err = summon_cli("stop", "scripted", db=summon_db, cwd=tmp_path)
+    assert rc == 0, err
+    assert driver.wait() == 0
 
 
 def test_terminal_mode_posts_assistant_text_to_single_thread(

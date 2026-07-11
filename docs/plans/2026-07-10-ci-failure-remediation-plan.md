@@ -1,7 +1,7 @@
 # CI Failure Remediation Plan
 
-Status: First release resubmission exposed and corrected a Windows-only test
-boundary; second resubmission pending fresh GitHub Actions
+Status: Second release resubmission exposed and isolated a macOS-only cleanup
+coupling; third resubmission pending fresh GitHub Actions
 
 ## Goal
 
@@ -379,6 +379,7 @@ an explicit residual risk until Actions runs.
 | Final whole-diff clearance | independent final reviewer | Re-review after both PTY boundary corrections and aligned docs. | CLEAR for code, tests, specs, and implementation docs. Fresh cross-platform Actions remain the post-push verification gate. |
 | First release resubmission | GitHub Actions Windows 3.11-3.14 matrix | Structured-adapter lifecycle fakes implemented POSIX `send_signal()` but not the Windows `Popen.terminate()` path; the real second-SIGINT probe also assumed POSIX signal semantics. | Accepted red-first. Added an isolated Windows-branch firing test, completed the Popen fake contract, and scoped the real signal probe to POSIX. |
 | Windows correction review | independent reviewer | The new dispatch proof observed only a shared signal counter and would not distinguish `terminate()` from an incorrect direct `send_signal()` call. | Accepted red-first. Added a separate terminate-call oracle; follow-up targeted pytest, Ruff, and mypy passed. |
+| Second release resubmission | GitHub Actions macOS 3.13 process lane | The flood/ledger test completed its owned assertions, then its generic cleanup added an unrelated POSIX SIGINT delivery boundary and timed out once; macOS 3.14 and every Ubuntu process lane passed. | Accepted as a test-boundary correction. The flood test now uses product control STOP and still waits for clean driver exit; more than two dozen other process tests retain real SIGINT cleanup coverage. Independent follow-up review: CLEAR. |
 
 ## Verification Record
 
@@ -399,6 +400,12 @@ an explicit residual risk until Actions runs.
   lint, PG, coverage, and non-Windows unit lanes but exposed the incomplete
   Windows Popen fake contract in the Summon unit step.
 - `uv run --no-sync pytest extensions/taut_summon/tests/test_scripted_adapter.py -n 1 --dist loadgroup -q --tb=short` — 22 passed after the Windows boundary correction.
+- Release Gate run `29135319846` passed every Windows version, all Ubuntu
+  process lanes, and macOS 3.14; only the macOS 3.13 flood test's unrelated
+  signal-cleanup step timed out after its owned assertions passed.
+- Updated flood test through product control STOP — 20 consecutive integrated
+  runs passed; independent review confirmed the shared teardown remains covered
+  and dedicated POSIX signal coverage is retained elsewhere.
 
 The TDD and hardening runbooks exposed the missing completion-boundary firing
 case during final review. Their current guidance was sufficient; no reusable

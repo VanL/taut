@@ -92,6 +92,13 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   alternate branch through a module-local platform binding, and keep real OS
   signal probes scoped to operating systems that provide those semantics.
 
+- 2026-07-10: An integration test should own one load-bearing boundary. If its
+  assertions cover event-pump throughput and ledger persistence, cleanup should
+  use the product control STOP path rather than add an unrelated POSIX signal-
+  delivery dependency. Keep real SIGINT coverage in dedicated lifecycle tests;
+  broad incidental signal cleanup multiplies runner-specific flake without
+  strengthening the behavior under test.
+
 - 2026-06-12: Type-check tests when they are the executable spec proof.
   A strict source tree with excluded tests leaves a blind spot in fixtures
   and helper contracts; use `mypy taut tests` when test code is part of
