@@ -181,6 +181,10 @@ generation. Taut closes the returned displaced waiter once. Summon's separate
 fixed-topology control reactor keeps its own strategy and never needs this
 replacement path.
 
+The callback-topology regression proof freezes the module-local monotonic clock:
+it verifies replacement occurs before the second strategy wait without turning
+runner throughput inside an arbitrary 100 ms window into part of [TAUT-8.5].
+
 `TautWatcher` subclasses `BaseReactor`, which itself extends a copied Weft
 `MultiQueueWatcher`, and changes
 the peek behavior at the taut boundary for chat queues: fetch uses

@@ -44,6 +44,9 @@ Risky plans are blocked if they do not make explicit:
 
 ## Active Plans
 
+- `2026-07-10-ci-failure-remediation-plan.md` — v0.5.1 CI remediation for
+  PTY interrupt ordering, watcher pre-publication stop, Windows artifact
+  fixture placement, and deterministic topology-rebind proof.
 - `2026-07-10-taut-dynamic-native-waiter-replacement-plan.md` — narrow
   SimpleBroker 5.3 live waiter-replacement correction for Taut's owner-thread
   membership generations and taut-pg native acceptance proof.

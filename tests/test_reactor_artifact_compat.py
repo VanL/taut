@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -43,6 +44,33 @@ def release_artifact_builder_module() -> ModuleType:
     return module
 
 
+def _select_site_packages(candidates: list[Path]) -> Path:
+    for candidate in candidates:
+        if candidate.name.casefold() in {"site-packages", "dist-packages"}:
+            return candidate
+    rendered = ", ".join(str(candidate) for candidate in candidates) or "<none>"
+    raise RuntimeError(
+        "virtual environment reported no site-packages or dist-packages "
+        f"directory; candidates: {rendered}"
+    )
+
+
+def test_select_site_packages_ignores_venv_prefix_entry(tmp_path: Path) -> None:
+    prefix = tmp_path / "isolated"
+    site_packages = prefix / "Lib" / "site-packages"
+
+    assert _select_site_packages([prefix, site_packages]) == site_packages
+
+
+def test_select_site_packages_rejects_missing_package_directory(
+    tmp_path: Path,
+) -> None:
+    prefix = tmp_path / "isolated"
+
+    with pytest.raises(RuntimeError, match="no site-packages or dist-packages"):
+        _select_site_packages([prefix])
+
+
 def _make_venv(tmp_path: Path) -> tuple[Path, Path, Path]:
     root = tmp_path / "isolated"
     env = os.environ.copy()
@@ -61,14 +89,15 @@ def _make_venv(tmp_path: Path) -> tuple[Path, Path, Path]:
             str(python),
             "-I",
             "-c",
-            "import site; print(site.getsitepackages()[0])",
+            "import json, site; print(json.dumps(site.getsitepackages()))",
         ],
         cwd=tmp_path,
         text=True,
         capture_output=True,
         check=True,
     )
-    return root, python, Path(completed.stdout.strip())
+    candidates = [Path(item) for item in json.loads(completed.stdout)]
+    return root, python, _select_site_packages(candidates)
 
 
 def _write_distribution(site_packages: Path, *, name: str, version: str) -> None:

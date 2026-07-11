@@ -771,10 +771,17 @@ def test_base_reactor_same_waiter_replacement_transfers_no_close_ownership(
     assert reused_waiter.close_calls == 1
 
 
+@pytest.mark.timeout(3.0)
 def test_base_reactor_rebinds_callback_topology_before_second_strategy_wait(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    class FrozenTime:
+        @staticmethod
+        def monotonic() -> float:
+            return 100.0
+
+    monkeypatch.setattr("taut.watcher.time", FrozenTime)
     waiters = iter((FakeWaiter(), FakeWaiter()))
     stop_event = threading.Event()
 

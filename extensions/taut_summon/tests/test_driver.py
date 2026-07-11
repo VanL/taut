@@ -146,6 +146,9 @@ class _ShutdownWatcher:
         while not self.stop_calls:
             time.sleep(0.01)
 
+    def request_stop(self) -> None:
+        self.stop_calls += 1
+
     def stop(self, *, join: bool = True) -> None:
         del join
         self.stop_calls += 1
@@ -428,12 +431,16 @@ def test_watcher_failure_wakes_driver_for_rebuild(
     driver._watcher_failed = threading.Event()
     driver._watcher_error = None
     driver._watcher = None
+    driver._control_failed = threading.Event()
+    driver._control_error = None
 
     ready = threading.Event()
     thread = driver._start_watcher_thread(
         db_path=None,
         token="tok",
         ready_event=ready,
+        attempt_stop=threading.Event(),
+        harness_dead=driver._harness_dead,
     )
     assert ready.wait(timeout=5.0)
     thread.join(timeout=5.0)
@@ -449,6 +456,182 @@ def test_watcher_failure_wakes_driver_for_rebuild(
     assert FakeClient.created_on == [thread.ident]
     assert FakeClient.closed_on == [thread.ident]
     assert watcher_stop_on == [thread.ident]
+
+
+def test_harness_death_before_watcher_publication_stops_owner_before_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    construction_started = threading.Event()
+    release_construction = threading.Event()
+    ready_registration_on: list[int] = []
+    run_on: list[int] = []
+    watcher_stop_on: list[int] = []
+
+    class DelayedWatcher:
+        def notify_ready_after_initial_drain(self, _event: threading.Event) -> None:
+            ready_registration_on.append(threading.get_ident())
+
+        def run(self) -> None:
+            run_on.append(threading.get_ident())
+
+        def stop(self, *, join: bool = True) -> None:
+            del join
+            watcher_stop_on.append(threading.get_ident())
+
+    class FakeClient:
+        created_on: list[int] = []
+        closed_on: list[int] = []
+
+        def __init__(self, **_kwargs: Any) -> None:
+            self.created_on.append(threading.get_ident())
+
+        def watch(self, _handler: Callable[[Any], None], **kwargs: Any) -> Any:
+            assert kwargs == {"persistent": True}
+            construction_started.set()
+            assert release_construction.wait(timeout=5.0)
+            return DelayedWatcher()
+
+        def close(self) -> None:
+            self.closed_on.append(threading.get_ident())
+
+    monkeypatch.setattr(driver_module, "TautClient", FakeClient)
+    driver = object.__new__(SummonDriver)
+    driver._request = _run_request()
+    driver._shutdown = threading.Event()
+    driver._harness_dead = threading.Event()
+    driver._halt_ack = threading.Event()
+    driver._wake = threading.Event()
+    driver._watcher_failed = threading.Event()
+    driver._watcher_error = None
+    driver._watcher = None
+    driver._control_failed = threading.Event()
+    driver._control_error = None
+    errors: list[BaseException] = []
+
+    def supervise() -> None:
+        try:
+            driver._watch_until_wake(
+                _BootstrapResult(
+                    member_id="m_reviewer",
+                    member_name="reviewer",
+                    token="tok",
+                    provider="scripted",
+                    provider_session_id=None,
+                ),
+                cast(Any, _CountingHandle()),
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    supervisor = threading.Thread(target=supervise)
+    supervisor.start()
+    try:
+        assert construction_started.wait(timeout=5.0)
+        driver._harness_dead.set()
+        driver._wake.set()
+        assert driver._halt_ack.wait(timeout=5.0)
+        release_construction.set()
+        supervisor.join(timeout=5.0)
+    finally:
+        release_construction.set()
+
+    assert not supervisor.is_alive()
+    assert errors == []
+    assert ready_registration_on == []
+    assert run_on == []
+    assert not driver._watcher_failed.is_set()
+    assert driver._watcher is None
+    assert len(watcher_stop_on) == 1
+    assert FakeClient.created_on == watcher_stop_on
+    assert FakeClient.closed_on == watcher_stop_on
+
+
+def test_live_watcher_after_bounded_join_is_fatal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_started = threading.Event()
+    release_run = threading.Event()
+    watcher_stopped = threading.Event()
+    watcher_constructions = 0
+
+    class StuckWatcher:
+        def notify_ready_after_initial_drain(self, event: threading.Event) -> None:
+            event.set()
+
+        def run(self) -> None:
+            run_started.set()
+            assert release_run.wait(timeout=5.0)
+
+        def request_stop(self) -> None:
+            pass
+
+        def stop(self, *, join: bool = True) -> None:
+            del join
+            watcher_stopped.set()
+
+    class FakeClient:
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        def watch(self, _handler: Callable[[Any], None], **kwargs: Any) -> Any:
+            nonlocal watcher_constructions
+            assert kwargs == {"persistent": True}
+            watcher_constructions += 1
+            return StuckWatcher()
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(driver_module, "TautClient", FakeClient)
+    monkeypatch.setattr(driver_module, "_WATCHER_JOIN_TIMEOUT_SECONDS", 0.01)
+    driver = object.__new__(SummonDriver)
+    driver._request = _run_request()
+    driver._shutdown = threading.Event()
+    driver._harness_dead = threading.Event()
+    driver._halt_ack = threading.Event()
+    driver._wake = threading.Event()
+    driver._watcher_failed = threading.Event()
+    driver._watcher_error = None
+    driver._watcher = None
+    driver._control_failed = threading.Event()
+    driver._control_error = None
+    errors: list[BaseException] = []
+
+    def supervise() -> None:
+        try:
+            driver._watch_until_wake(
+                _BootstrapResult(
+                    member_id="m_reviewer",
+                    member_name="reviewer",
+                    token="tok",
+                    provider="scripted",
+                    provider_session_id=None,
+                ),
+                cast(Any, _CountingHandle()),
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    supervisor = threading.Thread(target=supervise)
+    supervisor.start()
+    try:
+        assert run_started.wait(timeout=5.0)
+        driver._harness_dead.set()
+        driver._wake.set()
+        supervisor.join(timeout=1.0)
+
+        assert not supervisor.is_alive()
+        assert len(errors) == 1
+        assert isinstance(errors[0], DriverError)
+        assert "watcher did not stop within" in str(errors[0])
+        assert not watcher_stopped.is_set()
+    finally:
+        release_run.set()
+        supervisor.join(timeout=5.0)
+
+    assert watcher_stopped.wait(timeout=5.0)
+    assert watcher_constructions == 1
+    assert driver._watcher is None
 
 
 def test_watcher_failure_rebuilds_without_closing_provider(

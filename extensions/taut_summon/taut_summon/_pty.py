@@ -167,6 +167,7 @@ class PtyHandle:
         self._write_epoch = 0
         self._retired = False
         self._close_condition = threading.Condition(self._lifecycle_lock)
+        self._active_operations: set[object] = set()
         self._close_state = "open"
         self._close_error: str | None = None
         self._reader_started = False
@@ -314,17 +315,32 @@ class PtyHandle:
         return self._event_stream()
 
     def interrupt(self) -> None:
-        with self._lifecycle_lock:
+        operation: object | None = None
+        interrupt_fd: int | None = None
+        with self._close_condition:
             if self._retired or self._master_closed:
                 return
+            operation = self._register_operation_unlocked()
             self._write_epoch += 1
-            wrote_interrupt = self._write_interrupt_unlocked()
-        if not wrote_interrupt:
-            self._signal_process_group(signal.SIGTERM)
+            try:
+                interrupt_fd = os.dup(self._master_fd)
+            except OSError:
+                interrupt_fd = None
+        try:
+            wrote_interrupt = self._write_interrupt_fd_best_effort(interrupt_fd)
+            if not wrote_interrupt:
+                self._signal_process_group(signal.SIGTERM)
+        finally:
+            if interrupt_fd is not None:
+                self._close_operation_fd(interrupt_fd)
+            assert operation is not None
+            self._release_operation(operation)
 
     def close(self) -> None:
         primary_error = sys.exception()
         owns_close = False
+        close_operation: object | None = None
+        close_interrupt_fd: int | None = None
         with self._close_condition:
             if self._close_state == "closed":
                 close_error = self._close_error
@@ -333,6 +349,13 @@ class PtyHandle:
                 close_error = self._close_error
             else:
                 self._close_state = "closing"
+                if not self._master_closed:
+                    close_operation = self._register_operation_unlocked()
+                    try:
+                        close_interrupt_fd = os.dup(self._master_fd)
+                    except OSError:
+                        self._discard_operation_unlocked(close_operation)
+                        close_operation = None
                 self._retired = True
                 self._write_epoch += 1
                 owns_close = True
@@ -344,7 +367,14 @@ class PtyHandle:
 
         failure: AdapterError | None = None
         try:
-            self._write_interrupt_best_effort()
+            self._write_interrupt_fd_best_effort(close_interrupt_fd)
+            if close_interrupt_fd is not None:
+                self._close_operation_fd(close_interrupt_fd)
+                close_interrupt_fd = None
+            if close_operation is not None:
+                self._release_operation(close_operation)
+                close_operation = None
+            self._wait_for_active_operations()
             self._reap_child()
         except AdapterError as exc:
             failure = exc
@@ -352,6 +382,10 @@ class PtyHandle:
             failure = AdapterError(f"PTY child cleanup failed: {exc}")
             failure.__cause__ = exc
         finally:
+            if close_interrupt_fd is not None:
+                self._close_operation_fd(close_interrupt_fd)
+            if close_operation is not None:
+                self._release_operation(close_operation)
             with self._close_condition:
                 try:
                     if (
@@ -457,6 +491,7 @@ class PtyHandle:
             close_error = self._close_error if self._close_state == "closed" else None
         if close_error is not None:
             raise AdapterError(close_error)
+        self._wait_for_active_operations()
         if self._proc.poll() is None:
             self._reap_child()
         returncode = self._proc.returncode
@@ -464,43 +499,62 @@ class PtyHandle:
 
     def _write_all(self, data: bytes) -> None:
         offset = 0
-        fd: int | None = None
         with self._lifecycle_lock:
             if self._retired or self._master_closed:
                 raise AdapterError("PTY master is closed")
             write_epoch = self._write_epoch
         with self._normal_writer_lock:
-            with self._lifecycle_lock:
-                if self._retired or self._master_closed:
-                    raise AdapterError("PTY master is closed")
-                if write_epoch != self._write_epoch:
-                    raise AdapterError("PTY write interrupted")
-                fd = self._master_fd
-            while offset < len(data):
-                written: int | None
-                with self._lifecycle_lock:
-                    if self._retired or self._master_closed:
-                        raise AdapterError("PTY master is closed")
-                    if write_epoch != self._write_epoch:
-                        raise AdapterError("PTY write interrupted")
-                    fd = self._master_fd
-                    if self._proc.poll() is not None:
-                        raise AdapterError("PTY child exited during write")
+            operation: object | None = None
+            fd: int | None = None
+            try:
+                with self._close_condition:
+                    self._validate_write_unlocked(write_epoch)
+                    operation = self._register_operation_unlocked()
+                    try:
+                        fd = os.dup(self._master_fd)
+                    except OSError as exc:
+                        self._discard_operation_unlocked(operation)
+                        operation = None
+                        raise AdapterError(f"PTY write fd lease failed: {exc}") from exc
+                while offset < len(data):
+                    with self._lifecycle_lock:
+                        self._validate_write_unlocked(write_epoch)
                     try:
                         written = os.write(fd, data[offset:])
                     except BlockingIOError:
                         written = None
                     except OSError as exc:
+                        with self._lifecycle_lock:
+                            self._validate_write_unlocked(write_epoch)
                         raise AdapterError(f"PTY write failed: {exc}") from exc
-                if written is None:
-                    try:
-                        select.select([], [fd], [], 0.05)
-                    except (OSError, ValueError) as exc:
-                        raise AdapterError(f"PTY write wait failed: {exc}") from exc
-                    continue
-                if written <= 0:
-                    raise AdapterError("PTY write wrote no bytes")
-                offset += written
+                    with self._lifecycle_lock:
+                        self._validate_write_unlocked(write_epoch)
+                    if written is None:
+                        try:
+                            select.select([], [fd], [], 0.05)
+                        except (OSError, ValueError) as exc:
+                            with self._lifecycle_lock:
+                                self._validate_write_unlocked(write_epoch)
+                            raise AdapterError(f"PTY write wait failed: {exc}") from exc
+                        with self._lifecycle_lock:
+                            self._validate_write_unlocked(write_epoch)
+                        continue
+                    if written <= 0:
+                        raise AdapterError("PTY write wrote no bytes")
+                    offset += written
+            finally:
+                if fd is not None:
+                    self._close_operation_fd(fd)
+                if operation is not None:
+                    self._retire_write_operation(operation, write_epoch)
+
+    def _validate_write_unlocked(self, write_epoch: int) -> None:
+        if write_epoch != self._write_epoch:
+            raise AdapterError("PTY write interrupted")
+        if self._retired or self._master_closed:
+            raise AdapterError("PTY master is closed")
+        if self._proc.poll() is not None:
+            raise AdapterError("PTY child exited during write")
 
     def _write_best_effort(self, data: bytes) -> None:
         try:
@@ -508,16 +562,10 @@ class PtyHandle:
         except AdapterError:
             pass
 
-    def _write_interrupt_best_effort(self) -> bool:
-        with self._lifecycle_lock:
-            return self._write_interrupt_unlocked()
-
-    def _write_interrupt_unlocked(self) -> bool:
-        """Write Ctrl-C while lifecycle ownership pins the master fd."""
-
-        if self._master_closed:
+    @staticmethod
+    def _write_interrupt_fd_best_effort(fd: int | None) -> bool:
+        if fd is None:
             return False
-        fd = self._master_fd
         try:
             os.write(fd, b"\x03")
             return True
@@ -525,6 +573,38 @@ class PtyHandle:
             return False
         except OSError:
             return False
+
+    @staticmethod
+    def _close_operation_fd(fd: int) -> None:
+        try:
+            os.close(fd)
+        except OSError:
+            logger.debug("PTY operation fd cleanup failed", exc_info=True)
+
+    def _register_operation_unlocked(self) -> object:
+        operation = object()
+        self._active_operations.add(operation)
+        return operation
+
+    def _discard_operation_unlocked(self, operation: object) -> None:
+        self._active_operations.discard(operation)
+        self._close_condition.notify_all()
+
+    def _release_operation(self, operation: object) -> None:
+        with self._close_condition:
+            self._discard_operation_unlocked(operation)
+
+    def _retire_write_operation(self, operation: object, write_epoch: int) -> None:
+        with self._close_condition:
+            try:
+                if write_epoch != self._write_epoch:
+                    raise AdapterError("PTY write interrupted")
+            finally:
+                self._discard_operation_unlocked(operation)
+
+    def _wait_for_active_operations(self) -> None:
+        with self._close_condition:
+            self._close_condition.wait_for(lambda: not self._active_operations)
 
     def _signal_process_group(self, sig: signal.Signals) -> None:
         if self._proc.poll() is not None:

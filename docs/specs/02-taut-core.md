@@ -1081,6 +1081,8 @@ it verifies after both fresh builds and before either publication job can run.
 
 ## Related Plans
 
+- `docs/plans/2026-07-10-ci-failure-remediation-plan.md` — removes wall-clock
+  throughput assumptions from the [TAUT-8.5] callback-topology rebind proof.
 - `docs/plans/2026-07-10-taut-dynamic-native-waiter-replacement-plan.md` —
   active owner-thread live waiter replacement implementation and PostgreSQL
   native-wake proof.

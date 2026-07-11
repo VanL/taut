@@ -114,6 +114,7 @@ _SESSION_BOOTSTRAP_WAIT_SECONDS = 5.0
 _PUMP_JOIN_TIMEOUT_SECONDS = 10.0
 _SHUTDOWN_PUMP_JOIN_TIMEOUT_SECONDS = 5.0
 _HALT_ACK_TIMEOUT_SECONDS = 30.0
+_WATCHER_JOIN_TIMEOUT_SECONDS = 30.0
 _NAME_RETRY_ATTEMPTS = 5
 _WATCHER_RESTART_BACKOFF = (0.2, 0.5, 1.0, 2.0, 4.0, 8.0, 8.0, 8.0)
 
@@ -1347,25 +1348,29 @@ class SummonDriver:
 
         self._raise_if_control_failed()
         watcher_failures = 0
+        harness_dead = self._harness_dead
         while not (
             self._shutdown.is_set()
-            or self._harness_dead.is_set()
+            or harness_dead.is_set()
             or self._control_failed.is_set()
         ):
             self._watcher_failed.clear()
             self._watcher_error = None
             self._halt_ack.clear()
+            attempt_stop = threading.Event()
             watcher_ready = threading.Event()
             watcher_thread = self._start_watcher_thread(
                 db_path=self._request.db_path,
                 token=boot.token,
                 ready_event=watcher_ready,
+                attempt_stop=attempt_stop,
+                harness_dead=harness_dead,
             )
             deadline = time.monotonic() + 30.0
             while (
                 not watcher_ready.is_set()
                 and not self._watcher_failed.is_set()
-                and not self._harness_dead.is_set()
+                and not harness_dead.is_set()
                 and not self._shutdown.is_set()
                 and not self._control_failed.is_set()
                 and time.monotonic() < deadline
@@ -1374,18 +1379,13 @@ class SummonDriver:
             if (
                 not watcher_ready.is_set()
                 and not self._watcher_failed.is_set()
-                and not self._harness_dead.is_set()
+                and not harness_dead.is_set()
                 and not self._shutdown.is_set()
                 and not self._control_failed.is_set()
             ):
                 self._halt_ack.set()
-                watcher = self._watcher
-                if watcher is not None:
-                    watcher.stop(join=False)
-                watcher_thread.join(timeout=30.0)
-                watcher = self._watcher
-                if watcher is not None:
-                    watcher.stop(join=True)
+                self._request_watcher_attempt_stop(attempt_stop)
+                self._join_watcher_attempt(watcher_thread)
                 raise DriverError("cannot watch chat: watcher did not become ready")
             if watcher_ready.is_set():
                 logger.info(
@@ -1401,23 +1401,18 @@ class SummonDriver:
             # Shutdown ordering ([SUM-9]): stop injection, unblock any
             # in-flight inject via interrupt, drain the pump, release.
             self._halt_ack.set()
-            watcher = self._watcher
-            if watcher is not None:
-                watcher.stop(join=False)
+            self._request_watcher_attempt_stop(attempt_stop)
             if self._shutdown.is_set():
                 handle.interrupt()
                 handle.close()
-            watcher_thread.join(timeout=30.0)
-            watcher = self._watcher
-            if watcher is not None:
-                watcher.stop(join=True)
+            self._join_watcher_attempt(watcher_thread)
 
             self._raise_if_control_failed()
 
             if (
                 self._watcher_failed.is_set()
                 and not self._shutdown.is_set()
-                and not self._harness_dead.is_set()
+                and not harness_dead.is_set()
             ):
                 watcher_failures += 1
                 if watcher_failures > len(_WATCHER_RESTART_BACKOFF):
@@ -1443,6 +1438,31 @@ class SummonDriver:
                 continue
             return
         self._raise_if_control_failed()
+
+    def _request_watcher_attempt_stop(
+        self,
+        attempt_stop: threading.Event,
+    ) -> None:
+        """Publish attempt-local stop before signaling a published watcher."""
+
+        attempt_stop.set()
+        watcher = self._watcher
+        if watcher is None:
+            return
+        try:
+            watcher.request_stop()
+        except Exception:  # pragma: no cover - checked join remains authoritative
+            logger.debug("watcher stop request failed", exc_info=True)
+
+    @staticmethod
+    def _join_watcher_attempt(watcher_thread: threading.Thread) -> None:
+        """Require one watcher owner to exit before another can be started."""
+
+        watcher_thread.join(timeout=_WATCHER_JOIN_TIMEOUT_SECONDS)
+        if watcher_thread.is_alive():
+            raise DriverError(
+                f"watcher did not stop within {_WATCHER_JOIN_TIMEOUT_SECONDS:.1f}s"
+            )
 
     def _start_control_thread(self, boot: _BootstrapResult) -> None:
         """Start the [SUM-9] control consumer + [SUM-10] rate backstop.
@@ -1567,8 +1587,18 @@ class SummonDriver:
         db_path: str | None,
         token: str,
         ready_event: threading.Event,
+        attempt_stop: threading.Event,
+        harness_dead: threading.Event,
     ) -> threading.Thread:
         """Open and run the chat watcher on its owning thread."""
+
+        def _stop_requested() -> bool:
+            return (
+                attempt_stop.is_set()
+                or harness_dead.is_set()
+                or self._shutdown.is_set()
+                or self._control_failed.is_set()
+            )
 
         def _run_watcher() -> None:
             failed = False
@@ -1578,6 +1608,8 @@ class SummonDriver:
                 client = TautClient(db_path=db_path, token=token, persistent=True)
                 watcher = client.watch(self._on_item, persistent=True)
                 self._watcher = watcher
+                if _stop_requested():
+                    return
                 notify_ready = getattr(
                     watcher, "notify_ready_after_initial_drain", None
                 )
@@ -1585,13 +1617,11 @@ class SummonDriver:
                     notify_ready(ready_event)
                 else:  # pragma: no cover - TautClient.watch returns TautWatcher today
                     ready_event.set()
+                if _stop_requested():
+                    return
                 watcher.run()
             except Exception as exc:
-                if (
-                    not self._shutdown.is_set()
-                    and not self._harness_dead.is_set()
-                    and not self._halt_ack.is_set()
-                ):
+                if not _stop_requested() and not self._halt_ack.is_set():
                     failed = True
                     self._watcher_error = exc
                     self._watcher_failed.set()
@@ -1611,11 +1641,7 @@ class SummonDriver:
                         client.close()
                     except Exception:  # pragma: no cover - defensive cleanup
                         logger.debug("watcher client close failed", exc_info=True)
-                if (
-                    not self._shutdown.is_set()
-                    and not self._harness_dead.is_set()
-                    and not self._halt_ack.is_set()
-                ):
+                if not _stop_requested() and not self._halt_ack.is_set():
                     if not failed:
                         self._watcher_error = None
                         self._watcher_failed.set()

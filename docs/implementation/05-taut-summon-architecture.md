@@ -182,11 +182,10 @@ closes both fds and becomes `AdapterError`, so malformed environment knobs
 cannot leak a master or escape the CLI as a traceback. The master is made
 nonblocking once before publication. All ordinary writers (injection, attach,
 and terminal replies) share one serializer and a method-entry write epoch;
-interrupt advances the epoch under the lifecycle lock, cancels active and
-queued old-epoch writes, and leaves the next epoch reusable. The epoch check,
-child poll, and each nonblocking `os.write` are one lock-protected action;
-readiness-wait errors from concurrent close are also normalized to
-`AdapterError`.
+interrupt cancels active and queued old-epoch writes without acquiring that
+serializer and leaves the next epoch reusable. Write-side leases below pin fd
+identity while syscalls run outside the lifecycle lock; readiness-wait errors
+from concurrent close are normalized to the newer lifecycle state.
 
 The fd lifecycle is the load-bearing boundary. `PtyHandle.close()` always
 signals and reaps the child, but closes the master only if no reader has
@@ -196,6 +195,22 @@ through bootstrap and the pump hand-off, so a failed rejoin or thread join
 cannot leak a master fd or leave a zombie. Stream and PTY handles publish their
 closing state before signaling, so injections that begin after close starts
 fail synchronously; concurrent close callers observe the same terminal result.
+
+Write-side fd lifetime is carried by lifecycle-registered operation tokens and
+duplicated master fds. Normal writers snapshot their epoch before serialization,
+lease a duplicate under the reentrant lifecycle lock, and perform nonblocking
+write/wait syscalls outside it. Interrupt registers before attempting its dup
+and holds that token through Ctrl-C plus fallback; close atomically leases its
+own graceful Ctrl-C fd while publishing retirement, releases its own token,
+drains external tokens, then escalates and reaps. This makes cancellation
+non-starving without letting canonical-fd close or numeric reuse redirect an
+in-flight syscall. Reader-side canonical ownership remains unchanged. Epoch and
+retirement state are rechecked after successful and failed syscalls so a
+published cancellation outranks concurrent reader close and a stale lower-level
+fd diagnostic. At completion, the writer rechecks its epoch and retires its
+operation token in one lifecycle-lock action. Cancellation published before
+that linearization point makes the call fail even when its final bytes were
+already transferred; cancellation after it applies only to later calls.
 
 ### Attach/detach and `wired` ([SUM-7.4], [SUM-8])
 
@@ -314,6 +329,15 @@ or an unexpected clean return stops the watcher, interrupts the adapter, wakes
 the foreground supervisor, and exits nonzero after normal release cleanup.
 Expected STOP and driver shutdown remain clean exits. Control failure never
 spends the watcher-rebuild or provider-resume budgets.
+
+Each chat-watcher attempt also has attempt-local stop state and captures the
+current harness-generation death event. The foreground publishes that stop
+before reading `self._watcher`; the owner publishes its watcher, rechecks stop,
+generation death, shutdown, and control failure, then alone registers readiness
+or enters `run()`. Foreground callers use `request_stop()` only. The owner
+performs close in `finally`, and a checked bounded join is fatal if the owner
+does not exit, preventing rebuild or a later harness generation from starting
+over a live stale watcher.
 
 Control cleanup closes broker handles but does not hard-delete control queues.
 Completed commands and replies are already claim-consumed by `read_one`; every

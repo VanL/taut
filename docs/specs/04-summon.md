@@ -576,12 +576,42 @@ The PTY master is configured nonblocking once before concurrent publication,
 preserving unrelated flags. No writer calls `F_SETFL` afterward. Injection,
 terminal-query replies, and attach-forwarded human input serialize through one
 normal-writer primitive. Every normal-write call snapshots the current epoch at
-method entry, before waiting for serialization, and checks it plus handle
-retirement before every `os.write`; active and queued calls from the old epoch
-abort. Interrupt is the sole out-of-band writer: it advances the epoch without
-acquiring the normal-writer lock and writes Ctrl-C nonblocking. Calls entering
-afterward capture the new epoch and remain valid. Query replies retain
-best-effort error reporting but use the same serializer and epoch checks.
+method entry, before waiting for serialization. Before fd I/O, it validates the
+epoch, child, and handle state under the lifecycle lock, registers a unique
+active-operation token, and duplicates the canonical master fd. The duplicated
+fd pins the same nonblocking open file description, so `os.write` and readiness
+wait run outside the lifecycle lock without risking numeric-fd reuse. The
+operation closes its duplicate in `finally`, then rechecks the epoch and
+retires its token as one lifecycle-lock action. It also rechecks the epoch
+after every syscall, including error outcomes. A published epoch mismatch
+outranks concurrent reader-side close and stale lower-level fd diagnostics. An
+attempt already authorized when interruption is published may transfer its
+current chunk, but cancellation published before token retirement makes the
+call report interruption and no later chunk begins. Once the token is retired,
+the write is complete and later cancellation applies only to later calls.
+
+Interrupt is the sole out-of-band writer. It never acquires the normal-writer
+lock: under the reentrant lifecycle lock it first registers an operation token,
+advances the epoch, and attempts to duplicate the master fd, then attempts
+Ctrl-C outside the lock when duplication succeeded. The token exists even when
+duplication fails and remains active through any SIGTERM fallback, so close
+cannot reap the child between the failed duplication or Ctrl-C attempt and
+fallback signal. Calls entering afterward capture the new epoch and remain
+valid.
+
+Close publishes retirement and advances the epoch atomically with acquiring
+its own close-owned duplicated-fd token. Outside the lock, the winning closer
+writes graceful Ctrl-C through that duplicate, closes it, and retires its own
+token. If close cannot duplicate the master, retirement and the epoch advance
+still commit; close registers no lasting self-token, drains external tokens,
+and proceeds directly to escalation and reap rather than leaving the handle
+open or stuck in `closing`. Close waits for all other pre-retirement
+write/interrupt tokens to drain before escalation and reap; it never waits on
+its own token. The reader's existing canonical `select`/`read` and EOF-close
+ownership is unchanged. A reader-side canonical close and numeric-fd reuse
+cannot redirect leased write-side syscalls because their duplicates pin the
+original open file description. Query replies retain best-effort error
+reporting but use the same serializer, epoch checks, and operation leases.
 
 Close re-reads reader ownership after each reap outcome and makes the fd
 ownership decision atomically under the lifecycle lock. Spawn closes each fd
@@ -900,6 +930,15 @@ existing release-before-ack ordering.
   spending any harness crash budget. Repeated watcher rebuild failure is a
   driver failure; pump exit or injection failure remains the harness-resume
   path.
+  Each watcher attempt owns a fresh stop token and captures the immutable
+  harness-generation death event it serves. Foreground teardown publishes the
+  attempt stop before inspecting the watcher object. After constructing and
+  publishing its watcher, the owner thread checks that attempt token,
+  generation death, global shutdown, and fatal control state before readiness
+  registration or `run()`. A pre-publication stop therefore closes on the
+  owner without entering the drive loop. Every watcher-attempt join is checked;
+  a live thread after the bounded join is a fatal driver error and prevents a
+  watcher rebuild or harness generation N+1.
 - Driver crash: cursors and ledger make restart safe (at-least-once
   injection); the stale ledger claim is reclaimable by evidence.
 - Unroutable output ([SUM-6]) → driver log only.
@@ -995,6 +1034,11 @@ existing release-before-ack ordering.
   inject-after-close-start fencing, reader-start-during-close, concurrent
   close, post-interrupt reuse, readiness-wait close normalization, invalid PTY
   configuration/fd cleanup, unreaped child cleanup/primary-error precedence,
+  same-thread PTY signal reentry, fd-operation lease drain and numeric-fd
+  reuse, interrupt/close dup-failure cleanup, deterministic queued old-epoch
+  capture, cancellation priority over concurrent reader close, cancellation at
+  final write-token retirement, watcher pre-publication stop, fatal
+  watcher-attempt join timeout,
   stale-pump fencing for every event, foreground event-pump broker failure,
   STOP cleanup/release error, missing/error ACK refusal, evidence-relative
   release confirmation, fatal STATUS-key collision supervision,
@@ -1005,6 +1049,9 @@ existing release-before-ack ordering.
 
 ## Related Plans
 
+- `docs/plans/2026-07-10-ci-failure-remediation-plan.md` — v0.5.1 CI
+  remediation for PTY write leases, watcher pre-publication stop, artifact
+  fixture portability, and deterministic waiter-rebind proof.
 - `docs/plans/2026-07-10-taut-dynamic-native-waiter-replacement-plan.md` —
   active shared-core waiter replacement and paired dependency-floor follow-on;
   Summon's control topology remains fixed.

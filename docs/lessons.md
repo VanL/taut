@@ -65,6 +65,26 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
 
 ## Project Lessons
 
+- 2026-07-10: A cancellation epoch cannot share the lock held across the I/O it
+  must cancel. For fd-backed concurrent writers, publish cancellation under a
+  short reentrant lifecycle lock, pin write-side identity with duplicated-fd
+  operation leases, recheck state after both successful and failed syscalls,
+  and keep interrupt ownership through fallback signaling. Close needs its own
+  graceful-write lease and must drain external operations before reap; reader
+  EOF ownership may remain independent because duplicates prevent numeric-fd
+  reuse from redirecting leased I/O.
+
+- 2026-07-10: Background-worker stop intent needs attempt-local state before
+  object publication. A global event cleared for the next generation can lose
+  a stop while construction is delayed. Publish a per-attempt stop token, check
+  it after object publication but before readiness/run, and make the join fatal
+  if the old owner survives so no later generation can overlap it.
+
+- 2026-07-10: `site.getsitepackages()` ordering is platform-specific. Test
+  fixtures must select a structural `site-packages`/`dist-packages` entry, not
+  index zero; otherwise Windows can place synthetic packages at the venv root
+  and make a correct isolation verifier look broken.
+
 - 2026-06-12: Type-check tests when they are the executable spec proof.
   A strict source tree with excluded tests leaves a blind spot in fixtures
   and helper contracts; use `mypy taut tests` when test code is part of
