@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.3 - 2026-07-11
+
+- Adopted SimpleBroker 5.3.1's atomic `Queue.write()` return value for live
+  message ids and closed sender cursor races with a bounded post-write probe.
+- Serialized Postgres schema initialization and the cross-table name/alias
+  namespace with transaction-scoped advisory locks; corrupt Taut-owned JSON
+  now fails with table/field context instead of silently becoming empty state.
+- Hardened watcher sink shutdown, Summon control/audit/PTY behavior, reply
+  notifications, CLI help, release metadata, and maintained documentation
+  checks from the 2026-07-11 multi-factor review.
+
 ## 0.5.2 - 2026-07-11
 
 - Coordinated the GitHub-only publication of `taut`, `taut-pg`, and
@@ -11,6 +22,18 @@
 - Carries the 0.5.1 lifecycle and release-gate corrections across the paired
   core/Summon boundary: generation-safe shutdown, complete Windows process
   fakes, test-owned control cleanup, and the fresh installed-artifact canary.
+
+## 0.5.1 - 2026-07-10
+
+- Rebuilt the core watcher and Summon control owners around generation-fenced
+  reactor lifecycles, owner-thread handle replacement, bounded shutdown, and
+  fatal owned-thread supervision.
+- Added deterministic SQLite/PTY process lanes, dynamic Postgres waiter
+  replacement coverage, and a fresh installed-wheel compatibility matrix for
+  the paired core/Summon release boundary.
+- Removed Taut-owned broker retry policy in favor of the supported
+  SimpleBroker ownership/retry contract and raised the paired dependency
+  floors accordingly.
 
 ## 0.5.0 - 2026-07-08
 
@@ -69,6 +92,44 @@
   tracking for the summon lockfile, local summon LLM gate preparation, and a
   `taut_summon/vX.Y.Z` release gate.
 
+## 0.4.7 - 2026-07-06
+
+- Closed the evaluation-review findings: consistent CLI usage exits and `--`
+  handling, resumable channel renames, anchor-based identity recovery,
+  bounded first-contact collision retries, DM mention scoping, and clean
+  diagnostics for malformed config/stdin/database setup.
+- Added adversarial CLI probes and the first documentation path/spec-code
+  reference gate.
+
+## 0.4.6 - 2026-07-06
+
+- Moved multi-queue activity waiting onto SimpleBroker's public watcher hooks
+  and added real watcher lifecycle and wake coverage.
+
+## 0.4.5 - 2026-07-06
+
+- Refreshed the development dependency set used by the release gates.
+
+## 0.4.4 - 2026-07-03
+
+- Updated the SimpleBroker dependency and strengthened spec-promotion,
+  traceability, and independent-review guidance used by implementation plans.
+
+## 0.4.3 - 2026-07-02
+
+- Added adversarial acceptance/testing guidance, raised the SimpleBroker
+  dependency, and required patch coverage above 50 percent.
+
+## 0.4.2 - 2026-07-01
+
+- Relaxed the Codecov project threshold while retaining patch-level coverage
+  enforcement.
+
+## 0.4.1 - 2026-07-01
+
+- Added focused messaging/identity/dev-script coverage and made identity tests
+  portable across checkout paths.
+
 ## 0.4.0 - 2026-07-01
 
 - Added stable member identity, aliases, direct-message routing by current
@@ -88,6 +149,15 @@
 - Cleaned project hygiene: `.envrc` is local-only, stale generated logo assets
   are out of workflow gates, and private test coupling was reduced where the
   public API gives the same proof.
+
+## 0.3.0 - 2026-07-01
+
+- Introduced the stable member-id, addressing, notification, SQL state-adapter,
+  and watcher-runtime refactors later released together as the 0.4 public
+  contract.
+- Split the client facade into concern-specific modules, retired the schema
+  compatibility shim, and refreshed Postgres state-adapter coverage and the
+  repository documentation map.
 
 ## 0.2.1 - 2026-06-18
 

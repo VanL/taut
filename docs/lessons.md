@@ -3,6 +3,27 @@
 Use this file for durable, project-level lessons that should influence future
 sessions.
 
+## Topic Index
+
+This index routes readers into the unchanged incident log below. It does not
+reclassify, move, summarize away, or archive any lesson.
+
+- **Universal engineering rules:** [Golden Rules](#golden-rules).
+- **Concurrency, reactors, PTYs, and teardown:** search Project Lessons for
+  `generation`, `owner`, `shutdown`, `interrupt`, `PTY`, and `control`.
+- **SQLite, SimpleBroker, queues, and watcher wakeups:** search for `SQLite`,
+  `SimpleBroker`, `handle`, `WAL`, `cursor`, and `waiter`.
+- **Testing, CI, subprocesses, and release gates:** search for `CI`, `xdist`,
+  `subprocess`, `coverage`, `artifact`, and `release`.
+- **Specs, plans, reviews, and documentation:** search for `spec`, `plan`,
+  `review`, `traceability`, and `agent`.
+- **Identity, membership, and notifications:** search for `identity`, `claim`,
+  `membership`, `notification`, and `direct message`.
+
+The outside review's archive/compaction suggestion is intentionally deferred:
+there is no measured read-cost baseline or approved retention policy. Any
+future redesign needs its own plan and proof.
+
 ## When To Add A Lesson
 
 - A correction exposed a repeated failure mode.

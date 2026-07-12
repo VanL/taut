@@ -16,7 +16,10 @@ import os
 from pathlib import Path
 
 import pytest
+from simplebroker import Queue
 
+from taut._constants import META_QUEUE_NAME
+from taut.state import SQLITE_SQL_DIALECT, SqlSidecarTautState
 from tests.conftest import run_cli
 
 pytestmark = [pytest.mark.sqlite_only, pytest.mark.usefixtures("clean_env")]
@@ -123,6 +126,80 @@ def test_probe_non_utf8_stdin_fails_clean_and_posts_nothing(tmp_path: Path) -> N
     assert [json.loads(line)["text"] for line in out.splitlines()] == [
         "van created #general"
     ]
+
+
+@pytest.mark.parametrize(
+    ("table", "field", "command"),
+    [
+        ("taut_members", "meta", ("who", "--json")),
+        ("taut_threads", "meta", ("list", "--all", "--json")),
+        (
+            "taut_identity_claims",
+            "evidence_json",
+            ("rejoin", "van", "--json"),
+        ),
+    ],
+)
+def test_probe_corrupt_owned_object_json_fails_with_context(
+    tmp_path: Path,
+    table: str,
+    field: str,
+    command: tuple[str, ...],
+) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    queue = Queue(META_QUEUE_NAME, db_path=str(tmp_path / ".taut.db"))
+    try:
+        with queue.sidecar(transaction=True) as session:
+            session.run(f"UPDATE {table} SET {field} = ?", ("{broken",))
+    finally:
+        queue.close()
+
+    rc, out, err = run_cli(*command, cwd=tmp_path)
+
+    _assert_clean_failure(rc, out, err, expected_rc=1)
+    assert f"{table}.{field}: invalid JSON" in err
+
+
+def test_probe_corrupt_channel_rename_json_fails_without_completing_marker(
+    tmp_path: Path,
+) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    queue = Queue(META_QUEUE_NAME, db_path=str(tmp_path / ".taut.db"))
+    state = SqlSidecarTautState(queue, SQLITE_SQL_DIALECT)
+    try:
+        state.start_channel_rename(
+            old_name="general",
+            new_name="ops",
+            affected=[{"old": "general", "new": "ops"}],
+            started_ts=queue.generate_timestamp(),
+        )
+        with queue.sidecar(transaction=True) as session:
+            session.run(
+                "UPDATE taut_channel_renames SET affected_json = ? WHERE old_name = ?",
+                ("{broken", "general"),
+            )
+    finally:
+        queue.close()
+
+    rc, out, err = run_cli("rename", "general", "ops", "--json", cwd=tmp_path)
+
+    _assert_clean_failure(rc, out, err, expected_rc=1)
+    assert "taut_channel_renames.affected_json: invalid JSON" in err
+    queue = Queue(META_QUEUE_NAME, db_path=str(tmp_path / ".taut.db"))
+    try:
+        with queue.sidecar() as session:
+            rows = list(
+                session.run(
+                    "SELECT state FROM taut_channel_renames WHERE old_name = ?",
+                    ("general",),
+                    fetch=True,
+                )
+            )
+        assert rows == [("started",)]
+    finally:
+        queue.close()
 
 
 @pytest.mark.skipif(

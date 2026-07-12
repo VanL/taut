@@ -64,7 +64,7 @@ def notification_from_body(body: str, ts: int) -> Notification:
     message_ts = parsed.get("message_ts")
     matched = parsed.get("matched")
     if (
-        notification_type not in {"mention", "dm_started"}
+        notification_type not in {"mention", "dm_started", "reply"}
         or not isinstance(to_id, str)
         or not isinstance(actor_id, str)
         or not isinstance(actor_name, str)

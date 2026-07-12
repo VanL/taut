@@ -54,10 +54,11 @@ back to ``default_response`` (default: echo). Steps, one key each:
   inject scenario for [SUM-5.4]/[TAUT-8.4]).
 - ``{"exec_taut": {"args": [...], "count": N, "interval": S}}`` — run
   ``python -m taut ARGS`` as a real subprocess ``N`` times (default 1),
-  using the child's own environment. Because the environment carries
-  ``TAUT_TOKEN``/``TAUT_DB`` ([SUM-6]), this is the agent speaking through
-  its mouth for real — the end-to-end mouth-credential proof, and the flood
-  source for the [SUM-10] rate-backstop test.
+  using the child's own environment. The environment always carries
+  ``TAUT_TOKEN`` and carries ``TAUT_DB`` only for path-addressed backends
+  ([SUM-6]); this is the agent speaking through its mouth for real — the
+  end-to-end mouth-credential proof, and the flood source for the [SUM-10]
+  rate-backstop test.
 - ``{"raw_line": LINE}`` — emit LINE verbatim (malformed/unknown-shape
   scenarios).
 
@@ -73,8 +74,8 @@ visible):
 - on start: ``{"event": "start", "pid": ..., "session": <resumed session
   id or null>, "env_token": $TAUT_TOKEN, "env_db": $TAUT_DB,
   "env_system_prompt": $TAUT_SUMMON_SYSTEM_PROMPT}`` — the session field
-  proves resume offers ([SUM-7.3]), the token/db fields prove the mouth
-  credential path ([SUM-6]), and the system-prompt field proves the
+  proves resume offers ([SUM-7.3]), the token/db fields prove the conditional
+  mouth selector contract ([SUM-6]), and the system-prompt field proves the
   persona / ``--system-prompt-file`` override reached the provider
   ([SUM-10]).
 - per injected message: ``{"event": "message", "pid": ..., "text": ...}``.
@@ -228,7 +229,8 @@ def _run_steps(
 def _exec_taut(spec: Any) -> None:
     """Run ``python -m taut ARGS`` as a real child, using our own env.
 
-    The environment carries ``TAUT_TOKEN``/``TAUT_DB`` ([SUM-6]), so this
+    The environment carries ``TAUT_TOKEN`` and, for a path backend,
+    ``TAUT_DB`` ([SUM-6]), so this
     is the summoned agent speaking through its mouth for real. Best-effort:
     a non-zero taut exit is logged to stderr but does not stop the scenario.
     """

@@ -38,8 +38,8 @@ the core package first, then inject the extension wheel into the same
 environment:
 
 ```bash
-pipx install "git+https://github.com/VanL/taut.git@vX.Y.Z"
-pipx inject taut ./taut_summon-0.1.0-py3-none-any.whl
+pipx install "git+https://github.com/VanL/taut.git@v0.5.3"
+pipx inject taut ./taut_summon-0.5.3-py3-none-any.whl
 ```
 
 ## Usage
@@ -52,6 +52,15 @@ taut dismiss reviewer
 taut-summon status
 ```
 
+When the workspace is discoverable from the current directory, `--db` is not
+required. The quickstart above exercises the same discovery path for the
+driver, control loop, and recovered broker handles.
+
+`taut-summon --help` lists the three verbs and their exit classes; each verb's
+own `--help` documents every positional and flag. Exit `0` is success, `1` is
+an invocation, adapter, storage, or unresponsive-driver error, and `2` means
+nothing is currently summoned. With no verb, help goes to stderr and exits `1`.
+
 `taut summon`/`taut dismiss` delegate argv verbatim to `taut-summon
 run`/`taut-summon stop`; both surfaces share one resolution contract.
 
@@ -61,6 +70,27 @@ After detach the member is marked wired and future summons run detached.
 Use `taut summon --attach NAME` to re-enter setup, or `--detach` for an
 explicit detached run. PTY output is never parsed as speech; the agent speaks
 by running `taut say`.
+
+The PTY orientation is the first injected user turn, not a privileged system
+message. Chat continuation lines are indented to keep attribution visible, but
+chat remains untrusted user-role workspace input. Notification injection is
+at most once because inbox records are consumable pointers; the source chat is
+durable. The rate backstop limits posting volume and does not detect a
+low-rate semantic loop.
+
+## Trust boundary
+
+Anyone who can write the configured Taut storage can feed user-role input and
+storage-backed control requests to the summoned harness. For SQLite this is the
+local file-access boundary. For shared Postgres, a remote database writer can
+therefore influence tools on the harness host. Restrict storage writers to
+principals authorized for that effect, or constrain the harness tools
+separately. Names, personas, message framing, driver evidence, and continuity
+tokens preserve attribution or lifecycle state; they are not authorization.
+
+Control requests carry driver evidence as a stale-generation fence. That
+evidence prevents an old queued command from acting on a replacement driver;
+it does not authenticate the requester.
 
 ## Testing
 

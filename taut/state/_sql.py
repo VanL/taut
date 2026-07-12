@@ -13,7 +13,6 @@ Spec references:
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -135,7 +134,7 @@ class SqlSidecarTautState:
     dialect: SqlDialect
 
     def ensure_schema(self) -> None:
-        ensure_schema(self.queue)
+        ensure_schema(self.queue, dialect=self.dialect)
 
     def get_schema_version(self) -> int | None:
         return get_schema_version(self.queue)
@@ -158,6 +157,7 @@ class SqlSidecarTautState:
     ) -> MemberRow:
         return insert_member(
             self.queue,
+            dialect=self.dialect,
             member_id=member_id,
             display_name=display_name,
             kind=kind,
@@ -190,7 +190,12 @@ class SqlSidecarTautState:
         )
 
     def update_member_name(self, member_id: str, display_name: str) -> MemberRow:
-        return update_member_name(self.queue, member_id, display_name)
+        return update_member_name(
+            self.queue,
+            member_id,
+            display_name,
+            dialect=self.dialect,
+        )
 
     def update_member_anchor(
         self,
@@ -217,6 +222,7 @@ class SqlSidecarTautState:
     def add_member_alias(self, *, member_id: str, alias: str, created_ts: int) -> None:
         add_member_alias(
             self.queue,
+            dialect=self.dialect,
             member_id=member_id,
             alias=alias,
             created_ts=created_ts,
@@ -324,9 +330,6 @@ class SqlSidecarTautState:
     def list_memberships(self, member_id: str) -> list[MembershipRow]:
         return list_memberships(self.queue, member_id)
 
-    def list_thread_memberships(self, thread: str) -> list[MembershipRow]:
-        return list_thread_memberships(self.queue, thread)
-
     def advance_cursor(self, *, thread: str, member_id: str, seen_ts: int) -> None:
         advance_cursor(
             self.queue,
@@ -351,9 +354,6 @@ class SqlSidecarTautState:
             started_ts=started_ts,
         )
 
-    def get_channel_rename(self, old_name: str) -> ChannelRenameRow | None:
-        return get_channel_rename(self.queue, old_name)
-
     def incomplete_channel_renames(self) -> list[ChannelRenameRow]:
         return incomplete_channel_renames(self.queue)
 
@@ -377,10 +377,11 @@ class SqlSidecarTautState:
         return member_names_in_use(self.queue)
 
 
-def ensure_schema(queue: Queue) -> None:
+def ensure_schema(queue: Queue, *, dialect: SqlDialect) -> None:
     """Install or validate the current sidecar schema."""
 
     with queue.sidecar(transaction=True) as session:
+        _acquire_advisory_lock(session, dialect, "taut:schema")
         session.run(META_DDL)
         row = _one(
             session,
@@ -425,6 +426,7 @@ def get_schema_version(queue: Queue) -> int | None:
 def insert_member(
     queue: Queue,
     *,
+    dialect: SqlDialect,
     member_id: str,
     display_name: str,
     kind: str,
@@ -443,6 +445,7 @@ def insert_member(
     key = route_key(display_name)
     meta_json = _json_dumps(meta or {})
     with queue.sidecar(transaction=True) as session:
+        _acquire_advisory_lock(session, dialect, f"taut:route:{key}")
         _ensure_route_available(session, key, owner_member_id=None)
         session.run(
             """
@@ -524,9 +527,16 @@ def update_member_persona(
         return _member_row(_one(session, _member_select("member_id = ?"), (member_id,)))
 
 
-def update_member_name(queue: Queue, member_id: str, display_name: str) -> MemberRow:
+def update_member_name(
+    queue: Queue,
+    member_id: str,
+    display_name: str,
+    *,
+    dialect: SqlDialect,
+) -> MemberRow:
     key = route_key(display_name)
     with queue.sidecar(transaction=True) as session:
+        _acquire_advisory_lock(session, dialect, f"taut:route:{key}")
         _ensure_route_available(session, key, owner_member_id=member_id)
         session.run(
             """
@@ -583,12 +593,14 @@ def update_member_anchor(
 def add_member_alias(
     queue: Queue,
     *,
+    dialect: SqlDialect,
     member_id: str,
     alias: str,
     created_ts: int,
 ) -> None:
     key = route_key(alias)
     with queue.sidecar(transaction=True) as session:
+        _acquire_advisory_lock(session, dialect, f"taut:route:{key}")
         _ensure_route_available(session, key, owner_member_id=member_id)
         session.run(
             """
@@ -868,15 +880,17 @@ def add_membership(
 
 
 def remove_membership(queue: Queue, *, thread: str, member_id: str) -> bool:
-    existed = get_membership(queue, thread=thread, member_id=member_id) is not None
-    if not existed:
-        return False
     with queue.sidecar(transaction=True) as session:
-        session.run(
-            "DELETE FROM taut_membership WHERE thread = ? AND member_id = ?",
+        deleted = _one(
+            session,
+            """
+            DELETE FROM taut_membership
+            WHERE thread = ? AND member_id = ?
+            RETURNING 1
+            """,
             (thread, member_id),
         )
-    return True
+    return deleted is not None
 
 
 def get_membership(
@@ -906,21 +920,6 @@ def list_memberships(queue: Queue, member_id: str) -> list[MembershipRow]:
             ORDER BY thread
             """,
             (member_id,),
-        )
-    return [_require_membership_row(row) for row in rows]
-
-
-def list_thread_memberships(queue: Queue, thread: str) -> list[MembershipRow]:
-    with queue.sidecar() as session:
-        rows = _all(
-            session,
-            """
-            SELECT thread, member_id, joined_ts, last_seen_ts
-            FROM taut_membership
-            WHERE thread = ?
-            ORDER BY member_id
-            """,
-            (thread,),
         )
     return [_require_membership_row(row) for row in rows]
 
@@ -1014,13 +1013,13 @@ def apply_channel_rename_state(
                 (new_thread, old_thread),
             )
             session.run(
-                "UPDATE taut_threads SET parent = ? WHERE parent = ?",
-                (new_name, old_name),
-            )
-            session.run(
                 "UPDATE taut_membership SET thread = ? WHERE thread = ?",
                 (new_thread, old_thread),
             )
+        session.run(
+            "UPDATE taut_threads SET parent = ? WHERE parent = ?",
+            (new_name, old_name),
+        )
         session.run(
             """
             UPDATE taut_channel_renames
@@ -1033,10 +1032,6 @@ def apply_channel_rename_state(
 
 def member_names_in_use(queue: Queue) -> set[str]:
     return {member["name_key"] for member in list_members(queue)}
-
-
-def membership_threads(rows: Iterable[MembershipRow]) -> set[str]:
-    return {row["thread"] for row in rows}
 
 
 def _member_select(where: str) -> str:
@@ -1071,6 +1066,21 @@ def _ensure_route_available(
         raise IntegrityError(f"name or alias already exists: {key}")
 
 
+def _acquire_advisory_lock(
+    session: SidecarSession,
+    dialect: SqlDialect,
+    key: str,
+) -> None:
+    """Serialize a Postgres-only logical state namespace for this transaction."""
+
+    if dialect.name != "postgres":
+        return
+    session.run(
+        "SELECT pg_advisory_xact_lock(hashtextextended(?, 0))",
+        (key,),
+    )
+
+
 def _one(
     session: SidecarSession,
     sql: str,
@@ -1103,7 +1113,7 @@ def _member_row(row: tuple[Any, ...] | None) -> MemberRow | None:
         "anchor_start_time": cast(str | None, row[8]),
         "fingerprint": cast(str | None, row[9]),
         "token": cast(str | None, row[10]),
-        "meta": _json_loads_object(row[11]),
+        "meta": _json_loads_object(row[11], context="taut_members.meta", nullable=True),
         "created_ts": int(row[12]),
         "last_active_ts": int(row[13]),
     }
@@ -1118,7 +1128,11 @@ def _identity_claim_row(row: tuple[Any, ...] | None) -> IdentityClaimRow | None:
         "claim_kind": cast(str, row[2]),
         "host_id": cast(str | None, row[3]),
         "host_label": cast(str | None, row[4]),
-        "evidence": _json_loads_object(row[5]),
+        "evidence": _json_loads_object(
+            row[5],
+            context="taut_identity_claims.evidence_json",
+            nullable=False,
+        ),
         "first_seen_ts": int(row[6]),
         "last_seen_ts": int(row[7]),
     }
@@ -1133,7 +1147,7 @@ def _thread_row(row: tuple[Any, ...] | None) -> ThreadRow | None:
         "parent": cast(str | None, row[2]),
         "origin_ts": None if row[3] is None else int(row[3]),
         "created_by": cast(str, row[4]),
-        "meta": _json_loads_object(row[5]),
+        "meta": _json_loads_object(row[5], context="taut_threads.meta", nullable=True),
         "created_ts": int(row[6]),
     }
 
@@ -1152,13 +1166,14 @@ def _membership_row(row: tuple[Any, ...] | None) -> MembershipRow | None:
 def _channel_rename_row(row: tuple[Any, ...] | None) -> ChannelRenameRow | None:
     if row is None:
         return None
-    raw = _json_loads(row[3])
-    affected = raw if isinstance(raw, list) else []
+    affected = _json_loads_rename_list(
+        row[3], context="taut_channel_renames.affected_json"
+    )
     return {
         "old_name": cast(str, row[0]),
         "new_name": cast(str, row[1]),
         "state": cast(str, row[2]),
-        "affected": cast(list[dict[str, str]], affected),
+        "affected": affected,
         "started_ts": int(row[4]),
         "updated_ts": int(row[5]),
     }
@@ -1196,15 +1211,45 @@ def _json_dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
-def _json_loads(value: Any) -> Any:
+def _json_loads_object(
+    value: Any,
+    *,
+    context: str,
+    nullable: bool,
+) -> dict[str, Any]:
+    if value is None and nullable:
+        return {}
     if not isinstance(value, str) or not value:
-        return {}
+        raise RuntimeError(f"{context}: expected JSON text")
     try:
-        return json.loads(value)
-    except json.JSONDecodeError:
-        return {}
+        decoded = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"{context}: invalid JSON") from exc
+    if not isinstance(decoded, dict):
+        raise RuntimeError(f"{context}: expected an object")
+    return decoded
 
 
-def _json_loads_object(value: Any) -> dict[str, Any]:
-    decoded = _json_loads(value)
-    return decoded if isinstance(decoded, dict) else {}
+def _json_loads_rename_list(
+    value: Any,
+    *,
+    context: str,
+) -> list[dict[str, str]]:
+    if not isinstance(value, str) or not value:
+        raise RuntimeError(f"{context}: expected JSON text")
+    try:
+        decoded = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"{context}: invalid JSON") from exc
+    if not isinstance(decoded, list):
+        raise RuntimeError(f"{context}: expected a list")
+    affected: list[dict[str, str]] = []
+    for index, item in enumerate(decoded):
+        if not isinstance(item, dict):
+            raise RuntimeError(f"{context}: item {index}: expected an object")
+        old = item.get("old")
+        new = item.get("new")
+        if not isinstance(old, str) or not isinstance(new, str):
+            raise RuntimeError(f"{context}: item {index}: expected string old and new")
+        affected.append({"old": old, "new": new})
+    return affected

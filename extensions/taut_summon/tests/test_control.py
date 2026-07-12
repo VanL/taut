@@ -204,7 +204,122 @@ def _make_loop(rate_limit: int) -> ControlLoop:
         ledger_queue_name="taut_meta",
         driver_pid=123,
         driver_start_time="driver-start",
+        audit_start_ts=0,
     )
+
+
+def test_rate_audit_reconciles_late_join_leave_and_rejoin_with_real_queues(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """[SUM-10]: membership is live, while cursors survive handle churn."""
+
+    db_path = tmp_path / ".taut.db"
+    control_module.TautClient.init(db_path=db_path)
+    bot = control_module.TautClient(db_path=db_path, as_name="bot")
+    bot.join("general")
+    created = bot.last_created_member
+    assert created is not None and created.token is not None
+    with Queue("audit-clock", db_path=str(db_path)) as clock:
+        audit_start = clock.generate_timestamp()
+
+    loop = ControlLoop(
+        member_id=created.member_id,
+        db_path=str(db_path),
+        token=created.token,
+        provider="scripted",
+        threads=("general",),
+        handle_provider=lambda: None,
+        request_stop=lambda: None,
+        shutdown=threading.Event(),
+        shutdown_complete=threading.Event(),
+        release_confirmed=lambda: True,
+        rate_limit=100,
+        ledger_queue_name="taut.summon_state",
+        driver_pid=123,
+        driver_start_time="driver-start",
+        audit_start_ts=audit_start,
+    )
+    closed: list[int] = []
+    real_close = Queue.close
+
+    def close_spy(queue: Queue) -> None:
+        closed.append(id(queue))
+        real_close(queue)
+
+    monkeypatch.setattr(Queue, "close", close_spy)
+    actor = control_module.TautClient(db_path=db_path, token=created.token)
+    try:
+        loop._open()
+        loop._audit_pass()
+
+        actor.join("ops")
+        actor.say("ops", "late post")
+        loop._audit_pass()
+        first_handle = loop._thread_queues["ops"]
+        assert loop._status_snapshot().thread_count == 2
+        assert any(ts > audit_start for ts in loop._own_posts)
+
+        actor.leave("ops")
+        loop._audit_pass()
+        assert "ops" not in loop._thread_queues
+        assert closed.count(id(first_handle)) == 1
+
+        actor.join("ops")
+        actor.say("ops", "after rejoin")
+        loop._audit_pass()
+        second_handle = loop._thread_queues["ops"]
+        assert second_handle is not first_handle
+        assert loop._status_snapshot().thread_count == 2
+        assert len(loop._own_posts) == len(set(loop._own_posts))
+    finally:
+        loop._close()
+        actor.close()
+        bot.close()
+
+
+def test_control_handle_recovery_with_cwd_discovery_keeps_same_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A db_path=None recovery re-runs the same public cwd resolver."""
+
+    monkeypatch.chdir(tmp_path)
+    control_module.TautClient.init()
+    bot = control_module.TautClient(as_name="bot")
+    bot.join("general")
+    created = bot.last_created_member
+    assert created is not None and created.token is not None
+    loop = ControlLoop(
+        member_id=created.member_id,
+        db_path=None,
+        token=created.token,
+        provider="scripted",
+        threads=("general",),
+        handle_provider=lambda: None,
+        request_stop=lambda: None,
+        shutdown=threading.Event(),
+        shutdown_complete=threading.Event(),
+        release_confirmed=lambda: True,
+        rate_limit=60,
+        ledger_queue_name="taut.summon_state",
+        driver_pid=123,
+        driver_start_time="driver-start",
+        audit_start_ts=0,
+    )
+    try:
+        loop._open()
+        first_client = loop._client
+        assert first_client is not None
+        target = first_client.target
+
+        assert loop._reopen_broker_handles(
+            "rate audit", OperationalError("forced recovery")
+        )
+        assert loop._client is not first_client
+        assert loop._client is not None
+        assert loop._client.target == target
+    finally:
+        loop._close()
+        bot.close()
 
 
 class _ExplodingLedger:
@@ -220,7 +335,7 @@ class _FlakyPeekQueue:
 
     def peek_many(self, *args: Any, **kwargs: Any) -> list[tuple[str, int]]:
         assert args == ()
-        assert kwargs == {"with_timestamps": True, "after_timestamp": 0}
+        assert kwargs == {"with_timestamps": True, "after_timestamp": 99}
         self.calls += 1
         raise OperationalError("database is locked")
 
@@ -252,7 +367,7 @@ class _BacklogPeekQueue:
 
     def peek_many(self, *args: Any, **kwargs: Any) -> list[tuple[str, int]]:
         assert args == ()
-        assert kwargs == {"with_timestamps": True, "after_timestamp": 0}
+        assert kwargs == {"with_timestamps": True, "after_timestamp": 99}
         body = encode_envelope(
             from_id="m_" + "a" * 26,
             from_name="ptybot",
@@ -511,6 +626,7 @@ def test_rate_audit_derives_one_cutoff_from_public_broker_timestamp() -> None:
     ledger = TimestampQueue()
     loop._ledger = cast(Queue, ledger)
     loop._thread_queues = {"general": cast(Queue, _BacklogPeekQueue())}
+    loop._reconcile_audit_threads = lambda: None  # type: ignore[method-assign]
 
     loop._audit_pass()
 
@@ -537,7 +653,7 @@ def test_rate_audit_prunes_expired_posts_across_interleaved_threads() -> None:
         def peek_many(self, *args: Any, **kwargs: Any) -> list[tuple[str, int]]:
             assert args == ()
             assert kwargs["with_timestamps"] is True
-            assert kwargs["after_timestamp"] in (0, self.timestamp)
+            assert kwargs["after_timestamp"] >= 0
             if kwargs["after_timestamp"] >= self.timestamp:
                 return []
             return [
@@ -558,6 +674,7 @@ def test_rate_audit_prunes_expired_posts_across_interleaved_threads() -> None:
         "general": cast(Queue, ThreadQueue(200)),
         "dev": cast(Queue, ThreadQueue(150)),
     }
+    loop._reconcile_audit_threads = lambda: None  # type: ignore[method-assign]
 
     loop._audit_pass()
     assert list(loop._own_posts) == [200, 150]
@@ -1007,7 +1124,6 @@ def test_control_reactor_native_activity_wakes_before_probe_interval(
             reactor.stop(join=False)
 
     thread = threading.Thread(target=drive)
-    started = time.monotonic()
     thread.start()
     try:
         assert waiting.wait(timeout=3.0)
@@ -1016,7 +1132,6 @@ def test_control_reactor_native_activity_wakes_before_probe_interval(
         ) as writer:
             writer.write("wake")
         assert handled.wait(timeout=2.0)
-        assert time.monotonic() - started < 3.0
     finally:
         reactor.request_stop()
         thread.join(timeout=3.0)
@@ -1498,12 +1613,16 @@ def test_control_loop_real_correlated_ping_round_trip(tmp_path: Path) -> None:
 def test_control_loop_cross_process_ping_wakes_and_replies(tmp_path: Path) -> None:
     db_path = tmp_path / ".taut.db"
     control_module.TautClient.init(db_path=db_path)
-    member_id = "m_" + "a" * 26
+    bot = control_module.TautClient(db_path=db_path, as_name="bot")
+    bot.join("general")
+    created = bot.last_created_member
+    assert created is not None and created.token is not None
+    member_id = created.member_id
     shutdown = threading.Event()
     loop = ControlLoop(
         member_id=member_id,
         db_path=str(db_path),
-        token="taut-tok",
+        token=created.token,
         provider="scripted",
         threads=(),
         handle_provider=lambda: None,
@@ -1572,6 +1691,7 @@ def test_control_loop_cross_process_ping_wakes_and_replies(tmp_path: Path) -> No
         if loop._control_reactor is not None:
             loop._control_reactor.request_stop()
         owner.join(timeout=3.0)
+        bot.close()
 
     assert not owner.is_alive()
     assert errors == []

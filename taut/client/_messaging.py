@@ -59,7 +59,8 @@ class MessagingMixin(_ClientBase):
             raise MembershipError(
                 f"{member['display_name']} is not a member of {thread}"
             )
-        origin = self._resolve_message_id(thread, msg_id)
+        parent = self._resolve_message_id(thread, msg_id)
+        origin = parent.ts
         child_thread = f"{thread}.{origin}"
         child_queue = self.queue(child_thread)
         ts = child_queue.generate_timestamp()
@@ -83,27 +84,55 @@ class MessagingMixin(_ClientBase):
                 joined_ts=ts,
                 last_seen_ts=ts,
             )
-            caught_up = True
+            prior_cursor = ts
         else:
-            caught_up = not child_queue.has_pending(
-                after_timestamp=membership["last_seen_ts"]
-            )
-        message = self._insert_message(
+            prior_cursor = membership["last_seen_ts"]
+        message = self._write_message(
             queue=child_queue,
             thread=child_thread,
             from_id=member["member_id"],
             from_name=member["display_name"],
             kind="message",
             text=text,
-            ts=ts,
-            notify_mentions=True,
+            notify_mentions=False,
         )
-        if caught_up:
-            self._state.advance_cursor(
+        parent_author_id = parent.from_id
+        notify_parent = (
+            parent_author_id is not None
+            and parent_author_id != member["member_id"]
+            and self._state.get_membership(
                 thread=child_thread,
-                member_id=member["member_id"],
-                seen_ts=message.ts,
+                member_id=parent_author_id,
             )
+            is None
+        )
+        excluded_recipients: set[str] = set()
+        if notify_parent:
+            assert parent_author_id is not None
+            self._write_notification(
+                to_id=parent_author_id,
+                payload={
+                    "type": "reply",
+                    "to_id": parent_author_id,
+                    "actor_id": member["member_id"],
+                    "actor_name": member["display_name"],
+                    "thread": child_thread,
+                    "message_ts": message.ts,
+                },
+            )
+            excluded_recipients.add(parent_author_id)
+        self._write_mention_notifications(
+            message,
+            text,
+            excluded_recipient_ids=excluded_recipients,
+        )
+        self._advance_sender_if_no_intervening(
+            queue=child_queue,
+            thread=child_thread,
+            member_id=member["member_id"],
+            prior_cursor=prior_cursor,
+            own_message_ts=message.ts,
+        )
         return message
 
     def read(self, thread: str | None = None) -> list[Message]:
@@ -138,13 +167,16 @@ class MessagingMixin(_ClientBase):
                     after_timestamp=membership["last_seen_ts"],
                 ),
             )
-            for body, ts in raw_messages:
-                message = message_from_body(membership["thread"], body, ts)
-                messages.append(message)
+            page_messages = [
+                message_from_body(membership["thread"], body, ts)
+                for body, ts in raw_messages
+            ]
+            messages.extend(page_messages)
+            if raw_messages:
                 self._state.advance_cursor(
                     thread=membership["thread"],
                     member_id=member["member_id"],
-                    seen_ts=ts,
+                    seen_ts=max(ts for _body, ts in raw_messages),
                 )
         if not messages:
             raise EmptyResultError("nothing unread")
@@ -201,7 +233,7 @@ class MessagingMixin(_ClientBase):
                 f"{member['display_name']} is not a member of {thread}"
             )
         queue = self.queue(thread)
-        caught_up = not queue.has_pending(after_timestamp=membership["last_seen_ts"])
+        prior_cursor = membership["last_seen_ts"]
         message = self._write_message(
             queue=queue,
             thread=thread,
@@ -211,12 +243,13 @@ class MessagingMixin(_ClientBase):
             text=text,
             notify_mentions=True,
         )
-        if caught_up:
-            self._state.advance_cursor(
-                thread=thread,
-                member_id=member["member_id"],
-                seen_ts=message.ts,
-            )
+        self._advance_sender_if_no_intervening(
+            queue=queue,
+            thread=thread,
+            member_id=member["member_id"],
+            prior_cursor=prior_cursor,
+            own_message_ts=message.ts,
+        )
         return message
 
     def _say_dm(
@@ -258,11 +291,9 @@ class MessagingMixin(_ClientBase):
                 joined_ts=ts,
                 last_seen_ts=ts,
             )
-            caught_up = True
+            prior_cursor = ts
         else:
-            caught_up = not queue.has_pending(
-                after_timestamp=actor_membership["last_seen_ts"]
-            )
+            prior_cursor = actor_membership["last_seen_ts"]
         if (
             self._state.get_membership(thread=thread, member_id=target["member_id"])
             is None
@@ -273,22 +304,15 @@ class MessagingMixin(_ClientBase):
                 joined_ts=ts,
                 last_seen_ts=0,
             )
-        message = self._insert_message(
+        message = self._write_message(
             queue=queue,
             thread=thread,
             from_id=member["member_id"],
             from_name=member["display_name"],
             kind="message",
             text=text,
-            ts=ts,
             notify_mentions=True,
         )
-        if caught_up:
-            self._state.advance_cursor(
-                thread=thread,
-                member_id=member["member_id"],
-                seen_ts=message.ts,
-            )
         if created_thread:
             self._write_notification(
                 to_id=target["member_id"],
@@ -301,6 +325,13 @@ class MessagingMixin(_ClientBase):
                     "message_ts": message.ts,
                 },
             )
+        self._advance_sender_if_no_intervening(
+            queue=queue,
+            thread=thread,
+            member_id=member["member_id"],
+            prior_cursor=prior_cursor,
+            own_message_ts=message.ts,
+        )
         return message
 
     def _implicit_subthread_membership(
@@ -340,43 +371,50 @@ class MessagingMixin(_ClientBase):
         text: str,
         notify_mentions: bool,
     ) -> Message:
-        ts = queue.generate_timestamp()
-        return self._insert_message(
-            queue=queue,
-            thread=thread,
-            from_id=from_id,
-            from_name=from_name,
-            kind=kind,
-            text=text,
-            ts=ts,
-            notify_mentions=notify_mentions,
-        )
-
-    def _insert_message(
-        self,
-        *,
-        queue: Queue,
-        thread: str,
-        from_id: str,
-        from_name: str,
-        kind: str,
-        text: str,
-        ts: int,
-        notify_mentions: bool,
-    ) -> Message:
         body = encode_envelope(
             from_id=from_id,
             from_name=from_name,
             kind=cast(Any, kind),
             text=text,
         )
-        queue.insert_messages([(body, ts)])
+        ts = queue.write(body)
         message = message_from_body(thread, body, ts)
         if notify_mentions and kind == "message":
             self._write_mention_notifications(message, text)
         return message
 
-    def _write_mention_notifications(self, message: Message, text: str) -> None:
+    def _advance_sender_if_no_intervening(
+        self,
+        *,
+        queue: Queue,
+        thread: str,
+        member_id: str,
+        prior_cursor: int,
+        own_message_ts: int,
+    ) -> None:
+        # One high-water cursor cannot hide the sender's post while preserving
+        # an older unread row. Advance only when the committed open interval is
+        # empty; otherwise the later read deliberately includes both rows.
+        intervening = queue.peek_many(
+            1,
+            after_timestamp=prior_cursor,
+            before_timestamp=own_message_ts,
+        )
+        if intervening:
+            return
+        self._state.advance_cursor(
+            thread=thread,
+            member_id=member_id,
+            seen_ts=own_message_ts,
+        )
+
+    def _write_mention_notifications(
+        self,
+        message: Message,
+        text: str,
+        *,
+        excluded_recipient_ids: set[str] | None = None,
+    ) -> None:
         if message.from_id is None:
             return
         mentions = addressing.mentioned_route_keys(text)
@@ -397,6 +435,11 @@ class MessagingMixin(_ClientBase):
         for key, matched in mentions:
             target = self._state.get_member_by_route_key(key)
             if target is None or target["member_id"] == message.from_id:
+                continue
+            if (
+                excluded_recipient_ids is not None
+                and target["member_id"] in excluded_recipient_ids
+            ):
                 continue
             if participants is not None and target["member_id"] not in participants:
                 continue
@@ -436,21 +479,22 @@ class MessagingMixin(_ClientBase):
             return None
         return participants
 
-    def _resolve_message_id(self, thread: str, msg_id: str) -> int:
+    def _resolve_message_id(self, thread: str, msg_id: str) -> Message:
         queue = self.queue(thread)
         if MESSAGE_ID_RE.fullmatch(msg_id):
             exact = int(msg_id)
             found = queue.peek_one(exact_timestamp=exact, with_timestamps=True)
             if found is None:
                 raise NotFoundError(f"message not found: {msg_id}")
-            return exact
+            body, timestamp = cast(tuple[str, int], found)
+            return message_from_body(thread, body, timestamp)
         if len(msg_id) < 4 or not msg_id.isdigit():
             raise NotFoundError("message id suffix must be at least 4 digits")
-        recent: deque[int] = deque(maxlen=1000)
+        recent: deque[Message] = deque(maxlen=1000)
         for result in queue.peek_generator(with_timestamps=True):
-            _body, ts = cast(tuple[str, int], result)
-            recent.append(ts)
-        matches = [ts for ts in recent if str(ts).endswith(msg_id)]
+            body, ts = cast(tuple[str, int], result)
+            recent.append(message_from_body(thread, body, ts))
+        matches = [message for message in recent if str(message.ts).endswith(msg_id)]
         if not matches:
             raise NotFoundError(
                 f"message not found in the most recent 1,000 messages of {thread}; "
@@ -458,7 +502,8 @@ class MessagingMixin(_ClientBase):
             )
         if len(matches) > 1:
             raise AmbiguousMessageError(
-                "ambiguous message id suffix: " + ", ".join(str(ts) for ts in matches)
+                "ambiguous message id suffix: "
+                + ", ".join(str(message.ts) for message in matches)
             )
         return matches[0]
 

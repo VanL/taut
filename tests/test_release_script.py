@@ -206,6 +206,88 @@ def test_write_version_files_updates_summon_dependency_floor(
     assert '"taut>=0.5.1",' in text
 
 
+def test_sync_readme_version_examples_updates_only_selected_artifact(
+    tmp_path: Path,
+) -> None:
+    release = _load_release_module()
+    root = tmp_path / "README.md"
+    pg = tmp_path / "pg.md"
+    summon = tmp_path / "summon.md"
+    root.write_text(
+        "core @v0.5.2\n./taut_pg-0.5.2-py3-none-any.whl\n"
+        "./taut_summon-0.5.2-py3-none-any.whl\n",
+        encoding="utf-8",
+    )
+    pg.write_text(
+        "core @v0.5.2\n./taut_pg-0.5.2-py3-none-any.whl\n",
+        encoding="utf-8",
+    )
+    summon.write_text(
+        "core @v0.5.2\n./taut_summon-0.5.2-py3-none-any.whl\n",
+        encoding="utf-8",
+    )
+
+    release.sync_readme_version_examples(
+        release.ROOT_TARGET,
+        "0.5.3",
+        root_readme_path=root,
+        pg_readme_path=pg,
+        summon_readme_path=summon,
+    )
+    release.sync_readme_version_examples(
+        release.PG_TARGET,
+        "0.5.4",
+        root_readme_path=root,
+        pg_readme_path=pg,
+        summon_readme_path=summon,
+    )
+    release.sync_readme_version_examples(
+        release.SUMMON_TARGET,
+        "0.5.5",
+        root_readme_path=root,
+        pg_readme_path=pg,
+        summon_readme_path=summon,
+    )
+
+    assert root.read_text(encoding="utf-8") == (
+        "core @v0.5.3\n./taut_pg-0.5.4-py3-none-any.whl\n"
+        "./taut_summon-0.5.5-py3-none-any.whl\n"
+    )
+    assert pg.read_text(encoding="utf-8") == (
+        "core @v0.5.3\n./taut_pg-0.5.4-py3-none-any.whl\n"
+    )
+    assert summon.read_text(encoding="utf-8") == (
+        "core @v0.5.3\n./taut_summon-0.5.5-py3-none-any.whl\n"
+    )
+
+
+def test_summon_target_tracks_root_and_extension_readme_examples() -> None:
+    release = _load_release_module()
+
+    assert release.ROOT_README_PATH in release.target_version_files(
+        release.SUMMON_TARGET
+    )
+    assert release.SUMMON_README_PATH in release.target_version_files(
+        release.SUMMON_TARGET
+    )
+    assert release.ROOT_README_PATH in release._release_file_paths(  # noqa: SLF001
+        release.SUMMON_TARGET
+    )
+
+
+def test_require_changelog_heading_rejects_missing_target(tmp_path: Path) -> None:
+    release = _load_release_module()
+    changelog = tmp_path / "CHANGELOG.md"
+    changelog.write_text(
+        "# Changelog\n\n## 0.5.2 - 2026-07-11\n",
+        encoding="utf-8",
+    )
+
+    release.require_changelog_heading("0.5.2", changelog_path=changelog)
+    with pytest.raises(SystemExit, match="CHANGELOG.md has no heading for 0.5.3"):
+        release.require_changelog_heading("0.5.3", changelog_path=changelog)
+
+
 def test_sync_root_summon_dev_dependency_updates_root_floor(tmp_path: Path) -> None:
     release = _load_release_module()
     root_pyproject_path = tmp_path / "pyproject.toml"
@@ -817,6 +899,7 @@ def test_verifier_failure_under_skip_checks_stops_release_mutation(
     )
     monkeypatch.setattr(release, "current_head_commit", lambda: "head")
     monkeypatch.setattr(release, "_require_command", lambda _name: None)
+    monkeypatch.setattr(release, "require_changelog_heading", lambda _version: None)
     monkeypatch.setattr(release, "_sync_root_release_dependencies", lambda: None)
     monkeypatch.setattr(
         release,
@@ -877,6 +960,7 @@ def test_version_changed_core_syncs_pair_before_verifier_failure_stops_git(
     )
     monkeypatch.setattr(release, "current_head_commit", lambda: "head")
     monkeypatch.setattr(release, "_require_command", lambda _name: None)
+    monkeypatch.setattr(release, "require_changelog_heading", lambda _version: None)
     monkeypatch.setattr(
         release,
         "write_version_files",
@@ -938,6 +1022,7 @@ def test_version_changed_core_verifies_before_staging_paired_files(
     )
     monkeypatch.setattr(release, "current_head_commit", lambda: "head")
     monkeypatch.setattr(release, "_require_command", lambda _name: None)
+    monkeypatch.setattr(release, "require_changelog_heading", lambda _version: None)
     monkeypatch.setattr(release, "write_version_files", lambda *_args: None)
     monkeypatch.setattr(release, "_sync_root_release_dependencies", lambda: None)
     monkeypatch.setattr(
@@ -1101,3 +1186,55 @@ def test_capture_command_returns_stdout(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr(release.subprocess, "run", fake_run)
 
     assert release.capture_command(("git", "rev-parse", "HEAD")) == "abc123"
+
+
+def test_checks_only_runs_real_prechecks_then_exits_before_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _load_release_module()
+    events: list[str] = []
+
+    monkeypatch.setattr(release, "is_dirty_worktree", lambda: True)
+    monkeypatch.setattr(
+        release,
+        "read_target_version",
+        lambda target: "0.5.3",
+    )
+    monkeypatch.setattr(
+        release,
+        "require_changelog_heading",
+        lambda version: events.append(f"changelog:{version}"),
+    )
+    monkeypatch.setattr(release, "_require_command", lambda name: events.append(name))
+    monkeypatch.setattr(
+        release,
+        "run_prechecks",
+        lambda target, *, dry_run: events.append(f"prechecks:{target.key}:{dry_run}"),
+    )
+    monkeypatch.setattr(
+        release,
+        "current_head_commit",
+        lambda: pytest.fail("checks-only must not plan tags"),
+    )
+    monkeypatch.setattr(
+        release,
+        "write_version_files",
+        lambda *_args: pytest.fail("checks-only must not write versions"),
+    )
+    monkeypatch.setattr(
+        release,
+        "run_postupdate_steps",
+        lambda *_args, **_kwargs: pytest.fail("checks-only must not build artifacts"),
+    )
+
+    assert release.main(["core", "--checks-only"]) == 0
+    assert events == ["changelog:0.5.3", "uv", "prechecks:core:False"]
+
+
+def test_checks_only_rejects_dry_run_and_skip_checks() -> None:
+    release = _load_release_module()
+
+    with pytest.raises(SystemExit):
+        release.parse_args(["--checks-only", "--dry-run"])
+    with pytest.raises(SystemExit):
+        release.parse_args(["--checks-only", "--skip-checks"])

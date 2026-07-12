@@ -8,7 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from simplebroker import open_broker
+from simplebroker import Queue, open_broker
 
 import taut.identity as identity
 from taut._constants import META_QUEUE_NAME
@@ -103,6 +103,39 @@ def test_project_reply_creates_subthread_contract(taut_project: Path) -> None:
     assert child.parent == "general"
 
 
+def test_project_reply_pointer_claim_and_membership_contract(
+    taut_project: Path,
+) -> None:
+    """[IAN-7.2]/[IAN-7.4] reply pointers remain backend-shared."""
+
+    TautClient.init()
+    van = TautClient(as_name="van")
+    bob = TautClient(as_name="bob")
+    van.join("general")
+    bob.join("general")
+    root = van.say("general", "root")
+
+    first = bob.reply("general", str(root.ts), "first reply")
+    claimed = van.inbox()
+
+    assert [(item.type, item.thread, item.message_ts) for item in claimed] == [
+        ("reply", first.thread, first.ts)
+    ]
+    with pytest.raises(EmptyResultError):
+        van.inbox()
+    assert [message.text for message in van.log(first.thread)] == ["first reply"]
+
+    assert [message.text for message in van.read(first.thread)] == ["first reply"]
+    second = bob.reply("general", str(root.ts), "while joined")
+    with pytest.raises(EmptyResultError):
+        van.inbox()
+    assert [message.ts for message in van.read(first.thread)] == [second.ts]
+
+    van.leave(first.thread)
+    after_leave = bob.reply("general", str(root.ts), "after leave")
+    assert [item.message_ts for item in van.inbox()] == [after_leave.ts]
+
+
 def test_project_leave_removes_membership_contract(taut_project: Path) -> None:
     TautClient.init()
     van = TautClient(as_name="van")
@@ -116,6 +149,79 @@ def test_project_leave_removes_membership_contract(taut_project: Path) -> None:
     assert [member.name for member in van.who("general")] == ["van"]
     with pytest.raises(MembershipError):
         bob.say("general", "should fail after leave")
+
+
+def test_project_joined_thread_names_contract(taut_project: Path) -> None:
+    """[TAUT-8.3] read-only membership discovery is backend-shared."""
+
+    TautClient.init()
+    owner = TautClient(as_name="reviewer")
+    owner.join("ops")
+    created = owner.last_created_member
+    assert created is not None
+    owner.join("general")
+    speaker = TautClient(as_name="speaker")
+    speaker.join("general")
+    mention = speaker.say("general", "ping @reviewer")
+    member_ids_before = {member.member_id for member in owner.who()}
+    member_before = owner._state.get_member(created.member_id)
+    assert member_before is not None
+    meta = owner.queue(META_QUEUE_NAME)
+    try:
+        before_high_water = meta.refresh_last_ts()
+        names = owner.joined_thread_names()
+        after_high_water = meta.refresh_last_ts()
+    finally:
+        meta.close()
+    member_after = owner._state.get_member(created.member_id)
+    assert member_after is not None
+    assert names == ("general", "ops")
+    assert member_after["last_active_ts"] == member_before["last_active_ts"]
+    assert after_high_water == before_high_water
+    assert [item.message_ts for item in owner.inbox()] == [mention.ts]
+
+    ghost = TautClient(as_name="ghost")
+    with pytest.raises(NotFoundError):
+        ghost.joined_thread_names()
+    assert {member.member_id for member in owner.who()} == member_ids_before
+
+
+def test_project_sender_interval_probe_preserves_intervening_message(
+    taut_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[TAUT-7.4] the committed open-interval probe is backend-shared."""
+
+    TautClient.init()
+    van = TautClient(as_name="van")
+    bob = TautClient(as_name="bob")
+    van.join("general")
+    bob.join("general")
+    real_write = Queue.write
+    inserted = False
+    injecting = False
+
+    def write_with_intervening(queue: Queue, body: str) -> int:
+        nonlocal inserted, injecting
+        if queue.name == "general" and not inserted and not injecting:
+            inserted = True
+            injecting = True
+            try:
+                van.say("general", "intervening")
+            finally:
+                injecting = False
+        return real_write(queue, body)
+
+    monkeypatch.setattr(Queue, "write", write_with_intervening)
+
+    response = bob.say("general", "response")
+
+    unread = bob.read("general")
+    assert [message.text for message in unread] == ["intervening", "response"]
+    assert [message.ts for message in unread] == sorted(
+        message.ts for message in unread
+    )
+    assert unread[-1].ts == response.ts
 
 
 def test_project_rejoin_updates_anchor_contract(taut_project: Path) -> None:

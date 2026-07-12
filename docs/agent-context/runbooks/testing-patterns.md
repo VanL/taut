@@ -3,6 +3,17 @@
 This runbook documents preferred testing patterns for repository work and the
 most common ways verification becomes too weak.
 
+## Operating Metadata
+
+- **Owner:** the engineer changing behavior, with reviewers challenging weak
+  proof boundaries.
+- **Boundary:** test selection and design for repository changes; governing
+  specs may impose stronger acceptance or backend requirements.
+- **Verification:** observe the intended red failure, then the green result
+  through the narrowest real boundary that proves the contract.
+- **Required action:** choose the proof before implementation, avoid mocking
+  the behavior under test, and name any substitute proof for a TDD exception.
+
 ## Harness Selection
 
 Use the narrowest real proof that still exercises the behavior under review.

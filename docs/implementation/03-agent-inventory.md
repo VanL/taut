@@ -27,16 +27,16 @@ To refresh this inventory:
 
 ## Current Observed Availability
 
-Last refreshed: 2026-06-12
+Last refreshed: 2026-07-11
 
 | Agent family | Status | Notes |
 |--------------|--------|-------|
-| Claude | verified usable | Authoring agent for the 2026-06-12 foundation docs (this environment) |
-| Codex | verified usable | `/opt/homebrew/bin/codex`; performed the 2026-06-12 foundation-docs review (`codex exec --sandbox read-only`) |
-| Gemini | present, blocked | `/opt/homebrew/bin/gemini`; 2026-06-12 invocation failed: `GEMINI_API_KEY` not set in environment |
-| Qwen | present, blocked | `/opt/homebrew/bin/qwen`; 2026-06-12 invocation failed: configured model unavailable on free tier (API 404) |
-| Kimi | present, blocked | `/Users/van/.local/bin/kimi`; 2026-06-12 invocation failed: API key invalid or expired (401) |
-| Grok | present, currently unreliable | `/Users/van/.grok/bin/grok`; re-authorized 2026-06-12 and worked for round 4, but the 0.1.1 round 5 implementation-review attempt hung after environment/plugin warnings and returned no findings. Treat as fallback-only until a fresh no-op or review invocation completes. |
+| Claude | present | `/opt/homebrew/bin/claude`, version 2.1.201. Version probe passed 2026-07-11; authenticated read-only work was not re-probed. |
+| Codex | verified usable | `/opt/homebrew/bin/codex`, version 0.144.1. This 2026-07-11 task and its independent review run through Codex successfully. |
+| Gemini | present | `/opt/homebrew/bin/gemini`, version 0.46.0. Version probe passed 2026-07-11; prior credential failure was not re-probed. |
+| Qwen | present | `/opt/homebrew/bin/qwen`, version 0.17.0. Version probe passed 2026-07-11; prior model-access failure was not re-probed. |
+| Kimi | present | `/Users/van/.kimi-code/bin/kimi`, version 0.23.5. Version probe passed 2026-07-11; prior credential failure was not re-probed. |
+| Grok | present | `/Users/van/.local/bin/grok`, version 0.2.93. Version probe passed 2026-07-11; the prior hanging review was not re-probed. |
 
 ## Review Preference
 
@@ -55,3 +55,7 @@ Update this file when:
 - a new agent family becomes available
 - an existing agent family is removed
 - review workflow preferences change materially
+
+Presence/version probes do not prove authenticated review capability. Before
+selecting a merely present family, run the small read-only prompt described
+above and promote it to `verified usable` or record the exact blocking error.

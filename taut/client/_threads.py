@@ -19,6 +19,20 @@ from ._models import Message, Thread
 
 
 class ThreadsMixin(_ClientBase):
+    def joined_thread_names(self) -> tuple[str, ...]:
+        """Return this member's joined chat-thread names without side effects.
+
+        State returns memberships in lexical thread order.  Keep that order as
+        the public deterministic contract used by long-lived extensions for
+        resource reconciliation ([TAUT-8.3]).
+        """
+
+        resolved = self._resolve_member(create=False, _touch_activity=False)
+        member = self._require_member(resolved)
+        return tuple(
+            row["thread"] for row in self._state.list_memberships(member["member_id"])
+        )
+
     def join(
         self,
         thread: str,
@@ -62,16 +76,23 @@ class ThreadsMixin(_ClientBase):
             updated = self._state.update_member_persona(member["member_id"], persona)
             if updated is not None:
                 member = updated
-        return self._insert_message(
+        message = self._write_message(
             queue=queue,
             thread=thread,
             from_id=member["member_id"],
             from_name=member["display_name"],
             kind="notice",
             text=notice_text,
-            ts=ts,
             notify_mentions=False,
         )
+        self._advance_sender_if_no_intervening(
+            queue=queue,
+            thread=thread,
+            member_id=member["member_id"],
+            prior_cursor=ts,
+            own_message_ts=message.ts,
+        )
+        return message
 
     def leave(self, thread: str) -> Message:
         thread = addressing.validate_chat_thread_name(thread, allow_subthread=True)
@@ -236,6 +257,22 @@ class ThreadsMixin(_ClientBase):
             isinstance(item, str) for item in raw_members
         ):
             members = tuple(raw_members)
+        display_name: str | None = None
+        if row["kind"] == "dm":
+            distinct_members = set(members)
+            if len(members) == 2 and len(distinct_members) == 2:
+                visible_ids = list(members)
+                if membership is not None and membership["member_id"] in visible_ids:
+                    visible_ids.remove(membership["member_id"])
+                visible_rows = [self._state.get_member(item) for item in visible_ids]
+                if all(item is not None for item in visible_rows):
+                    display_name = "DM with " + ", ".join(
+                        item["display_name"]
+                        for item in visible_rows
+                        if item is not None
+                    )
+            if display_name is None:
+                display_name = f"DM {row['name']} (participants unavailable)"
         return Thread(
             name=row["name"],
             kind=row["kind"],
@@ -244,6 +281,7 @@ class ThreadsMixin(_ClientBase):
             last_ts=self._last_message_ts(queue),
             unread_count=unread_count,
             members=members,
+            display_name=display_name,
         )
 
     def _last_message_ts(self, queue: Queue) -> int | None:

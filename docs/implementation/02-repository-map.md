@@ -9,7 +9,7 @@ Quick pointers to the key guidance documents in this repository.
 | `AGENTS.md` | Canonical agent entry point |
 | `CLAUDE.md` | Alias for tools that expect Claude-style root guidance |
 | `README.md` | Product face and current CLI/API behavior contract (see `docs/specs/02-taut-core.md`) |
-| `bin/release.py` | GitHub-only release helper for version sync, release gates, summon local-LLM preparation, `vX.Y.Z`, `taut_pg/vX.Y.Z`, `taut_summon/vX.Y.Z`, and `all` release batches |
+| `bin/release.py` | GitHub-only release helper for version/README sync, changelog and release gates, non-mutating `--checks-only`, summon local-LLM preparation, namespaced tags, and `all` batches |
 | `bin/pytest-pg` | Docker-backed Postgres test runner for shared root tests and `taut-pg` tests |
 | `bin/verify-reactor-artifact-compat.py` | Isolated four-case core/Summon wheel compatibility verifier for the paired reactor release |
 | `bin/verify-reactor-release-artifacts.py` | Fresh-build owner that selects exactly one core wheel and one Summon wheel before invoking the paired compatibility verifier |
@@ -68,7 +68,8 @@ Quick pointers to the key guidance documents in this repository.
 | `docs/plans/2026-07-01-taut-state-sql-dialect-plan.md` | Implemented `TautState` interface and SQL dialect seam refactor |
 | `docs/plans/2026-07-01-taut-watch-runtime-plan.md` | Implemented `TautWatchRuntime` seam between `TautClient` and the watcher |
 | `docs/plans/2026-07-06-taut-summon-plan.md` | Implemented `taut-summon` extension: delegation verbs, ledger, adapters, driver, control plane, conformance suite |
-| `docs/plans/2026-07-10-taut-summon-quality-remediation-plan.md` | Active remediation plan for state, lifecycle, control, PTY, driver-generation, and paired-release findings |
+| `docs/plans/2026-07-10-taut-summon-quality-remediation-plan.md` | Implemented and independently verified remediation for state, lifecycle, control, PTY, driver-generation, and paired-release findings |
+| `docs/plans/2026-07-11-multi-factor-review-remediation-plan.md` | Implemented and independently reviewed external multi-factor remediation; current worktree remains uncommitted |
 | `docs/implementation/00-implementation-index.md` | Numbered entry point for implementation docs |
 | `docs/implementation/01-documentation-system.md` | Why the documentation system is shaped this way |
 | `docs/implementation/03-agent-inventory.md` | Current observed agent availability and review preference |
@@ -91,6 +92,8 @@ Quick pointers to the key guidance documents in this repository.
 | `taut/watcher.py` | Shared `BaseReactor`, vendored multi-queue scheduling, and cursor-aware `TautWatcher` with persistent owned queue handles |
 | `taut/cli.py` | Argparse CLI and output/exit-code rendering |
 | `tests/` | Contract tests using real SQLite files, shared backend markers, and subprocess CLI |
+| `tests/test_docs_references.py` | Maintained-source path and local/external citation-family gate |
+| `tests/test_project_metadata_consistency.py` | Package version, dependency floor, README pin, and wheel-name consistency gate |
 | `extensions/taut_pg/` | Separate `taut-pg` project with extension metadata, README, and PG-only tests |
 | `extensions/taut_summon/` | Separate `taut-summon` project: the summon driver, adapters, ledger, control plane, persona, and real-process conformance suite |
 

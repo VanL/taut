@@ -9,8 +9,8 @@ JSON subset; verbs STOP / STATUS / PING). Two roles live here:
   **per-request** queue ``sys.rsp_<member-id>_<request_id>`` (see below).
   ``TautClient.watch`` is chat-only and knows nothing about ``sys.*``
   ([SUM-9]). The same thread runs the [SUM-10] rate backstop audit on its
-  cadence, because the watch stream never delivers the member's own sends
-  ([TAUT-7.4]).
+  cadence, because the watch stream is not a complete source for the member's
+  own sends ([TAUT-7.4]).
 - **Client side** (:class:`ControlClient`): what ``taut-summon stop`` and
   ``taut-summon status`` use to write a request and await its reply. Each
   request carries a ``reply_to`` naming a per-request queue
@@ -281,6 +281,13 @@ class _ControlReactor(BaseReactor):
     ) -> None:
         self._owner = owner
         self._queue_name = control_in_queue_name(owner._member_id)
+        self._protected_aux_queues = frozenset(
+            {
+                self._queue_name,
+                control_out_queue_name(owner._member_id),
+                owner._ledger_queue_name,
+            }
+        )
         super().__init__(
             {
                 self._queue_name: {
@@ -296,6 +303,19 @@ class _ControlReactor(BaseReactor):
             config=config,
         )
         self._queue(self._queue_name)
+
+    def retire_auxiliary_queue(self, queue_name: str) -> None:
+        """Close one owner-thread audit handle without changing topology.
+
+        Control and configured watcher queues belong to the reactor lifecycle;
+        only auxiliary audit handles may be retired independently ([SUM-10]).
+        """
+
+        if queue_name in self._protected_aux_queues or queue_name in self._queues:
+            raise ValueError(f"cannot retire protected reactor queue: {queue_name}")
+        queue = self._queue_cache.pop(queue_name, None)
+        if queue is not None:
+            queue.close()
 
     def _handle_control_message(
         self, body: str, timestamp: int, context: QueueMessageContext
@@ -340,6 +360,7 @@ class ControlLoop:
         driver_pid: int,
         driver_start_time: str,
         provider_session_id: str | None = None,
+        audit_start_ts: int = 0,
     ) -> None:
         self._member_id = member_id
         self._db_path = db_path
@@ -357,6 +378,7 @@ class ControlLoop:
         self._driver_start_time = driver_start_time
         self._status_lock = threading.Lock()
         self._provider_session_id = provider_session_id
+        self._audit_start_ts = audit_start_ts
         # The control/audit cadence. Kept gentle by default so the audit's
         # peeks do not add db contention; tests that exercise stop/status
         # latency or the rate backstop lower it via the env var.
@@ -372,6 +394,7 @@ class ControlLoop:
         # again is interrupted again ([SUM-10] circuit-breaker intent).
         self._audit_cursor: dict[str, int] = {}
         self._own_posts: deque[int] = deque()
+        self._own_posts_seen: set[int] = set()
         self._nudged = False
         self._hard_breached = False
         self._hard_breach_count = 0
@@ -397,9 +420,6 @@ class ControlLoop:
             self._provider_session_id = session_id
 
     def run(self) -> None:
-        if self._db_path is None:
-            logger.warning("control loop exiting gracefully: no database target")
-            return
         try:
             self._open()
             while not self._shutdown.is_set() and not self._pending_stop_seen:
@@ -689,8 +709,6 @@ class ControlLoop:
     def _open(self) -> None:
         logger.debug("control loop opening broker handles")
         self._install_broker_handles(self._make_broker_handles())
-        logger.debug("control loop initializing audit cursor")
-        self._init_audit_cursor()
         logger.debug("control loop open complete")
 
     def _close(self) -> None:
@@ -725,8 +743,6 @@ class ControlLoop:
         return True
 
     def _make_broker_handles(self) -> _BrokerHandles:
-        if self._db_path is None:
-            raise RuntimeError("control loop requires a database target")
         client = TautClient(
             db_path=self._db_path,
             token=self._token,
@@ -964,29 +980,23 @@ class ControlLoop:
 
     # --- rate backstop ([SUM-10]) -----------------------------------------
     #
-    # Audit coverage is the summon's startup threads only. A per-tick
-    # membership refresh was tried and reverted: resolving current
-    # memberships (`client.list_threads()`) re-records the member's
-    # continuity-token identity claim, which races the driver's watcher on
-    # the same claim_hash (UNIQUE) and destabilizes both. Closing the
-    # late-joined-thread gap correctly needs either idempotent claim
-    # recording in core (frozen here) or an in-memory membership channel
-    # from the watcher; deferred as an accepted limitation. The breaker
-    # re-arm below (pure in-memory) is the load-bearing [SUM-10] fix.
+    # Membership reconciliation uses TautClient's read-only selector. It must
+    # stay on this control owner thread with the handles it mutates; watcher
+    # callbacks never open or retire audit queues ([SUM-10]).
 
-    def _init_audit_cursor(self) -> None:
-        # Start each audit cursor at the thread's current head so only posts
-        # made *after* the summon are counted ([SUM-10]).
-        for thread, queue in self._thread_queues.items():
-            self._audit_cursor[thread] = self._latest_ts(queue)
-
-    def _latest_ts(self, queue: Queue) -> int:
-        try:
-            rows = self._audit_peek_many(queue, cursor=0, what="rate audit init")
-        except (BrokerError, OSError):
-            return 0
-        stamped = cast("list[tuple[str, int]]", rows)
-        return max((ts for _body, ts in stamped), default=0)
+    def _reconcile_audit_threads(self) -> None:
+        client = self._client
+        reactor = self._control_reactor
+        if client is None or reactor is None:
+            raise RuntimeError("rate audit handles are not open")
+        current = set(client.joined_thread_names())
+        existing = set(self._thread_queues)
+        for thread in sorted(existing - current):
+            self._thread_queues.pop(thread)
+            reactor.retire_auxiliary_queue(thread)
+        for thread in sorted(current - existing):
+            self._thread_queues[thread] = reactor._queue(thread)
+        self._threads = tuple(sorted(current))
 
     def _audit_pass(self) -> None:
         ledger = self._ledger
@@ -994,13 +1004,19 @@ class ControlLoop:
             raise RuntimeError("rate audit ledger is not open")
         now_ts = ledger.generate_timestamp()
         cutoff = now_ts - int(_RATE_WINDOW_SECONDS * 1_000_000_000)
+        self._reconcile_audit_threads()
         for thread, queue in self._thread_queues.items():
             self._audit_thread(thread, queue, cutoff)
         self._prune(cutoff)
         self._enforce()
 
     def _audit_thread(self, thread: str, queue: Queue, cutoff: int) -> None:
-        cursor = self._audit_cursor.get(thread, 0)
+        cursor = max(
+            0,
+            self._audit_start_ts,
+            cutoff - 1,
+            self._audit_cursor.get(thread, 0),
+        )
         highest = cursor
         # A direct log-semantics peek after the driver-local audit cursor —
         # never touching the member cursor ([SUM-10]/[TAUT-7.4]).
@@ -1011,7 +1027,9 @@ class ControlLoop:
             body, ts = cast("tuple[str, int]", row)
             highest = max(highest, ts)
             if ts >= cutoff and decode_envelope(body).from_id == self._member_id:
-                self._own_posts.append(ts)
+                if ts not in self._own_posts_seen:
+                    self._own_posts.append(ts)
+                    self._own_posts_seen.add(ts)
         self._audit_cursor[thread] = highest
 
     def _audit_peek_many(
@@ -1030,6 +1048,7 @@ class ControlLoop:
         )
         self._own_posts.clear()
         self._own_posts.extend(retained)
+        self._own_posts_seen = set(retained)
 
     def _enforce(self) -> None:
         count = len(self._own_posts)

@@ -9,11 +9,13 @@ the nothing-summoned class exits 2). Driver behavior itself is covered by
 
 from __future__ import annotations
 
+import argparse
 import os
 import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 import pytest
 import taut_summon.cli as cli_module
@@ -24,6 +26,7 @@ from taut_summon._state import (
     capture_driver_evidence,
     ensure_summon_schema,
     record_session,
+    release_evidence_confirmed,
 )
 from taut_summon.cli import build_parser, run_request
 
@@ -45,14 +48,18 @@ pytestmark = pytest.mark.sqlite_only
     ),
 )
 def test_stop_release_confirmation_uses_complete_requested_evidence(
-    row: dict[str, object] | None,
+    row: dict[str, int | str | None] | None,
     expected: bool,
 ) -> None:
     assert (
-        cli_module._release_is_confirmed(  # noqa: SLF001
-            row,
-            driver_pid=123,
-            driver_start_time="claimed",
+        release_evidence_confirmed(
+            cast(
+                "tuple[int | None, str | None]",
+                (None, None)
+                if row is None
+                else (row["driver_pid"], row["driver_start_time"]),
+            ),
+            (123, "claimed"),
         )
         is expected
     )
@@ -240,10 +247,99 @@ def test_run_parses_placeholder_flags() -> None:
 def test_cli_no_arguments_prints_help_and_exits_1(
     run_summon_cli: SummonCliRunner, tmp_path: Path
 ) -> None:
-    rc, out, _err = run_summon_cli(cwd=tmp_path)
+    rc, out, err = run_summon_cli(cwd=tmp_path)
 
     assert rc == 1
+    assert out == ""
+    folded = " ".join(err.split())
+    assert "usage:" in folded
+    assert "0 success" in folded
+    assert "2 nothing summoned" in folded
+
+
+def test_cli_help_exits_0_on_stdout(
+    run_summon_cli: SummonCliRunner, tmp_path: Path
+) -> None:
+    rc, out, err = run_summon_cli("--help", cwd=tmp_path)
+
+    assert rc == 0
+    assert err == ""
     assert "usage:" in out
+
+
+def test_every_summon_parser_action_has_useful_help() -> None:
+    root = build_parser()
+    pending = [root]
+    seen: set[int] = set()
+    missing: list[str] = []
+
+    while pending:
+        parser = pending.pop()
+        if id(parser) in seen:
+            continue
+        seen.add(id(parser))
+        if not parser.description or not parser.description.strip():
+            missing.append(f"{parser.prog}: parser description")
+        for action in parser._actions:
+            if action.dest != "help" and (
+                action.help == argparse.SUPPRESS
+                or not isinstance(action.help, str)
+                or not action.help.strip()
+            ):
+                missing.append(f"{parser.prog}: {action.dest}")
+            if isinstance(action, argparse._SubParsersAction):
+                pending.extend(action.choices.values())
+                for choice in action._choices_actions:
+                    if (
+                        choice.help == argparse.SUPPRESS
+                        or not choice.help
+                        or not choice.help.strip()
+                    ):
+                        missing.append(f"{parser.prog}: subcommand {choice.dest}")
+
+    assert missing == []
+
+
+@pytest.mark.parametrize(
+    ("args", "phrases"),
+    [
+        (
+            ("--help",),
+            ("0 success", "1 error", "2 nothing summoned"),
+        ),
+        (
+            ("run", "--help"),
+            (
+                "default: general",
+                "--provider",
+                "current directory",
+                "ancestor",
+                "--attach",
+                "--detach",
+            ),
+        ),
+        (
+            ("stop", "--help"),
+            ("STOP", "current directory", "ancestor"),
+        ),
+        (
+            ("status", "--help"),
+            ("live sessions", "current directory", "ancestor"),
+        ),
+    ],
+)
+def test_summon_help_exposes_load_bearing_contracts(
+    run_summon_cli: SummonCliRunner,
+    tmp_path: Path,
+    args: tuple[str, ...],
+    phrases: tuple[str, ...],
+) -> None:
+    rc, out, err = run_summon_cli(*args, cwd=tmp_path)
+
+    assert rc == 0, err
+    folded = " ".join(out.lower().split())
+    for phrase in phrases:
+        assert phrase.lower() in folded
 
 
 def test_cli_unknown_subcommand_exits_1(

@@ -64,7 +64,10 @@ the child's stdin as a user-role event ([SUM-5]). The mouth is credential,
 not code: the child environment carries `TAUT_TOKEN` (the member's
 continuity token, [SUM-6]) and, on path-addressed backends, `TAUT_DB`; the
 agent runs `taut say ...` like a human. Those CLI calls are transient broker
-clients. The terminal-mode mouth path is reactor-owned by the driver and uses
+clients. Config-backed targets such as Postgres are rediscovered from the
+child's inherited working directory; their DSN is never placed in `TAUT_DB`.
+Prompts and diagnostics use `BrokerTarget.display_target`, so any credentials
+in a server DSN remain redacted. The terminal-mode mouth path is reactor-owned by the driver and uses
 the driver's persistent client. The driver never posts chat on the member's
 behalf outside terminal mode — a hard invariant, because two speakers under one
 identity is the double-speak failure ([SUM-6]/[SUM-9]).
@@ -111,6 +114,12 @@ running three concurrent lanes that a cold reader must keep distinct:
    rebuilds the watcher over the same live provider session; only pump exit or
    injection failure spends the harness crash budget. Transient CLI clients
    remain non-persistent.
+   Multiline chat remains one user-role event. `format_injection()` indents
+   every continuation line without stripping content, so `[system]`,
+   `[notify]`, or a speaker-like prefix stays visibly inside the originating
+   frame. This is attribution hygiene, not prompt-injection prevention.
+   Notification events retain inbox claim semantics and are therefore at most
+   once; the referenced source chat remains durable.
 2. **Event pump — a dedicated drain thread.** Consumes `events()` for the
    life of the child ([SUM-7.1]): session ids to the ledger, `activity` to
    member liveness via a rate-limited token-selected `whoami()` (the public
@@ -127,10 +136,16 @@ running three concurrent lanes that a cold reader must keep distinct:
    thread exception or a provider crash.
 3. **Control plane — its own consumer thread.** See below.
 
-The backstop audit ([SUM-10]) rides the control thread, not the ears,
-because the watch stream never delivers the member's own sends ([TAUT-7.4]
-advances the sender cursor at write time), so counting in the handler would
-be mechanically inert.
+The backstop audit ([SUM-10]) rides the control thread, not the ears. The watch
+stream is not a complete source for own sends: [TAUT-7.4] normally catches the
+sender up after commit, though an intervening unread row can leave an own send
+visible. Counting in the handler would therefore be incomplete and unstable.
+
+`_driver.py` deliberately remains the cohesive owner of bootstrap, harness
+generation, event pump, watcher, and their generation fences. These are one
+live state machine, with named transition tests. Splitting the file by size
+would hide the side-effect fences between transitions and make stale-generation
+writes easier to introduce.
 
 Shutdown ordering (shared by SIGINT and control STOP): stop injection →
 adapter interrupt (unblocks any in-flight `inject()`) → pump drains to `exit`
@@ -155,7 +170,9 @@ cursor-style sets are consumed as no-reply mode changes so they do not become
 false `awaiting_query` diagnostics. Unknown report-shaped queries get no
 fabricated reply and instead surface `awaiting_query` through
 `AdapterHandle.status_fields()`. The control loop merges those fields into
-STATUS after checking reserved keys.
+STATUS after checking reserved keys. Incomplete CSI/OSC retention is capped;
+oversized prefixes are discarded or reduced to the last bounded plausible ESC
+suffix, and deterministic byte-scan tests keep parser work linear.
 
 The pump start point depends on who owns the PTY master. In detached/no-tty
 operation there is no human bridge reading the master, so the pump starts
@@ -238,8 +255,8 @@ bearing summon tables — the oblivious-core invariant):
 
 - `taut_summon_claims` — **transient**. One row per in-flight bootstrap,
   `(name, provider)` primary key. This is the concurrent-summon
-  serialization point ([SUM-4] step 0): a losing racer takes the constraint
-  error and applies the collision rule. Deleted at bootstrap step 3; a row
+  serialization point ([SUM-4]): a losing racer takes the constraint
+  error and applies the collision rule. Deleted after session publication; a row
   whose driver evidence is dead is reclaimable. Because it is transient, a
   name renamed away from is claimable again — the name key never permanently
   occupies anything.
@@ -265,13 +282,19 @@ SQLite write transactions short: they read evidence, release the operation,
 run process-liveness checks outside the write transaction, then perform a short
 predicate-guarded write that rechecks enough ownership to preserve race safety.
 
-The bootstrap's six-step order ([SUM-4]) resolves three constraints at once:
+The bootstrap order ([SUM-4]) resolves three constraints at once:
 the token/env cycle (the token must exist before the child is spawned with
 it), the concurrent-summon race, and the never-touch-a-foreign-member rule.
-Creation happens under a driver-generated collision-proof **temp name** —
-a fresh name cannot adopt anything — followed by core's transactional
-`set_name()` to take the target. The single cosmetic cost is one temp-name
-join notice.
+Each bounded candidate attempt claims the proposed final name, then calls core
+`join(new=True)` directly under that name. Core's fail-not-adopt rule makes an
+occupied route a clean collision: Summon releases only that attempt's transient
+claim and tries the documented fallback. It never creates a visible temporary
+member and never deletes a member as rollback. A later failure after successful
+creation can leave a final-named ordinary member. The initiating terminal gets
+its continuity token and the non-destructive recovery command: rename that
+residual member aside with `TAUT_TOKEN=... taut set name ...`, then summon
+again. It cannot be resumed as a summoned session because no session row was
+published.
 
 ### Control plane: unregistered `sys.*` queues, weft-congruent verbs ([SUM-9])
 
@@ -348,16 +371,23 @@ unregistered `sys.*` queue. That inert residue is preferable to running
 delete-all maintenance in the same high-churn SQLite window as driver, provider,
 and CLI subprocesses.
 
-The rate backstop ([SUM-10]) is a circuit breaker, not a content policy: a
-driver-local audit cursor per thread counts `from_id == self` messages on the
-control cadence; a soft breach injects a nudge and logs, a hard breach
+The rate backstop ([SUM-10]) is a circuit breaker, not a content policy. Before
+each due pass, the control owner calls read-only
+`TautClient.joined_thread_names()` and reconciles auxiliary persistent handles.
+Left-thread handles close on that owner; rejoin gets a fresh handle while the
+retained audit cursor and active-window timestamp dedupe survive. Never-seen
+threads start at the later of driver audit start and the moving window floor,
+never at current head. A soft breach injects a nudge and logs; a hard breach
 interrupts the harness and surfaces through STATUS plus logs — never posting
-to chat and never leaving an unconsumed control reply. A
-documented limitation: coverage is the startup thread set (late-joined
-threads are not audited), because a per-tick `list_threads()` re-records the
-member's continuity claim and races the watcher on a UNIQUE constraint; the
-state layer now treats same-member claim insert races as idempotent, but
-late-join audit expansion remains deliberately out of scope for this release.
+to chat and never leaving an unconsumed control reply. It limits posting volume;
+it does not detect a semantic loop below the configured rate.
+
+PTY and stream close machines stay separate because their resources and
+interrupt mechanisms differ (fd epochs and terminal signals versus pipes and
+structured streams). STATUS reserved keys also remain separate from adapter
+display fields: they protect control-protocol ownership, not resource closure.
+The release-evidence predicate is shared because ledger release and CLI polling
+answer the same ownership question; those other similar-looking sets do not.
 
 ### SimpleBroker handle ownership, not a Taut retry layer ([TAUT-3.4])
 
@@ -409,6 +439,15 @@ supervise real child processes over real pipes; the shared stream-json plumbing 
 in `extensions/taut_summon/taut_summon/_stream.py` so both shipped adapters
 share the [SUM-7.1] handle mechanics (flushed inject, thread-safe
 interrupt/close, single-consumer events) once.
+
+The extension CLI keeps one documented argparse inventory for `run`, `stop`,
+and `status`. Root help owns exit classes; each subcommand owns its syntax and
+database-selection guidance. Omitting `--db` explicitly means normal Taut
+discovery from the current directory through its ancestors. The root parser's
+special `run` dispatch still uses the standalone intermixed parser required by
+Python 3.11/3.12, and `_add_run_arguments()` supplies the same description and
+action help to both parser instances. Parser inventory and phrase tests prevent
+the executable help surface from drifting while preserving verbatim `--` tails.
 
 ## Boundaries and Invariants
 
@@ -463,7 +502,7 @@ interrupt/close, single-consumer events) once.
 
 | Spec area | Primary code owners | Contract tests |
 |---|---|---|
-| [SUM-3], name/provider resolution and CLI exit classes | `extensions/taut_summon/taut_summon/cli.py` | `extensions/taut_summon/tests/test_summon_cli.py` |
+| [SUM-3], name/provider resolution, CLI help, database discovery, and exit classes | `extensions/taut_summon/taut_summon/cli.py` | `extensions/taut_summon/tests/test_summon_cli.py` parser-inventory, help-phrase, grammar, discovery, and exit-class tests |
 | [SUM-4], bootstrap, identity, presence | `extensions/taut_summon/taut_summon/_driver.py`, `extensions/taut_summon/taut_summon/_state.py` | `extensions/taut_summon/tests/test_driver.py` |
 | [SUM-5], ears injection contract | `extensions/taut_summon/taut_summon/_driver.py` | `extensions/taut_summon/tests/test_driver.py`, `extensions/taut_summon/tests/test_conformance.py` |
 | [SUM-6], mouth CLI contract | `extensions/taut_summon/taut_summon/_driver.py`, `extensions/taut_summon/taut_summon/_persona.py` | `extensions/taut_summon/tests/test_driver.py`, `extensions/taut_summon/tests/test_persona.py` |

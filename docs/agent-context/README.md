@@ -11,14 +11,22 @@ agents, and human contributors working in this repository.
 - Make review loops, agent bootstrap, and skill maintenance explicit.
 - Keep spec, plan, implementation, and code traceability bidirectional.
 
-## Read Order
+## Canonical Startup Order
 
-1. `decision-hierarchy.md`
-2. `principles.md`
-3. `engineering-principles.md`
-4. Relevant runbook(s) in `runbooks/`
-5. `lessons.md`
-6. `../lessons.md`
+This is the one canonical startup sequence. Root entry points and newcomer
+guides link here rather than copying it.
+
+1. If it was not already loaded by the tool, read `../../AGENTS.md`.
+2. Read `decision-hierarchy.md`.
+3. Read `principles.md`.
+4. Read `engineering-principles.md`.
+5. Read the relevant runbook(s) in `runbooks/`.
+6. Read `lessons.md`.
+7. Read `../lessons.md`.
+8. Read the relevant spec, active plan, and implementation note for the task.
+9. Read the relevant skill under `../../skills/` when one exists.
+10. For delegation or independent review, read
+    `../implementation/03-agent-inventory.md`.
 
 ## Runbooks
 
@@ -59,4 +67,4 @@ agents, and human contributors working in this repository.
   `runbooks/hardening-plans.md` instead of leaving the correction trapped in a
   single plan.
 - When a repeated workflow becomes stable and reusable, promote it into a skill
-  under `../skills/`.
+  under `../../skills/`.

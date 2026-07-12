@@ -113,20 +113,32 @@ class QueueRuntimeConfig:
 
 def _resolve_db_target(
     db: BrokerTarget | str | Path | None,
-    fallback: BrokerTarget,
+    fallback: Callable[[], BrokerTarget],
 ) -> BrokerTarget | str:
-    """Derive a broker target shared across Queue instances."""
+    """Derive one target, resolving the context fallback only when needed."""
     if isinstance(db, BrokerTarget):
         return db
     if isinstance(db, (str, Path)):
         return str(db)
-    return fallback
+    return fallback()
 
 
 def _detach_queue_stop_event(queue: Queue) -> None:
     """Keep queue connections usable after the watcher stop event is set."""
     if hasattr(queue, "set_stop_event"):
         queue.set_stop_event(None)
+
+
+def _taut_default_error_handler(
+    exc: Exception,
+    message: str,
+    timestamp: int,
+) -> bool | None:
+    """Stop on terminal sink closure; preserve broker policy otherwise."""
+
+    if isinstance(exc, StopWatching):
+        return False
+    return default_error_handler(exc, message, timestamp)
 
 
 class MultiQueueWatcher(BaseWatcher):
@@ -191,7 +203,10 @@ class MultiQueueWatcher(BaseWatcher):
         first_queue_name = next(iter(queue_configs.keys()))
         shared_target = _resolve_db_target(
             db,
-            resolve_context_broker_target(Path.cwd(), config=self._config),
+            # Taut's public watcher always supplies its client-resolved target.
+            # Keep the copied Weft db=None fallback for advanced direct callers,
+            # but never let it inspect an irrelevant cwd for explicit targets.
+            lambda: resolve_context_broker_target(Path.cwd(), config=self._config),
         )
         # Direct Queue ok here: MultiQueueWatcher is creating its owned primary
         # handle; see runtime-and-context-patterns.md section 2.
@@ -1291,6 +1306,7 @@ class TautWatcher(BaseReactor):
             stop_event=stop_event,
             persistent=persistent,
             inactive_probe_interval=membership_refresh_interval,
+            default_error_handler_fn=_taut_default_error_handler,
             config=self._runtime.config,
         )
 
@@ -1352,6 +1368,10 @@ class TautWatcher(BaseReactor):
             failure_key = (thread, timestamp)
             try:
                 self._user_handler(message)
+            except StopWatching:
+                # Terminal sink failure is not poison content. Its error handler
+                # stops the reactor without advancing this durable chat cursor.
+                raise
             except Exception:
                 count = self._failures.get(failure_key, 0) + 1
                 self._failures[failure_key] = count

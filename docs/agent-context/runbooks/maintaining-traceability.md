@@ -3,6 +3,16 @@
 Documentation maintenance is part of delivery. A change is not complete if the
 code moved but the plan, spec, or implementation notes did not.
 
+## Operating Metadata
+
+- **Owner:** the engineer delivering the material change.
+- **Boundary:** spec, plan, implementation-note, code, and test links affected
+  by that change; historical plans remain records rather than live contracts.
+- **Verification:** rerun the repository reference gates and inspect the
+  minimum traceability chain named below.
+- **Required action:** update each live owner in the same change or record the
+  missing link as an explicit blocker.
+
 ## Preflight
 
 Before editing:

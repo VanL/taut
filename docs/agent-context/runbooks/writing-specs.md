@@ -25,6 +25,16 @@ Agent-usable spec writing should make these explicit whenever they matter:
 - verification
 - required action
 
+## Operating Metadata
+
+- **Owner:** the engineer or product owner defining intended behavior.
+- **Boundary:** durable contracts, invariants, interfaces, and failure modes;
+  implementation sequencing and current code layout belong elsewhere.
+- **Verification:** stable codes resolve, enumerable requirements have firing
+  tests, backlinks close, and the docs reference gate passes.
+- **Required action:** revise the spec before or with material behavior changes
+  and promote plan deltas before code cites them as canonical.
+
 ## File Placement
 
 - Put specs in `docs/specs/`.

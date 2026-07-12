@@ -369,10 +369,20 @@ jobs:
           COVERAGE_PROCESS_START: ${{ github.workspace }}/pyproject.toml
           COVERAGE_FILE: ${{ github.workspace }}/.coverage
         run: |
-          uv run pytest --cov=taut --cov-report= -m "not slow"
-          if compgen -G ".coverage.*" > /dev/null; then
-            uv run coverage combine
-          fi
+          # Keep the existing fresh-process selector boundaries. SQLite-heavy,
+          # PTY, live-harness, and local-LLM lanes are unsafe to collapse into
+          # one pytest process merely for a coverage report.
+          uv run coverage erase
+          uv run coverage run --parallel-mode -m pytest tests -m "not slow"
+          uv run coverage run --parallel-mode -m pytest extensions/taut_summon/tests -m "not xdist_group"
+          uv run coverage run --parallel-mode -m pytest extensions/taut_summon/tests -m "xdist_group and not requires_live_harness and not requires_local_llm" -n 1 --dist loadgroup
+          uv run coverage run --parallel-mode -m pytest extensions/taut_summon/tests/test_live_harness.py -n 1 --dist loadgroup
+          uv run coverage run --parallel-mode -m pytest extensions/taut_summon/tests/test_live_local_llm.py -n 1 --dist loadgroup
+          uv run coverage combine
+          uv run python bin/verify-coverage-evidence.py
+          uv run coverage report --include="*/taut_summon/_driver.py" --fail-under=1
+          uv run coverage report --include="*/taut_summon/_control.py" --fail-under=1
+          uv run coverage report --include="*/taut_summon/cli.py" --fail-under=1
           uv run coverage report --show-missing
           uv run coverage xml
 

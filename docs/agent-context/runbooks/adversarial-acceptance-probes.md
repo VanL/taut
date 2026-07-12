@@ -12,14 +12,18 @@ deliberately independent of spec version, and they exist because
 implementations reliably pass their own test suites while failing exactly
 these cases — the probes check what the author's imagination did not.
 
-Owner: whoever integrates an implementation. Boundary: black-box only — run
-the shipped entry point; never call internals. Verification: every probe
-asserts an exit-code class and "no traceback on stderr" at minimum. Required
-action: an implementation that fails any probe is not integration-ready,
-regardless of its own suite passing.
+## Operating Metadata
+
+- **Owner:** the engineer integrating a user-facing tool or parser.
+- **Boundary:** black-box acceptance through the shipped entry point; internal
+  unit tests are supporting evidence only.
+- **Verification:** every applicable probe asserts its exit class, diagnostic
+  shape, and absence of a traceback.
+- **Required action:** apply the governing spec's probe set, or these defaults
+  when no override exists; a failing probe blocks integration readiness.
 
 When a repository's spec defines a contractual probe list (a verification
-section naming required probes and their home, e.g. `tests/acceptance/`),
+section naming required probes and their home, e.g. `tests/acceptance/<tool>/`),
 that list governs; this runbook is the generic pattern to derive it from.
 
 ## The Invariant Floors

@@ -1,9 +1,9 @@
 """SQL dialect marker for Taut-owned sidecar state.
 
-The first SQL state adapter intentionally uses only portable qmark SQL that
-SimpleBroker translates for supported SQL backends. This marker is the explicit
-home for future SQLite/Postgres SQL differences, not an invitation to add
-speculative SQL fragment helpers.
+The SQL state adapter uses qmark SQL that SimpleBroker translates for supported
+backends. This marker selects the few backend capabilities the adapter cannot
+express portably, such as PostgreSQL transaction-scoped advisory locking. SQL
+stays in ``taut.state._sql``; this module does not own SQL fragments.
 """
 
 from __future__ import annotations

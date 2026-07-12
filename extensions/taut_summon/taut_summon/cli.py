@@ -24,7 +24,7 @@ import logging
 import os
 import sys
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, NoReturn, TypeVar, cast
 
@@ -42,6 +42,7 @@ from taut_summon._state import (
     ensure_summon_schema,
     get_session,
     list_sessions,
+    release_evidence_confirmed,
 )
 
 _LEDGER_QUEUE_NAME = LEDGER_QUEUE_NAME
@@ -61,6 +62,16 @@ StatusFaultPlane = Literal[
     "driver_snapshot",
 ]
 T = TypeVar("T")
+
+_DATABASE_HELP = (
+    "Use an explicit SQLite database path. Omit to discover .taut.toml or "
+    ".taut.db from the current directory and its ancestors."
+)
+_RUN_DESCRIPTION = (
+    "Start or resume a summoned workspace member. NAME_OR_PROVIDER is always "
+    "the member name; on first summon it may also select a provider shortcut. "
+    "THREAD defaults to general."
+)
 
 
 def _emit_status_fault_plane(plane: StatusFaultPlane, exc: BaseException) -> None:
@@ -154,20 +165,58 @@ class RunRequest:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = _SummonRootArgumentParser(prog="taut-summon")
-    sub = parser.add_subparsers(dest="command", parser_class=_SummonArgumentParser)
+    parser = _SummonRootArgumentParser(
+        prog="taut-summon",
+        description=(
+            "Host existing agent harnesses as Taut workspace members. Exit codes: "
+            "0 success; 1 error or unresponsive driver; 2 nothing summoned."
+        ),
+    )
+    sub = parser.add_subparsers(
+        dest="command",
+        parser_class=_SummonArgumentParser,
+        title="commands",
+        metavar="COMMAND",
+        help="Command to run; use 'taut-summon COMMAND --help' for syntax.",
+    )
 
-    p = sub.add_parser("run")
+    p = sub.add_parser(
+        "run",
+        help="Start or resume a summoned harness member.",
+    )
     _add_run_arguments(p)
 
-    p = sub.add_parser("stop")
-    p.add_argument("name", metavar="NAME")
-    p.add_argument("--db", dest="db_path")
+    p = sub.add_parser(
+        "stop",
+        help="Ask one live summoned driver to stop.",
+        description=(
+            "Send STOP to the live driver for NAME and wait for its ownership "
+            "evidence to be released."
+        ),
+    )
+    p.add_argument(
+        "name",
+        metavar="NAME",
+        help="Current name of the summoned member to stop.",
+    )
+    p.add_argument("--db", dest="db_path", metavar="PATH", help=_DATABASE_HELP)
     p.set_defaults(func=_cmd_stop)
 
-    p = sub.add_parser("status")
-    p.add_argument("name", metavar="NAME", nargs="?")
-    p.add_argument("--db", dest="db_path")
+    p = sub.add_parser(
+        "status",
+        help="Show live summoned sessions or query one driver.",
+        description=(
+            "List all live sessions, or request detailed live status from the "
+            "driver for NAME."
+        ),
+    )
+    p.add_argument(
+        "name",
+        metavar="NAME",
+        nargs="?",
+        help="Current summoned-member name; omit to list all live sessions.",
+    )
+    p.add_argument("--db", dest="db_path", metavar="PATH", help=_DATABASE_HELP)
     p.set_defaults(func=_cmd_status)
 
     return parser
@@ -176,20 +225,75 @@ def build_parser() -> argparse.ArgumentParser:
 def _add_run_arguments(
     parser: argparse.ArgumentParser, *, require_name: bool = True
 ) -> None:
+    parser.description = _RUN_DESCRIPTION
     if require_name:
-        parser.add_argument("name", metavar="NAME_OR_PROVIDER")
+        parser.add_argument(
+            "name",
+            metavar="NAME_OR_PROVIDER",
+            help=(
+                "Member name; on first summon, a registered provider name is also "
+                "the convenience provider selection."
+            ),
+        )
     else:
-        parser.add_argument("name", metavar="NAME_OR_PROVIDER", nargs="?")
-    parser.add_argument("threads", metavar="THREAD", nargs="*")
-    parser.add_argument("--provider")
-    parser.add_argument("--terminal", action="store_true")
-    parser.add_argument("--attach", action="store_true")
-    parser.add_argument("--detach", action="store_true")
-    parser.add_argument("--takeover", action="store_true")
-    parser.add_argument("--persona")
-    parser.add_argument("--system-prompt-file", dest="system_prompt_file")
-    parser.add_argument("--rate-limit", dest="rate_limit", type=int)
-    parser.add_argument("--db", dest="db_path")
+        parser.add_argument(
+            "name",
+            metavar="NAME_OR_PROVIDER",
+            nargs="?",
+            help=(
+                "Member name; after '--', an option-shaped name is accepted literally."
+            ),
+        )
+    parser.add_argument(
+        "threads",
+        metavar="THREAD",
+        nargs="*",
+        help="Threads to join in order (default: general).",
+    )
+    parser.add_argument(
+        "--provider",
+        metavar="PROVIDER",
+        help="Select the provider adapter explicitly for a chosen member name.",
+    )
+    parser.add_argument(
+        "--terminal",
+        action="store_true",
+        help="Enable one-thread terminal mode when the adapter supports it.",
+    )
+    parser.add_argument(
+        "--attach",
+        action="store_true",
+        help="Force an interactive terminal attach for onboarding or setup.",
+    )
+    parser.add_argument(
+        "--detach",
+        action="store_true",
+        help="Force detached startup without the automatic first-use attach.",
+    )
+    parser.add_argument(
+        "--takeover",
+        action="store_true",
+        help="Replace a dead, abandoned, or indeterminate driver claim.",
+    )
+    parser.add_argument(
+        "--persona",
+        metavar="TEXT",
+        help="Set or replace the summoned member's short Taut persona.",
+    )
+    parser.add_argument(
+        "--system-prompt-file",
+        dest="system_prompt_file",
+        metavar="PATH",
+        help="Read the complete harness orientation text from PATH.",
+    )
+    parser.add_argument(
+        "--rate-limit",
+        dest="rate_limit",
+        metavar="N",
+        type=int,
+        help="Set the per-window posting-rate circuit-breaker threshold.",
+    )
+    parser.add_argument("--db", dest="db_path", metavar="PATH", help=_DATABASE_HELP)
     parser.set_defaults(command="run", func=_cmd_run)
 
 
@@ -323,25 +427,6 @@ def _resolve_session(
     return member, row
 
 
-def _release_is_confirmed(
-    row: Mapping[str, object] | None,
-    *,
-    driver_pid: int | None,
-    driver_start_time: str | None,
-) -> bool:
-    """Return whether current evidence proves the requested driver is gone."""
-
-    if row is None:
-        return True
-    stored_pid = row["driver_pid"]
-    stored_start = row["driver_start_time"]
-    if stored_pid is None and stored_start is None:
-        return True
-    if stored_pid is None or stored_start is None:
-        return False
-    return (stored_pid, stored_start) != (driver_pid, driver_start_time)
-
-
 def _confirm_released(
     client: TautClient,
     member_id: str,
@@ -357,11 +442,12 @@ def _confirm_released(
     try:
         while time.monotonic() < deadline:
             row = get_session(queue, member_id)
-            if _release_is_confirmed(
-                row,
-                driver_pid=driver_pid,
-                driver_start_time=driver_start_time,
-            ):
+            stored = (
+                (None, None)
+                if row is None
+                else (row["driver_pid"], row["driver_start_time"])
+            )
+            if release_evidence_confirmed(stored, (driver_pid, driver_start_time)):
                 return True
             time.sleep(0.05)
         return False
@@ -571,9 +657,10 @@ def _print_status(name: str, reply: dict[str, Any]) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = build_parser().parse_args(list(argv) if argv is not None else sys.argv[1:])
+    parser = build_parser()
+    args = parser.parse_args(list(argv) if argv is not None else sys.argv[1:])
     if not hasattr(args, "func"):
-        build_parser().print_help()
+        parser.print_help(sys.stderr)
         return 1
     try:
         return int(args.func(args))

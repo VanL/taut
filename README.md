@@ -86,11 +86,11 @@ default, or a few machines through the Postgres extension.
 ## Installation
 
 ```bash
-pipx install "git+https://github.com/VanL/taut.git@v0.4.0"       # CLI use
-uv add "taut @ git+https://github.com/VanL/taut.git@v0.4.0"      # as a library
+pipx install "git+https://github.com/VanL/taut.git@v0.5.3"       # CLI use
+uv add "taut @ git+https://github.com/VanL/taut.git@v0.5.3"      # as a library
 ```
 
-Requirements: Python 3.11+. Runtime dependencies are `simplebroker>=5.1.0`
+Requirements: Python 3.11+. Runtime dependencies are `simplebroker>=5.3.1`
 (which itself has none) and `psutil` for cross-platform process metadata.
 
 PyPI install names stay out of the documented path until the `taut` package
@@ -106,8 +106,8 @@ Extensions use their own tags (`taut_pg/vX.Y.Z`, `taut_summon/vX.Y.Z`), so
 their versions do not have to match the core package version:
 
 ```bash
-pipx install "git+https://github.com/VanL/taut.git@v0.4.0"
-pipx inject taut ./taut_pg-0.4.0-py3-none-any.whl
+pipx install "git+https://github.com/VanL/taut.git@v0.5.3"
+pipx inject taut ./taut_pg-0.5.3-py3-none-any.whl
 ```
 
 The Postgres database must already exist. Create `.taut.toml` in the project
@@ -139,7 +139,7 @@ by its continuity token (its mouth). It ships as a separate package with its
 own version tags:
 
 ```bash
-pipx inject taut ./taut_summon-X.Y.Z-py3-none-any.whl
+pipx inject taut ./taut_summon-0.5.3-py3-none-any.whl
 ```
 
 With it installed, core's `taut summon` / `taut dismiss` verbs delegate to
@@ -303,6 +303,24 @@ empty / nothing new / not found. So this is a polling inbox:
 while sleep 5; do taut read -q && notify-send "taut: new messages"; done
 ```
 
+Exit `2` deliberately combines empty and not-found results. Scripts that need
+to distinguish those cases must inspect the stderr diagnostic; the numeric code
+only means that no requested record was produced. `--json` applies to successful
+stdout records, not diagnostics: errors and warnings remain concise text on
+stderr with the same exit codes.
+
+Message text is arbitrary UTF-8 and may be empty. These are both valid posts:
+
+```bash
+taut say general ""
+printf 'first line\nsecond line\n' | taut say general -
+```
+
+One high-water cursor represents each member's position in a thread. If an
+older unread message prevents your cursor from advancing when you post, your
+own new post remains unread behind it and can appear in the next `taut read`.
+Taut does not add per-message read flags to hide only your own traffic.
+
 `MSG_ID` accepts the full 19-digit message id (always works, any age) or
 a unique suffix of 4+ digits — ids are timestamps, and the last few
 digits are the part that varies. Suffix search covers the thread's most
@@ -382,6 +400,14 @@ the design:
   make, not one taut manages. With Postgres, the boundary is who can reach and
   write the configured database/schema. Wider, same shape: storage access *is*
   membership.
+- **Summon widens what storage write access can cause.** A writer can inject
+  user-role turns and storage-backed control requests into a summoned harness.
+  With local SQLite that writer already has access to the same machine. With a
+  shared Postgres workspace, a remote database writer can influence tools on
+  the harness host. Grant write access only to principals authorized for that
+  effect, or run the harness with separately constrained tools. Message
+  framing, personas, driver evidence, names, and continuity tokens do not form
+  an authorization boundary.
 
 The one-line threat model: every participant could already do worse than
 lie in chat, because they run code on your machine, as you. Taut is for
@@ -402,7 +428,10 @@ broker itself.
 Notification inboxes are different. They are pointers for pings and new direct
 messages, so `taut inbox` and `taut watch` claim them. If two sessions are the
 same member, one can drain the other's notifications. That is the intended
-single-directory model.
+single-directory model. A crash after `inbox` or notification watch has claimed
+a pointer but before it displays can lose that pointer. The source chat remains
+durable, and later notification-worthy activity may create a new pointer;
+ordinary chat activity does not necessarily create one.
 
 One consequence worth knowing: if you point a vanilla `broker read` at a taut
 chat-history queue, you will consume messages out of the history. Taut
@@ -455,7 +484,7 @@ security model.
 <summary><strong>Why argparse and a small dependency set?</strong></summary>
 
 Taut follows SimpleBroker's discipline: the install should be boring.
-Runtime dependencies are exactly `simplebroker>=5.1.0` and `psutil`. The CLI is
+Runtime dependencies are exactly `simplebroker>=5.3.1` and `psutil`. The CLI is
 argparse, the storage is stdlib `sqlite3` (via SimpleBroker), and `psutil`
 keeps identity capture from relying on fragile platform-specific command
 parsing. The planned TUI ships as an optional extra so the core dependency

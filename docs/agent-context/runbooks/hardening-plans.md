@@ -15,6 +15,16 @@ Role split:
 - this runbook defines when the draft is still too loose, what to rewrite, and
   the generic examples that make the rules easier to apply
 
+## Operating Metadata
+
+- **Owner:** the plan author, with the independent reviewer checking the result.
+- **Boundary:** risky or boundary-crossing plans after the base plan structure
+  exists; it does not replace the governing spec or implementation plan.
+- **Verification:** the hardening checklist has concrete answers in the plan,
+  and a reviewer can locate rollback, anti-mocking, ownership, and stop gates.
+- **Required action:** revise underspecified sections before implementation;
+  do not defer missing safety decisions to the implementer.
+
 ## When This Runbook Is Mandatory
 
 Treat hardening as mandatory when any of these are true:

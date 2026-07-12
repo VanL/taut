@@ -3,6 +3,16 @@
 This runbook covers when repeated workflow knowledge should become a skill and
 how skills should evolve over time.
 
+## Operating Metadata
+
+- **Owner:** the engineer who observes a repeated, stable workflow.
+- **Boundary:** optional promotion of recurring task guidance; one-off or
+  unstable work remains in plans, lessons, or runbooks.
+- **Verification:** a proposed skill has a real repeated caller, one entry
+  point, and concrete commands or failure modes that can be exercised.
+- **Required action:** use `skills/README.md` and `skills/_template/SKILL.md`
+  when promotion is justified; otherwise create no skill.
+
 ## 1. What a Skill Is
 
 A skill is a reusable, task-scoped instruction set for recurring work. Skills
@@ -46,6 +56,9 @@ Example:
 - a debugging checklist for one subsystem belongs in a skill
 
 ## 3. Promotion Rule
+
+Promotion is optional. An empty `skills/` directory apart from its README and
+template is valid until a real reusable workflow graduates.
 
 Consider creating or updating a skill when:
 

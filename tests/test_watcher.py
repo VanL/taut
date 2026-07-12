@@ -13,7 +13,7 @@ from typing import Any, TypeVar, cast
 
 import pytest
 from simplebroker import Queue
-from simplebroker.ext import OperationalError, PollingStrategy
+from simplebroker.ext import OperationalError, PollingStrategy, StopWatching
 
 from taut._exceptions import EmptyResultError, MembershipError
 from taut.client import Message, Notification, TautClient
@@ -22,6 +22,7 @@ from taut.watcher import (
     BaseReactor,
     MultiQueueWatcher,
     QueueMessageContext,
+    QueueMode,
     QueueRuntimeConfig,
     TautWatcher,
 )
@@ -993,7 +994,7 @@ def test_base_reactor_live_queue_is_owner_only_after_drive(tmp_path: Path) -> No
 def test_multi_queue_watcher_does_not_layer_retry_over_queue_operation(
     tmp_path: Path,
 ) -> None:
-    watcher = MultiQueueWatcher(
+    watcher = BaseReactor(
         queue_configs={"retry.probe": {"handler": lambda _body, _ts: None}},
         db=tmp_path / ".taut.db",
     )
@@ -1068,7 +1069,7 @@ def test_start_strategy_uses_multi_queue_activity_waiter(
         fake_create,
     )
 
-    watcher = MultiQueueWatcher(
+    watcher = BaseReactor(
         queue_configs={
             "strategy.one": {"handler": handler},
             "strategy.two": {"handler": handler},
@@ -1124,6 +1125,72 @@ def test_base_reactor_centralizes_process_wait_stop_loop(
         ("turn", threading.current_thread()),
     ]
     assert watcher.is_running() is False
+
+
+def test_multi_queue_watcher_drains_higher_priority_queue_first(
+    tmp_path: Path,
+) -> None:
+    seen: list[str] = []
+    db = tmp_path / ".taut.db"
+    watcher = BaseReactor(
+        {
+            "priority.low": {
+                "handler": lambda body, *_args: seen.append(body),
+                "priority": 20,
+            },
+            "priority.high": {
+                "handler": lambda body, *_args: seen.append(body),
+                "priority": 0,
+            },
+        },
+        db=db,
+    )
+    low = Queue("priority.low", db_path=str(db))
+    high = Queue("priority.high", db_path=str(db))
+    try:
+        low.write("low")
+        high.write("high")
+
+        watcher.process_once()
+
+        assert seen == ["high", "low"]
+    finally:
+        watcher.stop(join=False)
+        low.close()
+        high.close()
+
+
+def test_multi_queue_watcher_reserve_moves_message_before_dispatch(
+    tmp_path: Path,
+) -> None:
+    seen: list[tuple[str, str | None]] = []
+    db = tmp_path / ".taut.db"
+    watcher = BaseReactor(
+        {
+            "reserve.source": {
+                "handler": lambda body, _ts, context: seen.append(
+                    (body, context.reserved_queue_name)
+                ),
+                "mode": QueueMode.RESERVE,
+                "reserved_queue": "reserve.target",
+            }
+        },
+        db=db,
+    )
+    source = Queue("reserve.source", db_path=str(db))
+    target = Queue("reserve.target", db_path=str(db))
+    try:
+        source.write("reserved")
+
+        watcher.process_once()
+
+        assert seen == [("reserved", "reserve.target")]
+        assert source.peek_many() == []
+        assert target.peek_many() == ["reserved"]
+    finally:
+        watcher.stop(join=False)
+        source.close()
+        target.close()
 
 
 def _white_box_watcher_cls(
@@ -1191,6 +1258,72 @@ def test_client_watch_can_use_nonpersistent_queue_handles(tmp_path: Path) -> Non
         assert watcher._persistent is False
     finally:
         watcher.stop()
+
+
+def test_client_watch_closes_owned_runtime_when_construction_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[TAUT-8.4] A rejected explicit filter must not leak its runtime."""
+
+    from taut.client import _watching
+
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    client = TautClient(db_path=tmp_path / ".taut.db", as_name="van")
+    client.join("foo")
+    created: list[Any] = []
+    close_calls: list[Any] = []
+    real_factory = _watching._watch_runtime_for_client
+
+    def capture_runtime(
+        source: TautClient,
+        *,
+        persistent: bool = True,
+    ) -> Any:
+        runtime = real_factory(source, persistent=persistent)
+        real_close = runtime.close
+
+        def track_real_close() -> None:
+            close_calls.append(runtime)
+            real_close()
+
+        cast(Any, runtime).close = track_real_close
+        created.append(runtime)
+        return runtime
+
+    monkeypatch.setattr(_watching, "_watch_runtime_for_client", capture_runtime)
+
+    with pytest.raises(MembershipError, match="ghost"):
+        client.watch(lambda _item: None, threads=["foo", "ghost"])
+
+    assert len(created) == 1
+    runtime = created[0]
+    assert close_calls == [runtime]
+    assert runtime._closed is True
+
+
+def test_multi_queue_watcher_explicit_db_skips_broken_cwd_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[TAUT-8.4] An explicit target must not resolve an irrelevant cwd."""
+
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    (cwd / ".taut.toml").write_text("not = [valid", encoding="utf-8")
+    explicit_db = tmp_path / "explicit.db"
+    monkeypatch.chdir(cwd)
+
+    watcher = MultiQueueWatcher(
+        {"explicit.input": {"handler": lambda *_args: None}},
+        db=explicit_db,
+        persistent=False,
+    )
+    try:
+        assert str(watcher._db_path) == str(explicit_db)
+        assert not (cwd / ".taut.db").exists()
+    finally:
+        watcher.stop(join=False)
 
 
 def test_taut_watcher_start_drives_the_same_persistent_instance(tmp_path: Path) -> None:
@@ -1768,6 +1901,79 @@ def test_watcher_poison_message_advances_after_three_failures(
             client.list_threads()
         assert thread.is_alive()
         assert f"advancing past poison message {message.ts} in foo" in caplog.text
+    finally:
+        watcher.stop()
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+
+
+def test_stop_watching_from_refreshed_chat_queue_does_not_poison_advance(
+    tmp_path: Path,
+) -> None:
+    """[TAUT-8.4] Terminal sink failure stops even on a late-added queue."""
+
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    van = TautClient(db_path=tmp_path / ".taut.db", as_name="van")
+    bob = TautClient(db_path=tmp_path / ".taut.db", as_name="bob")
+    van.join("home")
+    bob.join("home")
+    _drain_unread(van, "home")
+    attempted: list[Message] = []
+
+    def closed_sink(item: Message | Notification) -> None:
+        if not isinstance(item, Message) or item.thread != "late":
+            return
+        if item.text == "terminal sink probe":
+            attempted.append(item)
+            raise StopWatching
+
+    watcher = _white_box_watcher(
+        van,
+        closed_sink,
+        membership_refresh_interval=0.05,
+    )
+    thread = watcher.start()
+    try:
+        _wait_until(thread.is_alive)
+        van.join("late")
+        bob.join("late")
+        _wait_until(lambda: "late" in watcher.list_queues())
+        bob.say("late", "terminal sink probe")
+        _wait_until(lambda: not thread.is_alive())
+
+        assert len(attempted) == 1
+        unread = van.read_unread("late")
+        assert [message.ts for message in unread] == [attempted[0].ts]
+    finally:
+        watcher.stop()
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+
+
+def test_stop_watching_from_notification_queue_stops_reactor(tmp_path: Path) -> None:
+    """[TAUT-8.4] Notification handlers share terminal-stop classification."""
+
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    van = TautClient(db_path=tmp_path / ".taut.db", as_name="van")
+    bob = TautClient(db_path=tmp_path / ".taut.db", as_name="bob")
+    van.join("foo")
+    bob.join("foo")
+    _drain_unread(van, "foo")
+    attempted: list[Notification] = []
+
+    def closed_sink(item: Message | Notification) -> None:
+        if isinstance(item, Notification):
+            attempted.append(item)
+            raise StopWatching
+
+    watcher = _white_box_watcher(van, closed_sink)
+    thread = watcher.start()
+    try:
+        _wait_until(thread.is_alive)
+        bob.say("foo", "@van ping")
+        _wait_until(lambda: not thread.is_alive())
+
+        assert len(attempted) == 1
     finally:
         watcher.stop()
         thread.join(timeout=2)

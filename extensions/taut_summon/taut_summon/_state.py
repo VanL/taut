@@ -9,7 +9,7 @@ The ledger is split by lifetime per [SUM-8]:
 
 - ``taut_summon_claims`` — transient. One row per in-flight bootstrap,
   keyed ``(name, provider)`` (the concurrent-summon serialization point,
-  [SUM-4] step 0). Rows are deleted at bootstrap step 3; a row whose
+  [SUM-4]). Rows are deleted after session publication; a row whose
   driver evidence is dead is reclaimable.
 - ``taut_summon_sessions`` — durable. One row per summoned member, keyed
   ``member_id`` (created only after the member exists). Names never key
@@ -276,7 +276,7 @@ def capture_driver_evidence(pid: int | None = None) -> tuple[int, str]:
     return target, proc.start_time
 
 
-# --- transient claims ([SUM-4] step 0) ---------------------------------------
+# --- transient bootstrap claims ([SUM-4]) ------------------------------------
 
 
 def claim_name(
@@ -663,7 +663,7 @@ def release_driver(
         stored_evidence = (stored["driver_pid"], stored["driver_start_time"])
         caller_evidence = (driver_pid, driver_start_time)
         if stored_evidence != caller_evidence:
-            return _release_evidence_confirmed(stored_evidence, caller_evidence)
+            return release_evidence_confirmed(stored_evidence, caller_evidence)
         # Evidence predicates on the write itself: SQLite's BEGIN IMMEDIATE
         # already serializes read-and-write, but simplebroker-pg maps
         # begin_immediate to plain BEGIN (read committed), where the read
@@ -675,7 +675,7 @@ def release_driver(
         confirm = _session_row(_one(session, _SESSION_SELECT_BY_MEMBER, (member_id,)))
         if confirm is None:
             return True
-        return _release_evidence_confirmed(
+        return release_evidence_confirmed(
             (confirm["driver_pid"], confirm["driver_start_time"]),
             caller_evidence,
         )
@@ -686,11 +686,15 @@ def release_driver(
 _Liveness = Literal["live", "dead", "indeterminate"]
 
 
-def _release_evidence_confirmed(
+def release_evidence_confirmed(
     stored: tuple[int | None, str | None],
-    caller: tuple[int, str],
+    caller: tuple[int | None, str | None],
 ) -> bool:
-    """Return whether complete row evidence proves the caller no longer owns it."""
+    """Return whether complete row evidence proves the caller no longer owns it.
+
+    This predicate owns both transactional release confirmation and the CLI's
+    later polling projection ([SUM-9]).
+    """
 
     pid, start = stored
     if pid is None and start is None:

@@ -27,10 +27,14 @@ from typing import Final, Literal, NoReturn
 PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parents[1]
 PYPROJECT_PATH: Final[Path] = PROJECT_ROOT / "pyproject.toml"
 CONSTANTS_PATH: Final[Path] = PROJECT_ROOT / "taut" / "_constants.py"
+CHANGELOG_PATH: Final[Path] = PROJECT_ROOT / "CHANGELOG.md"
+ROOT_README_PATH: Final[Path] = PROJECT_ROOT / "README.md"
 PG_EXTENSION_DIR: Final[Path] = PROJECT_ROOT / "extensions" / "taut_pg"
 PG_PYPROJECT_PATH: Final[Path] = PG_EXTENSION_DIR / "pyproject.toml"
+PG_README_PATH: Final[Path] = PG_EXTENSION_DIR / "README.md"
 SUMMON_EXTENSION_DIR: Final[Path] = PROJECT_ROOT / "extensions" / "taut_summon"
 SUMMON_PYPROJECT_PATH: Final[Path] = SUMMON_EXTENSION_DIR / "pyproject.toml"
+SUMMON_README_PATH: Final[Path] = SUMMON_EXTENSION_DIR / "README.md"
 SUMMON_UV_LOCK_PATH: Final[Path] = SUMMON_EXTENSION_DIR / "uv.lock"
 REACTOR_RELEASE_ARTIFACT_VERIFIER: Final[Path] = (
     PROJECT_ROOT / "bin" / "verify-reactor-release-artifacts.py"
@@ -65,6 +69,13 @@ TAUT_DEPENDENCY_PATTERN: Final[re.Pattern[str]] = re.compile(
 )
 TAUT_SUMMON_DEPENDENCY_PATTERN: Final[re.Pattern[str]] = re.compile(
     r'(?m)^(\s*"taut-summon>=)([^"]+)(",\s*)$'
+)
+CORE_README_TAG_PATTERN: Final[re.Pattern[str]] = re.compile(r"@v\d+\.\d+\.\d+")
+PG_WHEEL_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"taut_pg-\d+\.\d+\.\d+-py3-none-any\.whl"
+)
+SUMMON_WHEEL_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"taut_summon-\d+\.\d+\.\d+-py3-none-any\.whl"
 )
 
 ROOT_TEST_COMMAND: Final[Command] = ("uv", "run", "pytest")
@@ -138,14 +149,20 @@ SUMMON_TOOL_PATHS: Final[Command] = (
     "extensions/taut_summon/tests",
 )
 ROOT_MYPY_PATHS: Final[Command] = ("taut", "tests", "bin/release.py")
+# The trailing explicit ``tests/conftest.py`` re-includes the conftest that
+# ``[tool.mypy] exclude`` drops from directory discovery (see pyproject): the
+# gate still type-checks it, while ad-hoc combined runs avoid the duplicate
+# ``conftest`` module clash under ``no_namespace_packages``.
 PG_MYPY_PATHS: Final[Command] = (
     "taut/_scripts.py",
     "extensions/taut_pg/taut_pg",
     "extensions/taut_pg/tests",
+    "extensions/taut_pg/tests/conftest.py",
 )
 SUMMON_MYPY_PATHS: Final[Command] = (
     "extensions/taut_summon/taut_summon",
     "extensions/taut_summon/tests",
+    "extensions/taut_summon/tests/conftest.py",
 )
 PRECHECK_ENV_OVERRIDES: Final[dict[str, str]] = {"PYTEST_ADDOPTS": "-x --maxfail=1"}
 LOCAL_LLM_DEFAULT_ENDPOINT: Final[str] = "http://127.0.0.1:11434/v1"
@@ -314,6 +331,17 @@ def validate_version(version: str) -> str:
     return normalized
 
 
+def require_changelog_heading(
+    version: str,
+    *,
+    changelog_path: Path = CHANGELOG_PATH,
+) -> None:
+    normalized = validate_version(version)
+    heading = re.compile(rf"(?m)^## {re.escape(normalized)}(?:\s+-\s+[^\n]+)?$")
+    if heading.search(changelog_path.read_text(encoding="utf-8")) is None:
+        fail(f"CHANGELOG.md has no heading for {normalized}")
+
+
 def _read_version(path: Path, pattern: re.Pattern[str], label: str) -> str:
     text = path.read_text(encoding="utf-8")
     match = pattern.search(text)
@@ -363,7 +391,45 @@ def target_version_files(target: ReleaseTarget) -> tuple[Path, ...]:
     paths = [target.pyproject_path]
     if target.constants_path is not None:
         paths.append(target.constants_path)
+    if target == ROOT_TARGET:
+        paths.extend((ROOT_README_PATH, PG_README_PATH, SUMMON_README_PATH))
+    elif target == PG_TARGET:
+        paths.extend((ROOT_README_PATH, PG_README_PATH))
+    elif target == SUMMON_TARGET:
+        paths.extend((ROOT_README_PATH, SUMMON_README_PATH))
     return tuple(paths)
+
+
+def _replace_all(path: Path, pattern: re.Pattern[str], replacement: str) -> None:
+    text = path.read_text(encoding="utf-8")
+    updated, count = pattern.subn(replacement, text)
+    if count == 0:
+        fail(f"Could not update release example in {display_path(path)}")
+    path.write_text(updated, encoding="utf-8")
+
+
+def sync_readme_version_examples(
+    target: ReleaseTarget,
+    version: str,
+    *,
+    root_readme_path: Path = ROOT_README_PATH,
+    pg_readme_path: Path = PG_README_PATH,
+    summon_readme_path: Path = SUMMON_README_PATH,
+) -> None:
+    normalized = validate_version(version)
+    if target == ROOT_TARGET:
+        for path in (root_readme_path, pg_readme_path, summon_readme_path):
+            _replace_all(path, CORE_README_TAG_PATTERN, f"@v{normalized}")
+        return
+    if target == PG_TARGET:
+        replacement = f"taut_pg-{normalized}-py3-none-any.whl"
+        for path in (root_readme_path, pg_readme_path):
+            _replace_all(path, PG_WHEEL_PATTERN, replacement)
+        return
+    if target == SUMMON_TARGET:
+        replacement = f"taut_summon-{normalized}-py3-none-any.whl"
+        for path in (root_readme_path, summon_readme_path):
+            _replace_all(path, SUMMON_WHEEL_PATTERN, replacement)
 
 
 def write_version_files(version: str, target: ReleaseTarget = ROOT_TARGET) -> None:
@@ -381,6 +447,8 @@ def write_version_files(version: str, target: ReleaseTarget = ROOT_TARGET) -> No
             rf'\g<1>"{normalized}"',
             display_path(target.constants_path),
         )
+    if target in {ROOT_TARGET, PG_TARGET, SUMMON_TARGET}:
+        sync_readme_version_examples(target, normalized)
     if target in (PG_TARGET, SUMMON_TARGET) or target.package_name in {
         "taut-pg",
         "taut-summon",
@@ -1188,9 +1256,7 @@ def run_postupdate_steps(target: ReleaseTarget, *, dry_run: bool) -> None:
 
 
 def _release_file_paths(target: ReleaseTarget) -> tuple[Path, ...]:
-    paths = [target.pyproject_path]
-    if target.constants_path is not None:
-        paths.append(target.constants_path)
+    paths = list(target_version_files(target))
     if target == ROOT_TARGET:
         paths.append(SUMMON_PYPROJECT_PATH)
     if target in {ROOT_TARGET, SUMMON_TARGET} and SUMMON_UV_LOCK_PATH.exists():
@@ -1526,10 +1592,19 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
             "version when it has not been published yet. Not valid with all."
         ),
     )
-    parser.add_argument(
+    execution_mode = parser.add_mutually_exclusive_group()
+    execution_mode.add_argument(
         "--dry-run",
         action="store_true",
         help="Print the release plan without changing files, tags, or remotes.",
+    )
+    execution_mode.add_argument(
+        "--checks-only",
+        action="store_true",
+        help=(
+            "Run the real precheck commands and exit before version writes, "
+            "builds, commits, tags, or pushes."
+        ),
     )
     parser.add_argument(
         "--skip-checks",
@@ -1552,6 +1627,8 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         if TARGETS.get(args.target_option) != TARGETS.get(args.target):
             parser.error("positional target and --target disagree")
     args.target = args.target_option or args.target or ROOT_TARGET.key
+    if args.checks_only and args.skip_checks:
+        parser.error("--checks-only cannot be combined with --skip-checks")
     return args
 
 
@@ -1567,6 +1644,15 @@ def _run_batch_release(args: argparse.Namespace) -> int:
             "files first, then run `bin/release.py all`."
         )
 
+    if args.checks_only:
+        release_targets = tuple(CANONICAL_TARGETS.values())
+        for target in release_targets:
+            require_changelog_heading(read_target_version(target))
+        _require_command("uv")
+        run_prechecks_for_targets(release_targets, dry_run=False)
+        print("Checks passed; no release files, artifacts, tags, or remotes changed.")
+        return 0
+
     dirty = is_dirty_worktree()
     if dirty and not args.dry_run:
         fail("Worktree is dirty; commit or stash changes before releasing")
@@ -1579,6 +1665,9 @@ def _run_batch_release(args: argparse.Namespace) -> int:
             print_publish_note()
         print("No unpublished release targets found.")
         return 0
+
+    for candidate in candidates:
+        require_changelog_heading(candidate.release_version)
 
     release_targets = _candidate_targets(candidates)
     initial_head_commit = current_head_commit()
@@ -1671,6 +1760,16 @@ def main(argv: list[str] | None = None) -> int:
         return _run_batch_release(args)
 
     target = TARGETS[args.target]
+    if args.checks_only:
+        target_version = validate_version(
+            args.version if args.version is not None else read_target_version(target)
+        )
+        require_changelog_heading(target_version)
+        _require_command("uv")
+        run_prechecks(target, dry_run=False)
+        print("Checks passed; no release files, artifacts, tags, or remotes changed.")
+        return 0
+
     dirty = is_dirty_worktree()
     if dirty and not args.dry_run:
         fail("Worktree is dirty; commit or stash changes before releasing")
@@ -1682,6 +1781,7 @@ def main(argv: list[str] | None = None) -> int:
         args.version,
         target,
     )
+    require_changelog_heading(target_version)
     version_changed = target_version != current_version
     initial_head_commit = current_head_commit()
     planning_head = (

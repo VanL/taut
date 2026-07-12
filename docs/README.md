@@ -16,15 +16,9 @@ This repository uses a docs-first operating model for agentic development.
 
 ### Starting a Session
 
-Read:
-
-1. `../AGENTS.md`
-2. `agent-context/README.md`
-3. `implementation/03-agent-inventory.md`, if it exists
-4. the relevant spec in `specs/`
-5. the active plan in `plans/`, if one exists
-6. the relevant implementation note in `implementation/`
-7. the relevant skill in `../skills/`, if one exists
+Follow the single canonical sequence in `agent-context/README.md`. For
+newcomer orientation after that sequence, use `implementation/00-implementation-index.md`
+and `implementation/02-repository-map.md`.
 
 ### Planning a Change
 

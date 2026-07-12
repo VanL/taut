@@ -281,10 +281,11 @@ an accident. Two consequences are binding:
   CLI/client work, persistent owned handles for long-lived actors, and
   `close()` at owned lifetime end.
 
-  The `simplebroker>=5.3.0` floor is load-bearing. Version 5.2.0 supplies the
+  The `simplebroker>=5.3.1` floor is load-bearing. Version 5.2.0 supplies the
   reference ownership model, and 5.2.2 first passed Taut's persistent-owner
-  process/control proof, but 5.3.0 is the first supported release with the
-  public live activity-waiter replacement contract. Persistent Queue handles
+  process/control proof, 5.3.0 supplies the public live activity-waiter
+  replacement contract, and 5.3.1 makes `Queue.write()` return the exact
+  committed message id. Persistent Queue handles
   for one resolved target share a process-local broker session; each driving
   thread receives its own thread-local backend core. Releasing an ordinary operation
   ends only its active-operation lease; it does not recycle the owning thread's
@@ -314,19 +315,20 @@ time-window policy may therefore derive one raw inclusive cutoff as
 timestamps directly. It must not import a private decoder or convert stored
 timestamps into a second persisted clock domain.
 
-Write path: `Queue.write()` returns `None`, but taut always needs the id
-of the message it just wrote (cursor advance [TAUT-7.4], sub-thread
-naming [TAUT-4.1], `-t` output). Every taut message write therefore
-preallocates its id and inserts it exactly — SimpleBroker's sanctioned
-pattern for live protocols that need the id up front:
+Write path: every Taut-authored live chat write uses SimpleBroker's ordinary
+atomic `Queue.write()` path and receives that committed row's message id from
+the same call. Taut never allocates a live message id and later supplies it to
+`insert_messages`; exact-id insertion is an import/restore surface, not a live
+write surface. This makes timestamp order and visibility order the same for
+Taut-authored messages on the supported SQLite and Postgres state backends:
 
 ```python
-ts = queue.generate_timestamp()
-queue.insert_messages([(envelope_json, ts)])
+ts = queue.write(envelope_json)
 ```
 
-This is the single write path (invariant: there is no `Queue.write()`
-call anywhere in taut).
+This is the single live write path. Redis `Queue.write()` returns its exact
+inserted id as well, but Redis-backed Taut state remains unsupported under
+[TAUT-12.2], so Taut makes no Redis visibility-order claim.
 
 ## 4. Threads and Channels [TAUT-4]
 
@@ -472,27 +474,31 @@ human display; the count is presentation, not contract (the `--json`
 
 ### [TAUT-7.4] Senders and their own messages
 
-`say` and `reply` advance the sender's cursor to the written timestamp
-iff the sender was caught up at write time (checked immediately before
-writing). A sender with existing unread keeps their cursor (they still
-have catching up to do).
+Sender catch-up is decided after the sender's message commits. Given the cursor
+value observed before the write and the committed message id returned by
+SimpleBroker, Taut advances to the sender's id only when no pending chat message
+exists in the open interval between those values. A message above the sender's
+id remains unread normally. An older unread message prevents the advance, so
+the sender's own post may later appear in `read`; with one high-water cursor
+Taut cannot hide that post without also hiding the older message. This applies
+to every Taut-authored chat record that may catch up a cursor, including
+join/creation notices after sidecar membership creation. This is deliberate.
 
-Joining starts you at **now**: the membership row's `last_seen_ts` is
-initialized to the join (or creation) notice's own timestamp, so a new
-member begins caught up, and history is a deliberate rewind away via
-`log` — joining a busy channel must not scream a thousand unread. One
-carve-out: implicit sub-thread join *by reading it* ([TAUT-4.3])
+Joining starts you at **now**: sidecar membership is initialized with the
+provisional timestamp taken immediately before the join (or creation) notice.
+After that notice commits, the bounded interval probe catches the cursor up to
+the notice only when no intervening chat row exists. Thus a new member normally
+begins caught up, while a concurrent row remains unread; older history is a
+deliberate rewind away via `log`. One carve-out: implicit sub-thread join *by
+reading it* ([TAUT-4.3])
 initializes the cursor to 0, because reading the thread is exactly what
 was asked; implicit join by replying starts at now like any join.
 `leave` notices have no cursor effect.
 
-The advance is applied **after the message insert succeeds**, never
-before — cursor movement is not part of the pre-write sidecar state in
-the [TAUT-10] ordering, because advancing first and crashing before the
-insert would silently skip any message that landed between the
-caught-up check and the crash. The check-then-write race (a message
-landing in that window gets marked seen) is accepted as cosmetic: the
-window is milliseconds and the cost is one message not flagged unread.
+The bounded probe and advance run **after the message insert succeeds**, never
+before. Cursor movement is not part of the pre-write sidecar state in the
+[TAUT-10] ordering. A crash after the message commit but before cursor advance
+can only re-show durable messages; it cannot skip one.
 
 ### [TAUT-7.5] `--since`
 
@@ -545,6 +551,12 @@ errors and exit 1, never 2. Exit 2 is reserved for the empty/not-found
 class so that polling idioms like `taut read -q && handle_new` cannot
 mistake a typo for "nothing new". `--help` and `--version` exit 0.
 
+Help text is part of the agent-usable surface: every option and positional names
+its purpose, message-id suffix and timestamp forms are discoverable from the
+owning subcommand, and root help names exit-code classes. With no subcommand,
+help goes to stderr and exits 1. `--token` is continuity selection, never
+authentication.
+
 ### [TAUT-8.2] Output contract
 
 - Human output goes to stdout, hints and warnings to stderr. No prompts
@@ -588,6 +600,9 @@ mistake a typo for "nothing new". `--help` and `--version` exit 0.
 
   These field names are the current contract. Because the project is still in
   development, the specs describe the intended shape directly.
+- `--json` defines successful stdout records. Errors and warnings remain concise
+  text diagnostics on stderr and are classified by exit code; Taut does not
+  define a JSON error envelope.
 - Human-readable rendering (colors, alignment, time formatting) is
   explicitly not a stable contract.
 
@@ -608,12 +623,23 @@ create, join, or leave a thread; write a notice; or alter membership/cursor
 state. This is the public embedding seam for persona-only updates such as
 Summon re-summon.
 
-Core runtime dependencies: exactly `simplebroker>=5.3.0` and `psutil`. The
+`joined_thread_names()` returns the acting member's current chat-thread names
+through read-only identity resolution. It does not update activity, record an
+identity claim, inspect unread state, or create membership. Long-lived
+extensions use it to reconcile their own thread-scoped resources.
+
+Core runtime dependencies: exactly `simplebroker>=5.3.1` and `psutil`. The
 optional `taut-pg` extension adds `simplebroker-pg` and its driver dependencies
 in the same environment as Taut. Python ≥ 3.11. The CLI uses argparse, not a CLI
 framework.
 
 ### [TAUT-8.4] Watcher
+
+A message-specific handler failure leaves the cursor in place and uses the
+three-consecutive-failure poison rule. A terminal delivery failure, including a
+closed CLI output pipe, is not a poison message: it stops the watcher after the
+first failed delivery, leaves the chat cursor unchanged, and emits no traceback.
+CLI watch flushes each rendered record before successful handler return.
 
 `TautWatcher` subclasses a taut-vendored copy of Weft's
 `MultiQueueWatcher` (copied, attributed; taut must not depend on weft).
@@ -751,6 +777,15 @@ plainly rather than imply otherwise:
   membership.
 - Threat model in one line: taut assumes every participant could already
   do worse than lie in chat, because they run inside your trust domain.
+
+When Summon is used, authority is wider than permission to converse: every
+principal that can write the configured Taut storage can supply user-role input
+to the summoned harness and can issue storage-backed control requests. In a
+shared Postgres deployment, a remote database writer can therefore influence
+tools available on the machine hosting the harness. Operators must grant
+database write access only to principals authorized for that effect, or run the
+harness with separately constrained tools. Message framing, personas, driver
+evidence, names, and continuity tokens do not create an authorization boundary.
 
 Anything stronger (signing, tamper evidence) is future work and must not be
 implied by docs or output.
@@ -891,6 +926,12 @@ Implementation boundaries:
   extension releases use `taut_pg/vX.Y.Z`.
 
 Binding obligations:
+
+- Concurrent clients may initialize an empty Postgres Taut sidecar. The first
+  statement in each initialization transaction acquires the fixed Taut schema
+  advisory lock before any DDL or version read/write. Every caller either sees
+  or creates one complete supported schema; no caller observes a partial schema
+  or fails only because another supported initializer ran concurrently.
 
 - no SQLite-specific assumptions outside target resolution and the
   documented data-version wake ([TAUT-8.4] interval backstop is the
@@ -1081,6 +1122,9 @@ it verifies after both fresh builds and before either publication job can run.
 
 ## Related Plans
 
+- `docs/plans/2026-07-11-multi-factor-review-remediation-plan.md` — reviewed
+  SimpleBroker write-result, cursor, watcher, trust, Postgres, CLI, and
+  documentation remediation program for v0.5.3.
 - `docs/plans/2026-07-11-v0.5.2-coordinated-release-plan.md` — coordinated
   0.5.2 version sync, batch release execution, GitHub Actions monitoring, and
   artifact evidence for core, PG, and Summon.

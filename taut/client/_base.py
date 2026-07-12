@@ -208,21 +208,8 @@ class _ClientBase(ABC):
         force_new: bool = False,
         persona: str | None = None,
         allow_guest: bool = False,
+        _touch_activity: bool = True,
     ) -> _ResolvedMember: ...
-
-    @abstractmethod
-    def _insert_message(
-        self,
-        *,
-        queue: Queue,
-        thread: str,
-        from_id: str,
-        from_name: str,
-        kind: str,
-        text: str,
-        ts: int,
-        notify_mentions: bool,
-    ) -> Message: ...
 
     @abstractmethod
     def _write_message(
@@ -236,6 +223,17 @@ class _ClientBase(ABC):
         text: str,
         notify_mentions: bool,
     ) -> Message: ...
+
+    @abstractmethod
+    def _advance_sender_if_no_intervening(
+        self,
+        *,
+        queue: Queue,
+        thread: str,
+        member_id: str,
+        prior_cursor: int,
+        own_message_ts: int,
+    ) -> None: ...
 
     @abstractmethod
     def _write_notification(self, *, to_id: str, payload: dict[str, Any]) -> None: ...

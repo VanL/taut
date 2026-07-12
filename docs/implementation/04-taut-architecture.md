@@ -106,10 +106,43 @@ including tests, go through `taut/state/`. That boundary matters because SQL
 sidecar tables are the current state mapping, while [TAUT-12.2] reserves a
 future non-SQL mapping behind the same state-access boundary.
 
-Message writes use one path: `Queue.generate_timestamp()` followed by
-`Queue.insert_messages([(body, ts)])`. Taut never calls `Queue.write()` because
-the caller needs the message id before rendering, cursor advancement, and
-sub-thread naming.
+SQLite sidecar writer transactions are already serialized by its
+`BEGIN IMMEDIATE` discipline. PostgreSQL needs two narrower logical locks that
+the relational constraints cannot express: a fixed transaction-scoped
+`taut:schema` advisory lock is the first statement of schema initialization,
+and `taut:route:<normalized-key>` is acquired before member-name or alias
+probes. The per-table unique constraints remain the final integrity backstop;
+the advisory lock supplies the missing cross-table name/alias namespace.
+`SqlSidecarTautState` passes its resolved dialect into only those operations,
+while portable and SQLite dialects remain no-ops.
+
+Taut-owned JSON is decoded according to the column contract, not with a
+generic fallback. Nullable member/thread metadata maps SQL `NULL` to an empty
+object. Malformed JSON, a wrong top-level type, required claim evidence that
+is absent, or a malformed channel-rename affected list raises a contextual
+error naming its table and column. In particular, corrupt rename state is
+never converted to an empty affected list or marked complete.
+
+Membership removal is one `DELETE ... RETURNING` transaction, so concurrent
+callers observe exactly one successful removal. `RETURNING` is not a newly
+imposed floor: SimpleBroker already requires SQLite >= 3.35.0 (the release that
+introduced `RETURNING`) and Postgres supports it, so this adds no dependency
+beyond the existing state-backend baseline. `read_unread` decodes a whole
+thread page before advancing that thread's cursor once to the page's highest
+timestamp; a decoder failure leaves the page cursor unchanged.
+
+Every live chat write uses SimpleBroker's atomic `Queue.write(body)` and takes
+the committed message id from that same call ([TAUT-3.4]). Allocating an id with
+`Queue.generate_timestamp()` and inserting it later with
+`Queue.insert_messages([(body, ts)])` is reserved for import/restore and
+deliberate corruption fixtures; it is never a live-write path, because a
+timestamp allocated before a set of sidecar transactions can commit below a
+cursor that has already advanced past it, permanently hiding the message. The
+committed id is still available before rendering, cursor advancement, and
+sub-thread naming — it is simply the return value of the write rather than a
+pre-generated timestamp. Sidecar-first operations (`join`, first reply, first
+DM) may keep a provisional state timestamp for registry and membership fields,
+but never reuse it as a broker message id.
 
 List metadata asks SimpleBroker for the newest pending timestamp with
 `Queue.latest_pending_timestamp()`. That keeps `taut list` from walking full
@@ -190,14 +223,19 @@ runner throughput inside an arbitrary 100 ms window into part of [TAUT-8.5].
 the peek behavior at the taut boundary for chat queues: fetch uses
 `peek_many(..., after_timestamp=cursor)`, pending checks use
 `has_pending(after_timestamp=cursor)`, and cursor advancement happens inside the
-taut handler wrapper after the user handler returns. Notification queues are a
-separate consumable inbox path and must not be forced through chat-history cursor
-semantics. The vendored multi-queue watcher installs its fan-in activity waiter
-through SimpleBroker's watcher lifecycle hook rather than cloning the base retry
-loop. Membership refresh is wired both to SimpleBroker's data-version callback
-and to a timer that deliberately counts as pending work, so an idle watcher still
-reaches the refresh code on backends whose native waiters only wake for queue
-writes. The copied watcher primitive is not edited for Taut cursor semantics;
+taut handler wrapper after the user handler returns. For `taut watch`, that
+return means a complete record has also been flushed to stdout. A closed output
+pipe becomes `StopWatching`: the default error policy stops notification,
+initial-chat, and refresh-added queues immediately, while the chat wrapper keeps
+the cursor in place and does not count the sink as poison content. Ordinary
+handler exceptions retain the three-strike poison rule. Notification queues are
+a separate consumable inbox path and must not be forced through chat-history
+cursor semantics. The vendored multi-queue watcher installs its fan-in activity
+waiter through SimpleBroker's watcher lifecycle hook rather than cloning the
+base retry loop. Membership refresh is wired both to SimpleBroker's data-version
+callback and to a timer that deliberately counts as pending work, so an idle
+watcher still reaches the refresh code on backends whose native waiters only wake
+for queue writes. The copied watcher primitive is not edited for Taut cursor semantics;
 those adaptations live in `TautWatcher`. Its data-version callback is a wake
 hint and membership-refresh trigger, not a `last_ts` cache refresh, because
 delivery is governed by taut cursors. `TautWatcher`
@@ -217,9 +255,30 @@ handle lifetime and taut-specific state.
 constructs `TautWatcher`. The watcher owns live-follow mechanics and local
 in-memory cursors; the runtime adapter owns the translation from `TautState`
 membership rows to watched-thread values, message/notification decoding, and
-cursor persistence. Direct `TautWatcher(client, ...)` construction is preserved
-only as a deprecated constructor compatibility path and is converted immediately
-to the same runtime.
+cursor persistence. If watcher validation or construction fails after that
+runtime is acquired, `TautClient.watch()` closes it before preserving the
+construction error. The copied `MultiQueueWatcher` resolves its cwd fallback
+only for `db=None`; the normal client path passes an already resolved target, so
+an unrelated cwd config cannot override or break explicit construction.
+Direct `TautWatcher(client, ...)` construction is preserved only as a deprecated
+constructor compatibility path and is converted immediately to the same runtime.
+
+The core CLI builds one argparse tree per invocation and uses that same tree for
+parsing and no-subcommand help. Every parser, command choice, positional, and
+option carries local help, while root help owns the cross-command exit classes,
+token trust boundary, and JSON diagnostic rule. Explicit `main([])` is distinct
+from `main(None)`: only `None` reads process argv. Parser inventory tests walk
+the nested argparse tree so a newly registered action cannot silently ship
+without help. Runtime reply-id failures retain their normal exit class and add
+the owning command form plus the full-id/4-digit-suffix rule to stderr.
+
+Human notification actions are derived at render time from current thread and
+membership state. Channel and subthread mentions use the membership-independent
+`log` path; DM mentions use bare `read` because internal `dm.*` names are not
+public log operands. Only a joined top-level channel gets a reply action, using
+the shortest unique suffix in the same 1,000-message window as `reply` and the
+full id when no shorter suffix is safe. JSON notification fields remain the
+durable machine contract.
 
 ## Boundaries and Invariants
 
@@ -285,15 +344,15 @@ requirement or auditing implementation coverage.
 | Spec area | Primary code owners | Contract tests |
 |---|---|---|
 | [TAUT-3.2], project resolution and config | `taut/_constants.py::load_config`, `taut/client/_base.py::_ClientBase._resolve_target`, `taut/client/__init__.py::TautClient.init` | `tests/test_project_config.py`, `tests/test_cli.py::test_init_uses_project_config_postgres_backend` |
-| [TAUT-3.3], [TAUT-3.4], sidecar schema and version gate | `taut/state/_sql.py::SqlSidecarTautState.ensure_schema`, `taut/state/__init__.py::TautState` | `tests/test_state_contract.py`, `tests/test_shared_contract.py` |
+| [TAUT-3.3], [TAUT-3.4], sidecar schema and version gate | `taut/state/_sql.py::SqlSidecarTautState.ensure_schema`, `taut/state/__init__.py::TautState` | `tests/test_state_contract.py`, `tests/test_shared_contract.py`, `extensions/taut_pg/tests/test_pg_sidecar.py::test_postgres_concurrent_empty_schema_initializers_converge` |
 | [TAUT-4], channels, membership, replies, reads, logs, and listing | `taut/client/_threads.py::ThreadsMixin.join`, `leave`, `list_threads`; `taut/client/_messaging.py::MessagingMixin.say`, `reply`, `read_unread`, `log`; `taut/client/_identity.py::IdentityMixin.who` | `tests/test_client.py`, `tests/test_cli.py`, `tests/test_shared_contract.py` |
 | [TAUT-5], [IAN-3], identity claims, recognition, rejoin, and name changes | `taut/identity.py`, `taut/client/_identity.py::IdentityMixin._resolve_member`, `_create_member`, `rejoin`, `set_name` | `tests/test_identity.py`, `tests/test_client.py`, `tests/test_cli.py::test_rejoin_*` |
-| [TAUT-6], message envelopes and sender snapshots | `taut/envelope.py`, `taut/client/_codec.py::message_from_body`, `message_from_decoded`, `taut/client/_messaging.py::MessagingMixin._insert_message` | `tests/test_envelope.py`, `tests/test_client.py::test_set_name_changes_current_name_without_changing_member_id` |
+| [TAUT-6], message envelopes and sender snapshots | `taut/envelope.py`, `taut/client/_codec.py::message_from_body`, `message_from_decoded`, `taut/client/_messaging.py::MessagingMixin._write_message` | `tests/test_envelope.py`, `tests/test_client.py::test_set_name_changes_current_name_without_changing_member_id` |
 | [TAUT-7], read cursors and chat-history peek discipline | `taut/client/_messaging.py::MessagingMixin.read_unread`, `_implicit_subthread_membership`, `taut/state/_sql.py` membership and cursor helpers | `tests/test_client.py`, `tests/test_state_contract.py`, `tests/test_shared_contract.py` |
-| [TAUT-8.1], [TAUT-8.2], CLI behavior, rendering, JSON, and exit codes | `taut/cli.py` | `tests/test_cli.py`, `tests/test_public_api.py` |
+| [TAUT-8.1], [TAUT-8.2], CLI behavior, rendering, JSON, help, and exit codes | `taut/cli.py` | `tests/test_cli.py` parser-inventory, help-phrase, explicit-argv, subprocess, rendering, and exit-class tests; `tests/test_public_api.py` |
 | [TAUT-8.3], Python API objects and verb semantics | `taut/client/__init__.py::TautClient`, `taut/client/_models.py`, and the client mixins | `tests/test_public_api.py`, `tests/test_client.py` |
-| [TAUT-8.4], [TAUT-8.5], watcher behavior and shared reactor lifecycle | `taut/watcher.py::BaseReactor`, `taut/watcher.py::TautWatcher`, `taut/_watch_runtime.py`, `taut/client/_watching.py`, `taut/client/__init__.py::TautClient.watch` | `tests/test_watcher.py` ownership, stop, wake, cursor replay, ordering, and same-instance tests; `tests/test_architecture_boundaries.py::test_first_party_reactors_inherit_guarded_lifecycle_templates`; `tests/test_shared_contract.py::test_project_watcher_receives_cli_write`; `extensions/taut_pg/tests/test_reactor.py::test_taut_watcher_native_waiter_rebinds_on_membership_topology_change` |
-| [IAN-4], alias/name route namespace | `taut/state/_sql.py` member and alias helpers, `taut/_constants.py::route_key`, `validate_member_name` | `tests/test_state_contract.py`, `tests/test_client.py::test_set_name_changes_current_name_without_changing_member_id` |
+| [TAUT-8.4], [TAUT-8.5], watcher behavior and shared reactor lifecycle | `taut/watcher.py::BaseReactor`, `taut/watcher.py::TautWatcher`, `taut/_watch_runtime.py`, `taut/client/_watching.py`, `taut/client/__init__.py::TautClient.watch`, `taut/cli.py::_cmd_watch` | `tests/test_watcher.py` ownership, stop, wake, cursor replay, construction cleanup, explicit-target resolution, terminal-stop, poison, ordering, and same-instance tests; `tests/test_cli.py::test_cli_watch_json_flushes_records_while_live`, `test_cli_watch_closed_pipe_exits_0_without_advancing_cursor`; `tests/test_architecture_boundaries.py::test_first_party_reactors_inherit_guarded_lifecycle_templates`; `tests/test_shared_contract.py::test_project_watcher_receives_cli_write`; `extensions/taut_pg/tests/test_reactor.py::test_taut_watcher_native_waiter_rebinds_on_membership_topology_change` |
+| [IAN-4], alias/name route namespace | `taut/state/_sql.py` member and alias helpers, `taut/_constants.py::route_key`, `validate_member_name` | `tests/test_state_contract.py`, `tests/test_client.py::test_set_name_changes_current_name_without_changing_member_id`, PostgreSQL create/rename-versus-alias races in `extensions/taut_pg/tests/test_pg_sidecar.py` |
 | [IAN-5], [IAN-6], addressing and special queue names | `taut/addressing.py`, `taut/client/_messaging.py::MessagingMixin.say`, `_say_dm`; `taut/client/_threads.py::_thread_from_row` | `tests/test_addressing.py`, `tests/test_client.py::test_direct_message_queue_is_stable_across_name_change`, `test_channel_names_reject_dots_and_reserved_words` |
 | [IAN-7], notification payloads and claiming | `taut/client/_messaging.py::_write_mention_notifications`; `taut/client/_codec.py::notification_from_body`; `taut/client/_notifications.py::_write_notification`, `inbox`; `taut/watcher.py` notification path | `tests/test_client.py::test_mention_notification_is_claimed_without_touching_chat_history`, `tests/test_watcher.py` |
 | [IAN-8], channel rename and partial-rename reporting | `taut/client/_threads.py::ThreadsMixin.rename_channel`, `taut/client/_base.py::_ClientBase._ensure_no_incomplete_channel_rename`; `taut/state/_sql.py` rename helpers | `tests/test_client.py::test_rename_channel_moves_messages_and_subthreads`, `test_incomplete_channel_rename_blocks_chat_history_operations`, `tests/test_state_contract.py`, shared rename tests |
@@ -306,24 +365,13 @@ Read `docs/specs/02-taut-core.md`,
 the behavior before editing. Prefer extending `TautClient` and `taut/state/`
 over adding logic in the CLI or watcher.
 
-Before completion, run:
+The canonical full local verification block lives in `README.md` under
+**Development**. Do not duplicate it here. For state/release changes, add the
+focused state, Docker Postgres, docs-reference, release-helper, and metadata
+tests named by the active plan before running that canonical block.
 
-```bash
-uv run pytest
-uv run pytest -m shared
-uv run ./bin/pytest-pg --fast
-uv run pytest extensions/taut_summon/tests
-uv run ruff check taut tests bin extensions/taut_pg/taut_pg extensions/taut_pg/tests extensions/taut_summon/taut_summon extensions/taut_summon/tests
-uv run ruff format --check taut tests bin extensions/taut_pg/taut_pg extensions/taut_pg/tests extensions/taut_summon/taut_summon extensions/taut_summon/tests
-uv run --extra dev mypy taut tests bin/release.py extensions/taut_pg/taut_pg extensions/taut_pg/tests --config-file pyproject.toml
-uv run --extra dev mypy extensions/taut_summon/taut_summon extensions/taut_summon/tests --config-file pyproject.toml
-uv build
-uv build extensions/taut_pg
-uv build extensions/taut_summon
-```
-
-Then run the grep gates from the active plan for private imports, unexpected
-consuming broker APIs, SQL outside `taut/state/_sql.py`, and `Queue.write()`.
+Also run the active plan's grep gates for private imports, unexpected consuming
+broker APIs, SQL outside `taut/state/_sql.py`, and live-write path drift.
 Expected exceptions: `taut/watcher.py` consumes notification queues during
 watch, `taut/client/_notifications.py::NotificationsMixin.inbox` claims notification pointers, and
 `taut/_scripts.py` may use `SELECT 1` only to validate a Postgres test DSN.

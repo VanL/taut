@@ -8,6 +8,7 @@ Spec references:
 
 from __future__ import annotations
 
+import logging
 import os
 import tomllib
 from collections.abc import Callable
@@ -40,6 +41,8 @@ from ._threads import ThreadsMixin
 
 if TYPE_CHECKING:
     from taut.watcher import TautWatcher
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "InitResult",
@@ -127,13 +130,24 @@ class TautClient(
         self._ensure_no_incomplete_channel_rename()
         resolved = self._resolve_member(create=False)
         member = self._require_member(resolved)
-        return TautWatcher(
-            _watch_runtime_for_client(self, persistent=persistent),
-            member["member_id"],
-            handler,
-            threads=threads,
-            persistent=persistent,
-        )
+        runtime = _watch_runtime_for_client(self, persistent=persistent)
+        try:
+            return TautWatcher(
+                runtime,
+                member["member_id"],
+                handler,
+                threads=threads,
+                persistent=persistent,
+            )
+        except BaseException:
+            try:
+                runtime.close()
+            except Exception:  # pragma: no cover - defensive third-party cleanup
+                logger.debug(
+                    "failed to close watch runtime after construction failure",
+                    exc_info=True,
+                )
+            raise
 
 
 def database_path_from_target(target: BrokerTarget | str) -> str:

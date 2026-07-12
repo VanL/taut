@@ -167,6 +167,12 @@ the current claim hash already belongs to another member, `join --new` must not
 steal it; the fresh member is reachable by its name or continuity token until a
 future explicit rejoin from suitable evidence.
 
+`join(..., new=True)` means create a fresh member and never adopt an existing
+route. When an explicit `as_name` is already a member name or alias, the call
+raises the existing identity-collision error before activity, claim,
+membership, cursor, persona, or notice mutation. The CLI `join --new` has the
+same fail-not-adopt behavior.
+
 ### [IAN-3.4] Rejoin
 
 `taut rejoin NAME_OR_ALIAS` means "associate the current identity claim with the
@@ -212,6 +218,13 @@ member's `display_name` at write time.
 
 All active name keys and alias keys share one uniqueness namespace. If `claude`
 is a member name, another member cannot claim `claude` as an alias.
+
+The name/alias route-key namespace remains unique under concurrent writes on
+every supported backend. Before checking either route table and inserting or
+renaming a route, a server-backed SQL implementation serializes the normalized
+route key for the current transaction. Per-table UNIQUE constraints remain the
+final same-table backstop; they are not sufficient for cross-table uniqueness
+by themselves.
 
 The current public CLI does not define an alias-management command. Alias
 storage and lookup are reserved for schema/API use and future command work.
@@ -352,6 +365,21 @@ current display name when there are exactly two participants. JSON surfaces must
 keep the internal `dm.<dm_id>` queue name in `thread` and expose participant
 member ids through the list/thread metadata contract in [TAUT-8.2].
 
+Human `list` renders a valid direct message as `DM with <current names>` while
+JSON retains the stable internal `thread` and `members` fields. Missing or
+malformed participant metadata renders `DM <internal-thread> (participants
+unavailable)` and emits no invented identity or extra stderr warning. Human
+notification actions are type-specific. A channel or subthread mention renders
+`taut log <source-thread>`; a direct-message mention renders bare `taut read`
+because opaque internal DM queue names are not valid `log` arguments. A mention
+also includes the shortest unique source-message suffix usable with `taut
+reply` only when the source is a top-level channel and the recipient is a
+member (full id on ambiguity). A reply pointer renders `taut log
+<child-thread>`; `dm_started` renders the bare
+`taut read` command, which resolves the recipient's current DM at execution
+time, and no invented reply id. `log` is the membership-independent inspection
+action. All render local `HH:MM`. JSON timestamps and names do not change.
+
 Self-DM is rejected unless a later spec explicitly gives it a use.
 
 ### [IAN-6.5] Notification queues
@@ -394,14 +422,30 @@ Required fields:
 
 | Field | Meaning |
 |---|---|
-| `type` | `mention` or `dm_started` |
+| `type` | `mention`, `dm_started`, or `reply` |
 | `to_id` | recipient member id |
 | `actor_id` | member id that caused the notification |
 | `actor_name` | actor display-name snapshot at event time |
 | `thread` | source chat queue |
 | `message_ts` | source message timestamp |
 
-`matched` is required for `mention` and omitted for `dm_started`.
+`matched` is required for `mention` and omitted for `dm_started` and `reply`.
+
+A `reply` notification points the author of a parent message to activity in
+that message's child thread. Taut emits one for each reply while the parent
+author is not a member of the child thread, except when the author wrote the
+reply or the parent is a foreign message without a stable `from_id`. Once the
+author joins the child, ordinary unread/watch delivery replaces the pointer. If
+the same reply mentions the parent author, Taut emits only the reply
+notification, not a duplicate mention pointer. The payload uses `type:
+"reply"` and the existing actor/thread/message fields; `thread` is the child
+queue.
+
+Membership is observed after the reply commits and immediately before
+notification dispatch. A concurrent join may therefore leave one stale
+disposable pointer; it never loses or duplicates the durable reply, and later
+replies use the new membership state. After a later leave, reply pointers
+resume.
 
 Notification payloads may add fields later. Consumers must ignore unknown
 fields and must not depend on notification text formatting.
@@ -458,8 +502,9 @@ and text remain unchanged.
 Taut must use a public SimpleBroker queue-rename API for broker queue renames.
 Taut must not update SimpleBroker-owned message tables directly.
 
-Taut requires `simplebroker>=5.3.0` and `taut-pg` requires
-`simplebroker-pg>=3.2.0`. This compatible pair supplies the rename-capable
+Taut requires `simplebroker>=5.3.1` and `taut-pg` requires
+`simplebroker-pg>=3.2.1`. This compatible pair supplies the atomic write-id and
+rename-capable
 backend handshake, safe persistent-reactor ownership, and public live
 activity-waiter replacement contract. The
 implementation must use `simplebroker.open_broker(...).rename_queue(...)`
@@ -535,6 +580,9 @@ Required proofs:
 
 ## Related Plans
 
+- `docs/plans/2026-07-11-multi-factor-review-remediation-plan.md` — reviewed
+  identity, route concurrency, reply notification, human rendering, and trust
+  remediation program for v0.5.3.
 - `docs/plans/2026-07-10-taut-dynamic-native-waiter-replacement-plan.md` —
   active SimpleBroker floor and live native-waiter replacement follow-on.
 - `docs/plans/2026-07-10-taut-summon-quality-remediation-plan.md` — approved

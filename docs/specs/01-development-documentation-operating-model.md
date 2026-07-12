@@ -46,12 +46,10 @@ should not collapse multiple roles into one file without a strong reason.
 
 ## 3. Agent Startup Context [DOM-3]
 
-At the start of a session, agents should load:
-
-1. the root agent entry point
-2. the read order defined in `docs/agent-context/README.md`
-3. the current agent availability inventory, if one exists
-4. the relevant spec, active plan, implementation note, and skill for the task
+At the start of a session, agents follow the canonical order in
+`docs/agent-context/README.md`. Root entry points and newcomer guides link to
+that sequence and may add role-specific supplements, but must not maintain a
+second ordered copy.
 
 The shared agent context should stay repository-owned so multiple agent tools
 can consume the same durable guidance.

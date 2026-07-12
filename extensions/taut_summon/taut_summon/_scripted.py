@@ -19,7 +19,6 @@ import os
 import subprocess
 import sys
 from collections.abc import Mapping
-from pathlib import Path
 from typing import Any
 
 from taut_summon._adapter import (
@@ -30,8 +29,6 @@ from taut_summon._adapter import (
     SessionEvent,
 )
 from taut_summon._stream import StreamJsonHandle
-
-_PROVIDER_PATH = Path(__file__).with_name("scripted_provider.py")
 
 
 class ScriptedAdapter:
@@ -57,7 +54,7 @@ class ScriptedAdapter:
             child_env["TAUT_SUMMON_SESSION"] = session_id
         try:
             proc = subprocess.Popen(
-                [sys.executable, str(_PROVIDER_PATH)],
+                [sys.executable, "-m", "taut_summon.scripted_provider"],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 env=child_env,

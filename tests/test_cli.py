@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import queue as queue_module
@@ -205,6 +206,106 @@ def test_cli_help_exits_0(tmp_path: Path) -> None:
     assert "usage:" in out
 
 
+def test_cli_no_subcommand_prints_help_to_stderr_and_exits_1(
+    tmp_path: Path,
+) -> None:
+    rc, out, err = run_cli(cwd=tmp_path)
+
+    assert rc == 1
+    assert out == ""
+    assert "usage:" in err
+    folded = " ".join(err.split())
+    assert "0 success" in folded
+    assert "2 empty" in folded
+
+
+def test_main_explicit_empty_argv_does_not_fall_back_to_process_argv(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["taut", "--version"])
+
+    assert cli.main([]) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "usage:" in captured.err
+
+
+def test_every_cli_parser_action_has_useful_help() -> None:
+    root = cli.build_parser()
+    pending = [root]
+    seen: set[int] = set()
+    missing: list[str] = []
+
+    while pending:
+        parser = pending.pop()
+        if id(parser) in seen:
+            continue
+        seen.add(id(parser))
+        if not parser.description or not parser.description.strip():
+            missing.append(f"{parser.prog}: parser description")
+        for action in parser._actions:
+            if action.dest != "help" and (
+                action.help == argparse.SUPPRESS
+                or not isinstance(action.help, str)
+                or not action.help.strip()
+            ):
+                missing.append(f"{parser.prog}: {action.dest}")
+            if isinstance(action, argparse._SubParsersAction):
+                pending.extend(action.choices.values())
+                for choice in action._choices_actions:
+                    if (
+                        choice.help == argparse.SUPPRESS
+                        or not choice.help
+                        or not choice.help.strip()
+                    ):
+                        missing.append(f"{parser.prog}: subcommand {choice.dest}")
+
+    assert missing == []
+
+
+@pytest.mark.parametrize(
+    ("args", "phrases"),
+    [
+        (
+            ("--help",),
+            (
+                "continuity",
+                "not authentication",
+                "errors remain text on stderr",
+                "0 success",
+                "1 error",
+                "2 empty",
+            ),
+        ),
+        (
+            ("say", "--help"),
+            ("stdin", "TEXT", "-"),
+        ),
+        (
+            ("reply", "--help"),
+            ("19-digit", "suffix", "at least 4", "stdin"),
+        ),
+        (
+            ("log", "--help"),
+            ("ISO 8601", "unix", "19-digit", "most recent"),
+        ),
+    ],
+)
+def test_cli_help_exposes_load_bearing_contracts(
+    tmp_path: Path,
+    args: tuple[str, ...],
+    phrases: tuple[str, ...],
+) -> None:
+    rc, out, err = run_cli(*args, cwd=tmp_path)
+
+    assert rc == 0, err
+    folded = " ".join(out.lower().split())
+    for phrase in phrases:
+        assert phrase.lower() in folded
+
+
 def test_cli_version_exits_0(tmp_path: Path) -> None:
     rc, out, _err = run_cli("--version", cwd=tmp_path)
 
@@ -395,6 +496,43 @@ def test_cli_say_dm_and_list_json_members(tmp_path: Path) -> None:
     }
 
 
+def test_cli_human_list_labels_dm_by_other_current_name(tmp_path: Path) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "bob", "join", "general", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "say", "@bob", "hi", cwd=tmp_path)[0] == 0
+
+    rc, out, err = run_cli("--as", "van", "list", "--all", cwd=tmp_path)
+
+    assert rc == 0, err
+    assert "DM with bob" in out
+    assert "dm.d_" not in out
+
+
+def test_cli_human_list_dm_with_bad_participants_uses_explicit_fallback(
+    tmp_path: Path,
+) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "bob", "join", "general", cwd=tmp_path)[0] == 0
+    out = run_cli("--as", "van", "say", "@bob", "hi", "--json", cwd=tmp_path)[1]
+    thread = json.loads(out)["thread"]
+    meta = Queue(META_QUEUE_NAME, db_path=str(tmp_path / ".taut.db"))
+    try:
+        with meta.sidecar(transaction=True) as session:
+            session.run(
+                "UPDATE taut_threads SET meta = ? WHERE name = ?",
+                ('{"members":["missing"]}', thread),
+            )
+    finally:
+        meta.close()
+
+    rc, out, err = run_cli("--as", "van", "list", "--all", cwd=tmp_path)
+
+    assert rc == 0, err
+    assert f"DM {thread} (participants unavailable)" in out
+
+
 def test_cli_inbox_json_claims_notifications(tmp_path: Path) -> None:
     assert run_cli("init", cwd=tmp_path)[0] == 0
     assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
@@ -407,6 +545,189 @@ def test_cli_inbox_json_claims_notifications(tmp_path: Path) -> None:
     notification = json.loads(out)
     assert notification["type"] == "mention"
     assert notification["actor_name"] == "van"
+
+
+def test_cli_human_mention_uses_shortest_working_reply_suffix(
+    tmp_path: Path,
+) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "bob", "join", "general", cwd=tmp_path)[0] == 0
+    source_ts = _say_ts(tmp_path, "van", "general", "hello @bob")
+    full_id = str(source_ts)
+    ids = [str(value) for value in _log_ts_values(tmp_path, "general")]
+    expected_suffix = next(
+        full_id[-length:]
+        for length in range(4, len(full_id) + 1)
+        if sum(candidate.endswith(full_id[-length:]) for candidate in ids) == 1
+    )
+
+    rc, out, err = run_cli("--as", "bob", "inbox", cwd=tmp_path)
+
+    assert rc == 0, err
+    assert "taut log general" in out
+    assert f"taut reply general {expected_suffix}" in out
+    assert (
+        run_cli(
+            "--as",
+            "bob",
+            "reply",
+            "general",
+            expected_suffix,
+            "works",
+            cwd=tmp_path,
+        )[0]
+        == 0
+    )
+
+
+def test_cli_human_mention_omits_reply_action_after_recipient_leaves(
+    tmp_path: Path,
+) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "bob", "join", "general", cwd=tmp_path)[0] == 0
+    _say_ts(tmp_path, "van", "general", "hello @bob")
+    assert run_cli("--as", "bob", "leave", "general", cwd=tmp_path)[0] == 0
+
+    rc, out, err = run_cli("--as", "bob", "inbox", cwd=tmp_path)
+
+    assert rc == 0, err
+    assert "taut log general" in out
+    assert "taut reply" not in out
+    assert run_cli("--as", "bob", "log", "general", cwd=tmp_path)[0] == 0
+
+
+def test_cli_human_dm_mention_offers_log_but_not_invalid_reply(
+    tmp_path: Path,
+) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "bob", "join", "general", cwd=tmp_path)[0] == 0
+    sent = run_cli("--as", "van", "say", "@bob", "hello @bob", "--json", cwd=tmp_path)
+    dm_thread = json.loads(sent[1])["thread"]
+
+    rc, out, err = run_cli("--as", "bob", "inbox", cwd=tmp_path)
+
+    assert rc == 0, err
+    assert "inspect: taut read" in out
+    assert f"taut reply {dm_thread}" not in out
+    assert run_cli("--as", "bob", "read", cwd=tmp_path)[0] == 0
+
+
+def test_cli_human_subthread_mention_offers_log_but_not_invalid_reply(
+    tmp_path: Path,
+) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "bob", "join", "general", cwd=tmp_path)[0] == 0
+    root_ts = _say_ts(tmp_path, "van", "general", "root")
+    assert (
+        run_cli("--as", "bob", "reply", "general", root_ts, "answer", cwd=tmp_path)[0]
+        == 0
+    )
+    child = f"general.{root_ts}"
+    assert run_cli("--as", "van", "read", child, cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "say", child, "ping @bob", cwd=tmp_path)[0] == 0
+
+    rc, out, err = run_cli("--as", "bob", "inbox", cwd=tmp_path)
+
+    assert rc == 0, err
+    assert f"taut log {child}" in out
+    assert f"taut reply {child}" not in out
+    assert run_cli("--as", "bob", "log", child, cwd=tmp_path)[0] == 0
+
+
+def test_cli_human_mention_uses_full_id_when_all_short_suffixes_collide(
+    tmp_path: Path,
+) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "bob", "join", "general", cwd=tmp_path)[0] == 0
+    van = json.loads(run_cli("--as", "van", "whoami", "--json", cwd=tmp_path)[1])
+    bob = json.loads(run_cli("--as", "bob", "whoami", "--json", cwd=tmp_path)[1])
+    first_ts = 1_000_000_000_000_004_321
+    second_ts = 2_000_000_000_000_004_321
+    queue = Queue("general", db_path=str(tmp_path / ".taut.db"))
+    inbox = Queue(
+        addressing.notification_queue_name(bob["member_id"]),
+        db_path=str(tmp_path / ".taut.db"),
+    )
+    try:
+        queue.insert_messages(
+            [
+                (
+                    encode_envelope(
+                        from_id=van["member_id"],
+                        from_name="van",
+                        kind="message",
+                        text=text,
+                    ),
+                    timestamp,
+                )
+                for text, timestamp in (
+                    ("first collision", first_ts),
+                    ("second collision", second_ts),
+                )
+            ]
+        )
+        inbox.write(
+            json.dumps(
+                {
+                    "type": "mention",
+                    "to_id": bob["member_id"],
+                    "actor_id": van["member_id"],
+                    "actor_name": "van",
+                    "thread": "general",
+                    "message_ts": first_ts,
+                    "matched": "@bob",
+                }
+            )
+        )
+    finally:
+        queue.close()
+        inbox.close()
+
+    rc, out, err = run_cli("--as", "bob", "inbox", cwd=tmp_path)
+
+    assert rc == 0, err
+    assert f"taut reply general {first_ts}" in out
+    assert (
+        run_cli(
+            "--as",
+            "bob",
+            "reply",
+            "general",
+            str(first_ts),
+            "full id works",
+            cwd=tmp_path,
+        )[0]
+        == 0
+    )
+
+
+def test_cli_human_reply_notification_renders_membership_independent_log_action(
+    tmp_path: Path,
+) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "bob", "join", "general", cwd=tmp_path)[0] == 0
+    root_out = run_cli("--as", "van", "say", "general", "root", "--json", cwd=tmp_path)[
+        1
+    ]
+    root_ts = json.loads(root_out)["ts"]
+    assert (
+        run_cli("--as", "bob", "reply", "general", root_ts, "answer", cwd=tmp_path)[0]
+        == 0
+    )
+
+    rc, out, err = run_cli("--as", "van", "inbox", cwd=tmp_path)
+
+    child = f"general.{root_ts}"
+    assert rc == 0, err
+    assert re.search(r"\b\d\d:\d\d\b", out)
+    assert f"taut log {child}" in out
+    assert run_cli("--as", "van", "log", child, cwd=tmp_path)[0] == 0
 
     rc, _out, err = run_cli("--as", "bob", "inbox", "--json", cwd=tmp_path)
     assert rc == 2
@@ -643,6 +964,22 @@ def test_cli_reply_unknown_suffix_exit_2(tmp_path: Path) -> None:
 
     assert rc == 2
     assert "message not found" in err
+    assert "usage: taut reply THREAD MSG_ID [TEXT|-]" in err
+    assert "at least 4 digits" in err
+
+
+def test_cli_reply_too_short_suffix_names_usage_and_minimum(tmp_path: Path) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+
+    rc, out, err = run_cli(
+        "--as", "van", "reply", "general", "123", "child", cwd=tmp_path
+    )
+
+    assert rc == 2
+    assert out == ""
+    assert "message id suffix must be at least 4 digits" in err
+    assert "usage: taut reply THREAD MSG_ID [TEXT|-]" in err
 
 
 def test_cli_who_bare_and_per_thread(tmp_path: Path) -> None:
@@ -672,13 +1009,8 @@ def test_cli_who_unknown_thread_exit_2(tmp_path: Path) -> None:
     assert "thread not found" in err
 
 
-@pytest.mark.skipif(
-    os.name == "nt",
-    reason="SIGINT-driven clean stop is not a Windows process contract",
-)
-def test_cli_watch_json_streams_message_and_sigint_exits_0(tmp_path: Path) -> None:
-    """[TAUT-8.1] watch: live-follow delivers messages as ndjson and a
-    SIGINT stop is a clean stop (exit 0)."""
+def test_cli_watch_json_flushes_records_while_live(tmp_path: Path) -> None:
+    """[TAUT-8.1] watch flushes message and notification NDJSON while live."""
 
     assert run_cli("init", cwd=tmp_path)[0] == 0
     assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
@@ -706,21 +1038,35 @@ def test_cli_watch_json_streams_message_and_sigint_exits_0(tmp_path: Path) -> No
 
         threading.Thread(target=_pump, daemon=True).start()
 
-        assert run_cli("--as", "bob", "say", "general", "ping", cwd=tmp_path)[0] == 0
+        assert (
+            run_cli("--as", "bob", "say", "general", "@van ping", cwd=tmp_path)[0] == 0
+        )
 
-        seen = False
+        seen_message = False
+        seen_notification = False
         for _ in range(60):  # bounded wait: 60 * 0.5s
             try:
                 line = lines.get(timeout=0.5)
             except queue_module.Empty:
                 continue
-            if json.loads(line).get("text") == "ping":
-                seen = True
+            item = json.loads(line)
+            if item.get("text") == "@van ping":
+                seen_message = True
+            if item.get("type") == "mention":
+                seen_notification = True
+            if seen_message and seen_notification:
                 break
-        assert seen, "watch did not deliver the message within the bounded wait"
+        assert seen_message, "watch did not flush the message while still live"
+        assert seen_notification, (
+            "watch did not flush the notification while still live"
+        )
 
-        proc.send_signal(signal.SIGINT)
-        assert proc.wait(timeout=10) == 0
+        if os.name == "nt":
+            proc.terminate()
+            proc.wait(timeout=10)
+        else:
+            proc.send_signal(signal.SIGINT)
+            assert proc.wait(timeout=10) == 0
     finally:
         if proc.poll() is None:
             proc.kill()
@@ -729,6 +1075,71 @@ def test_cli_watch_json_streams_message_and_sigint_exits_0(tmp_path: Path) -> No
             proc.stderr.close()
         if proc.stdout is not None:
             proc.stdout.close()
+
+
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="closing the parent read fd is a POSIX pipe contract probe",
+)
+def test_cli_watch_closed_pipe_exits_0_without_advancing_cursor(
+    tmp_path: Path,
+) -> None:
+    """[TAUT-8.4] EPIPE is terminal sink failure, never poison content."""
+
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "bob", "join", "general", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "read", "general", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "read", "general", cwd=tmp_path)[0] == 2
+
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "taut", "--as", "van", "watch", "--json"],
+        cwd=tmp_path,
+        env=build_cli_env(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+    )
+    published_ids: list[int] = []
+    try:
+        assert proc.stdout is not None
+        proc.stdout.close()
+        assert proc.poll() is None
+
+        for index in range(4):
+            body = f"closed-pipe-{index}-" + ("x" * 20_000)
+            rc, out, err = run_cli(
+                "--as",
+                "bob",
+                "say",
+                "general",
+                "-",
+                "--json",
+                cwd=tmp_path,
+                stdin=body,
+            )
+            assert rc == 0, err
+            published_ids.append(int(json.loads(out)["ts"]))
+
+        assert proc.wait(timeout=10) == 0
+        assert proc.stderr is not None
+        stderr = proc.stderr.read()
+        assert "Traceback" not in stderr
+        assert "BrokenPipeError" not in stderr
+
+        rc, out, err = run_cli("--as", "van", "read", "general", "--json", cwd=tmp_path)
+        assert rc == 0, err
+        unread_ids = {int(json.loads(line)["ts"]) for line in out.splitlines()}
+        assert unread_ids.issuperset(published_ids)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=10)
+        if proc.stderr is not None:
+            proc.stderr.close()
 
 
 def test_cli_taut_as_env_resolves_like_as_flag(tmp_path: Path) -> None:
@@ -823,6 +1234,25 @@ def test_cli_join_new_mints_second_member(tmp_path: Path) -> None:
     assert rc == 0, err
     member_ids = {json.loads(line)["member_id"] for line in out.splitlines()}
     assert {first["member_id"], second["member_id"]} <= member_ids
+
+
+def test_cli_join_new_refuses_occupied_explicit_name(tmp_path: Path) -> None:
+    """[IAN-3.3]: CLI ``join --new`` fails-not-adopts on an occupied name."""
+
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+
+    rc, out, err = run_cli("--as", "van", "join", "general", "--new", cwd=tmp_path)
+
+    assert rc == 1
+    assert out == ""
+    assert "member name already exists: van" in err
+    assert "Traceback" not in err
+
+    rc, out, err = run_cli("who", "--json", cwd=tmp_path)
+    assert rc == 0, err
+    vans = [obj for obj in map(json.loads, out.splitlines()) if obj["name"] == "van"]
+    assert len(vans) == 1
 
 
 def test_cli_say_dash_posts_piped_stdin(tmp_path: Path) -> None:

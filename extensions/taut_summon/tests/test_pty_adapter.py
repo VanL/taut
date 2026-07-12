@@ -53,6 +53,8 @@ else:
     PtySpec = _pty_module.PtySpec
     _TerminalResponder = _pty_module._TerminalResponder
 
+_TERMINAL_RESPONSE_BUFFER_LIMIT = _pty_module._TERMINAL_RESPONSE_BUFFER_LIMIT
+
 FAKE_TUI = Path(__file__).with_name("fixtures") / "fake_tui.py"
 
 # These tests allocate real PTYs and intentionally exercise full input queues,
@@ -553,6 +555,29 @@ def test_pty_responder_handles_live_observed_parameterized_queries() -> None:
         b"\x1b[?997;1n",
     ]
     assert responder.outstanding_query is None
+
+
+@pytest.mark.parametrize("introducer", (b"\x1b[", b"\x1b]"))
+def test_pty_responder_bounds_oversized_incomplete_sequences_and_recovers(
+    introducer: bytes,
+) -> None:
+    responder = _TerminalResponder(rows=31, cols=97)
+
+    responder.feed(introducer + b"1" * (_TERMINAL_RESPONSE_BUFFER_LIMIT * 2))
+
+    assert responder.buffered_bytes <= _TERMINAL_RESPONSE_BUFFER_LIMIT
+    assert responder.feed(b"\x1b[6n") == [b"\x1b[1;1R"]
+
+
+def test_pty_responder_incomplete_scan_work_is_linear_in_input_bytes() -> None:
+    responder = _TerminalResponder(rows=31, cols=97)
+    payload = b"\x1b]10;?" + b"x" * (_TERMINAL_RESPONSE_BUFFER_LIMIT * 2)
+
+    for byte in payload:
+        responder.feed(bytes((byte,)))
+
+    assert responder.buffered_bytes <= _TERMINAL_RESPONSE_BUFFER_LIMIT
+    assert responder.scan_steps <= len(payload) * 4
 
 
 def test_line_mode_inject_collapses_newlines_and_strips_controls(

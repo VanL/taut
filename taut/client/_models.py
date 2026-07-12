@@ -32,6 +32,7 @@ class Thread:
     kind: str = "channel"
     unread_count: int = 0
     members: tuple[str, ...] = ()
+    display_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

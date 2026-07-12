@@ -3,6 +3,11 @@
 This directory contains reusable task-scoped instructions for recurring work in
 this repository.
 
+Skills are optional. The empty extension point is intentional: create one only
+after a real workflow has repeated and stabilized. Do not invent a skill merely
+to populate this directory. Start from `skills/_template/SKILL.md` when a
+workflow qualifies.
+
 ## When To Add a Skill
 
 Add a skill when:

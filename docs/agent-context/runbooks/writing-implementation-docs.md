@@ -5,6 +5,16 @@ owns, and what a future editor must understand before changing it.
 
 They complement specs; they do not replace them.
 
+## Operating Metadata
+
+- **Owner:** the engineer who changes architecture rationale or ownership.
+- **Boundary:** current why, tradeoffs, invariants, and edit points; intended
+  behavior remains in specs and execution history remains in plans.
+- **Verification:** cross-check the note against current code, governing spec,
+  repository map, and named tests.
+- **Required action:** update the note when its rationale or owner would become
+  misleading, while avoiding a line-by-line code tour.
+
 ## Purpose
 
 Use implementation docs to capture:

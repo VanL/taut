@@ -26,8 +26,7 @@ class NotificationsMixin(_ClientBase):
     def _write_notification(self, *, to_id: str, payload: dict[str, Any]) -> None:
         queue = self.queue(addressing.notification_queue_name(to_id))
         try:
-            ts = queue.generate_timestamp()
-            queue.insert_messages([(_json_dumps(payload), ts)])
+            queue.write(_json_dumps(payload))
         except Exception as exc:  # pragma: no cover - backend-specific warning path.
             # Entries carry their own context; the CLI renders each one
             # verbatim under a bare "warning: " prefix.

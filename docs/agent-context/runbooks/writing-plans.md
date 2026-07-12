@@ -26,6 +26,16 @@ Role split:
 - `hardening-plans.md` defines the rewrite criteria, rationale, and generic
   examples for risky work
 
+## Operating Metadata
+
+- **Owner:** the author of the dated implementation plan.
+- **Boundary:** executable sequencing for one concrete change; specs own
+  intended behavior and implementation notes own durable rationale.
+- **Verification:** a zero-context engineer can name every file, invariant,
+  dependency, red/green test, review gate, and stop condition without guessing.
+- **Required action:** promote proposed spec changes before dependent code and
+  keep deviations and review dispositions explicit during execution.
+
 ## Audience Assumptions
 
 - Strong engineer, limited or zero project context.

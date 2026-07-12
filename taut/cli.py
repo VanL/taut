@@ -14,6 +14,8 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Any, NoReturn, TextIO
 
+from simplebroker.ext import StopWatching
+
 from taut._constants import __version__
 from taut._exceptions import (
     EmptyResultError,
@@ -26,7 +28,8 @@ from taut.client import InitResult, Member, Message, Notification, TautClient, T
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    raw = list(argv or sys.argv[1:])
+    raw = list(sys.argv[1:] if argv is None else argv)
+    parser = build_parser()
     command, boundary = _find_first_command(raw)
     if command in _DELEGATED_VERBS:
         # Delegation verbs ([TAUT-8.1] D4) hand their whole tail to the
@@ -36,12 +39,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         # tail is also kept away from argparse because REMAINDER
         # mis-parses a leading option-like token.)
         head = _hoist_global_options([*raw[:boundary], command])
-        args = build_parser().parse_args(head)
+        args = parser.parse_args(head)
         args.rest = raw[boundary + 1 :]
     else:
-        args = build_parser().parse_args(_hoist_global_options(raw))
+        args = parser.parse_args(_hoist_global_options(raw))
     if not hasattr(args, "func"):
-        build_parser().print_help()
+        parser.print_help(sys.stderr)
         return 1
     try:
         return int(args.func(args))
@@ -64,97 +67,342 @@ class _TautArgumentParser(argparse.ArgumentParser):
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = _TautArgumentParser(prog="taut")
-    parser.add_argument("--db", dest="db_path")
-    parser.add_argument("--as", dest="as_name")
-    parser.add_argument("--token", dest="auth_token")
-    parser.add_argument("--json", action="store_true")
-    parser.add_argument("-t", "--timestamps", action="store_true")
-    parser.add_argument("-q", "--quiet", action="store_true")
-    parser.add_argument("--version", action="version", version=f"taut {__version__}")
+    parser = _TautArgumentParser(
+        prog="taut",
+        description=(
+            "Coordinate humans and agents through durable project chat. "
+            "Exit codes: 0 success; 1 error; 2 empty, nothing matched, or not "
+            "found. JSON controls successful stdout records; errors remain text "
+            "on stderr."
+        ),
+    )
+    parser.add_argument(
+        "--db",
+        dest="db_path",
+        metavar="PATH",
+        help="Use an explicit SQLite database path instead of project discovery.",
+    )
+    parser.add_argument(
+        "--as",
+        dest="as_name",
+        metavar="NAME_OR_ALIAS",
+        help="Act as the member with this current name or alias.",
+    )
+    parser.add_argument(
+        "--token",
+        dest="auth_token",
+        metavar="TOKEN",
+        help=(
+            "Select identity by continuity token. This provides continuity, not "
+            "authentication."
+        ),
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit successful stdout records as NDJSON; errors remain text on stderr.",
+    )
+    parser.add_argument(
+        "-t",
+        "--timestamps",
+        action="store_true",
+        help="Show 19-digit message ids in human message output.",
+    )
+    parser.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        help="Suppress ordinary output while preserving exit status.",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"taut {__version__}",
+        help="Show the Taut version and exit.",
+    )
 
-    sub = parser.add_subparsers(dest="command", parser_class=_TautArgumentParser)
+    sub = parser.add_subparsers(
+        dest="command",
+        parser_class=_TautArgumentParser,
+        title="commands",
+        metavar="COMMAND",
+        help="Command to run; use 'taut COMMAND --help' for command syntax.",
+    )
 
-    p = sub.add_parser("init")
+    p = sub.add_parser(
+        "init",
+        help="Initialize the resolved Taut storage.",
+        description=(
+            "Create the default SQLite database or initialize the sidecar schema "
+            "for the project-configured backend."
+        ),
+    )
     p.set_defaults(func=_cmd_init)
 
-    p = sub.add_parser("join")
-    p.add_argument("thread")
-    p.add_argument("--persona")
-    p.add_argument("--new", action="store_true")
+    p = sub.add_parser(
+        "join",
+        help="Join a channel, creating it when needed.",
+        description=(
+            "Join THREAD at its current end. The acting identity and channel are "
+            "created when needed."
+        ),
+    )
+    p.add_argument("thread", metavar="THREAD", help="Channel to join.")
+    p.add_argument(
+        "--persona",
+        metavar="TEXT",
+        help="Set or replace the acting member's persona text.",
+    )
+    p.add_argument(
+        "--new",
+        action="store_true",
+        help="Force creation of a fresh member instead of recognizing an existing one.",
+    )
     p.set_defaults(func=_cmd_join)
 
-    p = sub.add_parser("leave")
-    p.add_argument("thread")
+    p = sub.add_parser(
+        "leave",
+        help="Leave a joined thread without deleting history.",
+        description="Remove the acting member's membership from THREAD.",
+    )
+    p.add_argument("thread", metavar="THREAD", help="Joined thread to leave.")
     p.set_defaults(func=_cmd_leave)
 
-    p = sub.add_parser("say")
-    p.add_argument("target")
-    p.add_argument("text", nargs="?")
+    p = sub.add_parser(
+        "say",
+        help="Post to a channel, sub-thread, or direct-message target.",
+        description=(
+            "Post TEXT to TARGET. Use '-' for stdin; when TEXT is omitted, piped "
+            "stdin is read automatically. Empty text and arbitrary UTF-8 are allowed."
+        ),
+    )
+    p.add_argument(
+        "target",
+        metavar="TARGET",
+        help="Channel, sub-thread, or @NAME direct-message target.",
+    )
+    p.add_argument(
+        "text",
+        metavar="TEXT|-",
+        nargs="?",
+        help="Message text, '-' for stdin, or omit when stdin is piped.",
+    )
     p.set_defaults(func=_cmd_say)
 
-    p = sub.add_parser("reply")
-    p.add_argument("thread")
-    p.add_argument("msg_id")
-    p.add_argument("text", nargs="?")
+    p = sub.add_parser(
+        "reply",
+        help="Reply in the sub-thread rooted at a message.",
+        description=(
+            "Reply to MSG_ID in THREAD. MSG_ID is a full 19-digit id or a unique "
+            "suffix of at least 4 digits from the most recent 1,000 messages."
+        ),
+    )
+    p.add_argument("thread", metavar="THREAD", help="Parent thread containing MSG_ID.")
+    p.add_argument(
+        "msg_id",
+        metavar="MSG_ID",
+        help="Full 19-digit message id or unique suffix of at least 4 digits.",
+    )
+    p.add_argument(
+        "text",
+        metavar="TEXT|-",
+        nargs="?",
+        help="Reply text, '-' for stdin, or omit when stdin is piped.",
+    )
     p.set_defaults(func=_cmd_reply)
 
-    p = sub.add_parser("read")
-    p.add_argument("thread", nargs="?")
+    p = sub.add_parser(
+        "read",
+        help="Show unread messages and advance chat cursors.",
+        description=(
+            "Read up to 1,000 unread messages per selected thread. Omit THREAD to "
+            "read all joined threads; rerun until exit 2 to drain larger backlogs."
+        ),
+    )
+    p.add_argument(
+        "thread",
+        metavar="THREAD",
+        nargs="?",
+        help="One joined thread; omit to read every joined thread.",
+    )
     p.set_defaults(func=_cmd_read)
 
-    p = sub.add_parser("log")
-    p.add_argument("thread")
-    p.add_argument("--since")
-    p.add_argument("--limit", type=int)
+    p = sub.add_parser(
+        "log",
+        help="Show thread history without moving a cursor.",
+        description=(
+            "Show chronological history for THREAD. Filtering never changes unread "
+            "state."
+        ),
+    )
+    p.add_argument("thread", metavar="THREAD", help="Thread whose history to show.")
+    p.add_argument(
+        "--since",
+        metavar="TS",
+        help=(
+            "Show ids strictly after TS: ISO 8601, unix seconds/milliseconds/"
+            "nanoseconds, or a native 19-digit id."
+        ),
+    )
+    p.add_argument(
+        "--limit",
+        metavar="N",
+        type=int,
+        help="Show the most recent N matching messages in chronological order.",
+    )
     p.set_defaults(func=_cmd_log)
 
-    p = sub.add_parser("list")
-    p.add_argument("--all", action="store_true", dest="all_threads")
+    p = sub.add_parser(
+        "list",
+        help="List joined threads and unread state.",
+        description="List the acting member's threads, or every registered thread.",
+    )
+    p.add_argument(
+        "--all",
+        action="store_true",
+        dest="all_threads",
+        help="List every registered thread, not only joined threads.",
+    )
     p.set_defaults(func=_cmd_list)
 
-    p = sub.add_parser("watch")
-    p.add_argument("threads", nargs="*")
+    p = sub.add_parser(
+        "watch",
+        help="Live-follow chat and notification activity.",
+        description=(
+            "Follow selected joined chat threads plus the acting member's notification "
+            "inbox. Omit THREAD to follow all current and later memberships."
+        ),
+    )
+    p.add_argument(
+        "threads",
+        metavar="THREAD",
+        nargs="*",
+        help="Joined thread filters; omit to follow every membership.",
+    )
     p.set_defaults(func=_cmd_watch)
 
-    p = sub.add_parser("inbox")
+    p = sub.add_parser(
+        "inbox",
+        help="Claim and show pending notification pointers.",
+        description=(
+            "Claim pending notification pointers. Source chat remains durable even "
+            "though claimed pointers are consumable."
+        ),
+    )
     p.set_defaults(func=_cmd_inbox)
 
-    p = sub.add_parser("set")
-    set_sub = p.add_subparsers(
-        dest="set_command", required=True, parser_class=_TautArgumentParser
+    p = sub.add_parser(
+        "set",
+        help="Change a property of the acting member.",
+        description="Change one acting-member property through a nested command.",
     )
-    p_name = set_sub.add_parser("name")
-    p_name.add_argument("name")
+    set_sub = p.add_subparsers(
+        dest="set_command",
+        required=True,
+        parser_class=_TautArgumentParser,
+        title="properties",
+        metavar="PROPERTY",
+        help="Property to change; use 'taut set PROPERTY --help' for syntax.",
+    )
+    p_name = set_sub.add_parser(
+        "name",
+        help="Change the current display and routing name.",
+        description=(
+            "Change the acting member's current display and routing name without "
+            "rewriting old messages."
+        ),
+    )
+    p_name.add_argument("name", metavar="NAME", help="New unique member name.")
     p_name.set_defaults(func=_cmd_set_name)
 
-    p = sub.add_parser("rename")
-    p.add_argument("old_name")
-    p.add_argument("new_name")
+    p = sub.add_parser(
+        "rename",
+        help="Rename a channel and its registered sub-threads.",
+        description=(
+            "Rename OLD to NEW and move its registered one-level sub-thread names."
+        ),
+    )
+    p.add_argument("old_name", metavar="OLD", help="Current channel name.")
+    p.add_argument("new_name", metavar="NEW", help="New unused channel name.")
     p.set_defaults(func=_cmd_rename)
 
-    p = sub.add_parser("who")
-    p.add_argument("thread", nargs="?")
+    p = sub.add_parser(
+        "who",
+        help="Show members and presence evidence.",
+        description="Show all members, or only members of THREAD when supplied.",
+    )
+    p.add_argument(
+        "thread",
+        metavar="THREAD",
+        nargs="?",
+        help="Thread whose members to show; omit for every member.",
+    )
     p.set_defaults(func=_cmd_who)
 
-    p = sub.add_parser("whoami")
-    p.add_argument("--explain", action="store_true")
+    p = sub.add_parser(
+        "whoami",
+        help="Show the identity Taut resolved for this caller.",
+        description="Show the acting member and optionally the recognition evidence.",
+    )
+    p.add_argument(
+        "--explain",
+        action="store_true",
+        help="Include captured identity evidence and the rule that matched.",
+    )
     p.set_defaults(func=_cmd_whoami)
 
-    p = sub.add_parser("rejoin")
-    p.add_argument("name_or_alias", nargs="?")
-    p.add_argument("--token", dest="rejoin_token")
+    p = sub.add_parser(
+        "rejoin",
+        help="Associate current identity evidence with an existing member.",
+        description=(
+            "Rejoin by NAME_OR_ALIAS, continuity token, or the global --as selector. "
+            "Continuity tokens are not authentication."
+        ),
+    )
+    p.add_argument(
+        "name_or_alias",
+        metavar="NAME_OR_ALIAS",
+        nargs="?",
+        help="Existing current name or alias; omit when selecting another way.",
+    )
+    p.add_argument(
+        "--token",
+        dest="rejoin_token",
+        metavar="TOKEN",
+        help="Select the existing member by continuity token.",
+    )
     p.set_defaults(func=_cmd_rejoin)
 
     # Delegation verbs ([TAUT-8.1] D4, spec 04 [SUM-3]): the tail is
     # captured whole and handed to the taut-summon extension. `main()`
     # overrides the REMAINDER capture with a verbatim split (see there).
-    p = sub.add_parser("summon")
-    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser(
+        "summon",
+        help="Delegate agent-harness startup to the taut-summon extension.",
+        description=(
+            "Delegate verbatim to 'taut-summon run'. The extension owns provider, "
+            "name, thread, and adapter options."
+        ),
+    )
+    p.add_argument(
+        "rest",
+        metavar="ARG",
+        nargs=argparse.REMAINDER,
+        help="Arguments passed verbatim to 'taut-summon run'.",
+    )
     p.set_defaults(func=_cmd_summon)
 
-    p = sub.add_parser("dismiss")
-    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser(
+        "dismiss",
+        help="Delegate agent-harness shutdown to the taut-summon extension.",
+        description="Delegate verbatim to 'taut-summon stop'.",
+    )
+    p.add_argument(
+        "rest",
+        metavar="ARG",
+        nargs=argparse.REMAINDER,
+        help="Arguments passed verbatim to 'taut-summon stop'.",
+    )
     p.set_defaults(func=_cmd_dismiss)
 
     return parser
@@ -233,12 +481,21 @@ def _cmd_list(args: argparse.Namespace) -> int:
 
 def _cmd_watch(args: argparse.Namespace) -> int:
     client = _client(args)
+    sink_closed = False
 
     def handle(item: Message | Notification) -> None:
-        if isinstance(item, Notification):
-            _emit_notifications(args, [item])
-        else:
-            _emit_messages(args, [item])
+        nonlocal sink_closed
+        if sink_closed:
+            raise StopWatching
+        try:
+            if isinstance(item, Notification):
+                _emit_notifications(args, [item], client=client)
+            else:
+                _emit_messages(args, [item])
+            sys.stdout.flush()
+        except BrokenPipeError:
+            sink_closed = True
+            raise StopWatching from None
 
     watcher = client.watch(handle, threads=args.threads or None)
     try:
@@ -247,6 +504,13 @@ def _cmd_watch(args: argparse.Namespace) -> int:
         return 0
     finally:
         watcher.stop(join=True, timeout=5.0)
+    if sink_closed:
+        try:
+            sys.stdout.close()
+        except BrokenPipeError:
+            # The record flush already classified this pipe as closed. Suppress
+            # only the matching final close so interpreter shutdown stays quiet.
+            pass
     return 0
 
 
@@ -270,8 +534,9 @@ def _cmd_rejoin(args: argparse.Namespace) -> int:
 
 
 def _cmd_inbox(args: argparse.Namespace) -> int:
-    notifications = _client(args).inbox()
-    _emit_notifications(args, notifications)
+    client = _client(args)
+    notifications = client.inbox()
+    _emit_notifications(args, notifications, client=client)
     return 0
 
 
@@ -403,7 +668,8 @@ def _emit_threads(args: argparse.Namespace, threads: list[Thread]) -> None:
         if args.json:
             _print_json(_thread_object(thread))
         else:
-            print(f"{thread.name}  {_format_unread_count(thread.unread_count)} unread")
+            label = thread.display_name or thread.name
+            print(f"{label}  {_format_unread_count(thread.unread_count)} unread")
 
 
 def _emit_members(args: argparse.Namespace, members: list[Member]) -> None:
@@ -422,6 +688,8 @@ def _emit_members(args: argparse.Namespace, members: list[Member]) -> None:
 def _emit_notifications(
     args: argparse.Namespace,
     notifications: list[Notification],
+    *,
+    client: TautClient | None = None,
 ) -> None:
     if args.quiet:
         return
@@ -431,17 +699,97 @@ def _emit_notifications(
         if args.json:
             _print_json(_notification_object(notification))
         elif notification.type == "mention":
+            assert notification.message_ts is not None
+            inspect_action = _mention_inspect_action(client, notification)
+            reply_id = _mention_reply_id(client, notification)
+            reply_action = (
+                f"; reply: taut reply {notification.thread} {reply_id}"
+                if reply_id is not None
+                else ""
+            )
             print(
-                f"{notification.actor_name} mentioned you in "
-                f"{notification.thread} at {notification.message_ts}"
+                f"{_format_message_time(notification.message_ts)} "
+                f"{notification.actor_name} mentioned you in {notification.thread}; "
+                f"inspect: {inspect_action}{reply_action}"
+            )
+        elif notification.type == "reply":
+            assert notification.message_ts is not None
+            print(
+                f"{_format_message_time(notification.message_ts)} "
+                f"{notification.actor_name} replied in {notification.thread}; "
+                f"inspect: taut log {notification.thread}"
             )
         elif notification.type == "dm_started":
+            assert notification.message_ts is not None
             print(
-                f"{notification.actor_name} started a direct message "
-                f"in {notification.thread}"
+                f"{_format_message_time(notification.message_ts)} "
+                f"{notification.actor_name} started a direct message in "
+                f"{notification.thread}; read: taut read"
             )
         else:
             print(notification.raw or "foreign notification")
+
+
+def _mention_inspect_action(
+    client: TautClient | None,
+    notification: Notification,
+) -> str:
+    thread = notification.thread
+    if thread is None:
+        return "taut read"
+    if client is not None:
+        thread_row = next(
+            (
+                candidate
+                for candidate in client.list_threads(all_threads=True)
+                if candidate.name == thread
+            ),
+            None,
+        )
+        if thread_row is not None and thread_row.kind == "dm":
+            return "taut read"
+    return f"taut log {thread}"
+
+
+def _mention_reply_id(
+    client: TautClient | None,
+    notification: Notification,
+) -> str | None:
+    """Return the shortest currently usable reply id for a mention pointer."""
+
+    thread = notification.thread
+    message_ts = notification.message_ts
+    if client is None or thread is None or message_ts is None:
+        return None
+    if thread not in client.joined_thread_names():
+        return None
+    thread_row = next(
+        (
+            candidate
+            for candidate in client.list_threads(all_threads=True)
+            if candidate.name == thread
+        ),
+        None,
+    )
+    if (
+        thread_row is None
+        or thread_row.kind != "channel"
+        or thread_row.parent is not None
+    ):
+        return None
+
+    full_id = str(message_ts)
+    try:
+        recent_ids = [str(message.ts) for message in client.log(thread, limit=1000)]
+    except (EmptyResultError, NotFoundError):
+        return full_id
+    if full_id not in recent_ids:
+        return full_id
+    for length in range(4, len(full_id) + 1):
+        suffix = full_id[-length:]
+        if sum(candidate.endswith(suffix) for candidate in recent_ids) == 1:
+            return suffix
+    return full_id
 
 
 def _message_object(message: Message) -> dict[str, Any]:
@@ -580,11 +928,17 @@ def _read_stdin_text() -> str:
 
 
 def _handle_error(args: argparse.Namespace, exc: Exception) -> int:
-    if isinstance(exc, SystemExit):
-        raise exc
     code = _exit_code_for_exception(exc)
     if not getattr(args, "quiet", False):
-        print(str(exc), file=sys.stderr)
+        message = str(exc)
+        if getattr(args, "command", None) == "reply" and (
+            "message id" in message or message.startswith("message not found")
+        ):
+            message += (
+                "; usage: taut reply THREAD MSG_ID [TEXT|-] "
+                "(MSG_ID is a full 19-digit id or unique suffix of at least 4 digits)"
+            )
+        print(message, file=sys.stderr)
     return code
 
 

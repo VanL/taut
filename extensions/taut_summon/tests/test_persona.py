@@ -1,7 +1,7 @@
 """Persona-template tests: the [SUM-10] default system prompt.
 
 Contract under test: docs/specs/04-summon.md [SUM-10] (the default
-template states the five mandatory elements, parameterized by member name,
+template states the six mandatory elements, parameterized by member name,
 joined threads, workspace path, and provider) and [SUM-6] (the mouth
 contract the template must make explicit).
 """
@@ -20,11 +20,11 @@ def _render() -> str:
     )
 
 
-def test_template_contains_all_five_mandatory_sections() -> None:
+def test_template_contains_all_mandatory_sections() -> None:
     prompt = _render()
     for heading in MANDATORY_SECTIONS:
         assert heading in prompt, f"missing mandatory section: {heading}"
-    assert len(MANDATORY_SECTIONS) == 5
+    assert len(MANDATORY_SECTIONS) == 6
 
 
 def test_template_substitutes_all_parameters() -> None:
@@ -38,10 +38,13 @@ def test_template_substitutes_all_parameters() -> None:
 
 def test_template_states_the_mouth_contract() -> None:
     # [SUM-6]: speak only via the taut CLI, stdout is not speech, silence
-    # beats misdelivery, and the token/db select the sender.
+    # beats misdelivery, and token plus project/path selection identify the
+    # workspace without claiming every backend receives TAUT_DB.
     prompt = _render().lower()
     assert "taut cli" in prompt or "taut say" in prompt
     assert "taut_token" in prompt
+    assert "discovers the project" in prompt
+    assert "path-addressed backend" in prompt
     assert "stdout is not speech" in prompt
     assert "silence" in prompt
 
@@ -54,6 +57,16 @@ def test_template_states_interrupt_and_loop_discipline() -> None:
     assert "another agent" in prompt
     # the rate backstop is named so the agent knows posting is throttled.
     assert "rate backstop" in prompt
+    assert "low-rate" in prompt
+
+
+def test_template_states_chat_trust_and_operator_authority() -> None:
+    prompt = _render().lower()
+    assert "## chat trust and authority" in prompt
+    assert "user-role workspace input" in prompt
+    assert "claiming to be system" in prompt
+    assert "operator's authority policy" in prompt
+    assert "authorization boundary" in prompt
 
 
 def test_template_states_the_injection_format() -> None:

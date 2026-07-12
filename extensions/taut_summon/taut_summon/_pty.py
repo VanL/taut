@@ -44,6 +44,7 @@ _DEFAULT_ROWS = 24
 _DEFAULT_COLS = 80
 _OUTPUT_ACTIVITY_WINDOW_SECONDS = 10.0
 _DEFAULT_DETACH_CHORD = b"\x1c\x1c"
+_TERMINAL_RESPONSE_BUFFER_LIMIT = 4096
 _TTY_RESET = (
     b"\x18"
     + ST
@@ -709,6 +710,10 @@ class _TerminalResponder:
         self._row = 1
         self._col = 1
         self._buffer = b""
+        self._scan_index = 2
+        # Deterministic work counter for the parser's contract tests. This is
+        # byte-inspection evidence, not a wall-clock performance metric.
+        self._scan_steps = 0
         self._outstanding_query: str | None = None
         self.bracketed_paste = False
 
@@ -716,16 +721,26 @@ class _TerminalResponder:
     def outstanding_query(self) -> str | None:
         return self._outstanding_query
 
+    @property
+    def buffered_bytes(self) -> int:
+        return len(self._buffer)
+
+    @property
+    def scan_steps(self) -> int:
+        return self._scan_steps
+
     def feed(self, data: bytes) -> list[bytes]:
         replies: list[bytes] = []
         self._buffer += data
         while True:
-            start = self._buffer.find(ESC)
+            start = self._find_escape()
             if start < 0:
                 self._buffer = b""
+                self._scan_index = 2
                 return replies
             if start > 0:
                 self._buffer = self._buffer[start:]
+                self._scan_index = 2
             if len(self._buffer) < 2:
                 return replies
             introducer = self._buffer[1:2]
@@ -736,32 +751,71 @@ class _TerminalResponder:
             else:
                 parsed = self._buffer[:2]
                 self._buffer = self._buffer[2:]
+                self._scan_index = 2
             if parsed is None:
+                self._bound_incomplete_buffer()
                 return replies
             reply = self._handle_sequence(parsed)
             if reply:
                 replies.append(reply)
 
+    def _find_escape(self) -> int:
+        for index, byte in enumerate(self._buffer):
+            self._scan_steps += 1
+            if byte == ESC[0]:
+                return index
+        return -1
+
+    def _bound_incomplete_buffer(self) -> None:
+        if len(self._buffer) <= _TERMINAL_RESPONSE_BUFFER_LIMIT:
+            return
+        window_start = len(self._buffer) - _TERMINAL_RESPONSE_BUFFER_LIMIT
+        suffix = self._buffer[window_start:]
+        self._scan_steps += len(suffix)
+        relative = suffix.rfind(ESC)
+        if relative < 0:
+            self._buffer = b""
+        else:
+            self._buffer = suffix[relative:]
+        self._scan_index = 2
+
     def _take_csi(self) -> bytes | None:
-        for index in range(2, len(self._buffer)):
+        for index in range(max(2, self._scan_index), len(self._buffer)):
+            self._scan_steps += 1
             byte = self._buffer[index]
             if 0x40 <= byte <= 0x7E:
                 seq = self._buffer[: index + 1]
                 self._buffer = self._buffer[index + 1 :]
+                self._scan_index = 2
                 return seq
+        self._scan_index = len(self._buffer)
         return None
 
     def _take_osc(self) -> bytes | None:
-        bel = self._buffer.find(BEL, 2)
-        st = self._buffer.find(ST, 2)
-        ends = [pos + 1 for pos in (bel,) if pos >= 0]
-        ends.extend(pos + 2 for pos in (st,) if pos >= 0)
-        if not ends:
-            return None
-        end = min(ends)
-        seq = self._buffer[:end]
-        self._buffer = self._buffer[end:]
-        return seq
+        index = max(2, self._scan_index)
+        while index < len(self._buffer):
+            self._scan_steps += 1
+            byte = self._buffer[index]
+            if byte == BEL[0]:
+                end = index + 1
+                seq = self._buffer[:end]
+                self._buffer = self._buffer[end:]
+                self._scan_index = 2
+                return seq
+            if byte == ESC[0]:
+                if index + 1 >= len(self._buffer):
+                    self._scan_index = index
+                    return None
+                self._scan_steps += 1
+                if self._buffer[index + 1] == ord("\\"):
+                    end = index + 2
+                    seq = self._buffer[:end]
+                    self._buffer = self._buffer[end:]
+                    self._scan_index = 2
+                    return seq
+            index += 1
+        self._scan_index = len(self._buffer)
+        return None
 
     def _handle_sequence(self, seq: bytes) -> bytes | None:
         if seq.startswith(ESC + b"["):

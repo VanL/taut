@@ -3,8 +3,8 @@
 One foreground process per summoned member — a terminal emulator, not a
 manager ([SUM-2]). The driver owns exactly three runtime lanes:
 
-- **Bootstrap** in [SUM-4]'s six-step order (claim → temp-name create →
-  rename → ledger → spawn → token-only rejoin), entirely over public core
+- **Bootstrap** in [SUM-4]'s order (claim → fail-not-adopt final-name create
+  → ledger → spawn → token-only rejoin), entirely over public core
   seams: ``TautClient(identity_capture=..., token=...)``, ``join``,
   ``set_name``, ``rejoin``, and the ``taut.identity`` capture surface
   blessed for extensions.
@@ -42,7 +42,6 @@ from __future__ import annotations
 import getpass
 import logging
 import os
-import secrets
 import signal
 import sys
 import threading
@@ -50,7 +49,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from simplebroker import Queue
+from simplebroker import BrokerTarget, Queue
 from simplebroker.ext import BrokerError
 
 from taut import (
@@ -61,7 +60,7 @@ from taut import (
     TautError,
 )
 from taut.addressing import classify_registered_queue
-from taut.client import Member, Message, Notification, database_path_from_target
+from taut.client import Member, Message, Notification
 from taut.identity import (
     IdentityCapture,
     capture_host_identity,
@@ -148,9 +147,24 @@ def format_injection(item: Message | Notification) -> str:
         if classify_registered_queue(item.thread) == "dm"
         else (f"[#{item.thread}]")
     )
+    text = _indent_continuation_lines(item.text)
     if item.kind == "notice":
-        return f"{prefix} · {item.text}"
-    return f"{prefix} {item.from_name}: {item.text}"
+        return f"{prefix} · {text}"
+    return f"{prefix} {item.from_name}: {text}"
+
+
+def _indent_continuation_lines(text: str) -> str:
+    """Keep arbitrary text intact while making its frame boundary visible.
+
+    This is attribution hygiene only ([SUM-5.2]). It does not sanitize chat
+    content or turn a user-role event into a trusted instruction. Carriage
+    returns are normalized to newlines first: the PTY paste path maps a lone
+    ``\\r`` to ``\\n`` after formatting, so an unnormalized ``\\r`` here would
+    reach the child as an unindented continuation line and escape the frame.
+    """
+
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    return normalized.replace("\n", "\n    ")
 
 
 def _notify_location(thread: str | None) -> str:
@@ -159,6 +173,33 @@ def _notify_location(thread: str | None) -> str:
     if classify_registered_queue(thread) == "dm":
         return "dm"
     return f"#{thread}"
+
+
+def _harness_target_projection(
+    target: BrokerTarget | str,
+) -> tuple[str, str | None]:
+    """Return redacted display text and the optional path-only env selector.
+
+    ``TAUT_DB`` is a filesystem-path selector. Config-backed targets must be
+    rediscovered by the child; exposing a server DSN there is both invalid for
+    core and a credential leak ([SUM-6]).
+    """
+
+    if isinstance(target, str):
+        return target, target
+    target_path = target.target_path
+    return target.display_target, None if target_path is None else str(target_path)
+
+
+def _harness_environment(
+    boot: _BootstrapResult,
+    *,
+    db_path: str | None,
+) -> dict[str, str]:
+    env = {"TAUT_TOKEN": boot.token}
+    if db_path is not None:
+        env["TAUT_DB"] = db_path
+    return env
 
 
 @dataclass(frozen=True, slots=True)
@@ -282,6 +323,7 @@ class SummonDriver:
         self._shutdown_error: BaseException | None = None
         self._queue: Queue | None = None
         self._evidence: tuple[int, str] | None = None
+        self._audit_start_ts: int | None = None
         self._owned_clients: list[TautClient] = []
 
     # --- public entry ----------------------------------------------------
@@ -337,7 +379,7 @@ class SummonDriver:
     def _run(self) -> int:
         request = self._request
         client = self._persistent_client(db_path=request.db_path)
-        db_display = database_path_from_target(client.target)
+        db_display, db_env_path = _harness_target_projection(client.target)
         self._queue = client.queue(_LEDGER_QUEUE_NAME)
         try:
             ensure_summon_schema(self._queue)
@@ -346,7 +388,12 @@ class SummonDriver:
                 boot = self._bootstrap(client)
                 self._member_id = boot.member_id
                 self._update_resummon_persona(boot)
-                return self._supervise(boot, db_display)
+                # Bootstrap membership notices are setup, not harness posting.
+                # Fix the lower bound only after every bootstrap join and
+                # immediately before the first spawn; the same bound survives
+                # every later harness generation ([SUM-10]).
+                self._audit_start_ts = self._queue.generate_timestamp()
+                return self._supervise(boot, db_display, db_path=db_env_path)
             finally:
                 # Ownership-checked release covering EVERY post-claim fatal
                 # path, including a bootstrap failure after member_id becomes
@@ -439,10 +486,12 @@ class SummonDriver:
         queue = self._ledger()
         pid, start = self._require_evidence()
         attempted = {target}
+        created: Member | None = None
+        retrying_after_occupied_claim = False
 
-        # Step 0: claim the (name, provider) slot. A concurrent loser
-        # applies the [SUM-4] collision rule: implied names retry through
-        # the pool, chosen names refuse loudly.
+        # Each candidate attempt owns one claim and one creator. A core
+        # fail-not-adopt collision leaves no member to clean up: release that
+        # claim, choose another candidate, and retry ([SUM-4]).
         for _ in range(_NAME_RETRY_ATTEMPTS):
             try:
                 claim_name(
@@ -454,10 +503,14 @@ class SummonDriver:
                     claimed_ts=queue.generate_timestamp(),
                     takeover=self._request.takeover,
                 )
-                break
             except ClaimConflictError as exc:
-                if not implied:
+                if not implied and not retrying_after_occupied_claim:
                     raise DriverError(str(exc)) from exc
+                if len(attempted) >= _NAME_RETRY_ATTEMPTS:
+                    raise DriverError(
+                        f"could not settle a name for '{requested}' after "
+                        f"{_NAME_RETRY_ATTEMPTS} attempts"
+                    ) from exc
                 target = self._fallback_name(client, requested, attempted)
                 attempted.add(target)
                 logger.warning(
@@ -465,131 +518,95 @@ class SummonDriver:
                     requested,
                     target,
                 )
+                continue
+
+            creator: TautClient | None = None
+            try:
+                creator = TautClient(
+                    db_path=self._request.db_path,
+                    as_name=target,
+                    identity_capture=_agent_capture(
+                        os.getpid(), rule="summon driver bootstrap anchor"
+                    ),
+                    persistent=True,
+                )
+                creator.join(
+                    self._request.threads[0],
+                    persona=self._request.persona,
+                    new=True,
+                )
+                created = creator.last_created_member
+                if created is None or created.token is None:
+                    raise DriverError(
+                        "bootstrap failed: fresh final-named member was not created"
+                    )
+                # Join all requested threads before the session row becomes the
+                # readiness signal. This preserves the no-gap rule from the old
+                # bootstrap without a visible temporary identity.
+                self._ensure_threads(creator, created.member_id)
+            except IdentityError:
+                if created is None and creator is not None:
+                    created = creator.last_created_member
+                self._release_name_claim_after_failure(
+                    queue, target=target, provider=provider, pid=pid, start=start
+                )
+                if created is not None and created.token is not None:
+                    raise self._residual_member_error(created) from None
+                collided_target = target
+                retrying_after_occupied_claim = True
+                if len(attempted) >= _NAME_RETRY_ATTEMPTS:
+                    raise DriverError(
+                        f"could not settle a name for '{requested}' after "
+                        f"{_NAME_RETRY_ATTEMPTS} attempts"
+                    ) from None
+                target = self._fallback_name(client, requested, attempted)
+                attempted.add(target)
+                logger.warning(
+                    "requested name '%s' was taken mid-summon; trying '%s'",
+                    collided_target,
+                    target,
+                )
+                continue
+            except BaseException as exc:
+                if created is None and creator is not None:
+                    created = creator.last_created_member
+                self._release_name_claim_after_failure(
+                    queue, target=target, provider=provider, pid=pid, start=start
+                )
+                if created is not None and created.token is not None:
+                    raise self._residual_member_error(created) from exc
+                raise
+            finally:
+                if creator is not None:
+                    primary_error = sys.exception()
+                    try:
+                        creator.close()
+                    except Exception as exc:
+                        if primary_error is not None:
+                            logger.debug(
+                                "creator close after bootstrap failure also failed",
+                                exc_info=True,
+                            )
+                        else:
+                            self._release_name_claim_after_failure(
+                                queue,
+                                target=target,
+                                provider=provider,
+                                pid=pid,
+                                start=start,
+                            )
+                            if created is not None and created.token is not None:
+                                raise self._residual_member_error(created) from exc
+                            raise
+            break
         else:
             raise DriverError(
                 f"could not claim a name for '{requested}' after "
                 f"{_NAME_RETRY_ATTEMPTS} attempts"
             )
-
-        # Step 1: create under a collision-proof temp name with a
-        # driver-anchored agent capture. A fresh name cannot adopt;
-        # creation is asserted via the public last_created_member signal.
-        temp = f"{target[:48]}-{secrets.token_hex(4)}"
-        try:
-            creator = TautClient(
-                db_path=self._request.db_path,
-                as_name=temp,
-                identity_capture=_agent_capture(
-                    os.getpid(), rule="summon driver bootstrap anchor"
-                ),
-                persistent=True,
-            )
-        except BaseException:
-            self._release_name_claim_after_failure(
-                queue, target=target, provider=provider, pid=pid, start=start
-            )
-            raise
-        created: Member | None = None
-        try:
-            first_thread = self._request.threads[0]
-            creator.join(first_thread, persona=self._request.persona)
-            created = creator.last_created_member
-            if created is None or created.token is None:
-                release_claim(
-                    queue,
-                    name=target,
-                    provider=provider,
-                    driver_pid=pid,
-                    driver_start_time=start,
-                )
-                raise DriverError(
-                    "bootstrap failed: the temp-named member was not created"
-                )
-
-            # Step 2: take the target name (fail-loud core rename). A
-            # mid-bootstrap collision falls back for implied and chosen names
-            # alike ([SUM-4] round-13 rule) — refusal here would strand the
-            # temp-named member, fallback leaves no debris.
-            for _ in range(_NAME_RETRY_ATTEMPTS):
-                try:
-                    creator.set_name(target)
-                    break
-                except IdentityError:
-                    release_claim(
-                        queue,
-                        name=target,
-                        provider=provider,
-                        driver_pid=pid,
-                        driver_start_time=start,
-                    )
-                    collided_target = target
-                    while len(attempted) < _NAME_RETRY_ATTEMPTS:
-                        fallback = self._fallback_name(client, requested, attempted)
-                        attempted.add(fallback)
-                        try:
-                            claim_name(
-                                queue,
-                                name=fallback,
-                                provider=provider,
-                                driver_pid=pid,
-                                driver_start_time=start,
-                                claimed_ts=queue.generate_timestamp(),
-                            )
-                        except ClaimConflictError:
-                            continue
-                        target = fallback
-                        logger.warning(
-                            "requested name '%s' was taken mid-summon; member "
-                            "will be '%s' — rename with 'taut set name' if needed",
-                            collided_target,
-                            fallback,
-                        )
-                        break
-                    else:
-                        raise DriverError(
-                            f"could not settle a name for '{requested}' after "
-                            f"{_NAME_RETRY_ATTEMPTS} attempts"
-                        )
-            else:
-                raise DriverError(
-                    f"could not settle a name for '{requested}' after "
-                    f"{_NAME_RETRY_ATTEMPTS} attempts"
-                )
-
-            # Join the remaining threads BEFORE recording the session row.
-            # record_session is the readiness signal (stop/status resolve off
-            # it, and callers wait on it): a summon thread joined only later, in
-            # _supervise, would silently drop anything said into it between
-            # readiness and that join ([TAUT-7.4]: joining starts you at now).
-            # Idempotent (skips threads[0], already joined at creation).
-            self._ensure_threads(creator, created.member_id)
-        except BaseException:
-            self._release_name_claim_after_failure(
-                queue, target=target, provider=provider, pid=pid, start=start
-            )
-            raise
-        finally:
-            primary_error = sys.exception()
-            try:
-                creator.close()
-            except Exception:
-                if primary_error is not None:
-                    logger.debug(
-                        "creator close after bootstrap failure also failed",
-                        exc_info=True,
-                    )
-                else:
-                    self._release_name_claim_after_failure(
-                        queue,
-                        target=target,
-                        provider=provider,
-                        pid=pid,
-                        start=start,
-                    )
-                    raise
         assert created is not None and created.token is not None
 
-        # Step 3: record the durable session row, then release the claim —
+        # Publish the durable session row, then release the claim —
         # old names free up the moment they stop being load-bearing.
         self._member_id = created.member_id
         try:
@@ -603,11 +620,11 @@ class SummonDriver:
                 driver_start_time=start,
                 updated_ts=queue.generate_timestamp(),
             )
-        except BaseException:
+        except BaseException as exc:
             self._release_name_claim_after_failure(
                 queue, target=target, provider=provider, pid=pid, start=start
             )
-            raise
+            raise self._residual_member_error(created) from exc
         if not release_claim(
             queue,
             name=target,
@@ -642,12 +659,18 @@ class SummonDriver:
 
     # --- supervision loop (steps 4-5, ears, pump, resume) ------------------
 
-    def _supervise(self, boot: _BootstrapResult, db_display: str) -> int:
+    def _supervise(
+        self,
+        boot: _BootstrapResult,
+        db_display: str,
+        *,
+        db_path: str | None = None,
+    ) -> int:
         request = self._request
         adapter = self._require_adapter(boot.provider)
         if request.attach and not adapter.supports_attach:
             raise DriverError(f"provider '{boot.provider}' does not support attach")
-        env = {"TAUT_TOKEN": boot.token, "TAUT_DB": db_display}
+        env = _harness_environment(boot, db_path=db_path)
         system_prompt = self._system_prompt(boot, db_display)
         terminal_thread = (
             request.threads[0]
@@ -1118,7 +1141,7 @@ class SummonDriver:
             raise DriverError(f"cannot spawn the harness: {exc}") from exc
 
     def _rejoin(self, handle: AdapterHandle, boot: _BootstrapResult) -> None:
-        """Step 5: re-anchor presence at the harness child (token-only)."""
+        """Re-anchor presence at the harness child through token-only selection."""
 
         capture = _agent_capture(
             handle.pid, rule=f"summon harness child for {boot.member_name}"
@@ -1330,6 +1353,18 @@ class SummonDriver:
                 exc_info=True,
             )
 
+    @staticmethod
+    def _residual_member_error(created: Member) -> DriverError:
+        """Give the initiating terminal the non-destructive recovery path."""
+
+        assert created.token is not None
+        return DriverError(
+            "bootstrap failed after creating final member "
+            f"'{created.name}'. Residual continuity token: {created.token}. "
+            f"Recover with `TAUT_TOKEN={created.token} taut set name "
+            "<unused-name>`, then summon again."
+        )
+
     def _require_evidence(self) -> tuple[int, str]:
         assert self._evidence is not None
         return self._evidence
@@ -1483,6 +1518,8 @@ class SummonDriver:
             if self._handle is not None and self._handle.session_id is not None
             else boot.provider_session_id
         )
+        if self._audit_start_ts is None:
+            raise DriverError("rate audit start timestamp was not initialized")
         loop = ControlLoop(
             member_id=boot.member_id,
             db_path=self._request.db_path,
@@ -1499,6 +1536,7 @@ class SummonDriver:
             driver_pid=driver_pid,
             driver_start_time=driver_start_time,
             provider_session_id=provider_session_id,
+            audit_start_ts=self._audit_start_ts,
         )
         self._control_loop = loop
         thread = threading.Thread(

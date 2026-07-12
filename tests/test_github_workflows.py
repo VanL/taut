@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+import tomllib
 from pathlib import Path
 
 import pytest
+from coverage import Coverage, CoverageData
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_DIR = PROJECT_ROOT / ".github" / "workflows"
@@ -53,6 +58,110 @@ def test_test_workflow_is_reusable_and_runs_release_gates() -> None:
     assert "gen_taut_logo" not in workflow
     assert "mypy taut tests bin/release.py --config-file pyproject.toml" in workflow
     assert "uv build" in workflow
+
+
+def test_coverage_measures_core_and_summon_in_isolated_process_lanes() -> None:
+    config = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text("utf-8"))
+    run_config = config["tool"]["coverage"]["run"]
+    assert run_config["source"] == ["taut", "taut_summon"]
+    assert run_config["patch"] == ["subprocess"]
+
+    workflow = _workflow("test.yml")
+    assert "uv run coverage erase" in workflow
+    assert 'coverage run --parallel-mode -m pytest tests -m "not slow"' in workflow
+    assert (
+        "coverage run --parallel-mode -m pytest extensions/taut_summon/tests "
+        '-m "not xdist_group"' in workflow
+    )
+    assert (
+        "coverage run --parallel-mode -m pytest extensions/taut_summon/tests "
+        '-m "xdist_group and not requires_live_harness and not '
+        'requires_local_llm" -n 1 --dist loadgroup' in workflow
+    )
+    assert (
+        "coverage run --parallel-mode -m pytest "
+        "extensions/taut_summon/tests/test_live_harness.py -n 1 --dist loadgroup"
+        in workflow
+    )
+    assert (
+        "coverage run --parallel-mode -m pytest "
+        "extensions/taut_summon/tests/test_live_local_llm.py -n 1 --dist loadgroup"
+        in workflow
+    )
+    assert "uv run coverage combine" in workflow
+    assert "uv run python bin/verify-coverage-evidence.py" in workflow
+    for critical_file in ("_driver.py", "_control.py", "cli.py"):
+        assert (
+            f'coverage report --include="*/taut_summon/{critical_file}" --fail-under=1'
+            in workflow
+        )
+
+
+def test_coverage_subprocess_patch_records_plain_children(tmp_path: Path) -> None:
+    coverage_file = tmp_path / ".coverage"
+    env = os.environ.copy()
+    env["COVERAGE_FILE"] = str(coverage_file)
+    env["COVERAGE_PROCESS_START"] = str(PROJECT_ROOT / "pyproject.toml")
+    provider_path = (
+        PROJECT_ROOT
+        / "extensions"
+        / "taut_summon"
+        / "taut_summon"
+        / "scripted_provider.py"
+    )
+    provider_input = (
+        '{"type":"user","message":{"role":"user","content":'
+        '[{"type":"text","text":"coverage probe"}]}}\n'
+    )
+    launcher = (
+        "import subprocess,sys\n"
+        "subprocess.run([sys.executable,'-m','taut','--version'],check=True)\n"
+        "subprocess.run([sys.executable,'-m','taut_summon.scripted_provider'],"
+        f"input={provider_input!r},text=True,check=True,capture_output=True)\n"
+    )
+    launcher_path = tmp_path / "coverage_launcher.py"
+    launcher_path.write_text(launcher, encoding="utf-8")
+
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "coverage",
+            "run",
+            "--parallel-mode",
+            str(launcher_path),
+        ],
+        cwd=PROJECT_ROOT,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    coverage = Coverage(data_file=str(coverage_file), config_file=False)
+    coverage.combine(data_paths=[str(tmp_path)], strict=True)
+    coverage.save()
+    data = CoverageData(basename=str(coverage_file))
+    data.read()
+    main_path = str((PROJECT_ROOT / "taut" / "__main__.py").resolve())
+    source_lines = (
+        (PROJECT_ROOT / "taut" / "__main__.py").read_text("utf-8").splitlines()
+    )
+    exit_line = next(
+        index
+        for index, line in enumerate(source_lines, start=1)
+        if "raise SystemExit(main())" in line
+    )
+
+    assert exit_line in (data.lines(main_path) or [])
+
+    provider_source = provider_path.read_text("utf-8").splitlines()
+    provider_exit_line = next(
+        index
+        for index, line in enumerate(provider_source, start=1)
+        if "raise SystemExit(main())" in line
+    )
+    assert provider_exit_line in (data.lines(str(provider_path.resolve())) or [])
 
 
 def test_setup_uv_steps_have_tight_timeouts() -> None:

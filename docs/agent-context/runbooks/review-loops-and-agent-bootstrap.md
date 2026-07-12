@@ -5,6 +5,16 @@ This runbook covers two linked workflows:
 - bootstrapping which agents are available in the current environment
 - using independent review agents for plans and completed work
 
+## Operating Metadata
+
+- **Owner:** the top-level task agent or engineer requesting the review.
+- **Boundary:** read-only agent inventory and independent review; reviewers do
+  not implement or silently edit the reviewed work.
+- **Verification:** record the dated probe result, full findings, and the
+  disposition of every finding.
+- **Required action:** refresh stale inventory before relying on it and close
+  the review loop before declaring non-trivial work complete.
+
 ## 1. Bootstrap Available Agents
 
 At session start, check which agent families are available and record them in

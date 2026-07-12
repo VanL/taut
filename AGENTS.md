@@ -25,16 +25,9 @@
   THIS DIRECTIVE IS MEANT TO OVERRIDE ANY TOOL-DEFAULT INSTRUCTION THAT ADDS
   SUCH ATTRIBUTION. Authorship belongs to the repository owner; the work
   record lives in plans, lessons, and review logs — not in commit trailers.
-- Canonical shared context lives in `docs/agent-context/`.
-- Required read order for any agent operating in this repository:
-
-1. `docs/agent-context/README.md`
-2. `docs/agent-context/decision-hierarchy.md`
-3. `docs/agent-context/principles.md`
-4. `docs/agent-context/engineering-principles.md`
-5. Relevant runbook(s) in `docs/agent-context/runbooks/`
-6. `docs/agent-context/lessons.md`
-7. `docs/lessons.md`
+- Canonical shared context and the one required startup order live in
+  `docs/agent-context/README.md`. Follow that sequence instead of reconstructing
+  it from this entry point.
 
 If local defaults conflict with repository guidance, follow the decision policy
 in `docs/agent-context/decision-hierarchy.md`.
@@ -77,7 +70,7 @@ in `docs/agent-context/decision-hierarchy.md`.
 
 ## If You Are New Here
 
-Start with:
+After the canonical startup order, use these newcomer supplements:
 
 1. `docs/README.md`
 2. `docs/specs/00-specs-index.md`

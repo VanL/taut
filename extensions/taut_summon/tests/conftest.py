@@ -341,6 +341,7 @@ class DriverProcess:
         extra_env: dict[str, str] | None = None,
         control_interval: float | None = None,
         tag: str = "driver",
+        include_db: bool = True,
     ) -> None:
         self.tag = tag
         self.db = db
@@ -362,7 +363,8 @@ class DriverProcess:
             env.update(extra_env)
         command = [sys.executable, "-m", "taut_summon", "run", name]
         command.extend(threads)
-        command.extend(["--db", str(db)])
+        if include_db:
+            command.extend(["--db", str(db)])
         if provider is not None:
             command.extend(["--provider", provider])
         command.extend(extra_args)

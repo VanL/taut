@@ -17,7 +17,7 @@ model faked.
 
 Relationship to ``test_driver.py``
 ----------------------------------
-``test_driver.py`` holds the taut-specific *deep* proofs (six-step
+``test_driver.py`` holds the taut-specific *deep* proofs (ordered
 bootstrap, name-collision rules, event-pump flood, rename discipline, the
 concurrent-summon race). This module does not re-litigate those; it is the
 *portable* layer, asserting only the provider-agnostic conformance contract
@@ -256,7 +256,7 @@ class ConformanceHarness:
         """Chat *speech* (kind ``message``) authored by the member.
 
         Deliberately excludes membership notices (e.g. the bootstrap
-        temp-name join notice, kind ``notice``): those are ordinary member
+        final-name join notice, kind ``notice``): those are ordinary member
         events, not the driver speaking on the member's behalf. "No
         double-speak" ([SUM-9]/[SUM-6]) is about chat, not notices.
         """

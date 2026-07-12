@@ -166,6 +166,11 @@ class IdentityMixin(_ClientBase):
                     force_new=force_new,
                 )
                 return self._created_resolution(row, capture, claim, "explicit --as")
+            if force_new:
+                # [TAUT-8.1]/[IAN-3.3] ``join(new=True)`` is a creation
+                # request, not an adoption mode.  Refuse before allocating an
+                # activity timestamp or mutating the existing member.
+                raise IdentityError(f"member name already exists: {explicit}")
             if _touch_activity:
                 self._state.update_member_activity(row["member_id"], next_active_ts())
                 if persona is not None:
@@ -288,7 +293,9 @@ class IdentityMixin(_ClientBase):
         claim: identity.IdentityClaim,
         rule: str,
     ) -> _ResolvedMember:
-        member = self._member_from_row(row, capture=capture, token=row["token"])
+        member = self.last_created_member
+        if member is None or member.member_id != row["member_id"]:
+            member = self._member_from_row(row, capture=capture, token=row["token"])
         self.last_created_member = member
         return _ResolvedMember(
             row=row,
@@ -367,6 +374,15 @@ class IdentityMixin(_ClientBase):
                         f"last candidate: {candidate}"
                     ) from exc
                 continue
+            # Publish durable creation evidence immediately after the member
+            # row commits. Later notification-thread or claim work can fail,
+            # but callers still need the final name and continuity token to
+            # recover the residual member without destructive rollback
+            # ([IAN-3.3]/[SUM-4]). A new member cannot have aliases yet, so
+            # constructing this value requires no second sidecar read.
+            self.last_created_member = self._inserted_member_evidence(
+                member, capture=capture
+            )
             self._ensure_notification_thread(member, active_ts)
             if self._state.get_member_by_claim_hash(claim.claim_hash) is None:
                 try:
@@ -380,6 +396,25 @@ class IdentityMixin(_ClientBase):
                     raise
             return member
         raise AssertionError("unreachable: member-creation retry loop fell through")
+
+    @staticmethod
+    def _inserted_member_evidence(
+        row: MemberRow,
+        *,
+        capture: identity.IdentityCapture,
+    ) -> Member:
+        meta = row["meta"]
+        persona = meta.get("persona") if isinstance(meta.get("persona"), str) else None
+        return Member(
+            member_id=row["member_id"],
+            name=row["display_name"],
+            aliases=(),
+            kind=row["kind"],
+            presence=identity.member_presence(row, capture.host.host_id),
+            last_active_ts=row["last_active_ts"],
+            persona=persona,
+            token=row["token"],
+        )
 
     def _record_claim(
         self,

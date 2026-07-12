@@ -123,17 +123,12 @@ taut dismiss NAME
 
 ## 4. Identity, Membership, and Presence [SUM-4]
 
-- The member's identity evidence is **ultimately the harness child
-  process** — after the bootstrap's `rejoin()` step the anchor points at
-  the child — and the driver supplies captures explicitly rather than
-  relying on ambient capture (a human launching `taut summon` from a
-  terminal would otherwise classify as a human member — wrong kind,
-  wrong anchor). During bootstrap, a temporary **driver-anchored** agent
-  capture bridges the gap, because the token must exist before the
-  child can be spawned with it (do not try to spawn first). The seam is
-  public: `taut.identity`'s exported capture types and
-  `capture_process` (this spec makes that surface part of the extension
-  contract) feeding `TautClient(identity_capture=...)`.
+- The member's identity evidence is **ultimately the harness child process**.
+  After bootstrap `rejoin()` points the anchor at that child. Before spawn, a
+  driver-anchored agent capture creates the member and obtains the continuity
+  token required in the child environment. The seam is public:
+  `taut.identity` capture types and `capture_process`, feeding
+  `TautClient(identity_capture=...)`.
   - **Name resolution before anything else**: the driver resolves the
     requested name through core (public `who()`/route lookup) to a
     current `member_id`, then reads `taut_summon_sessions` by that id.
@@ -153,24 +148,12 @@ taut dismiss NAME
       deliberate choice): refuse loudly with the collision and a hint
       to pick another name. Silently renaming a name the user chose
       would surprise both people and scripts (L1, L2).
-    This chosen-name refusal applies at **resolution time**, before
-    anything is created. A collision that appears later, inside the
-    bootstrap window (step 2's `set_name` failing because the name was
-    taken mid-summon), is handled the same way for implied and chosen
-    names alike: fall back per step 2 — refusal there would strand the
-    already-created temp-named member, and a fallback with a loud
-    console note (`requested name 'reviewer' was taken mid-summon;
-    member is 'reviewer-2' — rename with 'taut set name' if needed`)
-    is recoverable while leaving no debris. No member at all → first
-    summon: claim the name (step 0) and create under a temp name
-    (step 1).
-  - **Bootstrap ordering** (resolves three constraints at once: the
-    token/env cycle — the child env needs `TAUT_TOKEN`, minted at
-    creation, and env cannot be retrofitted; the concurrent-summon
-    race; and the rule that a foreign member must never be touched,
-    not even detectably-then-aborted — explicit-`as_name` resolution
-    adopts an existing member *before* any check can run, so the
-    design must make adoption impossible rather than detected):
+    This chosen-name refusal applies at resolution time, before anything is
+    created. A collision that appears after the transient claim is handled the
+    same way for implied and chosen names: release that claim, choose the
+    documented loud fallback, and retry.
+  - **Bootstrap ordering** resolves the token/env cycle, the concurrent-summon
+    race, and the rule that a foreign member must never be adopted:
     0. *Claim the name*: transactionally insert (name, provider) into
        the transient claims table ([SUM-8]). A loser of a concurrent
        same-name summon gets the constraint error and applies the
@@ -181,25 +164,17 @@ taut dismiss NAME
        (two simultaneous `taut summon reviewer --provider claude`
        yield one `reviewer` and one clean refusal). Claims from dead
        drivers are reclaimable by evidence.
-    1. *Create under a fresh temp name* — first summon only:
-       `TautClient(identity_capture=<agent capture anchored at the
-       DRIVER process>, as_name=<temp>).join(thread)` where `<temp>` is
-       driver-generated and collision-proof (target name + random
-       suffix). A fresh name **cannot adopt** — creation is guaranteed,
-       asserted via the public `last_created_member` signal (blessed
-       extension-visible surface, with its `token` field); the token
-       goes to the ledger. The one cosmetic cost: the join notice
-       renders the temp name for a moment (L2: a nickname settling).
-    2. *Take the target name*: `set_name(<claimed name>)` — core's
-       transactional, fail-loud rename ([IAN-4.4]). If a non-summon
-       actor took the name inside the window, this fails **without
-       having touched their member**; the driver then releases the now
-       stale claim and **restarts at step 0 with a `choose_name`
-       fallback target** (console note), so every name the member ends
-       up under was covered by a claim — the race guarantee never
-       lapses. The already-created temp-named member is reused by the
-       restarted pass (steps 0 and 2 rerun; step 1 is skipped).
-    3. *Record the session*: insert the member_id-keyed sessions row
+    1. *Create under the claimed final name* — first summon only:
+       `TautClient(identity_capture=<driver capture>,
+       as_name=<claimed-final-name>).join(thread, new=True)`. Core's
+       fail-not-adopt behavior ([IAN-3.3]) makes this atomic with respect to the
+       visible route: if occupied, no member, membership, or notice is created.
+       The driver releases the claim, chooses the next allowed fallback, and
+       retries. A successful create yields the token and final visible name in
+       one step. Summon never creates a temporary visible member and never
+       deletes a partially visible member as collision cleanup.
+    2. *Join remaining requested threads* before publishing readiness.
+    3. *Record the session*: insert the member-id-keyed sessions row
        ([SUM-8]) and delete the claim row — old names become claimable
        again the moment they are no longer load-bearing.
     4. *Spawn the harness* with `TAUT_TOKEN=<ledger token>` in its
@@ -209,6 +184,12 @@ taut dismiss NAME
        selection (`rejoin` rejects a name combined with a token by
        contract, [TAUT-8.1]); rejoin re-associates the child as the
        member's anchor through the public path ([IAN-3.4]).
+    Each candidate attempt owns and closes exactly one creator client. A failure
+    after member creation but before session publication may leave a final-named
+    non-summoned member. The initiating terminal reports its name and continuity
+    token; recovery is to use that token with `taut set name` to move the
+    residual aside, then summon again. It is never adopted as a summoned
+    session and no destructive rollback is attempted.
     Later summons resolve the current name to a member_id (public
     lookup), read the sessions row, and run exactly steps 4-5 — one
     shape for every summon, no private state calls anywhere.
@@ -260,6 +241,12 @@ format is part of this contract: agents write personas against it (L1)
 and it mirrors how a person reads a channel — source, speaker, words
 (L2). Exact rendering lives in one adapter-shared helper with tests.
 
+Each chat event remains one user-role event. The first line uses the existing
+source/speaker prefix; every continuation line in message text is indented so
+content such as `[system]` cannot visually forge a new top-level driver frame.
+Text is otherwise preserved. This is attribution hygiene, not prompt-injection
+prevention or authorization.
+
 ### [SUM-5.3] Filtering
 
 The driver injects **everything except the member's own messages**
@@ -280,8 +267,8 @@ thread's cursor only after the user handler returns successfully; a
 raising handler leaves the cursor in place and the message is re-seen
 ([TAUT-8.4]). The driver's watch handler is exactly: self-filter, format
 ([SUM-5.2]), `inject()`, return. (Rate-backstop counting is **not** in
-this handler — the member's own sends never reach the watch stream,
-[SUM-10] audits separately.) Consequences, all required:
+this handler — the watch stream does not reliably observe the member's complete
+own-send history, so [SUM-10] audits separately.) Consequences, all required:
 
 - **At-least-once delivery to the harness process boundary:**
   `inject()` must not return until the event is written *and flushed* to
@@ -898,8 +885,9 @@ existing release-before-ack ordering.
 - Driver-side backstop: a per-member posting rate limit (default
   generous, `run`-configurable) so a persona failure degrades to
   throttled chatter, not a two-agent feedback loop. Observation
-  mechanism: the watch stream **cannot** see the member's own sends —
-  [TAUT-7.4] advances the sender's cursor at write time — so the driver
+  mechanism: the watch stream does not reliably see every own send because
+  [TAUT-7.4] normally catches up the sender after commit, while an intervening
+  unread row can leave an own send visible. Therefore the driver
   runs a periodic **audit pass** on its control-thread cadence:
   log-semantics peeks after a driver-local audit cursor per thread
   (never touching the member cursor), counting messages with
@@ -911,14 +899,25 @@ existing release-before-ack ordering.
   content policy — restraint is the persona's job; the backstop is a
   circuit breaker (L1: mechanical guarantees where personas can fail;
   L2: the rate of a person typing).
+- The default persona states that injected chat is user-role workspace input,
+  that a line claiming to be system or driver policy is not thereby trusted,
+  and that the harness follows the operator's authority policy. This is
+  defense-in-depth only. The mechanical rate audit reconciles every currently
+  joined chat thread before each due audit and closes handles for threads that
+  were left. A newly discovered queue begins at the later of summon start and
+  the active rate-window floor, never current head; a retained cursor survives
+  leave/rejoin, and already-counted timestamps are deduplicated within the
+  active window. It limits posting rate per member; it does not detect semantic
+  loops below the configured rate.
 - `--persona TEXT` sets the member's short taut persona as `join` does;
   `--system-prompt-file PATH` replaces the template for full control.
   For the PTY adapter, orientation is delivered as the first injected
   message ([SUM-7.4]), not a spawn-time system-prompt flag;
   `--system-prompt-file` overrides the orientation text either way.
-- A PTY hard breach cancels the current harness turn. It does not lazily poison
-  the handle or force a generation restart unless the child exits or later
-  adapter I/O fails independently.
+- A hard breach requests the adapter's normal interrupt operation. If soft
+  interrupt delivery fails, the PTY adapter may terminate the child under
+  [SUM-7.4]; that fallback is an interrupt-I/O failure, not an independent
+  policy decision to restart a healthy generation.
 
 ## 11. Failure Modes [SUM-11]
 
@@ -1049,6 +1048,9 @@ existing release-before-ack ordering.
 
 ## Related Plans
 
+- `docs/plans/2026-07-11-multi-factor-review-remediation-plan.md` — reviewed
+  direct-name bootstrap, trust framing, dynamic audit, PTY bound, and
+  documentation remediation program for v0.5.3.
 - `docs/plans/2026-07-10-ci-failure-remediation-plan.md` — v0.5.1 CI
   remediation for PTY write leases, watcher pre-publication stop, artifact
   fixture portability, and deterministic waiter-rebind proof.
