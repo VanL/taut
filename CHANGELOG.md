@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.4 - 2026-07-12
+- Updated names to have a default capitalization rule (humans and agents)
+  while preserving --as or explicit names.
+
 ## 0.5.3 - 2026-07-11
 
 - Adopted SimpleBroker 5.3.1's atomic `Queue.write()` return value for live
