@@ -40,6 +40,7 @@ import taut.identity as identity
 from taut._constants import (
     HISTORICAL_NAME_POOL,
     PER_BASENAME_NAME_POOLS,
+    capitalize_automatic_name,
     normalize_name_seed,
 )
 from taut.state import MemberRow
@@ -129,7 +130,9 @@ def _anchor_argv0(shell: Path | str, cwd: Path) -> str:
 
 
 def _expected_name_from_anchor(argv0: str) -> str:
-    return normalize_name_seed(Path(argv0).name, fallback="agent")
+    return capitalize_automatic_name(
+        normalize_name_seed(Path(argv0).name, fallback="agent")
+    )
 
 
 def _capture(
@@ -437,15 +440,34 @@ def test_member_presence_distinguishes_human_remote_here_and_gone(
 
 
 def test_choose_name_uses_seed_pool_history_then_numeric_suffix() -> None:
-    assert identity.choose_name(seed="New Agent", taken=set()) == "new-agent"
+    assert identity.choose_name(seed="New Agent", taken=set()) == "New-agent"
     assert (
         identity.choose_name(seed="codex", taken={"codex"})
         == (PER_BASENAME_NAME_POOLS["codex"][0])
     )
+    assert identity.choose_name(seed="worker", taken={"worker"}) == "Ada"
 
     taken = {"agent", *HISTORICAL_NAME_POOL}
 
-    assert identity.choose_name(seed=None, taken=taken) == "agent-2"
+    assert identity.choose_name(seed=None, taken=taken) == "Agent-2"
+
+
+def test_choose_name_capitalizes_first_ascii_letter_after_leading_digits() -> None:
+    assert identity.choose_name(seed="2agent", taken=set()) == "2Agent"
+    assert identity.choose_name(seed="123", taken=set()) == "123"
+
+
+def test_choose_name_reaches_every_curated_candidate_in_declared_order() -> None:
+    for seed, pool in PER_BASENAME_NAME_POOLS.items():
+        taken = {seed}
+        for expected in pool:
+            first_letter = next(
+                character for character in expected if character.isalpha()
+            )
+            assert "A" <= first_letter <= "Z"
+            assert identity.choose_name(seed=seed, taken=taken) == expected
+            taken.add(expected)
+    assert all("A" <= name[0] <= "Z" for name in HISTORICAL_NAME_POOL)
 
 
 def test_rank_candidates_scores_matching_process_fingerprints() -> None:

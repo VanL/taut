@@ -232,7 +232,7 @@ already transferred; cancellation after it applies only to later calls.
 ### Attach/detach and `wired` ([SUM-7.4], [SUM-8])
 
 First PTY use is not guessed from output. The session row carries a durable
-`wired` boolean (`SUMMON_SCHEMA_VERSION` 2). A not-yet-wired first generation
+`wired` boolean (`SUMMON_SCHEMA_VERSION` 3; introduced in version 2). A not-yet-wired first generation
 with a real tty attaches the human terminal to the harness; the human answers
 trust/login/model prompts and detaches with the non-`ESC` chord
 `Ctrl-\ Ctrl-\`. Only that explicit detach sets `wired=True`. Future summons
@@ -254,7 +254,10 @@ core's schema gate is untouched (verified: the core suite passes against a db
 bearing summon tables — the oblivious-core invariant):
 
 - `taut_summon_claims` — **transient**. One row per in-flight bootstrap,
-  `(name, provider)` primary key. This is the concurrent-summon
+  `(name, provider)` primary key. Version-3 writers store the lowercase Taut
+  route key; `LOWER(name)` lookup plus a unique expression index on
+  `(LOWER(name), provider)` makes `Claude` and `claude` one slot even while an
+  already-running version-2 writer drains. This is the concurrent-summon
   serialization point ([SUM-4]): a losing racer takes the constraint
   error and applies the collision rule. Deleted after session publication; a row
   whose driver evidence is dead is reclaimable. Because it is transient, a
@@ -281,10 +284,22 @@ failures and surface immediately. Claim and driver ownership helpers keep
 SQLite write transactions short: they read evidence, release the operation,
 run process-liveness checks outside the write transaction, then perform a short
 predicate-guarded write that rechecks enough ownership to preserve race safety.
+Schema version 3 migrates version-2 transient claim names to lowercase route
+keys and constructs the unique route expression index in the same sidecar
+transaction as the version update. Index construction serializes against claim
+inserts on SQLite and PostgreSQL; a second read under that lock normalizes a
+non-conflicting late version-2 write. Case-variant collisions fail with version
+2 and every claim row untouched, so operators resolve one transient owner and
+retry without a partial migration. Normalized lookup keeps any version-2 write
+that begins after commit visible until it is released or reclaimed.
 
 The bootstrap order ([SUM-4]) resolves three constraints at once:
 the token/env cycle (the token must exist before the child is spawned with
 it), the concurrent-summon race, and the never-touch-a-foreign-member rule.
+An implied provider request runs through core's `choose_name` before its first
+claim, so `taut summon scripted` creates `Scripted`; an explicit
+`taut summon reviewer --provider scripted` preserves `reviewer`. Later
+automatic fallbacks use the same cased candidate path for either request form.
 Each bounded candidate attempt claims the proposed final name, then calls core
 `join(new=True)` directly under that name. Core's fail-not-adopt rule makes an
 occupied route a clean collision: Summon releases only that attempt's transient
@@ -539,6 +554,9 @@ rather than after the broad root and summon unit suites in the same runner.
 
 ## Related Plans
 
+- `docs/plans/2026-07-12-automatic-display-name-capitalization-plan.md` —
+  implied-provider display casing, shared candidate selection, and normalized
+  transient name claims.
 - `docs/plans/2026-07-10-taut-dynamic-native-waiter-replacement-plan.md` — the
   shared-core waiter replacement follow-on; Summon's control reactor remains
   fixed-topology.

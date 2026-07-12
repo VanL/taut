@@ -372,19 +372,19 @@ jobs:
           # Keep the existing fresh-process selector boundaries. SQLite-heavy,
           # PTY, live-harness, and local-LLM lanes are unsafe to collapse into
           # one pytest process merely for a coverage report.
-          uv run coverage erase
-          uv run coverage run --parallel-mode -m pytest tests -m "not slow"
-          uv run coverage run --parallel-mode -m pytest extensions/taut_summon/tests -m "not xdist_group"
-          uv run coverage run --parallel-mode -m pytest extensions/taut_summon/tests -m "xdist_group and not requires_live_harness and not requires_local_llm" -n 1 --dist loadgroup
-          uv run coverage run --parallel-mode -m pytest extensions/taut_summon/tests/test_live_harness.py -n 1 --dist loadgroup
-          uv run coverage run --parallel-mode -m pytest extensions/taut_summon/tests/test_live_local_llm.py -n 1 --dist loadgroup
-          uv run coverage combine
-          uv run python bin/verify-coverage-evidence.py
-          uv run coverage report --include="*/taut_summon/_driver.py" --fail-under=1
-          uv run coverage report --include="*/taut_summon/_control.py" --fail-under=1
-          uv run coverage report --include="*/taut_summon/cli.py" --fail-under=1
-          uv run coverage report --show-missing
-          uv run coverage xml
+          python -m coverage erase
+          python -m coverage run --parallel-mode -m pytest tests -m "not slow"
+          python -m coverage run --parallel-mode -m pytest extensions/taut_summon/tests -m "not xdist_group"
+          python -m coverage run --parallel-mode -m pytest extensions/taut_summon/tests -m "xdist_group and not requires_live_harness and not requires_local_llm" -n 1 --dist loadgroup
+          python -m coverage run --parallel-mode -m pytest extensions/taut_summon/tests/test_live_harness.py -n 1 --dist loadgroup
+          python -m coverage run --parallel-mode -m pytest extensions/taut_summon/tests/test_live_local_llm.py -n 1 --dist loadgroup
+          python -m coverage combine
+          python bin/verify-coverage-evidence.py
+          python -m coverage report --include="*/taut_summon/_driver.py" --fail-under=1
+          python -m coverage report --include="*/taut_summon/_control.py" --fail-under=1
+          python -m coverage report --include="*/taut_summon/cli.py" --fail-under=1
+          python -m coverage report --show-missing
+          python -m coverage xml
 
       - name: Upload coverage reports
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f

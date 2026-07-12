@@ -67,33 +67,40 @@ def test_coverage_measures_core_and_summon_in_isolated_process_lanes() -> None:
     assert run_config["patch"] == ["subprocess"]
 
     workflow = _workflow("test.yml")
-    assert "uv run coverage erase" in workflow
-    assert 'coverage run --parallel-mode -m pytest tests -m "not slow"' in workflow
+    assert "python -m coverage erase" in workflow
+    assert "uv run coverage" not in workflow
     assert (
-        "coverage run --parallel-mode -m pytest extensions/taut_summon/tests "
+        'python -m coverage run --parallel-mode -m pytest tests -m "not slow"'
+        in workflow
+    )
+    assert (
+        "python -m coverage run --parallel-mode -m pytest "
+        "extensions/taut_summon/tests "
         '-m "not xdist_group"' in workflow
     )
     assert (
-        "coverage run --parallel-mode -m pytest extensions/taut_summon/tests "
+        "python -m coverage run --parallel-mode -m pytest "
+        "extensions/taut_summon/tests "
         '-m "xdist_group and not requires_live_harness and not '
         'requires_local_llm" -n 1 --dist loadgroup' in workflow
     )
     assert (
-        "coverage run --parallel-mode -m pytest "
+        "python -m coverage run --parallel-mode -m pytest "
         "extensions/taut_summon/tests/test_live_harness.py -n 1 --dist loadgroup"
         in workflow
     )
     assert (
-        "coverage run --parallel-mode -m pytest "
+        "python -m coverage run --parallel-mode -m pytest "
         "extensions/taut_summon/tests/test_live_local_llm.py -n 1 --dist loadgroup"
         in workflow
     )
-    assert "uv run coverage combine" in workflow
-    assert "uv run python bin/verify-coverage-evidence.py" in workflow
+    assert "python -m coverage combine" in workflow
+    assert "python bin/verify-coverage-evidence.py" in workflow
+    assert "uv run python bin/verify-coverage-evidence.py" not in workflow
     for critical_file in ("_driver.py", "_control.py", "cli.py"):
         assert (
-            f'coverage report --include="*/taut_summon/{critical_file}" --fail-under=1'
-            in workflow
+            f'python -m coverage report --include="*/taut_summon/{critical_file}" '
+            "--fail-under=1" in workflow
         )
 
 

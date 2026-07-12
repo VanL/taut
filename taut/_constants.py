@@ -17,7 +17,7 @@ from typing import Any, Final
 
 from simplebroker import resolve_config
 
-__version__: Final[str] = "0.5.3"
+__version__: Final[str] = "0.5.4"
 
 DEFAULT_DB_NAME: Final[str] = ".taut.db"
 PROJECT_CONFIG_NAME: Final[str] = ".taut.toml"
@@ -80,27 +80,28 @@ INFRASTRUCTURE_BASENAMES: Final[tuple[str, ...]] = (
 )
 
 PER_BASENAME_NAME_POOLS: Final[dict[str, tuple[str, ...]]] = {
-    "claude": ("claudette", "claudius", "claudion", "claudine"),
-    "codex": ("codette", "codexter", "codius", "codine"),
-    "gemini": ("gemina", "geminus", "gemma", "gem"),
-    "qwen": ("qwenda", "qwenton", "qwin", "qwendolyn"),
-    "kimi": ("kimia", "kimiko", "kim", "kimber"),
-    "grok": ("grokkette", "grokus", "grokker", "grokin"),
+    "claude": ("Claudette", "Claudius", "Claudion", "Claudine"),
+    "codex": ("Codette", "Codexter", "Codius", "Codine"),
+    "gemini": ("Gemina", "Geminus", "Gemma", "Gem"),
+    "pi": ("Tau", "Phi"),
+    "qwen": ("Qwenda", "Qwenton", "Qwin", "Qwendolyn"),
+    "kimi": ("Kimia", "Kimiko", "Kim", "Kimber"),
+    "grok": ("Grokkette", "Grokus", "Grokker", "Grokin"),
 }
 
 HISTORICAL_NAME_POOL: Final[tuple[str, ...]] = (
-    "ada",
-    "grace",
-    "blaise",
-    "hypatia",
-    "kurt",
-    "alan",
-    "alonzo",
-    "edsger",
-    "barbara",
-    "margaret",
-    "donald",
-    "judea",
+    "Ada",
+    "Grace",
+    "Blaise",
+    "Hypatia",
+    "Kurt",
+    "Alan",
+    "Alonzo",
+    "Edsger",
+    "Barbara",
+    "Margaret",
+    "Donald",
+    "Judea",
 )
 
 NO_DATABASE_MESSAGE: Final[str] = (
@@ -137,6 +138,15 @@ def normalize_name_seed(seed: str | None, *, fallback: str = "agent") -> str:
     if not candidate or not candidate[0].isalnum():
         candidate = fallback
     return candidate[:64]
+
+
+def capitalize_automatic_name(name: str) -> str:
+    """Uppercase the first lowercase ASCII letter in an automatic name."""
+
+    for index, character in enumerate(name):
+        if "a" <= character <= "z":
+            return f"{name[:index]}{character.upper()}{name[index + 1 :]}"
+    return name
 
 
 def route_key(name: str) -> str:

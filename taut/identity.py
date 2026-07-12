@@ -2,6 +2,7 @@
 
 Spec references:
 - docs/specs/02-taut-core.md [TAUT-5]
+- docs/specs/03-identity-addressing-notifications.md [IAN-3], [IAN-4]
 """
 
 from __future__ import annotations
@@ -29,7 +30,11 @@ from taut._constants import (
     PER_BASENAME_NAME_POOLS,
     SHELL_BASENAMES,
     WRAPPER_BASENAMES,
+    capitalize_automatic_name,
     normalize_name_seed,
+)
+from taut._constants import (
+    route_key as _route_key,
 )
 from taut.state import MemberRow
 
@@ -357,6 +362,12 @@ def mint_token() -> str:
     return "taut-" + secrets.token_urlsafe(12).lower().replace("_", "-")
 
 
+def route_key(name: str) -> str:
+    """Return the canonical route key for a member display name or alias."""
+
+    return _route_key(name)
+
+
 def choose_name(
     *,
     seed: str | None,
@@ -366,19 +377,21 @@ def choose_name(
     """Choose the first deterministic available name for a seed."""
 
     stem = normalize_name_seed(seed, fallback=fallback)
-    if stem not in taken:
-        return stem
+    display_stem = capitalize_automatic_name(stem)
+    taken_keys = {route_key(name) for name in taken}
+    if route_key(display_stem) not in taken_keys:
+        return display_stem
     for name in PER_BASENAME_NAME_POOLS.get(stem, ()):
-        if name not in taken:
+        if route_key(name) not in taken_keys:
             return name
     for name in HISTORICAL_NAME_POOL:
-        if name not in taken:
+        if route_key(name) not in taken_keys:
             return name
     index = 2
     while True:
         suffix = f"-{index}"
-        candidate = f"{stem[: 64 - len(suffix)]}{suffix}"
-        if candidate not in taken:
+        candidate = f"{display_stem[: 64 - len(suffix)]}{suffix}"
+        if route_key(candidate) not in taken_keys:
             return candidate
         index += 1
 

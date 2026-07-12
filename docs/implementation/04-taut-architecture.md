@@ -194,6 +194,15 @@ stale candidate can never be reused across attempts. Explicit `--as` names
 get exactly one attempt and fail loudly: a collision on a chosen name is a
 user decision to surface, not noise to retry through.
 
+Automatic human and agent names share one display rule ([IAN-4.2]): normalize
+the login or process seed, then uppercase its first lowercase ASCII letter.
+Curated and historical candidates carry display casing, while `choose_name`
+canonicalizes every taken name or alias through `route_key`. The state snapshot
+is correspondingly route-wide, not member-name-only: `route_keys_in_use()`
+unions `taut_members.name_key` with `taut_member_aliases.alias_key`. This keeps
+presentation out of uniqueness decisions and lets an alias-owned candidate
+advance to the next name instead of failing the same insert repeatedly.
+
 `BaseReactor` is the shared lifecycle mechanism for Taut's long-lived queue
 owners. It follows SimpleBroker 5.2.0's executable reference-reactor pattern:
 one reactor instance claims one drive thread; inherited final templates own
@@ -346,7 +355,7 @@ requirement or auditing implementation coverage.
 | [TAUT-3.2], project resolution and config | `taut/_constants.py::load_config`, `taut/client/_base.py::_ClientBase._resolve_target`, `taut/client/__init__.py::TautClient.init` | `tests/test_project_config.py`, `tests/test_cli.py::test_init_uses_project_config_postgres_backend` |
 | [TAUT-3.3], [TAUT-3.4], sidecar schema and version gate | `taut/state/_sql.py::SqlSidecarTautState.ensure_schema`, `taut/state/__init__.py::TautState` | `tests/test_state_contract.py`, `tests/test_shared_contract.py`, `extensions/taut_pg/tests/test_pg_sidecar.py::test_postgres_concurrent_empty_schema_initializers_converge` |
 | [TAUT-4], channels, membership, replies, reads, logs, and listing | `taut/client/_threads.py::ThreadsMixin.join`, `leave`, `list_threads`; `taut/client/_messaging.py::MessagingMixin.say`, `reply`, `read_unread`, `log`; `taut/client/_identity.py::IdentityMixin.who` | `tests/test_client.py`, `tests/test_cli.py`, `tests/test_shared_contract.py` |
-| [TAUT-5], [IAN-3], identity claims, recognition, rejoin, and name changes | `taut/identity.py`, `taut/client/_identity.py::IdentityMixin._resolve_member`, `_create_member`, `rejoin`, `set_name` | `tests/test_identity.py`, `tests/test_client.py`, `tests/test_cli.py::test_rejoin_*` |
+| [TAUT-5], [IAN-3], [IAN-4], identity claims, recognition, automatic display names, rejoin, and name changes | `taut/identity.py`, `taut/state/_sql.py::route_keys_in_use`, `taut/client/_identity.py::IdentityMixin._resolve_member`, `_create_member`, `rejoin`, `set_name` | `tests/test_identity.py`, `tests/test_client.py::test_automatic_*`, `test_repeated_pi_agents_use_capitalized_curated_names`, `tests/test_shared_contract.py::test_project_automatic_name_skips_alias_owned_route_contract`, `tests/test_cli.py::test_rejoin_*` |
 | [TAUT-6], message envelopes and sender snapshots | `taut/envelope.py`, `taut/client/_codec.py::message_from_body`, `message_from_decoded`, `taut/client/_messaging.py::MessagingMixin._write_message` | `tests/test_envelope.py`, `tests/test_client.py::test_set_name_changes_current_name_without_changing_member_id` |
 | [TAUT-7], read cursors and chat-history peek discipline | `taut/client/_messaging.py::MessagingMixin.read_unread`, `_implicit_subthread_membership`, `taut/state/_sql.py` membership and cursor helpers | `tests/test_client.py`, `tests/test_state_contract.py`, `tests/test_shared_contract.py` |
 | [TAUT-8.1], [TAUT-8.2], CLI behavior, rendering, JSON, help, and exit codes | `taut/cli.py` | `tests/test_cli.py` parser-inventory, help-phrase, explicit-argv, subprocess, rendering, and exit-class tests; `tests/test_public_api.py` |
@@ -378,6 +387,7 @@ watch, `taut/client/_notifications.py::NotificationsMixin.inbox` claims notifica
 
 ## Related Plans
 
+- `docs/plans/2026-07-12-automatic-display-name-capitalization-plan.md`
 - `docs/plans/2026-07-10-taut-dynamic-native-waiter-replacement-plan.md`
 - `docs/plans/2026-06-18-member-identity-addressing-plan.md`
 - `docs/plans/2026-06-12-taut-foundation-plan.md`

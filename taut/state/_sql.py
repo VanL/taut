@@ -373,8 +373,8 @@ class SqlSidecarTautState:
             updated_ts=updated_ts,
         )
 
-    def member_names_in_use(self) -> set[str]:
-        return member_names_in_use(self.queue)
+    def route_keys_in_use(self) -> set[str]:
+        return route_keys_in_use(self.queue)
 
 
 def ensure_schema(queue: Queue, *, dialect: SqlDialect) -> None:
@@ -1030,8 +1030,17 @@ def apply_channel_rename_state(
         )
 
 
-def member_names_in_use(queue: Queue) -> set[str]:
-    return {member["name_key"] for member in list_members(queue)}
+def route_keys_in_use(queue: Queue) -> set[str]:
+    with queue.sidecar() as session:
+        rows = _all(
+            session,
+            """
+            SELECT name_key AS route_key FROM taut_members
+            UNION
+            SELECT alias_key AS route_key FROM taut_member_aliases
+            """,
+        )
+    return {str(row[0]) for row in rows}
 
 
 def _member_select(where: str) -> str:

@@ -24,7 +24,7 @@ from typing import Any
 import pytest
 import taut_summon._state as state_module
 from simplebroker import Queue
-from simplebroker.ext import DatabaseError
+from simplebroker.ext import DatabaseError, IntegrityError
 from taut_summon._state import (
     SUMMON_SCHEMA_VERSION,
     SUMMON_SCHEMA_VERSION_KEY,
@@ -162,6 +162,105 @@ def test_version_gate_refuses_older_schema(state_queue: Queue) -> None:
 
     with pytest.raises(SummonSchemaVersionError):
         ensure_summon_schema(state_queue)
+
+
+def test_version_two_migrates_claim_names_to_lowercase_route_keys(
+    state_queue: Queue,
+) -> None:
+    ensure_summon_schema(state_queue)
+    with state_queue.sidecar(transaction=True) as session:
+        session.run("DROP INDEX IF EXISTS taut_summon_claim_route_key_uq")
+    _set_meta_value(state_queue, SUMMON_SCHEMA_VERSION_KEY, "2")
+    with state_queue.sidecar(transaction=True) as session:
+        session.run(
+            """
+            INSERT INTO taut_summon_claims (
+                name, provider, driver_pid, driver_start_time, claimed_ts
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            ("Reviewer", "scripted", 123, "legacy-start", 1),
+        )
+
+    ensure_summon_schema(state_queue)
+
+    assert get_summon_schema_version(state_queue) == 3
+    migrated = get_claim(state_queue, name="REVIEWER", provider="scripted")
+    assert migrated is not None
+    assert migrated["name"] == "reviewer"
+
+
+def test_version_two_case_variant_claims_fail_before_migration(
+    state_queue: Queue,
+) -> None:
+    ensure_summon_schema(state_queue)
+    with state_queue.sidecar(transaction=True) as session:
+        session.run("DROP INDEX IF EXISTS taut_summon_claim_route_key_uq")
+    _set_meta_value(state_queue, SUMMON_SCHEMA_VERSION_KEY, "2")
+    with state_queue.sidecar(transaction=True) as session:
+        for name, pid in (("Reviewer", 123), ("reviewer", 456)):
+            session.run(
+                """
+                INSERT INTO taut_summon_claims (
+                    name, provider, driver_pid, driver_start_time, claimed_ts
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (name, "scripted", pid, f"legacy-{pid}", pid),
+            )
+
+    with pytest.raises(SummonSchemaVersionError, match="case-variant claims"):
+        ensure_summon_schema(state_queue)
+
+    assert get_summon_schema_version(state_queue) == 2
+    with state_queue.sidecar() as session:
+        rows = list(
+            session.run(
+                """
+                SELECT name FROM taut_summon_claims
+                WHERE provider = ? ORDER BY name
+                """,
+                ("scripted",),
+                fetch=True,
+            )
+        )
+    assert {str(row[0]) for row in rows} == {"Reviewer", "reviewer"}
+
+
+def test_version_three_index_and_lookup_cover_a_late_version_two_writer(
+    state_queue: Queue,
+) -> None:
+    ensure_summon_schema(state_queue)
+    with state_queue.sidecar(transaction=True) as session:
+        session.run(
+            """
+            INSERT INTO taut_summon_claims (
+                name, provider, driver_pid, driver_start_time, claimed_ts
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            ("Legacy", "scripted", 123, "legacy-start", 1),
+        )
+
+    visible = get_claim(state_queue, name="legacy", provider="scripted")
+    assert visible is not None
+    assert visible["name"] == "Legacy"
+
+    with pytest.raises(IntegrityError):
+        with state_queue.sidecar(transaction=True) as session:
+            session.run(
+                """
+                INSERT INTO taut_summon_claims (
+                    name, provider, driver_pid, driver_start_time, claimed_ts
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                ("legacy", "scripted", 456, "new-start", 2),
+            )
+
+    assert release_claim(
+        state_queue,
+        name="LEGACY",
+        provider="scripted",
+        driver_pid=123,
+        driver_start_time="legacy-start",
+    )
 
 
 def test_summon_schema_leaves_core_version_key_alone(state_queue: Queue) -> None:
@@ -1008,6 +1107,35 @@ def test_claim_name_refuses_live_claim(
             driver_start_time=my_start,
             claimed_ts=state_queue.generate_timestamp(),
         )
+
+
+def test_claim_name_serializes_display_case_through_one_route_key(
+    state_queue: Queue, live_child: subprocess.Popen[bytes]
+) -> None:
+    ensure_summon_schema(state_queue)
+    child_pid, child_start = capture_driver_evidence(live_child.pid)
+    stored = claim_name(
+        state_queue,
+        name="Scripted",
+        provider="scripted",
+        driver_pid=child_pid,
+        driver_start_time=child_start,
+        claimed_ts=state_queue.generate_timestamp(),
+    )
+    my_pid, my_start = capture_driver_evidence()
+
+    with pytest.raises(ClaimConflictError, match="live"):
+        claim_name(
+            state_queue,
+            name="scripted",
+            provider="scripted",
+            driver_pid=my_pid,
+            driver_start_time=my_start,
+            claimed_ts=state_queue.generate_timestamp(),
+        )
+
+    assert stored["name"] == "scripted"
+    assert get_claim(state_queue, name="SCRIPTED", provider="scripted") == stored
 
 
 def test_claim_name_reclaims_dead_claim(state_queue: Queue) -> None:

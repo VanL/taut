@@ -463,7 +463,9 @@ class SummonDriver:
         provider = request.provider_flag or requested
         self._require_adapter(provider)
 
-        target = requested
+        target = (
+            self._automatic_name(client, requested, set()) if implied else requested
+        )
         if member is not None:
             # A member exists but was never summoned: never adopt.
             if not implied:
@@ -471,7 +473,6 @@ class SummonDriver:
                     f"member '{requested}' already exists and was not "
                     "summoned; pick another name"
                 )
-            target = self._fallback_name(client, requested, set())
             logger.warning("summoned as '%s' — '%s' is taken", target, requested)
         return self._first_summon(client, requested, target, provider, implied)
 
@@ -511,7 +512,7 @@ class SummonDriver:
                         f"could not settle a name for '{requested}' after "
                         f"{_NAME_RETRY_ATTEMPTS} attempts"
                     ) from exc
-                target = self._fallback_name(client, requested, attempted)
+                target = self._automatic_name(client, requested, attempted)
                 attempted.add(target)
                 logger.warning(
                     "summon of '%s' is already in flight; trying '%s'",
@@ -559,7 +560,7 @@ class SummonDriver:
                         f"could not settle a name for '{requested}' after "
                         f"{_NAME_RETRY_ATTEMPTS} attempts"
                     ) from None
-                target = self._fallback_name(client, requested, attempted)
+                target = self._automatic_name(client, requested, attempted)
                 attempted.add(target)
                 logger.warning(
                     "requested name '%s' was taken mid-summon; trying '%s'",
@@ -1309,10 +1310,10 @@ class SummonDriver:
             provider=boot.provider,
         )
 
-    def _fallback_name(
+    def _automatic_name(
         self, client: TautClient, requested: str, attempted: set[str]
     ) -> str:
-        taken = {requested, *attempted}
+        taken = set(attempted)
         for member in client.who():
             taken.add(member.name)
             taken.update(member.aliases)

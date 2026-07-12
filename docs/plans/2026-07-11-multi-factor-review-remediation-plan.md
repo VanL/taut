@@ -1425,16 +1425,16 @@ After Task 12 updates the configuration, preserve the separate process lanes:
 ```bash
 export COVERAGE_PROCESS_START="$PWD/pyproject.toml"
 export COVERAGE_FILE="$PWD/.coverage"
-uv run coverage erase
-uv run coverage run --parallel-mode -m pytest tests -m "not slow"
-uv run coverage run --parallel-mode -m pytest extensions/taut_summon/tests -m "not xdist_group"
-uv run coverage run --parallel-mode -m pytest extensions/taut_summon/tests -m "xdist_group and not requires_live_harness and not requires_local_llm" -n 1 --dist loadgroup
-uv run coverage run --parallel-mode -m pytest extensions/taut_summon/tests/test_live_harness.py -n 1 --dist loadgroup
-uv run coverage run --parallel-mode -m pytest extensions/taut_summon/tests/test_live_local_llm.py -n 1 --dist loadgroup
-uv run coverage combine
-uv run python bin/verify-coverage-evidence.py
-uv run coverage report --show-missing
-uv run coverage xml
+python -m coverage erase
+python -m coverage run --parallel-mode -m pytest tests -m "not slow"
+python -m coverage run --parallel-mode -m pytest extensions/taut_summon/tests -m "not xdist_group"
+python -m coverage run --parallel-mode -m pytest extensions/taut_summon/tests -m "xdist_group and not requires_live_harness and not requires_local_llm" -n 1 --dist loadgroup
+python -m coverage run --parallel-mode -m pytest extensions/taut_summon/tests/test_live_harness.py -n 1 --dist loadgroup
+python -m coverage run --parallel-mode -m pytest extensions/taut_summon/tests/test_live_local_llm.py -n 1 --dist loadgroup
+python -m coverage combine
+python bin/verify-coverage-evidence.py
+python -m coverage report --show-missing
+python -m coverage xml
 ```
 
 The first full run proved that pytest-cov and native subprocess patching
@@ -1601,7 +1601,7 @@ and did it preserve every named invariant outside its scope?"
 |---|---|---|---|---|
 | Task 11 metadata inventory | Treat a root `VERSION` file as a release source and gate it | No `VERSION` file exists or is created; manifests, `taut/_constants.py`, README pins, and dependency floors are gated | A second version file would be redundant state with no current consumer; creating it only to satisfy the plan violates YAGNI | None; this is a plan-source correction, not a product-spec change |
 | Task 9B DM mention action | Render `taut log <source-thread>` for every mention source | Direct execution proved internal `dm.*` names are intentionally invalid `log` operands; DM mentions render bare `taut read`, while channels/subthreads retain `log` | Preserves the DM privacy boundary and makes the advertised action executable | [IAN-6.4] was corrected before completion |
-| Task 12 coverage owner | Use pytest-cov invocations plus Coverage's native subprocess patch | Coverage's first full run exposed a corrupt parallel shard and 0% scripted-provider child coverage; CI now uses `coverage run --parallel-mode -m pytest` as the sole owner, and the scripted adapter launches its installed provider module | One coverage owner removes data-file contention; module launch remains a real child and makes the installed source measurable | No product-spec change; workflow tests and named-line verifier encode the gate |
+| Task 12 coverage owner | Use pytest-cov invocations plus Coverage's native subprocess patch | Coverage's first full run exposed a corrupt parallel shard and 0% scripted-provider child coverage; CI now uses `python -m coverage run --parallel-mode -m pytest` as the sole owner through the setup-python interpreter where `.[dev]` was installed, and the scripted adapter launches its installed provider module | One coverage owner removes data-file contention; avoiding `uv run` prevents it from creating a runtime-only project environment without Coverage; module launch remains a real child and makes the installed source measurable | No product-spec change; workflow tests and named-line verifier encode the gate |
 | Task 14 commit gate | Mark completion only after a commit | Implementation remains intentionally uncommitted because the user did not request a commit | Repository policy forbids committing merely to satisfy the completion gate; handoff reports the exact uncommitted state | None |
 | Task 0 step 2 / [TAUT-3.4] | Forced transaction-order test (pause lower-id writer A pre-commit, prove B cannot publish first) for SQLite and Postgres, upstream in SimpleBroker | Not added; upstream keeps the pre-existing `tests/test_write_visibility.py` (sqlite_only) and declines the forced-order test as YAGNI. SQLite ordering is covered probabilistically there; PG ordering has no dedicated forced-order proof | SimpleBroker's atomic write commits id-allocation and row-insert in one transaction, so return-id order equals commit order by construction; the taut-side A2 real-race test exercises the property that matters to taut (a concurrently-committed intervening message blocks the sender advance). The residual PG-only gap is the visibility-ordering guarantee under a paused writer, unproven by a dedicated test | None; if a future backend weakens single-transaction write atomicity, add the forced-order test then |
 | Task 2 step 1 / R3 | Dedicated A1 test: pause writer A before publication, let B commit, third caught-up observer reads both in id order | Not added as a separate test. The A1 property (second-publisher receives the later id, no lower id publishes late) is exercised only incidentally by the A2 race test `test_sender_does_not_skip_message_published_during_its_write` | The A1 root cause — a pre-allocated timestamp committing below an advanced cursor — is eliminated structurally by removing the live exact-id insert path entirely (`_write_message` now uses `queue.write` and the returned id), so there is no pre-publication window left for a third observer to expose. The A2 test still exercises real concurrent commit ordering | Low; a dedicated third-observer test would harden against regression if the atomic-write path is ever reworked |
@@ -1626,6 +1626,8 @@ not relabeled as product reds.
 | Final release readiness (Task 14) | Independent implementation review found and reproduced DSN exposure, incomplete CLI help/actions, stale specs/pins, missing shared gates, bootstrap audit pollution, residual creation evidence, and empty evidence log | `ruff`/format clean; mypy `78` files clean; three packages built at `0.5.3`; paired artifact compatibility passed all four cases; `python bin/release.py all --checks-only` ended `Checks passed` without mutations | same | Worktree is uncommitted and therefore not claimed ready to land under repository policy |
 | Review remediation: `\r` framing bypass ([SUM-5.2]) | `pytest test_driver.py::test_format_carriage_return_bodies_cannot_escape_indentation` → FAILED (unindented `[system]` line after lone `\r`) | Same test after normalizing `\r\n`/`\r`→`\n` in `_indent_continuation_lines` → passed; `-k "format or injection_round_trip"` → 12 passed | uncommitted, baseline 06bfc93 | None; adapter paste path still maps `\r`→`\n`, now after indentation |
 | Review remediation: CLI `join --new` refusal ([IAN-3.3]) | (no prior CLI-level test existed for the occupied-name refusal) | `pytest test_cli.py::test_cli_join_new_refuses_occupied_explicit_name` → passed (exit 1, one stderr line, no traceback, single `van` remains) | uncommitted, baseline 06bfc93 | None |
+| CI remediation: control owner-thread fixture ([SUM-9]/[SUM-10]) | GitHub Linux Python 3.13/3.14 repeatedly failed `test_control_loop_constructs_and_closes_persistent_handles_on_owner_thread`: its invented token lost a race to the immediate audit, which correctly raised `TokenError` and closed the reactor | Fixture now creates a real token-selected member before starting the owner thread and retains the published reactor locally before signaling shutdown, so teardown cannot invalidate the request-stop call; the focused xdist test passed 20 consecutive invocations and the complete `not xdist_group` lane passed (`192` tests) | uncommitted, baseline 06bfc93 | Test-only correction; production invalid-token failure semantics are unchanged |
+| CI remediation: Coverage interpreter selection (Task 12) | CI raised `ModuleNotFoundError: coverage`; local clean-environment reproduction `uv run --isolated --no-dev python -c 'import coverage'` failed because `uv run` built a runtime-only environment instead of using the setup-python interpreter provisioned by `uv pip install --system -e ".[dev]"` | Workflow now uses `python -m coverage` and direct `python` for the evidence checker; the workflow regression and plain-child subprocess probe pass. A fresh temporary venv installed with the workflow's `.[dev]` + Summon command then ran the core CLI and real first-summon driver under direct `python -m coverage`; combine succeeded and every named child/driver/control/CLI line was present | uncommitted, baseline `c7266dd` | Coverage subprocess startup remains opt-in through the job environment; children without Coverage safely skip the defensive `.pth` hook instead of being made less isolated. Dependency hygiene remains: `pytest-cov>=4.0` does not guarantee the Coverage 7 native-patch floor; changing dependency floors requires maintainer approval |
 
 ## Fresh-eyes checklist
 
@@ -1655,6 +1657,8 @@ not relabeled as product reds.
 | 6 | final architecture/test re-review | revised plan, P0/P1 blockers only | clean after final two corrections |
 | 7 | independent completed-work reviewer | assembled runtime, security, docs, tests, coverage, and release gates | findings reproduced and fixed; final behavioral re-review clean |
 | 8 | independent final-delta reviewer | sole-owner coverage, module child launch, evidence log, and uncommitted handoff | clean; no blocker or unsupported product claim |
+| 9 | independent CI-fixture reviewer | real token setup and owner-thread teardown race | clean after retaining the published reactor locally |
+| 10 | independent coverage-CI reviewer | setup-python interpreter selection, child bootstrap safety, workflow regression | clean; direct Coverage floor noted as non-blocking dependency hygiene |
 
 ### Findings
 

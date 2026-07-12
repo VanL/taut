@@ -9,6 +9,15 @@ from pathlib import Path
 
 import pytest
 from simplebroker import Queue, open_broker
+from simplebroker.ext import IntegrityError
+from taut_summon._state import (
+    LEDGER_QUEUE_NAME,
+    SUMMON_SCHEMA_VERSION_KEY,
+    SummonSchemaVersionError,
+    ensure_summon_schema,
+    get_claim,
+    get_summon_schema_version,
+)
 
 import taut.identity as identity
 from taut._constants import META_QUEUE_NAME
@@ -22,6 +31,16 @@ from taut.client import Message, Notification, TautClient
 from tests.conftest import build_cli_env, run_cli
 
 pytestmark = pytest.mark.shared
+
+
+def _downgrade_summon_claim_schema_to_v2(queue: Queue) -> None:
+    ensure_summon_schema(queue)
+    with queue.sidecar(transaction=True) as session:
+        session.run("DROP INDEX IF EXISTS taut_summon_claim_route_key_uq")
+        session.run(
+            "UPDATE taut_meta SET value = ? WHERE key = ?",
+            ("2", SUMMON_SCHEMA_VERSION_KEY),
+        )
 
 
 def _wait_until(predicate: Callable[[], bool], *, timeout: float = 3.0) -> None:
@@ -455,6 +474,115 @@ def test_project_member_id_survives_name_change_contract(
     with pytest.raises(EmptyResultError):
         TautClient(as_name="van").whoami()
     assert TautClient(as_name="VanL").whoami().member_id == before.member_id
+
+
+def test_project_automatic_name_skips_alias_owned_route_contract(
+    taut_project: Path,
+) -> None:
+    TautClient.init()
+    owner = TautClient(as_name="owner")
+    owner.join("general")
+    owner._state.add_member_alias(
+        member_id=owner.whoami().member_id,
+        alias="codex",
+        created_ts=1,
+    )
+    automatic = TautClient(
+        identity_capture=_agent_capture(pid=505, start_time="alias-route-start")
+    )
+
+    automatic.join("general")
+
+    assert automatic.whoami().name == "Codette"
+
+
+def test_project_summon_v2_claim_migration_and_route_index_contract(
+    taut_project: Path,
+) -> None:
+    TautClient.init()
+    client = TautClient()
+    queue = client.queue(LEDGER_QUEUE_NAME)
+    try:
+        _downgrade_summon_claim_schema_to_v2(queue)
+        with queue.sidecar(transaction=True) as session:
+            session.run(
+                """
+                INSERT INTO taut_summon_claims (
+                    name, provider, driver_pid, driver_start_time, claimed_ts
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                ("Reviewer", "scripted", 123, "legacy-start", 1),
+            )
+
+        ensure_summon_schema(queue)
+
+        assert get_summon_schema_version(queue) == 3
+        migrated = get_claim(queue, name="REVIEWER", provider="scripted")
+        assert migrated is not None
+        assert migrated["name"] == "reviewer"
+        with queue.sidecar(transaction=True) as session:
+            session.run(
+                """
+                INSERT INTO taut_summon_claims (
+                    name, provider, driver_pid, driver_start_time, claimed_ts
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                ("Legacy", "scripted", 789, "late-v2-start", 2),
+            )
+        assert get_claim(queue, name="legacy", provider="scripted") is not None
+        with pytest.raises(IntegrityError):
+            with queue.sidecar(transaction=True) as session:
+                session.run(
+                    """
+                    INSERT INTO taut_summon_claims (
+                        name, provider, driver_pid, driver_start_time, claimed_ts
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    ("LEGACY", "scripted", 456, "duplicate-v2-start", 3),
+                )
+    finally:
+        queue.close()
+        client.close()
+
+
+def test_project_summon_v2_case_variant_migration_fails_before_mutation_contract(
+    taut_project: Path,
+) -> None:
+    TautClient.init()
+    client = TautClient()
+    queue = client.queue(LEDGER_QUEUE_NAME)
+    try:
+        _downgrade_summon_claim_schema_to_v2(queue)
+        with queue.sidecar(transaction=True) as session:
+            for name, pid in (("Reviewer", 123), ("reviewer", 456)):
+                session.run(
+                    """
+                    INSERT INTO taut_summon_claims (
+                        name, provider, driver_pid, driver_start_time, claimed_ts
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (name, "scripted", pid, f"legacy-{pid}", pid),
+                )
+
+        with pytest.raises(SummonSchemaVersionError, match="case-variant claims"):
+            ensure_summon_schema(queue)
+
+        assert get_summon_schema_version(queue) == 2
+        with queue.sidecar() as session:
+            rows = list(
+                session.run(
+                    """
+                    SELECT name FROM taut_summon_claims
+                    WHERE provider = ? ORDER BY name
+                    """,
+                    ("scripted",),
+                    fetch=True,
+                )
+            )
+        assert {str(row[0]) for row in rows} == {"Reviewer", "reviewer"}
+    finally:
+        queue.close()
+        client.close()
 
 
 def test_project_dm_queue_stable_across_name_change_contract(

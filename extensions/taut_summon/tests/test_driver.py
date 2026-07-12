@@ -67,7 +67,12 @@ from taut_summon._driver import (
     _InjectionHalted,
     format_injection,
 )
-from taut_summon._state import get_session, list_sessions
+from taut_summon._state import (
+    LEDGER_QUEUE_NAME,
+    ensure_summon_schema,
+    get_session,
+    list_sessions,
+)
 from taut_summon.cli import RunRequest
 
 import taut.client._identity as core_identity_module
@@ -1343,6 +1348,40 @@ def test_format_mention_notification_golden() -> None:
 # --- bootstrap and lifecycle --------------------------------------------------
 
 
+def test_pi_bootstrap_capitalizes_implied_name_and_preserves_chosen_name(
+    summon_db: Path,
+) -> None:
+    def bootstrap(name: str, provider_flag: str | None) -> _BootstrapResult:
+        request = RunRequest(
+            name=name,
+            threads=("general",),
+            terminal=False,
+            persona=None,
+            system_prompt_file=None,
+            rate_limit=None,
+            db_path=str(summon_db),
+            provider_flag=provider_flag,
+        )
+        queue = Queue(LEDGER_QUEUE_NAME, db_path=str(summon_db))
+        ensure_summon_schema(queue)
+        client = TautClient(db_path=summon_db)
+        driver = SummonDriver(request, install_signal_handlers=False)
+        driver._queue = queue
+        driver._evidence = driver_module.capture_driver_evidence()
+        try:
+            return driver._bootstrap(client)
+        finally:
+            driver._release()
+            client.close()
+            queue.close()
+
+    implied = bootstrap("pi", None)
+    chosen = bootstrap("reviewer", "pi")
+
+    assert (implied.member_name, implied.provider) == ("Pi", "pi")
+    assert (chosen.member_name, chosen.provider) == ("reviewer", "pi")
+
+
 def test_first_summon_creates_agent_member_with_ledger_row(
     summon_db: Path, tmp_path: Path, driver_factory: Callable[..., DriverProcess]
 ) -> None:
@@ -1355,6 +1394,7 @@ def test_first_summon_creates_agent_member_with_ledger_row(
     )
     member = _member_by_name(summon_db, "scripted")
     assert member is not None
+    assert member.name == "Scripted"
     assert member.kind == "agent"
 
     # Presence anchors at the harness child ([SUM-4]): here while it runs.
@@ -1683,7 +1723,7 @@ def test_terminal_mode_posts_assistant_text_to_single_thread(
         except Exception:
             return False
         return any(
-            m.from_name == "scripted" and m.text == "echo: [#general] van: hi"
+            m.from_name == "Scripted" and m.text == "echo: [#general] van: hi"
             for m in log
         )
 
@@ -2189,7 +2229,7 @@ def test_midbootstrap_fallback_conflict_reclaims_before_next_create(
     driver._evidence = (1234, "1.0")
     fallbacks = iter(("reviewer-2", "reviewer-3"))
     monkeypatch.setattr(
-        driver, "_fallback_name", cast(Any, lambda *_args: next(fallbacks))
+        driver, "_automatic_name", cast(Any, lambda *_args: next(fallbacks))
     )
     monkeypatch.setattr(driver, "_ensure_threads", cast(Any, lambda *_args: None))
 
@@ -2306,7 +2346,7 @@ def test_multi_collision_then_post_insert_failure_reports_and_recovers_real_memb
             """
             CREATE TRIGGER summon_test_reject_first_candidates
             BEFORE INSERT ON taut_members
-            WHEN NEW.display_name IN ('reviewer', 'ada')
+            WHEN NEW.display_name IN ('reviewer', 'Ada')
             BEGIN
                 SELECT RAISE(ABORT, 'forced route collision');
             END
@@ -2344,7 +2384,7 @@ def test_multi_collision_then_post_insert_failure_reports_and_recovers_real_memb
         match = re.search(r"Residual continuity token: ([^. ]+)", message)
         assert match is not None
         token = match.group(1)
-        assert closed == ["reviewer", "ada", "grace"]
+        assert closed == ["reviewer", "Ada", "Grace"]
         residual = _member_by_name(summon_db, "grace")
         assert residual is not None
         assert get_session(queue, residual.member_id) is None
@@ -2811,7 +2851,7 @@ def test_default_persona_reaches_provider(
     driver.wait_for_start()
     prompt = driver.starts()[0]["env_system_prompt"]
     assert "## Your mouth" in prompt
-    assert "'scripted'" in prompt
+    assert "'Scripted'" in prompt
     assert "#general" in prompt
     assert driver.stop() == 0
 
@@ -2864,7 +2904,7 @@ def test_mouth_proof_scripted_runs_taut_say(
         except Exception:
             return False
         return any(
-            m.from_name == "scripted" and m.text == "pong-from-mouth" for m in log
+            m.from_name == "Scripted" and m.text == "pong-from-mouth" for m in log
         )
 
     wait_until(_posted_by_member, message="mouth-posted reply from the member")

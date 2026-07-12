@@ -207,6 +207,15 @@ Names are case-preserving but route-normalized. A name must match:
 
 The route key is lowercase ASCII. `VanL`, `vanl`, and `VANL` conflict.
 
+Automatically generated human and agent display names use the same display
+casing rule: normalize the login or process seed, then scan left-to-right,
+uppercase the first lowercase ASCII letter `[a-z]`, and leave all remaining
+characters unchanged. A digit-leading seed such as `2agent` therefore becomes
+`2Agent`; a seed with no ASCII letter is unchanged. Curated fallback candidates
+carry their intended display casing. Explicit names supplied through `--as`,
+`TAUT_AS`, the Python API, or `set name` are case-preserving and are never
+recased automatically. All forms still route through the lowercase `name_key`.
+
 Free-form display profiles, names with spaces, and non-ASCII route aliases are
 out of scope until a later spec defines unambiguous shell and JSON behavior.
 
@@ -242,6 +251,10 @@ An explicit name change fails if the normalized name is already owned by another
 member as either a current name or alias. Automatic name generation may append
 or choose a deterministic fallback to avoid collisions, but explicit `set name`
 must not silently choose a different name.
+
+Automatic candidate order is the normalized seed, a curated per-agent pool
+when one exists, the shared historical-name pool, then a numeric suffix. The Pi
+family begins `Pi`, `Tau`, `Phi`.
 
 ### [IAN-4.5] Message sender snapshot
 
@@ -556,6 +569,11 @@ logic for contract tests.
 Required proofs:
 
 - changing a member name does not change `member_id`
+- automatic human and agent names use the [IAN-4.2] display casing rule while
+  explicit names preserve caller casing
+- automatic availability includes both current names and aliases in the
+  lowercase route namespace
+- the Pi automatic sequence begins `Pi`, `Tau`, `Phi`
 - messages written before a name change keep the old `from` snapshot and the
   same `from_id`
 - messages written after a name change use the new `from` snapshot and the
@@ -580,6 +598,9 @@ Required proofs:
 
 ## Related Plans
 
+- `docs/plans/2026-07-12-automatic-display-name-capitalization-plan.md` —
+  automatic human/agent display casing, route-aware candidate selection, and
+  the Pi/Tau/Phi family.
 - `docs/plans/2026-07-11-multi-factor-review-remediation-plan.md` — reviewed
   identity, route concurrency, reply notification, human rendering, and trust
   remediation program for v0.5.3.

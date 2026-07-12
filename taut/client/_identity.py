@@ -337,7 +337,7 @@ class IdentityMixin(_ClientBase):
                 fallback = "agent" if capture.kind == "agent" else "human"
                 candidate = identity.choose_name(
                     seed=seed,
-                    taken=self._state.member_names_in_use(),
+                    taken=self._state.route_keys_in_use(),
                     fallback=fallback,
                 )
             validate_member_name(candidate)

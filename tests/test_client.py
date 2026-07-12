@@ -1224,13 +1224,14 @@ def _anchor_capture(
     start_time: str = "anchor-start",
     cwd: str = "/workspace/one",
     host_id: str = "host:test",
+    executable: str = "workerbot",
 ) -> identity.IdentityCapture:
     process = identity.ProcessInfo(
         pid=pid,
         ppid=1,
         start_time=start_time,
-        exe="/usr/local/bin/workerbot",
-        argv=("workerbot",),
+        exe=f"/usr/local/bin/{executable}",
+        argv=(executable,),
         uid=501,
         pgid=pid,
         session_id=99,
@@ -1246,6 +1247,108 @@ def _anchor_capture(
         kind="agent",
         rule="test capture",
     )
+
+
+def _human_capture(*, login: str = "van") -> identity.IdentityCapture:
+    return identity.IdentityCapture(
+        chain=(),
+        host=identity.HostIdentity("host:test", "test-host"),
+        uid=501,
+        login=login,
+        anchor=None,
+        kind="human",
+        rule="test capture",
+    )
+
+
+def test_automatic_agent_name_capitalizes_first_ascii_letter(tmp_path: Path) -> None:
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    client = TautClient(
+        db_path=tmp_path / ".taut.db",
+        identity_capture=_anchor_capture(executable="codex"),
+    )
+
+    client.join("general")
+
+    assert client.whoami().name == "Codex"
+
+
+def test_automatic_human_name_capitalizes_first_ascii_letter(tmp_path: Path) -> None:
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    client = TautClient(
+        db_path=tmp_path / ".taut.db",
+        identity_capture=_human_capture(login="van"),
+    )
+
+    client.join("general")
+
+    assert client.whoami().name == "Van"
+
+
+def test_repeated_pi_agents_use_capitalized_curated_names(
+    tmp_path: Path,
+) -> None:
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    db = tmp_path / ".taut.db"
+    pi = TautClient(
+        db_path=db,
+        identity_capture=_anchor_capture(
+            pid=101,
+            start_time="pi-start",
+            executable="pi",
+        ),
+    )
+    tau = TautClient(
+        db_path=db,
+        identity_capture=_anchor_capture(
+            pid=202,
+            start_time="tau-start",
+            executable="pi",
+        ),
+    )
+    phi = TautClient(
+        db_path=db,
+        identity_capture=_anchor_capture(
+            pid=303,
+            start_time="phi-start",
+            executable="pi",
+        ),
+    )
+
+    pi.join("general")
+    tau.join("general")
+    phi.join("general")
+
+    assert pi.whoami().name == "Pi"
+    assert tau.whoami().name == "Tau"
+    assert phi.whoami().name == "Phi"
+    assert (
+        TautClient(db_path=db, as_name="pi").whoami().member_id == pi.whoami().member_id
+    )
+
+
+def test_automatic_name_skips_alias_owned_route(tmp_path: Path) -> None:
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    db = tmp_path / ".taut.db"
+    owner = TautClient(db_path=db, as_name="owner")
+    owner.join("general")
+    owner._state.add_member_alias(
+        member_id=owner.whoami().member_id,
+        alias="codex",
+        created_ts=1,
+    )
+    automatic = TautClient(
+        db_path=db,
+        identity_capture=_anchor_capture(
+            pid=505,
+            start_time="alias-collision-start",
+            executable="codex",
+        ),
+    )
+
+    automatic.join("general")
+
+    assert automatic.whoami().name == "Codette"
 
 
 def test_anchor_match_recovers_member_after_anchor_chdir(tmp_path: Path) -> None:
@@ -1429,7 +1532,7 @@ def test_first_contact_join_retries_next_name_after_losing_race(
     reliable 5-process overlap is inherently flaky, so the concurrent winner
     is injected between the loser's name snapshot and its ``insert_member``
     call through the real state API. The state layer is not mocked: the
-    wrapper delegates to the real ``member_names_in_use`` and the injected
+    wrapper delegates to the real ``route_keys_in_use`` and the injected
     winner performs a real ``join``.
     """
     TautClient.init(db_path=tmp_path / ".taut.db")
@@ -1441,7 +1544,7 @@ def test_first_contact_join_retries_next_name_after_losing_race(
         db_path=db, identity_capture=_anchor_capture(pid=202, start_time="l-start")
     )
 
-    original = SqlSidecarTautState.member_names_in_use
+    original = SqlSidecarTautState.route_keys_in_use
     fired = {"done": False}
 
     def racing(self: SqlSidecarTautState) -> set[str]:
@@ -1451,7 +1554,7 @@ def test_first_contact_join_retries_next_name_after_losing_race(
             winner.join("general")
         return names
 
-    monkeypatch.setattr(SqlSidecarTautState, "member_names_in_use", racing)
+    monkeypatch.setattr(SqlSidecarTautState, "route_keys_in_use", racing)
 
     loser.join("general")
 
@@ -1473,7 +1576,7 @@ def test_first_contact_retry_is_bounded_and_names_last_candidate(
         db_path=db, identity_capture=_anchor_capture(pid=303, start_time="b-start")
     )
 
-    original = SqlSidecarTautState.member_names_in_use
+    original = SqlSidecarTautState.route_keys_in_use
     counter = {"ts": 1000}
 
     def always_racing(self: SqlSidecarTautState) -> set[str]:
@@ -1502,7 +1605,7 @@ def test_first_contact_retry_is_bounded_and_names_last_candidate(
         return names
 
     original_insert = SqlSidecarTautState.insert_member
-    monkeypatch.setattr(SqlSidecarTautState, "member_names_in_use", always_racing)
+    monkeypatch.setattr(SqlSidecarTautState, "route_keys_in_use", always_racing)
 
     with pytest.raises(IdentityError, match="last candidate"):
         joiner.join("general")

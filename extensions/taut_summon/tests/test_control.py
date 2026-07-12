@@ -1405,6 +1405,15 @@ def test_control_loop_constructs_and_closes_persistent_handles_on_owner_thread(
 ) -> None:
     db_path = tmp_path / ".taut.db"
     control_module.TautClient.init(db_path=db_path)
+    # The control loop audits immediately after publishing its handles. Use a
+    # real token-selected member so this ownership test cannot race an
+    # unrelated TokenError from an invented identity.
+    bootstrap = control_module.TautClient(db_path=db_path, as_name="bot")
+    bootstrap.join("general")
+    created = bootstrap.last_created_member
+    assert created is not None and created.token is not None
+    bootstrap.join("dev")
+    bootstrap.close()
     construction: list[tuple[bool, threading.Thread]] = []
     client_closes: list[threading.Thread] = []
 
@@ -1421,9 +1430,9 @@ def test_control_loop_constructs_and_closes_persistent_handles_on_owner_thread(
     monkeypatch.setenv("TAUT_SUMMON_CONTROL_INTERVAL", "0.05")
     shutdown = threading.Event()
     loop = ControlLoop(
-        member_id="m_" + "a" * 26,
+        member_id=created.member_id,
         db_path=str(db_path),
-        token="taut-tok",
+        token=created.token,
         provider="scripted",
         threads=("general", "dev"),
         handle_provider=lambda: None,
@@ -1449,9 +1458,10 @@ def test_control_loop_constructs_and_closes_persistent_handles_on_owner_thread(
     deadline = time.monotonic() + 3.0
     while loop._control_reactor is None and time.monotonic() < deadline:
         time.sleep(0.01)
-    assert loop._control_reactor is not None
+    reactor = loop._control_reactor
+    assert reactor is not None
     shutdown.set()
-    loop._control_reactor.request_stop()
+    reactor.request_stop()
     owner.join(timeout=3.0)
 
     assert not owner.is_alive()

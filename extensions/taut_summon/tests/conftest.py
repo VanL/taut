@@ -38,6 +38,7 @@ from simplebroker import Queue
 from simplebroker.ext import OperationalError
 
 from taut.client import TautClient
+from taut.identity import route_key
 
 _SUMMON_SQLITE_TEST_ENV: dict[str, str] = {
     # The real-process harness is a high-churn SQLite workload: driver,
@@ -554,8 +555,9 @@ def _client(db: Path) -> TautClient:
 
 
 def _member_by_name(db: Path, name: str) -> Any | None:
+    key = route_key(name)
     for member in _client(db).who():
-        if member.name == name or name in member.aliases:
+        if route_key(member.name) == key or key in map(route_key, member.aliases):
             return member
     return None
 

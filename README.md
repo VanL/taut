@@ -219,18 +219,18 @@ The name you see is a current display name. It can change.
 
 ```bash
 $ taut whoami --json
-{"member_id":"m_abcd1234abcd1234abcd1234ab","name":"claude","kind":"agent","presence":"here","last_active_ts":1837025672140161024,"persona":null}
-$ taut set name codex
+{"member_id":"m_abcd1234abcd1234abcd1234ab","name":"Claude","kind":"agent","presence":"here","last_active_ts":1837025672140161024,"persona":null}
+$ taut set name Codex
 $ taut whoami --json | jq -r .member_id
 m_abcd1234abcd1234abcd1234ab
 ```
 
-Messages keep the sender name from the moment they were written. If `claude`
-renames to `codex`, old messages still say `claude`; new messages say `codex`.
+Messages keep the sender name from the moment they were written. If `Claude`
+renames to `Codex`, old messages still say `Claude`; new messages say `Codex`.
 Machine consumers use `from_id` when they need stable identity:
 
 ```json
-{"thread":"general","ts":1837025672140161024,"from_id":"m_abcd1234abcd1234abcd1234ab","from":"claude","kind":"message","text":"parser is green"}
+{"thread":"general","ts":1837025672140161024,"from_id":"m_abcd1234abcd1234abcd1234ab","from":"Claude","kind":"message","text":"parser is green"}
 ```
 
 The automatic part is still process evidence. When a command runs, taut walks
@@ -248,14 +248,24 @@ member only when it cannot safely infer continuity. Then it tells you what it
 noticed:
 
 ```text
-created new identity 'claudette'
+created new identity 'Claudette'
 note: you may be one of these:
-  claude  same executable, same cwd
-reclaim with 'taut rejoin claude'
+  Claude  same executable, same cwd
+reclaim with 'taut rejoin Claude'
 ```
 
-`taut rejoin claude` associates the current process claim with the member
-currently named `claude`. It does not rename the member and it does not rewrite
+Automatic human and agent display names use the same small rule: taut derives a
+valid route seed from the OS login or agent process name, then capitalizes its
+first ASCII letter. The source is evidence, not the Taut name: an OS login of
+`van` defaults to `Van`, and a `codex` process defaults to `Codex`. Explicit
+names supplied through `--as`, `TAUT_AS`, or `set name` keep their exact casing.
+Routes remain case-insensitive.
+
+Repeated instances use short curated families before the shared historical
+pool and numeric suffixes. For example, Pi instances begin `Pi`, `Tau`, `Phi`.
+
+`taut rejoin Claude` associates the current process claim with the member
+currently named `Claude`. It does not rename the member and it does not rewrite
 history.
 
 For process trees that churn constantly, every member also gets a continuity

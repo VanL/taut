@@ -112,12 +112,17 @@ taut dismiss NAME
   behavior depends on whether the name was chosen or implied
   ([SUM-4] states the rule; summarized): the convenience form
   (`taut summon claude`, name implied by the provider) falls back
-  through the [IAN-9] pool — a second claude becomes `claudette` or
-  `claude-2`, with a console note; an explicitly chosen name
+  through the [IAN-9] pool — a second Claude becomes `Claudette` or
+  `Claude-2`, with a console note; an explicitly chosen name
   (`--provider` given) that collides with a non-summoned member
   refuses loudly instead. Default thread `#general` unless threads are
   given; `taut summon reviewer --provider claude dev` names the member
   `reviewer`, re-summonable thereafter by name alone.
+  An implied provider name is an automatically generated display name under
+  [IAN-4.2]. `taut summon pi` therefore starts with member name `Pi`, while
+  `taut summon reviewer --provider pi` preserves the explicitly chosen
+  `reviewer`. Provider registry keys remain lowercase and do not change when
+  the member display name is capitalized.
 - `stop`/`status` are thin clients of the control plane ([SUM-9]) usable
   from any terminal; `taut dismiss NAME` is `stop`.
 
@@ -127,7 +132,7 @@ taut dismiss NAME
   After bootstrap `rejoin()` points the anchor at that child. Before spawn, a
   driver-anchored agent capture creates the member and obtains the continuity
   token required in the child environment. The seam is public:
-  `taut.identity` capture types and `capture_process`, feeding
+  `taut.identity` capture types, `capture_process`, and `route_key`, feeding
   `TautClient(identity_capture=...)`.
   - **Name resolution before anything else**: the driver resolves the
     requested name through core (public `who()`/route lookup) to a
@@ -142,7 +147,7 @@ taut dismiss NAME
       **`taut.identity.choose_name()`** — blessed for extensions here
       alongside the capture surface — seeded with the requested name
       against the names in use, with a console note
-      (`summoned as 'claudette' — 'claude' is taken`). The user asked
+      (`summoned as 'Claudette' — 'claude' is taken`). The user asked
       for *a* claude, not that exact string (L2).
     - *Chosen name* (`--provider` given, so the positional was a
       deliberate choice): refuse loudly with the collision and a hint
@@ -151,11 +156,17 @@ taut dismiss NAME
     This chosen-name refusal applies at resolution time, before anything is
     created. A collision that appears after the transient claim is handled the
     same way for implied and chosen names: release that claim, choose the
-    documented loud fallback, and retry.
+    documented loud fallback, and retry. A chosen name bypasses automatic
+    selection at initial resolution and refuses an already-visible collision.
+    If a route collision appears only after its transient claim was acquired,
+    the fallback is automatic and therefore uses [IAN-4.2] display casing for
+    both implied and initially chosen requests.
   - **Bootstrap ordering** resolves the token/env cycle, the concurrent-summon
     race, and the rule that a foreign member must never be adopted:
-    0. *Claim the name*: transactionally insert (name, provider) into
-       the transient claims table ([SUM-8]). A loser of a concurrent
+    0. *Claim the name*: transactionally insert (name key, provider) into
+       the transient claims table ([SUM-8]). The claim boundary normalizes the
+       display candidate to its lowercase [IAN-4.2] route key, so `Claude` and
+       `claude` serialize through one slot. A loser of a concurrent
        same-name summon gets the constraint error and applies the
        collision rule above — nothing exists yet, so it applies
        cleanly: an implied name retries with the `choose_name`
@@ -670,12 +681,25 @@ durable conversation; the harness session is an optimization of it.
 
 - **Two extension-owned sidecar tables**, split by lifetime:
   - `taut_summon_claims` — **transient**. One row per in-flight
-    bootstrap: (name, provider) PRIMARY KEY (the concurrent-summon
-    serialization point, [SUM-4] step 0), driver pid + start-time
-    evidence, claimed timestamp. Deleted at [SUM-4] step 3; a row whose
+    bootstrap: (name, provider) PRIMARY KEY. Version-3 writers store the
+    lowercase [IAN-4.2] route key in `name`; a unique expression index on
+    `(LOWER(name), provider)` is the concurrent-summon serialization point
+    ([SUM-4] step 0). Claim lookup and release use the same `LOWER(name)` key,
+    so an already-running version-2 writer cannot create an invisible
+    mixed-case route during rollout. The remaining fields are driver pid +
+    start-time evidence and claimed timestamp. Deleted at [SUM-4] step 3; a row whose
     driver evidence is dead is reclaimable. Because claims are
     transient, a name a member has since renamed away from is claimable
     again — the name key never permanently occupies anything.
+    Summon schema version 3 migrates version-2 claim names to lowercase route
+    keys and creates the unique route expression index in one transaction. The
+    index construction serializes with concurrent claim inserts on supported
+    SQL backends; migration re-reads and normalizes rows under that lock. If two
+    legacy or racing rows for the same provider collapse to one route key,
+    migration fails loudly before changing either row or the stored version; an
+    operator must let or make one transient claim clear and retry. The index
+    plus normalized lookup keeps a late version-2 writer visible and unique
+    after migration.
   - `taut_summon_sessions` — **durable**. One row per summoned member:
     `member_id` PRIMARY KEY (created only after the member exists, so
     never NULL on any backend), the member's continuity token (captured
@@ -714,10 +738,11 @@ durable conversation; the harness session is an optimization of it.
   path that may replace a partial-null legacy row.
 - **Wired flag:** the per-(member, provider) `wired` flag ([SUM-7.4]) is
   durable state and a versioned ledger schema change. `SUMMON_SCHEMA_VERSION`
-  is 2, and `taut_summon_sessions` includes
+  is 3, and `taut_summon_sessions` includes
   `wired INTEGER NOT NULL DEFAULT 0`. A stored version 1 database fails
-  closed with the existing "recreate the development database" path; there
-  is no `ALTER TABLE` migration for this uncommitted extension state. The
+  closed with the existing "recreate the development database" path. Version 2
+  already has the wired column and uses the claim-key migration above; no
+  `ALTER TABLE` is required. The
   typed session row carries `wired: bool`. The load-bearing column sites
   are `_SESSION_SELECT_BY_MEMBER`, `_SESSION_SELECT_ALL`, the `INSERT` in
   `record_session`, and `_session_row`.
@@ -984,6 +1009,9 @@ existing release-before-ack ordering.
   gates, or it belongs in the live lanes below.
 - Driver tests run real multi-process flows (a second CLI process
   writing to the watched thread), matching [TAUT-11] discipline.
+- Schema tests build version-2 claim rows directly and prove both successful
+  mixed-case normalization and fail-before-mutation handling for colliding case
+  variants.
 - Deterministic PTY lifecycle is proven against a fake interactive
   harness: a real subprocess over a real PTY that models a TUI
   (alternate screen, terminal queries, continuous redraw, delayed
@@ -1048,6 +1076,8 @@ existing release-before-ack ordering.
 
 ## Related Plans
 
+- `docs/plans/2026-07-12-automatic-display-name-capitalization-plan.md` —
+  capitalized implied-provider names and cased automatic collision fallbacks.
 - `docs/plans/2026-07-11-multi-factor-review-remediation-plan.md` — reviewed
   direct-name bootstrap, trust framing, dynamic audit, PTY bound, and
   documentation remediation program for v0.5.3.
