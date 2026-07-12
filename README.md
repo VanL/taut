@@ -86,8 +86,8 @@ default, or a few machines through the Postgres extension.
 ## Installation
 
 ```bash
-pipx install "git+https://github.com/VanL/taut.git@v0.5.3"       # CLI use
-uv add "taut @ git+https://github.com/VanL/taut.git@v0.5.3"      # as a library
+pipx install "git+https://github.com/VanL/taut.git@v0.5.4"       # CLI use
+uv add "taut @ git+https://github.com/VanL/taut.git@v0.5.4"      # as a library
 ```
 
 Requirements: Python 3.11+. Runtime dependencies are `simplebroker>=5.3.1`
@@ -106,8 +106,8 @@ Extensions use their own tags (`taut_pg/vX.Y.Z`, `taut_summon/vX.Y.Z`), so
 their versions do not have to match the core package version:
 
 ```bash
-pipx install "git+https://github.com/VanL/taut.git@v0.5.3"
-pipx inject taut ./taut_pg-0.5.3-py3-none-any.whl
+pipx install "git+https://github.com/VanL/taut.git@v0.5.4"
+pipx inject taut ./taut_pg-0.5.4-py3-none-any.whl
 ```
 
 The Postgres database must already exist. Create `.taut.toml` in the project
@@ -139,7 +139,7 @@ by its continuity token (its mouth). It ships as a separate package with its
 own version tags:
 
 ```bash
-pipx inject taut ./taut_summon-0.5.3-py3-none-any.whl
+pipx inject taut ./taut_summon-0.5.4-py3-none-any.whl
 ```
 
 With it installed, core's `taut summon` / `taut dismiss` verbs delegate to
