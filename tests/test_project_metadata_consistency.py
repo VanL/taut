@@ -40,7 +40,7 @@ def test_package_versions_and_dependency_floors_are_coordinated() -> None:
     assert constant_match.group(1) == version
     assert str(pg["version"]) == version
     assert str(summon["version"]) == version
-    assert _dependency_floor(root, "simplebroker") == "5.3.1"
+    assert _dependency_floor(root, "simplebroker") == "5.3.2"
     assert _dependency_floor(pg, "taut") == version
     assert _dependency_floor(pg, "simplebroker-pg") == "3.2.1"
     assert _dependency_floor(summon, "taut") == version
