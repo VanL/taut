@@ -243,6 +243,8 @@ shutdown waker pipe. It is not two blocking copy threads, because STOP must be
 observable during attach. It never intercepts `ESC` sequences. In `finally`, it
 writes a fixed reset blast to the local tty and restores termios, because the
 harness keeps running and will not clean up the user's terminal after detach.
+PTY test peers must drain that blast before joining the bridge: the deliberate
+`TCSADRAIN` restore may wait until the peer consumes pending terminal output.
 `TAUT_HOST_TUI=1` is the cooperative marker for taut-owned host TUIs to refuse
 nested attach.
 

@@ -1582,6 +1582,7 @@ def test_attach_forwarding_serializes_with_injection(
         release_forwarding.set()
         injector.join(timeout=2.0)
         os.write(user_master, b"\x1c\x1c")
+        reset = _read_fd_until(user_master, b"\x1b[?2004l", timeout=2.0)
         attach.join(timeout=2.0)
     finally:
         release_forwarding.set()
@@ -1592,6 +1593,7 @@ def test_attach_forwarding_serializes_with_injection(
     assert not injector.is_alive()
     assert not attach.is_alive()
     assert attach_result == ["detached"]
+    assert b"\x1b[?2004l" in reset
     assert failures == []
     assert not injection_interleaved
 

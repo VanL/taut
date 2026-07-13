@@ -549,6 +549,11 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   belong outside signal context; otherwise asynchronous signal re-entry can
   block on locks that normal cleanup is meant to own.
 
+- 2026-07-12: A synthetic PTY peer must consume terminal-reset output before
+  joining code that restores termios with `TCSADRAIN`. Joining first can make a
+  correctly recognized detach look hung because the test itself withholds the
+  drain condition.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent
