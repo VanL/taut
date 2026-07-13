@@ -592,12 +592,21 @@ def test_github_repo_slug_from_remote(remote: str, slug: str) -> None:
     assert release.github_repo_slug_from_remote(remote) == slug
 
 
-def test_precheck_commands_include_typed_release_helper() -> None:
+def test_precheck_commands_select_dev_extra_and_include_typed_release_helper() -> None:
     release = _load_release_module()
 
     commands = release.build_precheck_commands()
 
-    assert ("uv", "run", "pytest") in commands
+    pytest_prefix = ("uv", "run", "--extra", "dev", "pytest")
+    assert release.ROOT_TEST_COMMAND == pytest_prefix
+    for command in (
+        release.ROOT_TEST_COMMAND,
+        release.SUMMON_UNIT_TEST_COMMAND,
+        release.SUMMON_PROCESS_TEST_COMMAND,
+        release.SUMMON_LIVE_HARNESS_TEST_COMMAND,
+        release.SUMMON_LOCAL_LLM_TEST_COMMAND,
+    ):
+        assert command[:5] == pytest_prefix
     assert ("uv", "run", "./bin/pytest-pg", "--fast") in commands
     assert release.SUMMON_UNIT_TEST_COMMAND in commands
     assert release.SUMMON_PROCESS_TEST_COMMAND in commands

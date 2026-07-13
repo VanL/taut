@@ -25,6 +25,9 @@
 - Expanded the fresh-wheel release gate to verify exact command entry points,
   native Summon lifecycle, the retained 0.5.0 reactor case, 0.5.4 legacy
   command compatibility, and rejection of Summon 0.6.0 with core 0.5.4.
+- Made every release pytest precheck select the repository `dev` extra, so an
+  activated environment with stale Summon metadata cannot replace the current
+  0.6.0 command entry points during release validation.
 - Coordinated `taut`, `taut-pg`, and `taut-summon` versions and first-party
   dependency floors at 0.6.0.
 

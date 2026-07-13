@@ -1838,18 +1838,18 @@ Apply the repository probe runbook through shipped entry points:
 ### 14.1 Per-task targeted commands
 
 ```bash
-uv run pytest tests/test_command_registry.py tests/test_lazy_imports.py -n 0
-uv run pytest tests/test_cli.py tests/test_cli_probes.py -n 0
-uv run pytest tests/test_public_api.py tests/test_architecture_boundaries.py -n 0
-uv run pytest extensions/taut_summon/tests/test_controller.py \
+uv run --extra dev pytest tests/test_command_registry.py tests/test_lazy_imports.py -n 0
+uv run --extra dev pytest tests/test_cli.py tests/test_cli_probes.py -n 0
+uv run --extra dev pytest tests/test_public_api.py tests/test_architecture_boundaries.py -n 0
+uv run --extra dev pytest extensions/taut_summon/tests/test_controller.py \
   extensions/taut_summon/tests/test_interaction.py \
   extensions/taut_summon/tests/test_summon_cli.py -n 0
-uv run pytest extensions/taut_summon/tests/test_driver.py \
+uv run --extra dev pytest extensions/taut_summon/tests/test_driver.py \
   extensions/taut_summon/tests/test_control.py \
   extensions/taut_summon/tests/test_pty_adapter.py -n 0
-uv run pytest tests/test_core_summon_wheel_matrix.py \
+uv run --extra dev pytest tests/test_core_summon_wheel_matrix.py \
   tests/test_project_metadata_consistency.py tests/test_release_script.py -n 0
-uv run pytest tests/test_docs_references.py -n 0
+uv run --extra dev pytest tests/test_docs_references.py -n 0
 ```
 
 New test files do not exist at plan authoring time; commands become valid in
@@ -1858,15 +1858,15 @@ their owning task.
 ### 14.2 Full repository and extension gates
 
 ```bash
-uv run pytest
+uv run --extra dev pytest
 uv run ./bin/pytest-pg --fast
-uv run pytest extensions/taut_summon/tests -m "not xdist_group"
-uv run pytest extensions/taut_summon/tests \
+uv run --extra dev pytest extensions/taut_summon/tests -m "not xdist_group"
+uv run --extra dev pytest extensions/taut_summon/tests \
   -m "xdist_group and not requires_live_harness and not requires_local_llm" \
   -n 4 --dist load
-TAUT_SUMMON_LIVE_HARNESS_STRICT=1 uv run pytest \
+TAUT_SUMMON_LIVE_HARNESS_STRICT=1 uv run --extra dev pytest \
   extensions/taut_summon/tests/test_live_harness.py -n 1 --dist loadgroup
-TAUT_SUMMON_LOCAL_LLM=1 uv run pytest \
+TAUT_SUMMON_LOCAL_LLM=1 uv run --extra dev pytest \
   extensions/taut_summon/tests/test_live_local_llm.py -n 1 --dist loadgroup
 uv run --extra dev ruff check taut tests bin \
   extensions/taut_summon/taut_summon extensions/taut_summon/tests

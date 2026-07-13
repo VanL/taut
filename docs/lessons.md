@@ -86,6 +86,14 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
 
 ## Project Lessons
 
+- 2026-07-13: Release checks must select the optional dependency set they
+  claim to validate. A bare `uv run pytest` can inherit a stale package from an
+  activated environment even when the repository maps that package to current
+  editable source; importable source and installed entry-point metadata can
+  then describe different versions. Use `uv run --extra dev pytest` for the
+  coordinated release lanes, and keep old-version behavior in isolated wheel
+  matrices instead of relying on ambient developer state.
+
 - 2026-07-13: Replacing argparse with manual option extraction requires the
   parser's validation backstop, not just its happy-path token movement. A
   separated value option must reject another option token or the literal `--`

@@ -534,8 +534,8 @@ and both are kept in CI-grade sync with the code. Start with
 ```bash
 git clone git@github.com:VanL/taut.git && cd taut
 uv sync --all-extras
-uv run pytest
-uv run pytest extensions/taut_summon/tests
+uv run --extra dev pytest
+uv run --extra dev pytest extensions/taut_summon/tests
 uv run ./bin/pytest-pg --fast
 uv run ruff check taut tests bin extensions/taut_pg/taut_pg extensions/taut_pg/tests extensions/taut_summon/taut_summon extensions/taut_summon/tests
 uv run ruff format --check taut tests bin extensions/taut_pg/taut_pg extensions/taut_pg/tests extensions/taut_summon/taut_summon extensions/taut_summon/tests

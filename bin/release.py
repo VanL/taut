@@ -78,20 +78,17 @@ SUMMON_WHEEL_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"taut_summon-\d+\.\d+\.\d+-py3-none-any\.whl"
 )
 
-ROOT_TEST_COMMAND: Final[Command] = ("uv", "run", "pytest")
+PYTEST_PREFIX: Final[Command] = ("uv", "run", "--extra", "dev", "pytest")
+ROOT_TEST_COMMAND: Final[Command] = PYTEST_PREFIX
 PG_TEST_COMMAND: Final[Command] = ("uv", "run", "./bin/pytest-pg", "--fast")
 SUMMON_UNIT_TEST_COMMAND: Final[Command] = (
-    "uv",
-    "run",
-    "pytest",
+    *PYTEST_PREFIX,
     "extensions/taut_summon/tests",
     "-m",
     "not xdist_group",
 )
 SUMMON_PROCESS_TEST_COMMAND: Final[Command] = (
-    "uv",
-    "run",
-    "pytest",
+    *PYTEST_PREFIX,
     "extensions/taut_summon/tests",
     "-m",
     "xdist_group and not requires_live_harness and not requires_local_llm",
@@ -101,9 +98,7 @@ SUMMON_PROCESS_TEST_COMMAND: Final[Command] = (
     "load",
 )
 SUMMON_LIVE_HARNESS_TEST_COMMAND: Final[Command] = (
-    "uv",
-    "run",
-    "pytest",
+    *PYTEST_PREFIX,
     "extensions/taut_summon/tests/test_live_harness.py",
     "-n",
     "1",
@@ -111,9 +106,7 @@ SUMMON_LIVE_HARNESS_TEST_COMMAND: Final[Command] = (
     "loadgroup",
 )
 SUMMON_LOCAL_LLM_TEST_COMMAND: Final[Command] = (
-    "uv",
-    "run",
-    "pytest",
+    *PYTEST_PREFIX,
     "extensions/taut_summon/tests/test_live_local_llm.py",
     "-n",
     "1",
