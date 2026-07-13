@@ -2,11 +2,12 @@
 
 Date: 2026-07-12
 
-Status: implementation and Task 13 verification were performed as uncommitted
-work on 2026-07-13. The promoted specs, code, packaging, release gates, and current
-documentation are aligned. This work is not called ready to land because the
-user has not authorized the commit required by the repository completion gate;
-no release, tag, push, or publication is authorized by this plan.
+Status: implementation and Task 13 verification were committed locally as
+`5458442a` on 2026-07-13. The post-acceptance release-precheck correction was
+committed locally as `4579c5ca`. The promoted specs, code, packaging, release
+gates, and current documentation are aligned. This final evidence
+reconciliation remains uncommitted; no release, tag, push, or publication was
+performed or is authorized by this plan.
 
 Plan type: implementation with spec revision.
 
@@ -119,10 +120,12 @@ No external dependency is approved by this plan. `argparse`,
   and adds their Related Plans backlinks, but does not claim code mappings that
   do not yet exist. Later code slices add reciprocal mappings together. Do not
   reclassify either active spec file.
-- Promotion baseline: committed baseline `b0370945` plus the uncommitted
-  2026-07-13 Task 1 diff limited to `docs/specs/02-taut-core.md` and
-  `docs/specs/04-summon.md`, inspectable with
+- Task 1 promotion baseline at execution time: committed baseline `b0370945`
+  plus the then-uncommitted 2026-07-13 diff limited to
+  `docs/specs/02-taut-core.md` and `docs/specs/04-summon.md`, inspectable with
   `git diff b0370945 -- docs/specs/02-taut-core.md docs/specs/04-summon.md`.
+  The completed implementation, including that promotion, was later committed
+  locally as `5458442a`.
 
 ## 5. Scope Decision
 
@@ -2446,13 +2449,42 @@ for closure before handoff.
 | Task 7/11 evidence still named removed artifact files, and the five-file tooling rename lacked a single old-to-new owner mapping | Accepted and fixed | The historical rows now use the current executable test/checker names. The deviation log explicitly maps all five old names to their replacements, assigns the rename to process tooling, and explains why historical plans retain their original names. |
 | `.context/` Claude session scratch could be swept into a broad commit | Accepted and fixed without widening `.gitignore` | The final prompt and session-id files are deleted after the same-session closure review. No repository behavior depends on `.context/`, and the final status gate proves it is absent. |
 
+### Post-acceptance release-precheck correction (2026-07-13)
+
+The first real `bin/release.py all` attempt exposed an environment-selection
+gap that the earlier gate runs did not reproduce. The activated project
+environment contained installed `taut-summon` 0.5.3 metadata with no
+`taut.commands` entry points while its import path resolved the current Summon
+source tree. Bare `uv run pytest` therefore let the compatibility bridge own
+`taut -- summon`, producing `usage: taut-summon run` instead of the current
+0.6.0 adapter's `usage: taut summon`.
+
+The correction keeps production discovery strict and keeps the CLI assertion.
+All direct release pytest commands now select the root `dev` extra, which
+installs the coordinated editable Summon 0.6.0 metadata before collection.
+Historical 0.5.0/0.5.4 behavior remains isolated in the fresh-wheel matrix and
+is not inferred from ambient developer state. A read-only independent review
+found no P1, P2, or P3 and returned **PROCEED**.
+
+### Finding dispositions 19
+
+| Finding | Disposition | Plan/code change or evidence |
+|---------|-------------|------------------------------|
+| Release pytest commands inherited optional packages from the active environment | Accepted and fixed red-green | A release-script test first failed on the bare `("uv", "run", "pytest")` prefix. `PYTEST_PREFIX` now selects `--extra dev` for root and all four Summon lanes, and the test enumerates each command. |
+| The failing CLI assertion could be weakened to allow the standalone 0.5.x parser name | Rejected | `usage: taut-summon run` proves stale compatibility code won the current-pair release lane. The 0.6.0 release contract requires the native core-created `usage: taut summon` parser; old behavior already has real historical-wheel proof. |
+| Production could scan importable source when entry-point metadata is absent | Rejected | [TAUT-8.6] explicitly makes installed distribution metadata authoritative and forbids filesystem/source discovery. Dependency synchronization belongs to the release-check boundary. |
+| Contributor and plan commands still showed bare pytest runs | Accepted and fixed | README and active plan gates now select the dev extra; the 0.6.0 changelog and durable lessons record why. |
+
 ## 19. Execution Evidence Log
 
-Tasks 1-13 are implemented and verified as uncommitted work. Task 1 promoted
-the reviewed spec delta and production dispatch uses the registry-backed
-command protocol through the thin `taut.cli` entry point. No commit, tag, push,
-or publication was made; under the repository completion rule this is a
-verified handoff, not a claim that the work is ready to land.
+Tasks 1-13 are implemented, verified, and committed locally as `5458442a`.
+Task 1 promoted the reviewed spec delta and production dispatch uses the
+registry-backed command protocol through the thin `taut.cli` entry point. The
+release-precheck correction is committed locally as `4579c5ca`. Earlier rows
+below preserve the worktree state at each slice's review time; their
+"uncommitted WIP" labels are historical, not the current repository state.
+This final evidence reconciliation remains uncommitted. No release, tag, push,
+or publication was performed.
 
 ### Required-reading comprehension answers
 
@@ -2502,7 +2534,8 @@ verified handoff, not a claim that the work is ready to land.
 | Task 11 release metadata and artifact gates | Seven focused tests failed on the absent separate 0.5.4 core input/builder, missing exact wheel entry-point validation, and stale private-CLI paired probe. The selected 0.6.0 value itself was treated as release metadata rather than forced through a performative literal red; existing synthetic 0.6.0 rejection remained a regression guard. | Core, PG, and Summon metadata/floors plus the retained Summon lock are coordinated at 0.6.0. `uv run python bin/build-and-check-release-wheels.py` built fresh wheels and passed all six installed cases: retained 0.5.0 reactor evidence, new-new native root lifecycle and public STATUS, 0.5.4 old-core rejection, core-only hint, and 0.5.4 bridge. The focused artifact/release/metadata gate passed 118 tests; closure docs/metadata/probe gate passed 13; `uv lock --check`, Ruff, and `git diff --check` pass. | A read-only subagent performed initial, closure, and final closure passes. It blocked twice on concrete evidence gaps, verified their fixes, then returned **PROCEED** with no unresolved finding. | Uncommitted WIP; no build artifact, commit, tag, push, or publication was retained or performed. |
 | Task 12 documentation and traceability | Documentation-only TDD exception: the substitute proof was a zero-context agent reconstruction audit plus maintained-reference, metadata, and release dry-run gates. Its first pass returned BLOCK because several edge rules still required implementation reading. | Added `docs/implementation/06-command-extensions.md`; aligned both specs, architecture docs, index, map, READMEs, the runnable extension fixture, changelog, and this execution log. Root, PG, and Summon install examples and manifests are 0.6.0. The exact registry-handoff focused tests passed 13 cases; docs references passed 10; `uv run python bin/release.py all --dry-run --skip-checks` reported all three unpublished 0.6.0 targets and printed the paired verifier with both historical ref families. | The same zero-context agent reread the corrected documentation and returned **PROCEED**. Every blocking ambiguity was specified and linked to a firing test; its final wording nit was also fixed. | Uncommitted WIP; Task 13 owns the final complete suite and independent adversarial review. |
 | Tooling entry-point naming cleanup | Naming/docs-only TDD exception: existing workflow, release-order, coverage-data, and matrix tests were the substitute proof; no gate behavior was added. | Live entry points are now `check-required-coverage-paths.py`, `build-and-check-release-wheels.py`, and `check-core-summon-wheel-matrix.py`; matching test files, workflow input, release-helper symbol, maintained docs, and active commands agree. The 138-test focused gate passed; Ruff and format checks passed over eight files; mypy passed over eight files; `git diff --check`, live-old-reference grep, all three help surfaces, and the ordered dry run passed. | A same-family review found two stale labels, both fixed. A fresh Claude review found no rename wiring or behavior defect and identified the [SUM-12] case-count ambiguity, now clarified. | Uncommitted WIP. Task 13 later reran the renamed networked six-case matrix successfully. |
-| Task 13 final adversarial acceptance | Acceptance/evidence task: no product behavior red was required. Claude's final P2 reproduced the missing current-state acceptance row after the Task 12 and tooling-name edits. | Current-state gates: root 768 passed; real Postgres 138 shared plus 13 PG passed; Summon ordinary 228, serialized real-process 223, strict live-harness 18, and strict local-LLM 6 passed. Twenty-one explicit Python 3.11 installed-wheel cases passed. Ruff passed and 117 files were formatted; mypy passed 77 root, 37 Summon, and 6 PG files; all three 0.6.0 sdists/wheels built; `uv lock --check` passed; and `bin/build-and-check-release-wheels.py` fetched both historical ref families and passed all six installed cases. The post-edit documentation/metadata/workflow/release/coverage gate passed 74 tests; final docs references and `git diff --check` passed. | Fresh Claude completed-work review found no implementation defect, answered the required implementability question **Yes**, and returned `Recommendation: PROCEED`. Same-session closure found no remaining P1, P2, or P3, confirmed the registry/extension docs require no implementation inference, answered **Yes** again, and returned `Recommendation: PROCEED`. | Uncommitted verified handoff. No commit, release, tag, push, or publication was performed. |
+| Task 13 final adversarial acceptance | Acceptance/evidence task: no product behavior red was required. Claude's final P2 reproduced the missing current-state acceptance row after the Task 12 and tooling-name edits. | Current-state gates: root 768 passed; real Postgres 138 shared plus 13 PG passed; Summon ordinary 228, serialized real-process 223, strict live-harness 18, and strict local-LLM 6 passed. Twenty-one explicit Python 3.11 installed-wheel cases passed. Ruff passed and 117 files were formatted; mypy passed 77 root, 37 Summon, and 6 PG files; all three 0.6.0 sdists/wheels built; `uv lock --check` passed; and `bin/build-and-check-release-wheels.py` fetched both historical ref families and passed all six installed cases. The post-edit documentation/metadata/workflow/release/coverage gate passed 74 tests; final docs references and `git diff --check` passed. | Fresh Claude completed-work review found no implementation defect, answered the required implementability question **Yes**, and returned `Recommendation: PROCEED`. Same-session closure found no remaining P1, P2, or P3, confirmed the registry/extension docs require no implementation inference, answered **Yes** again, and returned `Recommendation: PROCEED`. | Committed after the verified handoff as `5458442a`. No release, tag, push, or publication was performed. |
+| Post-acceptance release-precheck environment correction | The exact focused CLI case failed 1 of 3 parameters under the activated project `.venv`; inspection showed installed Summon 0.5.3 metadata with no command entry points while imports resolved current source. The new release-command invariant then failed because `ROOT_TEST_COMMAND` was `("uv", "run", "pytest")`. | The invariant passed after one shared `PYTEST_PREFIX` selected `--extra dev`; 54 focused release/CLI tests passed. The safe exact release path, `UV_PROJECT_ENVIRONMENT=/Users/van/Developer/taut/.venv /Users/van/Developer/taut/.venv/bin/python3 bin/release.py all --checks-only`, then passed root 768, Postgres 138+13, Summon 228/223/18/6, Ruff, 123-file format check, and mypy 77/6/37, ending with no release files, artifacts, tags, or remotes changed. | Independent read-only review found no P1/P2/P3, confirmed the release boundary is correct, rejected weakening discovery or the CLI assertion, and returned **PROCEED**. | Committed locally as `4579c5ca`; no release mutation, tag, push, or publication was performed. |
 
 Task 3 process note: selected implementation-failure and cleanup-precedence
 tests added after the first dispatcher tracer bullet were born green because
