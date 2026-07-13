@@ -1,5 +1,8 @@
 # Changelog
 
+## 0.6.1 - 2026-07-13
+- Update to dependencies; bugfix on taut-summon
+
 ## 0.6.0 - 2026-07-13
 
 - Replaced the monolithic CLI switchboard with one versioned command-adapter
