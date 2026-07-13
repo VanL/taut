@@ -227,7 +227,13 @@ message is one submitted turn. Orientation is the first injected turn for PTY
 (`orientation_via_inject=True`), after the pump starts and settle observes the
 reader's `last_output_ts`, but before the watcher starts. If STOP or SIGINT
 races this pre-watch orientation step, the driver interrupts the handle and
-treats an interrupted `inject()` as a clean stop. Structured adapters keep the
+treats an interrupted `inject()` as a clean stop. The driver leaves the caught
+`AdapterError` scope before entering generation teardown. This is load-bearing:
+teardown uses `sys.exception()` to preserve a real primary failure, so calling
+it from the expected cancellation handler would relabel `PTY write interrupted`
+as a fatal shutdown error and make a confirmed ledger release return a false
+STOP failure. The rich-host regression pins the real write lease, control
+interrupt, and teardown order with events. Structured adapters keep the
 spawn-time system-prompt path.
 
 PTY construction validates argv, unsigned-short terminal dimensions, and
@@ -425,6 +431,14 @@ or an unexpected clean return stops the watcher, interrupts the adapter, wakes
 the foreground supervisor, and exits nonzero after normal release cleanup.
 Expected STOP and driver shutdown remain clean exits. Control failure never
 spends the watcher-rebuild or provider-resume budgets.
+
+Before publishing `shutdown_complete`, the foreground freezes one immutable
+STOP outcome with three distinct facts: teardown error, release exception, and
+release confirmation. The control owner maps those facts to an ACK only when
+teardown is clean and release is confirmed. Failures keep their actual plane in
+the correlated reply; teardown and ledger failures are never collapsed into a
+generic release boolean. The event is the publication fence, so the control
+thread never reads a partially assembled result.
 
 Each chat-watcher attempt also has attempt-local stop state and captures the
 current harness-generation death event. The foreground publishes that stop

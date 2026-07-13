@@ -580,6 +580,15 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   known-safe one-worker boundaries. Matrix jobs on isolated CI hosts do not
   need serialization for SQLite safety.
 
+- 2026-07-13: Expected cancellation must leave its `except` scope before it
+  enters cleanup that consults `sys.exception()`. Otherwise the cleanup owner
+  sees the actively handled cancellation as a primary failure and can turn a
+  clean stop into a false error. Pin the cancellation at the real blocking
+  operation with events, publish teardown and release as separate finalized
+  facts, and keep ACK truth strict. Timing repetition cannot prove this class
+  of bug because scheduler load only changes which exception scope owns the
+  transition.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

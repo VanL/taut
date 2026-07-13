@@ -250,6 +250,29 @@ class StatusSnapshot:
         return fields
 
 
+@dataclass(frozen=True, slots=True)
+class StopShutdownOutcome:
+    """Final foreground teardown and release facts observed by STOP."""
+
+    release_confirmed: bool
+    teardown_error: str | None = None
+    release_error: str | None = None
+
+    def error_detail(self) -> str | None:
+        if self.teardown_error is not None:
+            detail = f"driver teardown failed: {self.teardown_error}"
+            if self.release_error is not None:
+                detail += f"; driver slot release also failed: {self.release_error}"
+            elif not self.release_confirmed:
+                detail += "; driver slot release also could not be confirmed"
+            return detail
+        if self.release_error is not None:
+            return f"driver slot release failed: {self.release_error}"
+        if not self.release_confirmed:
+            return "driver slot release could not be confirmed"
+        return None
+
+
 @dataclass(frozen=True)
 class _BrokerHandles:
     client: TautClient
@@ -354,7 +377,7 @@ class ControlLoop:
         request_stop: Callable[[], None],
         shutdown: threading.Event,
         shutdown_complete: threading.Event,
-        release_confirmed: Callable[[], bool],
+        shutdown_outcome: Callable[[], StopShutdownOutcome],
         rate_limit: int | None,
         ledger_queue_name: str,
         driver_pid: int,
@@ -371,7 +394,7 @@ class ControlLoop:
         self._request_stop = request_stop
         self._shutdown = shutdown
         self._shutdown_complete = shutdown_complete
-        self._release_confirmed = release_confirmed
+        self._shutdown_outcome = shutdown_outcome
         self._rate_limit = _DEFAULT_RATE_LIMIT if rate_limit is None else rate_limit
         self._ledger_queue_name = ledger_queue_name
         self._driver_pid = driver_pid
@@ -491,17 +514,18 @@ class ControlLoop:
                 completed = self._shutdown_complete.wait(
                     timeout=_STOP_ACK_TIMEOUT_SECONDS
                 )
-                release_confirmed = False
+                outcome: StopShutdownOutcome | None = None
                 release_error: str | None = None
                 if completed:
                     try:
-                        release_confirmed = self._release_confirmed()
+                        outcome = self._shutdown_outcome()
                     except Exception as exc:
                         release_error = (
                             f"driver slot release confirmation failed: {exc}"
                         )
                         logger.error("%s", release_error)
-                if completed and release_confirmed:
+                outcome_error = outcome.error_detail() if outcome is not None else None
+                if completed and outcome is not None and outcome_error is None:
                     self._reply(
                         encode_control_reply(
                             CONTROL_STOP, "ack", request_id=self._pending_stop
@@ -519,6 +543,7 @@ class ControlLoop:
                                 if not completed
                                 else (
                                     release_error
+                                    or outcome_error
                                     or "driver slot release could not be confirmed"
                                 )
                             ),

@@ -35,6 +35,7 @@ from taut_summon._control import (
     _RATE_AUDIT_RECOVERABLE_FAILURES_BEFORE_DEGRADED,
     ControlClient,
     ControlLoop,
+    StopShutdownOutcome,
     _BrokerHandles,
     control_in_queue_name,
     control_out_queue_name,
@@ -198,7 +199,7 @@ def _make_loop(rate_limit: int) -> ControlLoop:
         request_stop=lambda: None,
         shutdown=threading.Event(),
         shutdown_complete=threading.Event(),
-        release_confirmed=lambda: True,
+        shutdown_outcome=lambda: StopShutdownOutcome(release_confirmed=True),
         rate_limit=rate_limit,
         ledger_queue_name="taut_meta",
         driver_pid=123,
@@ -231,7 +232,7 @@ def test_rate_audit_reconciles_late_join_leave_and_rejoin_with_real_queues(
         request_stop=lambda: None,
         shutdown=threading.Event(),
         shutdown_complete=threading.Event(),
-        release_confirmed=lambda: True,
+        shutdown_outcome=lambda: StopShutdownOutcome(release_confirmed=True),
         rate_limit=100,
         ledger_queue_name="taut.summon_state",
         driver_pid=123,
@@ -297,7 +298,7 @@ def test_control_handle_recovery_with_cwd_discovery_keeps_same_target(
         request_stop=lambda: None,
         shutdown=threading.Event(),
         shutdown_complete=threading.Event(),
-        release_confirmed=lambda: True,
+        shutdown_outcome=lambda: StopShutdownOutcome(release_confirmed=True),
         rate_limit=60,
         ledger_queue_name="taut.summon_state",
         driver_pid=123,
@@ -758,7 +759,7 @@ def test_stop_replies_error_when_driver_release_is_unconfirmed() -> None:
     loop._pending_stop_seen = True
     loop._pending_stop_reply_to = "sys.rsp_release_error"
     loop._shutdown_complete.set()
-    loop._release_confirmed = lambda: False
+    loop._shutdown_outcome = lambda: StopShutdownOutcome(release_confirmed=False)
     replies: list[tuple[dict[str, Any], str | None]] = []
     dynamic_loop = cast(Any, loop)
     dynamic_loop._open = lambda: None
@@ -789,7 +790,7 @@ def test_stop_replies_error_when_driver_release_confirmation_raises() -> None:
     loop._pending_stop_seen = True
     loop._pending_stop_reply_to = "sys.rsp_release_exception"
     loop._shutdown_complete.set()
-    loop._release_confirmed = lambda: (_ for _ in ()).throw(
+    loop._shutdown_outcome = lambda: (_ for _ in ()).throw(
         OperationalError("release ledger unavailable")
     )
     replies: list[tuple[dict[str, Any], str | None]] = []
@@ -815,6 +816,75 @@ def test_stop_replies_error_when_driver_release_confirmation_raises() -> None:
             },
             "sys.rsp_release_exception",
         )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("outcome", "expected_error"),
+    [
+        (
+            StopShutdownOutcome(
+                release_confirmed=True,
+                teardown_error="PTY child cleanup failed",
+            ),
+            "driver teardown failed: PTY child cleanup failed",
+        ),
+        (
+            StopShutdownOutcome(
+                release_confirmed=False,
+                release_error="database is locked",
+            ),
+            "driver slot release failed: database is locked",
+        ),
+        (
+            StopShutdownOutcome(
+                release_confirmed=False,
+                teardown_error="PTY write failed",
+                release_error="database is locked",
+            ),
+            (
+                "driver teardown failed: PTY write failed; "
+                "driver slot release also failed: database is locked"
+            ),
+        ),
+        (
+            StopShutdownOutcome(
+                release_confirmed=False,
+                teardown_error="PTY write failed",
+            ),
+            (
+                "driver teardown failed: PTY write failed; "
+                "driver slot release also could not be confirmed"
+            ),
+        ),
+    ],
+)
+def test_stop_replies_with_exact_finalized_shutdown_failure(
+    outcome: StopShutdownOutcome,
+    expected_error: str,
+) -> None:
+    loop = _make_loop(rate_limit=60)
+    loop._db_path = "unused"
+    loop._pending_stop = "req-exact-shutdown-error"
+    loop._pending_stop_seen = True
+    loop._pending_stop_reply_to = "sys.rsp_exact_shutdown_error"
+    loop._shutdown_complete.set()
+    loop._shutdown_outcome = lambda: outcome
+    replies: list[dict[str, Any]] = []
+    dynamic_loop = cast(Any, loop)
+    dynamic_loop._open = lambda: None
+    dynamic_loop._close = lambda: None
+    dynamic_loop._reply = lambda body, *, reply_to: replies.append(json.loads(body))
+
+    loop.run()
+
+    assert replies == [
+        {
+            "command": "STOP",
+            "status": "error",
+            "error": expected_error,
+            "request_id": "req-exact-shutdown-error",
+        }
     ]
 
 
@@ -1418,7 +1488,7 @@ def test_control_loop_constructs_and_closes_persistent_handles_on_owner_thread(
         request_stop=lambda: None,
         shutdown=shutdown,
         shutdown_complete=threading.Event(),
-        release_confirmed=lambda: True,
+        shutdown_outcome=lambda: StopShutdownOutcome(release_confirmed=True),
         rate_limit=60,
         ledger_queue_name="taut.summon_state",
         driver_pid=123,
@@ -1491,7 +1561,7 @@ def test_control_loop_real_correlated_ping_round_trip(tmp_path: Path) -> None:
         request_stop=lambda: None,
         shutdown=shutdown,
         shutdown_complete=threading.Event(),
-        release_confirmed=lambda: True,
+        shutdown_outcome=lambda: StopShutdownOutcome(release_confirmed=True),
         rate_limit=60,
         ledger_queue_name="taut.summon_state",
         driver_pid=123,
@@ -1618,7 +1688,7 @@ def test_control_loop_cross_process_ping_wakes_and_replies(tmp_path: Path) -> No
         request_stop=lambda: None,
         shutdown=shutdown,
         shutdown_complete=threading.Event(),
-        release_confirmed=lambda: True,
+        shutdown_outcome=lambda: StopShutdownOutcome(release_confirmed=True),
         rate_limit=60,
         ledger_queue_name="taut.summon_state",
         driver_pid=123,
@@ -1740,7 +1810,7 @@ def test_stale_command_for_old_driver_evidence_is_dropped(command: str) -> None:
         request_stop=lambda: stops.append(True),
         shutdown=threading.Event(),
         shutdown_complete=threading.Event(),
-        release_confirmed=lambda: True,
+        shutdown_outcome=lambda: StopShutdownOutcome(release_confirmed=True),
         rate_limit=60,
         ledger_queue_name="taut_meta",
         driver_pid=2,

@@ -809,6 +809,34 @@ def test_driver_release_requires_state_confirmation(
     assert driver._release_confirmed is False
 
 
+def test_driver_shutdown_outcome_preserves_release_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeQueue:
+        def generate_timestamp(self) -> int:
+            return 2
+
+    driver = _new_driver(_run_request())
+    driver._member_id = "m_reviewer"
+    driver._evidence = (1234, "1")
+    driver._queue = cast(Any, FakeQueue())
+
+    def fail_release(*_args: Any, **_kwargs: Any) -> bool:
+        raise DatabaseError("database is locked")
+
+    monkeypatch.setattr(driver_module, "release_driver", fail_release)
+
+    driver._release()
+    outcome = driver._finalize_stop_shutdown_outcome()
+
+    assert outcome.release_confirmed is False
+    assert outcome.release_error == "database is locked"
+    assert outcome.teardown_error is None
+    driver._release_confirmed = True
+    driver._release_error = None
+    assert driver._finalize_stop_shutdown_outcome() is outcome
+
+
 def test_halt_and_raise_requests_signal_only_watcher_stop() -> None:
     class RecordingWatcher:
         def __init__(self) -> None:
@@ -1310,7 +1338,10 @@ def test_checked_pump_join_timeout_retires_generation_and_is_fatal() -> None:
     assert pump.join_calls == [0.01]
     assert driver._active_generation is None
     assert driver._shutdown_error is not None
-    assert driver._control_release_confirmed() is False
+    outcome = driver._finalize_stop_shutdown_outcome()
+    assert outcome.release_confirmed is True
+    assert outcome.teardown_error is not None
+    assert outcome.release_error is None
 
 
 def test_generation_cleanup_failures_do_not_mask_primary_error() -> None:

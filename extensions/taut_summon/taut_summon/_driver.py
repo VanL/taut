@@ -79,7 +79,7 @@ from taut_summon._adapter import (
     UnknownAdapterError,
     get_adapter,
 )
-from taut_summon._control import ControlLoop
+from taut_summon._control import ControlLoop, StopShutdownOutcome
 from taut_summon._members import find_member
 from taut_summon._persona import render_default_persona
 from taut_summon._state import (
@@ -308,6 +308,8 @@ class SummonDriver:
         # confirmed (persistent broker failure), the control loop replies
         # an error rather than a false ack.
         self._release_confirmed = False
+        self._release_error: BaseException | None = None
+        self._stop_shutdown_outcome: StopShutdownOutcome | None = None
         # Terminates the control thread on driver exit for any reason
         # (a control STOP breaks its loop earlier, via the pending-stop
         # flag). Set in _run's finally.
@@ -410,6 +412,7 @@ class SummonDriver:
                 # so the stop client sees the reply only after the ledger is
                 # clear ([SUM-9]). Idempotent — a second release is a no-op.
                 self._release()
+                self._finalize_stop_shutdown_outcome()
                 self._shutdown_complete.set()
                 self._control_stop.set()
                 if self._control_thread is not None:
@@ -786,12 +789,16 @@ class SummonDriver:
                     handle.inject(system_prompt)
                 except AdapterError as exc:
                     self._raise_if_control_failed()
-                    if self._shutdown.is_set():
-                        return self._shutdown_current_generation(
-                            generation, handle, pump, boot
-                        )
-                    self._teardown_generation(generation, handle, pump)
-                    raise DriverError(f"cannot orient the harness: {exc}") from exc
+                    if not self._shutdown.is_set():
+                        self._teardown_generation(generation, handle, pump)
+                        raise DriverError(f"cannot orient the harness: {exc}") from exc
+                # A STOP may retire an in-flight PTY write. Leave the caught
+                # AdapterError scope before teardown so sys.exception() cannot
+                # misclassify that expected interruption as a shutdown failure.
+                if self._shutdown.is_set():
+                    return self._shutdown_current_generation(
+                        generation, handle, pump, boot
+                    )
             try:
                 self._watch_until_wake(boot, handle)
                 self._raise_if_pump_failed(generation)
@@ -1615,7 +1622,7 @@ class SummonDriver:
             request_stop=self.request_stop,
             shutdown=self._control_stop,
             shutdown_complete=self._shutdown_complete,
-            release_confirmed=self._control_release_confirmed,
+            shutdown_outcome=self._control_shutdown_outcome,
             rate_limit=self._request.rate_limit,
             ledger_queue_name=_LEDGER_QUEUE_NAME,
             driver_pid=driver_pid,
@@ -1633,10 +1640,30 @@ class SummonDriver:
         self._control_thread = thread
         thread.start()
 
-    def _control_release_confirmed(self) -> bool:
-        """Tell a pending STOP whether teardown and claim release both succeeded."""
+    def _control_shutdown_outcome(self) -> StopShutdownOutcome:
+        """Return finalized teardown/release facts after shutdown completion."""
 
-        return self._release_confirmed and self._shutdown_error is None
+        outcome = self._stop_shutdown_outcome
+        if outcome is None:
+            raise RuntimeError("driver shutdown outcome was not finalized")
+        return outcome
+
+    def _finalize_stop_shutdown_outcome(self) -> StopShutdownOutcome:
+        """Freeze shutdown facts before publishing ``_shutdown_complete``."""
+
+        if self._stop_shutdown_outcome is not None:
+            return self._stop_shutdown_outcome
+        outcome = StopShutdownOutcome(
+            release_confirmed=self._release_confirmed,
+            teardown_error=(
+                str(self._shutdown_error) if self._shutdown_error is not None else None
+            ),
+            release_error=(
+                str(self._release_error) if self._release_error is not None else None
+            ),
+        )
+        self._stop_shutdown_outcome = outcome
+        return outcome
 
     def _run_control_loop(self, loop: ControlLoop) -> None:
         """Transfer unexpected [SUM-9]/[SUM-11] control death to the owner."""
@@ -1778,6 +1805,7 @@ class SummonDriver:
         return thread
 
     def _release(self) -> None:
+        self._release_error = None
         if self._member_id is None or self._evidence is None:
             # Nothing was claimed: the slot is trivially clear of us.
             self._release_confirmed = True
@@ -1798,6 +1826,7 @@ class SummonDriver:
             # the slot is clear, so a STOP ack must not claim it is — the
             # control loop replies an error instead.
             self._release_confirmed = False
+            self._release_error = exc
             logger.error("could not release the driver slot: %s", exc)
 
     def _await_wake(self) -> None:

@@ -44,6 +44,9 @@ Risky plans are blocked if they do not make explicit:
 
 ## Active Plans
 
+- `2026-07-13-summon-stop-release-race-plan.md` — hypothesis-driven diagnosis
+  and root fix for the second-generation rich-host PTY STOP/release race while
+  preserving fixed-width xdist load and existing timeout budgets.
 - `2026-07-13-bounded-summon-process-test-parallelism-plan.md` — fixed-width
   deterministic Summon process pressure: four local workers, two CI workers,
   and retained one-worker external-live/local-LLM boundaries.

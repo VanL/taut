@@ -55,6 +55,22 @@ class _PtyHostInteraction:
             self.lease_events.append("exit")
 
 
+class _GatedPtyHostInteraction(_PtyHostInteraction):
+    """Hold the pre-spawn availability return until the test arms a phase."""
+
+    def __init__(self, *, input_fd: int, output_fd: int) -> None:
+        super().__init__(input_fd=input_fd, output_fd=output_fd)
+        self.availability_entered = threading.Event()
+        self.allow_availability = threading.Event()
+
+    def terminal_availability(self, intent: Any) -> Any:
+        availability = super().terminal_availability(intent)
+        self.availability_entered.set()
+        if not self.allow_availability.wait(timeout=10.0):
+            raise RuntimeError("test did not release terminal availability")
+        return availability
+
+
 def _read_pty_until(fd: int, needle: bytes, *, timeout: float = 10.0) -> bytes:
     deadline = time.monotonic() + timeout
     output = b""
@@ -274,24 +290,39 @@ def test_rich_host_real_pty_lease_wires_once_then_wired_resume_skips_lease(
         SummonRequest,
         TerminalIntent,
     )
+    from taut_summon._driver import SummonDriver
+    from taut_summon._pty import PtyHandle
 
     pty = pytest.importorskip("pty", reason="host interaction requires a POSIX PTY")
     _configure_fake_pty(monkeypatch, tmp_path=tmp_path)
     user_master, user_slave = pty.openpty()
+    prompt_marker = "orientation-race-probe"
+    prompt_path = tmp_path / "orientation-race-prompt.txt"
+    prompt_path.write_text(prompt_marker, encoding="utf-8")
     request = SummonRequest(
         name="hosted",
         threads=("general",),
         terminal=False,
         persona=None,
-        system_prompt_file=None,
+        system_prompt_file=str(prompt_path),
         rate_limit=None,
         provider_flag="pty",
     )
+    drivers: list[SummonDriver] = []
+    real_driver_init = SummonDriver.__init__
+
+    def observed_driver_init(driver: SummonDriver, *args: Any, **kwargs: Any) -> None:
+        real_driver_init(driver, *args, **kwargs)
+        drivers.append(driver)
+
+    monkeypatch.setattr(SummonDriver, "__init__", observed_driver_init)
     first = _PtyHostInteraction(input_fd=user_slave, output_fd=user_slave)
     first_thread, first_failures = _start_foreground_run(
         db=summon_db, request=request, interaction=first
     )
     second_thread: threading.Thread | None = None
+    stop_thread: threading.Thread | None = None
+    allow_orientation_write = threading.Event()
     try:
         assert b"ready" in _read_pty_until(user_master, b"ready")
         os.write(user_master, b"\x1c\x1c")
@@ -313,21 +344,77 @@ def test_rich_host_real_pty_lease_wires_once_then_wired_resume_skips_lease(
         assert first.availability_calls == [TerminalIntent.PREFERRED]
         assert first.lease_events == ["enter", "exit"]
 
-        second = _PtyHostInteraction(input_fd=user_slave, output_fd=user_slave)
+        orientation_write_entered = threading.Event()
+        control_interrupt_completed = threading.Event()
+        block_orientation_write = threading.Event()
+        real_write = os.write
+        real_interrupt = PtyHandle.interrupt
+
+        def controlled_write(fd: int, data: bytes) -> int:
+            if (
+                block_orientation_write.is_set()
+                and threading.current_thread().name == "rich-host-summon"
+                and prompt_marker.encode() in data
+                and not orientation_write_entered.is_set()
+            ):
+                orientation_write_entered.set()
+                if not allow_orientation_write.wait(timeout=10.0):
+                    raise RuntimeError("test did not release the orientation write")
+            return real_write(fd, data)
+
+        def observed_interrupt(handle: PtyHandle) -> None:
+            real_interrupt(handle)
+            if (
+                block_orientation_write.is_set()
+                and threading.current_thread().name == "taut-summon-control"
+            ):
+                control_interrupt_completed.set()
+
+        monkeypatch.setattr(os, "write", controlled_write)
+        monkeypatch.setattr(PtyHandle, "interrupt", observed_interrupt)
+
+        second = _GatedPtyHostInteraction(input_fd=user_slave, output_fd=user_slave)
         second_thread, second_failures = _start_foreground_run(
             db=summon_db, request=request, interaction=second
         )
-        wait_until(
-            lambda: second.availability_calls == [TerminalIntent.PREFERRED],
-            message="wired-resume availability probe",
+        assert second.availability_entered.wait(timeout=10.0)
+        assert second.availability_calls == [TerminalIntent.PREFERRED]
+        block_orientation_write.set()
+        second.allow_availability.set()
+        assert orientation_write_entered.wait(timeout=10.0)
+
+        stop_failures: list[BaseException] = []
+
+        def stop_second() -> None:
+            try:
+                SummonController(db_path=summon_db).stop("hosted")
+            except BaseException as exc:  # noqa: BLE001 - relayed to test owner
+                stop_failures.append(exc)
+
+        stop_thread = threading.Thread(
+            target=stop_second,
+            daemon=True,
+            name="second-stop-client",
         )
-        SummonController(db_path=summon_db).stop("hosted")
+        stop_thread.start()
+        assert control_interrupt_completed.wait(timeout=10.0)
+        allow_orientation_write.set()
+        stop_thread.join(timeout=10.0)
+        assert not stop_thread.is_alive()
+        assert stop_failures == []
         second_thread.join(timeout=10.0)
         assert not second_thread.is_alive()
         assert second_failures == []
         assert second.availability_calls == [TerminalIntent.PREFERRED]
         assert second.lease_events == []
     finally:
+        allow_orientation_write.set()
+        if "second" in locals():
+            second.allow_availability.set()
+        for driver in drivers:
+            driver.request_stop()
+        if stop_thread is not None and stop_thread.is_alive():
+            stop_thread.join(timeout=1.0)
         if first_thread.is_alive():
             first_thread.join(timeout=1.0)
         if second_thread is not None and second_thread.is_alive():
