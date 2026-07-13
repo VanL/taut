@@ -539,6 +539,16 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   bounded settle deadline before orientation, then keep the local-LLM settle
   window generous enough to cover image/model cold start side effects.
 
+- 2026-07-12: Developer-facing path identifiers should be serialized with an
+  explicit separator contract. Interpolating `Path` directly makes diagnostics
+  and their tests host-dependent; use `as_posix()` when the identifier belongs
+  to repository syntax rather than the local filesystem UI.
+
+- 2026-07-12: A synchronous reactor's SIGINT handler should publish stop and
+  wake state, then unwind. Resource close, joins, and native waiter teardown
+  belong outside signal context; otherwise asynchronous signal re-entry can
+  block on locks that normal cleanup is meant to own.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

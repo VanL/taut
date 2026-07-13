@@ -56,7 +56,7 @@ def missing_evidence(
         source = (project_root / relative_path).resolve()
         line = _marker_line(source, marker)
         if line not in measured.get(str(source), []):
-            missing.append(f"{relative_path}:{line} ({marker})")
+            missing.append(f"{relative_path.as_posix()}:{line} ({marker})")
     return missing
 
 

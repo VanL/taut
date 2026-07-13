@@ -915,6 +915,113 @@ def test_base_reactor_defers_reentrant_sigint_until_waiter_replacement_commits(
     assert replacement_waiter.close_calls == 1
 
 
+def test_base_reactor_sigint_defers_cleanup_outside_signal_handler(
+    tmp_path: Path,
+) -> None:
+    stop_event = threading.Event()
+    strategy = RecordingPollingStrategy(stop_event)
+    watcher = BaseReactor(
+        queue_configs={"signal.input": {"handler": lambda *_args: None}},
+        db=tmp_path / ".taut.db",
+        stop_event=stop_event,
+        polling_strategy=strategy,
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        watcher._sigint_handler(signal.SIGINT, None)
+
+    assert stop_event.is_set()
+    assert watcher._stop_requested is True
+    assert watcher._resources_closed is False
+
+    watcher.stop(join=False)
+
+    assert watcher._resources_closed is True
+
+
+def test_base_reactor_run_restores_signal_and_cleans_up_if_install_is_interrupted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    watcher = BaseReactor(
+        queue_configs={"signal.install": {"handler": lambda *_args: None}},
+        db=tmp_path / ".taut.db",
+    )
+    original_handler = signal.getsignal(signal.SIGINT)
+    installed: list[object] = []
+
+    def interrupting_signal(signum: int, handler: object) -> object:
+        assert signum == signal.SIGINT
+        installed.append(handler)
+        if len(installed) == 1:
+            assert callable(handler)
+            handler(signum, None)
+        return original_handler
+
+    monkeypatch.setattr(signal, "signal", interrupting_signal)
+
+    with pytest.raises(KeyboardInterrupt):
+        watcher.run_forever()
+
+    assert installed == [watcher._sigint_handler, original_handler]
+    assert watcher._resources_closed is True
+    assert watcher.is_running() is False
+
+
+def test_base_reactor_run_cleans_up_if_sigint_preempts_drive_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    watcher = BaseReactor(
+        queue_configs={"signal.claim": {"handler": lambda *_args: None}},
+        db=tmp_path / ".taut.db",
+    )
+    original_handler = signal.getsignal(signal.SIGINT)
+    monkeypatch.setattr(
+        watcher,
+        "_claim_reactor_thread",
+        lambda: watcher._sigint_handler(signal.SIGINT, None),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        watcher.run_forever()
+
+    assert signal.getsignal(signal.SIGINT) == original_handler
+    assert watcher._resources_closed is True
+    assert watcher.is_running() is False
+
+
+def test_base_reactor_run_cleans_up_if_running_state_publication_is_interrupted(
+    tmp_path: Path,
+) -> None:
+    watcher = BaseReactor(
+        queue_configs={"signal.running": {"handler": lambda *_args: None}},
+        db=tmp_path / ".taut.db",
+    )
+
+    class InterruptingRunningEvent:
+        def __init__(self) -> None:
+            self.clear_calls = 0
+
+        def set(self) -> None:
+            raise KeyboardInterrupt
+
+        def clear(self) -> None:
+            self.clear_calls += 1
+
+        def is_set(self) -> bool:
+            return False
+
+    running_event = InterruptingRunningEvent()
+    watcher._running_event = cast(Any, running_event)
+
+    with pytest.raises(KeyboardInterrupt):
+        watcher.run_forever()
+
+    assert running_event.clear_calls == 1
+    assert watcher._resources_closed is True
+
+
 def test_base_reactor_discovers_pending_dynamic_queue_before_waiter_rebind(
     tmp_path: Path,
 ) -> None:

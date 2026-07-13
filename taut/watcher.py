@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import itertools
 import logging
+import signal
 import threading
 import time
 import warnings
@@ -1028,18 +1029,22 @@ class BaseReactor(MultiQueueWatcher):
                 raise KeyboardInterrupt
 
     def _sigint_handler(self, signum: int, frame: Any) -> None:
-        """Defer SIGINT only while native waiter ownership is transferring."""
+        """Publish a signal-safe stop; leave resource cleanup to normal unwind."""
+
+        already_requested = self._stop_requested
+        self._stop_requested = True
+        self._stop_event.set()
+        self._reactor_activity_event.set()
 
         if self._waiter_replacement_critical:
             already_pending = self._waiter_replacement_sigint_pending
             self._waiter_replacement_sigint_pending = True
-            self._stop_requested = True
-            self._stop_event.set()
-            self._reactor_activity_event.set()
-            if not already_pending:
+            if not already_requested and not already_pending:
                 self._strategy.notify_activity()
             return
-        super()._sigint_handler(signum, frame)
+        if not already_requested:
+            self._strategy.notify_activity()
+        raise KeyboardInterrupt
 
     @final
     def wait_for_activity(self, timeout: float | None = None) -> None:
@@ -1101,17 +1106,24 @@ class BaseReactor(MultiQueueWatcher):
     def run_forever(self) -> None:
         """Run with the BaseTask-shaped reactor loop instead of data-version polling."""
 
-        signal_context = None
-        self._running_event.set()
+        previous_sigint_handler: Any = None
+        restore_sigint_handler = False
         try:
-            signal_context = self._setup_signal_handler()
+            self._running_event.set()
+            if threading.current_thread() is threading.main_thread():
+                previous_sigint_handler = signal.getsignal(signal.SIGINT)
+                restore_sigint_handler = True
+                signal.signal(signal.SIGINT, self._sigint_handler)
             self.run_until_stopped()
         finally:
             try:
-                if signal_context is not None:
-                    signal_context.__exit__(None, None, None)
+                if restore_sigint_handler:
+                    signal.signal(signal.SIGINT, previous_sigint_handler)
             finally:
-                self._running_event.clear()
+                try:
+                    self.stop(join=False)
+                finally:
+                    self._running_event.clear()
 
     @final
     def run_in_thread(self) -> threading.Thread:

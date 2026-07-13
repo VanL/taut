@@ -45,9 +45,11 @@ def test_named_coverage_evidence_requires_every_marker(tmp_path: Path) -> None:
 
     missing = module.missing_evidence(data_file)
 
-    assert len(missing) == 1
-    assert "taut_summon/_control.py" in missing[0]
-    assert "self._reconcile_audit_threads()" in missing[0]
+    assert missing == [
+        "extensions/taut_summon/taut_summon/_control.py:"
+        f"{module._marker_line(PROJECT_ROOT / 'extensions/taut_summon/taut_summon/_control.py', 'self._reconcile_audit_threads()')} "
+        "(self._reconcile_audit_threads())"
+    ]
 
 
 def test_named_coverage_evidence_accepts_all_markers(tmp_path: Path) -> None:

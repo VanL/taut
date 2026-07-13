@@ -208,6 +208,13 @@ owners. It follows SimpleBroker 5.2.0's executable reference-reactor pattern:
 one reactor instance claims one drive thread; inherited final templates own
 process, wait, stop signaling, joining, and exactly-once close. A foreign stop
 request only signals and wakes. The owner finalizes after a live turn unwinds.
+The SIGINT handler follows the same split: it publishes stop and wake state,
+then raises `KeyboardInterrupt`; it never closes queues, waiters, or runtime
+handles from signal context. `run_forever()` restores the prior handler and
+owns exactly-once cleanup from an outer boundary that also covers handler
+installation, running-state publication, and drive-owner claim; the CLI's
+`finally` remains an idempotent backstop. This keeps native waiter locks and
+coverage shutdown hooks outside asynchronous signal re-entry.
 Fixed topology is the default; `TautWatcher` is the explicit owner-thread-only
 dynamic-topology policy. A constructor-time compatibility check rejects legacy
 subclasses that override lifecycle templates before queue construction while
