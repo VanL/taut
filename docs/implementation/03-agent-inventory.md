@@ -27,11 +27,11 @@ To refresh this inventory:
 
 ## Current Observed Availability
 
-Last refreshed: 2026-07-11
+Last refreshed: 2026-07-13
 
 | Agent family | Status | Notes |
 |--------------|--------|-------|
-| Claude | present | `/opt/homebrew/bin/claude`, version 2.1.201. Version probe passed 2026-07-11; authenticated read-only work was not re-probed. |
+| Claude | verified usable | `/opt/homebrew/bin/claude`, version 2.1.201. A keychain-authenticated read-only implementation review completed successfully on 2026-07-13. File/environment-only auth heuristics reported a false negative, so verify with a small direct prompt before treating `AUTH_MISSING` as authoritative on macOS. |
 | Codex | verified usable | `/opt/homebrew/bin/codex`, version 0.144.1. This 2026-07-11 task and its independent review run through Codex successfully. |
 | Gemini | present | `/opt/homebrew/bin/gemini`, version 0.46.0. Version probe passed 2026-07-11; prior credential failure was not re-probed. |
 | Qwen | present | `/opt/homebrew/bin/qwen`, version 0.17.0. Version probe passed 2026-07-11; prior model-access failure was not re-probed. |

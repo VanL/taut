@@ -23,27 +23,29 @@ def test_test_workflow_is_reusable_and_runs_release_gates() -> None:
     workflow = _workflow("test.yml")
 
     assert "workflow_call:" in workflow
-    assert "verify_paired_reactor_artifacts:" in workflow
+    assert "check_paired_release_wheels:" in workflow
     assert "type: boolean" in workflow
     assert "default: false" in workflow
-    assert "if: ${{ inputs.verify_paired_reactor_artifacts }}" in workflow
-    assert "python bin/verify-reactor-release-artifacts.py" in workflow
+    assert "if: ${{ inputs.check_paired_release_wheels }}" in workflow
+    assert "python bin/build-and-check-release-wheels.py" in workflow
     core_build = workflow.index("- name: Build package")
     summon_build = workflow.index("- name: Build taut-summon extension package")
-    paired_verify = workflow.index("- name: Verify fresh paired reactor artifacts")
+    release_wheel_check = workflow.index(
+        "- name: Build and check paired release wheels"
+    )
     wheel_smoke = workflow.index("- name: Smoke test built wheel")
-    assert core_build < summon_build < paired_verify < wheel_smoke
+    assert core_build < summon_build < release_wheel_check < wheel_smoke
     assert "pytest -v --tb=short" in workflow
     assert "summon-process:" in workflow
     assert "name: taut-summon process" in workflow
-    assert "max-parallel: 1" in workflow
+    assert "max-parallel:" not in workflow
     process_job_position = workflow.index("summon-process:")
     process_command_position = workflow.index(
-        'pytest extensions/taut_summon/tests -v --tb=short -m "xdist_group and not requires_live_harness and not requires_local_llm" -n 1 --dist loadgroup'
+        'pytest extensions/taut_summon/tests -v --tb=short -m "xdist_group and not requires_live_harness and not requires_local_llm" -n 2 --dist load'
     )
     assert process_job_position < process_command_position
     assert (
-        'pytest extensions/taut_summon/tests -v --tb=short -m "xdist_group and not requires_live_harness and not requires_local_llm" -n 1 --dist loadgroup'
+        'pytest extensions/taut_summon/tests -v --tb=short -m "xdist_group and not requires_live_harness and not requires_local_llm" -n 2 --dist load'
         in workflow
     )
     assert (
@@ -82,7 +84,7 @@ def test_coverage_measures_core_and_summon_in_isolated_process_lanes() -> None:
         "python -m coverage run --parallel-mode -m pytest "
         "extensions/taut_summon/tests "
         '-m "xdist_group and not requires_live_harness and not '
-        'requires_local_llm" -n 1 --dist loadgroup' in workflow
+        'requires_local_llm" -n 2 --dist load' in workflow
     )
     assert (
         "python -m coverage run --parallel-mode -m pytest "
@@ -95,8 +97,8 @@ def test_coverage_measures_core_and_summon_in_isolated_process_lanes() -> None:
         in workflow
     )
     assert "python -m coverage combine" in workflow
-    assert "python bin/verify-coverage-evidence.py" in workflow
-    assert "uv run python bin/verify-coverage-evidence.py" not in workflow
+    assert "python bin/check-required-coverage-paths.py" in workflow
+    assert "uv run python bin/check-required-coverage-paths.py" not in workflow
     for critical_file in ("_driver.py", "_control.py", "cli.py"):
         assert (
             f'python -m coverage report --include="*/taut_summon/{critical_file}" '
@@ -206,7 +208,7 @@ def test_release_gate_runs_tests_before_publishing() -> None:
 
     assert test_position < publish_position
     assert pg_test_position < publish_position
-    assert "verify_paired_reactor_artifacts: true" in workflow
+    assert "check_paired_release_wheels: true" in workflow
     assert "verify-tag-current:" in workflow
     assert "expected: ${EXPECTED_SHA}" in workflow
 
@@ -239,7 +241,7 @@ def test_pg_release_gate_is_github_only() -> None:
     assert "uv publish" not in lower_workflow
     assert "pypi" not in lower_workflow
     assert "trusted-publishing" not in lower_workflow
-    assert "verify_paired_reactor_artifacts: true" not in workflow
+    assert "check_paired_release_wheels: true" not in workflow
 
 
 def test_summon_release_gate_is_github_only() -> None:
@@ -252,7 +254,7 @@ def test_summon_release_gate_is_github_only() -> None:
     assert "package_name: taut-summon" in workflow
     assert "package_dir: extensions/taut_summon" in workflow
     assert "verify-tag-current:" in workflow
-    assert "verify_paired_reactor_artifacts: true" in workflow
+    assert "check_paired_release_wheels: true" in workflow
     assert "uv publish" not in lower_workflow
     assert "pypi" not in lower_workflow
     assert "trusted-publishing" not in lower_workflow

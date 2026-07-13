@@ -86,6 +86,14 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
 
 ## Project Lessons
 
+- 2026-07-13: Replacing argparse with manual option extraction requires the
+  parser's validation backstop, not just its happy-path token movement. A
+  separated value option must reject another option token or the literal `--`
+  as a missing value; otherwise hoisting silently changes both error classes
+  and the remaining grammar. Pin the rejection matrix and the intentional
+  exceptions, such as negative numbers, literal `-`, and joined
+  option-looking values.
+
 - 2026-07-11: A tight `pytest-timeout` marker under xdist thread mode is a
   worker-kill boundary, not an ordinary failing assertion. On a saturated
   Windows runner, a real queue-handle topology test exceeded its three-second
@@ -553,6 +561,16 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   joining code that restores termios with `TCSADRAIN`. Joining first can make a
   correctly recognized detach look hung because the test itself withholds the
   drain condition.
+
+- 2026-07-13: One xdist worker was a stabilization measure for Summon's real
+  process lane, not a product invariant. Each worker multiplies a complete
+  driver/provider/CLI topology, so pressure should be fixed and bounded rather
+  than absent or tied to host CPU count: four workers in local release checks
+  and two per CI runner. Keep each selected test's resources local, keep broad
+  default runs co-located under `loadgroup`, and use `load` only in the isolated
+  deterministic lane. External-live and local-LLM lanes retain their separate
+  known-safe one-worker boundaries. Matrix jobs on isolated CI hosts do not
+  need serialization for SQLite safety.
 
 ## Starter Lessons
 

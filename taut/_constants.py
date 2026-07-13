@@ -15,9 +15,7 @@ import re
 from collections.abc import Mapping
 from typing import Any, Final
 
-from simplebroker import resolve_config
-
-__version__: Final[str] = "0.5.4"
+__version__: Final[str] = "0.6.0"
 
 DEFAULT_DB_NAME: Final[str] = ".taut.db"
 PROJECT_CONFIG_NAME: Final[str] = ".taut.toml"
@@ -117,6 +115,8 @@ def load_config(overrides: Mapping[str, Any] | None = None) -> dict[str, Any]:
     client layer. The three broker keys below are the full project-resolution
     contract for [TAUT-3.2].
     """
+
+    from simplebroker import resolve_config
 
     raw: dict[str, Any] = {
         "BROKER_DEFAULT_DB_NAME": os.environ.get("TAUT_DB", DEFAULT_DB_NAME),

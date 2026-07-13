@@ -17,7 +17,7 @@ jobs:
   test:
     uses: ./.github/workflows/test.yml
     with:
-      verify_paired_reactor_artifacts: true
+      check_paired_release_wheels: true
     permissions:
       contents: read
 

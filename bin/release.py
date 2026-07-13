@@ -36,8 +36,8 @@ SUMMON_EXTENSION_DIR: Final[Path] = PROJECT_ROOT / "extensions" / "taut_summon"
 SUMMON_PYPROJECT_PATH: Final[Path] = SUMMON_EXTENSION_DIR / "pyproject.toml"
 SUMMON_README_PATH: Final[Path] = SUMMON_EXTENSION_DIR / "README.md"
 SUMMON_UV_LOCK_PATH: Final[Path] = SUMMON_EXTENSION_DIR / "uv.lock"
-REACTOR_RELEASE_ARTIFACT_VERIFIER: Final[Path] = (
-    PROJECT_ROOT / "bin" / "verify-reactor-release-artifacts.py"
+RELEASE_WHEEL_SET_CHECKER: Final[Path] = (
+    PROJECT_ROOT / "bin" / "build-and-check-release-wheels.py"
 )
 
 ROOT_RELEASE_WORKFLOW: Final[str] = ".github/workflows/release-gate.yml"
@@ -96,9 +96,9 @@ SUMMON_PROCESS_TEST_COMMAND: Final[Command] = (
     "-m",
     "xdist_group and not requires_live_harness and not requires_local_llm",
     "-n",
-    "1",
+    "4",
     "--dist",
-    "loadgroup",
+    "load",
 )
 SUMMON_LIVE_HARNESS_TEST_COMMAND: Final[Command] = (
     "uv",
@@ -1174,8 +1174,8 @@ def build_postupdate_steps_for_targets(
     if target_keys & {ROOT_TARGET.key, SUMMON_TARGET.key}:
         steps.append(
             CommandStep(
-                (sys.executable, str(REACTOR_RELEASE_ARTIFACT_VERIFIER)),
-                "Verify fresh paired taut and taut-summon artifacts",
+                (sys.executable, str(RELEASE_WHEEL_SET_CHECKER)),
+                "Build and check fresh paired core/Summon release wheels",
             )
         )
     return _unique_steps(tuple(steps))
@@ -1243,7 +1243,7 @@ def _run_postupdate_step(step: CommandStep, *, dry_run: bool) -> None:
     print(step.description)
     if dry_run and step.command == (
         sys.executable,
-        str(REACTOR_RELEASE_ARTIFACT_VERIFIER),
+        str(RELEASE_WHEEL_SET_CHECKER),
     ):
         run_command((*step.command, "--dry-run"), cwd=step.cwd)
         return

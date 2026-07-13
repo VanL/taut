@@ -44,6 +44,13 @@ Risky plans are blocked if they do not make explicit:
 
 ## Active Plans
 
+- `2026-07-13-bounded-summon-process-test-parallelism-plan.md` — fixed-width
+  deterministic Summon process pressure: four local workers, two CI workers,
+  and retained one-worker external-live/local-LLM boundaries.
+- `2026-07-12-lazy-command-extensions-and-rich-tui-composition-plan.md` —
+  implemented and verified, but uncommitted, command-extension registry,
+  subsystem-lazy imports, public Summon controller/host interaction, and rich
+  future TUI composition contract; no release action has been performed.
 - `2026-07-10-ci-failure-remediation-plan.md` — v0.5.1 CI remediation for
   PTY interrupt ordering, watcher pre-publication stop, Windows artifact
   fixture placement, and deterministic topology-rebind proof.

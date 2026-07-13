@@ -1,6 +1,35 @@
 # Changelog
 
+## 0.6.0 - 2026-07-13
+
+- Replaced the monolithic CLI switchboard with one versioned command-adapter
+  interface for every top-level verb. Core commands register statically;
+  separately installed packages register lightweight manifests through the
+  `taut.commands` entry-point group.
+- Added deterministic installed-command ownership, conflict diagnostics,
+  command-local parser configuration, shared root-global policy, and lazy
+  command factory loading. Root version/help and command help no longer
+  initialize unrelated clients, storage, watchers, providers, PTYs, or driver
+  subsystems.
+- Made the public `taut` and `taut_summon` package facades lazy while retaining
+  their typed import surfaces. Runtime failures now occur at the selected
+  subsystem boundary with the original cause preserved.
+- Added the typed `SummonController`, frozen request/result/status models, and
+  host-interaction terminal lease interface. Rich hosts can compose Summon
+  directly without parsing console output or importing private ledger,
+  control, driver, or PTY modules.
+- Moved `taut summon` and `taut dismiss` to native `taut-summon` entry-point
+  adapters shared with the standalone console. Core retains a narrow 0.5.4
+  compatibility/install-hint bridge for paired rollout; the 0.6.0 Summon wheel
+  wins when installed.
+- Expanded the fresh-wheel release gate to verify exact command entry points,
+  native Summon lifecycle, the retained 0.5.0 reactor case, 0.5.4 legacy
+  command compatibility, and rejection of Summon 0.6.0 with core 0.5.4.
+- Coordinated `taut`, `taut-pg`, and `taut-summon` versions and first-party
+  dependency floors at 0.6.0.
+
 ## 0.5.4 - 2026-07-12
+
 - Updated names to have a default capitalization rule (humans and agents)
   while preserving --as or explicit names.
 

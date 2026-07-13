@@ -11,8 +11,9 @@ Quick pointers to the key guidance documents in this repository.
 | `README.md` | Product face and current CLI/API behavior contract (see `docs/specs/02-taut-core.md`) |
 | `bin/release.py` | GitHub-only release helper for version/README sync, changelog and release gates, non-mutating `--checks-only`, summon local-LLM preparation, namespaced tags, and `all` batches |
 | `bin/pytest-pg` | Docker-backed Postgres test runner for shared root tests and `taut-pg` tests |
-| `bin/verify-reactor-artifact-compat.py` | Isolated four-case core/Summon wheel compatibility verifier for the paired reactor release |
-| `bin/verify-reactor-release-artifacts.py` | Fresh-build owner that selects exactly one core wheel and one Summon wheel before invoking the paired compatibility verifier |
+| `bin/check-required-coverage-paths.py` | Post-combine coverage-data checker for required child-process and critical Summon execution paths |
+| `bin/check-core-summon-wheel-matrix.py` | Isolated six-case core/Summon wheel-matrix checker retaining the 0.5.0 reactor floor and adding the 0.5.4 command-rollout floor |
+| `bin/build-and-check-release-wheels.py` | Fresh-build owner that selects exactly one core wheel and one Summon wheel before invoking the wheel-matrix checker |
 | `.github/workflows/test.yml` | Push/PR/reusable pytest, lint, type, and build gates |
 | `.github/workflows/test-pg-extension.yml` | Push/PR/reusable Docker Postgres gate for `taut-pg` |
 | `.github/workflows/release-gate.yml` | `v*` tag gate that runs tests, verifies tag stability, and publishes release artifacts |
@@ -70,11 +71,13 @@ Quick pointers to the key guidance documents in this repository.
 | `docs/plans/2026-07-06-taut-summon-plan.md` | Implemented `taut-summon` extension: delegation verbs, ledger, adapters, driver, control plane, conformance suite |
 | `docs/plans/2026-07-10-taut-summon-quality-remediation-plan.md` | Implemented and independently verified remediation for state, lifecycle, control, PTY, driver-generation, and paired-release findings |
 | `docs/plans/2026-07-11-multi-factor-review-remediation-plan.md` | Implemented and independently reviewed external multi-factor remediation; current worktree remains uncommitted |
+| `docs/plans/2026-07-12-lazy-command-extensions-and-rich-tui-composition-plan.md` | Reviewed implementation plan for command extensions, lazy subsystem loading, public Summon composition, and rich-host boundaries |
 | `docs/implementation/00-implementation-index.md` | Numbered entry point for implementation docs |
 | `docs/implementation/01-documentation-system.md` | Why the documentation system is shaped this way |
 | `docs/implementation/03-agent-inventory.md` | Current observed agent availability and review preference |
 | `docs/implementation/04-taut-architecture.md` | Taut implementation rationale, boundaries, dependencies, and key files |
 | `docs/implementation/05-taut-summon-architecture.md` | Summon extension rationale: ears/mouth split, three-thread driver, session ledger, control plane, and SimpleBroker handle ownership |
+| `docs/implementation/06-command-extensions.md` | Static and installed command registration, registry/dispatch ownership, lazy imports, extension packaging, and rich composition guidance |
 | `docs/lessons.md` | Canonical lessons ledger |
 
 ## Product Code
@@ -90,12 +93,13 @@ Quick pointers to the key guidance documents in this repository.
 | `taut/identity.py` | Process fingerprint capture, anchor selection, presence checks |
 | `taut/client/` | Public Python API package: facade plus identity, messaging, notification, thread mixins, and plain SimpleBroker queue ownership |
 | `taut/watcher.py` | Shared `BaseReactor`, vendored multi-queue scheduling, and cursor-aware `TautWatcher` with persistent owned queue handles |
-| `taut/cli.py` | Argparse CLI and output/exit-code rendering |
+| `taut/cli.py` | Thin console entry point into the registry-backed dispatcher |
+| `taut/commands/` | Versioned command manifests/protocol, deterministic installed-command registry, root dispatcher, shared renderers, lazy per-verb adapters, and the temporary reserved Summon compatibility bridge |
 | `tests/` | Contract tests using real SQLite files, shared backend markers, and subprocess CLI |
 | `tests/test_docs_references.py` | Maintained-source path and local/external citation-family gate |
-| `tests/test_project_metadata_consistency.py` | Package version, dependency floor, README pin, and wheel-name consistency gate |
+| `tests/test_project_metadata_consistency.py` | Package and retained-lock versions, dependency floors, README pins, and wheel-name consistency gate |
 | `extensions/taut_pg/` | Separate `taut-pg` project with extension metadata, README, and PG-only tests |
-| `extensions/taut_summon/` | Separate `taut-summon` project: the summon driver, adapters, ledger, control plane, persona, and real-process conformance suite |
+| `extensions/taut_summon/` | Separate `taut-summon` project: lazy public facade, typed controller/models and host-interaction seam, thin CLI renderer, driver, adapters, ledger, control plane, persona, and real-process conformance suite |
 
 ## Skills
 

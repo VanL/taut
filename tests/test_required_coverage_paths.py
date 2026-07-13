@@ -10,12 +10,12 @@ from coverage import CoverageData
 pytestmark = pytest.mark.sqlite_only
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-SCRIPT_PATH = PROJECT_ROOT / "bin" / "verify-coverage-evidence.py"
+COVERAGE_PATH_CHECKER = PROJECT_ROOT / "bin" / "check-required-coverage-paths.py"
 
 
 def _load_module() -> ModuleType:
     spec = importlib.util.spec_from_file_location(
-        "verify_coverage_evidence", SCRIPT_PATH
+        "check_required_coverage_paths", COVERAGE_PATH_CHECKER
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -32,7 +32,7 @@ def _marker_lines(module: ModuleType) -> dict[str, set[int]]:
     }
 
 
-def test_named_coverage_evidence_requires_every_marker(tmp_path: Path) -> None:
+def test_required_coverage_paths_requires_every_marker(tmp_path: Path) -> None:
     module = _load_module()
     data_file = tmp_path / ".coverage"
     lines = _marker_lines(module)
@@ -43,7 +43,7 @@ def test_named_coverage_evidence_requires_every_marker(tmp_path: Path) -> None:
     data.add_lines({path: value for path, value in lines.items() if path != omitted})
     data.write()
 
-    missing = module.missing_evidence(data_file)
+    missing = module.missing_required_paths(data_file)
 
     assert missing == [
         "extensions/taut_summon/taut_summon/_control.py:"
@@ -52,11 +52,11 @@ def test_named_coverage_evidence_requires_every_marker(tmp_path: Path) -> None:
     ]
 
 
-def test_named_coverage_evidence_accepts_all_markers(tmp_path: Path) -> None:
+def test_required_coverage_paths_accepts_all_markers(tmp_path: Path) -> None:
     module = _load_module()
     data_file = tmp_path / ".coverage"
     data = CoverageData(basename=str(data_file))
     data.add_lines(_marker_lines(module))
     data.write()
 
-    assert module.missing_evidence(data_file) == []
+    assert module.missing_required_paths(data_file) == []

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "taut-summon"
-version = "0.5.4"
+version = "0.6.0"
 description = "Summon extension for Taut: host an agent harness as a workspace member"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -16,11 +16,15 @@ authors = [
 dependencies = [
     # Floor is the paired core version shipping the shared BaseReactor
     # lifecycle used by the summon control reactor.
-    "taut>=0.5.4",
+    "taut>=0.6.0",
 ]
 
 [project.scripts]
 taut-summon = "taut_summon.cli:main"
+
+[project.entry-points."taut.commands"]
+summon = "taut_summon.command_manifest:summon"
+dismiss = "taut_summon.command_manifest:dismiss"
 
 [project.optional-dependencies]
 dev = [
@@ -57,6 +61,6 @@ markers = [
     "requires_kimi: live smoke tests that spawn the installed kimi CLI",
     "requires_opencode: live smoke tests that spawn the installed opencode CLI",
     "requires_pi: live smoke tests that spawn the installed pi CLI",
-    "xdist_group: group tests that share global external resources",
+    "xdist_group: select test-local process topologies; co-locate in broad loadgroup runs, selection-only in isolated load lanes",
     "sqlite_only: tests that validate built-in SQLite/path behavior",
 ]

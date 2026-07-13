@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify that combined coverage contains the plan's named execution evidence."""
+"""Check that combined coverage executed every required cross-process path."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ REQUIRED_MARKERS = {
         "raise SystemExit(main())"
     ),
     Path("extensions/taut_summon/taut_summon/_driver.py"): (
-        "return SummonDriver(request).run()"
+        "SummonDriver(request, interaction=interaction, db_path=db_path).run()"
     ),
     Path("extensions/taut_summon/taut_summon/_control.py"): (
         "self._reconcile_audit_threads()"
@@ -40,7 +40,7 @@ def _marker_line(path: Path, marker: str) -> int:
     return matches[0]
 
 
-def missing_evidence(
+def missing_required_paths(
     data_file: Path,
     *,
     project_root: Path = PROJECT_ROOT,
@@ -62,7 +62,7 @@ def missing_evidence(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Require named child-process and critical Summon coverage lines."
+        description="Check required child-process and critical Summon coverage paths."
     )
     parser.add_argument(
         "--data-file",
@@ -71,10 +71,10 @@ def main() -> int:
         help="Combined Coverage data file (default: repository .coverage).",
     )
     args = parser.parse_args()
-    missing = missing_evidence(args.data_file)
+    missing = missing_required_paths(args.data_file)
     if missing:
-        parser.error("missing executed coverage evidence: " + "; ".join(missing))
-    print("Named child-process and critical Summon coverage evidence is present.")
+        parser.error("required coverage paths were not executed: " + "; ".join(missing))
+    print("Every required child-process and critical Summon path was executed.")
     return 0
 
 

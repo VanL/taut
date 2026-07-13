@@ -83,23 +83,26 @@ sealed instance.
   (`extensions/taut_summon`), per [TAUT-12.3]. Runtime dependencies:
   `taut` only — no new third-party packages. The provider harness is an
   external executable, not a dependency.
-- Surface: core gains two **delegation verbs** — a deliberate, small
-  [TAUT-8.1] revision (plan delta D4) because the human phrase is
-  `taut summon claude`, and the agent-usable phrase is the same one (L1,
-  L2 agree):
+- Surface: the separately installed `taut-summon` distribution registers two
+  first-party command slots through the core `taut.commands` entry-point
+  interface ([TAUT-8.6]):
 
 ```text
 taut summon PROVIDER_OR_NAME [THREAD ...] [flags]   # default thread: general
 taut dismiss NAME
 ```
 
-  Core's implementation is a thin hand-off: if the `taut_summon` package
-  is importable, delegate argv; otherwise exit 1 with a one-line install
-  hint. Core gains no summon logic and no dependency.
-- The extension installs the console script **`taut-summon`** carrying
-  the real entry points (`run`/`stop`/`status`); the core verbs map
-  argv **verbatim** onto them (`taut summon X ...` ≡ `taut-summon run
-  X ...`), so both surfaces share one resolution contract:
+  Core supplies only a temporary previous-release compatibility adapter and
+  the absent-package install hint; it contains no Summon domain logic. The
+  compatibility adapter is removed after the immediately previous supported
+  Summon release supplies entry points.
+- The extension also installs `taut-summon run|stop|status`. Both console
+  surfaces are adapters over the public [SUM-13] controller. They share
+  request models, provider/name resolution, results, error semantics, and
+  tests; neither console surface invokes the other's `main()` or parses the
+  other's output. `taut summon X ...` remains behaviorally equivalent to
+  `taut-summon run X ...`, and `taut dismiss X` remains equivalent to
+  `taut-summon stop X`. Both surfaces share one resolution contract:
   `run NAME_OR_PROVIDER [THREAD ...]` — the positional is always the
   **member name**; the provider resolves in order: (1) `--provider`
   when given (a re-summon whose session row disagrees is an error
@@ -123,9 +126,6 @@ taut dismiss NAME
   `taut summon reviewer --provider pi` preserves the explicitly chosen
   `reviewer`. Provider registry keys remain lowercase and do not change when
   the member display name is capitalized.
-- `stop`/`status` are thin clients of the control plane ([SUM-9]) usable
-  from any terminal; `taut dismiss NAME` is `stop`.
-
 ## 4. Identity, Membership, and Presence [SUM-4]
 
 - The member's identity evidence is **ultimately the harness child process**.
@@ -216,10 +216,11 @@ taut dismiss NAME
   everyone).
 - Thread membership is ordinary membership. **Positional `[THREAD ...]`
   is the canonical thread syntax at both entry points** (`taut summon
-  PROVIDER [THREAD ...]` and `taut-summon run NAME [THREAD ...]` — core
-  delegation maps argv verbatim; there is no `--thread` flag); each is a
-  convenience `join`, defaulting to `general` when none given. The agent
-  may `taut join`/`taut leave` on its own thereafter ([SUM-6]).
+  PROVIDER [THREAD ...]` and `taut-summon run NAME [THREAD ...]`). The shared
+  parser configuration preserves the same syntax on both surfaces; there is no
+  `--thread` flag. Each is a convenience `join`, defaulting to `general` when
+  none is given. The agent may `taut join`/`taut leave` on its own thereafter
+  ([SUM-6]).
 
 ## 5. Ears — the Injection Contract [SUM-5]
 
@@ -515,18 +516,22 @@ they poison `control_health`. Skipped passes stay visible in logs without
 permanently marking a live driver unhealthy for one local SQLite/process-churn
 blip.
 
-**Attach / detach.** Whether a human is bridged is decided by a durable
-`wired` flag, not by screen-readiness heuristics. First-ever summon of a
-not-wired member, when summon's stdin is a tty and not nested inside a
-cooperative host TUI, bridges the launching terminal in raw mode to the
-PTY master. The human answers trust/login/model prompts and explicitly
-detaches with a configurable non-`ESC` chord, defaulting to
-`Ctrl-\ Ctrl-\`; only then does summon mark the row wired. Summon never
-auto-detaches on a first run. Subsequent wired summons go straight to
-detached driver mode. No-tty runs go detached with a notice and may
-surface `awaiting_onboarding` through log + STATUS. `--attach` forces the
-bridge and errors if no tty or if `TAUT_HOST_TUI=1`; `--detach` forces
-detached mode.
+**Attach / detach and host interaction.** Whether a human is bridged is
+decided by the durable `wired` flag plus a [SUM-13] host-interaction adapter,
+never by screen-readiness heuristics. On a first-ever summon of a not-wired
+member, the shell interaction reports an ordinary real tty as available and
+Summon bridges it in raw mode to the PTY master. The human answers
+trust/login/model prompts and explicitly detaches with the configured
+non-`ESC` chord, defaulting to `Ctrl-\ Ctrl-\`; only then does Summon mark the
+row wired. Summon never auto-detaches on a first run. Subsequent wired summons
+go straight to detached driver mode. No-tty runs go detached with the current
+notice and may surface `awaiting_onboarding` through log plus STATUS.
+`--attach` requires terminal availability; `--detach` forces detached mode.
+They are mutually exclusive at CLI parsing and at the driver boundary.
+The shell adapter preserves the existing fd behavior: fd 0 must be a tty, fd 1
+may be redirected, and a missing stdin tty reports `NO_TTY` before considering
+the nested-host marker. With a tty, `TAUT_HOST_TUI=1` reports `NESTED_HOST`;
+otherwise the shell reports `AVAILABLE` and grants a no-op lease over fds 0/1.
 
 Attach is first-generation only. A post-crash resume does not re-grab
 the terminal. During attach the driver starts no event pump and no
@@ -538,9 +543,27 @@ The detach chord matcher runs byte-at-a-time across raw-mode reads. It
 buffers partial chord bytes, detaches only on a complete match, and
 forwards the buffered bytes plus current byte on mismatch. It never
 intercepts `ESC`-prefixed input; Escape, arrows, and function keys pass
-through unchanged. A single-terminal host TUI must set `TAUT_HOST_TUI=1`
-when shelling out; summon refuses attach under that marker and runs
-detached so two full-screen apps do not scribble over one terminal.
+through unchanged.
+
+An uncooperative nested shell-out marked `TAUT_HOST_TUI=1` refuses attach so
+two full-screen applications never share the terminal. A cooperative future
+TUI supplies a [SUM-13] interaction adapter instead of setting that fallback
+marker for the in-process call.
+
+A host-supplied generic `UNAVAILABLE` result is distinct from `NO_TTY` and
+`NESTED_HOST`. Required attach fails with `--attach requires an available
+terminal`. Preferred attach stays detached and warns that the provider is not
+wired because the host terminal is unavailable, including the member name in
+the follow-up `taut summon --attach` instruction.
+
+The interaction has a pure availability phase and a scoped terminal-lease
+phase. A cooperative TUI may report availability during bootstrap, then pause
+rendering and grant explicit input/output fds only when the lease is entered.
+Summon calls the provider attach bridge itself and owns when attach occurs,
+the harness PTY, detach result, reset bytes, driver lifecycle, and the rule
+that chat is not injected until the watcher starts after detach. The
+interaction never receives the provider handle, reads Summon state, or writes
+control messages.
 
 On every bridge exit path, summon restores the local tty with a fixed,
 idempotent reset blast before `termios.tcsetattr(TCSADRAIN)`: `CAN`
@@ -619,20 +642,26 @@ ownership path, and raises `AdapterError` after best-effort cleanup. Cleanup
 errors do not replace an existing primary exception; interrupt after retirement
 is a no-op and cannot touch a reused fd.
 
-Startup order per generation is fixed around PTY master ownership. In
-detached/no-tty/no-attach paths, the driver starts the pump immediately after
-spawn, before `rejoin` and `ensure_threads`, so the terminal-query responder is
-live while bootstrap work runs:
+Startup order per generation is fixed around PTY master ownership. When policy
+rules out attach before bootstrap (`--detach`, `NESTED_HOST`, or generic
+`UNAVAILABLE`), the driver starts the pump immediately after spawn, before
+`rejoin` and `ensure_threads`, so the terminal-query responder is live while
+bootstrap work runs:
 `spawn → pump.start → rejoin → ensure_threads → settle → inject orientation →
 watcher`. In a real first-run attach path, the human bridge owns the PTY master
 until detach, so the pump starts only after the bridge hands ownership back:
 `spawn → rejoin → ensure_threads → attach → detach → set_wired(True) →
 pump.start → settle → inject orientation → watcher`. `--attach` follows the
-attach path. `rejoin` still anchors the member to the child before onboarding
-or detached operation; the watcher starts only after orientation is injected.
-The early-pump detached path is required because TUIs may emit DSR, XTVERSION,
-or kitty queries immediately after spawn and time out while the driver is doing
-SQLite or thread bootstrap work.
+attach path when the terminal is available. `NO_TTY` and `AVAILABLE` preserve
+the historical delayed-pump path: after `rejoin` and `ensure_threads`, the
+driver either attaches or records the reason-specific detached outcome, then
+starts the pump. The same cached availability and ordering are reused after a
+provider crash; no later generation reacquires a host lease. `rejoin` still
+anchors the member to the child before onboarding or detached operation; the
+watcher starts only after orientation is injected. Early-pump refusal paths are
+required because TUIs may emit DSR, XTVERSION, or kitty queries immediately
+after spawn and time out while the driver is doing SQLite or thread bootstrap
+work.
 Settling must not treat pre-output silence as readiness: when a PTY reader has
 started but has not yet observed any child output, the driver waits for first
 output or the bounded settle deadline before injecting orientation. This keeps
@@ -1074,8 +1103,85 @@ existing release-before-ack ordering.
   ledger/configuration diagnostics, registry-wide session-event capability,
   the 5.3.0 floor, and ordered release invocation with fresh built artifacts.
 
+Command/embedding verification additionally proves: both console surfaces use
+one controller; source and installed-wheel command discovery;
+previous-Summon compatibility; controller list/status/stop truth through real
+SQLite and real control queues; shell interaction parity through a real PTY
+child; a deterministic host adapter that grants explicit terminal fds and
+observes the attach transition; no private state/control access by adapters;
+and lazy import floors showing core and standalone command help do not import
+client/controller/driver/provider/PTY implementations until execution. Mocks
+may replace only metadata enumeration, clocks, or the external host adapter
+response in narrow unit tests. Broker, sidecar, CLI subprocess, control
+dispatch, driver process, and PTY remain real for contract proof.
+
+The installed-wheel checker reports six cases in total: the four reactor
+combinations above plus two command-rollout cases. The first additional case
+uses the new core alone and requires the exact `taut-summon` install hint
+without importing `taut_summon`. The second installs the new core with the
+immutable Summon 0.5.4 wheel and proves the temporary `summon`/`dismiss` bridge,
+including one non-help execution path. The 0.5.0 reactor floor and 0.5.4 command
+floor are separate historical contracts; neither may silently replace the
+other.
+
+## 13. Embedding and Rich Hosts [SUM-13]
+
+`taut_summon` exports a typed `SummonController` with provider-name discovery,
+session listing, live status, confirmed stop, and foreground-run operations,
+plus typed request/result/status models and a host-interaction interface. The
+standalone CLI, core command adapters, and future rich TUI use this controller
+rather than private ledger/control/driver modules.
+
+The controller hides extension table rows, queue handles and names, control
+JSON, evidence predicates, adapter handles, and driver mutable state. `status`
+proves a live correlated control response; a session row alone is not live
+status. `stop` succeeds only after correlated ACK and evidence-relative release
+confirmation. `run_foreground(request, interaction)` remains blocking and owns
+exactly one foreground driver lifecycle; it never silently daemonizes or
+detaches.
+
+A host interaction reports terminal availability and grants a scoped lease
+containing input/output fds. Summon owns provider PTY bytes, calls the attach
+bridge itself, interprets its finite result, and owns lifecycle. Shell and
+future TUI adapters may present different experiences while using the same
+attach transition. A future TUI that wants a nonblocking managed driver must
+define process supervision, terminal-release handshake, log routing, exit
+policy, and rollback in its own spec; [SUM-13] does not guess those behaviors.
+
+`SummonController` is bound to one optional database path. It exposes sorted
+provider names through `provider_names()` without constructing adapters; live
+session summaries through `list_live()`; one correlated live status; one
+confirmed stop result; and a blocking foreground run that returns no value on
+clean completion. `list_live()` returns an empty tuple when no database or no
+live rows exist; command adapters, not embedders, translate that empty result to
+the nothing-summoned exit class. The request model contains `name`, `threads`, `terminal`,
+`persona`, `system_prompt_file`, `rate_limit`, `attach`, `detach`,
+`provider_flag`, and `takeover`; the database path belongs to the controller.
+A live summary contains member id, current name, provider, and optional provider
+session id. A stop result contains member id and current name. Status contains
+those identity/provider values plus driver, thread count, cursor lag, and
+defensive copies of remaining validated JSON-primitive detail fields; it never
+exposes a raw reply.
+
+Public controller operations return typed domain results and raise typed
+`NothingSummoned`, `DriverUnresponsive`, or `SummonOperationError`. They do not
+print, return CLI exit codes, or require callers to parse human or JSON output.
+Command adapters own rendering and map `NothingSummoned` to exit 2 and the other
+public operation errors to exit 1.
+
+## Implementation Mapping
+
+- `docs/implementation/05-taut-summon-architecture.md` explains controller,
+  driver, control, PTY, and host-interaction ownership.
+- `docs/implementation/06-command-extensions.md` explains how installed Summon
+  manifests replace the temporary core bridge and how rich hosts compose the
+  public controller without parsing a CLI.
+
 ## Related Plans
 
+- `docs/plans/2026-07-12-lazy-command-extensions-and-rich-tui-composition-plan.md`
+  — installed command adapters, lazy loading, public Summon embedding, and
+  future rich-host terminal composition.
 - `docs/plans/2026-07-12-automatic-display-name-capitalization-plan.md` —
   capitalized implied-provider names and cased automatic collision fallbacks.
 - `docs/plans/2026-07-11-multi-factor-review-remediation-plan.md` — reviewed

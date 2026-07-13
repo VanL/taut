@@ -648,10 +648,20 @@ def test_summon_precheck_commands_include_extension_gate() -> None:
     )
     assert release.SUMMON_PROCESS_TEST_COMMAND[-4:] == (
         "-n",
-        "1",
+        "4",
         "--dist",
-        "loadgroup",
+        "load",
     )
+    for single_resource_command in (
+        release.SUMMON_LIVE_HARNESS_TEST_COMMAND,
+        release.SUMMON_LOCAL_LLM_TEST_COMMAND,
+    ):
+        assert single_resource_command[-4:] == (
+            "-n",
+            "1",
+            "--dist",
+            "loadgroup",
+        )
     assert any("extensions/taut_summon/taut_summon" in command for command in commands)
     assert any("extensions/taut_summon/tests" in command for command in commands)
     assert all("pypi" not in " ".join(command).lower() for command in commands)
@@ -803,11 +813,11 @@ def test_summon_postupdate_locks_and_builds_extension() -> None:
     assert steps[1].command == ("uv", "build", "extensions/taut_summon")
     assert steps[2].command == (
         sys.executable,
-        str(release.REACTOR_RELEASE_ARTIFACT_VERIFIER),
+        str(release.RELEASE_WHEEL_SET_CHECKER),
     )
 
 
-def test_core_postupdate_verifies_fresh_paired_artifacts_after_normal_build() -> None:
+def test_core_postupdate_checks_fresh_paired_release_wheels_after_build() -> None:
     release = _load_release_module()
 
     steps = release.build_postupdate_steps(release.ROOT_TARGET)
@@ -817,7 +827,7 @@ def test_core_postupdate_verifies_fresh_paired_artifacts_after_normal_build() ->
         ("uv", "build"),
         (
             sys.executable,
-            str(release.REACTOR_RELEASE_ARTIFACT_VERIFIER),
+            str(release.RELEASE_WHEEL_SET_CHECKER),
         ),
     ]
     assert steps[0].cwd == release.SUMMON_EXTENSION_DIR
@@ -852,7 +862,7 @@ def test_core_dry_run_executes_only_the_helpers_dry_run_plan(
         (
             (
                 sys.executable,
-                str(release.REACTOR_RELEASE_ARTIFACT_VERIFIER),
+                str(release.RELEASE_WHEEL_SET_CHECKER),
                 "--dry-run",
             ),
             False,
@@ -860,7 +870,7 @@ def test_core_dry_run_executes_only_the_helpers_dry_run_plan(
     ]
 
 
-def test_pg_postupdate_skips_paired_artifact_verification() -> None:
+def test_pg_postupdate_skips_paired_release_wheel_check() -> None:
     release = _load_release_module()
 
     steps = release.build_postupdate_steps(release.PG_TARGET)
@@ -868,7 +878,7 @@ def test_pg_postupdate_skips_paired_artifact_verification() -> None:
     assert [step.command for step in steps] == [("uv", "build", "extensions/taut_pg")]
 
 
-def test_matching_batch_verifies_once_after_all_normal_builds() -> None:
+def test_matching_batch_checks_once_after_all_normal_builds() -> None:
     release = _load_release_module()
 
     steps = release.build_postupdate_steps_for_targets(
@@ -880,11 +890,11 @@ def test_matching_batch_verifies_once_after_all_normal_builds() -> None:
         ("uv", "build"),
         ("uv", "build", "extensions/taut_pg"),
         ("uv", "build", "extensions/taut_summon"),
-        (sys.executable, str(release.REACTOR_RELEASE_ARTIFACT_VERIFIER)),
+        (sys.executable, str(release.RELEASE_WHEEL_SET_CHECKER)),
     ]
 
 
-def test_verifier_failure_under_skip_checks_stops_release_mutation(
+def test_release_wheel_check_failure_under_skip_checks_stops_release_mutation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     release = _load_release_module()
@@ -909,17 +919,17 @@ def test_verifier_failure_under_skip_checks_stops_release_mutation(
     monkeypatch.setattr(
         release,
         "release_files_changed",
-        lambda _target: pytest.fail("verification must precede release mutation"),
+        lambda _target: pytest.fail("wheel check must precede release mutation"),
     )
     monkeypatch.setattr(
         release,
         "prepare_tag",
-        lambda *_args, **_kwargs: pytest.fail("verification must precede tags"),
+        lambda *_args, **_kwargs: pytest.fail("wheel check must precede tags"),
     )
     monkeypatch.setattr(
         release,
         "push_current_branch",
-        lambda **_kwargs: pytest.fail("verification must precede pushes"),
+        lambda **_kwargs: pytest.fail("wheel check must precede pushes"),
     )
 
     def fake_run_command(
@@ -929,7 +939,7 @@ def test_verifier_failure_under_skip_checks_stops_release_mutation(
         commands.append(command)
         if command == (
             sys.executable,
-            str(release.REACTOR_RELEASE_ARTIFACT_VERIFIER),
+            str(release.RELEASE_WHEEL_SET_CHECKER),
         ):
             raise subprocess.CalledProcessError(1, command)
 
@@ -941,11 +951,11 @@ def test_verifier_failure_under_skip_checks_stops_release_mutation(
     assert commands == [
         ("uv", "lock"),
         ("uv", "build"),
-        (sys.executable, str(release.REACTOR_RELEASE_ARTIFACT_VERIFIER)),
+        (sys.executable, str(release.RELEASE_WHEEL_SET_CHECKER)),
     ]
 
 
-def test_version_changed_core_syncs_pair_before_verifier_failure_stops_git(
+def test_version_changed_core_syncs_pair_before_wheel_check_failure_stops_git(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     release = _load_release_module()
@@ -974,22 +984,22 @@ def test_version_changed_core_syncs_pair_before_verifier_failure_stops_git(
     monkeypatch.setattr(
         release,
         "prepare_tag",
-        lambda *_args, **_kwargs: pytest.fail("verification must precede tags"),
+        lambda *_args, **_kwargs: pytest.fail("wheel check must precede tags"),
     )
     monkeypatch.setattr(
         release,
         "push_current_branch",
-        lambda **_kwargs: pytest.fail("verification must precede pushes"),
+        lambda **_kwargs: pytest.fail("wheel check must precede pushes"),
     )
 
     def fake_run_command(command: tuple[str, ...], **_kwargs: object) -> None:
         if command[:2] == ("git", "add") or command[:2] == ("git", "commit"):
-            pytest.fail("verification must precede release commits")
+            pytest.fail("wheel check must precede release commits")
         if command == (
             sys.executable,
-            str(release.REACTOR_RELEASE_ARTIFACT_VERIFIER),
+            str(release.RELEASE_WHEEL_SET_CHECKER),
         ):
-            events.append("verify")
+            events.append("check-release-wheels")
             raise subprocess.CalledProcessError(1, command)
         events.append(":".join(command))
 
@@ -1003,11 +1013,11 @@ def test_version_changed_core_syncs_pair_before_verifier_failure_stops_git(
         "sync-paired-floors",
         "uv:lock",
         "uv:build",
-        "verify",
+        "check-release-wheels",
     ]
 
 
-def test_version_changed_core_verifies_before_staging_paired_files(
+def test_version_changed_core_checks_before_staging_paired_files(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     release = _load_release_module()
@@ -1038,12 +1048,12 @@ def test_version_changed_core_verifies_before_staging_paired_files(
 
     assert release.main(["core", "--version", "0.6.0", "--skip-checks"]) == 0
 
-    verifier = (
+    wheel_checker = (
         sys.executable,
-        str(release.REACTOR_RELEASE_ARTIFACT_VERIFIER),
+        str(release.RELEASE_WHEEL_SET_CHECKER),
     )
     git_add = next(command for command in events if command[:2] == ("git", "add"))
-    assert events.index(verifier) < events.index(git_add)
+    assert events.index(wheel_checker) < events.index(git_add)
     assert release.display_path(release.SUMMON_PYPROJECT_PATH) in git_add
     assert release.display_path(release.SUMMON_UV_LOCK_PATH) in git_add
     assert events.index(git_add) < events.index(("git", "tag", "v0.1.1"))

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and verify one fresh paired Taut/Taut Summon wheel set."""
+"""Build and check one fresh paired Taut/Taut Summon release-wheel set."""
 
 from __future__ import annotations
 
@@ -18,24 +18,26 @@ SUMMON_ROOT = PROJECT_ROOT / "extensions" / "taut_summon"
 SUMMON_LOCK = SUMMON_ROOT / "uv.lock"
 PG_ROOT = PROJECT_ROOT / "extensions" / "taut_pg"
 PG_PYPROJECT = PG_ROOT / "pyproject.toml"
-VERIFIER = PROJECT_ROOT / "bin" / "verify-reactor-artifact-compat.py"
+WHEEL_MATRIX_CHECKER = PROJECT_ROOT / "bin" / "check-core-summon-wheel-matrix.py"
 PREVIOUS_CORE_REF = "v0.5.0"
 PREVIOUS_SUMMON_REF = "taut_summon/v0.5.0"
+PREVIOUS_COMMAND_CORE_REF = "v0.5.4"
+PREVIOUS_COMMAND_SUMMON_REF = "taut_summon/v0.5.4"
 MINIMUM_SIMPLEBROKER = (5, 3, 0)
 MINIMUM_SIMPLEBROKER_PG = (3, 2, 0)
 MINIMUM_TAUT = (0, 5, 1)
 
 
-class ArtifactBuildError(RuntimeError):
-    """One fail-closed paired build or verification diagnostic."""
+class ReleaseWheelCheckError(RuntimeError):
+    """One fail-closed paired release-wheel build or check diagnostic."""
 
 
 def _fail(message: str) -> NoReturn:
-    raise ArtifactBuildError(message)
+    raise ReleaseWheelCheckError(message)
 
 
 def _run(command: tuple[str, ...]) -> None:
-    print("[artifact-release] + " + shlex.join(command), flush=True)
+    print("[release-wheels] + " + shlex.join(command), flush=True)
     try:
         completed = subprocess.run(command, cwd=PROJECT_ROOT, check=False)
     except OSError as exc:
@@ -62,7 +64,7 @@ def _version_tuple(version: str, *, label: str) -> tuple[int, int, int]:
     return int(major), int(minor), int(patch)
 
 
-def _verify_retained_summon_lock(path: Path = SUMMON_LOCK) -> None:
+def _check_retained_summon_lock(path: Path = SUMMON_LOCK) -> None:
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError) as exc:
@@ -81,7 +83,7 @@ def _verify_retained_summon_lock(path: Path = SUMMON_LOCK) -> None:
         _fail(f"retained Summon lock resolved simplebroker {version} below 5.3.0")
 
 
-def _verify_pg_resolution(path: Path) -> None:
+def _check_pg_resolution(path: Path) -> None:
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
@@ -96,7 +98,7 @@ def _verify_pg_resolution(path: Path) -> None:
         _fail(f"ephemeral PG resolution selected simplebroker-pg {version} below 3.2.0")
 
 
-def _verify_pg_manifest(path: Path = PG_PYPROJECT) -> None:
+def _check_pg_manifest(path: Path = PG_PYPROJECT) -> None:
     """Require explicit unmarked core and plugin floors in taut-pg metadata."""
 
     try:
@@ -164,7 +166,7 @@ def _print_dry_run_plan(*, core_output: Path, summon_output: Path) -> None:
         ),
         (
             sys.executable,
-            str(VERIFIER),
+            str(WHEEL_MATRIX_CHECKER),
             "--new-core",
             str(core_wheel),
             "--new-summon",
@@ -173,16 +175,20 @@ def _print_dry_run_plan(*, core_output: Path, summon_output: Path) -> None:
             PREVIOUS_CORE_REF,
             "--previous-summon-ref",
             PREVIOUS_SUMMON_REF,
+            "--previous-command-core-ref",
+            PREVIOUS_COMMAND_CORE_REF,
+            "--previous-command-summon-ref",
+            PREVIOUS_COMMAND_SUMMON_REF,
         ),
     )
     for command in commands:
-        print("[artifact-release] + " + shlex.join(command), flush=True)
+        print("[release-wheels] + " + shlex.join(command), flush=True)
 
 
-def build_and_verify(*, dry_run: bool = False) -> None:
-    """Build wheel-only artifacts in fresh outputs, then verify explicit paths."""
+def build_and_check(*, dry_run: bool = False) -> None:
+    """Build wheels in fresh outputs, then check their explicit paths."""
 
-    with tempfile.TemporaryDirectory(prefix="taut-reactor-release-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="taut-release-wheels-") as temporary:
         artifact_root = Path(temporary)
         core_output = artifact_root / "core"
         summon_output = artifact_root / "summon"
@@ -193,8 +199,8 @@ def build_and_verify(*, dry_run: bool = False) -> None:
             _print_dry_run_plan(core_output=core_output, summon_output=summon_output)
             return
 
-        _verify_pg_manifest()
-        _verify_retained_summon_lock()
+        _check_pg_manifest()
+        _check_retained_summon_lock()
 
         _run(
             (
@@ -232,12 +238,12 @@ def build_and_verify(*, dry_run: bool = False) -> None:
                 "--quiet",
             )
         )
-        _verify_pg_resolution(pg_resolution)
+        _check_pg_resolution(pg_resolution)
 
         _run(
             (
                 sys.executable,
-                str(VERIFIER),
+                str(WHEEL_MATRIX_CHECKER),
                 "--new-core",
                 str(core_wheel),
                 "--new-summon",
@@ -246,24 +252,28 @@ def build_and_verify(*, dry_run: bool = False) -> None:
                 PREVIOUS_CORE_REF,
                 "--previous-summon-ref",
                 PREVIOUS_SUMMON_REF,
+                "--previous-command-core-ref",
+                PREVIOUS_COMMAND_CORE_REF,
+                "--previous-command-summon-ref",
+                PREVIOUS_COMMAND_SUMMON_REF,
             )
         )
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Build and verify fresh paired Taut reactor artifacts."
+        description="Build and check fresh paired core/Summon release wheels."
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Print the ordered fresh-build and verification commands.",
+        help="Print the ordered fresh-build and wheel-matrix check commands.",
     )
     args = parser.parse_args(argv)
     try:
-        build_and_verify(dry_run=args.dry_run)
-    except ArtifactBuildError as exc:
-        print(f"paired artifact verification failed: {exc}", file=sys.stderr)
+        build_and_check(dry_run=args.dry_run)
+    except ReleaseWheelCheckError as exc:
+        print(f"release-wheel check failed: {exc}", file=sys.stderr)
         return 1
     return 0
 

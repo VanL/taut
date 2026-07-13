@@ -52,6 +52,18 @@ def test_package_versions_and_dependency_floors_are_coordinated() -> None:
     assert "simplebroker-pg>=3.2.1" in dev
     assert f"taut-summon>={version}" in dev
 
+    summon_lock = _manifest("extensions/taut_summon/uv.lock")
+    packages = summon_lock["package"]
+    assert isinstance(packages, list)
+    for package_name in ("taut", "taut-summon"):
+        locked = [
+            package
+            for package in packages
+            if isinstance(package, dict) and package.get("name") == package_name
+        ]
+        assert len(locked) == 1
+        assert locked[0].get("version") == version
+
 
 def test_readme_install_examples_match_current_manifests() -> None:
     version = str(_project("pyproject.toml")["version"])

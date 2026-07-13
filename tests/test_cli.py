@@ -8,8 +8,8 @@ import re
 import signal
 import subprocess
 import sys
-import sysconfig
 import threading
+from io import StringIO
 from pathlib import Path
 from typing import TextIO, cast
 
@@ -19,8 +19,11 @@ from simplebroker import Queue
 import taut.cli as cli
 from taut import addressing
 from taut._constants import META_QUEUE_NAME
-from taut.cli import _format_unread_count
 from taut.client import Message
+from taut.commands._rendering import format_message_time as _format_message_time
+from taut.commands._rendering import format_unread_count as _format_unread_count
+from taut.commands._rendering import human_message_row as _human_message_row
+from taut.commands._rendering import thread_heading as _thread_heading
 from taut.envelope import encode_envelope
 from taut.state import SQLITE_SQL_DIALECT, SqlSidecarTautState
 from tests.conftest import PROJECT_ROOT, build_cli_env, run_cli
@@ -53,13 +56,13 @@ def test_cli_human_glyphs_fall_back_for_legacy_stdout_encoding() -> None:
         text="van created #general",
     )
 
-    assert cli._thread_heading("general", stream=stream) == (
+    assert _thread_heading("general", stream=stream) == (
         "-- general --------------------------------------"
     )
-    expected_time = cli._format_message_time(message.ts)
+    expected_time = _format_message_time(message.ts)
 
     assert (
-        cli._human_message_row(
+        _human_message_row(
             message,
             timestamps=False,
             sender_width=6,
@@ -183,6 +186,24 @@ def test_cli_usage_error_unknown_flag_exits_1(tmp_path: Path) -> None:
     assert out == ""
 
 
+def test_cli_usage_error_unknown_root_option_exits_1(tmp_path: Path) -> None:
+    rc, out, err = run_cli("--wat", "whoami", cwd=tmp_path)
+
+    assert rc == 1
+    assert out == ""
+    assert "unrecognized root option: --wat" in err
+    assert "Traceback" not in err
+
+
+def test_cli_missing_root_value_exits_1_without_traceback(tmp_path: Path) -> None:
+    rc, out, err = run_cli("--db", cwd=tmp_path)
+
+    assert rc == 1
+    assert out == ""
+    assert "argument --db" in err
+    assert "Traceback" not in err
+
+
 def test_cli_usage_error_unknown_subcommand_exits_1(tmp_path: Path) -> None:
     rc, out, err = run_cli("nosuchverb", cwd=tmp_path)
 
@@ -204,6 +225,58 @@ def test_cli_help_exits_0(tmp_path: Path) -> None:
 
     assert rc == 0
     assert "usage:" in out
+
+
+def test_cli_short_help_and_preverb_long_abbreviation_remain_accepted(
+    tmp_path: Path,
+) -> None:
+    rc, out, err = run_cli("-h", cwd=tmp_path)
+    assert rc == 0, err
+    assert out.startswith("usage: taut ")
+
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    rc, out, err = run_cli("--timest", "log", "general", cwd=tmp_path)
+    assert rc == 0, err
+    assert re.search(r"\d{19}", out)
+
+
+def test_cli_post_verb_globals_are_exact_but_local_abbreviations_remain(
+    tmp_path: Path,
+) -> None:
+    rc, out, err = run_cli("join", "general", "--tok", "continuity-token", cwd=tmp_path)
+    assert rc == 1
+    assert out == ""
+    assert "unrecognized" in err
+
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    rc, out, err = run_cli("--as", "van", "join", "general", "--json", cwd=tmp_path)
+    assert rc == 0, err
+    token = json.loads(out.splitlines()[0])["token"]
+    rc, out, err = run_cli("rejoin", "--t", token, "--json", cwd=tmp_path)
+    assert rc == 0, err
+    assert json.loads(out)["name"] == "van"
+
+
+@pytest.mark.parametrize(
+    ("args", "error_fragment"),
+    [
+        (("--",), "usage: taut"),
+        (("--", "say"), "usage: taut say"),
+        (("--", "summon"), "usage: taut summon"),
+    ],
+)
+def test_cli_root_separator_selects_later_verb_and_preserves_tail_boundary(
+    tmp_path: Path,
+    args: tuple[str, ...],
+    error_fragment: str,
+) -> None:
+    rc, out, err = run_cli(*args, cwd=tmp_path, stdin="")
+
+    assert rc == 1
+    assert out == ""
+    assert error_fragment in err
+    assert "Traceback" not in err
 
 
 def test_cli_no_subcommand_prints_help_to_stderr_and_exits_1(
@@ -233,8 +306,20 @@ def test_main_explicit_empty_argv_does_not_fall_back_to_process_argv(
 
 
 def test_every_cli_parser_action_has_useful_help() -> None:
-    root = cli.build_parser()
-    pending = [root]
+    from taut.commands._dispatch import _build_command_parser, _load_command
+    from taut.commands._registry import CommandRegistry
+
+    pending: list[argparse.ArgumentParser] = []
+    for selected in CommandRegistry(entry_points=()).commands():
+        assert selected.spec is not None
+        pending.append(
+            _build_command_parser(
+                selected.spec,
+                _load_command(selected),
+                StringIO(),
+                StringIO(),
+            )
+        )
     seen: set[int] = set()
     missing: list[str] = []
 
@@ -1299,8 +1384,8 @@ def test_cli_summon_delegates_argv_to_extension(tmp_path: Path) -> None:
 
 
 def test_cli_summon_provider_flag_round_trips_to_extension(tmp_path: Path) -> None:
-    # --provider is not a core flag: seeing it change the extension's
-    # resolution proves the tail passed through the delegation verbatim.
+    # --provider is not a core flag: seeing it change Summon's resolution
+    # proves the selected compatibility or native adapter received the tail.
     rc, _out, err = run_cli(
         "summon", "reviewer", "--provider", "zz-unknown", "dev", cwd=tmp_path
     )
@@ -1340,9 +1425,11 @@ def test_cli_dismiss_db_before_verb_reaches_extension(tmp_path: Path) -> None:
 
 
 def test_cli_summon_tail_keeps_core_global_lookalikes(tmp_path: Path) -> None:
-    # [SUM-3]: the tail after the verb is the extension's, verbatim —
-    # including tokens that spell core globals. The extension's own usage
-    # error naming the token proves it arrived instead of being hoisted.
+    # [SUM-3]: undeclared root-global lookalikes remain in the selected Summon
+    # adapter's tail. Both the compatibility and native manifests declare only
+    # `--db` post-verb. The usage error proves `--json` was not hoisted. The
+    # installed-wheel matrix separately proves which owner runs per artifact
+    # state; this source-tree case is intentionally owner-agnostic.
     rc, _out, err = run_cli("summon", "claude", "--json", cwd=tmp_path)
 
     assert rc == 1
@@ -1383,19 +1470,15 @@ def test_cli_dismiss_maps_to_extension_stop(tmp_path: Path) -> None:
 def test_cli_summon_without_extension_exits_1_with_install_hint(
     tmp_path: Path,
 ) -> None:
-    # Absence path via a real subprocess: `-S` disables site processing,
-    # so the editable taut_summon install (a site-packages .pth file)
-    # vanishes; taut and its regular dependencies stay importable via
-    # explicit PYTHONPATH entries, whose .pth files are never processed.
-    # No import mocking anywhere.
-    # purelib and platlib usually coincide; both are listed for the
-    # installs (e.g. C extensions) that land only in platlib.
-    site_dirs = list(
-        dict.fromkeys([sysconfig.get_path("purelib"), sysconfig.get_path("platlib")])
-    )
+    # Absence path via a real subprocess: `-S` disables site processing and
+    # PYTHONPATH names only the core checkout. Do not add site-packages here:
+    # official Summon entry-point metadata without its importable package is a
+    # broken installation, which must not fall back to the absence hint.
+    # Lazy core command selection needs no third-party runtime dependency for
+    # this path. No import mocking anywhere.
     env = os.environ.copy()
     env.pop("PYTHONHOME", None)
-    env["PYTHONPATH"] = os.pathsep.join([str(PROJECT_ROOT), *site_dirs])
+    env["PYTHONPATH"] = str(PROJECT_ROOT)
     env["PYTHONIOENCODING"] = "utf-8"
 
     probe = subprocess.run(

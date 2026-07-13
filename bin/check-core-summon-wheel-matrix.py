@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Verify the paired Taut/Taut Summon installed-artifact matrix ([SUM-12])."""
+"""Check the installed core/Summon wheel matrix required by [SUM-12]."""
 
 from __future__ import annotations
 
 import argparse
+import configparser
 import hashlib
 import json
 import os
@@ -25,15 +26,35 @@ from typing import NoReturn
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_PREVIOUS_COMMIT = "766e3aaf84f75046a57ef769b9c802148b42e71a"
 EXPECTED_PREVIOUS_CORE_VERSION = "0.5.0"
+EXPECTED_COMMAND_ROLLOUT_COMMIT = "b03709452cf4d5962b0d7204b0dab78b9bafd524"
+EXPECTED_COMMAND_ROLLOUT_CORE_VERSION = "0.5.4"
+EXPECTED_COMMAND_ROLLOUT_SUMMON_VERSION = "0.5.4"
 MINIMUM_SIMPLEBROKER_VERSION = "5.3.0"
 COMMAND_TIMEOUT_SECONDS = 180.0
 CONTROL_SMOKE_TIMEOUT_SECONDS = 180.0
 EXPECTED_CORE_REF = "v0.5.0"
 EXPECTED_SUMMON_REF = "taut_summon/v0.5.0"
+EXPECTED_COMMAND_CORE_REF = "v0.5.4"
+EXPECTED_COMMAND_SUMMON_REF = "taut_summon/v0.5.4"
+EXPECTED_REF_COMMITS = {
+    EXPECTED_CORE_REF: EXPECTED_PREVIOUS_COMMIT,
+    EXPECTED_SUMMON_REF: EXPECTED_PREVIOUS_COMMIT,
+    EXPECTED_COMMAND_CORE_REF: EXPECTED_COMMAND_ROLLOUT_COMMIT,
+    EXPECTED_COMMAND_SUMMON_REF: EXPECTED_COMMAND_ROLLOUT_COMMIT,
+}
+EXPECTED_SUMMON_COMMAND_ENTRY_POINTS = (
+    ("dismiss", "taut_summon.command_manifest:dismiss"),
+    ("summon", "taut_summon.command_manifest:summon"),
+)
 
 
-class VerificationError(RuntimeError):
-    """One fail-closed artifact compatibility diagnostic."""
+class WheelMatrixError(RuntimeError):
+    """One fail-closed core/Summon wheel-matrix diagnostic."""
+
+
+class _CaseSensitiveConfigParser(configparser.ConfigParser):
+    def optionxform(self, optionstr: str) -> str:
+        return optionstr
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +63,7 @@ class WheelMetadata:
     name: str
     version: str
     requirements: tuple[str, ...]
+    command_entry_points: tuple[tuple[str, str], ...]
     sha256: str
 
 
@@ -51,10 +73,12 @@ class Inputs:
     new_summon: Path
     previous_core_ref: str
     previous_summon_ref: str
+    previous_command_core_ref: str
+    previous_command_summon_ref: str
 
 
 def _fail(message: str) -> NoReturn:
-    raise VerificationError(message)
+    raise WheelMatrixError(message)
 
 
 def _required_wheel(path: str, label: str) -> Path:
@@ -69,26 +93,40 @@ def _required_wheel(path: str, label: str) -> Path:
 def _parse_args(argv: list[str] | None) -> Inputs:
     parser = argparse.ArgumentParser(
         description=(
-            "Verify Taut reactor compatibility using installed wheels in "
-            "checkout-free virtual environments."
+            "Check the core/Summon compatibility matrix using installed wheels "
+            "in checkout-free virtual environments."
         )
     )
     parser.add_argument("--new-core", required=True, metavar="WHEEL")
     parser.add_argument("--new-summon", required=True, metavar="WHEEL")
     parser.add_argument("--previous-core-ref", required=True, metavar="REF")
     parser.add_argument("--previous-summon-ref", required=True, metavar="REF")
+    parser.add_argument("--previous-command-core-ref", required=True, metavar="REF")
+    parser.add_argument("--previous-command-summon-ref", required=True, metavar="REF")
     args = parser.parse_args(argv)
     inputs = Inputs(
         new_core=_required_wheel(args.new_core, "new core"),
         new_summon=_required_wheel(args.new_summon, "new Summon"),
         previous_core_ref=args.previous_core_ref,
         previous_summon_ref=args.previous_summon_ref,
+        previous_command_core_ref=args.previous_command_core_ref,
+        previous_command_summon_ref=args.previous_command_summon_ref,
     )
     if inputs.previous_core_ref != EXPECTED_CORE_REF:
         _fail(f"previous core ref must be immutable release ref {EXPECTED_CORE_REF!r}")
     if inputs.previous_summon_ref != EXPECTED_SUMMON_REF:
         _fail(
             f"previous Summon ref must be immutable release ref {EXPECTED_SUMMON_REF!r}"
+        )
+    if inputs.previous_command_core_ref != EXPECTED_COMMAND_CORE_REF:
+        _fail(
+            "command-rollout core ref must be immutable release ref "
+            f"{EXPECTED_COMMAND_CORE_REF!r}"
+        )
+    if inputs.previous_command_summon_ref != EXPECTED_COMMAND_SUMMON_REF:
+        _fail(
+            "command-rollout Summon ref must be immutable release ref "
+            f"{EXPECTED_COMMAND_SUMMON_REF!r}"
         )
     return inputs
 
@@ -112,7 +150,29 @@ def _read_wheel_metadata(path: Path) -> WheelMetadata:
             if len(candidates) != 1:
                 _fail(f"wheel must contain exactly one .dist-info/METADATA: {path}")
             message = BytesParser().parsebytes(wheel.read(candidates[0]))
-    except (OSError, zipfile.BadZipFile, KeyError) as exc:
+            entry_point_candidates = [
+                name
+                for name in wheel.namelist()
+                if name.endswith(".dist-info/entry_points.txt")
+            ]
+            if len(entry_point_candidates) > 1:
+                _fail(
+                    "wheel must contain at most one .dist-info/entry_points.txt: "
+                    f"{path}"
+                )
+            command_entry_points: tuple[tuple[str, str], ...] = ()
+            if entry_point_candidates:
+                parser = _CaseSensitiveConfigParser(interpolation=None)
+                parser.read_string(wheel.read(entry_point_candidates[0]).decode())
+                if parser.has_section("taut.commands"):
+                    command_entry_points = tuple(sorted(parser.items("taut.commands")))
+    except (
+        OSError,
+        UnicodeDecodeError,
+        configparser.Error,
+        zipfile.BadZipFile,
+        KeyError,
+    ) as exc:
         _fail(f"cannot read wheel metadata from {path}: {exc}")
     name = message.get("Name")
     version = message.get("Version")
@@ -123,6 +183,7 @@ def _read_wheel_metadata(path: Path) -> WheelMetadata:
         name=name,
         version=version,
         requirements=tuple(message.get_all("Requires-Dist", [])),
+        command_entry_points=command_entry_points,
         sha256=_sha256(path),
     )
 
@@ -181,6 +242,25 @@ def _validate_new_metadata(core: WheelMetadata, summon: WheelMetadata) -> None:
         project="taut",
         requirement=f"taut>={core.version}",
     )
+    if core.command_entry_points:
+        rendered = ", ".join(
+            f"{name}={target}" for name, target in core.command_entry_points
+        )
+        _fail(
+            "new core wheel must not publish taut.commands entry points; "
+            f"found: {rendered}"
+        )
+    if summon.command_entry_points != EXPECTED_SUMMON_COMMAND_ENTRY_POINTS:
+        rendered = (
+            ", ".join(
+                f"{name}={target}" for name, target in summon.command_entry_points
+            )
+            or "<none>"
+        )
+        _fail(
+            "new Summon wheel must publish exactly the summon and dismiss "
+            f"taut.commands entry points; found: {rendered}"
+        )
 
 
 def _clean_environment() -> dict[str, str]:
@@ -220,7 +300,7 @@ def _process_detail(completed: subprocess.CompletedProcess[str]) -> str:
 
 
 def _terminate_owned_process_group(process: subprocess.Popen[str]) -> None:
-    """Kill and reap one command plus descendants owned by this verifier."""
+    """Kill and reap one command plus descendants owned by this checker."""
 
     try:
         if os.name == "posix":
@@ -249,7 +329,7 @@ def _run(
     timeout: float = COMMAND_TIMEOUT_SECONDS,
     terminate_process_group: bool = True,
 ) -> subprocess.CompletedProcess[str]:
-    print(f"[artifact-compat] + {_format_command(command)}")
+    print(f"[wheel-matrix] + {_format_command(command)}")
     start_new_session = terminate_process_group and os.name == "posix"
     creationflags = (
         int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
@@ -298,6 +378,9 @@ def _run(
 
 
 def _resolve_remote_tag(ref: str, *, env: dict[str, str]) -> str:
+    expected_commit = EXPECTED_REF_COMMITS.get(ref)
+    if expected_commit is None:
+        _fail(f"no immutable commit is configured for historical ref {ref!r}")
     remote_ref = f"refs/tags/{ref}"
     completed = _run(
         [
@@ -319,12 +402,9 @@ def _resolve_remote_tag(ref: str, *, env: dict[str, str]) -> str:
     commit = resolved.get(f"{remote_ref}^{{}}") or resolved.get(remote_ref)
     if commit is None:
         _fail(f"tag {ref!r} does not exist on origin")
-    if commit != EXPECTED_PREVIOUS_COMMIT:
-        _fail(
-            f"origin tag {ref!r} resolves to {commit}, expected "
-            f"{EXPECTED_PREVIOUS_COMMIT}"
-        )
-    print(f"[artifact-compat] ref={ref} origin_commit={commit}")
+    if commit != expected_commit:
+        _fail(f"origin tag {ref!r} resolves to {commit}, expected {expected_commit}")
+    print(f"[wheel-matrix] ref={ref} origin_commit={commit}")
     return commit
 
 
@@ -343,6 +423,9 @@ def _prepare_archive_repository(
     if not remote:
         _fail("origin has no fetch URL")
     for ref in refs:
+        expected_commit = EXPECTED_REF_COMMITS.get(ref)
+        if expected_commit is None:
+            _fail(f"no immutable commit is configured for historical ref {ref!r}")
         tag_ref = f"refs/tags/{ref}"
         _run(
             [
@@ -366,10 +449,9 @@ def _prepare_archive_repository(
             cwd=work,
             env=env,
         ).stdout.strip()
-        if fetched != EXPECTED_PREVIOUS_COMMIT:
+        if fetched != expected_commit:
             _fail(
-                f"fetched tag {ref!r} resolves to {fetched}, expected "
-                f"{EXPECTED_PREVIOUS_COMMIT}"
+                f"fetched tag {ref!r} resolves to {fetched}, expected {expected_commit}"
             )
     return repository
 
@@ -479,6 +561,63 @@ def _build_previous_wheels(
     return previous_core, previous_summon
 
 
+def _build_previous_command_summon(
+    *,
+    summon_source: Path,
+    work: Path,
+    env: dict[str, str],
+    uv: str,
+) -> Path:
+    summon_out = work / "previous-command-summon-wheel"
+    summon_out.mkdir()
+    _run(
+        [
+            uv,
+            "build",
+            "--wheel",
+            str(summon_source / "extensions" / "taut_summon"),
+            "--out-dir",
+            str(summon_out),
+        ],
+        cwd=summon_source,
+        env=env,
+    )
+    previous_summon = _find_built_wheel(summon_out, "taut-summon")
+    metadata = _read_wheel_metadata(previous_summon)
+    if metadata.version != EXPECTED_COMMAND_ROLLOUT_SUMMON_VERSION:
+        _fail(
+            f"command-rollout Summon wheel version is {metadata.version}, expected "
+            f"{EXPECTED_COMMAND_ROLLOUT_SUMMON_VERSION}"
+        )
+    _print_wheel_evidence("command_previous_summon", metadata)
+    return previous_summon
+
+
+def _build_previous_command_core(
+    *,
+    core_source: Path,
+    work: Path,
+    env: dict[str, str],
+    uv: str,
+) -> Path:
+    core_out = work / "previous-command-core-wheel"
+    core_out.mkdir()
+    _run(
+        [uv, "build", "--wheel", "--out-dir", str(core_out)],
+        cwd=core_source,
+        env=env,
+    )
+    previous_core = _find_built_wheel(core_out, "taut")
+    metadata = _read_wheel_metadata(previous_core)
+    if metadata.version != EXPECTED_COMMAND_ROLLOUT_CORE_VERSION:
+        _fail(
+            f"command-rollout core wheel version is {metadata.version}, expected "
+            f"{EXPECTED_COMMAND_ROLLOUT_CORE_VERSION}"
+        )
+    _print_wheel_evidence("command_previous_core", metadata)
+    return previous_core
+
+
 def _venv_python(venv: Path) -> Path:
     if os.name == "nt":
         return venv / "Scripts" / "python.exe"
@@ -527,7 +666,7 @@ def _install(
         cwd=cwd,
         env=env,
     )
-    print(f"[artifact-compat] resolved[{cwd.name}]:")
+    print(f"[wheel-matrix] resolved[{cwd.name}]:")
     print(frozen.stdout.rstrip())
 
 
@@ -712,6 +851,166 @@ print(json.dumps({{
     print(probe.stdout.rstrip())
 
 
+def _case_new_core_command_fallback(
+    *,
+    new_core: Path,
+    work: Path,
+    env: dict[str, str],
+    uv: str,
+) -> None:
+    case_root, python = _create_environment(
+        name="05-command-core-only", work=work, env=env, uv=uv
+    )
+    _install(
+        python=python,
+        artifacts=(new_core,),
+        cwd=case_root,
+        env=env,
+        uv=uv,
+    )
+    probe = _run_python_probe(
+        python=python,
+        cwd=case_root,
+        env=env,
+        code=r"""
+from io import StringIO
+
+import taut
+from taut.commands._dispatch import dispatch
+
+taut_path = assert_installed(taut)
+stdout = StringIO()
+stderr = StringIO()
+result = dispatch(
+    ["summon", "reviewer"],
+    stdin=StringIO(),
+    stdout=stdout,
+    stderr=stderr,
+)
+expected = (
+    "taut summon requires the taut-summon extension "
+    "(pipx inject taut taut-summon)\n"
+)
+if result != 1 or stdout.getvalue() or stderr.getvalue() != expected:
+    raise SystemExit(
+        "core-only summon did not produce the exact install hint: "
+        f"result={result} stdout={stdout.getvalue()!r} stderr={stderr.getvalue()!r}"
+    )
+if any(name == "taut_summon" or name.startswith("taut_summon.") for name in sys.modules):
+    raise SystemExit("core-only summon imported taut_summon")
+
+print(json.dumps({
+    "case": "command_core_only",
+    "summon": "install_hint",
+    "taut_path": taut_path,
+}, sort_keys=True))
+""",
+    )
+    print(probe.stdout.rstrip())
+
+
+def _case_new_core_previous_command_summon(
+    *,
+    new_core: Path,
+    previous_summon: Path,
+    work: Path,
+    env: dict[str, str],
+    uv: str,
+) -> None:
+    case_root, python = _create_environment(
+        name="06-command-prior-summon", work=work, env=env, uv=uv
+    )
+    _install(
+        python=python,
+        artifacts=(new_core, previous_summon),
+        cwd=case_root,
+        env=env,
+        uv=uv,
+    )
+    probe = _run_python_probe(
+        python=python,
+        cwd=case_root,
+        env=env,
+        code=r"""
+from io import StringIO
+
+import taut
+from taut.commands._dispatch import dispatch
+
+taut_path = assert_installed(taut)
+root_stdout = StringIO()
+root_stderr = StringIO()
+if dispatch(
+    ["--help"],
+    stdin=StringIO(),
+    stdout=root_stdout,
+    stderr=root_stderr,
+) != 0:
+    raise SystemExit("root help failed with prior Summon installed")
+if any(name == "taut_summon" or name.startswith("taut_summon.") for name in sys.modules):
+    raise SystemExit("root help imported taut_summon")
+
+for core_verb, legacy_usage in (
+    ("summon", "usage: taut-summon run"),
+    ("dismiss", "usage: taut-summon stop"),
+):
+    stdout = StringIO()
+    stderr = StringIO()
+    result = dispatch(
+        [core_verb, "--help"],
+        stdin=StringIO(),
+        stdout=stdout,
+        stderr=stderr,
+    )
+    if result != 0 or legacy_usage not in stdout.getvalue() or stderr.getvalue():
+        raise SystemExit(
+            f"legacy {core_verb} bridge failed: result={result} "
+            f"stdout={stdout.getvalue()!r} stderr={stderr.getvalue()!r}"
+        )
+
+missing_db = Path.cwd() / "legacy-stop-missing.db"
+stop_stdout = StringIO()
+stop_stderr = StringIO()
+legacy_stop_exit = dispatch(
+    ["dismiss", "nobody", "--db", str(missing_db)],
+    stdin=StringIO(),
+    stdout=stop_stdout,
+    stderr=stop_stderr,
+)
+if (
+    legacy_stop_exit != 2
+    or stop_stdout.getvalue()
+    or "nothing summoned as 'nobody'" not in stop_stderr.getvalue()
+    or str(missing_db) not in stop_stderr.getvalue()
+):
+    raise SystemExit(
+        "legacy stop execution failed: "
+        f"result={legacy_stop_exit} stdout={stop_stdout.getvalue()!r} "
+        f"stderr={stop_stderr.getvalue()!r}"
+    )
+if missing_db.exists():
+    raise SystemExit("legacy stop created a database for an empty result")
+
+import taut_summon
+
+summon_path = assert_installed(taut_summon)
+summon_version = importlib.metadata.version("taut-summon")
+if summon_version != "0.5.4":
+    raise SystemExit(f"command-rollout Summon is {summon_version}, expected 0.5.4")
+
+print(json.dumps({
+    "case": "command_rollout_0_5_4",
+    "compatibility": "legacy_command_bridge",
+    "legacy_stop_exit": legacy_stop_exit,
+    "summon_path": summon_path,
+    "summon_version": summon_version,
+    "taut_path": taut_path,
+}, sort_keys=True))
+""",
+    )
+    print(probe.stdout.rstrip())
+
+
 def _case_paired_control_smoke(
     *,
     new_core: Path,
@@ -742,24 +1041,44 @@ import time
 import taut
 import taut_summon
 from taut import TautClient
-from taut_summon._control import CONTROL_PING, ControlClient
-from taut_summon.cli import _LEDGER_QUEUE_NAME, _resolve_member, _resolve_member_session
+from taut_summon.controller import SummonController
 
 taut_path = assert_installed(taut)
 summon_path = assert_installed(taut_summon)
+claims = {
+    entry_point.name: (
+        entry_point.dist.metadata.get("Name"),
+        entry_point.value,
+    )
+    for entry_point in importlib.metadata.entry_points(group="taut.commands")
+}
+expected_claims = {
+    "dismiss": (
+        "taut-summon",
+        "taut_summon.command_manifest:dismiss",
+    ),
+    "summon": (
+        "taut-summon",
+        "taut_summon.command_manifest:summon",
+    ),
+}
+if claims != expected_claims:
+    raise SystemExit(f"unexpected installed command ownership: {claims!r}")
+
 db = Path.cwd() / "control-smoke.db"
 TautClient.init(db_path=db)
 command = [
     sys.executable,
     "-I",
     "-m",
-    "taut_summon.cli",
-    "run",
+    "taut",
+    "--db",
+    str(db),
+    "summon",
     "artifact-probe",
     "--provider",
     "scripted",
-    "--db",
-    str(db),
+    "--detach",
 ]
 child_env = os.environ.copy()
 child_env.pop("PYTHONPATH", None)
@@ -773,12 +1092,10 @@ driver = subprocess.Popen(
     stdout=subprocess.PIPE,
     stderr=subprocess.PIPE,
 )
-client = None
-control = None
 try:
+    controller = SummonController(db_path=db)
     deadline = time.monotonic() + 45.0
-    row = None
-    member = None
+    live = ()
     while time.monotonic() < deadline:
         if driver.poll() is not None:
             stdout, stderr = driver.communicate(timeout=2)
@@ -787,85 +1104,29 @@ try:
                 f"stdout={stdout!r} stderr={stderr!r}"
             )
         try:
-            member = None
-            row = None
-            client = TautClient(db_path=db, persistent=False)
-            member = _resolve_member(client, "artifact-probe")
-            if member is not None:
-                row = _resolve_member_session(client, member)
-            if row is not None and row["driver_pid"] is not None:
-                break
+            live = controller.list_live()
         except Exception:
-            pass
-        finally:
-            if client is not None:
-                client.close()
-                client = None
+            live = ()
+        if any(member.name == "artifact-probe" for member in live):
+            break
         time.sleep(0.05)
-    if member is None or row is None or row["driver_pid"] is None:
+    else:
         raise SystemExit("summon driver did not publish live ledger evidence")
 
-    client = TautClient(db_path=db, persistent=False)
-    control = ControlClient(
-        client.queue,
-        member.member_id,
-        driver_pid=row["driver_pid"],
-        driver_start_time=row["driver_start_time"],
-    )
-    ping = control.request(CONTROL_PING, timeout=10.0)
-    if ping is None or ping.get("status") != "ok":
-        raise SystemExit(f"PING failed: {ping!r}")
-    control.close()
-    control = None
-    client.close()
-    client = None
+    status = controller.status("artifact-probe")
+    if status.driver != "alive" or status.provider != "scripted":
+        raise SystemExit(f"unexpected public controller status: {status!r}")
 
-    status = subprocess.run(
+    dismiss = subprocess.run(
         [
             sys.executable,
             "-I",
             "-m",
-            "taut_summon.cli",
-            "status",
-            "artifact-probe",
+            "taut",
             "--db",
             str(db),
-        ],
-        cwd=Path.cwd(),
-        env=child_env,
-        text=True,
-        capture_output=True,
-        timeout=20.0,
-        check=False,
-    )
-    if status.returncode != 0:
-        raise SystemExit(
-            f"STATUS failed rc={status.returncode} "
-            f"stdout={status.stdout!r} stderr={status.stderr!r}"
-        )
-    expected_status_fields = (
-        "artifact-probe\tprovider=scripted\tdriver=alive",
-        "control_health=ok",
-    )
-    missing_status_fields = [
-        field for field in expected_status_fields if field not in status.stdout
-    ]
-    if missing_status_fields:
-        raise SystemExit(
-            f"STATUS omitted live fields {missing_status_fields}: "
-            f"stdout={status.stdout!r} stderr={status.stderr!r}"
-        )
-
-    stop = subprocess.run(
-        [
-            sys.executable,
-            "-I",
-            "-m",
-            "taut_summon.cli",
-            "stop",
+            "dismiss",
             "artifact-probe",
-            "--db",
-            str(db),
         ],
         cwd=Path.cwd(),
         env=child_env,
@@ -874,58 +1135,44 @@ try:
         timeout=45.0,
         check=False,
     )
-    if stop.returncode != 0:
+    if dismiss.returncode != 0 or "stopped 'artifact-probe'" not in dismiss.stdout:
         raise SystemExit(
-            f"STOP failed rc={stop.returncode} "
-            f"stdout={stop.stdout!r} stderr={stop.stderr!r}"
+            f"native DISMISS failed rc={dismiss.returncode} "
+            f"stdout={dismiss.stdout!r} stderr={dismiss.stderr!r}"
         )
     try:
         driver.wait(timeout=15.0)
     except subprocess.TimeoutExpired:
-        raise SystemExit("summon driver remained live after STOP")
+        raise SystemExit("summon driver remained live after DISMISS")
     if driver.returncode != 0:
         stdout, stderr = driver.communicate(timeout=2)
         raise SystemExit(
-            f"summon driver exited nonzero after STOP rc={driver.returncode} "
+            f"summon driver exited nonzero after DISMISS rc={driver.returncode} "
             f"stdout={stdout!r} stderr={stderr!r}"
         )
     driver_stdout, driver_stderr = driver.communicate(timeout=2)
     all_process_output = "\n".join(
         (
-            status.stdout,
-            status.stderr,
-            stop.stdout,
-            stop.stderr,
+            dismiss.stdout,
+            dismiss.stderr,
             driver_stdout,
             driver_stderr,
         )
     )
     if "Traceback (most recent call last)" in all_process_output:
         raise SystemExit("paired control smoke emitted an unhandled traceback")
-
-    client = TautClient(db_path=db, persistent=False)
-    released_member = _resolve_member(client, "artifact-probe")
-    released = (
-        None
-        if released_member is None
-        else _resolve_member_session(client, released_member)
-    )
-    if released is not None and released["driver_pid"] is not None:
-        raise SystemExit(f"ledger still owns live driver evidence: {released!r}")
+    if controller.list_live():
+        raise SystemExit("ledger still owns live driver evidence after DISMISS")
     print(json.dumps({
         "case": "paired_control",
-        "ping": "ok",
+        "command_owner": "taut-summon",
         "status": "ok",
-        "stop": "ok",
+        "dismiss": "ok",
         "ledger": "released",
         "taut_path": taut_path,
         "summon_path": summon_path,
     }, sort_keys=True))
 finally:
-    if control is not None:
-        control.close()
-    if client is not None:
-        client.close()
     if driver.poll() is None:
         driver.terminate()
         try:
@@ -941,6 +1188,7 @@ finally:
 def _case_resolver_rejects_prior_core(
     *,
     previous_core: Path,
+    previous_core_version: str,
     new_summon: Path,
     new_core_version: str,
     work: Path,
@@ -967,7 +1215,8 @@ def _case_resolver_rejects_prior_core(
     )
     if completed.returncode == 0:
         _fail(
-            "resolver accepted new Summon with prior taut 0.5.0; the new "
+            f"resolver accepted new Summon with prior taut {previous_core_version}; "
+            "the new "
             f"Summon floor must require taut>={new_core_version}"
         )
     diagnostic = f"{completed.stdout}\n{completed.stderr}".lower()
@@ -975,8 +1224,8 @@ def _case_resolver_rejects_prior_core(
         _fail("resolver failed with a Python traceback, not a dependency conflict")
     normalized = " ".join(diagnostic.split())
     prior_markers = (
-        f"taut=={EXPECTED_PREVIOUS_CORE_VERSION}",
-        f"taut {EXPECTED_PREVIOUS_CORE_VERSION}",
+        f"taut=={previous_core_version}",
+        f"taut {previous_core_version}",
         f"only taut<{new_core_version} is available",
     )
     expected_conflict = (
@@ -995,7 +1244,7 @@ def _case_resolver_rejects_prior_core(
             {
                 "case": "resolver_rejects_prior_core",
                 "new_core_floor": new_core_version,
-                "prior_core": EXPECTED_PREVIOUS_CORE_VERSION,
+                "prior_core": previous_core_version,
                 "resolver": "conflict",
             },
             sort_keys=True,
@@ -1005,13 +1254,13 @@ def _case_resolver_rejects_prior_core(
 
 def _print_wheel_evidence(label: str, metadata: WheelMetadata) -> None:
     print(
-        "[artifact-compat] "
+        "[wheel-matrix] "
         f"artifact={label} project={metadata.name} version={metadata.version} "
         f"sha256={metadata.sha256} path={metadata.path}"
     )
 
 
-def _verify(inputs: Inputs) -> None:
+def _check(inputs: Inputs) -> None:
     core_metadata = _read_wheel_metadata(inputs.new_core)
     summon_metadata = _read_wheel_metadata(inputs.new_summon)
     _validate_new_metadata(core_metadata, summon_metadata)
@@ -1028,12 +1277,23 @@ def _verify(inputs: Inputs) -> None:
 
     core_commit = _resolve_remote_tag(inputs.previous_core_ref, env=env)
     summon_commit = _resolve_remote_tag(inputs.previous_summon_ref, env=env)
-    with tempfile.TemporaryDirectory(prefix="taut-reactor-artifact-") as raw_work:
+    command_core_commit = _resolve_remote_tag(inputs.previous_command_core_ref, env=env)
+    command_summon_commit = _resolve_remote_tag(
+        inputs.previous_command_summon_ref, env=env
+    )
+    with tempfile.TemporaryDirectory(prefix="taut-wheel-matrix-") as raw_work:
         work = Path(raw_work)
         core_source = work / "previous-core-source"
         summon_source = work / "previous-summon-source"
+        command_core_source = work / "previous-command-core-source"
+        command_summon_source = work / "previous-command-summon-source"
         archive_repository = _prepare_archive_repository(
-            refs=(inputs.previous_core_ref, inputs.previous_summon_ref),
+            refs=(
+                inputs.previous_core_ref,
+                inputs.previous_summon_ref,
+                inputs.previous_command_core_ref,
+                inputs.previous_command_summon_ref,
+            ),
             work=work,
             env=env,
         )
@@ -1049,9 +1309,33 @@ def _verify(inputs: Inputs) -> None:
             destination=summon_source,
             env=env,
         )
-        previous_core, previous_summon = _build_previous_wheels(
+        _export_ref(
+            repository=archive_repository,
+            commit=command_core_commit,
+            destination=command_core_source,
+            env=env,
+        )
+        _export_ref(
+            repository=archive_repository,
+            commit=command_summon_commit,
+            destination=command_summon_source,
+            env=env,
+        )
+        _previous_core, previous_summon = _build_previous_wheels(
             core_source=core_source,
             summon_source=summon_source,
+            work=work,
+            env=env,
+            uv=uv,
+        )
+        previous_command_summon = _build_previous_command_summon(
+            summon_source=command_summon_source,
+            work=work,
+            env=env,
+            uv=uv,
+        )
+        previous_command_core = _build_previous_command_core(
+            core_source=command_core_source,
             work=work,
             env=env,
             uv=uv,
@@ -1072,30 +1356,44 @@ def _verify(inputs: Inputs) -> None:
             uv=uv,
         )
         _case_resolver_rejects_prior_core(
-            previous_core=previous_core,
+            previous_core=previous_command_core,
+            previous_core_version=EXPECTED_COMMAND_ROLLOUT_CORE_VERSION,
             new_summon=inputs.new_summon,
             new_core_version=core_metadata.version,
             work=work,
             env=env,
             uv=uv,
         )
-    print("[artifact-compat] all four installed-artifact cases passed")
+        _case_new_core_command_fallback(
+            new_core=inputs.new_core,
+            work=work,
+            env=env,
+            uv=uv,
+        )
+        _case_new_core_previous_command_summon(
+            new_core=inputs.new_core,
+            previous_summon=previous_command_summon,
+            work=work,
+            env=env,
+            uv=uv,
+        )
+    print("[wheel-matrix] all six installed-wheel cases passed")
 
 
 def main(argv: list[str] | None = None) -> int:
     try:
         inputs = _parse_args(argv)
-        _verify(inputs)
-    except VerificationError as exc:
-        print(f"artifact compatibility verification failed: {exc}", file=sys.stderr)
+        _check(inputs)
+    except WheelMatrixError as exc:
+        print(f"core/Summon wheel-matrix check failed: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
-        print("artifact compatibility verification interrupted", file=sys.stderr)
+        print("core/Summon wheel-matrix check interrupted", file=sys.stderr)
         return 130
     except Exception as exc:  # fail closed without exposing an agent/tool traceback
         detail = str(exc).replace("\n", " ")
         print(
-            "artifact compatibility verification failed: internal verifier "
+            "core/Summon wheel-matrix check failed: internal checker "
             f"error ({type(exc).__name__}): {detail}",
             file=sys.stderr,
         )

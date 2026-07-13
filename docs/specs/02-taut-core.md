@@ -517,8 +517,14 @@ over the `TAUT_TOKEN` env var), `--json`, `-t/--timestamps` (show message ids in
 human output; `say` prints the new message's id), `-q/--quiet`, `--version`,
 `--help`. A literal `--` ends option parsing: every later token is positional,
 so message text that looks like an option is sendable
-(`taut say general -- -q` posts the text `-q`). Global options may appear
-before or after the subcommand, but never after `--`.
+(`taut say general -- -q` posts the text `-q`). Root globals may appear before
+every verb. After a verb, the dispatcher consumes only the root-global
+spellings that verb's manifest declares; this preserves command-local
+lookalikes such as `rejoin --token` and opaque extension tails. A literal `--`
+stops root option interpretation. Before a verb, the next positional still
+selects that verb but its entire tail is command-local; after a verb, every
+later token is command-local. `--version` is a root action before the verb.
+`COMMAND --help` is command help.
 
 | Verb | Behavior | Exit codes |
 |---|---|---|
@@ -537,11 +543,14 @@ before or after the subcommand, but never after `--`.
 | `who [THREAD]` | Members and presence (thread members, or all members when bare). | 0; 1 error; 2 no such thread |
 | `whoami [--explain]` | Resolved identity; with `--explain`, the evidence and rule. | 0 resolved; 1 error (incl. invalid token); 2 unrecognized |
 | `rejoin [NAME_OR_ALIAS] [--token TOKEN]` | Associate the current identity claim with the selected member ([IAN-3.4]). Target: name or alias if given, else `--token` (subcommand or global), else global `--as`; name/alias combined with any `--token` is an error. | 0; 1 error/collision/ambiguous selectors; 2 no such member/token |
-| `summon PROVIDER_OR_NAME [THREAD ...]` | Delegates to the `taut-summon` extension when installed (spec 04); without it, exit 1 with a one-line install hint. | per spec 04 |
-| `dismiss NAME` | Delegates likewise (summon `stop`). | per spec 04 |
+| `summon PROVIDER_OR_NAME [THREAD ...]` | Provided by the separately installed `taut-summon` command package through [TAUT-8.6]. Without a compatible provider, exit 1 with a one-line install hint. Behavior lives in spec 04. | per spec 04 |
+| `dismiss NAME` | Provided by the same package and command interface; maps to Summon's stop operation. | per spec 04 |
 
-Delegation verbs carry no core logic and add no core dependency; their
-behavior contract lives entirely in the owning extension's spec.
+Top-level verbs are command modules under [TAUT-8.6]. Core verbs and installed
+extension verbs share one interface and dispatch policy. A command adapter
+translates argv and output only; domain behavior remains on its typed owning
+interface. Installing a package may add a top-level verb, but no package may
+override a built-in or win a conflict by installation order.
 
 Exit-code rule, matching SimpleBroker: 0 success, 1 error, 2 "empty /
 nothing matched / not found" — so `taut read -q && process_inbox` and
@@ -556,6 +565,12 @@ its purpose, message-id suffix and timestamp forms are discoverable from the
 owning subcommand, and root help names exit-code classes. With no subcommand,
 help goes to stderr and exits 1. `--token` is continuity selection, never
 authentication.
+
+Root help is registry-backed. It must remain usable when an unrelated installed
+command is broken or incompatible. A selected unavailable command exits 1 with
+its distribution, entry point, and compatibility failure; it never produces a
+traceback. Literal `--`, global-option placement, usage exit 1, and the 0/1/2
+exit classes apply equally to built-in and extension command adapters.
 
 ### [TAUT-8.2] Output contract
 
@@ -632,6 +647,18 @@ Core runtime dependencies: exactly `simplebroker>=5.3.1` and `psutil`. The
 optional `taut-pg` extension adds `simplebroker-pg` and its driver dependencies
 in the same environment as Taut. Python ≥ 3.11. The CLI uses argparse, not a CLI
 framework.
+
+`taut.commands` is the typed extension-author surface for command manifests,
+adapters, the command parser, command context, and command errors
+([TAUT-8.6]). It does not dynamically add methods to `TautClient`;
+extension-specific Python behavior remains on the extension package's typed
+interface.
+
+Root package exports are lazy at subsystem seams. `import taut` does not load
+SimpleBroker, client/state, watcher, Summon, PTY, or TUI implementations.
+Accessing a documented public export loads its owner on first use while
+preserving `__all__`, `py.typed`, static typing, and ordinary `AttributeError`
+for unknown names.
 
 ### [TAUT-8.4] Watcher
 
@@ -753,9 +780,128 @@ runtime does not share the source `TautClient` state handle; closing either
 object does not close the other. A removed membership queue is closed once.
 One-shot client and CLI paths remain transient.
 
-The TUI (future) is a consumer of `TautClient` + `TautWatcher`, ships as
-the optional extra `taut[tui]`, and adds no new runtime dependency to the
-core package.
+### [TAUT-8.6] Command modules, discovery, and lazy loading
+
+Every top-level `taut` verb is represented by a versioned command manifest
+and a command adapter. Built-ins are registered statically from the core
+distribution. Installed extensions register the same manifest shape through
+the standard Python entry-point group `taut.commands`; discovery uses
+`importlib.metadata` and adds no runtime dependency.
+
+Discovery is based on distributions installed in the running interpreter, not
+on repository layout or importable source files. An extension in this
+monorepo, an editable development install, and a separately published wheel
+all follow the installed-entry-point path. Merely placing an extension package
+beside core does not register its verbs. Conversely, a correctly installed
+wheel is discoverable without core knowing its filesystem location. Static
+registration is reserved for core-owned built-ins that must exist when running
+from a source checkout.
+
+A manifest contains exactly the command-interface version, canonical
+lowercase-hyphenated name, non-empty root-help summary, closed set of root
+global options that may be consumed after the verb (each option's documented
+long, `=`-joined, and short spellings travel together as one declaration),
+and a lazy implementation import target in `module:attribute` form. The
+installed entry point loads the manifest object itself. The implementation
+target resolves only after selection to a zero-argument factory returning a
+fresh command adapter. Core creates the usage-error parser; the adapter
+configures it but cannot replace its policy. Pre-verb root globals remain
+accepted for all commands. Interface version 1 supports top-level verbs only.
+Nested parsing remains owned by the selected top-level adapter. Version 1 has
+no aliases, override priority, cross-package nested namespace, dependency
+graph, or hot reload.
+
+Ordinary command parsers use argparse's ordered parsing policy. An adapter
+whose top-level grammar has variable-length positionals on both sides of local
+options may call `CommandArgumentParser.enable_intermixed_args()` during parser
+configuration. Core then uses argparse's intermixed parser for that command
+tail only. The adapter must not combine this opt-in with nested subparsers or a
+`REMAINDER` action, which argparse does not support in intermixed mode. The
+default remains unchanged for every adapter that does not opt in. A leading
+literal `--` still uses ordinary parsing because Python 3.11's intermixed
+parser loses the required positional in that shape; the separator and every
+later option-shaped token remain literal as required by dispatch.
+
+Installed discovery produces one immutable process-local registry snapshot.
+Built-in names are reserved. Duplicate external names make only that name
+unavailable;
+invoking it fails with both owners named, while unrelated built-ins continue.
+Selection and root-help ordering never depend on installation order. Core and
+reserved first-party verbs retain their CLI table order; other installed names
+sort canonically. Installed command code is trusted in-process Python and is
+not a sandbox or authentication boundary.
+
+Distribution-name comparisons use Python packaging normalization: lowercase
+the name and collapse each run of hyphen, underscore, or dot to one hyphen.
+Thus `taut-summon`, `taut_summon`, and `TAUT.SUMMON` are the same owner for
+reserved-slot selection. This is deterministic provenance policy, not package
+authentication.
+
+Registry construction loads every discovered manifest so root help can show a
+complete, deterministic inventory and isolated availability diagnostics. It
+does not resolve any implementation target. `taut --version` constructs no
+registry. Direct execution of a known static built-in uses the static registry
+and does not enumerate installed metadata; root help and selection of a
+reserved or external verb use the installed snapshot. Installing or removing a
+command distribution becomes visible in the next process, not by mutating a
+live snapshot.
+
+A manifest-load failure is owned by the entry-point key because the manifest
+name is unavailable. An entry-point key and successfully loaded manifest name
+must match exactly. Root help retains one row for a selected unavailable verb,
+uses `unavailable` as its summary, and emits its diagnostic once as a warning.
+A broken or conflicting external claim must not hide or make a core built-in
+unavailable. Multiple ordinary claims for one external name make that name
+unavailable even when one claimant is otherwise valid.
+
+`summon` and `dismiss` are reserved first-party extension slots owned by the
+normalized `taut-summon` distribution name, not ordinary built-ins. A unique
+compatible official entry point owns each slot. When absent, core may supply
+only the previous-release compatibility/install-hint adapter required by
+[SUM-3]. An unofficial claimant cannot suppress that path. A broken,
+incompatible, or duplicate official claim is an error and never falls back to
+legacy code.
+
+Dispatch locates the verb as the first token not consumed by a recognized
+root option; an unknown option before it is a root usage error. A literal `--`
+before a verb still leaves the next positional as the verb, but disables
+root-global interpretation for its complete tail; after a verb it likewise
+stops root-global hoisting and leaves all later tokens to the command. In both
+positions core preserves the separator when handing the tail to the command
+parser, so every token after it remains positional; "command-local" does not
+mean that those tokens resume command-option parsing. Dispatch parses pre-verb
+globals, then loads only the selected command implementation and gives its
+standalone parser the unconsumed tail. A declared value option
+after the verb wins over the same option before the verb, matching textual
+order; a declared boolean flag combines as logical OR across both positions.
+`rejoin --token` remains command-local while a pre-verb `--token` remains
+global. The selected adapter runs exactly once and returns only exit class 0,
+1, or 2.
+
+The execution context contains the resolved database path, acting name,
+continuity token, JSON/timestamp/quiet flags, and stdin/stdout/stderr streams.
+Its `client()` method creates at most one core `TautClient` lazily, and the
+dispatcher closes that client in `finally` without replacing a primary command
+failure. Context streams are authoritative for command input/output; adapters
+and shared renderers do not use ambient process streams directly. Root/command
+help, usage, and registry diagnostics use the same dispatcher streams.
+Extension-specific domain APIs remain on their owning package; the context is
+not a service locator.
+
+Imports and initialization are lazy by subsystem. `taut --version` does not
+enumerate entry points. `taut --help` may load lightweight manifests but no
+command implementation. `taut COMMAND --help` may load its parser adapter but
+not its client/controller/driver/provider runtime. Actual execution imports
+only the domain modules that command uses; import or manifest discovery never
+opens storage, starts a thread/process or watcher, installs a signal handler,
+or changes terminal mode. Failures move to first use with actionable
+diagnostics and preserved causes.
+
+Verification must include source-tree and installed-wheel invocation, built-in
+parity, entry-point install/uninstall, duplicate/broken/incompatible providers,
+literal/global grammar on Python 3.11, exit classes, traceback absence, and
+isolated `sys.modules` import floors for version, help, ordinary messaging,
+watcher, and extension commands.
 
 ## 9. Trust Model [TAUT-9]
 
@@ -1006,10 +1152,22 @@ Shape decided 2026-06-12:
 Core obligations: envelope readers ignore unknown fields ([TAUT-6.1]) and no
 code assumes members only speak via CLI invocations.
 
-### [TAUT-12.4] TUI
+### [TAUT-12.4] Rich first-party TUI
 
-Per [TAUT-8.4]: a consumer of `TautClient` + `TautWatcher`, optional
-extra, own spec.
+The future TUI has its own product spec and ships as an optional installed
+command provider under [TAUT-8.6]. It is a first-party composition root, not a
+generic renderer over argparse or command manifests. It may present rich
+capability-specific flows and depend directly on public typed interfaces from
+core and first-party extensions such as Summon.
+
+The TUI consumes `TautClient` and `TautWatcher` for chat. For Summon it consumes
+the public [SUM-13] controller and supplies a host-interaction adapter for
+terminal suspension/restoration. It must not import private modules, inspect
+extension tables, synthesize control JSON, or duplicate driver/PTY lifecycle.
+Its own spec must choose screen behavior, framework/dependencies, managed
+child-process ownership, terminal handoff, and what happens to TUI-launched
+drivers when the TUI exits. None of those choices are implied by the command
+registry.
 
 ### [TAUT-12.5] Release machinery
 
@@ -1055,9 +1213,14 @@ Helper obligations:
   local-LLM lanes, ruff over root plus touched extension paths, and split mypy
   lanes so extension `conftest.py` modules do not collide. The process/live/LLM
   lanes are isolated from unrelated summon tests because they drive multiple
-  real processes against shared SQLite files; xdist still schedules each lane
-  with `-n 1 --dist loadgroup`, but the lanes run as fresh pytest invocations
-  rather than one long worker.
+  real processes against shared SQLite files. The deterministic process lane is
+  a fixed-width pressure proof: local release checks run it with
+  `-n 4 --dist load`. Its `xdist_group("process")` marker selects and co-locates
+  the lane in broad default runs, but every selected test owns test-local
+  resources because the isolated release invocation uses `--dist load` and
+  intentionally ignores group co-location. Strict external-live and local-LLM
+  lanes retain their existing known-safe `-n 1 --dist loadgroup` boundaries.
+  All three run as fresh pytest invocations rather than one long worker.
 - For core or summon releases, require the summon local-LLM lane locally. The
   helper starts local LLM preparation at the beginning of prechecks so Docker
   image/model setup can overlap root and PG checks. It uses an existing
@@ -1071,12 +1234,14 @@ Helper obligations:
 - In `.github/workflows/test.yml`, keep summon's deterministic process lane
   aligned with the release helper selector:
   `xdist_group and not requires_live_harness and not requires_local_llm`. Run
-  that lane as a dedicated fresh matrix job, still under `-n 1 --dist
-  loadgroup`, so it is not preceded by the broad root and summon unit suites in
-  the same runner environment. The local-LLM lane runs in its own CI job with a
-  prepared loopback Ollama model. External-provider live harnesses are a strict
-  local release gate unless CI grows explicit credentials/tooling for those
-  provider CLIs.
+  that lane as a dedicated fresh matrix job under `-n 2 --dist load`, so it is
+  not preceded by the broad root and summon unit suites in the same runner
+  environment. The coverage invocation of the same deterministic selector uses
+  the same two-worker topology. Do not serialize the matrix itself for SQLite
+  safety; matrix jobs run on isolated hosts. The local-LLM lane runs in its own
+  CI job with a prepared loopback Ollama model. External-provider live harnesses
+  are a strict local release gate unless CI grows explicit credentials/tooling
+  for those provider CLIs.
 - After version sync, build the selected package artifacts and run
   `uv lock` in `extensions/taut_summon` when the summon package is selected.
 
@@ -1113,15 +1278,29 @@ superficially stronger floor.
 
 Every non-dry-run `core`, `summon`, or matching `all` release builds both
 wheels from the same checkout into a fresh temporary artifact root and runs
-the paired installed-artifact verifier with their explicit paths after both
+the core/Summon wheel-matrix checker with their explicit paths after both
 builds and before any release commit, tag, or push. The gate still runs under
 `--skip-checks`; dry-run prints the ordered build and verification commands.
 PG-only releases do not run it. The reusable test workflow exposes a default-
 false paired-verification input enabled by the core and Summon release gates;
 it verifies after both fresh builds and before either publication job can run.
 
+## Implementation Mapping
+
+- `docs/implementation/04-taut-architecture.md` explains the core runtime and
+  dispatcher boundaries.
+- `docs/implementation/06-command-extensions.md` explains static versus
+  installed registration, registry selection, lazy factories, extension
+  packaging, and rich-host composition.
+
 ## Related Plans
 
+- `docs/plans/2026-07-13-bounded-summon-process-test-parallelism-plan.md` —
+  fixed-width deterministic process pressure locally and in CI while preserving
+  fresh one-worker external-live and local-LLM boundaries.
+- `docs/plans/2026-07-12-lazy-command-extensions-and-rich-tui-composition-plan.md`
+  — command modules, installed extension discovery, lazy subsystem imports,
+  Summon embedding, and future rich-TUI composition boundaries.
 - `docs/plans/2026-07-11-multi-factor-review-remediation-plan.md` — reviewed
   SimpleBroker write-result, cursor, watcher, trust, Postgres, CLI, and
   documentation remediation program for v0.5.3.

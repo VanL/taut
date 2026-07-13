@@ -11,8 +11,8 @@ the core repository at `docs/specs/04-summon.md`.
 
 ## Status
 
-Functional. The CLI surface (`taut-summon run|stop|status`) and the core
-delegation verbs (`taut summon`, `taut dismiss`), the foreground driver
+Functional. The CLI surface (`taut-summon run|stop|status`) and the installed
+root verbs (`taut summon`, `taut dismiss`), the foreground driver
 (bootstrap, chat injection, event pump, crash-resume, clean shutdown), the
 session ledger with a single-driver guard and PTY `wired` flag, the control
 plane (STOP/STATUS/PING) with a rate backstop, the default persona, and the
@@ -22,7 +22,9 @@ interactive harnesses (`claude`, `codex`, `coder`, `grok`, `qwen`, `kimi`,
 structured stream-json mode. See
 `docs/plans/2026-07-06-taut-summon-plan.md`,
 `docs/plans/2026-07-07-taut-summon-pty-harness-adapter-plan.md`, and
-`docs/implementation/05-taut-summon-architecture.md` for the design.
+`docs/implementation/05-taut-summon-architecture.md` for the driver design.
+Command registration and rich-host composition are documented in
+`docs/implementation/06-command-extensions.md`.
 
 ## Requirements
 
@@ -38,8 +40,8 @@ the core package first, then inject the extension wheel into the same
 environment:
 
 ```bash
-pipx install "git+https://github.com/VanL/taut.git@v0.5.4"
-pipx inject taut ./taut_summon-0.5.4-py3-none-any.whl
+pipx install "git+https://github.com/VanL/taut.git@v0.6.0"
+pipx inject taut ./taut_summon-0.6.0-py3-none-any.whl
 ```
 
 ## Usage
@@ -61,8 +63,11 @@ own `--help` documents every positional and flag. Exit `0` is success, `1` is
 an invocation, adapter, storage, or unresponsive-driver error, and `2` means
 nothing is currently summoned. With no verb, help goes to stderr and exits `1`.
 
-`taut summon`/`taut dismiss` delegate argv verbatim to `taut-summon
-run`/`taut-summon stop`; both surfaces share one resolution contract.
+Installing this package registers native `taut summon` and `taut dismiss`
+command adapters through Taut's command-extension interface. The root and
+standalone consoles use the same parser configuration and controller adapters;
+neither console invokes the other. `taut-summon status` remains the standalone
+control-plane listing and inspection command.
 
 On first PTY use, summon attaches your terminal so you can answer trust,
 login, or model prompts in the real harness UI. Detach with `Ctrl-\ Ctrl-\`.

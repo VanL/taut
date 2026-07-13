@@ -11,7 +11,7 @@ any change to frozen core state. It covers the ears/mouth split, the
    SimpleBroker-handle ownership boundary the extension holds to.
 
 It does not restate the contract — that lives in the spec
-(`docs/specs/04-summon.md`, [SUM-1]–[SUM-12]). It explains *why* the code is
+(`docs/specs/04-summon.md`, [SUM-1]–[SUM-13]). It explains *why* the code is
 shaped the way it is, and where to read and edit.
 
 Implementation status: the extension ships `run`/`stop`/`status`, the
@@ -20,7 +20,9 @@ scripted adapter, the universal PTY adapter for interactive harnesses, the
 ears, event pump, resume, shutdown), the persona template, the control
 plane, and the rate backstop. The control policy uses core's shared
 `BaseReactor` lifecycle and reports unexpected control-lane death to the
-foreground driver.
+foreground driver. A lazy public facade exposes typed models and a
+`SummonController`; the standalone CLI is a renderer over that controller and
+does not own ledger, control, or driver orchestration.
 
 Historical blocker note: the 2026-07-09 process-lane PING failure was traced to
 the dependency release rather than worked around with transient long-lived
@@ -32,17 +34,48 @@ floor.
 
 ## Governing Spec References
 
-- `docs/specs/04-summon.md` [SUM-1]–[SUM-12] — the full summon contract
+- `docs/specs/04-summon.md` [SUM-1]–[SUM-13] — the full summon contract
 - `docs/specs/02-taut-core.md` [TAUT-2] no-daemon posture,
   [TAUT-3.3]/[TAUT-3.4] sidecar schema and SimpleBroker interop,
   [TAUT-4.1] reserved queue naming, [TAUT-7.4] senders and their own
   messages, [TAUT-8.4] watcher cursor advancement, [TAUT-12.3] the captive
-  agents shape decision
+  agents shape decision, [TAUT-12.5] release and CI verification topology
 - `docs/specs/03-identity-addressing-notifications.md` [IAN-3.3] claim
   association, [IAN-3.4] rejoin, [IAN-4.4] name changes, [IAN-6.1] queue
   classes (amended by the summon plan's D3), [IAN-9] failure-mode robustness
 
 ## Design Rationale
+
+### Typed embedding boundary ([SUM-13])
+
+`extensions/taut_summon/taut_summon/controller.py` is the finite public
+operation boundary. It is bound to one optional database path and owns provider
+discovery, live-session listing, correlated STATUS, ACK-plus-release STOP, and
+one blocking foreground driver lifecycle. The foreground method requires a
+public `SummonInteraction`; the controller passes it through without inspecting
+terminal state. It returns frozen typed values from `models.py` and raises the
+public error hierarchy; it never prints, accepts
+argv, returns CLI exit codes, or exposes ledger rows, queue handles, raw control
+replies, or mutable driver state. Empty live-session discovery is the ordinary
+tuple `()` for polling hosts; only the CLI turns it into the nothing-summoned
+exit class.
+
+The controller deliberately reuses `_members.find_member`, `_state`,
+`ControlClient`, and `SummonDriver` behind that boundary. A second state or
+control abstraction would duplicate invariants. STATUS validation copies
+cursor lag and scalar detail fields into public values, rejects malformed
+reply shapes, and excludes request/protocol keys. STOP still requires both a
+correlated ACK and evidence-relative ledger release before returning a
+`StopResult`.
+
+`cli.py` owns only argparse, human rendering, database-path suffixes, and the
+exit mapping (`NothingSummoned` to 2, other operation errors to 1). It imports
+the controller inside the selected command function, after parsing. The
+package facade uses typed `TYPE_CHECKING` imports plus cached runtime lookup, so
+plain `import taut_summon` loads no adapter, core client, control, state,
+driver, provider, or PTY implementation. Accessing a public export loads only
+its owning module. This keeps help and embedding discovery cheap without a
+general lazy-loader framework.
 
 ### Terminal, not runtime: ears and mouth ([SUM-2])
 
@@ -55,7 +88,9 @@ operation. Terminal mode is the narrow exception: parsed assistant text is
 posted through the driver-owned persistent mouth client because the harness has
 no separate tool path. This is the single most load-bearing decision in the
 design, and it is why the extension needs no general wire protocol and no core
-changes beyond two delegation verbs.
+Summon domain logic. Core knows only its generic command-extension protocol and
+the two first-party ownership slots; the installed extension owns the command
+adapters and controller calls.
 
 The ears are an injected stream. `extensions/taut_summon/taut_summon/_driver.py`
 watches, over the public `TautClient.watch(...)` surface, every thread the
@@ -174,13 +209,15 @@ STATUS after checking reserved keys. Incomplete CSI/OSC retention is capped;
 oversized prefixes are discarded or reduced to the last bounded plausible ESC
 suffix, and deterministic byte-scan tests keep parser work linear.
 
-The pump start point depends on who owns the PTY master. In detached/no-tty
-operation there is no human bridge reading the master, so the pump starts
-immediately after spawn, before `rejoin` and thread bootstrap. That keeps the
-terminal-query responder live while SQLite and queue setup run. In the first-run
-attach path, the attach bridge owns the master until the detach chord; only then
-does the driver start the pump. Keeping those paths distinct preserves the
-single-reader invariant while avoiding early TUI query timeouts.
+The pump start point depends on the cached host decision. Forced detach,
+`NESTED_HOST`, and generic `UNAVAILABLE` rule out a bridge before bootstrap, so
+the pump starts immediately after spawn and keeps the terminal-query responder
+live while SQLite and queue setup run. `AVAILABLE` and historical `NO_TTY`
+remain delayed through `rejoin` and thread bootstrap. The driver then either
+lets the first-generation attach bridge own the master until detach or records
+the detached reason before starting the pump. Later crash generations reuse
+the same decision and never acquire another lease. These paths preserve the
+single-reader invariant and the shipped shell ordering.
 
 Injection is keyboard input, so it is sanitized before framing: CR/CRLF
 canonicalize to LF, C0 controls except LF are stripped, `DEL` and `ESC` are
@@ -232,11 +269,30 @@ already transferred; cancellation after it applies only to later calls.
 ### Attach/detach and `wired` ([SUM-7.4], [SUM-8])
 
 First PTY use is not guessed from output. The session row carries a durable
-`wired` boolean (`SUMMON_SCHEMA_VERSION` 3; introduced in version 2). A not-yet-wired first generation
+`wired` boolean (`SUMMON_SCHEMA_VERSION` 3; introduced in version 2). A
+not-yet-wired first generation
 with a real tty attaches the human terminal to the harness; the human answers
 trust/login/model prompts and detaches with the non-`ESC` chord
 `Ctrl-\ Ctrl-\`. Only that explicit detach sets `wired=True`. Future summons
 go detached. `--attach` forces setup, while `--detach` forces detached mode.
+
+`interaction.py` is the stdlib-only public host seam. It separates a pure
+availability probe from a scoped terminal lease. The driver samples one
+availability value before provider bootstrap for every attach-capable run
+except forced detach, then reuses it across crash generations and after the
+durable `wired` row becomes known. `AVAILABLE` and `NO_TTY` retain the delayed
+pump path; `NESTED_HOST` and generic `UNAVAILABLE` start the pump early. A lease
+is entered only for the actual first-generation attach transition. The driver,
+not the host, calls the provider bridge with the lease fds and interprets
+`detached`, `eof`, or `shutdown`; the host never receives an adapter handle or
+state/control access. Lease acquisition and restoration failures are fatal, so
+a failed restore cannot mark the member wired.
+
+`ShellSummonInteraction` preserves historical shell behavior. It tests stdin
+only, allows redirected stdout, gives no-tty diagnostics precedence over the
+nested marker, and grants fds 0/1 without changing terminal state. A rich host
+may pause rendering and grant other real tty fds inside its lease, then restore
+and redraw on exit.
 
 The bridge is a single select loop over the human tty, PTY master, and a
 shutdown waker pipe. It is not two blocking copy threads, because STOP must be
@@ -245,8 +301,8 @@ writes a fixed reset blast to the local tty and restores termios, because the
 harness keeps running and will not clean up the user's terminal after detach.
 PTY test peers must drain that blast before joining the bridge: the deliberate
 `TCSADRAIN` restore may wait until the peer consumes pending terminal output.
-`TAUT_HOST_TUI=1` is the cooperative marker for taut-owned host TUIs to refuse
-nested attach.
+`TAUT_HOST_TUI=1` is the fallback marker for an uncooperative nested shell-out.
+A cooperative in-process host supplies its own interaction instead.
 
 ### The session ledger: split by lifetime ([SUM-8])
 
@@ -460,18 +516,27 @@ interrupt/close, single-consumer events) once.
 The extension CLI keeps one documented argparse inventory for `run`, `stop`,
 and `status`. Root help owns exit classes; each subcommand owns its syntax and
 database-selection guidance. Omitting `--db` explicitly means normal Taut
-discovery from the current directory through its ancestors. The root parser's
-special `run` dispatch still uses the standalone intermixed parser required by
-Python 3.11/3.12, and `_add_run_arguments()` supplies the same description and
-action help to both parser instances. Parser inventory and phrase tests prevent
-the executable help surface from drifting while preserving verbatim `--` tails.
+discovery from the current directory through its ancestors. The standalone
+root parser and the installed `taut summon` adapter both select intermixed
+parsing because the Summon grammar permits thread positionals after local
+options. One shared parser configurator supplies the same description and
+action help to both console surfaces. Parser inventory, installed-wheel parity,
+and phrase tests prevent the surfaces from drifting while preserving verbatim
+`--` tails.
+
+The console adapter configures driver logging with `logging.basicConfig` on
+first execution, preserving the released CLI behavior. This is process-global
+and best-effort when a host has already configured logging; it is not an
+embedding contract. Rich hosts call `SummonController` directly and own their
+logging policy and streams.
 
 ## Boundaries and Invariants
 
-- **Core changes are exactly two spec-text deltas plus the two delegation
-  verbs.** `summon`/`dismiss` in core carry zero summon logic and add no
-  dependency; they find-and-hand-off to `taut_summon` or exit 1 with an
-  install hint. Any other core code change is a stop-and-re-plan gate.
+- **Core contains command policy, not Summon domain logic.** Core owns the
+  generic command registry, parser/context protocol, two reserved first-party
+  slots, and the previous-release compatibility/install-hint adapter. The
+  installed `taut-summon` distribution owns the native adapters and all
+  controller calls. Core has no Summon runtime dependency.
 - **No daemon** ([TAUT-2]): the driver is foreground; `stop`/`status` are
   clients, not services.
 - **Mouth is CLI-only** ([SUM-6]): no extension code path posts chat under
@@ -500,7 +565,11 @@ the executable help surface from drifting while preserving verbatim `--` tails.
 
 | Path | Owner |
 |---|---|
-| `extensions/taut_summon/taut_summon/cli.py` | `run`/`stop`/`status` argparse, [SUM-3] name/provider resolution, exit-code mapping |
+| `extensions/taut_summon/taut_summon/__init__.py` | Lazy, typed public facade and stable export inventory |
+| `extensions/taut_summon/taut_summon/models.py` | Public request/result/status values and operation-error hierarchy ([SUM-13]) |
+| `extensions/taut_summon/taut_summon/controller.py` | CLI-independent provider/list/status/stop/foreground-run orchestration ([SUM-13]) |
+| `extensions/taut_summon/taut_summon/interaction.py` | Stdlib-only public terminal availability/lease protocol and shell adapter ([SUM-7.4]/[SUM-13]) |
+| `extensions/taut_summon/taut_summon/cli.py` | Lightweight `run`/`stop`/`status` argparse, human rendering, and exit-code mapping |
 | `extensions/taut_summon/taut_summon/_driver.py` | Bootstrap ([SUM-4]), ears watch handler, event pump, resume, shutdown; `format_injection` ([SUM-5.2]) |
 | `extensions/taut_summon/taut_summon/_state.py` | The two-table ledger, claim/session helpers, single-driver guard evidence ([SUM-8]) |
 | `extensions/taut_summon/taut_summon/_control.py` | Fixed `_ControlReactor`, between-turn replacement supervisor, client, `sys.*` queue derivation, rate backstop ([SUM-9]/[SUM-10]/[SUM-11]) |
@@ -519,7 +588,7 @@ the executable help surface from drifting while preserving verbatim `--` tails.
 
 | Spec area | Primary code owners | Contract tests |
 |---|---|---|
-| [SUM-3], name/provider resolution, CLI help, database discovery, and exit classes | `extensions/taut_summon/taut_summon/cli.py` | `extensions/taut_summon/tests/test_summon_cli.py` parser-inventory, help-phrase, grammar, discovery, and exit-class tests |
+| [SUM-3], command registration, name/provider resolution, CLI help, database discovery, and exit classes | `extensions/taut_summon/taut_summon/command_manifest.py`, `extensions/taut_summon/taut_summon/commands/`, `extensions/taut_summon/taut_summon/controller.py`, `extensions/taut_summon/taut_summon/cli.py` | `extensions/taut_summon/tests/test_controller.py`, `extensions/taut_summon/tests/test_summon_cli.py` parser-inventory, help-phrase, grammar, discovery, and exit-class tests; installed Python 3.11 ownership, parity, and import-floor cases in `tests/test_core_summon_wheel_matrix.py`; real root adapter lifecycle in `extensions/taut_summon/tests/test_driver.py` |
 | [SUM-4], bootstrap, identity, presence | `extensions/taut_summon/taut_summon/_driver.py`, `extensions/taut_summon/taut_summon/_state.py` | `extensions/taut_summon/tests/test_driver.py` |
 | [SUM-5], ears injection contract | `extensions/taut_summon/taut_summon/_driver.py` | `extensions/taut_summon/tests/test_driver.py`, `extensions/taut_summon/tests/test_conformance.py` |
 | [SUM-6], mouth CLI contract | `extensions/taut_summon/taut_summon/_driver.py`, `extensions/taut_summon/taut_summon/_persona.py` | `extensions/taut_summon/tests/test_driver.py`, `extensions/taut_summon/tests/test_persona.py` |
@@ -528,6 +597,7 @@ the executable help surface from drifting while preserving verbatim `--` tails.
 | [SUM-8], session ledger and guard | `extensions/taut_summon/taut_summon/_state.py` | `extensions/taut_summon/tests/test_state.py`, `extensions/taut_summon/tests/test_driver.py` |
 | [SUM-9], [SUM-10], [SUM-11], control lifecycle, backstop, recovery, and fatal supervision | `extensions/taut_summon/taut_summon/_control.py::_ControlReactor`, `extensions/taut_summon/taut_summon/_control.py::ControlLoop`, `extensions/taut_summon/taut_summon/_driver.py::SummonDriver._run_control_loop`, `_report_control_failure`, `_raise_if_control_failed` | `extensions/taut_summon/tests/test_control.py` fixed topology, ownership, native wake, inter-turn recovery, audit, partial-bundle, and close tests; `extensions/taut_summon/tests/test_driver.py::test_control_loop_exception_is_driver_fatal`, `test_unexpected_clean_control_loop_return_is_driver_fatal`, `test_initial_control_open_failure_is_driver_fatal`, and real-process fatal-control/STOP/PING cases |
 | [SUM-12], conformance | (all of the above) | `extensions/taut_summon/tests/test_conformance.py`, `extensions/taut_summon/tests/test_live_harness.py`, `extensions/taut_summon/tests/test_live_local_llm.py` |
+| [SUM-13], typed embedding and lazy host boundary | `extensions/taut_summon/taut_summon/__init__.py`, `extensions/taut_summon/taut_summon/models.py`, `extensions/taut_summon/taut_summon/controller.py`, `extensions/taut_summon/taut_summon/interaction.py`, `extensions/taut_summon/taut_summon/cli.py` | `extensions/taut_summon/tests/test_controller.py`, `extensions/taut_summon/tests/test_interaction.py`, controller-backed CLI and real-process driver cases |
 
 ## Change Guidance
 
@@ -539,23 +609,33 @@ revision, not a tweak, and version any ledger schema change under
 adding a fourth; new provider behavior belongs in an adapter, never in a
 summon-defined protocol.
 
-Before completion, run the extension gate block from the summon plan's §10
-(the extension suite, the core suite untouched-green, ruff/format/mypy over
-the extension paths, and `uv build extensions/taut_summon`). Keep the
-deterministic process, external-live, and local-LLM lanes under xdist, but run
-them as separate one-worker pytest invocations: they start multiple real
-processes against temporary SQLite sidecars, so worker fan-out or one very long
-worker tests host storage pressure more than summon behavior. Release prechecks
-also set `TAUT_SUMMON_LIVE_HARNESS_STRICT=1` locally for the external-live lane
-so installed provider CLIs fail instead of skipping when detached onboarding
-would otherwise be reported as not ready. The external-provider live lane proves
-detached readiness and injection catch-up; the local LLM lane is the
-deterministic sentinel-posting proof. CI mirrors this boundary by running the
-deterministic process selector in a fresh `taut-summon process` matrix job,
-rather than after the broad root and summon unit suites in the same runner.
+Before completion, run the extension gate block from the active plan (the
+extension suite, the core suite untouched-green, ruff/format/mypy over the
+extension paths, and `uv build extensions/taut_summon`). Keep the deterministic
+process, external-live, and local-LLM lanes in separate fresh pytest
+invocations. The deterministic lane is a bounded pressure proof: local release
+prechecks use `-n 4 --dist load`, while CI and its coverage mirror use
+`-n 2 --dist load`. Every selected item owns test-local resources. Its
+`xdist_group("process")` marker still co-locates process-heavy tests in broad
+default `--dist loadgroup` runs, but is selection-only when the isolated lane
+deliberately overrides the scheduler with `--dist load`. This prevents
+unbounded `-n auto` fan-out without removing useful concurrent pressure.
+
+External-live and local-LLM lanes retain their known-safe
+`-n 1 --dist loadgroup` boundaries. Release prechecks also set
+`TAUT_SUMMON_LIVE_HARNESS_STRICT=1` locally for the external-live lane so
+installed provider CLIs fail instead of skipping when detached onboarding
+would otherwise be reported as not ready. The external-provider live lane
+proves detached readiness and injection catch-up; the local LLM lane is the
+deterministic sentinel-posting proof. CI runs the deterministic selector in a
+fresh `taut-summon process` matrix job rather than after broad root and summon
+unit suites, and does not serialize isolated matrix hosts for SQLite safety.
 
 ## Related Plans
 
+- `docs/plans/2026-07-13-bounded-summon-process-test-parallelism-plan.md` —
+  fixed-width deterministic process pressure locally and in CI while
+  preserving fresh one-worker external-live and local-LLM boundaries.
 - `docs/plans/2026-07-12-automatic-display-name-capitalization-plan.md` —
   implied-provider display casing, shared candidate selection, and normalized
   transient name claims.

@@ -8,8 +8,8 @@ on:
   workflow_dispatch:
   workflow_call:
     inputs:
-      verify_paired_reactor_artifacts:
-        description: Build and verify fresh paired taut and taut-summon wheels.
+      check_paired_release_wheels:
+        description: Build and check fresh paired core and Summon release wheels.
         required: false
         type: boolean
         default: false
@@ -82,7 +82,6 @@ jobs:
     timeout-minutes: 25
     strategy:
       fail-fast: false
-      max-parallel: 1
       matrix:
         os: [ubuntu-latest, macos-latest]
         python-version: ["3.11", "3.12", "3.13", "3.14"]
@@ -119,7 +118,7 @@ jobs:
       - name: Run taut-summon extension process tests
         timeout-minutes: 15
         run: |
-          pytest extensions/taut_summon/tests -v --tb=short -m "xdist_group and not requires_live_harness and not requires_local_llm" -n 1 --dist loadgroup
+          pytest extensions/taut_summon/tests -v --tb=short -m "xdist_group and not requires_live_harness and not requires_local_llm" -n 2 --dist load
 
   lint:
     runs-on: ubuntu-latest
@@ -320,10 +319,10 @@ jobs:
         run: |
           uv build extensions/taut_summon
 
-      - name: Verify fresh paired reactor artifacts
-        if: ${{ inputs.verify_paired_reactor_artifacts }}
+      - name: Build and check paired release wheels
+        if: ${{ inputs.check_paired_release_wheels }}
         timeout-minutes: 20
-        run: python bin/verify-reactor-release-artifacts.py
+        run: python bin/build-and-check-release-wheels.py
 
       - name: Smoke test built wheel
         shell: bash
@@ -375,11 +374,11 @@ jobs:
           python -m coverage erase
           python -m coverage run --parallel-mode -m pytest tests -m "not slow"
           python -m coverage run --parallel-mode -m pytest extensions/taut_summon/tests -m "not xdist_group"
-          python -m coverage run --parallel-mode -m pytest extensions/taut_summon/tests -m "xdist_group and not requires_live_harness and not requires_local_llm" -n 1 --dist loadgroup
+          python -m coverage run --parallel-mode -m pytest extensions/taut_summon/tests -m "xdist_group and not requires_live_harness and not requires_local_llm" -n 2 --dist load
           python -m coverage run --parallel-mode -m pytest extensions/taut_summon/tests/test_live_harness.py -n 1 --dist loadgroup
           python -m coverage run --parallel-mode -m pytest extensions/taut_summon/tests/test_live_local_llm.py -n 1 --dist loadgroup
           python -m coverage combine
-          python bin/verify-coverage-evidence.py
+          python bin/check-required-coverage-paths.py
           python -m coverage report --include="*/taut_summon/_driver.py" --fail-under=1
           python -m coverage report --include="*/taut_summon/_control.py" --fail-under=1
           python -m coverage report --include="*/taut_summon/cli.py" --fail-under=1

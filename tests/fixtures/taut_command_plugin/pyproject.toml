@@ -1,0 +1,15 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "taut-command-plugin-fixture"
+version = "1.0.0"
+requires-python = ">=3.11"
+dependencies = ["taut>=0.6.0"]
+
+[project.entry-points."taut.commands"]
+fixture = "taut_command_plugin.manifest:fixture"
+
+[tool.hatch.build]
+include = ["/taut_command_plugin/**/*.py"]

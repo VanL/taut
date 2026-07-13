@@ -6,9 +6,9 @@ self-filter, cursor-as-ledger, backpressure), [SUM-6] (mouth env),
 [SUM-7.1] (event pump), [SUM-8] (ledger lifecycle), [SUM-11] (crash and
 resume), and [SUM-3] (name/provider resolution shared with the CLI).
 
-Anti-mocking posture ([SUM-12]): every test drives the real
-``taut-summon run`` entry point as a foreground subprocess against a real
-SQLite taut database; peer writers are real ``taut`` CLI subprocesses;
+Anti-mocking posture ([SUM-12]): every test drives a real Summon console entry
+point as a foreground subprocess against a real SQLite taut database; peer
+writers are real ``taut`` CLI subprocesses;
 the harness is the real scripted provider child. What reached the harness
 process is asserted through the provider's received-log
 (``TAUT_SUMMON_RECEIVED_LOG``), the observable form of [SUM-5.4]'s
@@ -26,7 +26,8 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, cast
 
@@ -53,6 +54,7 @@ from simplebroker import BrokerTarget, Queue
 from simplebroker.ext import DatabaseError
 from taut_summon._adapter import (
     ActivityEvent,
+    AdapterError,
     AssistantTextEvent,
     ExitEvent,
     SessionEvent,
@@ -73,7 +75,14 @@ from taut_summon._state import (
     get_session,
     list_sessions,
 )
-from taut_summon.cli import RunRequest
+from taut_summon.interaction import (
+    ShellSummonInteraction,
+    SummonInteraction,
+    TerminalAvailability,
+    TerminalIntent,
+    TerminalLease,
+)
+from taut_summon.models import SummonOperationError, SummonRequest
 
 import taut.client._identity as core_identity_module
 from taut.client import Member, Message, Notification, TautClient
@@ -186,30 +195,461 @@ class _AttachUnsupportedAdapter:
     emits_session_events = True
 
 
-def _run_request(*, attach: bool = False, detach: bool = False) -> RunRequest:
-    return RunRequest(
+class _RecordingInteraction:
+    def __init__(
+        self,
+        availability: TerminalAvailability,
+        *,
+        lease: TerminalLease = TerminalLease(input_fd=0, output_fd=1),
+        acquire_error: BaseException | None = None,
+        restore_error: BaseException | None = None,
+    ) -> None:
+        self.availability = availability
+        self.lease = lease
+        self.acquire_error = acquire_error
+        self.restore_error = restore_error
+        self.availability_calls: list[TerminalIntent] = []
+        self.lease_calls = 0
+        self.lease_events: list[str] = []
+
+    def terminal_availability(self, intent: TerminalIntent) -> TerminalAvailability:
+        self.availability_calls.append(intent)
+        return self.availability
+
+    @contextmanager
+    def terminal_lease(self) -> Iterator[TerminalLease]:
+        self.lease_calls += 1
+        self.lease_events.append("acquire")
+        if self.acquire_error is not None:
+            raise self.acquire_error
+        try:
+            yield self.lease
+        finally:
+            self.lease_events.append("restore")
+            if self.restore_error is not None:
+                raise self.restore_error
+
+
+class _RecordingAttachHandle:
+    def __init__(
+        self, result: str = "detached", *, attach_error: BaseException | None = None
+    ) -> None:
+        self.result = result
+        self.attach_error = attach_error
+        self.attach_calls: list[dict[str, Any]] = []
+
+    def attach(self, **kwargs: Any) -> str:
+        self.attach_calls.append(kwargs)
+        if self.attach_error is not None:
+            raise self.attach_error
+        return self.result
+
+
+def _run_request(*, attach: bool = False, detach: bool = False) -> SummonRequest:
+    return SummonRequest(
         name="ptybot",
         threads=("general",),
         terminal=False,
         persona=None,
         system_prompt_file=None,
         rate_limit=None,
-        db_path=None,
         attach=attach,
         detach=detach,
     )
 
 
-def test_detached_pty_pump_starts_before_bootstrap() -> None:
+def _new_driver(
+    request: SummonRequest,
+    *,
+    db_path: str | None = None,
+    install_signal_handlers: bool = False,
+) -> SummonDriver:
+    """Construct a driver with the same explicit shell host as the CLI."""
+
+    return SummonDriver(
+        request,
+        interaction=ShellSummonInteraction(),
+        db_path=db_path,
+        install_signal_handlers=install_signal_handlers,
+    )
+
+
+@pytest.mark.parametrize(
+    ("attach", "detach", "availability", "expected"),
+    [
+        (False, True, None, True),
+        (False, False, TerminalAvailability.AVAILABLE, False),
+        (True, False, TerminalAvailability.AVAILABLE, False),
+        (False, False, TerminalAvailability.NO_TTY, False),
+        (True, False, TerminalAvailability.NO_TTY, False),
+        (False, False, TerminalAvailability.NESTED_HOST, True),
+        (True, False, TerminalAvailability.NESTED_HOST, True),
+        (False, False, TerminalAvailability.UNAVAILABLE, True),
+        (True, False, TerminalAvailability.UNAVAILABLE, True),
+    ],
+)
+def test_pty_early_pump_matrix_uses_cached_availability(
+    *,
+    attach: bool,
+    detach: bool,
+    availability: TerminalAvailability | None,
+    expected: bool,
+) -> None:
     driver = object.__new__(SummonDriver)
     adapter = cast(Any, _AttachCapableAdapter())
 
-    assert driver._should_start_pump_before_bootstrap(
-        _run_request(detach=True), adapter
+    assert (
+        driver._should_start_pump_before_bootstrap(
+            _run_request(attach=attach, detach=detach),
+            adapter,
+            availability=availability,
+        )
+        is expected
     )
-    assert not driver._should_start_pump_before_bootstrap(
-        _run_request(attach=True), adapter
+
+
+@pytest.mark.parametrize(
+    ("attach", "expected_intent"),
+    [
+        (False, TerminalIntent.PREFERRED),
+        (True, TerminalIntent.REQUIRED),
+    ],
+)
+def test_attach_capable_run_samples_availability_once_before_bootstrap(
+    attach: bool, expected_intent: TerminalIntent
+) -> None:
+    interaction = _RecordingInteraction(TerminalAvailability.AVAILABLE)
+    driver = SummonDriver(
+        _run_request(attach=attach),
+        interaction=cast(SummonInteraction, interaction),
+        install_signal_handlers=False,
     )
+    adapter = cast(Any, _AttachCapableAdapter())
+
+    availability = driver._terminal_availability(_run_request(attach=attach), adapter)
+
+    assert availability is TerminalAvailability.AVAILABLE
+    assert interaction.availability_calls == [expected_intent]
+
+
+def test_forced_detach_bypasses_interaction_probe() -> None:
+    interaction = _RecordingInteraction(TerminalAvailability.AVAILABLE)
+    driver = SummonDriver(
+        _run_request(detach=True),
+        interaction=cast(SummonInteraction, interaction),
+        install_signal_handlers=False,
+    )
+
+    availability = driver._terminal_availability(
+        _run_request(detach=True), cast(Any, _AttachCapableAdapter())
+    )
+
+    assert availability is None
+    assert interaction.availability_calls == []
+
+
+def test_driver_rejects_forced_attach_and_detach_before_host_probe() -> None:
+    interaction = _RecordingInteraction(TerminalAvailability.AVAILABLE)
+
+    with pytest.raises(
+        SummonOperationError, match="--attach and --detach cannot be used together"
+    ):
+        SummonDriver(
+            _run_request(attach=True, detach=True),
+            interaction=cast(SummonInteraction, interaction),
+            install_signal_handlers=False,
+        )
+
+    assert interaction.availability_calls == []
+
+
+def _attach_boot() -> _BootstrapResult:
+    return _BootstrapResult(
+        member_id="m_ptybot",
+        member_name="ptybot",
+        token="tok",
+        provider="pty",
+        provider_session_id=None,
+    )
+
+
+def test_attach_uses_one_host_lease_and_forwards_its_fds() -> None:
+    interaction = _RecordingInteraction(
+        TerminalAvailability.AVAILABLE,
+        lease=TerminalLease(input_fd=17, output_fd=19),
+    )
+    driver = SummonDriver(
+        _run_request(),
+        interaction=cast(SummonInteraction, interaction),
+        install_signal_handlers=False,
+    )
+    handle = _RecordingAttachHandle()
+
+    result = driver._attach_if_needed(
+        cast(Any, handle),
+        boot=_attach_boot(),
+        wired=False,
+        first_generation=True,
+        availability=TerminalAvailability.AVAILABLE,
+    )
+
+    assert result == "detached"
+    assert interaction.lease_calls == 1
+    assert interaction.lease_events == ["acquire", "restore"]
+    assert handle.attach_calls == [
+        {
+            "wake": driver._wake,
+            "shutdown": driver._shutdown,
+            "input_fd": 17,
+            "output_fd": 19,
+        }
+    ]
+
+
+@pytest.mark.parametrize("result", ["eof", "shutdown"])
+def test_attach_preserves_other_finite_provider_results(result: str) -> None:
+    interaction = _RecordingInteraction(TerminalAvailability.AVAILABLE)
+    driver = SummonDriver(
+        _run_request(),
+        interaction=cast(SummonInteraction, interaction),
+        install_signal_handlers=False,
+    )
+
+    assert (
+        driver._attach_if_needed(
+            cast(Any, _RecordingAttachHandle(result)),
+            boot=_attach_boot(),
+            wired=False,
+            first_generation=True,
+            availability=TerminalAvailability.AVAILABLE,
+        )
+        == result
+    )
+    assert interaction.lease_events == ["acquire", "restore"]
+
+
+def test_attach_rejects_provider_result_outside_finite_contract() -> None:
+    interaction = _RecordingInteraction(TerminalAvailability.AVAILABLE)
+    driver = SummonDriver(
+        _run_request(),
+        interaction=cast(SummonInteraction, interaction),
+        install_signal_handlers=False,
+    )
+
+    with pytest.raises(DriverError, match="invalid attach result"):
+        driver._attach_if_needed(
+            cast(Any, _RecordingAttachHandle("surprise")),
+            boot=_attach_boot(),
+            wired=False,
+            first_generation=True,
+            availability=TerminalAvailability.AVAILABLE,
+        )
+
+    assert interaction.lease_events == ["acquire", "restore"]
+
+
+@pytest.mark.parametrize(
+    ("wired", "first_generation", "detach"),
+    [
+        (True, True, False),
+        (False, False, False),
+        (False, True, True),
+    ],
+)
+def test_non_attach_paths_never_acquire_host_lease(
+    *, wired: bool, first_generation: bool, detach: bool
+) -> None:
+    interaction = _RecordingInteraction(TerminalAvailability.AVAILABLE)
+    driver = SummonDriver(
+        _run_request(detach=detach),
+        interaction=cast(SummonInteraction, interaction),
+        install_signal_handlers=False,
+    )
+    handle = _RecordingAttachHandle()
+
+    result = driver._attach_if_needed(
+        cast(Any, handle),
+        boot=_attach_boot(),
+        wired=wired,
+        first_generation=first_generation,
+        availability=(None if detach else TerminalAvailability.AVAILABLE),
+    )
+
+    assert result is None
+    assert interaction.lease_calls == 0
+    assert handle.attach_calls == []
+
+
+@pytest.mark.parametrize(
+    ("availability", "message"),
+    [
+        (TerminalAvailability.NO_TTY, "--attach requires a tty"),
+        (
+            TerminalAvailability.NESTED_HOST,
+            "--attach is not available inside TAUT_HOST_TUI=1",
+        ),
+        (
+            TerminalAvailability.UNAVAILABLE,
+            "--attach requires an available terminal",
+        ),
+    ],
+)
+def test_required_unavailable_terminal_is_fatal_before_lease(
+    availability: TerminalAvailability, message: str
+) -> None:
+    interaction = _RecordingInteraction(availability)
+    driver = SummonDriver(
+        _run_request(attach=True),
+        interaction=cast(SummonInteraction, interaction),
+        install_signal_handlers=False,
+    )
+
+    with pytest.raises(DriverError, match=re.escape(message)):
+        driver._attach_if_needed(
+            cast(Any, _RecordingAttachHandle()),
+            boot=_attach_boot(),
+            wired=False,
+            first_generation=True,
+            availability=availability,
+        )
+
+    assert interaction.lease_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("availability", "message"),
+    [
+        (
+            TerminalAvailability.NO_TTY,
+            "provider 'pty' is not wired yet and no tty is available; "
+            "run taut summon --attach ptybot from a real terminal",
+        ),
+        (
+            TerminalAvailability.NESTED_HOST,
+            "provider 'pty' is not wired yet but attach is refused inside "
+            "TAUT_HOST_TUI=1; run from a real terminal or pane",
+        ),
+        (
+            TerminalAvailability.UNAVAILABLE,
+            "provider 'pty' is not wired yet because the host terminal is "
+            "unavailable; run taut summon --attach ptybot from an available "
+            "terminal",
+        ),
+    ],
+)
+def test_preferred_unavailable_terminal_keeps_reason_specific_warning(
+    availability: TerminalAvailability,
+    message: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    interaction = _RecordingInteraction(availability)
+    driver = SummonDriver(
+        _run_request(),
+        interaction=cast(SummonInteraction, interaction),
+        install_signal_handlers=False,
+    )
+    caplog.set_level("WARNING", logger="taut_summon.driver")
+
+    result = driver._attach_if_needed(
+        cast(Any, _RecordingAttachHandle()),
+        boot=_attach_boot(),
+        wired=False,
+        first_generation=True,
+        availability=availability,
+    )
+
+    assert result is None
+    assert caplog.messages == [message]
+    assert interaction.lease_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("acquire_error", "restore_error", "attach_calls", "events"),
+    [
+        (RuntimeError("pause failed"), None, 0, ["acquire"]),
+        (
+            None,
+            RuntimeError("redraw failed"),
+            1,
+            ["acquire", "restore"],
+        ),
+    ],
+)
+def test_terminal_lease_acquire_and_restore_failures_are_fatal(
+    acquire_error: BaseException | None,
+    restore_error: BaseException | None,
+    attach_calls: int,
+    events: list[str],
+) -> None:
+    interaction = _RecordingInteraction(
+        TerminalAvailability.AVAILABLE,
+        acquire_error=acquire_error,
+        restore_error=restore_error,
+    )
+    driver = SummonDriver(
+        _run_request(),
+        interaction=cast(SummonInteraction, interaction),
+        install_signal_handlers=False,
+    )
+    handle = _RecordingAttachHandle()
+
+    with pytest.raises(DriverError, match="terminal interaction failed"):
+        driver._attach_if_needed(
+            cast(Any, handle),
+            boot=_attach_boot(),
+            wired=False,
+            first_generation=True,
+            availability=TerminalAvailability.AVAILABLE,
+        )
+
+    assert len(handle.attach_calls) == attach_calls
+    assert interaction.lease_events == events
+
+
+def test_terminal_restore_failure_does_not_replace_attach_failure() -> None:
+    interaction = _RecordingInteraction(
+        TerminalAvailability.AVAILABLE,
+        restore_error=RuntimeError("redraw failed"),
+    )
+    driver = SummonDriver(
+        _run_request(),
+        interaction=cast(SummonInteraction, interaction),
+        install_signal_handlers=False,
+    )
+    handle = _RecordingAttachHandle(attach_error=AdapterError("provider attach failed"))
+
+    with pytest.raises(AdapterError, match="provider attach failed"):
+        driver._attach_if_needed(
+            cast(Any, handle),
+            boot=_attach_boot(),
+            wired=False,
+            first_generation=True,
+            availability=TerminalAvailability.AVAILABLE,
+        )
+
+    assert interaction.lease_events == ["acquire", "restore"]
+
+
+def test_raw_attach_io_failure_becomes_driver_error_after_lease_restore() -> None:
+    interaction = _RecordingInteraction(TerminalAvailability.AVAILABLE)
+    driver = SummonDriver(
+        _run_request(),
+        interaction=cast(SummonInteraction, interaction),
+        install_signal_handlers=False,
+    )
+    failure = OSError("host output closed")
+
+    with pytest.raises(DriverError, match="terminal attach failed") as caught:
+        driver._attach_if_needed(
+            cast(Any, _RecordingAttachHandle(attach_error=failure)),
+            boot=_attach_boot(),
+            wired=False,
+            first_generation=True,
+            availability=TerminalAvailability.AVAILABLE,
+        )
+
+    assert caught.value.__cause__ is failure
+    assert interaction.lease_events == ["acquire", "restore"]
 
 
 @pytest.mark.parametrize("name", adapter_names())
@@ -226,7 +666,7 @@ def test_registered_adapter_declares_session_event_capability(
 def test_non_session_adapter_skips_initial_session_wait(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    driver = SummonDriver(_run_request(), install_signal_handlers=False)
+    driver = _new_driver(_run_request())
     adapter = cast(Any, _AttachUnsupportedAdapter())
     adapter.emits_session_events = False
     monkeypatch.setattr(
@@ -241,7 +681,7 @@ def test_non_session_adapter_skips_initial_session_wait(
 def test_explicit_attach_refuses_before_unsupported_adapter_spawn(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    driver = SummonDriver(_run_request(attach=True), install_signal_handlers=False)
+    driver = _new_driver(_run_request(attach=True))
     boot = _BootstrapResult(
         member_id="m_ptybot",
         member_name="ptybot",
@@ -269,18 +709,18 @@ def test_explicit_attach_refuses_before_unsupported_adapter_spawn(
 def test_driver_reports_broker_error_without_traceback(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    driver = SummonDriver(_run_request(), install_signal_handlers=False)
+    driver = _new_driver(_run_request())
 
     def fail() -> int:
         raise DatabaseError("malformed summon session row")
 
     monkeypatch.setattr(driver, "_run", fail)
 
-    assert driver.run() == 1
+    with pytest.raises(SummonOperationError, match="malformed summon session row"):
+        driver.run()
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert captured.err.strip() == "malformed summon session row"
-    assert "Traceback (most recent call last)" not in captured.err
+    assert captured.err == ""
 
 
 def test_harness_target_projection_keeps_path_env_and_redacts_server_target(
@@ -293,7 +733,7 @@ def test_harness_target_projection_keeps_path_env_and_redacts_server_target(
         provider="scripted",
         provider_session_id=None,
     )
-    driver = SummonDriver(_run_request(), install_signal_handlers=False)
+    driver = _new_driver(_run_request())
     sqlite_path = tmp_path / ".taut.db"
     sqlite_target = BrokerTarget(backend_name="sqlite", target=str(sqlite_path))
     pg_target = BrokerTarget(
@@ -331,7 +771,7 @@ def test_bootstrap_failure_after_member_claim_runs_driver_release(
         def queue(self, _name: str) -> FakeQueue:
             return FakeQueue()
 
-    driver = SummonDriver(_run_request(), install_signal_handlers=False)
+    driver = _new_driver(_run_request())
     releases: list[str] = []
     monkeypatch.setattr(driver, "_persistent_client", lambda **_kwargs: FakeClient())
     monkeypatch.setattr(driver, "_close_owned_clients", lambda: None)
@@ -358,7 +798,7 @@ def test_driver_release_requires_state_confirmation(
         def generate_timestamp(self) -> int:
             return 2
 
-    driver = SummonDriver(_run_request(), install_signal_handlers=False)
+    driver = _new_driver(_run_request())
     driver._member_id = "m_reviewer"
     driver._evidence = (1234, "1")
     driver._queue = cast(Any, FakeQueue())
@@ -429,7 +869,7 @@ def test_driver_ledger_client_is_persistent_and_foreground_owned(
     monkeypatch.setattr(driver_module, "ensure_summon_schema", lambda _queue: None)
     monkeypatch.setattr(driver_module, "capture_driver_evidence", lambda: (1, "s"))
 
-    driver = SummonDriver(_run_request(), install_signal_handlers=False)
+    driver = _new_driver(_run_request())
     boot = _BootstrapResult("m_reviewer", "reviewer", "tok", "scripted", None)
     monkeypatch.setattr(driver, "_bootstrap", lambda _client: boot)
     monkeypatch.setattr(driver, "_supervise", lambda _boot, _display, **_kwargs: 0)
@@ -543,6 +983,7 @@ def test_harness_death_before_watcher_publication_stops_owner_before_run(
     monkeypatch.setattr(driver_module, "TautClient", FakeClient)
     driver = object.__new__(SummonDriver)
     driver._request = _run_request()
+    driver._db_path = None
     driver._shutdown = threading.Event()
     driver._harness_dead = threading.Event()
     driver._halt_ack = threading.Event()
@@ -632,6 +1073,7 @@ def test_live_watcher_after_bounded_join_is_fatal(
     monkeypatch.setattr(driver_module, "_WATCHER_JOIN_TIMEOUT_SECONDS", 0.01)
     driver = object.__new__(SummonDriver)
     driver._request = _run_request()
+    driver._db_path = None
     driver._shutdown = threading.Event()
     driver._harness_dead = threading.Event()
     driver._halt_ack = threading.Event()
@@ -686,6 +1128,7 @@ def test_watcher_failure_rebuilds_without_closing_provider(
     monkeypatch.setattr(driver_module, "_WATCHER_RESTART_BACKOFF", (0.0,))
     driver = object.__new__(SummonDriver)
     driver._request = _run_request()
+    driver._db_path = None
     driver._shutdown = threading.Event()
     driver._harness_dead = threading.Event()
     driver._halt_ack = threading.Event()
@@ -764,7 +1207,7 @@ def test_pump_constructs_mouth_client_on_pump_thread(
             yield ExitEvent(0)
 
     monkeypatch.setattr(driver_module, "TautClient", FakeMouth)
-    driver = SummonDriver(_run_request(), install_signal_handlers=False)
+    driver = _new_driver(_run_request())
     driver._control_loop = None
     generation = driver._activate_generation()
 
@@ -813,7 +1256,7 @@ def test_stale_generation_events_cannot_mutate_active_or_external_state(
         "update_session",
         lambda *_args, **_kwargs: effects.append("ledger-session"),
     )
-    driver = SummonDriver(_run_request(), install_signal_handlers=False)
+    driver = _new_driver(_run_request())
     stale = driver._activate_generation()
     active = driver._activate_generation()
     driver._control_loop = cast(Any, RecordingControl())
@@ -856,7 +1299,7 @@ def test_checked_pump_join_timeout_retires_generation_and_is_fatal() -> None:
         def is_alive(self) -> bool:
             return True
 
-    driver = SummonDriver(_run_request(), install_signal_handlers=False)
+    driver = _new_driver(_run_request())
     driver._release_confirmed = True
     generation = driver._activate_generation()
     pump = StuckPump()
@@ -882,7 +1325,7 @@ def test_generation_cleanup_failures_do_not_mask_primary_error() -> None:
         def is_alive(self) -> bool:
             return True
 
-    driver = SummonDriver(_run_request(), install_signal_handlers=False)
+    driver = _new_driver(_run_request())
     generation = driver._activate_generation()
     caught: ValueError | None = None
 
@@ -915,7 +1358,7 @@ def test_generation_join_timeout_outranks_close_failure_without_primary() -> Non
         def is_alive(self) -> bool:
             return True
 
-    driver = SummonDriver(_run_request(), install_signal_handlers=False)
+    driver = _new_driver(_run_request())
     generation = driver._activate_generation()
 
     with pytest.raises(DriverError, match="event pump did not stop") as caught:
@@ -974,7 +1417,7 @@ def test_pump_join_timeout_prevents_next_generation_spawn(
         orientation_via_inject = False
         emits_session_events = False
 
-    driver = SummonDriver(_run_request(), install_signal_handlers=False)
+    driver = _new_driver(_run_request())
     boot = _BootstrapResult("m_reviewer", "reviewer", "tok", "fake", None)
     monkeypatch.setattr(driver_module, "_PUMP_JOIN_TIMEOUT_SECONDS", 0.01)
     monkeypatch.setattr(driver_module, "TautClient", FakeClient)
@@ -1047,7 +1490,7 @@ def test_session_ledger_broker_failure_is_foreground_fatal_without_resume(
         orientation_via_inject = False
         emits_session_events = True
 
-    driver = SummonDriver(_run_request(), install_signal_handlers=False)
+    driver = _new_driver(_run_request())
     driver._backoff = ()
     boot = _BootstrapResult(
         "m_reviewer",
@@ -1076,15 +1519,14 @@ def test_session_ledger_broker_failure_is_foreground_fatal_without_resume(
     monkeypatch.setattr(driver, "_run", lambda: driver._supervise(boot, "db"))
 
     try:
-        assert driver.run() == 1
+        with pytest.raises(SummonOperationError, match="event pump storage failed"):
+            driver.run()
     finally:
         failing_ledger.close()
 
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert "event pump storage failed" in captured.err
-    assert "no such table: taut_summon_sessions" in captured.err
-    assert "Traceback (most recent call last)" not in captured.err
+    assert captured.err == ""
     assert spawn_calls == [1]
     assert not any(
         issubclass(warning.category, pytest.PytestUnhandledThreadExceptionWarning)
@@ -1101,7 +1543,7 @@ class _ControlFailureWatcher:
 
 
 def _control_supervision_driver() -> tuple[SummonDriver, _CountingHandle]:
-    driver = SummonDriver(_run_request(), install_signal_handlers=False)
+    driver = _new_driver(_run_request())
     handle = _CountingHandle()
     driver._evidence = (123, "start")
     driver._audit_start_ts = 1
@@ -1154,8 +1596,11 @@ def test_control_loop_exception_is_driver_fatal(
     assert caught.value.__cause__ is failure
 
     monkeypatch.setattr(driver, "_run", driver._raise_if_control_failed)
-    assert driver.run() == 1
-    assert "control turn exploded" in capsys.readouterr().err
+    with pytest.raises(SummonOperationError, match="control turn exploded"):
+        driver.run()
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
 
 
 def test_unexpected_clean_control_loop_return_is_driver_fatal(
@@ -1352,20 +1797,19 @@ def test_pi_bootstrap_capitalizes_implied_name_and_preserves_chosen_name(
     summon_db: Path,
 ) -> None:
     def bootstrap(name: str, provider_flag: str | None) -> _BootstrapResult:
-        request = RunRequest(
+        request = SummonRequest(
             name=name,
             threads=("general",),
             terminal=False,
             persona=None,
             system_prompt_file=None,
             rate_limit=None,
-            db_path=str(summon_db),
             provider_flag=provider_flag,
         )
         queue = Queue(LEDGER_QUEUE_NAME, db_path=str(summon_db))
         ensure_summon_schema(queue)
         client = TautClient(db_path=summon_db)
-        driver = SummonDriver(request, install_signal_handlers=False)
+        driver = _new_driver(request, db_path=str(summon_db))
         driver._queue = queue
         driver._evidence = driver_module.capture_driver_evidence()
         try:
@@ -2214,17 +2658,16 @@ def test_midbootstrap_fallback_conflict_reclaims_before_next_create(
     monkeypatch.setattr(driver_module, "release_claim", release_name)
     monkeypatch.setattr(driver_module, "record_session", lambda *_a, **_kw: None)
 
-    request = RunRequest(
+    request = SummonRequest(
         name="reviewer",
         threads=("general",),
         terminal=False,
         persona=None,
         system_prompt_file=None,
         rate_limit=None,
-        db_path=None,
         provider_flag="scripted",
     )
-    driver = SummonDriver(request, install_signal_handlers=False)
+    driver = _new_driver(request)
     driver._queue = cast(Any, FakeQueue())
     driver._evidence = (1234, "1.0")
     fallbacks = iter(("reviewer-2", "reviewer-3"))
@@ -2260,14 +2703,13 @@ def test_direct_name_all_candidate_exhaustion_leaves_no_summon_debris(
 ) -> None:
     """[SUM-4]: five real insert collisions create no Summon-owned residue."""
 
-    request = RunRequest(
+    request = SummonRequest(
         name="reviewer",
         threads=("general",),
         terminal=False,
         persona=None,
         system_prompt_file=None,
         rate_limit=None,
-        db_path=str(summon_db),
         provider_flag="scripted",
     )
     queue = Queue("taut.summon_state", db_path=str(summon_db))
@@ -2296,7 +2738,7 @@ def test_direct_name_all_candidate_exhaustion_leaves_no_summon_debris(
         real_close(client)
 
     monkeypatch.setattr(driver_module.TautClient, "close", close_spy)
-    driver = SummonDriver(request, install_signal_handlers=False)
+    driver = _new_driver(request, db_path=str(summon_db))
     driver._queue = queue
     driver._evidence = driver_module.capture_driver_evidence()
     try:
@@ -2326,14 +2768,13 @@ def test_multi_collision_then_post_insert_failure_reports_and_recovers_real_memb
 ) -> None:
     """[SUM-4]: durable insert evidence survives later bootstrap failure."""
 
-    request = RunRequest(
+    request = SummonRequest(
         name="reviewer",
         threads=("general",),
         terminal=False,
         persona=None,
         system_prompt_file=None,
         rate_limit=None,
-        db_path=str(summon_db),
         provider_flag="scripted",
     )
     queue = Queue("taut.summon_state", db_path=str(summon_db))
@@ -2364,7 +2805,7 @@ def test_multi_collision_then_post_insert_failure_reports_and_recovers_real_memb
     def fail_after_member_insert(_client: Any, _member: Any, _created_ts: int) -> None:
         raise DatabaseError("forced post-insert readback failure")
 
-    driver = SummonDriver(request, install_signal_handlers=False)
+    driver = _new_driver(request, db_path=str(summon_db))
     driver._queue = queue
     driver._evidence = driver_module.capture_driver_evidence()
     try:
@@ -2405,7 +2846,7 @@ def test_multi_collision_then_post_insert_failure_reports_and_recovers_real_memb
 
         with queue.sidecar(transaction=True) as session:
             session.run("DROP TRIGGER summon_test_reject_first_candidates")
-        retry = SummonDriver(request, install_signal_handlers=False)
+        retry = _new_driver(request, db_path=str(summon_db))
         retry._queue = queue
         retry._evidence = driver_module.capture_driver_evidence()
         boot = retry._first_summon(resolver, "reviewer", "reviewer", "scripted", False)
@@ -2470,17 +2911,16 @@ def test_first_summon_failure_releases_transient_name_claim(
     monkeypatch.setattr(driver_module, "release_claim", release_claim)
     monkeypatch.setattr(driver_module, "record_session", fail_record)
 
-    request = RunRequest(
+    request = SummonRequest(
         name="reviewer",
         threads=("general",),
         terminal=False,
         persona=None,
         system_prompt_file=None,
         rate_limit=None,
-        db_path=None,
         provider_flag="scripted",
     )
-    driver = SummonDriver(request, install_signal_handlers=False)
+    driver = _new_driver(request)
     driver._queue = cast(Any, FakeQueue())
     driver._evidence = (1234, "1.0")
     monkeypatch.setattr(
@@ -2518,17 +2958,16 @@ def test_post_create_failure_reports_real_residual_member_recovery(
 ) -> None:
     """[SUM-4]: later failure is loud and non-destructive, with a usable token."""
 
-    request = RunRequest(
+    request = SummonRequest(
         name="reviewer",
         threads=("general",),
         terminal=False,
         persona=None,
         system_prompt_file=None,
         rate_limit=None,
-        db_path=str(summon_db),
         provider_flag="scripted",
     )
-    driver = SummonDriver(request, install_signal_handlers=False)
+    driver = _new_driver(request, db_path=str(summon_db))
     queue = Queue("taut.summon_state", db_path=str(summon_db))
     driver._queue = queue
     driver._evidence = driver_module.capture_driver_evidence()
@@ -3125,6 +3564,32 @@ def test_stop_from_another_terminal(
         if m.get("command") == "STOP"
     ]
     assert base_acks == []
+
+
+def test_root_command_adapters_drive_real_summon_and_dismiss(
+    summon_db: Path, tmp_path: Path, driver_factory: Callable[..., DriverProcess]
+) -> None:
+    driver = driver_factory(
+        summon_db,
+        "root-reviewer",
+        "general",
+        provider="scripted",
+        control_interval=0.1,
+        tag="root-command-adapters",
+        console="root",
+    )
+    driver.wait_for_start()
+    member = _member_by_name(summon_db, "root-reviewer")
+    assert member is not None
+
+    rc, out, err = taut_cli("dismiss", "root-reviewer", db=summon_db, cwd=tmp_path)
+
+    assert rc == 0, err
+    assert out == f"stopped 'root-reviewer' (db: {summon_db})"
+    assert driver.wait() == 0
+    row = _session_row(summon_db, member.member_id)
+    assert row is not None
+    assert row["driver_pid"] is None
 
 
 def test_stop_by_current_name_after_rename(

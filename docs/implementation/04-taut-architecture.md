@@ -87,9 +87,10 @@ owns the Docker Postgres gate for `taut-pg`, and
 summon extension and local-LLM lane. No workflow uploads to PyPI.
 
 Core and Summon are one paired reactor release boundary. The single owner of
-that proof is `bin/verify-reactor-release-artifacts.py`: it builds fresh core
+that proof is `bin/build-and-check-release-wheels.py`: it builds fresh core
 and Summon wheels in isolated temporary directories, then passes those exact
-artifacts to `bin/verify-reactor-artifact-compat.py`. Core and Summon release
+artifacts to the `bin/check-core-summon-wheel-matrix.py` checker. Core and
+Summon release
 paths run the proof after builds and before any commit, tag, push, or publish,
 including `--skip-checks`; a PG-only release does not run it. The same owner
 checks the retained Summon lock's resolved SimpleBroker version and compiles
@@ -279,14 +280,34 @@ an unrelated cwd config cannot override or break explicit construction.
 Direct `TautWatcher(client, ...)` construction is preserved only as a deprecated
 constructor compatibility path and is converted immediately to the same runtime.
 
-The core CLI builds one argparse tree per invocation and uses that same tree for
-parsing and no-subcommand help. Every parser, command choice, positional, and
-option carries local help, while root help owns the cross-command exit classes,
+The core CLI is a thin call into the command dispatcher. Root parsing consumes
+only root options and the selected verb; the selected adapter configures its
+own core-created parser. Root help still owns the cross-command exit classes,
 token trust boundary, and JSON diagnostic rule. Explicit `main([])` is distinct
-from `main(None)`: only `None` reads process argv. Parser inventory tests walk
-the nested argparse tree so a newly registered action cannot silently ship
-without help. Runtime reply-id failures retain their normal exit class and add
-the owning command form plus the full-id/4-digit-suffix rule to stderr.
+from `main(None)`: only `None` reads process argv. Runtime reply-id failures
+retain their normal exit class and add the owning command form plus the
+full-id/4-digit-suffix rule to stderr.
+
+Top-level verb dispatch now lives under `taut/commands/`. Lightweight
+`CommandSpec` manifests are static for built-ins and discovered through the
+`taut.commands` entry-point group for installed extensions. The registry loads
+manifest metadata for root help, but imports a command factory only after that
+verb is selected. The core-created `CommandArgumentParser` and
+`CommandContext` keep usage exits, root globals, streams, lazy client lifetime,
+and final cleanup under core policy while each adapter owns only its local
+syntax and controller/client call. Commands with a variable-length positional
+grammar may explicitly enable intermixed parsing; the default parser policy is
+unchanged for all other adapters.
+
+`summon` and `dismiss` are reserved extension slots, not built-ins. A unique
+entry point from the normalized `taut-summon` distribution owns each slot.
+Core retains a narrow 0.5.4 compatibility/install-hint adapter for paired
+rollout only. Once the 0.6.0 extension is selected, its native command adapters
+run directly and the compatibility bridge is not involved.
+
+The complete static-versus-installed registration flow, extension packaging
+contract, registry cache timing, and rich-host boundary are documented in
+`docs/implementation/06-command-extensions.md`.
 
 Human notification actions are derived at render time from current thread and
 membership state. Channel and subthread mentions use the membership-independent
@@ -366,6 +387,7 @@ requirement or auditing implementation coverage.
 | [TAUT-6], message envelopes and sender snapshots | `taut/envelope.py`, `taut/client/_codec.py::message_from_body`, `message_from_decoded`, `taut/client/_messaging.py::MessagingMixin._write_message` | `tests/test_envelope.py`, `tests/test_client.py::test_set_name_changes_current_name_without_changing_member_id` |
 | [TAUT-7], read cursors and chat-history peek discipline | `taut/client/_messaging.py::MessagingMixin.read_unread`, `_implicit_subthread_membership`, `taut/state/_sql.py` membership and cursor helpers | `tests/test_client.py`, `tests/test_state_contract.py`, `tests/test_shared_contract.py` |
 | [TAUT-8.1], [TAUT-8.2], CLI behavior, rendering, JSON, help, and exit codes | `taut/cli.py` | `tests/test_cli.py` parser-inventory, help-phrase, explicit-argv, subprocess, rendering, and exit-class tests; `tests/test_public_api.py` |
+| [TAUT-8.6], command manifests, installed discovery, dispatch, parser/context policy, and lazy loading | `taut/commands/` | `tests/test_command_registry.py`, `tests/test_lazy_imports.py`, `tests/test_architecture_boundaries.py`, installed-wheel cases in `tests/test_core_summon_wheel_matrix.py` |
 | [TAUT-8.3], Python API objects and verb semantics | `taut/client/__init__.py::TautClient`, `taut/client/_models.py`, and the client mixins | `tests/test_public_api.py`, `tests/test_client.py` |
 | [TAUT-8.4], [TAUT-8.5], watcher behavior and shared reactor lifecycle | `taut/watcher.py::BaseReactor`, `taut/watcher.py::TautWatcher`, `taut/_watch_runtime.py`, `taut/client/_watching.py`, `taut/client/__init__.py::TautClient.watch`, `taut/cli.py::_cmd_watch` | `tests/test_watcher.py` ownership, stop, wake, cursor replay, construction cleanup, explicit-target resolution, terminal-stop, poison, ordering, and same-instance tests; `tests/test_cli.py::test_cli_watch_json_flushes_records_while_live`, `test_cli_watch_closed_pipe_exits_0_without_advancing_cursor`; `tests/test_architecture_boundaries.py::test_first_party_reactors_inherit_guarded_lifecycle_templates`; `tests/test_shared_contract.py::test_project_watcher_receives_cli_write`; `extensions/taut_pg/tests/test_reactor.py::test_taut_watcher_native_waiter_rebinds_on_membership_topology_change` |
 | [IAN-4], alias/name route namespace | `taut/state/_sql.py` member and alias helpers, `taut/_constants.py::route_key`, `validate_member_name` | `tests/test_state_contract.py`, `tests/test_client.py::test_set_name_changes_current_name_without_changing_member_id`, PostgreSQL create/rename-versus-alias races in `extensions/taut_pg/tests/test_pg_sidecar.py` |
@@ -394,6 +416,7 @@ watch, `taut/client/_notifications.py::NotificationsMixin.inbox` claims notifica
 
 ## Related Plans
 
+- `docs/plans/2026-07-12-lazy-command-extensions-and-rich-tui-composition-plan.md`
 - `docs/plans/2026-07-12-automatic-display-name-capitalization-plan.md`
 - `docs/plans/2026-07-10-taut-dynamic-native-waiter-replacement-plan.md`
 - `docs/plans/2026-06-18-member-identity-addressing-plan.md`

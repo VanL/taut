@@ -57,9 +57,9 @@ SummonCliRunner = Callable[..., tuple[int, str, str]]
 
 # Generous for slow CI runners: every use is a wait-until (cheap when
 # green), and each driver test runs a real three-process pipeline
-# (driver + provider + CLI writers). xdist is the default; tests that
-# require shared external resources must opt into narrower grouping rather
-# than making the whole suite serial.
+# (driver + provider + CLI writers). Broad xdist runs co-locate process-heavy
+# tests to avoid unbounded ``-n auto`` fan-out; isolated process lanes override
+# that grouping with a deliberate fixed worker count.
 _DEADLINE = 90.0
 # Bootstrap PING is the live readiness authority. Keep the per-request timeout
 # generous enough for slow CI and loaded local runs without adding a Taut-level
@@ -133,11 +133,13 @@ def _base_env() -> dict[str, str]:
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    """Group real driver-process tests under xdist without disabling xdist.
+    """Mark real driver-process tests for default grouping and lane selection.
 
     The shared driver harness starts a foreground driver, a provider child,
-    and peer CLI subprocesses. Running many of those at once makes host process
-    scheduling the behavior under test and can starve the control loop.
+    and peer CLI subprocesses. Every marked test owns test-local resources.
+    Broad ``loadgroup`` runs co-locate the group because unbounded fan-out can
+    starve control loops; isolated release and CI lanes intentionally use
+    bounded ``load`` scheduling to add concurrent pressure.
     """
 
     for item in items:
@@ -327,7 +329,7 @@ def _await_control_request(
 
 
 class DriverProcess:
-    """One real ``taut-summon run`` foreground driver under test control."""
+    """One real foreground driver under test control through either console."""
 
     def __init__(
         self,
@@ -343,6 +345,7 @@ class DriverProcess:
         control_interval: float | None = None,
         tag: str = "driver",
         include_db: bool = True,
+        console: str = "standalone",
     ) -> None:
         self.tag = tag
         self.db = db
@@ -362,9 +365,17 @@ class DriverProcess:
             env["TAUT_SUMMON_CONTROL_INTERVAL"] = str(control_interval)
         if extra_env is not None:
             env.update(extra_env)
-        command = [sys.executable, "-m", "taut_summon", "run", name]
+        if console == "standalone":
+            command = [sys.executable, "-m", "taut_summon", "run", name]
+        elif console == "root":
+            command = [sys.executable, "-m", "taut"]
+            if include_db:
+                command.extend(["--db", str(db)])
+            command.extend(["summon", name])
+        else:
+            raise ValueError(f"unknown driver console {console!r}")
         command.extend(threads)
-        if include_db:
+        if include_db and console == "standalone":
             command.extend(["--db", str(db)])
         if provider is not None:
             command.extend(["--provider", provider])

@@ -36,6 +36,9 @@ from taut_summon._adapter import (
 )
 
 pty = pytest.importorskip("pty", reason="POSIX PTY tests require the pty module")
+termios = pytest.importorskip(
+    "termios", reason="POSIX PTY tests require terminal attributes"
+)
 if TYPE_CHECKING:
     import taut_summon._pty as _pty_module
     from taut_summon._pty import (
@@ -237,6 +240,15 @@ def _read_fd_until(fd: int, needle: bytes, *, timeout: float = 5.0) -> bytes:
         if needle in out:
             return out
     return out
+
+
+def _assert_termios_restored(fd: int, saved: list[Any]) -> None:
+    """Compare host-controlled modes while ignoring the kernel PENDIN bit."""
+
+    current = termios.tcgetattr(fd)
+    assert current[:3] == saved[:3]
+    assert current[3] & ~termios.PENDIN == saved[3] & ~termios.PENDIN
+    assert current[4:] == saved[4:]
 
 
 def test_registry_maps_named_harnesses_to_pty_specs() -> None:
@@ -1443,6 +1455,7 @@ def test_attach_bridges_and_split_chord_detaches_with_reset(
         tmp_path, {"queries": False, "modes": False, "redraw": False}
     )
     user_master, user_slave = pty.openpty()
+    saved_termios = termios.tcgetattr(user_slave)
     wake = threading.Event()
     shutdown = threading.Event()
     result: list[str] = []
@@ -1478,6 +1491,7 @@ def test_attach_bridges_and_split_chord_detaches_with_reset(
         assert b"\x18\x1b\\" in reset
         assert b"\x1b[?1049l" in reset
         assert b"\x1b[0m" in reset
+        _assert_termios_restored(user_slave, saved_termios)
     finally:
         handle.close()
         os.close(user_master)
@@ -1605,6 +1619,7 @@ def test_attach_shutdown_wake_exits_bridge(
         tmp_path, {"queries": False, "modes": False, "redraw": False}
     )
     user_master, user_slave = pty.openpty()
+    saved_termios = termios.tcgetattr(user_slave)
     wake = threading.Event()
     shutdown = threading.Event()
     result: list[str] = []
@@ -1625,7 +1640,44 @@ def test_attach_shutdown_wake_exits_bridge(
         thread.join(timeout=5.0)
         assert result == ["shutdown"]
         assert b"\x1b[?1049l" in reset
+        _assert_termios_restored(user_slave, saved_termios)
     finally:
         handle.close()
+        os.close(user_master)
+        os.close(user_slave)
+
+
+def test_attach_output_failure_still_restores_input_termios(tmp_path: Path) -> None:
+    handle, _log = _spawn_fake(
+        tmp_path, {"queries": False, "modes": False, "redraw": False}
+    )
+    user_master, user_slave = pty.openpty()
+    saved_termios = termios.tcgetattr(user_slave)
+    output_r, output_w = os.pipe()
+    os.close(output_w)
+    failures: list[BaseException] = []
+
+    def attach() -> None:
+        try:
+            handle.attach(
+                wake=threading.Event(),
+                shutdown=threading.Event(),
+                input_fd=user_slave,
+                output_fd=output_w,
+            )
+        except BaseException as exc:  # noqa: BLE001 - asserted below
+            failures.append(exc)
+
+    thread = threading.Thread(target=attach, daemon=True)
+    thread.start()
+    try:
+        thread.join(timeout=5.0)
+        assert not thread.is_alive()
+        assert len(failures) == 1
+        assert isinstance(failures[0], OSError)
+        _assert_termios_restored(user_slave, saved_termios)
+    finally:
+        handle.close()
+        os.close(output_r)
         os.close(user_master)
         os.close(user_slave)

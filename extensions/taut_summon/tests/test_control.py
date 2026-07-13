@@ -23,7 +23,6 @@ from typing import Any, cast
 
 import pytest
 import taut_summon._control as control_module
-import taut_summon.cli as cli_module
 from simplebroker import Queue
 from simplebroker.ext import (
     DatabaseError,
@@ -543,26 +542,6 @@ def test_control_reactor_inherits_shared_lifecycle_templates() -> None:
     assert reactor_cls.wait_for_activity is BaseReactor.wait_for_activity
     assert reactor_cls.stop is BaseReactor.stop
     assert reactor_cls.cleanup is BaseReactor.cleanup
-
-
-def test_status_fault_plane_diagnostic_is_opt_in(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    def boom() -> str:
-        raise DatabaseError("database disk image is malformed")
-
-    with pytest.raises(DatabaseError):
-        cli_module._with_status_fault_plane("resolve_session", boom)
-    assert capsys.readouterr().err == ""
-
-    monkeypatch.setenv(cli_module._STATUS_FAULT_PLANE_ENV, "1")
-    with pytest.raises(DatabaseError):
-        cli_module._with_status_fault_plane("resolve_session", boom)
-
-    err = capsys.readouterr().err
-    assert "status_fault_plane=resolve_session" in err
-    assert "DatabaseError" in err
-    assert "Traceback" not in err
 
 
 def test_control_client_tags_write_fault_plane() -> None:

@@ -47,7 +47,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from simplebroker import BrokerTarget, Queue
 from simplebroker.ext import BrokerError
@@ -99,9 +99,13 @@ from taut_summon._state import (
     set_wired,
     update_session,
 )
-
-if TYPE_CHECKING:
-    from taut_summon.cli import RunRequest
+from taut_summon.interaction import (
+    SummonInteraction,
+    TerminalAvailability,
+    TerminalIntent,
+    TerminalLease,
+)
+from taut_summon.models import SummonOperationError, SummonRequest
 
 logger = logging.getLogger("taut_summon.driver")
 
@@ -277,11 +281,17 @@ class SummonDriver:
 
     def __init__(
         self,
-        request: RunRequest,
+        request: SummonRequest,
         *,
+        interaction: SummonInteraction,
+        db_path: str | None = None,
         install_signal_handlers: bool = True,
     ) -> None:
+        if request.attach and request.detach:
+            raise SummonOperationError("--attach and --detach cannot be used together")
         self._request = request
+        self._interaction = interaction
+        self._db_path = db_path
         self._install_signal_handlers = install_signal_handlers
         self._backoff = _resume_backoff_from_env()
         self._shutdown = threading.Event()
@@ -328,7 +338,7 @@ class SummonDriver:
 
     # --- public entry ----------------------------------------------------
 
-    def run(self) -> int:
+    def run(self) -> None:
         # The driver process is nobody: its clients are explicitly
         # selected (as_name/token/capture), and ambient TAUT_AS/TAUT_TOKEN
         # from the launching shell must not leak into them — or into
@@ -338,18 +348,18 @@ class SummonDriver:
         if self._install_signal_handlers:
             self._install_signals()
         try:
-            return self._run()
+            result = self._run()
         except NotInitializedError:
-            # The CLI owns this diagnostic: with no database there can be
+            # The controller owns this diagnostic: with no database there can be
             # no session row, so [SUM-3] resolution may still surface the
             # unknown-adapter error instead ([SUM-3] step 3).
             raise
         except DriverError as exc:
-            print(str(exc), file=sys.stderr)
-            return 1
+            raise SummonOperationError(str(exc)) from exc
         except (BrokerError, SummonStateError, AdapterError, TautError) as exc:
-            print(str(exc), file=sys.stderr)
-            return 1
+            raise SummonOperationError(str(exc)) from exc
+        if result != 0:
+            raise SummonOperationError(f"summon driver exited with status {result}")
 
     def request_stop(self) -> None:
         self._shutdown.set()
@@ -377,8 +387,7 @@ class SummonDriver:
     # --- bootstrap ([SUM-4]) ----------------------------------------------
 
     def _run(self) -> int:
-        request = self._request
-        client = self._persistent_client(db_path=request.db_path)
+        client = self._persistent_client(db_path=self._db_path)
         db_display, db_env_path = _harness_target_projection(client.target)
         self._queue = client.queue(_LEDGER_QUEUE_NAME)
         try:
@@ -524,7 +533,7 @@ class SummonDriver:
             creator: TautClient | None = None
             try:
                 creator = TautClient(
-                    db_path=self._request.db_path,
+                    db_path=self._db_path,
                     as_name=target,
                     identity_capture=_agent_capture(
                         os.getpid(), rule="summon driver bootstrap anchor"
@@ -648,7 +657,7 @@ class SummonDriver:
         persona = self._request.persona
         if not boot.resummon or persona is None:
             return
-        client = TautClient(db_path=self._request.db_path, token=boot.token)
+        client = TautClient(db_path=self._db_path, token=boot.token)
         try:
             updated = client.set_persona(persona)
         finally:
@@ -671,6 +680,7 @@ class SummonDriver:
         adapter = self._require_adapter(boot.provider)
         if request.attach and not adapter.supports_attach:
             raise DriverError(f"provider '{boot.provider}' does not support attach")
+        terminal_availability = self._terminal_availability(request, adapter)
         env = _harness_environment(boot, db_path=db_path)
         system_prompt = self._system_prompt(boot, db_display)
         terminal_thread = (
@@ -704,17 +714,21 @@ class SummonDriver:
             self._halt_ack.clear()
             pump: threading.Thread | None = None
             try:
-                if self._should_start_pump_before_bootstrap(request, adapter):
+                if self._should_start_pump_before_bootstrap(
+                    request,
+                    adapter,
+                    availability=terminal_availability,
+                ):
                     pump = self._start_pump(
                         generation,
                         handle,
-                        db_path=request.db_path,
+                        db_path=self._db_path,
                         token=boot.token,
                         member_id=boot.member_id,
                         terminal_thread=terminal_thread,
                     )
                 self._rejoin(handle, boot)
-                setup_client = TautClient(db_path=request.db_path, token=boot.token)
+                setup_client = TautClient(db_path=self._db_path, token=boot.token)
                 try:
                     self._ensure_threads(setup_client, boot.member_id)
                 finally:
@@ -726,6 +740,7 @@ class SummonDriver:
                         boot=boot,
                         wired=wired,
                         first_generation=first_generation,
+                        availability=terminal_availability,
                     )
                     if attach_result == "shutdown":
                         self._teardown_generation(generation, handle, pump)
@@ -744,7 +759,7 @@ class SummonDriver:
                     pump = self._start_pump(
                         generation,
                         handle,
-                        db_path=request.db_path,
+                        db_path=self._db_path,
                         token=boot.token,
                         member_id=boot.member_id,
                         terminal_thread=terminal_thread,
@@ -1148,7 +1163,7 @@ class SummonDriver:
             handle.pid, rule=f"summon harness child for {boot.member_name}"
         )
         rejoin_client = TautClient(
-            db_path=self._request.db_path,
+            db_path=self._db_path,
             token=boot.token,
             identity_capture=capture,
         )
@@ -1175,19 +1190,40 @@ class SummonDriver:
         handle.wait_until_quiet()
 
     def _should_start_pump_before_bootstrap(
-        self, request: RunRequest, adapter: ProviderAdapter
+        self,
+        request: SummonRequest,
+        adapter: ProviderAdapter,
+        *,
+        availability: TerminalAvailability | None,
     ) -> bool:
         """Return whether no attach path can consume early provider terminal IO."""
 
         if not adapter.supports_attach:
             return False
-        if request.attach:
-            return False
         if request.detach:
             return True
-        if os.environ.get("TAUT_HOST_TUI") == "1":
-            return True
-        return False
+        if availability is None:
+            raise DriverError("terminal availability was not resolved")
+        return availability in {
+            TerminalAvailability.NESTED_HOST,
+            TerminalAvailability.UNAVAILABLE,
+        }
+
+    def _terminal_availability(
+        self, request: SummonRequest, adapter: ProviderAdapter
+    ) -> TerminalAvailability | None:
+        """Resolve the host decision once, before provider bootstrap begins."""
+
+        if not adapter.supports_attach or request.detach:
+            return None
+        intent = TerminalIntent.REQUIRED if request.attach else TerminalIntent.PREFERRED
+        try:
+            availability = self._interaction.terminal_availability(intent)
+        except Exception as exc:
+            raise DriverError(f"terminal availability failed: {exc}") from exc
+        if not isinstance(availability, TerminalAvailability):
+            raise DriverError("terminal interaction returned invalid availability")
+        return availability
 
     def _await_initial_session_event(self, adapter: ProviderAdapter) -> None:
         if not adapter.emits_session_events:
@@ -1264,36 +1300,84 @@ class SummonDriver:
         boot: _BootstrapResult,
         wired: bool,
         first_generation: bool,
+        availability: TerminalAvailability | None,
     ) -> str | None:
         request = self._request
-        nested = os.environ.get("TAUT_HOST_TUI") == "1"
-        has_tty = sys.stdin.isatty()
         if request.attach:
-            if not has_tty:
+            if availability is TerminalAvailability.NO_TTY:
                 raise DriverError("--attach requires a tty")
-            if nested:
+            if availability is TerminalAvailability.NESTED_HOST:
                 raise DriverError("--attach is not available inside TAUT_HOST_TUI=1")
+            if availability is TerminalAvailability.UNAVAILABLE:
+                raise DriverError("--attach requires an available terminal")
         should_attach = first_generation and (
             request.attach
-            or (not wired and has_tty and not nested and not request.detach)
+            or (
+                not wired
+                and availability is TerminalAvailability.AVAILABLE
+                and not request.detach
+            )
         )
         if not should_attach:
-            if not wired and not has_tty:
+            if not wired and availability is TerminalAvailability.NO_TTY:
                 logger.warning(
                     "provider '%s' is not wired yet and no tty is available; "
                     "run taut summon --attach %s from a real terminal",
                     boot.provider,
                     boot.member_name,
                 )
-            elif not wired and nested:
+            elif not wired and availability is TerminalAvailability.NESTED_HOST:
                 logger.warning(
                     "provider '%s' is not wired yet but attach is refused inside "
                     "TAUT_HOST_TUI=1; run from a real terminal or pane",
                     boot.provider,
                 )
+            elif not wired and availability is TerminalAvailability.UNAVAILABLE:
+                logger.warning(
+                    "provider '%s' is not wired yet because the host terminal is "
+                    "unavailable; run taut summon --attach %s from an available "
+                    "terminal",
+                    boot.provider,
+                    boot.member_name,
+                )
             return None
         logger.info("attaching '%s'; detach with Ctrl-\\ Ctrl-\\", boot.member_name)
-        return str(handle.attach(wake=self._wake, shutdown=self._shutdown))
+        try:
+            lease_manager = self._interaction.terminal_lease()
+            lease = lease_manager.__enter__()
+        except Exception as exc:
+            raise DriverError(f"terminal interaction failed: {exc}") from exc
+        try:
+            if not isinstance(lease, TerminalLease):
+                raise DriverError("terminal interaction returned invalid lease")
+            result = handle.attach(
+                wake=self._wake,
+                shutdown=self._shutdown,
+                input_fd=lease.input_fd,
+                output_fd=lease.output_fd,
+            )
+            if result not in {"detached", "eof", "shutdown"}:
+                raise DriverError(
+                    f"provider returned invalid attach result: {result!r}"
+                )
+        except BaseException as primary:
+            try:
+                lease_manager.__exit__(type(primary), primary, primary.__traceback__)
+            except BaseException as restore_error:
+                if restore_error is not primary:
+                    logger.error(
+                        "terminal lease restoration also failed: %s", restore_error
+                    )
+            if isinstance(primary, (AdapterError, DriverError)) or not isinstance(
+                primary, Exception
+            ):
+                raise
+            raise DriverError(f"terminal attach failed: {primary}") from primary
+        try:
+            lease_manager.__exit__(None, None, None)
+        except Exception as exc:
+            raise DriverError(f"terminal interaction failed: {exc}") from exc
+        return str(result)
 
     def _system_prompt(self, boot: _BootstrapResult, db_display: str) -> str:
         override = self._request.system_prompt_file
@@ -1396,7 +1480,7 @@ class SummonDriver:
             attempt_stop = threading.Event()
             watcher_ready = threading.Event()
             watcher_thread = self._start_watcher_thread(
-                db_path=self._request.db_path,
+                db_path=self._db_path,
                 token=boot.token,
                 ready_event=watcher_ready,
                 attempt_stop=attempt_stop,
@@ -1523,7 +1607,7 @@ class SummonDriver:
             raise DriverError("rate audit start timestamp was not initialized")
         loop = ControlLoop(
             member_id=boot.member_id,
-            db_path=self._request.db_path,
+            db_path=self._db_path,
             token=boot.token,
             provider=boot.provider,
             threads=self._request.threads,
@@ -1740,7 +1824,12 @@ class SummonDriver:
         self.request_stop()
 
 
-def run_driver(request: RunRequest) -> int:
-    """CLI entry: run one summon driver in the foreground."""
+def run_driver(
+    request: SummonRequest,
+    interaction: SummonInteraction,
+    *,
+    db_path: str | None = None,
+) -> None:
+    """Controller entry: run one summon driver in the foreground."""
 
-    return SummonDriver(request).run()
+    SummonDriver(request, interaction=interaction, db_path=db_path).run()

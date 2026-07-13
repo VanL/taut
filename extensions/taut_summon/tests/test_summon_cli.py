@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-import taut_summon.cli as cli_module
 from simplebroker import Queue
 from taut_summon._state import (
     SUMMON_SCHEMA_VERSION,
@@ -65,77 +64,6 @@ def test_stop_release_confirmation_uses_complete_requested_evidence(
     )
 
 
-@pytest.mark.parametrize(
-    ("reply", "expected_error"),
-    (
-        (
-            {
-                "command": "STOP",
-                "status": "error",
-                "error": "driver slot release could not be confirmed",
-            },
-            "driver slot release could not be confirmed",
-        ),
-        (None, "did not acknowledge STOP"),
-    ),
-)
-def test_stop_requires_ack_before_a_cleared_row_can_be_success(
-    reply: dict[str, str] | None,
-    expected_error: str,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    class FakeMember:
-        member_id = "m_reviewer"
-        name = "reviewer"
-
-    class FakeClient:
-        def queue(self, _name: str) -> object:
-            return object()
-
-        def close(self) -> None:
-            pass
-
-    class ErrorControl:
-        def __init__(self, *_args: object, **_kwargs: object) -> None:
-            pass
-
-        def request(self, command: str, *, timeout: float) -> dict[str, str] | None:
-            assert command == "STOP"
-            assert timeout > 0
-            return reply
-
-        def close(self) -> None:
-            pass
-
-    pid, start = capture_driver_evidence(os.getpid())
-    row = {"driver_pid": pid, "driver_start_time": start}
-    confirm_calls: list[bool] = []
-
-    def confirm_released(*_args: object, **_kwargs: object) -> bool:
-        confirm_calls.append(True)
-        return True
-
-    monkeypatch.setattr(cli_module, "_open_client", lambda _args: FakeClient())
-    monkeypatch.setattr(cli_module, "_resolve_member", lambda *_args: FakeMember())
-    monkeypatch.setattr(cli_module, "_resolve_member_session", lambda *_args: row)
-    monkeypatch.setattr(cli_module, "ControlClient", ErrorControl)
-    monkeypatch.setattr(
-        cli_module,
-        "_confirm_released",
-        confirm_released,
-    )
-    args = build_parser().parse_args(["stop", "reviewer"])
-
-    rc = cli_module._cmd_stop(args)  # noqa: SLF001
-
-    captured = capsys.readouterr()
-    assert rc == 1
-    assert captured.out == ""
-    assert expected_error in captured.err
-    assert confirm_calls == []
-
-
 @pytest.mark.parametrize("command", (("status",), ("stop", "reviewer")))
 def test_cli_incompatible_summon_schema_is_fatal(
     command: tuple[str, ...],
@@ -167,6 +95,41 @@ def test_cli_incompatible_summon_schema_is_fatal(
     assert "summon schema version" in err
     assert "Traceback (most recent call last)" not in err
     assert len(err.splitlines()) == 1
+
+
+def test_status_fault_plane_diagnostic_classifies_real_resolution_failure(
+    run_summon_cli: SummonCliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    client = TautClient(db_path=db, as_name="reviewer")
+    try:
+        client.join("general")
+    finally:
+        client.close()
+    queue = Queue("taut.summon_state", db_path=str(db))
+    try:
+        ensure_summon_schema(queue)
+        with queue.sidecar(transaction=True) as session:
+            session.run(
+                "UPDATE taut_meta SET value = ? WHERE key = ?",
+                (str(SUMMON_SCHEMA_VERSION + 1), SUMMON_SCHEMA_VERSION_KEY),
+            )
+    finally:
+        queue.close()
+    monkeypatch.setenv("TAUT_SUMMON_STATUS_FAULT_PLANE", "1")
+
+    rc, out, err = run_summon_cli("status", "reviewer", "--db", db, cwd=tmp_path)
+
+    assert rc == 1
+    assert out == ""
+    assert "status_fault_plane=resolve_session" in err
+    assert "SummonOperationError" in err
+    assert "summon schema version" in err
+    assert "Traceback" not in err
+    assert len(err.splitlines()) == 2
 
 
 def test_run_defaults_thread_to_general() -> None:
@@ -219,29 +182,39 @@ def test_run_double_dash_preserves_option_shaped_thread_tail() -> None:
 
 
 def test_run_parses_placeholder_flags() -> None:
-    request = run_request(
-        build_parser().parse_args(
-            [
-                "run",
-                "claude",
-                "--terminal",
-                "--persona",
-                "standing reviewer",
-                "--system-prompt-file",
-                "prompt.md",
-                "--rate-limit",
-                "30",
-                "--db",
-                "x.taut.db",
-            ]
-        )
+    parsed = build_parser().parse_args(
+        [
+            "run",
+            "claude",
+            "--terminal",
+            "--persona",
+            "standing reviewer",
+            "--system-prompt-file",
+            "prompt.md",
+            "--rate-limit",
+            "30",
+            "--db",
+            "x.taut.db",
+        ]
     )
+    request = run_request(parsed)
 
     assert request.terminal is True
     assert request.persona == "standing reviewer"
     assert request.system_prompt_file == "prompt.md"
     assert request.rate_limit == 30
-    assert request.db_path == "x.taut.db"
+    assert parsed.db_path == "x.taut.db"
+
+
+def test_standalone_run_and_stop_select_shared_command_factories() -> None:
+    from taut_summon.commands.dismiss import create_command as create_dismiss_command
+    from taut_summon.commands.summon import create_command as create_summon_command
+
+    run_args = build_parser().parse_args(["run", "scripted", "--detach"])
+    stop_args = build_parser().parse_args(["stop", "scripted"])
+
+    assert run_args.command_factory is create_summon_command
+    assert stop_args.command_factory is create_dismiss_command
 
 
 def test_cli_no_arguments_prints_help_and_exits_1(
@@ -370,6 +343,26 @@ def test_cli_run_unknown_flag_is_usage_error_exit_1(
     assert rc == 1
     assert "usage:" in err
     assert out == ""
+
+
+def test_cli_rejects_attach_and_detach_together_as_usage_error(
+    run_summon_cli: SummonCliRunner, tmp_path: Path
+) -> None:
+    rc, out, err = run_summon_cli(
+        "run",
+        "reviewer",
+        "--provider",
+        "scripted",
+        "--attach",
+        "--detach",
+        cwd=tmp_path,
+    )
+
+    assert rc == 1
+    assert out == ""
+    assert "usage:" in err
+    assert "not allowed with argument --attach" in err
+    assert "Traceback" not in err
 
 
 def test_cli_run_reports_missing_adapter_exit_1(

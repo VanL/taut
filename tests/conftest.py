@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 from collections.abc import Iterator, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +17,222 @@ from taut._constants import PROJECT_CONFIG_NAME
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 POSTGRES_TEST_BACKEND = "postgres"
 BACKEND_MARKERS = ("shared", "sqlite_only", "pg_only")
+
+
+@dataclass(frozen=True, slots=True)
+class InstalledCommandFixture:
+    """Fresh Python 3.11 environment containing current core and fixture wheels."""
+
+    python: Path
+    root: Path
+    core_wheel: Path
+    plugin_wheel: Path
+    summon_wheel: Path
+
+    def create_isolated(self, root: Path) -> InstalledCommandFixture:
+        """Install the already-built wheels into a disposable environment."""
+
+        uv = shutil.which("uv")
+        if uv is None:
+            raise RuntimeError("uv is required for installed command fixture tests")
+        root.mkdir(parents=True, exist_ok=True)
+        python = _install_command_fixture_environment(
+            uv,
+            root,
+            self.core_wheel,
+            self.plugin_wheel,
+        )
+        return InstalledCommandFixture(
+            python=python,
+            root=root,
+            core_wheel=self.core_wheel,
+            plugin_wheel=self.plugin_wheel,
+            summon_wheel=self.summon_wheel,
+        )
+
+    def install_wheels(self, *wheels: Path) -> subprocess.CompletedProcess[str]:
+        """Install additional artifacts into this isolated environment."""
+
+        uv = shutil.which("uv")
+        if uv is None:
+            raise RuntimeError("uv is required for installed command fixture tests")
+        return subprocess.run(
+            [
+                uv,
+                "pip",
+                "install",
+                "--python",
+                str(self.python),
+                *(str(wheel) for wheel in wheels),
+            ],
+            cwd=self.root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=180,
+            check=False,
+        )
+
+    def run_python(self, code: str, *args: str) -> subprocess.CompletedProcess[str]:
+        env = os.environ.copy()
+        env.pop("PYTHONPATH", None)
+        return subprocess.run(
+            [str(self.python), "-c", code, *args],
+            cwd=self.root,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+            check=False,
+        )
+
+    def run_console(self, *args: str) -> subprocess.CompletedProcess[str]:
+        env = os.environ.copy()
+        env.pop("PYTHONPATH", None)
+        executable = self.python.parent / ("taut.exe" if os.name == "nt" else "taut")
+        return subprocess.run(
+            [str(executable), *args],
+            cwd=self.root,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+            check=False,
+        )
+
+    def run_summon_console(self, *args: str) -> subprocess.CompletedProcess[str]:
+        """Run the installed standalone Summon console without checkout imports."""
+
+        env = os.environ.copy()
+        env.pop("PYTHONPATH", None)
+        executable = self.python.parent / (
+            "taut-summon.exe" if os.name == "nt" else "taut-summon"
+        )
+        return subprocess.run(
+            [str(executable), *args],
+            cwd=self.root,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+            check=False,
+        )
+
+    def uninstall_plugin(self) -> subprocess.CompletedProcess[str]:
+        uv = shutil.which("uv")
+        if uv is None:
+            raise RuntimeError("uv is required for installed command fixture tests")
+        return subprocess.run(
+            [
+                uv,
+                "pip",
+                "uninstall",
+                "--python",
+                str(self.python),
+                "taut-command-plugin-fixture",
+            ],
+            cwd=self.root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+            check=False,
+        )
+
+
+def _install_command_fixture_environment(
+    uv: str,
+    root: Path,
+    core_wheel: Path,
+    plugin_wheel: Path,
+) -> Path:
+    venv = root / "venv"
+    subprocess.run(
+        [uv, "venv", "--python", "3.11", str(venv)],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    python = (
+        venv / "Scripts" / "python.exe" if os.name == "nt" else venv / "bin" / "python"
+    )
+    subprocess.run(
+        [
+            uv,
+            "pip",
+            "install",
+            "--python",
+            str(python),
+            str(core_wheel),
+            str(plugin_wheel),
+        ],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    return python
+
+
+@pytest.fixture(scope="session")
+def installed_command_fixture(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> InstalledCommandFixture:
+    """Build and install real core/plugin wheels with no checkout import path."""
+
+    uv = shutil.which("uv")
+    if uv is None:
+        raise RuntimeError("uv is required for installed command fixture tests")
+    root = tmp_path_factory.mktemp("installed-command-fixture")
+    core_dist = root / "core-dist"
+    plugin_dist = root / "plugin-dist"
+    summon_dist = root / "summon-dist"
+    fixture_project = PROJECT_ROOT / "tests" / "fixtures" / "taut_command_plugin"
+    for source, destination in (
+        (PROJECT_ROOT, core_dist),
+        (fixture_project, plugin_dist),
+        (PROJECT_ROOT / "extensions" / "taut_summon", summon_dist),
+    ):
+        subprocess.run(
+            [uv, "build", "--wheel", "--out-dir", str(destination), str(source)],
+            cwd=PROJECT_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    core_wheels = tuple(core_dist.glob("*.whl"))
+    plugin_wheels = tuple(plugin_dist.glob("*.whl"))
+    summon_wheels = tuple(summon_dist.glob("*.whl"))
+    if len(core_wheels) != 1 or len(plugin_wheels) != 1 or len(summon_wheels) != 1:
+        raise RuntimeError(
+            "installed command fixture must build exactly one core, plugin, and "
+            "Summon wheel"
+        )
+    python = _install_command_fixture_environment(
+        uv,
+        root,
+        core_wheels[0],
+        plugin_wheels[0],
+    )
+    return InstalledCommandFixture(
+        python=python,
+        root=root,
+        core_wheel=core_wheels[0],
+        plugin_wheel=plugin_wheels[0],
+        summon_wheel=summon_wheels[0],
+    )
 
 
 @pytest.fixture
