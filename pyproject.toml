@@ -47,7 +47,7 @@ dev = [
     "pyyaml>=6.0",
     "ruff>=0.1.0",
     "simplebroker-pg>=3.2.1",
-    "taut-summon>=0.6.0",
+    "taut-summon>=0.6.1",
     "types-psutil>=6.0",
 ]
 
