@@ -1,7 +1,7 @@
 """Stream-based input and output helpers shared by command adapters.
 
 Spec references:
-- docs/specs/02-taut-core.md [TAUT-8.1], [TAUT-8.2], [TAUT-8.6]
+- docs/specs/02-taut-core.md [TAUT-6.4], [TAUT-8.1], [TAUT-8.2], [TAUT-8.6]
 """
 
 from __future__ import annotations
@@ -11,7 +11,10 @@ import sys
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, TextIO
 
+from taut import escape_terminal_text
 from taut._exceptions import EmptyResultError, NotFoundError
+
+_POLICY_ERROR_MESSAGE = "terminal output policy is unavailable"
 
 if TYPE_CHECKING:
     from taut.client import (
@@ -22,6 +25,14 @@ if TYPE_CHECKING:
         TautClient,
         Thread,
     )
+
+
+class _TerminalOutputPolicyError(RuntimeError):
+    """Internal signal that the fixed policy diagnostic must bypass escaping."""
+
+    def __init__(self, *, project_config_syntax: bool = False) -> None:
+        super().__init__(_POLICY_ERROR_MESSAGE)
+        self.project_config_syntax = project_config_syntax
 
 
 def emit_init(
@@ -39,7 +50,7 @@ def emit_init(
         write_json(stdout, {"db": result.db, "created": result.created})
     else:
         status = "created" if result.created else "exists"
-        stdout.write(f"{status}: {result.db}\n")
+        write_human_line(stdout, f"{status}: {result.db}")
 
 
 def read_text_argument(text: str | None, stdin: TextIO) -> str:
@@ -77,7 +88,7 @@ def emit_sent_message(
         if not quiet:
             write_json(stdout, message_object(message))
     elif timestamps and not quiet:
-        stdout.write(f"{message.ts}\n")
+        write_human_line(stdout, str(message.ts))
     emit_notification_warnings(client, quiet=quiet, stderr=stderr)
 
 
@@ -98,13 +109,13 @@ def emit_created_member(
         write_json(stdout, member_object(member, include_token=True))
         return
     if not quiet:
-        stderr.write(f"created new identity '{member.name}'\n")
+        write_human_line(stderr, f"created new identity '{member.name}'")
         if member.token:
-            stderr.write(f"token: {member.token}\n")
+            write_human_line(stderr, f"token: {member.token}")
     if client.last_candidates:
-        stderr.write("note: you may be one of these:\n")
+        write_human_line(stderr, "note: you may be one of these:")
         for name, reasons in client.last_candidates:
-            stderr.write(f"  {name}  {', '.join(reasons)}\n")
+            write_human_line(stderr, f"  {name}  {', '.join(reasons)}")
 
 
 def emit_notification_warnings(
@@ -118,7 +129,7 @@ def emit_notification_warnings(
     if quiet:
         return
     for warning in client.last_notification_warnings:
-        stderr.write(f"warning: {warning}\n")
+        write_human_line(stderr, f"warning: {warning}")
 
 
 def emit_messages(
@@ -137,24 +148,30 @@ def emit_messages(
     if json_output:
         for message in messages:
             if message.warning:
-                stderr.write(f"warning: {message.warning}\n")
+                write_human_line(stderr, f"warning: {message.warning}")
             write_json(stdout, message_object(message))
         return
     for thread, grouped in _group_messages_by_thread(messages).items():
-        stdout.write(f"{thread_heading(thread, stream=stdout)}\n")
+        write_human_line(stdout, thread_heading(thread, stream=stdout))
         sender_width = max(
             [6]
             + [
-                len(message.from_name)
+                len(_escape_human_text(message.from_name))
                 for message in grouped
                 if message.kind != "notice"
             ]
         )
         for message in grouped:
             if message.warning:
-                stderr.write(f"warning: {message.warning}\n")
-            stdout.write(
-                f"{human_message_row(message, timestamps=timestamps, sender_width=sender_width, stream=stdout)}\n"
+                write_human_line(stderr, f"warning: {message.warning}")
+            write_human_line(
+                stdout,
+                human_message_row(
+                    message,
+                    timestamps=timestamps,
+                    sender_width=sender_width,
+                    stream=stdout,
+                ),
             )
 
 
@@ -176,11 +193,14 @@ def emit_members(
             )
         else:
             persona = f"  {member.persona}" if member.persona else ""
-            stdout.write(f"{member.name}\t{member.kind}\t{member.presence}{persona}\n")
+            write_human_line(
+                stdout,
+                f"{member.name}\t{member.kind}\t{member.presence}{persona}",
+            )
             if member.explain is not None:
-                stdout.write(
-                    json.dumps(member.explain, ensure_ascii=False, sort_keys=True)
-                    + "\n"
+                write_human_line(
+                    stdout,
+                    json.dumps(member.explain, ensure_ascii=False, sort_keys=True),
                 )
 
 
@@ -200,8 +220,9 @@ def emit_threads(
             write_json(stdout, thread_object(thread))
         else:
             label = thread.display_name or thread.name
-            stdout.write(
-                f"{label}  {format_unread_count(thread.unread_count)} unread\n"
+            write_human_line(
+                stdout,
+                f"{label}  {format_unread_count(thread.unread_count)} unread",
             )
 
 
@@ -220,7 +241,7 @@ def emit_notifications(
         return
     for notification in notifications:
         if notification.warning:
-            stderr.write(f"warning: {notification.warning}\n")
+            write_human_line(stderr, f"warning: {notification.warning}")
         if json_output:
             write_json(stdout, notification_object(notification))
         elif notification.type == "mention":
@@ -232,27 +253,33 @@ def emit_notifications(
                 if reply_id is not None
                 else ""
             )
-            stdout.write(
+            write_human_line(
+                stdout,
                 f"{format_message_time(notification.message_ts)} "
                 f"{notification.actor_name} mentioned you in {notification.thread}; "
-                f"inspect: {inspect_action}{reply_action}\n"
+                f"inspect: {inspect_action}{reply_action}",
             )
         elif notification.type == "reply":
             assert notification.message_ts is not None
-            stdout.write(
+            write_human_line(
+                stdout,
                 f"{format_message_time(notification.message_ts)} "
                 f"{notification.actor_name} replied in {notification.thread}; "
-                f"inspect: taut log {notification.thread}\n"
+                f"inspect: taut log {notification.thread}",
             )
         elif notification.type == "dm_started":
             assert notification.message_ts is not None
-            stdout.write(
+            write_human_line(
+                stdout,
                 f"{format_message_time(notification.message_ts)} "
                 f"{notification.actor_name} started a direct message in "
-                f"{notification.thread}; read: taut read\n"
+                f"{notification.thread}; read: taut read",
             )
         else:
-            stdout.write(f"{notification.raw or 'foreign notification'}\n")
+            write_human_line(
+                stdout,
+                notification.raw or "foreign notification",
+            )
 
 
 def emit_watch_item(
@@ -304,7 +331,7 @@ def emit_renamed_thread(
     if json_output:
         write_json(stdout, thread_object(thread))
     else:
-        stdout.write(f"renamed {old_name} to {thread.name}\n")
+        write_human_line(stdout, f"renamed {old_name} to {thread.name}")
 
 
 def message_object(message: Message) -> dict[str, Any]:
@@ -370,6 +397,31 @@ def write_json(stream: TextIO, obj: dict[str, Any]) -> None:
     stream.write(json.dumps(obj, ensure_ascii=False, separators=(",", ":")) + "\n")
 
 
+def write_human_line(stream: TextIO, body: str) -> None:
+    """Escape one complete human record, then append its structural newline."""
+
+    escaped = _escape_human_text(body)
+    stream.write(escaped)
+    stream.write("\n")
+
+
+def preflight_human_output_policy() -> None:
+    """Validate the effective human-output policy before command side effects."""
+
+    _escape_human_text("")
+
+
+def _escape_human_text(body: str) -> str:
+    try:
+        return escape_terminal_text(body)
+    except RuntimeError as exc:
+        raise _TerminalOutputPolicyError(
+            project_config_syntax=(
+                getattr(exc, "_taut_project_config_syntax", False) is True
+            )
+        ) from exc
+
+
 def thread_heading(thread: str, *, stream: TextIO) -> str:
     prefix, rule, _notice = _human_glyphs(stream)
     return f"{prefix} {thread} {rule * 38}"
@@ -387,7 +439,12 @@ def human_message_row(
     if message.kind == "notice":
         _prefix, _rule, notice = _human_glyphs(stream)
         return f"  {id_column}{clock} {notice} {message.text}"
-    return f"  {id_column}{clock} {message.from_name:<{sender_width}}  {message.text}"
+    escaped_sender = _escape_human_text(message.from_name)
+    padding = " " * max(0, sender_width - len(escaped_sender))
+    # Keep the original sender in this intermediate row. ``write_human_line``
+    # scans the complete row once, so generated escapes are never input to a
+    # later policy pass. The preview above exists only to preserve alignment.
+    return f"  {id_column}{clock} {message.from_name}{padding}  {message.text}"
 
 
 def format_message_time(ts: int) -> str:

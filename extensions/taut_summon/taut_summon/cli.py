@@ -26,8 +26,14 @@ import sys
 from collections.abc import Sequence
 from typing import NoReturn
 
+from taut import escape_terminal_text
 from taut.commands import CommandContext, CommandError
-from taut_summon.commands import DATABASE_HELP, STATUS_FAULT_PLANES, StatusFaultPlane
+from taut_summon.commands import (
+    DATABASE_HELP,
+    STATUS_FAULT_PLANES,
+    StatusFaultPlane,
+    _write_human_line,
+)
 from taut_summon.models import (
     NothingSummoned,
     SummonedMember,
@@ -37,14 +43,15 @@ from taut_summon.models import (
 )
 
 _STATUS_FAULT_PLANE_ENV = "TAUT_SUMMON_STATUS_FAULT_PLANE"
+_POLICY_ERROR_MESSAGE = "terminal output policy is unavailable"
 
 
 def _emit_status_fault_plane(plane: StatusFaultPlane, exc: BaseException) -> None:
     if not os.environ.get(_STATUS_FAULT_PLANE_ENV):
         return
-    print(
+    _write_human_line(
+        sys.stderr,
         f"status_fault_plane={plane} error={type(exc).__name__}: {exc}",
-        file=sys.stderr,
     )
 
 
@@ -59,7 +66,8 @@ class _SummonArgumentParser(argparse.ArgumentParser):
 
     def error(self, message: str) -> NoReturn:
         self.print_usage(sys.stderr)
-        self.exit(1, f"{self.prog}: error: {message}\n")
+        safe_message = escape_terminal_text(message)
+        self.exit(1, f"{self.prog}: error: {safe_message}\n")
 
 
 class _SummonRootArgumentParser(_SummonArgumentParser):
@@ -223,12 +231,15 @@ def _print_operation_error(exc: SummonOperationError, args: argparse.Namespace) 
     plane = exc.fault_plane
     if plane in STATUS_FAULT_PLANES:
         _emit_status_fault_plane(plane, exc)
-    print(f"{exc}{_db_suffix(args)}", file=sys.stderr)
+    _write_human_line(sys.stderr, f"{exc}{_db_suffix(args)}")
 
 
 def _print_live_member(member: SummonedMember) -> None:
     session = member.provider_session_id or "-"
-    print(f"{member.name}\t{member.provider}\tlive\tsession={session}")
+    _write_human_line(
+        sys.stdout,
+        f"{member.name}\t{member.provider}\tlive\tsession={session}",
+    )
 
 
 def _print_status(status: SummonStatus) -> None:
@@ -241,18 +252,30 @@ def _print_status(status: SummonStatus) -> None:
     )
     extra = "\t".join(f"{key}={value}" for key, value in sorted(status.details.items()))
     suffix = f"\t{extra}" if extra else ""
-    print(
+    _write_human_line(
+        sys.stdout,
         f"{status.name}\tprovider={status.provider}\tdriver={status.driver}\t"
-        f"session={session}\tthreads={status.thread_count}\tlag={lag_text}{suffix}"
+        f"session={session}\tthreads={status.thread_count}\tlag={lag_text}{suffix}",
     )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    try:
+        return _main(argv)
+    except RuntimeError as exc:
+        if str(exc) != _POLICY_ERROR_MESSAGE:
+            raise
+        sys.stderr.write(f"{_POLICY_ERROR_MESSAGE}\n")
+        return 1
+
+
+def _main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(list(argv) if argv is not None else sys.argv[1:])
     if not hasattr(args, "func") and not hasattr(args, "command_factory"):
         parser.print_help(sys.stderr)
         return 1
+    escape_terminal_text("")
     if hasattr(args, "func"):
         return int(args.func(args))
     context = CommandContext(
@@ -269,7 +292,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         return int(args.command_factory().run(context, args))
     except CommandError as exc:
-        context.stderr.write(f"{exc}\n")
+        _write_human_line(context.stderr, str(exc))
         return exc.exit_code
     finally:
         context.close()

@@ -250,7 +250,12 @@ class ThreadsMixin(_ClientBase):
         membership: MembershipRow | None,
     ) -> Thread:
         queue = self.queue(row["name"])
-        unread_count = self._unread_count(queue, membership)
+        latest_pending_ts = self._last_message_ts(queue)
+        unread_count = self._unread_count(
+            queue,
+            membership,
+            latest_pending_ts=latest_pending_ts,
+        )
         raw_members = row["meta"].get("members")
         members: tuple[str, ...] = ()
         if isinstance(raw_members, list) and all(
@@ -278,7 +283,7 @@ class ThreadsMixin(_ClientBase):
             kind=row["kind"],
             parent=row["parent"],
             unread=unread_count > 0,
-            last_ts=self._last_message_ts(queue),
+            last_ts=latest_pending_ts,
             unread_count=unread_count,
             members=members,
             display_name=display_name,
@@ -292,9 +297,14 @@ class ThreadsMixin(_ClientBase):
         queue: Queue,
         membership: MembershipRow | None,
         *,
+        latest_pending_ts: int | None,
         cap: int = 1000,
     ) -> int:
-        if membership is None:
+        if (
+            membership is None
+            or latest_pending_ts is None
+            or latest_pending_ts <= membership["last_seen_ts"]
+        ):
             return 0
         rows = queue.peek_many(
             cap,

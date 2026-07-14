@@ -62,6 +62,113 @@ class RecordingNativeWaiter:
         self._delegate.close()
 
 
+def test_taut_watcher_polls_and_refreshes_membership_without_native_waiter(
+    taut_pg_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(taut_pg_project)
+    TautClient.init()
+    van = TautClient(as_name="van")
+    bob = TautClient(as_name="bob")
+    van.join("home")
+    bob.join("home")
+    try:
+        van.read("home")
+    except EmptyResultError:
+        pass
+
+    waiter_factory_observed = threading.Event()
+
+    def no_native_waiter(
+        _queues: Sequence[Queue],
+        *,
+        stop_event: threading.Event,
+    ) -> None:
+        del stop_event
+        waiter_factory_observed.set()
+        return None
+
+    monkeypatch.setattr(
+        watcher_module,
+        "create_activity_waiter_for_queues",
+        no_native_waiter,
+    )
+
+    seen: list[tuple[str, str, int]] = []
+    observation_lock = threading.Lock()
+    drive_errors: list[BaseException] = []
+    ready = threading.Event()
+
+    def record(item: Message | Notification) -> None:
+        if not isinstance(item, Message):
+            return
+        with observation_lock:
+            seen.append((item.thread, item.text, item.ts))
+
+    def record_drive_error(args: threading.ExceptHookArgs) -> None:
+        if args.exc_value is None:
+            drive_errors.append(RuntimeError("drive thread exited without exception"))
+        else:
+            drive_errors.append(args.exc_value)
+
+    def new_room_is_read() -> bool:
+        return any(
+            row.name == "new-room" and not row.unread
+            for row in van.list_threads(all_threads=True)
+        )
+
+    def wait_while_drive_is_healthy(predicate: Callable[[], bool]) -> None:
+        def check() -> bool:
+            if drive_errors:
+                raise AssertionError("watcher drive thread failed") from drive_errors[0]
+            return predicate()
+
+        _wait_until(check)
+
+    monkeypatch.setattr(threading, "excepthook", record_drive_error)
+
+    watcher = TautWatcher(
+        _watch_runtime_for_client(van),
+        van.whoami().member_id,
+        record,
+        membership_refresh_interval=0.05,
+    )
+    watcher.notify_ready_after_initial_drain(ready)
+    thread = watcher.start()
+    try:
+        assert ready.wait(timeout=5.0), f"drive errors: {drive_errors!r}"
+        assert waiter_factory_observed.wait(timeout=5.0), (
+            f"drive errors: {drive_errors!r}"
+        )
+
+        van.join("new-room")
+        bob.join("new-room")
+        wait_while_drive_is_healthy(lambda: "new-room" in watcher.list_queues())
+
+        written = bob.say("new-room", "polled delivery")
+        expected = (written.thread, written.text, written.ts)
+
+        def delivery_seen() -> bool:
+            with observation_lock:
+                return expected in seen
+
+        wait_while_drive_is_healthy(delivery_seen)
+        wait_while_drive_is_healthy(new_room_is_read)
+        with pytest.raises(EmptyResultError):
+            van.read("new-room")
+        with observation_lock:
+            assert seen.count(expected) == 1
+        assert thread.is_alive()
+    finally:
+        watcher.stop()
+        thread.join(timeout=5.0)
+        van.close()
+        bob.close()
+
+    assert not thread.is_alive()
+    assert drive_errors == []
+
+
 def test_taut_watcher_native_waiter_rebinds_on_membership_topology_change(
     taut_pg_project: Path,
     monkeypatch: pytest.MonkeyPatch,

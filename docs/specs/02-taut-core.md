@@ -1,6 +1,6 @@
 # Taut Core Specification
 
-Status: Proposed
+Status: Active
 
 Taut is private, no-config chat for the processes that already share your
 machine: you, your agents, and anything else that can run a CLI. It is built
@@ -57,11 +57,12 @@ Out of scope as non-goals (not deferred ambiguity):
 ## 2. Mental Model [TAUT-2]
 
 - One file by default. `.taut.db` is a standard SimpleBroker database plus
-  taut-owned sidecar tables. There is no other durable state in the SQLite
-  path: no config file, no state directory, no lock files. (SQLite WAL
-  companions `.taut.db-wal` and `.taut.db-shm` are transient and managed by
-  SQLite.) Under `taut-pg`, `.taut.toml` selects a Postgres target and the same
-  sidecar tables live in that configured schema.
+  taut-owned sidecar tables. No project configuration file is required for the
+  default SQLite path. When present, `.taut.toml` is configuration rather than
+  durable state. Taut creates no state directory or lock files. SQLite-managed
+  `.taut.db-wal` and `.taut.db-shm` companions are transient. Under `taut-pg`,
+  `.taut.toml` selects a Postgres target and the same sidecar tables live in
+  that configured schema.
 - A thread is a queue. A **channel** is a top-level thread (`general`). A
   **sub-thread** hangs off one message in a channel and is itself a queue
   (`general.1837025672140161024`, named by the origin message id).
@@ -106,8 +107,20 @@ Taut resolves its database the way git resolves a repository:
    `No taut database found. Run 'taut init' to create one.` Only
    `taut init` creates a database.
 
-Implementation contract: taut owns no search logic of its own. The upward
-search is one call: `simplebroker.resolve_broker_target(cwd, config=cfg)`,
+`.taut.toml` is the only project file Taut reads as project configuration.
+Default SQLite discovery does not require it; selecting Postgres does. When
+step 3 discovers `.taut.toml`, that file is authoritative for storage and must
+contain `version`, `backend`, and `target`, including when `backend = "sqlite"`.
+It may also contain the Taut-owned `[terminal_text]` settings defined by
+[TAUT-6.4]. Taut does not inspect `pyproject.toml`, `.broker.toml`, or any other
+project file for Taut settings, and does not combine project settings from
+multiple project files. The presentation-only case described by [TAUT-6.4]
+does not make a settings-only `.taut.toml` a valid step-3 storage
+configuration.
+
+Implementation contract: taut owns no backend-target search logic of its own.
+The upward storage search is one call:
+`simplebroker.resolve_broker_target(cwd, config=cfg)`,
 which returns the discovered target or `None` (→ the `taut init` error).
 Plain `Queue(name, config=cfg)` does **not** search upward — it resolves
 the current directory and would auto-create a database there, so the
@@ -159,7 +172,10 @@ forward-compatibility posture SimpleBroker's project-config loader applies
 and that notification consumers apply to unknown payload fields
 ([IAN-7.2]). A malformed file (invalid TOML) is a loud error naming the
 file; an unrecognized key is not. Tools must not depend on unknown keys
-being diagnosed.
+being diagnosed. Taut additionally owns the optional `[terminal_text]`
+presentation table defined by [TAUT-6.4]. SimpleBroker ignores that table.
+Its separate presentation lookup does not participate in backend-target
+selection.
 
 ### [TAUT-3.3] Sidecar schema
 
@@ -437,9 +453,83 @@ to a queue. Foreign bodies must never crash or stall any taut surface.
 ### [TAUT-6.4] Limits
 
 Body size and content limits are SimpleBroker's (10 MB default). Taut adds
-no limit of its own; `text` is arbitrary UTF-8 including newlines and
-terminal control characters — escaping at render time is the renderer's
-job, and `--json` output is the safe path for machine consumers.
+no storage limit of its own; `text` is arbitrary UTF-8 including newlines and
+terminal control characters. Storage, Python API objects, and `--json` output
+preserve that exact content.
+
+Human-readable terminal output is a separate presentation boundary. By
+default, each Taut-owned dynamic text field is passed through the public
+`taut.escape_terminal_text` function before it is composed with trusted
+structural formatting. Renderer-owned line endings are appended only after
+the dynamic field or single-line record body is escaped. The function loads
+its default regex list from the packaged `taut/defaults.toml`. The shipped
+policy selects all C0 controls, DEL, and all C1 controls and renders every
+selected code point as a visible printable-ASCII escape. This includes
+content LF, ESC, CSI/OSC introducers, BEL, carriage return, backspace, tab,
+and their C1 forms. Selected BEL, backspace, tab, LF, vertical tab, form feed,
+and carriage return use `\a`, `\b`, `\t`, `\n`, `\v`, `\f`, and `\r`;
+other selected code points use `\xhh` through U+00FF, `\uhhhh` through
+U+FFFF, and `\Uhhhhhhhh` above U+FFFF, with lowercase hexadecimal digits.
+
+With its default `inherit_defaults=True`, the public function discovers the
+nearest `.taut.toml` from the resolved current working directory through the
+filesystem root. `.taut.db`, `.broker.toml`, backend selectors, and `BROKER_*`
+project-path variables do not define or relocate this presentation policy.
+`--db`, `TAUT_DB`, and API `db_path=` select storage independently and do not
+suppress the current working directory's terminal policy. A normal
+project-resolved command still needs a complete SimpleBroker project config;
+a `[terminal_text]` table alone does not make a valid storage config.
+
+The optional project schema is:
+
+```toml
+[terminal_text]
+inherit_defaults = true
+escape_patterns = []
+```
+
+An absent section means packaged defaults. In a present section, omitted
+`inherit_defaults` defaults to `true`, omitted `escape_patterns` defaults to an
+empty list, and unknown keys are ignored. With `true`, project patterns append
+to the packaged list. With `false`, project patterns replace it; an empty
+replacement disables filtering. Project syntax, I/O, type, regex-compilation,
+and data-dependent empty-match failures raise the fixed policy `RuntimeError`.
+Policy discovery is repeated on each inherited call; parsed project policy is
+cached by bounded file-identity and modification metadata, so edits, deletion,
+and a newly created nearer config take effect on the next call.
+
+Public `additional_patterns` append after the effective project policy.
+Passing `inherit_defaults=False` is an explicit API-level replacement: it
+bypasses current-directory discovery and packaged-resource access, and applies
+only `additional_patterns`. These are trusted presentation-policy inputs.
+Every regex operates on the original input; overlapping match spans are
+combined and generated escape text is not filtered again. An invalid explicit
+regex or an explicit matcher that yields an empty span for the supplied input
+raises `ValueError`. A bare string passed as the pattern iterable, or any
+non-string pattern element, raises `TypeError`. A missing, malformed,
+wrong-shaped, or invalid-regex packaged policy, or an invalid discovered
+project policy, raises `RuntimeError("terminal output policy is unavailable")`;
+Taut-owned renderers emit that fixed printable-ASCII diagnostic without
+recursively calling the failed policy or silently falling back to raw output.
+One core-CLI compatibility case preserves [TAUT-3.2]'s existing malformed-file
+contract with the equally static diagnostic
+`invalid .taut.toml: terminal output policy is unavailable`. It names only the
+fixed config filename, never attacker-controlled path or parser text, and does
+not call the failed helper again. The public helper still raises the fixed
+`RuntimeError` above.
+
+This is a defense-in-depth output-safety control for accidentally relayed
+untrusted content. It does not authenticate participants, validate message
+meaning, prevent prompt injection, or change the [TAUT-9] trust boundary.
+`--json` remains the machine-consumer path and is never passed through the
+human display transform. Taut-owned command text, diagnostics, and
+non-interactive first-party extension logging use the transform. An explicit
+Summon terminal lease and its raw PTY byte bridge are exempt: attached
+terminal applications retain byte-transparent terminal semantics and may
+emit controls by design. The temporary previous-version Summon compatibility
+bridge can escape non-LF controls in redirected Python text, but it treats
+every LF already emitted by legacy code as a structural line terminator
+because the formatted stream no longer exposes content-field boundaries.
 
 ## 7. Read Model [TAUT-7]
 
@@ -630,7 +720,8 @@ reachable through one public client method with the same semantics (the
 SimpleBroker/Weft layering rule: CLI and library share one operational
 model). Public exports from `taut`: `TautClient`, `TautWatcher`,
 `Message`, `Thread`, `Member`, the exception hierarchy rooted at
-`TautError`, and `__version__`. The package ships typed (`py.typed`).
+`TautError`, `escape_terminal_text`, and `__version__`. The package ships typed
+(`py.typed`).
 
 `TautClient.set_persona(persona: str | None) -> Member` resolves the client's
 selected identity, raises `IdentityError` when none resolves, and atomically
@@ -661,13 +752,30 @@ Accessing a documented public export loads its owner on first use while
 preserving `__all__`, `py.typed`, static typing, and ordinary `AttributeError`
 for unknown names.
 
+`taut.escape_terminal_text(text: str, *, additional_patterns:
+Iterable[str] = (), inherit_defaults: bool = True) -> str` is the typed public
+terminal-display utility for embedding callers and extensions. Its owner is a
+lightweight core module, not `TautClient`, because client/domain values remain
+exact. With inheritance enabled, the effective policy is packaged defaults,
+then the nearest current-directory project's `[terminal_text]` additions or
+replacement, then `additional_patterns`. Setting `inherit_defaults=False`
+bypasses both ambient project policy and packaged defaults; an empty explicit
+replacement is pass-through.
+Accessing the lazy root export may load only standard-library configuration and
+regex support; it must not import client, state, watcher, command-discovery,
+Summon, PTY, or TUI implementations. Its public failures are the `TypeError`,
+`ValueError`, and fixed-message `RuntimeError` cases defined by [TAUT-6.4].
+
 ### [TAUT-8.4] Watcher
 
 A message-specific handler failure leaves the cursor in place and uses the
 three-consecutive-failure poison rule. A terminal delivery failure, including a
-closed CLI output pipe, is not a poison message: it stops the watcher after the
+closed CLI output pipe or a human-output policy failure discovered while
+rendering a live item, is not a poison message: it stops the watcher after the
 first failed delivery, leaves the chat cursor unchanged, and emits no traceback.
-CLI watch flushes each rendered record before successful handler return.
+A policy failure exits the CLI with status 1 and the fixed [TAUT-6.4] bootstrap
+diagnostic. CLI watch flushes each rendered record before successful handler
+return.
 
 `TautWatcher` subclasses a taut-vendored copy of Weft's
 `MultiQueueWatcher` (copied, attributed; taut must not depend on weft).
@@ -889,6 +997,15 @@ help, usage, and registry diagnostics use the same dispatcher streams.
 Extension-specific domain APIs remain on their owning package; the context is
 not a service locator.
 
+Core and first-party extension adapters pass dynamic human-output fields or
+single-line record bodies through `taut.escape_terminal_text` before composing
+trusted multi-line structure and appending structural line endings.
+Non-interactive first-party extension logs use the same utility. Third-party
+extensions use the public function when they want Taut's default output-safety
+policy. JSON records are serialized from the original domain values and never
+from escaped display text. Raw PTY byte transport is not a command text
+renderer and remains exempt under [TAUT-6.4].
+
 Imports and initialization are lazy by subsystem. `taut --version` does not
 enumerate entry points. `taut --help` may load lightweight manifests but no
 command implementation. `taut COMMAND --help` may load its parser adapter but
@@ -924,6 +1041,14 @@ plainly rather than imply otherwise:
   membership.
 - Threat model in one line: taut assumes every participant could already
   do worse than lie in chat, because they run inside your trust domain.
+
+Terminal escaping under [TAUT-6.4] is a safety default inside this trust
+model, not a stronger trust boundary. It reduces accidental effects when a
+trusted participant relays untrusted content. It does not constrain a
+participant that can edit Taut storage, project files, installed code, or the
+caller-selected rendering policy. `.taut.toml` is trusted local policy: it may
+disable escaping or install an expensive regular expression. Safe-by-default
+behavior therefore assumes trusted project configuration has not opted out.
 
 When Summon is used, authority is wider than permission to converse: every
 principal that can write the configured Taut storage can supply user-role input
@@ -1409,13 +1534,24 @@ verification.
 ## Implementation Mapping
 
 - `docs/implementation/04-taut-architecture.md` explains the core runtime and
-  dispatcher boundaries.
+  dispatcher boundaries, including [TAUT-6.4]'s packaged/project policy owner,
+  exact-data split, watcher preflight, and bootstrap diagnostic.
 - `docs/implementation/06-command-extensions.md` explains static versus
   installed registration, registry selection, lazy factories, extension
-  packaging, and rich-host composition.
+  packaging, rich-host composition, and the [TAUT-8.3]/[TAUT-8.6] public
+  terminal-text helper contract for extension renderers.
 
 ## Related Plans
 
+- `docs/plans/2026-07-14-smaller-quality-followups-plan.md` — real
+  PostgreSQL polling-fallback coverage, bounded client state-machine coverage,
+  and a measured caught-up unread-list fast path that preserves [TAUT-7.3].
+- `docs/plans/2026-07-14-single-project-config-source-spec-plan.md` — makes
+  `.taut.toml` the explicit sole project file for Taut settings and rejects
+  alternate-manifest scanning or cross-file settings merging.
+- `docs/plans/2026-07-14-terminal-output-safety-plan.md` — configurable safe
+  terminal-text defaults, one public core/extension escape utility, exact
+  storage and JSON preservation, and explicit raw-PTY/trust-model boundaries.
 - `docs/plans/2026-07-14-universal-release-gates-plan.md` — one universal
   default local release boundary, explicit human override, and root-plus-PG
   exact-SHA evidence for every package tag.

@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.6.4 - 2026-07-14
+
+- Added the public `taut.escape_terminal_text` display transform and packaged
+  `taut/defaults.toml` policy. The default policy renders C0, DEL, and C1
+  controls visibly while humans through `.taut.toml` and trusted callers
+  through the public function can extend, replace, or disable it.
+- Routed core and first-party Summon human text through the shared policy,
+  including command diagnostics and non-interactive logs. Storage, Python
+  models, NDJSON, and explicit raw PTY transport remain byte-for-byte exact.
+- Reduced thread-list work by reusing the latest pending timestamp and skipping
+  message scans when it proves that a membership has no unread messages.
+- Expanded deterministic coverage for PostgreSQL watcher fallback, client
+  membership and cursor state transitions, terminal-control rendering, and
+  installed core/Summon wheel compatibility.
+- Documented terminal escaping as a safe-default relay control within Taut's
+  stated trust domain, not as an authentication or sandbox boundary, and raised
+  the paired Summon core floor to 0.6.4.
+
 ## 0.6.3 - 2026-07-14
 
 - Made every release target run one universal root, PostgreSQL, and Summon
@@ -22,7 +40,18 @@
   tag family and version.
 
 ## 0.6.1 - 2026-07-13
-- Update to dependencies; bugfix on taut-summon
+
+- Fixed the Summon STOP/release race where an expected STOP-interrupted PTY
+  orientation write was misclassified as a teardown failure. STOP now records
+  teardown and ledger-release outcomes separately, preserving clean
+  same-process stop and restart without lengthening the timeout.
+- Made release metadata preparation deterministic and package-owned, including
+  version and dependency-floor copies, README examples, the retained Summon
+  lock, a checked local preparation commit, and fresh state checks before
+  remote release actions.
+- Raised the core SimpleBroker floor to 5.3.2; set both extension `taut` floors
+  and the root Summon development floor to 0.6.1; reconciled the retained
+  Summon lock.
 
 ## 0.6.0 - 2026-07-13
 

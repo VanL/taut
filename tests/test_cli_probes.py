@@ -80,7 +80,7 @@ def test_probe_invalid_project_toml_names_the_file(tmp_path: Path) -> None:
         rc, out, err = run_cli(*args, cwd=tmp_path)
 
         _assert_clean_failure(rc, out, err, expected_rc=1)
-        assert ".taut.toml" in err
+        assert err == ("invalid .taut.toml: terminal output policy is unavailable")
 
 
 def test_probe_unknown_project_toml_keys_are_silently_ignored(

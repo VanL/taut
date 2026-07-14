@@ -3,6 +3,13 @@
 Startup context is the Golden Rules plus entries after the watermark in
 `docs/coalescing.md`; the rest of this ledger is searchable history.
 
+- 2026-07-14: A renderer failure inside a watcher callback can be mistaken for
+  poison input and retried or cursor-advanced. Preflight install-owned display
+  policy before entering a deferred callback, and keep the fixed bootstrap
+  diagnostic outside the failed renderer. Logging formatters need the same
+  internal bootstrap handling because `logging.raiseExceptions` can otherwise
+  emit its own unsafe traceback.
+
 Use this file for durable, project-level lessons that should influence future
 sessions.
 
@@ -645,6 +652,24 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   can still produce a skipped release gate if the test first sees `CI` or an
   inherited disable and never enters strict setup. Release environments must
   force both the enable flag and strict mode, with an executable test for each.
+
+- 2026-07-14: “Configurable” must name who can configure the behavior. A public
+  Python argument serves embedders and extensions but not a human using the
+  CLI. For a user-facing safety default, define the operator config surface,
+  precedence, discovery root, freshness, and failure behavior separately from
+  the library override.
+
+- 2026-07-14: Gate a performance fast path on deterministic operation
+  selection over a real backend, not a wall-clock ratio. A call-through counter
+  can prove that caught-up rows skip the expensive public operation while real
+  storage still supplies every result; a manual median/IQR benchmark then shows
+  materiality and residual cost without making host timing part of CI.
+
+- 2026-07-14: Backend-coverage audits must follow test markers through their
+  runner, not infer scope from file names or local defaults. A `shared` module
+  can already exercise identity, CLI, and watcher behavior under PostgreSQL
+  even when ordinary root pytest uses SQLite; identify the narrower missing
+  capability path before proposing duplicate suites.
 
 ## Starter Lessons
 

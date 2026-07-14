@@ -26,6 +26,7 @@ from taut._exceptions import (
 
 if TYPE_CHECKING:
     from taut.client import Member, Message, Notification, TautClient, Thread
+    from taut.terminal import escape_terminal_text
     from taut.watcher import TautWatcher
 
 _LAZY_EXPORTS = {
@@ -35,6 +36,7 @@ _LAZY_EXPORTS = {
     "TautClient": ("taut.client", "TautClient"),
     "TautWatcher": ("taut.watcher", "TautWatcher"),
     "Thread": ("taut.client", "Thread"),
+    "escape_terminal_text": ("taut.terminal", "escape_terminal_text"),
 }
 
 __all__ = [
@@ -56,6 +58,7 @@ __all__ = [
     "ThreadNameError",
     "TokenError",
     "__version__",
+    "escape_terminal_text",
 ]
 
 

@@ -90,6 +90,10 @@ import sys
 import time
 from typing import Any
 
+from taut import escape_terminal_text
+
+_POLICY_ERROR_MESSAGE = "terminal output policy is unavailable"
+
 
 def _emit(payload: dict[str, Any]) -> None:
     print(json.dumps(payload, separators=(",", ":")), flush=True)
@@ -107,6 +111,14 @@ def _record(payload: dict[str, Any]) -> None:
 
 def _emit_raw(line: str) -> None:
     print(line, flush=True)
+
+
+def _write_stderr(body: str) -> None:
+    try:
+        rendered = escape_terminal_text(body)
+    except RuntimeError:
+        rendered = _POLICY_ERROR_MESSAGE
+    print(rendered, file=sys.stderr, flush=True)
 
 
 def _emit_init(session_id: str) -> None:
@@ -246,11 +258,7 @@ def _exec_taut(spec: Any) -> None:
             env=os.environ.copy(),
         )
         if result.returncode != 0:
-            print(
-                f"scripted provider: taut exited {result.returncode}",
-                file=sys.stderr,
-                flush=True,
-            )
+            _write_stderr(f"scripted provider: taut exited {result.returncode}")
         if interval and i + 1 < count:
             time.sleep(interval)
 
@@ -259,7 +267,7 @@ def main() -> int:
     try:
         scenario = _load_scenario()
     except (OSError, ValueError, json.JSONDecodeError) as exc:
-        print(f"scripted provider: bad scenario: {exc}", file=sys.stderr)
+        _write_stderr(f"scripted provider: bad scenario: {exc}")
         return 2
 
     session_id = (
@@ -307,7 +315,7 @@ def main() -> int:
     except KeyboardInterrupt:
         return 130
     except (ValueError, json.JSONDecodeError) as exc:
-        print(f"scripted provider: protocol error: {exc}", file=sys.stderr)
+        _write_stderr(f"scripted provider: protocol error: {exc}")
         return 2
 
 

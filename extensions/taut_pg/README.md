@@ -25,8 +25,8 @@ GitHub Release into the same environment. `taut-pg` uses its own
 version:
 
 ```bash
-pipx install "git+https://github.com/VanL/taut.git@v0.6.3"
-pipx inject taut ./taut_pg-0.6.3-py3-none-any.whl
+pipx install "git+https://github.com/VanL/taut.git@v0.6.4"
+pipx inject taut ./taut_pg-0.6.4-py3-none-any.whl
 ```
 
 Do not use a PyPI install command for `taut-pg` until the project documents
@@ -44,6 +44,13 @@ target = "postgresql://postgres:postgres@127.0.0.1:54329/taut_test"
 [backend_options]
 schema = "taut_project"
 ```
+
+The credentials above are for a disposable local test database. A real target
+DSN may contain a password and must be treated as a secret. If `.taut.toml`
+contains one, add the file to your project's `.gitignore`, do not commit
+production credentials, and restrict it to the owner on POSIX systems (for
+example, `chmod 600 .taut.toml`). Taut does not interpolate environment
+variables in this file.
 
 Then initialize Taut normally:
 

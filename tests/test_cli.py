@@ -41,6 +41,35 @@ def _notice_pattern(text_pattern: str, *, timestamps: bool = False) -> str:
     return rf"  {id_pattern}\d\d:\d\d (?:·|-) {text_pattern}"
 
 
+def _assert_only_structural_newlines(text: str) -> None:
+    assert all(
+        character == "\n"
+        or not (ord(character) < 0x20 or 0x7F <= ord(character) <= 0x9F)
+        for character in text
+    )
+
+
+def _write_terminal_project_config(
+    root: Path,
+    *,
+    escape_patterns: tuple[str, ...],
+    inherit_defaults: bool | None = None,
+    target: str = ".taut.db",
+) -> None:
+    lines = [
+        "version = 1",
+        'backend = "sqlite"',
+        f"target = {json.dumps(target)}",
+        "",
+        "[terminal_text]",
+    ]
+    if inherit_defaults is not None:
+        lines.append(f"inherit_defaults = {str(inherit_defaults).lower()}")
+    rendered_patterns = ", ".join(json.dumps(item) for item in escape_patterns)
+    lines.extend((f"escape_patterns = [{rendered_patterns}]", ""))
+    (root / ".taut.toml").write_text("\n".join(lines), encoding="utf-8")
+
+
 def test_cli_human_glyphs_fall_back_for_legacy_stdout_encoding() -> None:
     class C1252Stream:
         encoding = "cp1252"
@@ -116,6 +145,498 @@ def test_cli_human_log_groups_messages_by_thread(tmp_path: Path) -> None:
     assert re.fullmatch(_notice_pattern(r"van created #general"), lines[1])
     assert re.fullmatch(_notice_pattern(r"claude joined"), lines[2])
     assert re.fullmatch(r"  \d\d:\d\d claude  yes\. what broke\?", lines[3])
+
+
+def test_cli_human_message_controls_are_visible_while_json_stays_exact(
+    tmp_path: Path,
+) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "bob", "join", "general", cwd=tmp_path)[0] == 0
+    probe = "line1\nline2\x1b]52;c;Y2xpcGJvYXJk\x07\x9b[31m\r\b\tend"
+    escaped = r"line1\nline2\x1b]52;c;Y2xpcGJvYXJk\a\x9b[31m\r\b\tend"
+    assert run_cli("--as", "van", "say", "general", probe, cwd=tmp_path)[0] == 0
+
+    rc, human, err = run_cli("log", "general", cwd=tmp_path)
+    assert rc == 0, err
+    assert escaped in human
+    _assert_only_structural_newlines(human)
+    assert sum(escaped in line for line in human.splitlines()) == 1
+
+    rc, unread, err = run_cli("--as", "bob", "read", "general", cwd=tmp_path)
+    assert rc == 0, err
+    assert escaped in unread
+    _assert_only_structural_newlines(unread)
+
+    rc, encoded, err = run_cli("log", "general", "--json", cwd=tmp_path)
+    assert rc == 0, err
+    assert probe in [json.loads(line)["text"] for line in encoded.splitlines()]
+
+
+def test_cli_forged_sender_and_foreign_body_are_safe_only_in_human_output(
+    tmp_path: Path,
+) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    member = json.loads(run_cli("--as", "van", "whoami", "--json", cwd=tmp_path)[1])
+    sender = "forged\x1b]0;title\x07\t"
+    body = "body\nnext\x9b[31m\r\b"
+    foreign = "foreign\x1b]52;c;Y2xpcGJvYXJk\x07\nrow"
+    queue = Queue("general", db_path=str(tmp_path / ".taut.db"))
+    try:
+        queue.write(
+            encode_envelope(
+                from_id=member["member_id"],
+                from_name=sender,
+                kind="message",
+                text=body,
+            )
+        )
+        queue.write(foreign)
+    finally:
+        queue.close()
+
+    rc, human, err = run_cli("log", "general", cwd=tmp_path)
+    assert rc == 0, err
+    assert r"forged\x1b]0;title\a\t" in human
+    assert r"body\nnext\x9b[31m\r\b" in human
+    assert r"foreign\x1b]52;c;Y2xpcGJvYXJk\a\nrow" in human
+    _assert_only_structural_newlines(human + "\n" + err)
+
+    rc, encoded, err = run_cli("log", "general", "--json", cwd=tmp_path)
+    assert rc == 0, err
+    records = [json.loads(line) for line in encoded.splitlines()]
+    forged = next(record for record in records if record["from"] == sender)
+    raw = next(record for record in records if record["kind"] == "foreign")
+    assert forged["text"] == body
+    assert raw["text"] == foreign
+
+
+def test_cli_human_message_escaping_does_not_rescan_generated_escapes(
+    tmp_path: Path,
+) -> None:
+    _write_terminal_project_config(
+        tmp_path,
+        escape_patterns=(r"\\",),
+    )
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    member = json.loads(run_cli("--as", "van", "whoami", "--json", cwd=tmp_path)[1])
+    queue = Queue("general", db_path=str(tmp_path / ".taut.db"))
+    try:
+        queue.write(
+            encode_envelope(
+                from_id=member["member_id"],
+                from_name="evil\x1b",
+                kind="message",
+                text=r"literal\slash",
+            )
+        )
+    finally:
+        queue.close()
+
+    rc, human, err = run_cli("log", "general", cwd=tmp_path)
+
+    assert rc == 0, err
+    assert r"evil\x1b" in human
+    assert r"evil\x5cx1b" not in human
+    assert r"literal\x5cslash" in human
+
+
+def test_cli_notification_actor_thread_and_foreign_raw_are_human_safe_json_exact(
+    tmp_path: Path,
+) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "bob", "join", "general", cwd=tmp_path)[0] == 0
+    bob = json.loads(run_cli("--as", "bob", "whoami", "--json", cwd=tmp_path)[1])
+    actor = "actor\x1b]0;title\x07"
+    thread = "general\x9b[31m\nrow"
+    foreign = "foreign notice\x1b]52;c;Y2xpcGJvYXJk\x07\r\t"
+    known = json.dumps(
+        {
+            "type": "reply",
+            "to_id": bob["member_id"],
+            "actor_id": "m_" + "a" * 26,
+            "actor_name": actor,
+            "thread": thread,
+            "message_ts": 1_785_000_000_000_000_001,
+        }
+    )
+    inbox_name = addressing.notification_queue_name(bob["member_id"])
+
+    def seed() -> None:
+        inbox = Queue(inbox_name, db_path=str(tmp_path / ".taut.db"))
+        try:
+            inbox.write(known)
+            inbox.write(foreign)
+        finally:
+            inbox.close()
+
+    seed()
+    rc, human, err = run_cli("--as", "bob", "inbox", cwd=tmp_path)
+    assert rc == 0, err
+    assert r"actor\x1b]0;title\a" in human
+    assert r"general\x9b[31m\nrow" in human
+    assert r"foreign notice\x1b]52;c;Y2xpcGJvYXJk\a\r\t" in human
+    _assert_only_structural_newlines(human + "\n" + err)
+
+    seed()
+    rc, encoded, err = run_cli("--as", "bob", "inbox", "--json", cwd=tmp_path)
+    assert rc == 0, err
+    records = [json.loads(line) for line in encoded.splitlines()]
+    reply = next(record for record in records if record["type"] == "reply")
+    raw = next(record for record in records if record["type"] == "foreign")
+    assert reply["actor_name"] == actor
+    assert reply["thread"] == thread
+    assert raw["raw"] == foreign
+
+
+def test_cli_persona_and_database_target_are_escaped_only_for_humans(
+    tmp_path: Path,
+) -> None:
+    controlled = tmp_path / "db\x1b]0;title\x07\t.sqlite"
+    persona = "builder\noperator\x1b]52;c;Y2xpcGJvYXJk\x07\x9b"
+
+    rc, human, err = run_cli("--db", str(controlled), "init", cwd=tmp_path)
+    assert rc == 0, err
+    assert r"db\x1b]0;title\a\t.sqlite" in human
+    _assert_only_structural_newlines(human)
+
+    assert (
+        run_cli(
+            "--db",
+            str(controlled),
+            "--as",
+            "van",
+            "join",
+            "general",
+            "--persona",
+            persona,
+            cwd=tmp_path,
+        )[0]
+        == 0
+    )
+    rc, human, err = run_cli(
+        "--db", str(controlled), "--as", "van", "whoami", cwd=tmp_path
+    )
+    assert rc == 0, err
+    assert r"builder\noperator\x1b]52;c;Y2xpcGJvYXJk\a\x9b" in human
+    _assert_only_structural_newlines(human)
+
+    rc, encoded, err = run_cli(
+        "--db",
+        str(controlled),
+        "--as",
+        "van",
+        "whoami",
+        "--json",
+        cwd=tmp_path,
+    )
+    assert rc == 0, err
+    assert json.loads(encoded)["persona"] == persona
+
+
+def test_cli_human_output_inherits_project_terminal_policy(
+    tmp_path: Path,
+) -> None:
+    persona = "MARK\x1b"
+    _write_terminal_project_config(
+        tmp_path,
+        escape_patterns=("MARK",),
+    )
+
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert (
+        run_cli(
+            "--as",
+            "van",
+            "join",
+            "general",
+            "--persona",
+            persona,
+            cwd=tmp_path,
+        )[0]
+        == 0
+    )
+
+    rc, human, err = run_cli("--as", "van", "whoami", cwd=tmp_path)
+    assert rc == 0, err
+    assert r"\x4d\x41\x52\x4b\x1b" in human
+    assert "MARK" not in human
+    _assert_only_structural_newlines(human)
+
+    rc, encoded, err = run_cli(
+        "--as",
+        "van",
+        "whoami",
+        "--json",
+        cwd=tmp_path,
+    )
+    assert rc == 0, err
+    assert json.loads(encoded)["persona"] == persona
+
+
+def test_project_terminal_policy_applies_with_explicit_database_path(
+    tmp_path: Path,
+) -> None:
+    _write_terminal_project_config(
+        tmp_path,
+        escape_patterns=("MARK",),
+        target="unused.db",
+    )
+    explicit_db = tmp_path / "MARK.db"
+
+    rc, human, err = run_cli("--db", explicit_db, "init", cwd=tmp_path)
+
+    assert rc == 0, err
+    assert explicit_db.exists()
+    assert r"\x4d\x41\x52\x4b.db" in human
+    assert "MARK.db" not in human
+
+
+def test_project_terminal_policy_applies_with_taut_db_selector(
+    tmp_path: Path,
+) -> None:
+    _write_terminal_project_config(
+        tmp_path,
+        escape_patterns=("MARK",),
+        target="unused.db",
+    )
+    env_db = tmp_path / "MARK-env.db"
+
+    rc, human, err = run_cli(
+        "init",
+        cwd=tmp_path,
+        env={"TAUT_DB": str(env_db)},
+    )
+
+    assert rc == 0, err
+    assert env_db.exists()
+    assert r"\x4d\x41\x52\x4b-env.db" in human
+    assert "MARK-env.db" not in human
+
+
+def test_invalid_project_terminal_policy_preflights_human_commands_only(
+    tmp_path: Path,
+) -> None:
+    _write_terminal_project_config(
+        tmp_path,
+        escape_patterns=("[",),
+        target="unused.db",
+    )
+    human_db = tmp_path / "human.db"
+
+    rc, human, err = run_cli("--db", human_db, "init", cwd=tmp_path)
+
+    assert rc == 1
+    assert human == ""
+    assert err == "terminal output policy is unavailable"
+    assert not human_db.exists()
+
+    json_db = tmp_path / "json.db"
+    rc, encoded, err = run_cli(
+        "--json",
+        "--db",
+        json_db,
+        "init",
+        cwd=tmp_path,
+    )
+    assert rc == 0, err
+    assert json.loads(encoded)["db"] == str(json_db)
+    assert json_db.exists()
+
+
+def test_data_dependent_policy_failure_is_not_a_command_load_error(
+    tmp_path: Path,
+) -> None:
+    _write_terminal_project_config(
+        tmp_path,
+        escape_patterns=(r"(?=P)",),
+    )
+
+    rc, out, err = run_cli("--as", "van", "say", "general", "hello", cwd=tmp_path)
+
+    assert rc == 1
+    assert out == ""
+    assert err == "terminal output policy is unavailable"
+    assert "failed to load" not in err
+
+
+def test_post_commit_policy_failure_does_not_roll_back_sent_message(
+    tmp_path: Path,
+) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    _write_terminal_project_config(
+        tmp_path,
+        escape_patterns=(r"(?=\d{19})",),
+    )
+
+    rc, out, err = run_cli(
+        "--as",
+        "van",
+        "--timestamps",
+        "say",
+        "general",
+        "committed before render failure",
+        cwd=tmp_path,
+    )
+
+    assert rc == 1
+    assert out == ""
+    assert err == "terminal output policy is unavailable"
+
+    rc, encoded, err = run_cli("log", "general", "--json", cwd=tmp_path)
+    assert rc == 0, err
+    assert "committed before render failure" in [
+        json.loads(line)["text"] for line in encoded.splitlines()
+    ]
+
+
+def test_core_human_renderer_inventory_escapes_every_dynamic_model_field() -> None:
+    from types import SimpleNamespace
+
+    from taut.client import InitResult, Member, Notification, TautClient, Thread
+    from taut.commands._rendering import (
+        emit_created_member,
+        emit_init,
+        emit_members,
+        emit_messages,
+        emit_notification_warnings,
+        emit_notifications,
+        emit_renamed_thread,
+        emit_threads,
+    )
+
+    probe = "value\x1b]52;c;Y2xpcGJvYXJk\x07\x9b\r\b\t\nrow"
+    escaped = r"value\x1b]52;c;Y2xpcGJvYXJk\a\x9b\r\b\t\nrow"
+    member = Member(
+        member_id="m_" + "a" * 26,
+        name=probe,
+        aliases=(),
+        kind=probe,
+        presence=probe,
+        last_active_ts=1,
+        persona=probe,
+        token=probe,
+        explain={probe: probe},
+    )
+    message = Message(
+        thread=probe,
+        ts=1_785_000_000_000_000_001,
+        from_id=member.member_id,
+        from_name=probe,
+        kind="message",
+        text=probe,
+        warning=probe,
+    )
+    thread = Thread(
+        name=probe,
+        parent=None,
+        unread=True,
+        last_ts=message.ts,
+        unread_count=4,
+        display_name=probe,
+    )
+    notification = Notification(
+        type="reply",
+        to_id=member.member_id,
+        actor_id=member.member_id,
+        actor_name=probe,
+        thread=probe,
+        message_ts=message.ts,
+        warning=probe,
+    )
+    foreign = Notification(
+        type="foreign",
+        to_id=None,
+        actor_id=None,
+        actor_name=None,
+        thread=None,
+        message_ts=None,
+        raw=probe,
+    )
+    client = cast(
+        TautClient,
+        SimpleNamespace(
+            last_created_member=member,
+            last_candidates=[(probe, [probe])],
+            last_notification_warnings=[probe],
+        ),
+    )
+    stdout = StringIO()
+    stderr = StringIO()
+
+    emit_init(
+        InitResult(db=probe, created=True),
+        json_output=False,
+        quiet=False,
+        stdout=stdout,
+    )
+    emit_created_member(
+        client,
+        json_output=False,
+        quiet=False,
+        stdout=stdout,
+        stderr=stderr,
+    )
+    emit_notification_warnings(client, quiet=False, stderr=stderr)
+    emit_messages(
+        [message],
+        json_output=False,
+        timestamps=False,
+        quiet=False,
+        stdout=stdout,
+        stderr=stderr,
+    )
+    emit_members([member], json_output=False, quiet=False, stdout=stdout)
+    emit_threads([thread], json_output=False, quiet=False, stdout=stdout)
+    emit_notifications(
+        [notification, foreign],
+        client=None,
+        json_output=False,
+        quiet=False,
+        stdout=stdout,
+        stderr=stderr,
+    )
+    emit_renamed_thread(
+        thread,
+        old_name=probe,
+        json_output=False,
+        quiet=False,
+        stdout=stdout,
+    )
+
+    rendered = stdout.getvalue() + stderr.getvalue()
+    assert rendered.count(escaped) >= 18
+    _assert_only_structural_newlines(rendered)
+
+    json_output = StringIO()
+    emit_messages(
+        [message],
+        json_output=True,
+        timestamps=False,
+        quiet=False,
+        stdout=json_output,
+        stderr=StringIO(),
+    )
+    emit_members([member], json_output=True, quiet=False, stdout=json_output)
+    emit_threads([thread], json_output=True, quiet=False, stdout=json_output)
+    emit_notifications(
+        [notification, foreign],
+        client=None,
+        json_output=True,
+        quiet=False,
+        stdout=json_output,
+        stderr=StringIO(),
+    )
+    records = [json.loads(line) for line in json_output.getvalue().splitlines()]
+    assert records[0]["text"] == probe
+    assert records[1]["persona"] == probe
+    assert records[1]["explain"] == {probe: probe}
+    assert records[2]["thread"] == probe
+    assert records[3]["actor_name"] == probe
+    assert records[4]["raw"] == probe
 
 
 def test_cli_human_log_timestamps_prepend_message_ids(tmp_path: Path) -> None:
@@ -318,6 +839,7 @@ def test_every_cli_parser_action_has_useful_help() -> None:
                 _load_command(selected),
                 StringIO(),
                 StringIO(),
+                escape_description=True,
             )
         )
     seen: set[int] = set()
@@ -1160,6 +1682,59 @@ def test_cli_watch_json_flushes_records_while_live(tmp_path: Path) -> None:
             proc.stderr.close()
         if proc.stdout is not None:
             proc.stdout.close()
+
+
+def test_cli_watch_policy_failure_stops_without_advancing_cursor(
+    tmp_path: Path,
+) -> None:
+    """[TAUT-6.4, TAUT-8.4] Policy failure is a terminal delivery failure."""
+
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "bob", "join", "general", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "read", "general", "--json", cwd=tmp_path)[0] == 0
+    bob = json.loads(run_cli("--as", "bob", "whoami", "--json", cwd=tmp_path)[1])
+    _write_terminal_project_config(
+        tmp_path,
+        escape_patterns=(r"(?=TRIGGER)",),
+    )
+
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "taut", "--as", "van", "watch"],
+        cwd=tmp_path,
+        env=build_cli_env(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    queue = Queue("general", db_path=str(tmp_path / ".taut.db"))
+    try:
+        queue.write(
+            encode_envelope(
+                from_id=bob["member_id"],
+                from_name="bob",
+                kind="message",
+                text="TRIGGER policy failure",
+            )
+        )
+        stdout, stderr = proc.communicate(timeout=10)
+    finally:
+        queue.close()
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=10)
+
+    assert proc.returncode == 1
+    assert stderr == "terminal output policy is unavailable\n"
+    assert "Traceback" not in stdout + stderr
+
+    rc, unread, err = run_cli("--as", "van", "read", "general", "--json", cwd=tmp_path)
+    assert rc == 0, err
+    assert "TRIGGER policy failure" in [
+        json.loads(line)["text"] for line in unread.splitlines()
+    ]
 
 
 @pytest.mark.skipif(

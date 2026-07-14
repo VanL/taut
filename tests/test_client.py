@@ -24,6 +24,7 @@ from taut._exceptions import (
     ThreadNameError,
 )
 from taut.client import Message, TautClient
+from taut.commands._rendering import format_unread_count
 from taut.envelope import encode_envelope
 from taut.state import SQLITE_SQL_DIALECT, MembershipRow, SqlSidecarTautState
 
@@ -319,6 +320,155 @@ def test_dm_does_not_skip_message_published_after_membership(
         item for item in van.list_threads(all_threads=True) if item.name == thread
     )
     assert listed.unread_count == 2
+
+
+def test_list_skips_bounded_peek_for_caught_up_memberships(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    alice = client(tmp_path, "alice")
+    for thread in ("caught-up-a", "unread", "caught-up-b"):
+        alice.join(thread)
+    bob = existing_client(tmp_path, "bob")
+    bob.join("unread")
+    alice.read("unread")
+    bob.say("unread", "pending")
+    membership = alice._state.get_membership(
+        thread="unread",
+        member_id=alice.whoami().member_id,
+    )
+    assert membership is not None
+
+    real_peek_many = Queue.peek_many
+    peek_calls: list[tuple[str, int | None]] = []
+
+    def counting_peek_many(
+        queue: Queue,
+        limit: int = 1000,
+        *,
+        with_timestamps: bool = False,
+        after_timestamp: int | None = None,
+        before_timestamp: int | None = None,
+        include_claimed: bool = False,
+    ) -> list[str] | list[tuple[str, int]]:
+        peek_calls.append((queue.name, after_timestamp))
+        return real_peek_many(
+            queue,
+            limit,
+            with_timestamps=with_timestamps,
+            after_timestamp=after_timestamp,
+            before_timestamp=before_timestamp,
+            include_claimed=include_claimed,
+        )
+
+    monkeypatch.setattr(Queue, "peek_many", counting_peek_many)
+
+    counts = {
+        thread.name: thread.unread_count
+        for thread in alice.list_threads(all_threads=True)
+    }
+
+    assert counts == {"caught-up-a": 0, "caught-up-b": 0, "unread": 1}
+    assert peek_calls == [("unread", membership["last_seen_ts"])]
+
+
+def test_list_unread_count_is_exact_through_999_and_then_saturates(
+    tmp_path: Path,
+) -> None:
+    alice = client(tmp_path, "alice")
+    alice.join("general")
+    bob = existing_client(tmp_path, "bob")
+    bob.join("general")
+    alice.read("general")
+    body = encode_envelope(
+        from_id=bob.whoami().member_id,
+        from_name="bob",
+        kind="message",
+        text="pending",
+    )
+    queue = bob.queue("general")
+    first_ts = queue.generate_timestamp() + 1
+    records = [(body, first_ts + offset) for offset in range(1001)]
+
+    try:
+        queue.insert_messages(records[:999])
+        at_999 = next(
+            thread
+            for thread in alice.list_threads(all_threads=True)
+            if thread.name == "general"
+        )
+
+        queue.insert_messages(records[999:])
+        above_1000 = next(
+            thread
+            for thread in alice.list_threads(all_threads=True)
+            if thread.name == "general"
+        )
+    finally:
+        queue.close()
+
+    assert at_999.unread_count == 999
+    assert format_unread_count(at_999.unread_count) == "999"
+    assert above_1000.unread_count == 1000
+    assert format_unread_count(above_1000.unread_count) == "999+"
+
+
+def test_list_converges_after_write_racing_latest_timestamp_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    alice = client(tmp_path, "alice")
+    alice.join("general")
+    bob = existing_client(tmp_path, "bob")
+    bob.join("general")
+    alice.read("general")
+    alice_id = alice.whoami().member_id
+    before = alice._state.get_membership(thread="general", member_id=alice_id)
+    assert before is not None
+    cursor_before = before["last_seen_ts"]
+    real_latest_pending_timestamp = Queue.latest_pending_timestamp
+    injected: list[Message] = []
+
+    def latest_then_write(queue: Queue) -> int | None:
+        prior_latest = real_latest_pending_timestamp(queue)
+        if queue.name == "general" and not injected:
+            injected.append(bob.say("general", "raced latest timestamp"))
+        return prior_latest
+
+    monkeypatch.setattr(
+        Queue,
+        "latest_pending_timestamp",
+        latest_then_write,
+    )
+
+    first = next(
+        thread
+        for thread in alice.list_threads(all_threads=True)
+        if thread.name == "general"
+    )
+    assert first.unread_count == 0
+    assert first.unread is False
+    assert len(injected) == 1
+    after_first = alice._state.get_membership(
+        thread="general",
+        member_id=alice_id,
+    )
+    assert after_first is not None
+    assert after_first["last_seen_ts"] == cursor_before
+
+    second = next(
+        thread
+        for thread in alice.list_threads(all_threads=True)
+        if thread.name == "general"
+    )
+    message = injected[0]
+    after = alice._state.get_membership(thread="general", member_id=alice_id)
+
+    assert second.unread_count == 1
+    assert second.unread is True
+    assert second.last_ts == message.ts
+    assert after is not None
+    assert after["last_seen_ts"] == cursor_before
 
 
 def test_reply_does_not_skip_message_published_after_membership(

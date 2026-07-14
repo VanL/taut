@@ -80,7 +80,12 @@ class CommandArgumentParser(argparse.ArgumentParser):
 
     def exit(self, status: int = 0, message: str | None = None) -> NoReturn:
         if message:
-            self._print_message(message, self.stdout if status == 0 else self.stderr)
+            from taut.commands._rendering import write_human_line
+
+            write_human_line(
+                self.stdout if status == 0 else self.stderr,
+                message.removesuffix("\n"),
+            )
         raise SystemExit(status)
 
     def print_help(self, file: Any = None) -> None:

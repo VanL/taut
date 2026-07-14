@@ -1514,12 +1514,15 @@ def test_attach_forwards_escape_prefixed_input(
     thread.start()
     try:
         assert b"ready" in _read_fd_until(user_master, b"ready")
-        os.write(user_master, b"\x1b[A\r")
+        probe = b"\x1b]52;c;Y2xpcGJvYXJk\x07\x1b[31m"
+        os.write(user_master, probe + b"\r")
+        echoed = _read_fd_until(user_master, b"echo:" + probe)
+        assert b"echo:" + probe in echoed
         wait_deadline = time.monotonic() + 5.0
         while time.monotonic() < wait_deadline:
             inputs = [entry for entry in _entries(log) if entry["event"] == "input"]
             if inputs:
-                assert inputs[-1]["raw"] == "\x1b[A\r"
+                assert inputs[-1]["raw"] == (probe + b"\r").decode("latin1")
                 break
             time.sleep(0.05)
         else:

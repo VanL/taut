@@ -31,6 +31,7 @@ EXPECTED_PUBLIC_EXPORTS = [
     "ThreadNameError",
     "TokenError",
     "__version__",
+    "escape_terminal_text",
 ]
 
 
@@ -79,6 +80,7 @@ def test_every_public_export_resolves() -> None:
 
 def test_lazy_exports_are_the_owning_module_objects() -> None:
     from taut.client import Member, Message, Notification, TautClient, Thread
+    from taut.terminal import escape_terminal_text
     from taut.watcher import TautWatcher
 
     assert taut.Member is Member
@@ -87,6 +89,7 @@ def test_lazy_exports_are_the_owning_module_objects() -> None:
     assert taut.TautClient is TautClient
     assert taut.TautWatcher is TautWatcher
     assert taut.Thread is Thread
+    assert taut.escape_terminal_text is escape_terminal_text
 
 
 def test_static_typing_rejects_unknown_public_export(tmp_path: Path) -> None:

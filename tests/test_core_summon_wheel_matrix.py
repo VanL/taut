@@ -1642,6 +1642,7 @@ def test_paired_case_installs_both_wheels_and_runs_full_control_probe(
         normalized = " ".join(code.split())
         for required in (
             "SummonController",
+            "taut.escape_terminal_text",
             '"summon"',
             '"dismiss"',
             '"ledger": "released"',

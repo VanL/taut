@@ -48,6 +48,17 @@ Risky plans are blocked if they do not make explicit:
   agent-guidance wave ([DOM-14] coalescing, [DOM-15] task classification,
   review lens, crosswalk, four skills) with SHA-pinned provenance.
 
+- `2026-07-14-smaller-quality-followups-plan.md` — add credential and 0.6.1
+  release-note hygiene, prove the real PostgreSQL polling fallback, add one
+  bounded client state machine, and optimize caught-up unread counting with a
+  measured public-API fast path.
+- `2026-07-14-single-project-config-source-spec-plan.md` — make `.taut.toml`
+  the explicit single project-configuration source while preserving no-config
+  SQLite and config-required PostgreSQL behavior.
+- `2026-07-14-terminal-output-safety-plan.md` — add packaged safe defaults,
+  human `.taut.toml` customization, and one public terminal-control escape
+  function shared by core and extensions, while preserving exact storage/JSON
+  content and Taut's stated trust boundary.
 - `2026-07-14-universal-release-gates-plan.md` — make every package release
   target use one universal core, PostgreSQL, and Summon local gate by default,
   preserve the explicit human override, and require both canonical exact-SHA

@@ -1,0 +1,5 @@
+[terminal_text]
+escape_patterns = [
+  '[\x00-\x1f]+',
+  '[\x7f-\x9f]+',
+]

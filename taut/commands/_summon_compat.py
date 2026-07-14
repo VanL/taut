@@ -19,9 +19,10 @@ import importlib.util
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
-from typing import TextIO
+from typing import Any, TextIO
 
 from taut.commands._protocol import CommandArgumentParser, CommandContext
+from taut.commands._rendering import write_human_line
 
 
 @contextmanager
@@ -32,6 +33,33 @@ def _redirect_stdin(stream: TextIO) -> Iterator[None]:
         yield
     finally:
         sys.stdin = previous
+
+
+class _LineBufferedTerminalStream:
+    """Escape legacy text records while preserving their LF framing."""
+
+    def __init__(self, stream: TextIO) -> None:
+        self._stream = stream
+        self._buffer = ""
+
+    def write(self, text: str) -> int:
+        if not isinstance(text, str):
+            raise TypeError("write() argument must be str")
+        segments = text.split("\n")
+        self._buffer += segments[0]
+        for segment in segments[1:]:
+            write_human_line(self._stream, self._buffer)
+            self._buffer = segment
+        return len(text)
+
+    def flush(self) -> None:
+        if self._buffer:
+            write_human_line(self._stream, self._buffer)
+            self._buffer = ""
+        self._stream.flush()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._stream, name)
 
 
 class SummonCompatibilityCommand:
@@ -70,17 +98,22 @@ class SummonCompatibilityCommand:
         if context.db_path:
             extension_argv.extend(("--db", context.db_path))
         extension_argv.extend(forwarded_tail)
+        safe_stdout = _LineBufferedTerminalStream(context.stdout)
+        safe_stderr = _LineBufferedTerminalStream(context.stderr)
         try:
             with (
                 _redirect_stdin(context.stdin),
-                redirect_stdout(context.stdout),
-                redirect_stderr(context.stderr),
+                redirect_stdout(safe_stdout),
+                redirect_stderr(safe_stderr),
             ):
                 return int(summon_main(extension_argv))
         except SystemExit as exc:
             if type(exc.code) is int and exc.code in (0, 1, 2):
                 return exc.code
             raise
+        finally:
+            safe_stdout.flush()
+            safe_stderr.flush()
 
 
 def create_summon_command() -> SummonCompatibilityCommand:

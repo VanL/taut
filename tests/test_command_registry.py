@@ -112,6 +112,20 @@ def _create_command_error_command() -> _CommandErrorCommand:
     return _CommandErrorCommand()
 
 
+class _ControlErrorCommand:
+    def configure_parser(self, parser: Any) -> None:
+        pass
+
+    def run(self, context: Any, args: argparse.Namespace) -> int:
+        from taut.commands import CommandError
+
+        raise CommandError("failed\x1b]0;title\x07\x9b\r\b\t\nrow")
+
+
+def _create_control_error_command() -> _ControlErrorCommand:
+    return _ControlErrorCommand()
+
+
 class _UnexpectedBaseException(BaseException):
     pass
 
@@ -803,6 +817,50 @@ def test_reserved_summon_bridge_fails_loud_without_dispatch_separator() -> None:
         match="summon compatibility tail separator is missing",
     ):
         create_summon_command().run(context, argparse.Namespace(rest=[]))
+
+
+def test_reserved_summon_bridge_line_buffers_and_escapes_legacy_python_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import taut_summon.cli
+
+    from taut.commands import CommandContext
+    from taut.commands._summon_compat import create_summon_command
+
+    def legacy_main(_argv: list[str]) -> int:
+        sys.stdout.write("first\x1b]52;c;Y2xpcGJvYXJk\x07")
+        sys.stdout.write(" tail\nsecond\x9b[31m")
+        sys.stderr.write("warning\r\b\t")
+        return 0
+
+    monkeypatch.setattr(taut_summon.cli, "main", legacy_main)
+    stdout = StringIO()
+    stderr = StringIO()
+    context = CommandContext(
+        db_path=None,
+        as_name=None,
+        auth_token=None,
+        json=False,
+        timestamps=False,
+        quiet=False,
+        stdin=StringIO(),
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+    result = create_summon_command().run(
+        context,
+        argparse.Namespace(rest=["--", "provider"]),
+    )
+
+    assert result == 0
+    assert stdout.getvalue() == (
+        r"first\x1b]52;c;Y2xpcGJvYXJk\a tail"
+        "\n"
+        r"second\x9b[31m"
+        "\n"
+    )
+    assert stderr.getvalue() == r"warning\r\b\t" + "\n"
 
 
 def test_compatible_installed_manifest_is_discovered_after_builtins() -> None:
@@ -2017,6 +2075,145 @@ def test_root_help_lists_unavailable_commands_and_emits_each_diagnostic_once() -
     assert len(warning_lines) == len(expected)
 
 
+def test_dispatch_escapes_dynamic_usage_help_registry_and_error_text() -> None:
+    from taut.commands import CommandSpec
+    from taut.commands._dispatch import dispatch
+    from taut.commands._registry import CommandRegistry
+
+    probe = "\x1b]52;c;Y2xpcGJvYXJk\x07\x9b[31m\r\b\t\n"
+    escaped = r"\x1b]52;c;Y2xpcGJvYXJk\a\x9b[31m\r\b\t\n"
+    manifest = CommandSpec(
+        1,
+        "fixture",
+        f"summary {probe}",
+        frozenset(),
+        "tests.test_command_registry:_create_echo_command",
+    )
+    registry = CommandRegistry(
+        entry_points=(
+            _EntryPoint(
+                "fixture",
+                "fixture.manifest:fixture",
+                manifest,
+                _Distribution(f"owner{probe}"),
+            ),
+            _EntryPoint(
+                "unavailable",
+                "broken.manifest:command",
+                RuntimeError(f"manifest {probe}"),
+                _Distribution(f"broken-owner{probe}"),
+            ),
+        )
+    )
+
+    for argv in ([f"--bad{probe}"], ["fixture", "ok", f"--bad{probe}"]):
+        stdout = StringIO()
+        stderr = StringIO()
+        result = dispatch(
+            argv,
+            registry=registry,
+            stdin=StringIO(),
+            stdout=stdout,
+            stderr=stderr,
+        )
+        assert result == 1
+        assert escaped in stderr.getvalue()
+
+    stdout = StringIO()
+    stderr = StringIO()
+    assert (
+        dispatch(
+            ["--help"],
+            registry=registry,
+            stdin=StringIO(),
+            stdout=stdout,
+            stderr=stderr,
+        )
+        == 0
+    )
+    assert f"summary {escaped}" in stdout.getvalue()
+    assert escaped in stderr.getvalue()
+
+    stderr = StringIO()
+    assert (
+        dispatch(
+            ["unavailable"],
+            registry=registry,
+            stdin=StringIO(),
+            stdout=StringIO(),
+            stderr=stderr,
+        )
+        == 1
+    )
+    assert escaped in stderr.getvalue()
+
+    broken = CommandSpec(
+        1,
+        "fixture",
+        "broken",
+        frozenset(),
+        "missing_fixture_module:create",
+    )
+    broken_registry = CommandRegistry(
+        entry_points=(
+            _EntryPoint(
+                "fixture",
+                "fixture.manifest:fixture",
+                broken,
+                _Distribution(f"owner{probe}"),
+            ),
+        )
+    )
+    stderr = StringIO()
+    assert (
+        dispatch(
+            ["fixture"],
+            registry=broken_registry,
+            stdin=StringIO(),
+            stdout=StringIO(),
+            stderr=stderr,
+        )
+        == 1
+    )
+    assert f"owner{escaped}" in stderr.getvalue()
+
+    execution = CommandSpec(
+        1,
+        "fixture",
+        "execution",
+        frozenset(),
+        "tests.test_command_registry:_create_control_error_command",
+    )
+    execution_registry = CommandRegistry(
+        entry_points=(
+            _EntryPoint(
+                "fixture",
+                "fixture.manifest:fixture",
+                execution,
+                _Distribution("fixture-owner"),
+            ),
+        )
+    )
+    stderr = StringIO()
+    assert (
+        dispatch(
+            ["fixture"],
+            registry=execution_registry,
+            stdin=StringIO(),
+            stdout=StringIO(),
+            stderr=stderr,
+        )
+        == 1
+    )
+    assert r"failed\x1b]0;title\a\x9b\r\b\t\nrow" in stderr.getvalue()
+    for output in (stdout.getvalue(), stderr.getvalue()):
+        assert all(
+            character == "\n"
+            or not (ord(character) < 0x20 or 0x7F <= ord(character) <= 0x9F)
+            for character in output
+        )
+
+
 def test_manifest_discovery_has_no_runtime_side_effects(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2930,7 +3127,7 @@ def test_registry_join_and_whoami_human_streams_and_token_boundary(
     result, out, err = _dispatch_static([*root, "whoami", "--explain"])
     assert result == 0, err
     lines = out.splitlines()
-    assert lines[0].startswith("van\t")
+    assert lines[0].startswith(r"van\tagent\t")
     assert lines[0].endswith("  builder")
     assert isinstance(json.loads(lines[1]), dict)
     assert "token" not in out.lower()
@@ -3594,6 +3791,8 @@ def test_registry_watch_sigint_path_stops_watcher_and_closes_client() -> None:
     from taut.commands._dispatch import dispatch
     from taut.commands._registry import CommandRegistry
 
+    message_text = "live\nmessage\x1b]52;c;Y2xpcGJvYXJk\x07\x9b"
+    actor_name = "bob\x1b]0;title\x07\t"
     items: list[Message | Notification] = [
         Message(
             thread="general",
@@ -3601,13 +3800,13 @@ def test_registry_watch_sigint_path_stops_watcher_and_closes_client() -> None:
             from_id="m_" + "a" * 26,
             from_name="van",
             kind="message",
-            text="live message",
+            text=message_text,
         ),
         Notification(
             type="reply",
             to_id="m_" + "a" * 26,
             actor_id="m_" + "b" * 26,
-            actor_name="bob",
+            actor_name=actor_name,
             thread="general.1785000000000000001",
             message_ts=1_785_000_000_000_000_002,
         ),
@@ -3681,9 +3880,31 @@ def test_registry_watch_sigint_path_stops_watcher_and_closes_client() -> None:
     assert clients[0].watcher.stop_calls == [(True, 5.0)]
     assert clients[0].closed is True
     records = [json.loads(line) for line in stdout.getvalue().splitlines()]
-    assert records[0]["text"] == "live message"
+    assert records[0]["text"] == message_text
+    assert records[1]["actor_name"] == actor_name
     assert records[1]["type"] == "reply"
     assert stdout.flush_count == 2
+
+    human_stdout = CountingStream()
+    human_stderr = StringIO()
+    result = dispatch(
+        ["watch", "general", "ops"],
+        registry=CommandRegistry(entry_points=()),
+        stdin=StringIO(),
+        stdout=human_stdout,
+        stderr=human_stderr,
+        client_factory=create_client,
+    )
+
+    assert result == 0
+    assert r"live\nmessage\x1b]52;c;Y2xpcGJvYXJk\a\x9b" in (human_stdout.getvalue())
+    assert r"bob\x1b]0;title\a\t" in human_stdout.getvalue()
+    assert all(
+        character == "\n"
+        or not (ord(character) < 0x20 or 0x7F <= ord(character) <= 0x9F)
+        for character in human_stdout.getvalue() + human_stderr.getvalue()
+    )
+    assert human_stdout.flush_count == 2
 
 
 def test_registry_watch_unjoined_filter_keeps_exit_two(tmp_path: Path) -> None:

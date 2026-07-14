@@ -1045,6 +1045,18 @@ from taut_summon.controller import SummonController
 
 taut_path = assert_installed(taut)
 summon_path = assert_installed(taut_summon)
+Path(".taut.toml").write_text(
+    "version = 1\n"
+    "backend = \"sqlite\"\n"
+    "target = \"unused.db\"\n\n"
+    "[terminal_text]\n"
+    "escape_patterns = [\"CUSTOM\"]\n",
+    encoding="utf-8",
+)
+if taut.escape_terminal_text("CUSTOM\x1b") != (
+    "\\x43\\x55\\x53\\x54\\x4f\\x4d\\x1b"
+):
+    raise SystemExit("installed core terminal policy/resource probe failed")
 claims = {
     entry_point.name: (
         entry_point.dist.metadata.get("Name"),

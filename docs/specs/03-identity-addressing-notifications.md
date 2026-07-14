@@ -1,6 +1,6 @@
 # Identity, Addressing, and Notifications Specification
 
-Status: Proposed
+Status: Active
 
 This spec defines Taut's member identity model, mutable names, addressing
 syntax, special queue namespaces, direct-message queues, notification queues,

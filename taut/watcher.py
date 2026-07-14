@@ -1,8 +1,28 @@
-"""Multi-queue watcher and taut cursor-aware live follower.
+"""Multi-queue watcher and Taut cursor-aware live follower.
 
-`MultiQueueWatcher` is copied from Weft's
-`weft/core/tasks/multiqueue_watcher.py`; Taut-specific behavior belongs in
-subclasses such as `TautWatcher`.
+Vendoring and ownership
+-----------------------
+
+``MultiQueueWatcher`` and its supporting scheduler types were originally
+vendored and adapted from:
+
+- repository: ``../weft``
+- path: ``weft/core/tasks/multiqueue_watcher.py``
+- commit: ``7612e972a75806b8165dbf18e6bbfcbb686f27ea``
+
+This module is not a byte-for-byte upstream mirror. Taut keeps the scheduler
+local to avoid a runtime dependency on Weft and to provide the multi-queue
+primitive below its cursor-aware watcher. The adapted scheduler block runs
+from ``resolve_context_broker_target`` through ``MultiQueueWatcher``;
+``BaseReactor`` and ``TautWatcher`` are Taut-owned layers. Current adaptations
+include Taut project-config fallback, time-bounded inactive-queue discovery,
+and integration with SimpleBroker's public multi-queue activity waiter.
+
+When changing the adapted block, compare it with the recorded source and
+current Weft implementation, preserve the public SimpleBroker boundary, and
+run ``tests/test_watcher.py``. Put Taut cursor and lifecycle policy in the
+Taut-owned layers below. If another project needs the neutral scheduler,
+prefer graduating it into ``simplebroker.ext`` over making another copy.
 
 Spec references:
 - docs/specs/02-taut-core.md [TAUT-8.4]
@@ -180,7 +200,7 @@ class MultiQueueWatcher(BaseWatcher):
             default_error_handler_fn: Fallback error handler when queue config
                 does not supply one (defaults to SimpleBroker's default)
             config: Optional SimpleBroker configuration dictionary. If omitted,
-                :func:`weft._constants.load_config` is used.
+                :func:`taut._constants.load_config` is used.
 
         Spec: [CC-2.1], [SB-0.4]
         """

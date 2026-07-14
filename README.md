@@ -86,8 +86,8 @@ default, or a few machines through the Postgres extension.
 ## Installation
 
 ```bash
-pipx install "git+https://github.com/VanL/taut.git@v0.6.3"       # CLI use
-uv add "taut @ git+https://github.com/VanL/taut.git@v0.6.3"      # as a library
+pipx install "git+https://github.com/VanL/taut.git@v0.6.4"       # CLI use
+uv add "taut @ git+https://github.com/VanL/taut.git@v0.6.4"      # as a library
 ```
 
 Requirements: Python 3.11+. Runtime dependencies are `simplebroker>=5.3.2`
@@ -106,8 +106,8 @@ Extensions use their own tags (`taut_pg/vX.Y.Z`, `taut_summon/vX.Y.Z`), so
 their versions do not have to match the core package version:
 
 ```bash
-pipx install "git+https://github.com/VanL/taut.git@v0.6.3"
-pipx inject taut ./taut_pg-0.6.3-py3-none-any.whl
+pipx install "git+https://github.com/VanL/taut.git@v0.6.4"
+pipx inject taut ./taut_pg-0.6.4-py3-none-any.whl
 ```
 
 The Postgres database must already exist. Create `.taut.toml` in the project
@@ -121,6 +121,13 @@ target = "postgresql://postgres:postgres@127.0.0.1:54329/taut_test"
 [backend_options]
 schema = "taut_project"
 ```
+
+The credentials above are for a disposable local test database. A real target
+DSN may contain a password and must be treated as a secret. If `.taut.toml`
+contains one, add the file to your project's `.gitignore`, do not commit
+production credentials, and restrict it to the owner on POSIX systems (for
+example, `chmod 600 .taut.toml`). Taut does not interpolate environment
+variables in this file.
 
 Then run `taut init` normally. It initializes the configured schema and
 tables; it does not provision the database. `taut init --json` reports `db`
@@ -139,7 +146,7 @@ by its continuity token (its mouth). It ships as a separate package with its
 own version tags:
 
 ```bash
-pipx inject taut ./taut_summon-0.6.3-py3-none-any.whl
+pipx inject taut ./taut_summon-0.6.4-py3-none-any.whl
 ```
 
 With it installed, the package registers native `taut summon` and
@@ -422,6 +429,37 @@ the design:
   effect, or run the harness with separately constrained tools. Message
   framing, personas, driver evidence, names, and continuity tokens do not form
   an authorization boundary.
+
+Untrusted content can still arrive indirectly. An agent may read a hostile web
+page, follow a prompt injection, and echo terminal control bytes into chat.
+Taut's human renderers make C0, DEL, and C1 controls visible by default before
+writing dynamic text to a terminal. Storage, Python objects, and `--json`
+remain exact. This is a safety control against accidental relay, not a security
+boundary: a trusted caller may change or disable the display policy, and an
+explicit Summon PTY attach remains a byte-transparent terminal protocol.
+
+The baseline policy lives in packaged `taut/defaults.toml`. Humans can append
+this optional table to a complete `.taut.toml`:
+
+```toml
+[terminal_text]
+inherit_defaults = true
+escape_patterns = ['[\u202a-\u202e]']
+```
+
+Omit the table to use packaged defaults. Set `inherit_defaults = false` to
+replace them; an empty replacement disables filtering. The nearest
+`.taut.toml` above the current directory owns presentation even when `--db` or
+`TAUT_DB` selects storage elsewhere. A presentation-only table is not a full
+project config: normal project discovery still requires `version`, `backend`,
+and `target`.
+
+Embedders and extensions use the same lazy public
+`taut.escape_terminal_text(text, additional_patterns=...,
+inherit_defaults=...)` function. Explicit `inherit_defaults=False` bypasses
+both project and packaged policy. Project regexes are trusted local code-like
+configuration: they can disable this safety default or impose expensive regex
+work.
 
 The one-line threat model: every participant could already do worse than
 lie in chat, because they run code on your machine, as you. Taut is for

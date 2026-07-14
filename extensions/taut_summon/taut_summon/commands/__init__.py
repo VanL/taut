@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, TextIO
 
+from taut import escape_terminal_text
 from taut.commands import CommandContext, CommandError
 
 if TYPE_CHECKING:
@@ -32,6 +33,13 @@ DATABASE_HELP = (
 )
 
 
+def _write_human_line(stream: TextIO, body: str) -> None:
+    """Escape one Summon-owned text record, then append structural LF."""
+
+    stream.write(escape_terminal_text(body))
+    stream.write("\n")
+
+
 def command_error(
     exc: SummonOperationError,
     context: CommandContext,
@@ -43,8 +51,9 @@ def command_error(
     if exc.fault_plane in STATUS_FAULT_PLANES and os.environ.get(
         "TAUT_SUMMON_STATUS_FAULT_PLANE"
     ):
-        context.stderr.write(
-            f"status_fault_plane={exc.fault_plane} error={type(exc).__name__}: {exc}\n"
+        _write_human_line(
+            context.stderr,
+            f"status_fault_plane={exc.fault_plane} error={type(exc).__name__}: {exc}",
         )
     suffix = f" (db: {context.db_path})" if context.db_path else ""
     return CommandError(f"{exc}{suffix}", exit_code=exit_code)

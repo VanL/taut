@@ -1,7 +1,7 @@
 """Raw command selection, isolated parsing, execution, and cleanup.
 
 Spec references:
-- docs/specs/02-taut-core.md [TAUT-8.1], [TAUT-8.2], [TAUT-8.6]
+- docs/specs/02-taut-core.md [TAUT-6.4], [TAUT-8.1], [TAUT-8.2], [TAUT-8.6]
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, TextIO
 
-from taut._constants import __version__
+from taut._constants import PROJECT_CONFIG_NAME, __version__
 from taut.commands._imports import resolve_import_target
 from taut.commands._protocol import (
     CommandArgumentParser,
@@ -70,6 +70,41 @@ def dispatch(
 ) -> int:
     """Dispatch one argv through the version-1 command interface."""
 
+    try:
+        return _dispatch(
+            argv,
+            registry=registry,
+            stdin=stdin,
+            stdout=stdout,
+            stderr=stderr,
+            client_factory=client_factory,
+        )
+    except RuntimeError as exc:
+        from taut.commands._rendering import _TerminalOutputPolicyError
+
+        if not isinstance(exc, _TerminalOutputPolicyError):
+            raise
+        error_stream = stderr if stderr is not None else sys.stderr
+        message = (
+            f"invalid {PROJECT_CONFIG_NAME}: terminal output policy is unavailable"
+            if exc.project_config_syntax
+            else str(exc)
+        )
+        error_stream.write(f"{message}\n")
+        return 1
+
+
+def _dispatch(
+    argv: Sequence[str],
+    *,
+    registry: CommandRegistry | None = None,
+    stdin: TextIO | None = None,
+    stdout: TextIO | None = None,
+    stderr: TextIO | None = None,
+    client_factory: Callable[..., Any] | None = None,
+) -> int:
+    """Execute dispatch after the public bootstrap-error boundary."""
+
     input_stream = stdin if stdin is not None else sys.stdin
     output_stream = stdout if stdout is not None else sys.stdout
     error_stream = stderr if stderr is not None else sys.stderr
@@ -108,7 +143,10 @@ def dispatch(
         _write_usage_error(f"unknown command: {verb}", error_stream)
         return 1
     if selected.error is not None or selected.spec is None:
-        error_stream.write(f"{selected.error or f'command {verb!r} is unavailable'}\n")
+        _write_human_line(
+            error_stream,
+            selected.error or f"command {verb!r} is unavailable",
+        )
         return 1
 
     try:
@@ -127,9 +165,16 @@ def dispatch(
             command,
             output_stream,
             error_stream,
+            escape_description=(
+                not merged.json or _command_tail_requests_help(command_tail)
+            ),
         )
     except BaseException as exc:
         if isinstance(exc, KeyboardInterrupt):
+            raise
+        from taut.commands._rendering import _TerminalOutputPolicyError
+
+        if isinstance(exc, _TerminalOutputPolicyError):
             raise
         _write_selected_error(selected, exc, error_stream)
         return 1
@@ -139,7 +184,10 @@ def dispatch(
     except SystemExit as exc:
         if type(exc.code) is int and exc.code in (0, 1):
             return exc.code
-        error_stream.write(f"taut {verb}: unexpected SystemExit({exc.code!r})\n")
+        _write_human_line(
+            error_stream,
+            f"taut {verb}: unexpected SystemExit({exc.code!r})",
+        )
         return 1
     context = CommandContext(
         db_path=merged.db_path,
@@ -153,6 +201,10 @@ def dispatch(
         stderr=error_stream,
         _client_factory=client_factory,
     )
+    if not context.json:
+        from taut.commands._rendering import preflight_human_output_policy
+
+        preflight_human_output_policy()
     primary: BaseException | None = None
     result = 1
     try:
@@ -166,6 +218,10 @@ def dispatch(
         if isinstance(exc, KeyboardInterrupt):
             raise
         primary = exc
+        from taut.commands._rendering import _TerminalOutputPolicyError
+
+        if isinstance(exc, _TerminalOutputPolicyError):
+            raise
         result = _render_execution_error(context, exc)
     finally:
         try:
@@ -373,16 +429,33 @@ def _build_command_parser(
     command: Any,
     stdout: TextIO,
     stderr: TextIO,
+    *,
+    escape_description: bool,
 ) -> CommandArgumentParser:
+    description = spec.summary
+    if escape_description:
+        from taut.commands._rendering import _escape_human_text
+
+        description = _escape_human_text(description)
+
     parser = CommandArgumentParser(
         prog=f"taut {spec.name}",
-        description=spec.summary,
+        description=description,
         stdout=stdout,
         stderr=stderr,
     )
     _add_declared_globals(parser, spec.post_verb_globals)
     command.configure_parser(parser)
     return parser
+
+
+def _command_tail_requests_help(tokens: Sequence[str]) -> bool:
+    for token in tokens:
+        if token == "--":
+            return False
+        if token in ("-h", "--help"):
+            return True
+    return False
 
 
 def _add_declared_globals(
@@ -481,7 +554,7 @@ def _write_root_help(
     )
     for command in registry.commands():
         summary = command.spec.summary if command.spec is not None else "unavailable"
-        stream.write(f"  {command.name:<12} {summary}\n")
+        _write_human_line(stream, f"  {command.name:<12} {summary}")
     diagnostics = {
         *registry.diagnostics(),
         *(
@@ -491,11 +564,12 @@ def _write_root_help(
         ),
     }
     for diagnostic in sorted(diagnostics):
-        diagnostics_stream.write(f"warning: {diagnostic}\n")
+        _write_human_line(diagnostics_stream, f"warning: {diagnostic}")
 
 
 def _write_usage_error(message: str, stream: TextIO, *, prog: str = "taut") -> None:
-    stream.write(f"usage: {prog} ...\n{prog}: error: {message}\n")
+    _write_human_line(stream, f"usage: {prog} ...")
+    _write_human_line(stream, f"{prog}: error: {message}")
 
 
 def _write_selected_error(
@@ -509,11 +583,12 @@ def _write_selected_error(
         if selected.entry_point is not None
         else "static built-in manifest"
     )
-    stream.write(
+    _write_human_line(
+        stream,
         f"command {selected.name!r} from {selected.distribution_name} "
         f"{selected.distribution_version} failed to load "
         f"(entry point {entry_point}; implementation "
-        f"{selected.spec.implementation}): {_exception_message(exc)}\n"
+        f"{selected.spec.implementation}): {_exception_message(exc)}",
     )
 
 
@@ -530,8 +605,16 @@ def _render_execution_error(
     else:
         code = 1
     if not context.quiet:
-        context.stderr.write(f"{_exception_message(exc)}\n")
+        _write_human_line(context.stderr, _exception_message(exc))
     return code
+
+
+def _write_human_line(stream: TextIO, body: str) -> None:
+    """Load the shared renderer only when a human record is emitted."""
+
+    from taut.commands._rendering import write_human_line
+
+    write_human_line(stream, body)
 
 
 def _exit_code_for_exception(exc: Exception) -> int:

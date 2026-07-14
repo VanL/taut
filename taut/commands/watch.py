@@ -6,7 +6,11 @@ import argparse
 from typing import TYPE_CHECKING
 
 from taut.commands._protocol import CommandArgumentParser, CommandContext
-from taut.commands._rendering import emit_watch_item
+from taut.commands._rendering import (
+    _TerminalOutputPolicyError,
+    emit_watch_item,
+    preflight_human_output_policy,
+)
 
 if TYPE_CHECKING:
     from taut.client import Message, Notification
@@ -29,11 +33,14 @@ class WatchCommand:
     def run(self, context: CommandContext, args: argparse.Namespace) -> int:
         from simplebroker.ext import StopWatching
 
+        if not context.json and not context.quiet:
+            preflight_human_output_policy()
         client = context.client()
         sink_closed = False
+        policy_failure: _TerminalOutputPolicyError | None = None
 
         def handle(item: Message | Notification) -> None:
-            nonlocal sink_closed
+            nonlocal policy_failure, sink_closed
             if sink_closed:
                 raise StopWatching
             try:
@@ -47,6 +54,12 @@ class WatchCommand:
                     stderr=context.stderr,
                 )
                 context.stdout.flush()
+            except _TerminalOutputPolicyError as exc:
+                # Like EPIPE, a renderer policy failure is a terminal delivery
+                # failure, not poison queue content. Stop before cursor advance
+                # and carry the bootstrap-safe signal out of the reactor.
+                policy_failure = exc
+                raise StopWatching from None
             except BrokenPipeError:
                 sink_closed = True
                 raise StopWatching from None
@@ -58,6 +71,8 @@ class WatchCommand:
             return 0
         finally:
             watcher.stop(join=True, timeout=5.0)
+        if policy_failure is not None:
+            raise policy_failure
         if sink_closed:
             try:
                 context.stdout.close()

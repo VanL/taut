@@ -100,7 +100,16 @@ taut dismiss NAME
   surfaces are adapters over the public [SUM-13] controller. They share
   request models, provider/name resolution, results, error semantics, and
   tests; neither console surface invokes the other's `main()` or parses the
-  other's output. `taut summon X ...` remains behaviorally equivalent to
+  other's output.
+
+  Both first-party console surfaces use `taut.escape_terminal_text` for
+  Taut-owned dynamic human text and diagnostics under [TAUT-6.4]. The temporary
+  previous-version compatibility adapter applies the policy to redirected
+  Python text on a line-buffered best-effort basis: incoming LF is a structural
+  terminator because legacy formatted output no longer exposes content-field
+  boundaries. JSON/domain values remain exact.
+
+  `taut summon X ...` remains behaviorally equivalent to
   `taut-summon run X ...`, and `taut dismiss X` remains equivalent to
   `taut-summon stop X`. Both surfaces share one resolution contract:
   `run NAME_OR_PROVIDER [THREAD ...]` — the positional is always the
@@ -436,6 +445,11 @@ spawn-time system-prompt flag.
 The PTY adapter runs the harness in its normal interactive mode on a
 pseudo-terminal and drives it as a minimally capable terminal — the
 truest form of "summon is the agent's terminal" ([SUM-2]).
+
+The explicit host terminal lease and attach bridge forward PTY bytes
+unchanged. They are terminal transport, not Taut-owned text rendering, and
+are exempt from [TAUT-6.4]. Sanitizing this byte stream would corrupt the
+hosted terminal protocol.
 
 **Spawn.** The adapter uses `pty.openpty()` and
 `subprocess.Popen(argv, stdin=slave, stdout=slave, stderr=slave,
@@ -1148,6 +1162,12 @@ plus typed request/result/status models and a host-interaction interface. The
 standalone CLI, core command adapters, and future rich TUI use this controller
 rather than private ledger/control/driver modules.
 
+Command and standalone-console adapters escape their Taut-owned dynamic human
+text through the core public utility. A host interaction's scoped terminal
+lease remains byte-transparent as specified by [SUM-7.4]; rich hosts must not
+assume attached PTY bytes have passed through the text-rendering safety
+policy.
+
 The controller hides extension table rows, queue handles and names, control
 JSON, evidence predicates, adapter handles, and driver mutable state. `status`
 proves a live correlated control response; a session row alone is not live
@@ -1188,13 +1208,19 @@ public operation errors to exit 1.
 ## Implementation Mapping
 
 - `docs/implementation/05-taut-summon-architecture.md` explains controller,
-  driver, control, PTY, and host-interaction ownership.
+  driver, control, PTY, host-interaction ownership, and [SUM-7.4]'s
+  byte-transparent attach boundary.
 - `docs/implementation/06-command-extensions.md` explains how installed Summon
   manifests replace the temporary core bridge and how rich hosts compose the
-  public controller without parsing a CLI.
+  public controller without parsing a CLI. It also maps [SUM-3]/[SUM-13]
+  command, standalone-console, and owned-log text through the public core
+  terminal-text policy.
 
 ## Related Plans
 
+- `docs/plans/2026-07-14-terminal-output-safety-plan.md` — shared terminal-text
+  safety defaults for Summon command/diagnostic output, coordinated core floor,
+  and an explicit byte-transparent PTY exemption.
 - `docs/plans/2026-07-13-ci-speed-determinism-release-evidence-plan.md` —
   strict prepared local-LLM proof, complete failure evidence, and shared
   exact-SHA release artifacts without duplicate test workflow calls.

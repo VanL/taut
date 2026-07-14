@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 
 from taut.commands import CommandArgumentParser, CommandContext
-from taut_summon.commands import DATABASE_HELP, command_error
+from taut_summon.commands import DATABASE_HELP, _write_human_line, command_error
 from taut_summon.models import NothingSummoned, SummonOperationError
 
 _DESCRIPTION = (
@@ -44,10 +44,8 @@ class DismissCommand:
             raise command_error(exc, context, exit_code=2) from exc
         except SummonOperationError as exc:
             raise command_error(exc, context, exit_code=1) from exc
-        context.stdout.write(f"stopped '{result.name}'")
-        if context.db_path:
-            context.stdout.write(f" (db: {context.db_path})")
-        context.stdout.write("\n")
+        suffix = f" (db: {context.db_path})" if context.db_path else ""
+        _write_human_line(context.stdout, f"stopped '{result.name}'{suffix}")
         return 0
 
 

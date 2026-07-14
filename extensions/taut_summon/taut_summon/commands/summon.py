@@ -6,6 +6,7 @@ import argparse
 import logging
 import os
 
+from taut import escape_terminal_text
 from taut.commands import CommandArgumentParser, CommandContext
 from taut_summon.commands import DATABASE_HELP, command_error
 from taut_summon.models import NothingSummoned, SummonOperationError, SummonRequest
@@ -15,6 +16,18 @@ _DESCRIPTION = (
     "the member name; on first summon it may also select a provider shortcut. "
     "THREAD defaults to general."
 )
+_POLICY_ERROR_MESSAGE = "terminal output policy is unavailable"
+
+
+class _TerminalSafeFormatter(logging.Formatter):
+    """Escape the final Summon-owned log body before handler framing."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        formatted = super().format(record)
+        try:
+            return escape_terminal_text(formatted)
+        except RuntimeError:
+            return _POLICY_ERROR_MESSAGE
 
 
 def configure_parser(
@@ -137,15 +150,21 @@ class SummonCommand:
 
 
 def _configure_logging(context: CommandContext) -> None:
-    """Send driver logs to the authoritative command error stream."""
+    """Own Summon logs without disturbing an embedding host's root logger."""
 
     level_name = os.environ.get("TAUT_SUMMON_LOG", "INFO").upper()
     level = getattr(logging, level_name, logging.INFO)
-    logging.basicConfig(
-        stream=context.stderr,
-        level=level,
-        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    handler = logging.StreamHandler(context.stderr)
+    handler.setFormatter(
+        _TerminalSafeFormatter("%(asctime)s %(name)s %(levelname)s %(message)s")
     )
+    summon_logger = logging.getLogger("taut_summon")
+    for existing_handler in tuple(summon_logger.handlers):
+        summon_logger.removeHandler(existing_handler)
+        existing_handler.close()
+    summon_logger.addHandler(handler)
+    summon_logger.setLevel(level)
+    summon_logger.propagate = False
 
 
 def create_command() -> SummonCommand:

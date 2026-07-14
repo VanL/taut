@@ -2214,6 +2214,33 @@ def test_terminal_mode_posts_assistant_text_to_single_thread(
     assert driver.stop() == 0
 
 
+def test_noninteractive_driver_logging_escapes_assistant_terminal_controls(
+    summon_db: Path,
+    driver_factory: Callable[..., DriverProcess],
+) -> None:
+    probe = "assistant\x1b]52;c;Y2xpcGJvYXJk\x07\x9b\r\b\t\nrow"
+    escaped = r"assistant\x1b]52;c;Y2xpcGJvYXJk\a\x9b\r\b\t\nrow"
+    driver = driver_factory(
+        summon_db,
+        "scripted",
+        "general",
+        scenario={"on_start": [{"assistant_text": probe}]},
+    )
+    driver.wait_for_start()
+
+    wait_until(
+        lambda: escaped in driver.stderr_tail(),
+        message=f"escaped assistant log: {driver.stderr_tail()}",
+    )
+    output = driver.stderr_path.read_text(encoding="utf-8")
+    assert all(
+        character == "\n"
+        or not (ord(character) < 0x20 or 0x7F <= ord(character) <= 0x9F)
+        for character in output
+    )
+    assert driver.stop() == 0
+
+
 @PTY_XDIST_GROUP
 def test_pty_terminal_mode_is_disabled_by_capability(
     summon_db: Path, tmp_path: Path, driver_factory: Callable[..., DriverProcess]

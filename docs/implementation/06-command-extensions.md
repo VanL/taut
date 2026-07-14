@@ -153,6 +153,35 @@ or 2. Core renders unexpected failures without a traceback and always closes
 the context's lazy client. An adapter must write through `context.stdin`,
 `stdout`, and `stderr`, not ambient process streams.
 
+Human terminal text is also an extension boundary. Import the lightweight
+root helper and escape a complete dynamic record before adding its structural
+newline:
+
+```python
+from taut import escape_terminal_text
+
+context.stdout.write(escape_terminal_text(result_text))
+context.stdout.write("\n")
+```
+
+The no-argument call inherits packaged `taut/defaults.toml` plus the nearest
+CWD `.taut.toml` `[terminal_text]` policy. Trusted extensions may pass
+`additional_patterns` to extend that effective policy. Setting
+`inherit_defaults=False` bypasses both ambient and packaged policy, leaving
+only explicit patterns. Do not copy the control regexes, mutate domain objects,
+or filter JSON. Invalid packaged or project policy is fatal; emit its fixed
+`RuntimeError` text directly without calling the helper again. Summon formats
+its owned log record first and then escapes that final body. Raw PTY leases are
+terminal protocols and remain a reviewed byte-transparent exemption.
+
+This policy limits accidental terminal-control relay, including content an
+agent echoes after prompt injection. Installed extension code is already
+trusted in-process, so the helper is a safety control, not a sandbox or
+authorization boundary. Project regexes are also trusted: they may disable the
+default or add expensive matching work. Provider-owned stderr inherited
+directly by an external adapter remains outside Taut-owned rendering; safely
+mediating it requires a separately drained pipe.
+
 `CommandContext` is intentionally not a service locator. It carries root
 values, authoritative streams, and one lazy `TautClient`. Extension-specific
 operations stay on the extension's public domain interface. Summon adapters,
@@ -346,7 +375,8 @@ For a new core built-in:
 2. Add its lightweight manifest to `taut/commands/_builtins.py` and write the
    failing source-tree contract test.
 3. Add its factory and thin adapter under `taut/commands/`; reuse shared
-   renderers and parser helpers.
+   renderers and parser helpers. Route human dynamic text through
+   `taut.escape_terminal_text`; keep machine output exact.
 4. Test real state and subprocess behavior. Mock only metadata enumeration,
    clocks, or a true external host/provider seam.
 5. Add import-floor assertions proving root and command help do not initialize
@@ -361,7 +391,8 @@ For a new installed extension command:
    point per verb, and matching lightweight `CommandSpec` objects.
 3. Write the failing manifest/package contract, then add zero-argument
    factories and thin adapters. Ensure every target module is included in the
-   built wheel.
+   built wheel. Use `taut.escape_terminal_text` for human text and raise the
+   package's `taut` floor to the first version that exports every helper used.
 4. Test real domain state and subprocess behavior. Do not replace broker,
    storage, or CLI execution with mocks.
 5. Build and install the wheel into a checkout-free environment. Test
@@ -377,6 +408,9 @@ those only for a concrete product need with its own compatibility plan.
 
 ## Related Plan
 
+- `docs/plans/2026-07-14-terminal-output-safety-plan.md`
+  — shared packaged/project policy, renderer integration, extension guidance,
+  and raw PTY exemption.
 - `docs/plans/2026-07-13-ci-speed-determinism-release-evidence-plan.md`
   — derived installed-wheel ownership, serial CI execution, and explicit
   current-wheel reuse without dropping historical compatibility builds.

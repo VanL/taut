@@ -40,8 +40,8 @@ the core package first, then inject the extension wheel into the same
 environment:
 
 ```bash
-pipx install "git+https://github.com/VanL/taut.git@v0.6.3"
-pipx inject taut ./taut_summon-0.6.3-py3-none-any.whl
+pipx install "git+https://github.com/VanL/taut.git@v0.6.4"
+pipx inject taut ./taut_summon-0.6.4-py3-none-any.whl
 ```
 
 ## Usage
@@ -75,6 +75,17 @@ After detach the member is marked wired and future summons run detached.
 Use `taut summon --attach NAME` to re-enter setup, or `--detach` for an
 explicit detached run. PTY output is never parsed as speech; the agent speaks
 by running `taut say`.
+
+Summon command records, standalone status/errors, and Summon-owned
+non-interactive logs use core's public `taut.escape_terminal_text` policy. This
+reduces the chance that prompt-injected chat or provider text is relayed as a
+live terminal command sequence. It is a safe default, not a sandbox boundary.
+The explicit PTY attach is intentionally exempt and copies provider terminal
+bytes unchanged because those bytes are the attached terminal protocol.
+Provider-owned stderr inherited directly by an external adapter is also
+outside Taut-owned text rendering and may contain controls. Constrain or
+redirect that provider stream when its output is not trusted; mediating it
+would require a separately drained pipe rather than this text-display policy.
 
 The PTY orientation is the first injected user turn, not a privileged system
 message. Chat continuation lines are indented to keep attribution visible, but

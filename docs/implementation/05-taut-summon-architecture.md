@@ -550,11 +550,15 @@ action help to both console surfaces. Parser inventory, installed-wheel parity,
 and phrase tests prevent the surfaces from drifting while preserving verbatim
 `--` tails.
 
-The console adapter configures driver logging with `logging.basicConfig` on
-first execution, preserving the released CLI behavior. This is process-global
-and best-effort when a host has already configured logging; it is not an
-embedding contract. Rich hosts call `SummonController` directly and own their
-logging policy and streams.
+The console adapter installs one handler on the package-scoped `taut_summon`
+logger for each foreground command execution and escapes the final owned log
+body through core's effective packaged/project terminal policy. Propagation is
+disabled, so a preconfigured host root logger cannot bypass the safe formatter
+and is not replaced. Rich hosts call `SummonController` directly and own their
+logging policy and streams. Provider-owned stderr inherited directly by an
+external adapter is outside Taut-owned rendering and may contain controls.
+Mediating it would
+require a separately drained subprocess pipe.
 
 ## Boundaries and Invariants
 

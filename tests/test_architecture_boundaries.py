@@ -152,15 +152,19 @@ class _RuntimeImportVisitor(ast.NodeVisitor):
         ),
         (
             Path("taut/commands/_summon_compat.py"),
-            {"taut.commands._protocol"},
+            {"taut.commands._protocol", "taut.commands._rendering"},
             {"taut_summon.cli"},
         ),
         (
             Path("taut/commands/_rendering.py"),
-            {"taut._exceptions"},
+            {"taut", "taut._exceptions"},
             {"taut.client"},
         ),
-        (Path("taut/commands/_protocol.py"), set(), {"taut.client"}),
+        (
+            Path("taut/commands/_protocol.py"),
+            set(),
+            {"taut.client", "taut.commands._rendering"},
+        ),
         (
             Path("taut/commands/__init__.py"),
             {"taut.commands._protocol"},
@@ -168,7 +172,12 @@ class _RuntimeImportVisitor(ast.NodeVisitor):
         ),
         (
             Path("extensions/taut_summon/taut_summon/cli.py"),
-            {"taut.commands", "taut_summon.commands", "taut_summon.models"},
+            {
+                "taut",
+                "taut.commands",
+                "taut_summon.commands",
+                "taut_summon.models",
+            },
             {
                 "taut_summon.commands.dismiss",
                 "taut_summon.commands.summon",
@@ -182,12 +191,17 @@ class _RuntimeImportVisitor(ast.NodeVisitor):
         ),
         (
             Path("extensions/taut_summon/taut_summon/commands/__init__.py"),
-            {"taut.commands"},
+            {"taut", "taut.commands"},
             set(),
         ),
         (
             Path("extensions/taut_summon/taut_summon/commands/summon.py"),
-            {"taut.commands", "taut_summon.commands", "taut_summon.models"},
+            {
+                "taut",
+                "taut.commands",
+                "taut_summon.commands",
+                "taut_summon.models",
+            },
             {"taut_summon.controller", "taut_summon.interaction"},
         ),
         (
@@ -224,3 +238,193 @@ def test_command_leaf_runtime_imports_stay_at_command_seams(
 
     assert nonstdlib == expected
     assert local_nonstdlib == expected_local
+
+
+class _TerminalSinkVisitor(ast.NodeVisitor):
+    def __init__(self, relative_path: Path) -> None:
+        self.relative_path = relative_path
+        self.scope: list[str] = []
+        self.sinks: list[tuple[str, str, str]] = []
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self.scope.append(node.name)
+        self.generic_visit(node)
+        self.scope.pop()
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        if (
+            self.scope
+            and self.scope[-1].endswith("ArgumentParser")
+            and node.name in {"error", "exit"}
+        ):
+            self.sinks.append(
+                (
+                    self.relative_path.as_posix(),
+                    ".".join([*self.scope, node.name]),
+                    f"argparse.{node.name}",
+                )
+            )
+        if (
+            self.scope
+            and self.scope[-1].endswith("Formatter")
+            and node.name == "format"
+        ):
+            self.sinks.append(
+                (
+                    self.relative_path.as_posix(),
+                    ".".join([*self.scope, node.name]),
+                    "logging.format",
+                )
+            )
+        self.scope.append(node.name)
+        self.generic_visit(node)
+        self.scope.pop()
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self.scope.append(node.name)
+        self.generic_visit(node)
+        self.scope.pop()
+
+    def visit_Call(self, node: ast.Call) -> None:
+        kind: str | None = None
+        if isinstance(node.func, ast.Name) and node.func.id == "print":
+            kind = "print"
+        elif isinstance(node.func, ast.Attribute) and node.func.attr == "write":
+            if isinstance(node.func.value, ast.Name) and node.func.value.id == "os":
+                kind = "os.write"
+            else:
+                kind = ".write"
+        elif (
+            isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "logging"
+            and node.func.attr in {"basicConfig", "StreamHandler"}
+        ):
+            kind = f"logging.{node.func.attr}"
+        if kind is not None:
+            self.sinks.append(
+                (
+                    self.relative_path.as_posix(),
+                    ".".join(self.scope) or "<module>",
+                    kind,
+                )
+            )
+        self.generic_visit(node)
+
+
+def test_first_party_terminal_sink_inventory_is_explicit() -> None:
+    relative_paths = [
+        *sorted(Path("taut/commands").glob("*.py")),
+        Path("extensions/taut_summon/taut_summon/cli.py"),
+        *sorted(Path("extensions/taut_summon/taut_summon/commands").glob("*.py")),
+        Path("extensions/taut_summon/taut_summon/scripted_provider.py"),
+        Path("extensions/taut_summon/taut_summon/_pty.py"),
+    ]
+    sinks: list[tuple[str, str, str]] = []
+    for relative_path in relative_paths:
+        visitor = _TerminalSinkVisitor(relative_path)
+        visitor.visit(
+            ast.parse((PROJECT_ROOT / relative_path).read_text(encoding="utf-8"))
+        )
+        sinks.extend(visitor.sinks)
+
+    # Each entry is a reviewed sink. Duplicate tuples are intentional call
+    # counts, so adding a write inside an allowed function still changes the
+    # inventory. JSON/protocol/file writes preserve exact data; common line
+    # writers and parser overrides escape text; bootstrap writes are fixed
+    # ASCII; the named PTY writes are the byte-transparent SUM-7.4 exemption.
+    expected = [
+        ("taut/commands/_dispatch.py", "dispatch", ".write"),
+        ("taut/commands/_dispatch.py", "_dispatch", ".write"),
+        ("taut/commands/_dispatch.py", "_write_root_help", ".write"),
+        (
+            "taut/commands/_protocol.py",
+            "CommandArgumentParser.error",
+            "argparse.error",
+        ),
+        (
+            "taut/commands/_protocol.py",
+            "CommandArgumentParser.exit",
+            "argparse.exit",
+        ),
+        ("taut/commands/_rendering.py", "write_json", ".write"),
+        ("taut/commands/_rendering.py", "write_human_line", ".write"),
+        ("taut/commands/_rendering.py", "write_human_line", ".write"),
+        (
+            "taut/commands/_summon_compat.py",
+            "SummonCompatibilityCommand.run",
+            ".write",
+        ),
+        ("extensions/taut_summon/taut_summon/cli.py", "main", ".write"),
+        (
+            "extensions/taut_summon/taut_summon/cli.py",
+            "_SummonArgumentParser.error",
+            "argparse.error",
+        ),
+        (
+            "extensions/taut_summon/taut_summon/commands/__init__.py",
+            "_write_human_line",
+            ".write",
+        ),
+        (
+            "extensions/taut_summon/taut_summon/commands/__init__.py",
+            "_write_human_line",
+            ".write",
+        ),
+        (
+            "extensions/taut_summon/taut_summon/commands/summon.py",
+            "_TerminalSafeFormatter.format",
+            "logging.format",
+        ),
+        (
+            "extensions/taut_summon/taut_summon/commands/summon.py",
+            "_configure_logging",
+            "logging.StreamHandler",
+        ),
+        (
+            "extensions/taut_summon/taut_summon/scripted_provider.py",
+            "_emit",
+            "print",
+        ),
+        (
+            "extensions/taut_summon/taut_summon/scripted_provider.py",
+            "_record",
+            ".write",
+        ),
+        (
+            "extensions/taut_summon/taut_summon/scripted_provider.py",
+            "_emit_raw",
+            "print",
+        ),
+        (
+            "extensions/taut_summon/taut_summon/scripted_provider.py",
+            "_write_stderr",
+            "print",
+        ),
+        (
+            "extensions/taut_summon/taut_summon/_pty.py",
+            "PtyHandle.attach._forward_wake",
+            "os.write",
+        ),
+        (
+            "extensions/taut_summon/taut_summon/_pty.py",
+            "PtyHandle.attach",
+            "os.write",
+        ),
+        (
+            "extensions/taut_summon/taut_summon/_pty.py",
+            "PtyHandle.attach",
+            "os.write",
+        ),
+        (
+            "extensions/taut_summon/taut_summon/_pty.py",
+            "PtyHandle._write_all",
+            "os.write",
+        ),
+        (
+            "extensions/taut_summon/taut_summon/_pty.py",
+            "PtyHandle._write_interrupt_fd_best_effort",
+            "os.write",
+        ),
+    ]
+    assert sorted(sinks) == sorted(expected)
