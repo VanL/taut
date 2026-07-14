@@ -13,13 +13,15 @@ Quick pointers to the key guidance documents in this repository.
 | `bin/pytest-pg` | Docker-backed Postgres test runner for shared root tests and `taut-pg` tests |
 | `bin/check-required-coverage-paths.py` | Post-combine coverage-data checker for required child-process and critical Summon execution paths |
 | `bin/check-core-summon-wheel-matrix.py` | Isolated six-case core/Summon wheel-matrix checker retaining the 0.5.0 reactor floor and adding the 0.5.4 command-rollout floor |
-| `bin/build-and-check-release-wheels.py` | Fresh-build owner that selects exactly one core wheel and one Summon wheel before invoking the wheel-matrix checker |
-| `.github/workflows/test.yml` | Push/PR/reusable pytest, lint, type, and build gates |
+| `bin/build-and-check-release-wheels.py` | Fresh-build owner, or paired explicit-current-wheel consumer in canonical CI, that retains the historical wheel builds before invoking the six-case matrix checker |
+| `bin/release-artifact.py` | Creates and verifies commit-bound release bundles containing one wheel, one sdist, and an inner SHA-256 manifest |
+| `bin/require-green-workflows.py` | Observes canonical exact-SHA workflow evidence and selects attempt-bound release artifacts by immutable id and archive digest |
+| `.github/workflows/test.yml` | Push/PR/reusable pytest, lint, type, existing-lane coverage, canonical packaging, and release-evidence artifact gates |
 | `.github/workflows/test-pg-extension.yml` | Push/PR/reusable Docker Postgres gate for `taut-pg` |
-| `.github/workflows/release-gate.yml` | `v*` tag gate that runs tests, verifies tag stability, and publishes release artifacts |
-| `.github/workflows/release-gate-pg.yml` | `taut_pg/v*` tag gate for GitHub-only `taut-pg` release artifacts |
-| `.github/workflows/release-gate-summon.yml` | `taut_summon/v*` tag gate for GitHub-only `taut-summon` release artifacts |
-| `.github/workflows/release.yml` | Reusable GitHub Release artifact builder/uploader; no PyPI path |
+| `.github/workflows/release-gate.yml` | `v*` tag observer that requires exact-SHA Test and PG Test evidence before publishing the tested core artifact |
+| `.github/workflows/release-gate-pg.yml` | `taut_pg/v*` tag observer that requires exact-SHA Test and PG Test evidence before publishing the tested `taut-pg` artifact |
+| `.github/workflows/release-gate-summon.yml` | `taut_summon/v*` tag observer that requires exact-SHA Test evidence before publishing the tested `taut-summon` artifact |
+| `.github/workflows/release.yml` | Reusable verifier/downloader/uploader for an immutable tested release artifact; it never builds packages and has no PyPI path |
 
 ## Shared Agent Context
 
@@ -72,6 +74,7 @@ Quick pointers to the key guidance documents in this repository.
 | `docs/plans/2026-07-10-taut-summon-quality-remediation-plan.md` | Implemented and independently verified remediation for state, lifecycle, control, PTY, driver-generation, and paired-release findings |
 | `docs/plans/2026-07-11-multi-factor-review-remediation-plan.md` | Implemented and independently reviewed external multi-factor remediation; current worktree remains uncommitted |
 | `docs/plans/2026-07-12-lazy-command-extensions-and-rich-tui-composition-plan.md` | Reviewed implementation plan for command extensions, lazy subsystem loading, public Summon composition, and rich-host boundaries |
+| `docs/plans/2026-07-13-ci-speed-determinism-release-evidence-plan.md` | Reviewed implementation plan for existing-lane coverage, deterministic worker/process ownership, strict local-LLM evidence, canonical package artifacts, and exact-SHA release gates |
 | `docs/implementation/00-implementation-index.md` | Numbered entry point for implementation docs |
 | `docs/implementation/01-documentation-system.md` | Why the documentation system is shaped this way |
 | `docs/implementation/03-agent-inventory.md` | Current observed agent availability and review preference |

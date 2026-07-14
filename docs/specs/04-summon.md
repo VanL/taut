@@ -1060,11 +1060,26 @@ existing release-before-ack ordering.
   not require hosted CLIs to auto-execute shell commands; the local LLM lane
   below owns the deterministic sentinel-posting proof.
 - A CI-safe local LLM lane uses a real PTY child and a loopback
-  OpenAI-compatible model endpoint. The child must receive the summon
-  orientation, call the local model endpoint, and post a sentinel through
-  `taut say`. This proves local model transport plus PTY/mouth integration;
-  it prewires the synthetic PTY member as already onboarded, and it does not
-  replace the real-harness, local-only smoke matrix.
+  OpenAI-compatible model endpoint. Prepared CI first performs a bounded
+  model-list wait, then exactly one real chat completion rather than completion
+  retries. The child must receive the summon orientation, complete one request
+  through the counting proxy, and post a sentinel through real `taut say`. The
+  model's prose does not control the sentinel post; this is a deterministic
+  transport and PTY/mouth proof, not an instruction-following benchmark. With
+  `TAUT_SUMMON_LOCAL_LLM=1`, missing models, endpoint/completion errors,
+  malformed responses, failed sentinel posts, and any harness exit/restart
+  observed before success are hard failures and never skips or silent greens.
+  Production [SUM-11] crash recovery remains enabled; the smoke inspects its
+  lifecycle evidence and fails if recovery was needed. Failure evidence
+  includes driver stderr, TUI events, request count, and provider/container
+  diagnostics. The lane prewires the synthetic PTY member as already onboarded
+  and does not replace the real-harness, local-only smoke matrix.
+  Structured child diagnostics enumerate HTTP failure, URL failure, timeout,
+  invalid JSON, non-object response, non-list choices, empty choices, missing
+  message, and missing content; each class has a firing test. Dedicated
+  external-live and local-LLM invocations select only their respective live
+  marker. Non-live diagnostics in the same files are owned once by the unit
+  lane rather than rerun by the dedicated smoke.
 - Control-reactor tests are independent of core reactor tests. They must prove
   fixed topology, control-thread ownership, persistent long-lived handles,
   broker-activity wake before a long audit interval, no in-turn handle
@@ -1180,6 +1195,9 @@ public operation errors to exit 1.
 
 ## Related Plans
 
+- `docs/plans/2026-07-13-ci-speed-determinism-release-evidence-plan.md` —
+  strict prepared local-LLM proof, complete failure evidence, and shared
+  exact-SHA release artifacts without duplicate test workflow calls.
 - `docs/plans/2026-07-13-release-metadata-preparation-plan.md` — synchronized
   SimpleBroker floor ownership and release preparation before verification.
 - `docs/plans/2026-07-12-lazy-command-extensions-and-rich-tui-composition-plan.md`

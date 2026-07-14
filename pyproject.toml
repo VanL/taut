@@ -85,6 +85,7 @@ testpaths = ["tests"]
 addopts = "-ra -q --strict-markers -m 'not slow' -n auto --dist loadgroup"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "installed_wheel: tests that consume the shared installed-wheel fixture",
     "shared: backend-agnostic tests that should pass on SQLite and Postgres",
     "sqlite_only: tests that validate built-in SQLite/path behavior",
     "pg_only: tests that validate the Postgres extension package",

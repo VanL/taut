@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import signal
 import subprocess
@@ -31,6 +32,9 @@ from tests.conftest import run_cli
 pytestmark = pytest.mark.sqlite_only
 
 _TautWatcherT = TypeVar("_TautWatcherT", bound=TautWatcher)
+_BASE_REACTOR_SIGINT_PROBE_MODULE = "tests.helpers.base_reactor_sigint_probe"
+_BASE_REACTOR_SIGINT_PROBE_TIMEOUT = 3.0
+_BASE_REACTOR_SIGINT_PROBE_GROUP = pytest.mark.xdist_group("base-reactor-sigint-probe")
 
 
 def _wait_until(predicate: Callable[[], bool], *, timeout: float = 3.0) -> None:
@@ -52,6 +56,63 @@ def _spawn_cli(cwd: Path, *args: object) -> subprocess.Popen[str]:
         encoding="utf-8",
         errors="replace",
     )
+
+
+def _run_base_reactor_sigint_probe(
+    *,
+    mode: str = "probe",
+    timeout: float = _BASE_REACTOR_SIGINT_PROBE_TIMEOUT,
+) -> dict[str, object]:
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            _BASE_REACTOR_SIGINT_PROBE_MODULE,
+            "--mode",
+            mode,
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        stdout, stderr = process.communicate()
+        raise AssertionError(
+            f"BaseReactor SIGINT probe timed out after {timeout:.1f}s and was killed; "
+            f"stdout={stdout!r}; stderr={stderr!r}"
+        ) from None
+
+    if process.returncode != 0:
+        raise AssertionError(
+            f"BaseReactor SIGINT probe exited with code {process.returncode}; "
+            f"stdout={stdout!r}; stderr={stderr!r}"
+        )
+
+    lines = [line for line in stdout.splitlines() if line.strip()]
+    if len(lines) != 1:
+        raise AssertionError(
+            "BaseReactor SIGINT probe did not emit exactly one structured result; "
+            f"stdout={stdout!r}; stderr={stderr!r}"
+        )
+    try:
+        payload = json.loads(lines[0])
+    except json.JSONDecodeError as exc:
+        raise AssertionError(
+            "BaseReactor SIGINT probe emitted an invalid structured result; "
+            f"stdout={stdout!r}; stderr={stderr!r}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise AssertionError(
+            "BaseReactor SIGINT probe result must be an object; "
+            f"stdout={stdout!r}; stderr={stderr!r}"
+        )
+    return cast(dict[str, object], payload)
 
 
 def _record_message_texts(seen: list[str]) -> Callable[[Message | Notification], None]:
@@ -772,7 +833,6 @@ def test_base_reactor_same_waiter_replacement_transfers_no_close_ownership(
     assert reused_waiter.close_calls == 1
 
 
-@pytest.mark.timeout(3.0)
 def test_base_reactor_rebinds_callback_topology_before_second_strategy_wait(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -812,8 +872,11 @@ def test_base_reactor_rebinds_callback_topology_before_second_strategy_wait(
                 assert self.callback is not None
                 self.callback()
                 return
-            assert len(self.replacements) == 1
-            stop_event.set()
+            if self.wait_calls == 2:
+                assert len(self.replacements) == 1
+                stop_event.set()
+                return
+            raise AssertionError("strategy waited more than twice")
 
     strategy = CallbackStrategy()
     monkeypatch.setattr(
@@ -844,75 +907,37 @@ def test_base_reactor_rebinds_callback_topology_before_second_strategy_wait(
         watcher.stop(join=False)
 
 
-@pytest.mark.timeout(3.0)
-def test_base_reactor_defers_reentrant_sigint_until_waiter_replacement_commits(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    if not hasattr(signal, "raise_signal"):
-        pytest.skip("signal.raise_signal is unavailable")
+def test_base_reactor_defers_reentrant_sigint_until_waiter_replacement_commits() -> (
+    None
+):
+    result = _run_base_reactor_sigint_probe()
 
-    installed_waiter = FakeWaiter()
-    replacement_waiter = FakeWaiter()
-    waiters = iter((installed_waiter, replacement_waiter))
-    stop_event = threading.Event()
+    assert result == {
+        "installed_close_calls": 1,
+        "keyboard_interrupt": True,
+        "multi_generation_matches": True,
+        "multi_waiter_is_replacement": True,
+        "replacement_close_calls": 1,
+        "replacement_count": 1,
+        "replacement_is_expected": True,
+        "start_calls": 1,
+        "status": "ok",
+        "strategy_generation_matches": True,
+    }
 
-    class InterruptingStrategy(RecordingPollingStrategy):
-        def __init__(self) -> None:
-            super().__init__(stop_event)
-            self.reenter_on_notify = False
 
-        def replace_activity_waiter(self, activity_waiter: Any | None) -> Any | None:
-            self.replacements.append(activity_waiter)
-            displaced = PollingStrategy.replace_activity_waiter(self, activity_waiter)
-            self.reenter_on_notify = True
-            signal.raise_signal(signal.SIGINT)
-            return displaced
+@_BASE_REACTOR_SIGINT_PROBE_GROUP
+def test_base_reactor_sigint_probe_watchdog_reports_hung_child_as_failure() -> None:
+    assert _BASE_REACTOR_SIGINT_PROBE_TIMEOUT == 3.0
+    with pytest.raises(AssertionError, match="timed out.*was killed") as exc_info:
+        _run_base_reactor_sigint_probe(mode="hang", timeout=1.0)
 
-        def notify_activity(self) -> None:
-            if self.reenter_on_notify:
-                self.reenter_on_notify = False
-                signal.raise_signal(signal.SIGINT)
-            super().notify_activity()
+    assert '"status": "hanging"' in str(exc_info.value)
 
-    strategy = InterruptingStrategy()
-    monkeypatch.setattr(
-        "taut.watcher.create_activity_waiter_for_queues",
-        lambda _queues, *, stop_event: next(waiters),
-    )
 
-    class DynamicReactor(BaseReactor):
-        _dynamic_topology = True
-
-        def __init__(self, *args: Any, **kwargs: Any) -> None:
-            self._topology_changed = False
-            super().__init__(*args, **kwargs)
-
-        def _process_reactor_turn(self) -> None:
-            if not self._topology_changed:
-                self._topology_changed = True
-                self.add_queue("dynamic.two", lambda *_args: None)
-
-        def next_wait_timeout(self) -> float | None:
-            return 0.1
-
-    watcher = DynamicReactor(
-        queue_configs={"dynamic.one": {"handler": lambda *_args: None}},
-        db=tmp_path / ".taut.db",
-        stop_event=stop_event,
-        polling_strategy=strategy,
-    )
-
-    with pytest.raises(KeyboardInterrupt):
-        watcher.run()
-
-    assert strategy.start_calls == 1
-    assert strategy.replacements == [replacement_waiter]
-    assert watcher._multi_activity_waiter is replacement_waiter
-    assert watcher._multi_activity_waiter_generation == watcher._queue_generation
-    assert watcher._strategy_generation == watcher._queue_generation
-    assert installed_waiter.close_calls == 1
-    assert replacement_waiter.close_calls == 1
+@_BASE_REACTOR_SIGINT_PROBE_GROUP
+def test_base_reactor_sigint_probe_watchdog_same_worker_sentinel() -> None:
+    assert _BASE_REACTOR_SIGINT_PROBE_TIMEOUT == 3.0
 
 
 def test_base_reactor_sigint_defers_cleanup_outside_signal_handler(

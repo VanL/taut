@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import select
 import subprocess
 import sys
 import threading
@@ -19,7 +20,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import pytest
 from conftest import _base_env, summon_cli, taut_cli
@@ -146,6 +147,56 @@ class _CountingProxy:
         return f"{origin}{path}"
 
 
+@dataclass
+class _StubCompletionEndpoint:
+    payload: bytes
+    status: int = 200
+    delay_seconds: float = 0.0
+    server: Any | None = None
+    thread: threading.Thread | None = None
+
+    def __enter__(self) -> _StubCompletionEndpoint:
+        import http.server
+
+        stub = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802 - stdlib hook name
+                length = int(self.headers.get("Content-Length", "0") or "0")
+                if length:
+                    self.rfile.read(length)
+                if stub.delay_seconds:
+                    time.sleep(stub.delay_seconds)
+                self.send_response(stub.status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(stub.payload)))
+                self.end_headers()
+                try:
+                    self.wfile.write(stub.payload)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+
+            def log_message(self, format: str, *args: object) -> None:
+                return
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        if self.server is not None:
+            self.server.shutdown()
+            self.server.server_close()
+        if self.thread is not None:
+            self.thread.join(timeout=2.0)
+
+    @property
+    def endpoint(self) -> str:
+        assert self.server is not None
+        return f"http://127.0.0.1:{self.server.server_port}/v1"
+
+
 def _env_truthy(name: str) -> bool:
     value = os.environ.get(name)
     if value is None:
@@ -252,6 +303,123 @@ def _tail(path: Path, *, limit: int = 4000) -> str:
     return path.read_text(encoding="utf-8", errors="replace")[-limit:]
 
 
+def _local_llm_failure_message(
+    reason: str,
+    *,
+    driver_stderr: Path,
+    tui_log: Path,
+    proxy_request_count: int,
+    detail: str | None = None,
+) -> str:
+    fields = [reason]
+    if detail:
+        fields.append(detail)
+    fields.extend(
+        [
+            f"proxy_request_count={proxy_request_count}",
+            f"tui_event_log={_tail(tui_log)!r}",
+            f"driver_stderr={_tail(driver_stderr)!r}",
+        ]
+    )
+    return "; ".join(fields)
+
+
+def _fail_local_llm_smoke(
+    reason: str,
+    *,
+    driver_stderr: Path,
+    tui_log: Path,
+    proxy_request_count: int,
+    detail: str | None = None,
+) -> NoReturn:
+    pytest.fail(
+        _local_llm_failure_message(
+            reason,
+            driver_stderr=driver_stderr,
+            tui_log=tui_log,
+            proxy_request_count=proxy_request_count,
+            detail=detail,
+        )
+    )
+
+
+def _driver_used_harness_recovery(stderr: str) -> bool:
+    return any(
+        marker in stderr
+        for marker in (
+            "harness exited",
+            "resuming in ",
+        )
+    )
+
+
+def _run_failing_local_llm_child(
+    tmp_path: Path,
+    *,
+    endpoint: str,
+    request_timeout: float = 0.2,
+) -> tuple[int, str, list[dict[str, object]]]:
+    pty = pytest.importorskip("pty", reason="local LLM child requires a POSIX PTY")
+    master_fd, slave_fd = pty.openpty()
+    event_log = tmp_path / "child-events.jsonl"
+    sentinel = "expected-child-error-sentinel"
+    env = os.environ.copy()
+    env.update(
+        {
+            "TAUT_SUMMON_LOCAL_LLM_ENDPOINT": endpoint,
+            "TAUT_SUMMON_LOCAL_LLM_MODEL": "stub-model",
+            "TAUT_SUMMON_LOCAL_LLM_TARGET": "general",
+            "TAUT_SUMMON_LOCAL_LLM_SENTINEL": sentinel,
+            "TAUT_SUMMON_LOCAL_LLM_TIMEOUT": str(request_timeout),
+            "TAUT_SUMMON_LOCAL_LLM_TUI_LOG": str(event_log),
+        }
+    )
+    proc = subprocess.Popen(
+        [sys.executable, str(LOCAL_LLM_TUI)],
+        stdin=slave_fd,
+        stdout=slave_fd,
+        stderr=subprocess.PIPE,
+        cwd=tmp_path,
+        env=env,
+    )
+    os.close(slave_fd)
+    try:
+        output = b""
+        deadline = time.monotonic() + 2.0
+        while b"local-llm-ready" not in output and time.monotonic() < deadline:
+            ready, _, _ = select.select([master_fd], [], [], 0.05)
+            if ready:
+                output += os.read(master_fd, 4096)
+            elif proc.poll() is not None:
+                break
+        assert b"local-llm-ready" in output, output
+        os.write(master_fd, f"orientation {sentinel}\r".encode())
+        _stdout, stderr = proc.communicate(timeout=4.0)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=2.0)
+        os.close(master_fd)
+    assert stderr is not None
+    return proc.returncode, stderr.decode(errors="replace"), _entries(event_log)
+
+
+def _assert_concise_child_error(
+    result: tuple[int, str, list[dict[str, object]]],
+    *,
+    expected_kind: str,
+) -> None:
+    returncode, stderr, events = result
+    assert returncode != 0
+    assert "Traceback" not in stderr
+    assert len(stderr) < 500
+    assert stderr.count("\n") == 1
+    assert any(
+        event.get("event") == "llm_error" and event.get("kind") == expected_kind
+        for event in events
+    ), events
+
+
 def _local_llm_capture() -> identity.IdentityCapture:
     process = identity.ProcessInfo(
         pid=os.getpid(),
@@ -336,6 +504,130 @@ def test_local_llm_env_can_disable_local(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setenv("TAUT_SUMMON_LOCAL_LLM", "0")
 
     assert not _local_llm_enabled()
+
+
+def test_local_llm_child_reports_url_failure_without_traceback(tmp_path: Path) -> None:
+    result = _run_failing_local_llm_child(
+        tmp_path,
+        endpoint="gopher://127.0.0.1/v1",
+    )
+
+    _assert_concise_child_error(result, expected_kind="url_error")
+
+
+def test_local_llm_child_reports_timeout_without_traceback(tmp_path: Path) -> None:
+    with _StubCompletionEndpoint(
+        b'{"choices":[{"message":{"content":"OK"}}]}',
+        delay_seconds=0.25,
+    ) as endpoint:
+        result = _run_failing_local_llm_child(
+            tmp_path,
+            endpoint=endpoint.endpoint,
+            request_timeout=0.05,
+        )
+
+    _assert_concise_child_error(result, expected_kind="timeout")
+
+
+def test_local_llm_child_reports_http_failure_without_traceback(tmp_path: Path) -> None:
+    with _StubCompletionEndpoint(b'{"error":"model failed"}', status=500) as endpoint:
+        result = _run_failing_local_llm_child(
+            tmp_path,
+            endpoint=endpoint.endpoint,
+        )
+
+    _assert_concise_child_error(result, expected_kind="http_error")
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_kind"),
+    [
+        pytest.param(b"{", "invalid_json", id="invalid-json"),
+        pytest.param(b"[]", "response_not_object", id="wrong-top-level-type"),
+        pytest.param(
+            b'{"choices":42}',
+            "missing_choices",
+            id="choices-not-list",
+        ),
+        pytest.param(b'{"choices":[]}', "empty_choices", id="empty-choices"),
+        pytest.param(b'{"choices":[{}]}', "missing_message", id="missing-message"),
+        pytest.param(
+            b'{"choices":[{"message":{}}]}',
+            "missing_content",
+            id="missing-content",
+        ),
+    ],
+)
+def test_local_llm_child_reports_malformed_response_without_traceback(
+    tmp_path: Path,
+    payload: bytes,
+    expected_kind: str,
+) -> None:
+    with _StubCompletionEndpoint(payload) as endpoint:
+        result = _run_failing_local_llm_child(
+            tmp_path,
+            endpoint=endpoint.endpoint,
+        )
+
+    _assert_concise_child_error(result, expected_kind=expected_kind)
+
+
+def test_local_llm_driver_early_exit_diagnostic_retains_evidence(
+    tmp_path: Path,
+) -> None:
+    driver_stderr = tmp_path / "driver.err"
+    driver_stderr.write_text("driver exploded\n", encoding="utf-8")
+    tui_log = tmp_path / "tui.jsonl"
+    tui_log.write_text('{"event":"llm_error","kind":"url_error"}\n', encoding="utf-8")
+
+    with pytest.raises(pytest.fail.Exception) as exc_info:
+        _fail_local_llm_smoke(
+            "local LLM summon driver exited before sentinel landed",
+            driver_stderr=driver_stderr,
+            tui_log=tui_log,
+            proxy_request_count=2,
+        )
+
+    message = str(exc_info.value)
+    assert "driver exploded" in message
+    assert "url_error" in message
+    assert "proxy_request_count=2" in message
+
+
+def test_local_llm_sentinel_timeout_diagnostic_retains_evidence(
+    tmp_path: Path,
+) -> None:
+    driver_stderr = tmp_path / "driver.err"
+    driver_stderr.write_text("driver still running\n", encoding="utf-8")
+    tui_log = tmp_path / "tui.jsonl"
+    tui_log.write_text('{"event":"llm_response","text":"OK"}\n', encoding="utf-8")
+
+    with pytest.raises(pytest.fail.Exception) as exc_info:
+        _fail_local_llm_smoke(
+            "local LLM PTY harness did not post sentinel",
+            driver_stderr=driver_stderr,
+            tui_log=tui_log,
+            proxy_request_count=1,
+            detail="driver_rc=None; status_rc=0; status_out='RUNNING'",
+        )
+
+    message = str(exc_info.value)
+    assert "driver still running" in message
+    assert "llm_response" in message
+    assert "proxy_request_count=1" in message
+    assert "status_out='RUNNING'" in message
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "harness exited with code 1",
+        "harness exited (code 1); resuming in 1.0s",
+    ],
+)
+def test_local_llm_lifecycle_evidence_detects_harness_recovery(line: str) -> None:
+    assert _driver_used_harness_recovery(f"INFO {line}\n")
+    assert not _driver_used_harness_recovery("INFO summoned 'local-llm'\n")
 
 
 def test_local_llm_prewire_marks_pty_member_wired(tmp_path: Path) -> None:
@@ -440,22 +732,37 @@ def test_local_llm_pty_harness_posts_sentinel(
             deadline = time.monotonic() + LOCAL_SENTINEL_TIMEOUT_SECONDS
             while time.monotonic() < deadline:
                 if _sentinel_posted(db, sentinel):
+                    lifecycle_stderr = _tail(driver_stderr)
+                    if _driver_used_harness_recovery(lifecycle_stderr):
+                        _fail_local_llm_smoke(
+                            "local LLM harness exited or resumed before "
+                            "sentinel success",
+                            driver_stderr=driver_stderr,
+                            tui_log=tui_log,
+                            proxy_request_count=len(proxy.request_bodies),
+                        )
                     break
                 if proc.poll() is not None:
-                    pytest.fail(
-                        "local LLM summon driver exited before sentinel landed: "
-                        f"{_tail(driver_stderr)}"
+                    _fail_local_llm_smoke(
+                        "local LLM summon driver exited before sentinel landed",
+                        driver_stderr=driver_stderr,
+                        tui_log=tui_log,
+                        proxy_request_count=len(proxy.request_bodies),
                     )
                 time.sleep(0.5)
             else:
                 rc, out, err = summon_cli(
                     "status", "local-llm", db=db, cwd=tmp_path, timeout=10.0
                 )
-                pytest.fail(
-                    "local LLM PTY harness did not post sentinel; "
-                    f"driver_rc={proc.poll()!r}; "
-                    f"status_rc={rc}; status_out={out!r}; status_err={err!r}; "
-                    f"log={_entries(tui_log)!r}; stderr={_tail(driver_stderr)}"
+                _fail_local_llm_smoke(
+                    "local LLM PTY harness did not post sentinel",
+                    driver_stderr=driver_stderr,
+                    tui_log=tui_log,
+                    proxy_request_count=len(proxy.request_bodies),
+                    detail=(
+                        f"driver_rc={proc.poll()!r}; status_rc={rc}; "
+                        f"status_out={out!r}; status_err={err!r}"
+                    ),
                 )
         finally:
             summon_cli("stop", "local-llm", db=db, cwd=tmp_path, timeout=30.0)
@@ -468,7 +775,13 @@ def test_local_llm_pty_harness_posts_sentinel(
                     proc.wait(timeout=10.0)
             stderr_handle.close()
 
-    assert proxy.request_bodies, "local LLM TUI did not call the counting proxy"
+    if len(proxy.request_bodies) != 1:
+        _fail_local_llm_smoke(
+            "local LLM TUI must make exactly one completion request",
+            driver_stderr=driver_stderr,
+            tui_log=tui_log,
+            proxy_request_count=len(proxy.request_bodies),
+        )
     bodies = [json.loads(body) for body in proxy.request_bodies]
     assert all(body.get("model") == model for body in bodies)
     entries = _entries(tui_log)

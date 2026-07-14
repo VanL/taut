@@ -17,7 +17,14 @@ import tty
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
+
+
+class _LocalLLMFailure(Exception):
+    def __init__(self, kind: str, detail: str) -> None:
+        super().__init__(detail)
+        self.kind = kind
+        self.detail = detail
 
 
 def _write(data: bytes) -> None:
@@ -64,6 +71,24 @@ def _joined_endpoint(endpoint: str, path: str) -> str:
     return f"{endpoint.rstrip('/')}/{path.lstrip('/')}"
 
 
+def _concise_detail(value: object, *, limit: int = 300) -> str:
+    text = " ".join(str(value).split())
+    if len(text) <= limit:
+        return text
+    return f"{text[: limit - 3]}..."
+
+
+def _llm_failure(
+    log: Path | None,
+    kind: str,
+    detail: str,
+    **fields: Any,
+) -> NoReturn:
+    concise = _concise_detail(detail)
+    _record(log, "llm_error", kind=kind, detail=concise, **fields)
+    raise _LocalLLMFailure(kind, concise)
+
+
 def _call_local_llm(prompt: str, *, log: Path | None) -> str:
     endpoint = os.environ["TAUT_SUMMON_LOCAL_LLM_ENDPOINT"]
     model = os.environ["TAUT_SUMMON_LOCAL_LLM_MODEL"]
@@ -91,13 +116,45 @@ def _call_local_llm(prompt: str, *, log: Path | None) -> str:
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
-            payload = json.load(response)
+            raw_payload = response.read()
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        _record(log, "llm_error", status=exc.code, detail=detail[-1000:])
-        raise
-    content = payload.get("choices", [{}])[0].get("message", {}).get("content", "")
-    text = str(content).strip()
+        _llm_failure(
+            log,
+            "http_error",
+            f"HTTP {exc.code}: {detail[-1000:]}",
+            status=exc.code,
+        )
+    except urllib.error.URLError as exc:
+        if isinstance(exc.reason, TimeoutError):
+            _llm_failure(log, "timeout", f"request timed out after {timeout:g}s")
+        _llm_failure(log, "url_error", f"request failed: {exc.reason}")
+    except TimeoutError:
+        _llm_failure(log, "timeout", f"request timed out after {timeout:g}s")
+
+    try:
+        payload = json.loads(raw_payload)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        _llm_failure(log, "invalid_json", f"invalid JSON response: {exc}")
+    if not isinstance(payload, dict):
+        _llm_failure(
+            log,
+            "response_not_object",
+            f"response must be an object, got {type(payload).__name__}",
+        )
+    choices = payload.get("choices")
+    if not isinstance(choices, list):
+        _llm_failure(log, "missing_choices", "response choices must be a list")
+    if not choices:
+        _llm_failure(log, "empty_choices", "response choices list is empty")
+    choice = choices[0]
+    if not isinstance(choice, dict) or not isinstance(choice.get("message"), dict):
+        _llm_failure(log, "missing_message", "first choice has no message object")
+    message = choice["message"]
+    content = message.get("content")
+    if not isinstance(content, str) or not content.strip():
+        _llm_failure(log, "missing_content", "first choice message has no content")
+    text = content.strip()
     _record(log, "llm_response", text=text[:1000])
     return text
 
@@ -150,7 +207,14 @@ def main() -> int:
         _record(log, "missing_sentinel", sentinel=sentinel)
         return 41
 
-    _call_local_llm(prompt, log=log)
+    try:
+        _call_local_llm(prompt, log=log)
+    except _LocalLLMFailure as exc:
+        print(
+            f"local LLM request failed ({exc.kind}): {exc.detail}",
+            file=sys.stderr,
+        )
+        return 42
     _post_sentinel(target, sentinel, log=log)
     _write(b"\r\nlocal-llm-posted\r\n")
 

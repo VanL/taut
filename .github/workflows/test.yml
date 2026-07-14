@@ -7,12 +7,6 @@ on:
     branches: [main, master]
   workflow_dispatch:
   workflow_call:
-    inputs:
-      check_paired_release_wheels:
-        description: Build and check fresh paired core and Summon release wheels.
-        required: false
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -56,19 +50,67 @@ jobs:
             pyproject.toml
 
       - name: Install dependencies
+        id: install
         timeout-minutes: 10
         run: |
           uv pip install --system -e ".[dev]" -e "./extensions/taut_summon[dev]"
 
       - name: Run tests with pytest
+        if: ${{ matrix.os != 'ubuntu-latest' || matrix.python-version != '3.13' }}
         timeout-minutes: 20
         run: |
-          pytest -v --tb=short -m "not slow" --durations=100 --durations-min=0.5 -o faulthandler_timeout=720 --timeout=900 --timeout-method=thread --full-trace
+          pytest -v --tb=short -m "not slow and not installed_wheel" --durations=100 --durations-min=0.5 -o faulthandler_timeout=720 --timeout=900 --timeout-method=thread --full-trace
+
+      - name: Run tests with coverage
+        id: root_coverage
+        if: ${{ matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13' }}
+        timeout-minutes: 20
+        env:
+          COVERAGE_PROCESS_START: ${{ github.workspace }}/pyproject.toml
+          COVERAGE_FILE: ${{ github.workspace }}/.coverage.root-unit
+        run: |
+          python -m coverage erase
+          python -m coverage run --parallel-mode -m pytest -v --tb=short -m "not slow and not installed_wheel" --durations=100 --durations-min=0.5 -o faulthandler_timeout=720 --timeout=900 --timeout-method=thread --full-trace
+
+      - name: Run installed-wheel tests
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && ((matrix.os == 'ubuntu-latest' && matrix.python-version != '3.13') || (matrix.os == 'macos-latest' && matrix.python-version == '3.13') || (matrix.os == 'windows-latest' && matrix.python-version == '3.11')) }}
+        timeout-minutes: 10
+        run: |
+          pytest -v --tb=short -m "not slow and installed_wheel" -n 0 --durations=100 --durations-min=0.5 -o faulthandler_timeout=720 --timeout=900 --timeout-method=thread --full-trace
+
+      - name: Run installed-wheel tests with coverage
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13' }}
+        timeout-minutes: 10
+        env:
+          COVERAGE_PROCESS_START: ${{ github.workspace }}/pyproject.toml
+          COVERAGE_FILE: ${{ github.workspace }}/.coverage.root-unit
+        run: |
+          python -m coverage run --parallel-mode -m pytest -v --tb=short -m "not slow and installed_wheel" -n 0 --durations=100 --durations-min=0.5 -o faulthandler_timeout=720 --timeout=900 --timeout-method=thread --full-trace
 
       - name: Run taut-summon extension unit tests
+        if: ${{ matrix.os != 'ubuntu-latest' || matrix.python-version != '3.13' }}
         timeout-minutes: 10
         run: |
           pytest extensions/taut_summon/tests -v --tb=short -m "not xdist_group"
+
+      - name: Run taut-summon extension unit tests with coverage
+        id: summon_unit_coverage
+        if: ${{ matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13' }}
+        timeout-minutes: 10
+        env:
+          COVERAGE_PROCESS_START: ${{ github.workspace }}/pyproject.toml
+          COVERAGE_FILE: ${{ github.workspace }}/.coverage.root-unit
+        run: |
+          python -m coverage run --parallel-mode -m pytest extensions/taut_summon/tests -v --tb=short -m "not xdist_group"
+
+      - name: Upload root and unit coverage data
+        if: ${{ always() && matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13' && (steps.root_coverage.outcome != 'skipped' || steps.summon_unit_coverage.outcome != 'skipped') }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-data-root-unit
+          path: ${{ github.workspace }}/.coverage.root-unit.*
+          if-no-files-found: error
+          include-hidden-files: true
 
       - name: Test CLI installation
         timeout-minutes: 2
@@ -116,9 +158,30 @@ jobs:
           uv pip install --system -e ".[dev]" -e "./extensions/taut_summon[dev]"
 
       - name: Run taut-summon extension process tests
+        if: ${{ matrix.os != 'ubuntu-latest' || matrix.python-version != '3.13' }}
         timeout-minutes: 15
         run: |
           pytest extensions/taut_summon/tests -v --tb=short -m "xdist_group and not requires_live_harness and not requires_local_llm" -n 2 --dist load
+
+      - name: Run taut-summon extension process tests with coverage
+        id: summon_process_coverage
+        if: ${{ matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13' }}
+        timeout-minutes: 15
+        env:
+          COVERAGE_PROCESS_START: ${{ github.workspace }}/pyproject.toml
+          COVERAGE_FILE: ${{ github.workspace }}/.coverage.summon-process
+        run: |
+          python -m coverage erase
+          python -m coverage run --parallel-mode -m pytest extensions/taut_summon/tests -v --tb=short -m "xdist_group and not requires_live_harness and not requires_local_llm" -n 2 --dist load
+
+      - name: Upload process coverage data
+        if: ${{ always() && matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13' && steps.summon_process_coverage.outcome != 'skipped' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-data-summon-process
+          path: ${{ github.workspace }}/.coverage.summon-process.*
+          if-no-files-found: error
+          include-hidden-files: true
 
   lint:
     runs-on: ubuntu-latest
@@ -161,7 +224,7 @@ jobs:
       - name: Type check with mypy
         timeout-minutes: 10
         run: |
-          mypy taut tests bin/release.py --config-file pyproject.toml
+          mypy taut tests bin/release.py bin/release-artifact.py bin/require-green-workflows.py --config-file pyproject.toml
           mypy extensions/taut_summon/taut_summon extensions/taut_summon/tests --config-file pyproject.toml
 
   summon-local-llm:
@@ -231,6 +294,7 @@ jobs:
       - name: Wait for served model
         timeout-minutes: 3
         run: |
+          model_ready=false
           for _ in $(seq 1 60); do
             if python - <<'PY'
           import json
@@ -257,11 +321,60 @@ jobs:
           sys.exit(1)
           PY
             then
-              exit 0
+              model_ready=true
+              break
             fi
             sleep 2
           done
-          exit 1
+          if [[ "${model_ready}" != "true" ]]; then
+            exit 1
+          fi
+
+          python - <<'PY'
+          import json
+          import os
+          import sys
+          import urllib.request
+
+          endpoint = (
+              os.environ["TAUT_SUMMON_LOCAL_LLM_ENDPOINT"].rstrip("/")
+              + "/chat/completions"
+          )
+          body = json.dumps(
+              {
+                  "model": os.environ["TAUT_SUMMON_LOCAL_LLM_MODEL"],
+                  "messages": [{"role": "user", "content": "Reply with ready."}],
+                  "max_tokens": 1,
+                  "stream": False,
+              }
+          ).encode("utf-8")
+          request = urllib.request.Request(
+              endpoint,
+              data=body,
+              headers={"Content-Type": "application/json"},
+              method="POST",
+          )
+          try:
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  payload = json.load(response)
+          except Exception as exc:
+              print(f"chat completion readiness failed: {exc}", file=sys.stderr)
+              sys.exit(1)
+          if not isinstance(payload, dict):
+              print("chat completion readiness returned a non-object", file=sys.stderr)
+              sys.exit(1)
+          choices = payload.get("choices")
+          if not isinstance(choices, list) or not choices:
+              print("chat completion readiness returned no choices", file=sys.stderr)
+              sys.exit(1)
+          first = choices[0]
+          message = first.get("message") if isinstance(first, dict) else None
+          content = message.get("content") if isinstance(message, dict) else None
+          if not isinstance(content, str):
+              print("chat completion readiness returned no content", file=sys.stderr)
+              sys.exit(1)
+          print("chat completion readiness succeeded")
+          PY
 
       - name: Install dependencies
         timeout-minutes: 10
@@ -269,11 +382,24 @@ jobs:
           uv pip install --system -e ".[dev]" -e "./extensions/taut_summon[dev]"
 
       - name: Run taut-summon local LLM live tests
+        id: local_llm_coverage
         timeout-minutes: 10
         env:
           TAUT_SUMMON_LOCAL_LLM: "1"
+          COVERAGE_PROCESS_START: ${{ github.workspace }}/pyproject.toml
+          COVERAGE_FILE: ${{ github.workspace }}/.coverage.local-llm
         run: |
-          pytest extensions/taut_summon/tests/test_live_local_llm.py -v --tb=short -n 1 --dist loadgroup
+          python -m coverage erase
+          python -m coverage run --parallel-mode -m pytest extensions/taut_summon/tests/test_live_local_llm.py -v --tb=short -m requires_local_llm -n 1 --dist loadgroup
+
+      - name: Upload local LLM coverage data
+        if: ${{ always() && steps.local_llm_coverage.outcome != 'skipped' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-data-local-llm
+          path: ${{ github.workspace }}/.coverage.local-llm.*
+          if-no-files-found: error
+          include-hidden-files: true
 
       - name: Local LLM diagnostics
         if: always()
@@ -309,33 +435,100 @@ jobs:
           cache-dependency-glob: |
             pyproject.toml
 
-      - name: Build package
+      - name: Build core package
         timeout-minutes: 10
         run: |
-          uv build
+          uv build --out-dir release-dist/core .
 
       - name: Build taut-summon extension package
         timeout-minutes: 10
         run: |
-          uv build extensions/taut_summon
+          uv build --out-dir release-dist/summon extensions/taut_summon
 
-      - name: Build and check paired release wheels
-        if: ${{ inputs.check_paired_release_wheels }}
+      - name: Build taut-pg release package
+        if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
+        timeout-minutes: 10
+        run: |
+          uv build --out-dir release-dist/pg extensions/taut_pg
+
+      - name: Check paired release wheels
+        if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
+        shell: bash
         timeout-minutes: 20
-        run: python bin/build-and-check-release-wheels.py
+        run: |
+          core_wheels=(release-dist/core/*.whl)
+          summon_wheels=(release-dist/summon/*.whl)
+          test "${#core_wheels[@]}" -eq 1
+          test "${#summon_wheels[@]}" -eq 1
+          python bin/build-and-check-release-wheels.py \
+            --core-wheel "${core_wheels[0]}" \
+            --summon-wheel "${summon_wheels[0]}"
 
-      - name: Smoke test built wheel
+      - name: Smoke test core wheel
         shell: bash
         timeout-minutes: 10
         run: |
           python -m venv /tmp/taut-wheel-smoke
           source /tmp/taut-wheel-smoke/bin/activate
-          python -m pip install dist/*.whl
+          python -m pip install release-dist/core/*.whl
           taut --version
+
+      - name: Smoke test taut-pg wheel with paired core
+        if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
+        shell: bash
+        timeout-minutes: 10
+        run: |
+          python -m venv /tmp/taut-pg-wheel-smoke
+          source /tmp/taut-pg-wheel-smoke/bin/activate
+          python -m pip install release-dist/core/*.whl release-dist/pg/*.whl
+          python - <<'PY'
+          import taut_pg
+          from simplebroker.ext import get_backend_plugin
+
+          assert taut_pg.__all__ == []
+          assert get_backend_plugin("postgres").name == "postgres"
+          PY
+
+      - name: Create release provenance bundles
+        if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
+        timeout-minutes: 5
+        run: |
+          python bin/release-artifact.py create --package-dir . --dist-dir release-dist/core --output-dir release-bundles/taut --commit "${{ github.sha }}"
+          python bin/release-artifact.py create --package-dir extensions/taut_summon --dist-dir release-dist/summon --output-dir release-bundles/taut-summon --commit "${{ github.sha }}"
+          python bin/release-artifact.py create --package-dir extensions/taut_pg --dist-dir release-dist/pg --output-dir release-bundles/taut-pg --commit "${{ github.sha }}"
+
+      - name: Upload core release evidence
+        if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-taut-attempt-${{ github.run_attempt }}
+          path: release-bundles/taut/
+          if-no-files-found: error
+          include-hidden-files: true
+
+      - name: Upload Summon release evidence
+        if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-taut-summon-attempt-${{ github.run_attempt }}
+          path: release-bundles/taut-summon/
+          if-no-files-found: error
+          include-hidden-files: true
+
+      - name: Upload PG release evidence
+        if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-taut-pg-attempt-${{ github.run_attempt }}
+          path: release-bundles/taut-pg/
+          if-no-files-found: error
+          include-hidden-files: true
 
   coverage:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
+    needs: [test, summon-process, summon-local-llm]
+    if: ${{ always() && !cancelled() }}
 
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -361,23 +554,17 @@ jobs:
         run: |
           uv pip install --system -e ".[dev]" -e "./extensions/taut_summon[dev]"
 
-      - name: Run tests with coverage
-        timeout-minutes: 20
-        env:
-          PYTEST_ADDOPTS: -ra -q --strict-markers -n auto --dist loadgroup
-          COVERAGE_PROCESS_START: ${{ github.workspace }}/pyproject.toml
-          COVERAGE_FILE: ${{ github.workspace }}/.coverage
+      - name: Download coverage data
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: coverage-data-*
+          path: coverage-data
+          merge-multiple: true
+
+      - name: Combine coverage reports
+        timeout-minutes: 5
         run: |
-          # Keep the existing fresh-process selector boundaries. SQLite-heavy,
-          # PTY, live-harness, and local-LLM lanes are unsafe to collapse into
-          # one pytest process merely for a coverage report.
-          python -m coverage erase
-          python -m coverage run --parallel-mode -m pytest tests -m "not slow"
-          python -m coverage run --parallel-mode -m pytest extensions/taut_summon/tests -m "not xdist_group"
-          python -m coverage run --parallel-mode -m pytest extensions/taut_summon/tests -m "xdist_group and not requires_live_harness and not requires_local_llm" -n 2 --dist load
-          python -m coverage run --parallel-mode -m pytest extensions/taut_summon/tests/test_live_harness.py -n 1 --dist loadgroup
-          python -m coverage run --parallel-mode -m pytest extensions/taut_summon/tests/test_live_local_llm.py -n 1 --dist loadgroup
-          python -m coverage combine
+          python -m coverage combine coverage-data
           python bin/check-required-coverage-paths.py
           python -m coverage report --include="*/taut_summon/_driver.py" --fail-under=1
           python -m coverage report --include="*/taut_summon/_control.py" --fail-under=1

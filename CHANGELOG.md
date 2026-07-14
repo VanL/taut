@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.2 - 2026-07-14
+
+- Made signal and PTY integration failures deterministic and diagnostic without
+  weakening the strict local-LLM smoke or production recovery behavior.
+- Removed duplicate coverage, live-test, installed-wheel, packaging, and
+  release-gate execution while preserving every supported Python and operating
+  system boundary.
+- Bound GitHub releases to canonical exact-commit workflow evidence, immutable
+  attempt-qualified artifacts, verified package bytes, and the correct package
+  tag family and version.
+
 ## 0.6.1 - 2026-07-13
 - Update to dependencies; bugfix on taut-summon
 

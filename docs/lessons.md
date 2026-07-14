@@ -597,6 +597,43 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   as changelog prose as pre-mutation checks. This turns serial metadata failures
   into one deterministic preparation step without weakening the release fence.
 
+- 2026-07-13: A session-scoped pytest fixture is scoped to one xdist worker,
+  not one distributed test run. If that fixture builds wheels or creates a
+  costly environment, every worker that receives a consumer repeats the build.
+  Derive a marker and xdist group from fixture ownership during collection,
+  prove the selector partition as set arithmetic, and give the real installed
+  artifact tests one fresh serial owner in CI.
+
+- 2026-07-13: `pytest-timeout` thread mode is a process-kill backstop, not a
+  safe assertion boundary under xdist. A test-specific timeout can therefore
+  report `node down` and erase the state needed to diagnose the test. Put real
+  signal delivery in a probe child, let the pytest worker own the watchdog and
+  structured result, and prove a following same-worker sentinel still runs.
+
+- 2026-07-13: Model discovery proves inventory, not inference readiness. A
+  prepared local-model smoke should poll only the cheap model-list boundary,
+  then make one completion request and fail on that result. Keep production
+  crash recovery enabled, but make the smoke inspect lifecycle evidence and
+  reject a success that required a harness restart.
+
+- 2026-07-13: Coverage and release evidence need explicit owners. Collect
+  coverage in existing representative matrix lanes and make aggregation
+  test-free. For releases, bind a canonical push run by workflow, repository,
+  branch, event, SHA, and attempt; bind its artifact by immutable id and both
+  outer and inner digests. Tag workflows should observe that evidence, not
+  enqueue duplicate matrices or rebuild different bytes.
+
+- 2026-07-13: A full OS/Python Cartesian product is not automatically stronger
+  when each case rebuilds the same artifact topology. Make the child use the
+  matrix interpreter, then factor-cover every supported Python on one OS and
+  every supported OS with one representative. State both dimensions and prove
+  the workflow expression so cost cannot fall by silently dropping coverage.
+
+- 2026-07-13: A dedicated live invocation must select the live marker, not the
+  whole source file. Live files often contain fast diagnostics already owned by
+  the unit lane. Prove the two selectors are a disjoint union of the file, then
+  keep the real smoke strict without rerunning its supporting tests.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

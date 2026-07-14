@@ -17,11 +17,13 @@ from taut._constants import PROJECT_CONFIG_NAME
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 POSTGRES_TEST_BACKEND = "postgres"
 BACKEND_MARKERS = ("shared", "sqlite_only", "pg_only")
+INSTALLED_COMMAND_FIXTURE = "installed_command_fixture"
+INSTALLED_WHEEL_XDIST_GROUP = "installed-wheel"
 
 
 @dataclass(frozen=True, slots=True)
 class InstalledCommandFixture:
-    """Fresh Python 3.11 environment containing current core and fixture wheels."""
+    """Fresh matrix-Python environment containing core and fixture wheels."""
 
     python: Path
     root: Path
@@ -156,7 +158,7 @@ def _install_command_fixture_environment(
 ) -> Path:
     venv = root / "venv"
     subprocess.run(
-        [uv, "venv", "--python", "3.11", str(venv)],
+        [uv, "venv", "--python", sys.executable, str(venv)],
         cwd=root,
         check=True,
         capture_output=True,
@@ -425,6 +427,23 @@ def run_cli(
         completed.stdout.strip(),
         completed.stderr.strip(),
     )
+
+
+@pytest.hookimpl(
+    hookwrapper=True,
+    tryfirst=True,
+    specname="pytest_collection_modifyitems",
+)
+def pytest_collection_modifyitems_installed_wheel(
+    items: list[pytest.Item],
+) -> Iterator[None]:
+    """Derive fixture ownership before pytest's marker deselection hook."""
+
+    for item in items:
+        if INSTALLED_COMMAND_FIXTURE in getattr(item, "fixturenames", ()):
+            item.add_marker(pytest.mark.installed_wheel)
+            item.add_marker(pytest.mark.xdist_group(INSTALLED_WHEEL_XDIST_GROUP))
+    yield
 
 
 @pytest.hookimpl(tryfirst=True)

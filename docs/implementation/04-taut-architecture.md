@@ -70,15 +70,18 @@ clean, unpushed commit that can be inspected or reused on a rerun.
 
 The helper accepts `core`/`pg`/`summon` targets plus `all`;
 `all --version X.Y.Z` coordinates all three manifests, while target-specific
-versions remain independent. After checking and building the exact preparation
-commit, it revalidates branch, HEAD, the full clean worktree/index, GitHub Release state,
-and local/remote tags. Only then may it push the branch, mutate or push tags, or
-cross the GitHub publication boundary. Branch and tag commands name the tested
-commit explicitly, and remote tag replacement uses an exact force-with-lease
-deletion before the explicit tag push. Checkout or tag drift therefore fails
-instead of redirecting the release. `--checks-only` never reconciles or commits;
-`--dry-run` prints the same ordering without writes. The helper has no PyPI
-upload path while the `taut` package-name request is unresolved.
+versions remain independent. A real publishing run is allowed only from
+`main` or `master`, checked once before any preparation mutation; dry-run and
+checks-only remain branch-independent. After checking and building the exact
+preparation commit, the helper revalidates branch, HEAD, the full clean
+worktree/index, GitHub Release state, and local/remote tags. Only then may it
+push the branch, mutate or push tags, or cross the GitHub publication boundary.
+Branch and tag commands name the tested commit explicitly, and remote tag
+replacement uses an exact force-with-lease deletion before the explicit tag
+push. Checkout or tag drift therefore fails instead of redirecting the
+release. `--checks-only` never reconciles or commits; `--dry-run` prints the
+same ordering without writes. The helper has no PyPI upload path while the
+`taut` package-name request is unresolved.
 
 For core or summon releases, it also starts summon local-LLM preparation before
 the precheck sequence: reuse a configured loopback endpoint if it already
@@ -89,31 +92,56 @@ waits on that endpoint at the dedicated local-LLM lane and runs it with
 than a hidden skip. External live harnesses run in a separate strict one-worker
 lane from the local-LLM lane to keep each SQLite process workload in a fresh
 pytest invocation.
-GitHub Actions mirrors that boundary: `.github/workflows/test.yml` owns normal
-push/PR gates and is reusable, `.github/workflows/release-gate.yml` runs on
-`v*` tags, reuses the root and PG test workflows, verifies that the tag still
-points at the tested commit, and calls `.github/workflows/release.yml` to build
-artifacts and create the GitHub Release. The workflow's summon process matrix
-uses the same deterministic selector as the release helper
-(`xdist_group and not requires_live_harness and not requires_local_llm`), while
-the local-LLM proof runs in its own prepared CI job. `.github/workflows/test-pg-extension.yml`
-owns the Docker Postgres gate for `taut-pg`, and
-`.github/workflows/release-gate-pg.yml` publishes GitHub artifacts for
-`taut_pg/v*` tags through the same reusable release workflow.
-`.github/workflows/release-gate-summon.yml` publishes GitHub artifacts for
-`taut_summon/v*` tags after the reusable root test workflow, which includes the
-summon extension and local-LLM lane. No workflow uploads to PyPI.
+GitHub Actions mirrors those process boundaries without duplicating work.
+`.github/workflows/test.yml` owns normal push/PR gates and remains reusable.
+Its representative Ubuntu root/unit and deterministic-process cells collect
+coverage while running their existing selectors; the prepared local-LLM job
+owns the live shard. The final coverage job only downloads, combines, checks,
+and reports those shards. The root matrix partitions non-slow tests into a
+broad lane and one fresh serial installed-wheel lane, so the wheel-building
+fixture has one worker owner per selected cell. That environment uses the
+matrix interpreter. CI factor-covers installed artifacts across every Python
+version on Ubuntu and one representative for each other supported OS, reducing
+ten identical-style wheel lanes to six without dropping either version or OS
+coverage.
+
+On canonical branch pushes, the Test packaging job builds core, Summon, and PG
+once. It passes the explicit core/Summon wheel paths to the paired checker,
+installs the PG wheel with that core wheel in a clean venv, then uses
+`bin/release-artifact.py` to create three attempt-qualified bundles. Each
+bundle contains one wheel, one sdist, and an inner manifest bound to package
+name/version, commit, exact file names, and SHA-256 digests. Verification also
+binds the release tag family and version to the package.
+`.github/workflows/test-pg-extension.yml` remains the real Docker Postgres
+evidence and does not rebuild those packages.
+
+The three tag gates call `bin/require-green-workflows.py`; they do not call the
+test workflows. The observer selects canonical push evidence by repository,
+head repository, workflow path, branch, event, exact commit peeled from either
+a lightweight or annotated tag, and latest attempt,
+then pins the package bundle by immutable artifact id and GitHub archive
+digest. Its 95-minute observer bound covers the 45-minute Test critical path,
+queueing, and API visibility; the enclosing job has 110 minutes including
+setup. An older-attempt artifact is treated as not-yet-visible for at most two
+minutes, then fails closed. `.github/workflows/release.yml` refetches that metadata, downloads the
+exact id from the selected run, verifies the inner manifest against the
+checked-out tag, rechecks the remote tag immediately before publication, and
+uploads those exact bytes to the GitHub Release. It never builds a package.
+No workflow uploads to PyPI.
 
 Core and Summon are one paired reactor release boundary. The single owner of
 that proof is `bin/build-and-check-release-wheels.py`: it builds fresh core
-and Summon wheels in isolated temporary directories, then passes those exact
-artifacts to the `bin/check-core-summon-wheel-matrix.py` checker. Core and
-Summon release paths run the proof after the local preparation commit,
-prechecks, and builds, but before any branch push, tag mutation, tag push, or
-publication, including `--skip-checks`; a PG-only release does not run it. The
-same owner checks the retained Summon lock's resolved SimpleBroker version and
-compiles the PG manifest into its temporary artifact root to prove the resolved
-`simplebroker-pg` floor. The repository does not retain a PG lockfile.
+and Summon wheels in isolated temporary directories by default, then passes
+those exact artifacts to `bin/check-core-summon-wheel-matrix.py`. Its explicit
+path mode lets canonical CI reuse the current wheels it just built while the
+checker still builds all four historical compatibility wheels. Core and Summon
+local release paths run the build-owning proof after the local preparation
+commit, prechecks, and ordinary builds, but before any branch push, tag
+mutation, tag push, or publication, including `--skip-checks`; a PG-only
+release does not run it. The same owner checks the retained Summon lock's
+resolved SimpleBroker version and compiles the PG manifest into its temporary
+artifact root to prove the resolved `simplebroker-pg` floor. The repository
+does not retain a PG lockfile.
 
 All production taut-owned relational state flows through `taut/state/`.
 `taut/state/__init__.py` exposes the internal `TautState` interface,
@@ -234,6 +262,12 @@ owns exactly-once cleanup from an outer boundary that also covers handler
 installation, running-state publication, and drive-owner claim; the CLI's
 `finally` remains an idempotent backstop. This keeps native waiter locks and
 coverage shutdown hooks outside asynchronous signal re-entry.
+The firing proof for the real SIGINT path runs the reactor in a dedicated child
+process. The parent owns a bounded watchdog, terminates only that child on a
+hang, and converts the failure into a normal assertion before a following
+same-worker sentinel. Do not put a thread-mode `pytest-timeout` marker around a
+real-signal proof: its timeout path exits the entire xdist worker and reports an
+opaque `node down` instead of isolating the faulty probe.
 Fixed topology is the default; `TautWatcher` is the explicit owner-thread-only
 dynamic-topology policy. A constructor-time compatibility check rejects legacy
 subclasses that override lifecycle templates before queue construction while
@@ -384,6 +418,8 @@ durable machine contract.
 | `taut/watcher.py` | Shared `BaseReactor`, vendored multi-queue scheduling, chat cursor watching, notification inbox integration |
 | `taut/cli.py` | Argparse tree, rendering, exit-code mapping |
 | `bin/release.py` | GitHub-only release helper, target/tag planning, dependency sync, and local release gates |
+| `bin/release-artifact.py` | Attempt-bound release bundle manifest creation and fail-closed package-byte verification |
+| `bin/require-green-workflows.py` | Exact-SHA canonical workflow observer and immutable artifact selector for tag gates |
 | `bin/pytest-pg` | Docker-backed Postgres test runner for shared and extension suites |
 | `extensions/taut_pg/` | Separate `taut-pg` package, docs, and PG-only tests |
 | `extensions/taut_summon/` | Separate `taut-summon` package, summon driver/adapters, docs, and real-process tests |
@@ -434,6 +470,7 @@ watch, `taut/client/_notifications.py::NotificationsMixin.inbox` claims notifica
 
 ## Related Plans
 
+- `docs/plans/2026-07-13-ci-speed-determinism-release-evidence-plan.md`
 - `docs/plans/2026-07-12-lazy-command-extensions-and-rich-tui-composition-plan.md`
 - `docs/plans/2026-07-12-automatic-display-name-capitalization-plan.md`
 - `docs/plans/2026-07-10-taut-dynamic-native-waiter-replacement-plan.md`

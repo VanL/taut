@@ -510,6 +510,16 @@ logs are diagnostics. The harness must not hide a malformed session row as "not
 ready" and must not create tight fresh-client polling loops that amplify SQLite
 connection churn.
 
+The prepared local-LLM smoke proves a different boundary. Workflow readiness
+waits for model listing, then makes exactly one real completion request and
+validates its response shape. The PTY child makes exactly one completion of its
+own and posts the sentinel through a real `taut say`. Transport, timeout, JSON,
+and response-shape failures are structured child errors without a traceback;
+test failures retain the driver stderr tail, raw TUI event-log tail, and proxy
+request count. Production still recovers from a crashed harness under [SUM-11],
+but this smoke fails if any harness exit or resume occurred before the sentinel:
+recovery is useful production behavior, not successful smoke evidence.
+
 The real-process summon test lane uses a correctness-first SQLite posture:
 `BROKER_AUTO_VACUUM=0` removes test-only maintenance writes, while
 `BROKER_SYNC_MODE=FULL` keeps SQLite's default sync semantics. The lane is slow
@@ -604,7 +614,7 @@ logging policy and streams.
 
 | Spec area | Primary code owners | Contract tests |
 |---|---|---|
-| [SUM-3], command registration, name/provider resolution, CLI help, database discovery, and exit classes | `extensions/taut_summon/taut_summon/command_manifest.py`, `extensions/taut_summon/taut_summon/commands/`, `extensions/taut_summon/taut_summon/controller.py`, `extensions/taut_summon/taut_summon/cli.py` | `extensions/taut_summon/tests/test_controller.py`, `extensions/taut_summon/tests/test_summon_cli.py` parser-inventory, help-phrase, grammar, discovery, and exit-class tests; installed Python 3.11 ownership, parity, and import-floor cases in `tests/test_core_summon_wheel_matrix.py`; real root adapter lifecycle in `extensions/taut_summon/tests/test_driver.py` |
+| [SUM-3], command registration, name/provider resolution, CLI help, database discovery, and exit classes | `extensions/taut_summon/taut_summon/command_manifest.py`, `extensions/taut_summon/taut_summon/commands/`, `extensions/taut_summon/taut_summon/controller.py`, `extensions/taut_summon/taut_summon/cli.py` | `extensions/taut_summon/tests/test_controller.py`, `extensions/taut_summon/tests/test_summon_cli.py` parser-inventory, help-phrase, grammar, discovery, and exit-class tests; installed current-interpreter ownership, parity, and import-floor cases in `tests/test_core_summon_wheel_matrix.py`; real root adapter lifecycle in `extensions/taut_summon/tests/test_driver.py` |
 | [SUM-4], bootstrap, identity, presence | `extensions/taut_summon/taut_summon/_driver.py`, `extensions/taut_summon/taut_summon/_state.py` | `extensions/taut_summon/tests/test_driver.py` |
 | [SUM-5], ears injection contract | `extensions/taut_summon/taut_summon/_driver.py` | `extensions/taut_summon/tests/test_driver.py`, `extensions/taut_summon/tests/test_conformance.py` |
 | [SUM-6], mouth CLI contract | `extensions/taut_summon/taut_summon/_driver.py`, `extensions/taut_summon/taut_summon/_persona.py` | `extensions/taut_summon/tests/test_driver.py`, `extensions/taut_summon/tests/test_persona.py` |
@@ -630,15 +640,19 @@ extension suite, the core suite untouched-green, ruff/format/mypy over the
 extension paths, and `uv build extensions/taut_summon`). Keep the deterministic
 process, external-live, and local-LLM lanes in separate fresh pytest
 invocations. The deterministic lane is a bounded pressure proof: local release
-prechecks use `-n 4 --dist load`, while CI and its coverage mirror use
-`-n 2 --dist load`. Every selected item owns test-local resources. Its
+prechecks use `-n 4 --dist load`, while CI uses `-n 2 --dist load` and collects
+coverage during that same execution. Every selected item owns test-local
+resources. Its
 `xdist_group("process")` marker still co-locates process-heavy tests in broad
 default `--dist loadgroup` runs, but is selection-only when the isolated lane
 deliberately overrides the scheduler with `--dist load`. This prevents
 unbounded `-n auto` fan-out without removing useful concurrent pressure.
 
 External-live and local-LLM lanes retain their known-safe
-`-n 1 --dist loadgroup` boundaries. Release prechecks also set
+`-n 1 --dist loadgroup` boundaries and select only `requires_live_harness` or
+`requires_local_llm`. Their non-live diagnostics remain in the unit selector,
+and a collection proof keeps the unit/live partitions disjoint and complete.
+Release prechecks also set
 `TAUT_SUMMON_LIVE_HARNESS_STRICT=1` locally for the external-live lane so
 installed provider CLIs fail instead of skipping when detached onboarding
 would otherwise be reported as not ready. The external-provider live lane
@@ -649,6 +663,9 @@ unit suites, and does not serialize isolated matrix hosts for SQLite safety.
 
 ## Related Plans
 
+- `docs/plans/2026-07-13-ci-speed-determinism-release-evidence-plan.md` —
+  strict local-LLM evidence, existing-lane coverage, and release reuse of
+  exact-SHA canonical test artifacts.
 - `docs/plans/2026-07-13-bounded-summon-process-test-parallelism-plan.md` —
   fixed-width deterministic process pressure locally and in CI while
   preserving fresh one-worker external-live and local-LLM boundaries.

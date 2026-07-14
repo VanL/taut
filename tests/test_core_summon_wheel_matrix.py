@@ -633,6 +633,50 @@ def test_release_wheel_checker_dry_run_prints_build_build_check_order(
     assert "taut_summon/v0.5.4" in output
 
 
+def test_release_wheel_checker_reuses_explicit_current_wheels_without_building(
+    tmp_path: Path,
+    release_wheel_checker_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    builder = release_wheel_checker_module
+    core = tmp_path / "taut-0.6.1-py3-none-any.whl"
+    summon = tmp_path / "taut_summon-0.6.1-py3-none-any.whl"
+    core.touch()
+    summon.touch()
+    commands: list[tuple[str, ...]] = []
+
+    def fake_run(command: tuple[str, ...]) -> None:
+        commands.append(command)
+        assert command[1:3] != ("build", "--wheel")
+        if command[1:3] == ("pip", "compile"):
+            output = Path(command[command.index("--output-file") + 1])
+            output.write_text("simplebroker-pg==3.2.0\n", encoding="utf-8")
+            return
+        assert command[command.index("--new-core") + 1] == str(core)
+        assert command[command.index("--new-summon") + 1] == str(summon)
+
+    monkeypatch.setattr(builder, "_run", fake_run)
+
+    builder.build_and_check(core_wheel=core, summon_wheel=summon)
+
+    assert len(commands) == 2
+
+
+def test_release_wheel_checker_rejects_partial_explicit_pair(
+    tmp_path: Path,
+    release_wheel_checker_module: ModuleType,
+) -> None:
+    builder = release_wheel_checker_module
+    core = tmp_path / "taut.whl"
+    core.touch()
+
+    with pytest.raises(
+        builder.ReleaseWheelCheckError,
+        match="core and Summon wheel paths must be supplied together",
+    ):
+        builder.build_and_check(core_wheel=core)
+
+
 def test_wheel_matrix_checker_accepts_exact_command_rollout_ref(
     tmp_path: Path,
     wheel_matrix_module: ModuleType,

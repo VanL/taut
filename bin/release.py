@@ -88,7 +88,23 @@ SUMMON_WHEEL_PATTERN: Final[re.Pattern[str]] = re.compile(
 )
 
 PYTEST_PREFIX: Final[Command] = ("uv", "run", "--extra", "dev", "pytest")
-ROOT_TEST_COMMAND: Final[Command] = PYTEST_PREFIX
+ROOT_BROAD_TEST_COMMAND: Final[Command] = (
+    *PYTEST_PREFIX,
+    "-m",
+    "not slow and not installed_wheel",
+)
+ROOT_INSTALLED_WHEEL_TEST_COMMAND: Final[Command] = (
+    *PYTEST_PREFIX,
+    "-m",
+    "not slow and installed_wheel",
+    "-n",
+    "0",
+)
+ROOT_TEST_COMMANDS: Final[tuple[Command, ...]] = (
+    ROOT_BROAD_TEST_COMMAND,
+    ROOT_INSTALLED_WHEEL_TEST_COMMAND,
+)
+PUBLISH_BRANCHES: Final[frozenset[str]] = frozenset({"main", "master"})
 PG_TEST_COMMAND: Final[Command] = ("uv", "run", "./bin/pytest-pg", "--fast")
 SUMMON_UNIT_TEST_COMMAND: Final[Command] = (
     *PYTEST_PREFIX,
@@ -109,6 +125,8 @@ SUMMON_PROCESS_TEST_COMMAND: Final[Command] = (
 SUMMON_LIVE_HARNESS_TEST_COMMAND: Final[Command] = (
     *PYTEST_PREFIX,
     "extensions/taut_summon/tests/test_live_harness.py",
+    "-m",
+    "requires_live_harness",
     "-n",
     "1",
     "--dist",
@@ -117,6 +135,8 @@ SUMMON_LIVE_HARNESS_TEST_COMMAND: Final[Command] = (
 SUMMON_LOCAL_LLM_TEST_COMMAND: Final[Command] = (
     *PYTEST_PREFIX,
     "extensions/taut_summon/tests/test_live_local_llm.py",
+    "-m",
+    "requires_local_llm",
     "-n",
     "1",
     "--dist",
@@ -150,7 +170,13 @@ SUMMON_TOOL_PATHS: Final[Command] = (
     "extensions/taut_summon/taut_summon",
     "extensions/taut_summon/tests",
 )
-ROOT_MYPY_PATHS: Final[Command] = ("taut", "tests", "bin/release.py")
+ROOT_MYPY_PATHS: Final[Command] = (
+    "taut",
+    "tests",
+    "bin/release.py",
+    "bin/release-artifact.py",
+    "bin/require-green-workflows.py",
+)
 # The trailing explicit ``tests/conftest.py`` re-includes the conftest that
 # ``[tool.mypy] exclude`` drops from directory discovery (see pyproject): the
 # gate still type-checks it, while ad-hoc combined runs avoid the duplicate
@@ -1039,6 +1065,18 @@ def current_branch() -> str:
     return branch
 
 
+def require_publish_branch() -> str:
+    """Require the canonical branch that owns push-triggered release evidence."""
+
+    branch = current_branch()
+    if branch not in PUBLISH_BRANCHES:
+        fail(
+            "Publishing releases requires branch main or master; "
+            f"current branch is {branch!r}"
+        )
+    return branch
+
+
 def push_current_branch(
     *,
     dry_run: bool,
@@ -1258,7 +1296,7 @@ def build_precheck_commands_for_targets(
         tool_paths = (*tool_paths, *SUMMON_TOOL_PATHS)
     tool_paths = _unique_strings(tool_paths)
 
-    commands: list[Command] = [ROOT_TEST_COMMAND]
+    commands: list[Command] = [*ROOT_TEST_COMMANDS]
     if run_pg:
         commands.append(PG_TEST_COMMAND)
     if run_summon:
@@ -2073,6 +2111,8 @@ def _run_batch_release(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if not args.dry_run and not args.checks_only:
+        require_publish_branch()
     if args.target == ALL_RELEASE_TARGET_KEY:
         return _run_batch_release(args)
 

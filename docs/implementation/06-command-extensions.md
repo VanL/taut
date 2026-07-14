@@ -304,6 +304,30 @@ wheels, verifies exact entry-point ownership, and exercises paired Summon
 lifecycle. `tests/fixtures/taut_command_plugin` is the minimal third-party
 packaging example.
 
+Root tests that consume `installed_command_fixture` are derived into the
+`installed_wheel` marker during collection, before marker deselection, and are
+also placed in one `installed-wheel` xdist group. CI and release prechecks run
+the non-slow broad selector without that marker, then run the marked selector
+once with `-n 0` in a fresh invocation. This is a partition, not a skip:
+`tests/test_installed_wheel_collection.py` proves that the two selectors are
+disjoint and their union is the prior non-slow collection. It also prevents a
+new fixture consumer from silently escaping the serial owner. A pytest session
+fixture is not process-global under xdist; without this partition each worker
+would rebuild the same wheel set.
+
+The fresh environment uses `sys.executable`, so each selected CI cell tests
+the Python version it claims. Canonical CI runs the installed lane for all four
+Python versions on Ubuntu and one representative each on macOS and Windows.
+This six-cell factor cover preserves every supported Python and OS boundary
+without paying for all ten OS/Python combinations.
+
+`bin/build-and-check-release-wheels.py` remains the build-owning entry point for
+local release checks. Canonical CI may pass one explicit core wheel and one
+explicit Summon wheel that it just built; paired arguments are required, and
+the historical compatibility wheels and all six installed-wheel cases still
+run. This avoids rebuilding current artifacts without weakening the historical
+matrix.
+
 The principal firing tests are:
 
 | Contract | Firing proof |
@@ -353,6 +377,9 @@ those only for a concrete product need with its own compatibility plan.
 
 ## Related Plan
 
+- `docs/plans/2026-07-13-ci-speed-determinism-release-evidence-plan.md`
+  — derived installed-wheel ownership, serial CI execution, and explicit
+  current-wheel reuse without dropping historical compatibility builds.
 - `docs/plans/2026-07-12-lazy-command-extensions-and-rich-tui-composition-plan.md`
   — reviewed specification, implementation sequence, rollout matrix, and
   execution evidence for this design.

@@ -134,59 +134,81 @@ def _check_pg_manifest(path: Path = PG_PYPROJECT) -> None:
             )
 
 
-def _print_dry_run_plan(*, core_output: Path, summon_output: Path) -> None:
+def _print_dry_run_plan(
+    *,
+    core_output: Path,
+    summon_output: Path,
+    core_wheel: Path | None = None,
+    summon_wheel: Path | None = None,
+) -> None:
     pg_resolution = core_output.parent / "pg-requirements.txt"
-    core_wheel = core_output / "<exactly-one-wheel>"
-    summon_wheel = summon_output / "<exactly-one-wheel>"
-    commands = (
+    commands: list[tuple[str, ...]] = []
+    if core_wheel is None or summon_wheel is None:
+        core_wheel = core_output / "<exactly-one-wheel>"
+        summon_wheel = summon_output / "<exactly-one-wheel>"
+        commands.extend(
+            (
+                (
+                    "uv",
+                    "build",
+                    "--wheel",
+                    "--out-dir",
+                    str(core_output),
+                    str(PROJECT_ROOT),
+                ),
+                (
+                    "uv",
+                    "build",
+                    "--wheel",
+                    "--out-dir",
+                    str(summon_output),
+                    str(SUMMON_ROOT),
+                ),
+            )
+        )
+    commands.extend(
         (
-            "uv",
-            "build",
-            "--wheel",
-            "--out-dir",
-            str(core_output),
-            str(PROJECT_ROOT),
-        ),
-        (
-            "uv",
-            "build",
-            "--wheel",
-            "--out-dir",
-            str(summon_output),
-            str(SUMMON_ROOT),
-        ),
-        (
-            "uv",
-            "pip",
-            "compile",
-            str(PG_PYPROJECT),
-            "--output-file",
-            str(pg_resolution),
-            "--quiet",
-        ),
-        (
-            sys.executable,
-            str(WHEEL_MATRIX_CHECKER),
-            "--new-core",
-            str(core_wheel),
-            "--new-summon",
-            str(summon_wheel),
-            "--previous-core-ref",
-            PREVIOUS_CORE_REF,
-            "--previous-summon-ref",
-            PREVIOUS_SUMMON_REF,
-            "--previous-command-core-ref",
-            PREVIOUS_COMMAND_CORE_REF,
-            "--previous-command-summon-ref",
-            PREVIOUS_COMMAND_SUMMON_REF,
-        ),
+            (
+                "uv",
+                "pip",
+                "compile",
+                str(PG_PYPROJECT),
+                "--output-file",
+                str(pg_resolution),
+                "--quiet",
+            ),
+            (
+                sys.executable,
+                str(WHEEL_MATRIX_CHECKER),
+                "--new-core",
+                str(core_wheel),
+                "--new-summon",
+                str(summon_wheel),
+                "--previous-core-ref",
+                PREVIOUS_CORE_REF,
+                "--previous-summon-ref",
+                PREVIOUS_SUMMON_REF,
+                "--previous-command-core-ref",
+                PREVIOUS_COMMAND_CORE_REF,
+                "--previous-command-summon-ref",
+                PREVIOUS_COMMAND_SUMMON_REF,
+            ),
+        )
     )
     for command in commands:
         print("[release-wheels] + " + shlex.join(command), flush=True)
 
 
-def build_and_check(*, dry_run: bool = False) -> None:
+def build_and_check(
+    *,
+    dry_run: bool = False,
+    core_wheel: Path | None = None,
+    summon_wheel: Path | None = None,
+) -> None:
     """Build wheels in fresh outputs, then check their explicit paths."""
+
+    if (core_wheel is None) != (summon_wheel is None):
+        _fail("core and Summon wheel paths must be supplied together")
 
     with tempfile.TemporaryDirectory(prefix="taut-release-wheels-") as temporary:
         artifact_root = Path(temporary)
@@ -196,35 +218,47 @@ def build_and_check(*, dry_run: bool = False) -> None:
         summon_output.mkdir()
 
         if dry_run:
-            _print_dry_run_plan(core_output=core_output, summon_output=summon_output)
+            _print_dry_run_plan(
+                core_output=core_output,
+                summon_output=summon_output,
+                core_wheel=core_wheel,
+                summon_wheel=summon_wheel,
+            )
             return
 
         _check_pg_manifest()
         _check_retained_summon_lock()
 
-        _run(
-            (
-                "uv",
-                "build",
-                "--wheel",
-                "--out-dir",
-                str(core_output),
-                str(PROJECT_ROOT),
+        if core_wheel is None or summon_wheel is None:
+            _run(
+                (
+                    "uv",
+                    "build",
+                    "--wheel",
+                    "--out-dir",
+                    str(core_output),
+                    str(PROJECT_ROOT),
+                )
             )
-        )
-        core_wheel = _single_wheel(core_output, label="core")
+            core_wheel = _single_wheel(core_output, label="core")
 
-        _run(
-            (
-                "uv",
-                "build",
-                "--wheel",
-                "--out-dir",
-                str(summon_output),
-                str(SUMMON_ROOT),
+            _run(
+                (
+                    "uv",
+                    "build",
+                    "--wheel",
+                    "--out-dir",
+                    str(summon_output),
+                    str(SUMMON_ROOT),
+                )
             )
-        )
-        summon_wheel = _single_wheel(summon_output, label="Summon")
+            summon_wheel = _single_wheel(summon_output, label="Summon")
+        else:
+            for wheel, label in ((core_wheel, "core"), (summon_wheel, "Summon")):
+                if not wheel.is_file():
+                    _fail(f"explicit {label} wheel does not exist: {wheel}")
+                if wheel.suffix != ".whl":
+                    _fail(f"explicit {label} artifact is not a wheel: {wheel}")
 
         pg_resolution = artifact_root / "pg-requirements.txt"
         _run(
@@ -269,9 +303,26 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Print the ordered fresh-build and wheel-matrix check commands.",
     )
+    parser.add_argument(
+        "--core-wheel",
+        type=Path,
+        help="Use this already-built current core wheel instead of building one.",
+    )
+    parser.add_argument(
+        "--summon-wheel",
+        type=Path,
+        help="Use this already-built current Summon wheel instead of building one.",
+    )
     args = parser.parse_args(argv)
     try:
-        build_and_check(dry_run=args.dry_run)
+        if args.core_wheel is None and args.summon_wheel is None:
+            build_and_check(dry_run=args.dry_run)
+        else:
+            build_and_check(
+                dry_run=args.dry_run,
+                core_wheel=args.core_wheel,
+                summon_wheel=args.summon_wheel,
+            )
     except ReleaseWheelCheckError as exc:
         print(f"release-wheel check failed: {exc}", file=sys.stderr)
         return 1

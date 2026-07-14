@@ -1069,9 +1069,24 @@ def test_precheck_commands_select_dev_extra_and_include_typed_release_helper() -
     commands = release.build_precheck_commands()
 
     pytest_prefix = ("uv", "run", "--extra", "dev", "pytest")
-    assert release.ROOT_TEST_COMMAND == pytest_prefix
+    assert release.ROOT_BROAD_TEST_COMMAND == (
+        *pytest_prefix,
+        "-m",
+        "not slow and not installed_wheel",
+    )
+    assert release.ROOT_INSTALLED_WHEEL_TEST_COMMAND == (
+        *pytest_prefix,
+        "-m",
+        "not slow and installed_wheel",
+        "-n",
+        "0",
+    )
+    assert commands[:2] == (
+        release.ROOT_BROAD_TEST_COMMAND,
+        release.ROOT_INSTALLED_WHEEL_TEST_COMMAND,
+    )
     for command in (
-        release.ROOT_TEST_COMMAND,
+        *release.ROOT_TEST_COMMANDS,
         release.SUMMON_UNIT_TEST_COMMAND,
         release.SUMMON_PROCESS_TEST_COMMAND,
         release.SUMMON_LIVE_HARNESS_TEST_COMMAND,
@@ -1097,6 +1112,8 @@ def test_precheck_commands_select_dev_extra_and_include_typed_release_helper() -
         "taut",
         "tests",
         "bin/release.py",
+        "bin/release-artifact.py",
+        "bin/require-green-workflows.py",
         "--config-file",
         "pyproject.toml",
     ) in commands
@@ -1142,6 +1159,26 @@ def test_summon_precheck_commands_include_extension_gate() -> None:
             "--dist",
             "loadgroup",
         )
+    assert (
+        "-m",
+        "requires_live_harness",
+    ) in tuple(
+        zip(
+            release.SUMMON_LIVE_HARNESS_TEST_COMMAND,
+            release.SUMMON_LIVE_HARNESS_TEST_COMMAND[1:],
+            strict=False,
+        )
+    )
+    assert (
+        "-m",
+        "requires_local_llm",
+    ) in tuple(
+        zip(
+            release.SUMMON_LOCAL_LLM_TEST_COMMAND,
+            release.SUMMON_LOCAL_LLM_TEST_COMMAND[1:],
+            strict=False,
+        )
+    )
     assert any("extensions/taut_summon/taut_summon" in command for command in commands)
     assert any("extensions/taut_summon/tests" in command for command in commands)
     assert all("pypi" not in " ".join(command).lower() for command in commands)
@@ -2158,3 +2195,40 @@ def test_checks_only_rejects_dry_run_and_skip_checks() -> None:
         release.parse_args(["--checks-only", "--dry-run"])
     with pytest.raises(SystemExit):
         release.parse_args(["--checks-only", "--skip-checks"])
+
+
+@pytest.mark.parametrize("target", ("all", "core", "pg", "summon"))
+@pytest.mark.parametrize("branch", ("topic/ci-work", "HEAD"))
+def test_publishing_targets_reject_noncanonical_branch_before_mutation(
+    target: str,
+    branch: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _load_release_module()
+    monkeypatch.setattr(release, "current_branch", lambda: branch)
+    monkeypatch.setattr(
+        release,
+        "prepare_release_metadata",
+        lambda *_args: pytest.fail("branch guard must precede metadata mutation"),
+    )
+    monkeypatch.setattr(
+        release,
+        "run_preparation_steps",
+        lambda *_args, **_kwargs: pytest.fail(
+            "branch guard must precede preparation commands"
+        ),
+    )
+
+    with pytest.raises(SystemExit, match="main or master"):
+        release.main([target])
+
+
+@pytest.mark.parametrize("branch", ("main", "master"))
+def test_publish_branch_guard_allows_canonical_branches(
+    branch: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _load_release_module()
+    monkeypatch.setattr(release, "current_branch", lambda: branch)
+
+    assert release.require_publish_branch() == branch

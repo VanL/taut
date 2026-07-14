@@ -44,6 +44,10 @@ Risky plans are blocked if they do not make explicit:
 
 ## Active Plans
 
+- `2026-07-13-ci-speed-determinism-release-evidence-plan.md` — remove
+  coverage-only test reruns, give expensive artifacts and signal probes safe
+  owners, keep strict local-LLM CI proof, and reuse exact-SHA test artifacts
+  across coordinated release tags.
 - `2026-07-13-release-metadata-preparation-plan.md` — make release metadata a
   deterministic helper-owned preparation phase before consistency gates, while
   keeping changelog prose human-owned and irreversible release actions last.

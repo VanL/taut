@@ -1036,6 +1036,22 @@ posture:
   temporary database; shared construction/drive/close and native-wake
   conformance also run against Postgres. The broker and watcher core path are
   not mocked.
+- Installed-wheel tests remain real cross-platform installed-artifact proofs,
+  but wheel construction has one owner per selected installed-artifact cell.
+  The child environment uses that cell's active Python interpreter. Canonical
+  CI covers every supported Python version once on Ubuntu and every supported
+  operating system at least once, instead of repeating the full OS/Python
+  Cartesian product. Every consumer of the
+  installed-command fixture is collection-marked into one group. Normal xdist
+  runs co-locate that group; CI and release checks run the non-slow consumers
+  once in a fresh serial pytest invocation after the broad non-slow root lane
+  deselects them. The two selectors must be disjoint and their union must equal
+  the prior `not slow` collection.
+- No per-test timeout marker may terminate an xdist worker for a reactor or
+  signal test. Real process-signal semantics run in an isolated probe child;
+  the parent pytest worker owns a bounded watchdog, well inside the retained
+  job-level hang backstop, and asserts the child's structured final state. This
+  isolation is not permission to retry or ignore probe failure.
 
 ## 12. Roadmap Commitments and Forward Compatibility [TAUT-12]
 
@@ -1201,6 +1217,11 @@ Helper obligations:
 
 - Accept both positional target form (`bin/release.py pg`) and the older
   `--target pg` form.
+- A publishing release runs from `main` or `master`, the branches that produce
+  canonical push-triggered CI evidence. One shared guard rejects a topic branch
+  or detached `HEAD` before release metadata mutation for `all`, `core`, `pg`,
+  and `summon`. Dry-run and checks-only remain usable from other branches
+  because they do not publish.
 - Before release, reject dirty worktrees unless `--dry-run` is set, reject or
   exclude already-published GitHub Releases according to the existing single
   target and resumable batch rules, and plan local/remote tag actions without
@@ -1233,7 +1254,9 @@ Helper obligations:
 - Run the relevant local gates against the clean local preparation commit and
   before any branch push, tag creation or replacement, tag push, or publication
   unless `--skip-checks` is set:
-  root pytest, `bin/pytest-pg --fast` for core or PG releases, the
+  root pytest partitioned into `not slow and not installed_wheel` plus a fresh
+  serial `not slow and installed_wheel` invocation,
+  `bin/pytest-pg --fast` for core or PG releases, the
   `extensions/taut_summon/tests` suite for core or summon releases split into
   non-process, deterministic `xdist_group` process, strict external-live, and
   local-LLM lanes, ruff over root plus touched extension paths, and split mypy
@@ -1245,8 +1268,10 @@ Helper obligations:
   the lane in broad default runs, but every selected test owns test-local
   resources because the isolated release invocation uses `--dist load` and
   intentionally ignores group co-location. Strict external-live and local-LLM
-  lanes retain their existing known-safe `-n 1 --dist loadgroup` boundaries.
-  All three run as fresh pytest invocations rather than one long worker.
+  lanes retain their existing known-safe `-n 1 --dist loadgroup` boundaries
+  and select only `requires_live_harness` or `requires_local_llm`, respectively.
+  Non-live diagnostics in those files remain owned by the unit lane. All three
+  run as fresh pytest invocations rather than one long worker.
 - For core or summon releases, require the summon local-LLM lane locally. The
   helper starts local LLM preparation at the beginning of prechecks so Docker
   image/model setup can overlap root and PG checks. It uses an existing
@@ -1262,12 +1287,21 @@ Helper obligations:
   `xdist_group and not requires_live_harness and not requires_local_llm`. Run
   that lane as a dedicated fresh matrix job under `-n 2 --dist load`, so it is
   not preceded by the broad root and summon unit suites in the same runner
-  environment. The coverage invocation of the same deterministic selector uses
-  the same two-worker topology. Do not serialize the matrix itself for SQLite
-  safety; matrix jobs run on isolated hosts. The local-LLM lane runs in its own
-  CI job with a prepared loopback Ollama model. External-provider live harnesses
-  are a strict local release gate unless CI grows explicit credentials/tooling
-  for those provider CLIs.
+  environment. Do not serialize the matrix itself for SQLite safety; matrix
+  jobs run on isolated hosts. The local-LLM lane runs in its own CI job with a
+  prepared loopback Ollama model. The representative Ubuntu root/unit cell,
+  Ubuntu deterministic-process cell, and prepared local-LLM job collect and
+  upload coverage while running their existing selectors; the process shard
+  retains `-n 2 --dist load`. A final aggregation job downloads and combines
+  shards, enforces required paths, and uploads the report, but runs no tests.
+  Placeholder live files that skip without prepared credentials or a model are
+  not invoked merely to inflate coverage. External-provider live harnesses are
+  a strict local release gate unless CI grows explicit credentials/tooling for
+  those provider CLIs.
+  Every root OS/Python cell still runs the source contract. The installed-wheel
+  lane uses factor coverage: all four supported Python versions on Ubuntu,
+  plus one macOS and one Windows representative, with the active matrix
+  interpreter used inside the fresh wheel environment.
 - After metadata preparation and prechecks, build the selected package
   artifacts. The Summon lock has already been refreshed during preparation.
 - Keep branch pushes, tag creation or replacement, tag pushes, and publication
@@ -1282,19 +1316,48 @@ Helper obligations:
 
 Workflow obligations:
 
-- `.github/workflows/release-gate.yml` listens to `v*`, runs the reusable root
-  test workflow and the PG extension workflow, verifies the tag still points at
-  the tested commit, and calls the reusable release workflow for `taut`.
-- `.github/workflows/release-gate-pg.yml` listens to `taut_pg/v*`, runs the
-  reusable root test workflow and PG extension workflow, verifies the tag, and
-  calls the reusable release workflow for `taut-pg`.
-- `.github/workflows/release-gate-summon.yml` listens to `taut_summon/v*`, runs
-  the reusable root test workflow (which includes the summon extension and
-  local-LLM lane), verifies the tag, and calls the reusable release workflow for
-  `taut-summon`.
-- `.github/workflows/release.yml` is the only artifact publisher. It builds the
-  selected package directory and creates/uploads a GitHub Release. It must not
-  contain PyPI upload or Trusted Publishing steps.
+- Canonical `push` runs of `.github/workflows/test.yml` and
+  `.github/workflows/test-pg-extension.yml` are the test evidence for a release
+  SHA. On canonical `main`/`master` pushes, the root workflow performs the
+  release-grade paired core/Summon wheel check against the distributions it
+  built, builds the PG distribution, and proves in a fresh environment that
+  the PG wheel installs with that core wheel, imports `taut_pg`, and is
+  discoverable as a plugin. It uploads separate core, Summon, and PG bundles;
+  the PG workflow remains real database evidence and does not duplicate package
+  construction. Pull-request and manual runs retain ordinary packaging smoke
+  but do not produce release evidence. Each release bundle records the exact
+  commit, package name/version, file allowlist, and SHA-256 digests, and its
+  name identifies the workflow attempt that produced it.
+- Each tag gate waits for the required canonical workflow file or id to finish
+  successfully for the exact commit peeled from the release tag, canonical
+  branch, source/head
+  repository, latest attempt, and `push` event. It normalizes API `path@ref`
+  values rather than trusting display names or path strings. Core and PG tags
+  require root plus PG evidence; Summon requires root evidence. The three tag
+  gates do not invoke test workflows. Each observer makes one repository-wide
+  runs-list request per poll and filters workflow files locally. A
+  rate-limit-signature 403 or 429 respects the server reset within the bounded
+  observer window; 401, non-rate-limit 403, malformed responses, and completed
+  non-success test conclusions fail immediately. Rerunning a timed-out or
+  rate-limited tag observer is permitted because it reruns no test and changes
+  no evidence.
+  The observer has a 95-minute total bound: the root Test workflow's 45-minute
+  critical path, 45 minutes of runner-queue margin, and five minutes of
+  API/listing margin. The enclosing evidence job has a 110-minute ceiling for
+  checkout, setup, tag peeling, observation, and cancellation overhead.
+  Seeing only an older-attempt artifact remains pollable during the bounded
+  two-minute artifact-visibility window; absence of the current-attempt
+  artifact after that window is fatal.
+- `.github/workflows/release.yml` downloads the one expected, non-expired
+  package artifact for the eligible workflow attempt by immutable artifact id,
+  with repository, run id, and GitHub archive SHA-256 digest verified from REST
+  metadata. It then verifies the embedded commit/package/version/file hashes
+  against the checked-out peeled tag commit, verifies that the tag family and
+  version are exactly `vX.Y.Z` for `taut`, `taut_pg/vX.Y.Z` for `taut-pg`, or
+  `taut_summon/vX.Y.Z` for `taut-summon`, rechecks that the remote tag is
+  current, and publishes those exact files. It does not rebuild distributions
+  and is the only artifact publisher. It must not contain PyPI upload or
+  Trusted Publishing steps.
 
 Core and `taut-summon` reactor changes ship as a paired release. The release
 helper synchronizes the Summon `taut>=` floor to the exact new core version,
@@ -1317,9 +1380,12 @@ the core/Summon wheel-matrix checker with their explicit paths after both
 builds and before any branch push, tag creation or replacement, tag push, or
 publication. The gate still runs under `--skip-checks`; dry-run prints the
 ordered build and verification commands. PG-only releases do not run it. The
-reusable test workflow exposes a default-false paired-verification input enabled
-by the core and Summon release gates; it verifies after both fresh builds and
-before either publication job can run.
+canonical-branch root Test workflow runs the same release-grade paired check
+once on freshly built explicit core and Summon wheel paths, plus the fresh PG
+installed-wheel proof described above. Pull-request and manual calls retain
+ordinary packaging smoke. Tag gates reuse the successful canonical Test run
+and its verified artifacts; they do not repeat paired or installed-wheel
+verification.
 
 ## Implementation Mapping
 
@@ -1331,6 +1397,9 @@ before either publication job can run.
 
 ## Related Plans
 
+- `docs/plans/2026-07-13-ci-speed-determinism-release-evidence-plan.md` —
+  coverage ownership, installed-wheel and signal isolation, strict local-LLM
+  evidence, and exact-SHA release artifact reuse.
 - `docs/plans/2026-07-13-release-metadata-preparation-plan.md` — manifest-owned
   metadata reconciliation, exact-path local preparation commits, and remote
   release fences.

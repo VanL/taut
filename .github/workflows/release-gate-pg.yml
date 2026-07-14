@@ -14,57 +14,69 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
-    uses: ./.github/workflows/test.yml
-    permissions:
-      contents: read
-
-  test-pg-extension:
-    uses: ./.github/workflows/test-pg-extension.yml
-    permissions:
-      contents: read
-
-  verify-tag-current:
+  release-evidence:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    needs:
-      - test
-      - test-pg-extension
+    timeout-minutes: 110
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      artifact_id: ${{ steps.observe.outputs.artifact_id }}
+      artifact_digest: ${{ steps.observe.outputs.artifact_digest }}
+      artifact_run_id: ${{ steps.observe.outputs.artifact_run_id }}
+      artifact_run_attempt: ${{ steps.observe.outputs.artifact_run_attempt }}
+      artifact_repository_id: ${{ steps.observe.outputs.artifact_repository_id }}
+      artifact_head_repository_id: ${{ steps.observe.outputs.artifact_head_repository_id }}
+      artifact_head_branch: ${{ steps.observe.outputs.artifact_head_branch }}
+      tag_commit: ${{ steps.tag.outputs.tag_commit }}
 
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         timeout-minutes: 5
 
-      - name: Verify tag still points at tested commit
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         timeout-minutes: 5
-        env:
-          EXPECTED_SHA: ${{ github.sha }}
-          TAG_NAME: ${{ github.ref_name }}
+        with:
+          python-version: "3.14"
+
+      - name: Resolve release tag commit
+        id: tag
+        timeout-minutes: 2
         run: |
-          set -euo pipefail
-          remote_sha="$(git ls-remote --tags origin "refs/tags/${TAG_NAME}" "refs/tags/${TAG_NAME}^{}" | awk 'NR==1 { sha=$1 } END { print $1 ? $1 : sha }')"
-          if [ -z "${remote_sha}" ]; then
-            echo "Tag ${TAG_NAME} no longer exists on origin"
-            exit 1
-          fi
-          if [ "${remote_sha}" != "${EXPECTED_SHA}" ]; then
-            echo "Tag ${TAG_NAME} moved while the release gate was running"
-            echo "expected: ${EXPECTED_SHA}"
-            echo "actual:   ${remote_sha}"
-            exit 1
-          fi
+          tag_commit="$(git rev-parse "${GITHUB_REF}^{commit}")"
+          [[ "${tag_commit}" =~ ^[0-9a-f]{40}$ ]]
+          echo "tag_commit=${tag_commit}" >> "${GITHUB_OUTPUT}"
+
+      - name: Observe exact-SHA workflow and artifact evidence
+        id: observe
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_SHA: ${{ steps.tag.outputs.tag_commit }}
+        run: |
+          python bin/require-green-workflows.py wait \
+            --workflow root=.github/workflows/test.yml \
+            --workflow pg=.github/workflows/test-pg-extension.yml \
+            --artifact-workflow root \
+            --artifact-prefix release-taut-pg
 
   publish-release:
-    needs:
-      - verify-tag-current
+    needs: release-evidence
     uses: ./.github/workflows/release.yml
     with:
       package_name: taut-pg
       package_dir: extensions/taut_pg
       tag_name: ${{ github.ref_name }}
-      release_ref: ${{ github.sha }}
-      expected_tag_commit: ${{ github.sha }}
+      release_ref: ${{ needs.release-evidence.outputs.tag_commit }}
+      expected_tag_commit: ${{ needs.release-evidence.outputs.tag_commit }}
+      evidence_run_id: ${{ needs.release-evidence.outputs.artifact_run_id }}
+      evidence_run_attempt: ${{ needs.release-evidence.outputs.artifact_run_attempt }}
+      evidence_branch: ${{ needs.release-evidence.outputs.artifact_head_branch }}
+      artifact_prefix: release-taut-pg
+      artifact_id: ${{ needs.release-evidence.outputs.artifact_id }}
+      artifact_digest: ${{ needs.release-evidence.outputs.artifact_digest }}
+      artifact_repository_id: ${{ needs.release-evidence.outputs.artifact_repository_id }}
+      artifact_head_repository_id: ${{ needs.release-evidence.outputs.artifact_head_repository_id }}
     permissions:
       actions: read
       contents: write
-
