@@ -18,6 +18,13 @@ from pathlib import Path
 import pytest
 from conftest import _base_env, summon_cli, taut_cli
 from simplebroker import Queue
+from taut_summon import (
+    DriverUnresponsive,
+    NothingSummoned,
+    SummonController,
+    SummonOperationError,
+    SummonStatus,
+)
 from taut_summon._state import ensure_summon_schema, record_session, set_wired
 
 from taut import identity
@@ -59,21 +66,13 @@ def _live_harness_timeout() -> float:
     return float(os.environ.get("TAUT_SUMMON_LIVE_HARNESS_TIMEOUT", "45.0"))
 
 
-def _not_ready_reason(status_text: str) -> str | None:
-    if "awaiting_onboarding=true" in status_text:
+def _not_ready_reason(status: SummonStatus) -> str | None:
+    if status.details.get("awaiting_onboarding") is True:
         return (
             "driver reports awaiting_onboarding=true; run "
             "`taut summon --attach <name>` from a real terminal for this "
             "provider/database before expecting detached live reachability"
         )
-    return None
-
-
-def _status_field(status_text: str, key: str) -> str | None:
-    prefix = f"{key}="
-    for part in status_text.split("\t"):
-        if part.startswith(prefix):
-            return part.removeprefix(prefix)
     return None
 
 
@@ -83,21 +82,32 @@ def _file_tail(path: Path, limit: int = 2_000) -> str:
     return path.read_text(encoding="utf-8", errors="replace")[-limit:]
 
 
-def _fatal_readiness_reason(status_text: str) -> str | None:
-    if "awaiting_query=" in status_text:
+def _fatal_readiness_reason(status: SummonStatus) -> str | None:
+    awaiting_query = status.details.get("awaiting_query")
+    if awaiting_query is not None:
         return (
             "driver reports an unanswered terminal query; the PTY responder "
-            f"needs coverage for this harness ({status_text})"
+            f"needs coverage for this harness ({awaiting_query})"
         )
-    error = _status_field(status_text, "error")
-    if error is not None:
-        return f"driver status is unavailable: {error}"
-    control_health = _status_field(status_text, "control_health")
+    control_health = status.details.get("control_health")
     if control_health != "ok":
-        detail = _status_field(status_text, "health_detail")
+        detail = status.details.get("health_detail")
         suffix = f": {detail}" if detail else ""
         return f"driver control health is {control_health or 'missing'}{suffix}"
     return None
+
+
+def _status_with_details(**details: str | int | float | bool | None) -> SummonStatus:
+    return SummonStatus(
+        member_id="m_" + "a" * 26,
+        name="codex",
+        driver="alive",
+        provider="codex",
+        provider_session_id=None,
+        thread_count=1,
+        cursor_lag={"general": 0},
+        details=details,
+    )
 
 
 def _harness_capture(provider: str) -> identity.IdentityCapture:
@@ -205,9 +215,7 @@ def test_live_harness_strict_mode_is_explicit(
 
 
 def test_live_status_not_ready_reason_names_onboarding() -> None:
-    reason = _not_ready_reason(
-        "claude\tprovider=claude\tdriver=alive\tawaiting_onboarding=true"
-    )
+    reason = _not_ready_reason(_status_with_details(awaiting_onboarding=True))
 
     assert reason is not None
     assert "awaiting_onboarding=true" in reason
@@ -215,7 +223,7 @@ def test_live_status_not_ready_reason_names_onboarding() -> None:
 
 
 def test_live_status_not_ready_reason_names_query_gap() -> None:
-    reason = _fatal_readiness_reason("codex\tprovider=codex\tawaiting_query=[?15n")
+    reason = _fatal_readiness_reason(_status_with_details(awaiting_query="[?15n"))
 
     assert reason is not None
     assert "terminal query" in reason
@@ -223,23 +231,13 @@ def test_live_status_not_ready_reason_names_query_gap() -> None:
 
 
 def test_live_status_fatal_reason_names_control_health_gap() -> None:
-    reason = _fatal_readiness_reason(
-        "codex\tprovider=codex\tdriver=alive\tcontrol_health=degraded"
-    )
+    reason = _fatal_readiness_reason(_status_with_details(control_health="degraded"))
 
     assert reason == "driver control health is degraded"
 
 
-def test_live_status_fatal_reason_names_status_error() -> None:
-    reason = _fatal_readiness_reason(
-        "codex\tprovider=codex\tdriver=alive\terror=status unavailable"
-    )
-
-    assert reason == "driver status is unavailable: status unavailable"
-
-
 def test_live_status_not_ready_reason_allows_plain_alive_status() -> None:
-    status = "claude\tprovider=claude\tdriver=alive\tcontrol_health=ok"
+    status = _status_with_details(control_health="ok")
 
     assert _fatal_readiness_reason(status) is None
     assert _not_ready_reason(status) is None
@@ -301,9 +299,10 @@ def test_live_pty_harness_reaches_ready_and_accepts_injection(
         text=True,
     )
     try:
+        controller = SummonController(db_path=db)
         deadline = time.monotonic() + _live_harness_timeout()
         last_status = ""
-        ready_status = ""
+        ready_status: SummonStatus | None = None
 
         while time.monotonic() < deadline:
             if proc.poll() is not None:
@@ -317,33 +316,28 @@ def test_live_pty_harness_reaches_ready_and_accepts_injection(
                     f"{provider} did not reach a ready detached session: {stderr[-500:]}"
                 )
             try:
-                rc, status_out, status_err = summon_cli(
-                    "status", provider, db=db, cwd=tmp_path, timeout=10.0
-                )
-            except subprocess.TimeoutExpired as exc:
-                detail = f"status command timed out after {exc.timeout}s"
-                if _strict_live_harness():
-                    pytest.fail(f"{provider} did not reach a ready prompt: {detail}")
-                pytest.skip(f"{provider} did not reach a ready prompt: {detail}")
-            if rc == 0:
-                last_status = status_out
-                reason = _not_ready_reason(status_out)
+                status = controller.status(provider)
+            except (NothingSummoned, DriverUnresponsive) as exc:
+                last_status = str(exc)
+            except SummonOperationError as exc:
+                pytest.fail(f"{provider} status failed during readiness: {exc}")
+            else:
+                last_status = repr(status)
+                reason = _not_ready_reason(status)
                 if reason is not None:
                     if _strict_live_harness():
                         pytest.fail(
                             f"{provider} did not reach a ready prompt: {reason}"
                         )
                     pytest.skip(f"{provider} did not reach a ready prompt: {reason}")
-                fatal_reason = _fatal_readiness_reason(status_out)
+                fatal_reason = _fatal_readiness_reason(status)
                 if fatal_reason is not None:
                     pytest.fail(
                         f"{provider} did not reach a ready prompt: {fatal_reason}; "
                         f"stderr: {_file_tail(stderr_path)}"
                     )
-                ready_status = status_out
+                ready_status = status
                 break
-            elif status_err:
-                last_status = status_err
             time.sleep(0.5)
         else:
             stderr = _finished_stderr_tail(proc)
@@ -352,7 +346,10 @@ def test_live_pty_harness_reaches_ready_and_accepts_injection(
                 f"last status: {last_status[-500:]}; stderr: {stderr[-500:]}"
             )
 
-        assert f"{provider}\tprovider={provider}\tdriver=alive" in ready_status
+        assert ready_status is not None
+        assert ready_status.name == provider
+        assert ready_status.provider == provider
+        assert ready_status.driver == "alive"
         probe = f"live-probe-{provider}-{time.monotonic_ns()}"
         rc, _out, err = taut_cli(
             "say",
@@ -366,22 +363,20 @@ def test_live_pty_harness_reaches_ready_and_accepts_injection(
         assert rc == 0, err
         deadline = time.monotonic() + _live_harness_timeout()
         while time.monotonic() < deadline:
-            rc, status_out, status_err = summon_cli(
-                "status", provider, db=db, cwd=tmp_path, timeout=10.0
-            )
-            if rc == 0:
-                fatal_reason = _fatal_readiness_reason(status_out)
+            try:
+                status = controller.status(provider)
+            except SummonOperationError as exc:
+                last_status = str(exc)
+            else:
+                last_status = repr(status)
+                fatal_reason = _fatal_readiness_reason(status)
                 if fatal_reason is not None:
                     pytest.fail(
                         f"{provider} lost ready control status: {fatal_reason}; "
                         f"stderr: {_file_tail(stderr_path)}"
                     )
-                if "lag=#general:0" in status_out:
+                if status.cursor_lag.get("general") == 0:
                     break
-            if status_err:
-                last_status = status_err
-            elif status_out:
-                last_status = status_out
             time.sleep(0.5)
         else:
             stderr = _finished_stderr_tail(proc)

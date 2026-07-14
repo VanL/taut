@@ -1113,6 +1113,13 @@ implementation with no remaining blocker.
   command test reproduced the control-byte leak; the foreground adapter now
   owns a package-scoped non-propagating `taut_summon` handler and preserves the
   host root logger.
+- The first 0.6.4 release attempt correctly stopped on the strict live lane.
+  The smoke parsed human status text as tab-delimited machine data, but the new
+  renderer intentionally exposes each tab as `\\t`; all eight providers then
+  falsely appeared to omit `control_health`. The test now reads readiness and
+  lag through public typed `SummonController.status()` while keeping the real
+  provider process and CLI stop path. The same 8-provider strict command moved
+  from 8/8 deterministic failures to 8/8 passes without changing a timeout.
 - Final verification and review: all scoped gates pass and independent review
   approved the final diff. The owner subsequently authorized commit and 0.6.4
   release subject to the ordinary release gates.
@@ -1124,6 +1131,7 @@ Observed passing commands on 2026-07-14:
 ```text
 uv run --extra dev pytest -n 0 -q
 uv run --extra dev pytest -q -n 0 extensions/taut_summon/tests/test_summon_cli.py::test_native_summon_command_owns_safe_logging_without_replacing_host_handlers
+TAUT_SUMMON_LIVE_HARNESS=1 TAUT_SUMMON_LIVE_HARNESS_STRICT=1 uv run --extra dev pytest -q extensions/taut_summon/tests/test_live_harness.py::test_live_pty_harness_reaches_ready_and_accepts_injection -n 1 --dist loadgroup
 uv run --extra dev pytest -q -n 0 extensions/taut_summon/tests -m 'not requires_live_harness and not requires_local_llm'
 uv run --extra dev pytest -q -n 0 tests/test_terminal_text.py tests/test_cli.py tests/test_architecture_boundaries.py
 uv run --extra dev pytest -q -n 0 tests/test_docs_references.py tests/test_project_metadata_consistency.py tests/test_core_summon_wheel_matrix.py tests/test_lazy_imports.py

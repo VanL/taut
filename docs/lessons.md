@@ -671,6 +671,12 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   even when ordinary root pytest uses SQLite; identify the narrower missing
   capability path before proposing duplicate suites.
 
+- 2026-07-14: Human terminal output is not a machine protocol, even when its
+  old layout resembles one. A safety renderer may intentionally make tabs and
+  other controls visible, turning delimiter parsing into a false missing-field
+  failure. Read operational state through a typed API or explicit JSON path;
+  reserve human-output assertions for presentation behavior.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent
