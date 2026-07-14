@@ -23,7 +23,9 @@ small and hot while git history holds everything raw.
   authority of the user's current request.
 - A sweep (including recording a checked-deferred entry) is its own unit
   of work, run when the user asks for it or agrees to it at a natural
-  completion boundary (a plan just closed, a release just shipped). A
+  completion boundary (a plan just closed, a release just shipped). One
+  boundary is standing: a repo that just adopted this layer via
+  propagation runs its first sweep as part of the propagation unit. A
   count at **twice** its threshold escalates the report to a strong
   recommendation — still not self-authorization.
 - A trip is only news when it is new: if the counts are unchanged since
