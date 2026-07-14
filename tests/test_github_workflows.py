@@ -66,6 +66,8 @@ def _summon_collection_records(path: str) -> tuple[dict[str, object], ...]:
             "run",
             "--project",
             "extensions/taut_summon",
+            "--extra",
+            "dev",
             "python",
             "-c",
             SUMMON_COLLECTION_REPORTER,
@@ -90,6 +92,34 @@ def _summon_collection_records(path: str) -> tuple[dict[str, object], ...]:
         if line.startswith("TAUT_SUMMON_COLLECTED=")
     )
     return tuple(json.loads(report))
+
+
+def test_summon_collection_probe_owns_its_dev_dependencies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[list[str]] = []
+
+    def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            "TAUT_SUMMON_COLLECTED=[]\n",
+            "",
+        )
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+    assert _summon_collection_records("tests/test_live_harness.py") == ()
+    assert commands[0][:7] == [
+        "uv",
+        "run",
+        "--project",
+        "extensions/taut_summon",
+        "--extra",
+        "dev",
+        "python",
+    ]
 
 
 def test_test_workflow_is_reusable_and_owns_canonical_release_artifacts() -> None:

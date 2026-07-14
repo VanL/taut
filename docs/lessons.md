@@ -634,6 +634,11 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   the unit lane. Prove the two selectors are a disjoint union of the file, then
   keep the real smoke strict without rerunning its supporting tests.
 
+- 2026-07-14: A test that starts `uv run --project` for another project owns
+  that child project's test dependencies. Request its `dev` extra explicitly;
+  an existing local `.venv` can otherwise hide a clean-runner failure where the
+  child environment correctly lacks `pytest`.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent
