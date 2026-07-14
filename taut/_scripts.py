@@ -25,6 +25,7 @@ POSTGRES_IMAGE = os.environ.get("SIMPLEBROKER_PG_TEST_IMAGE", "postgres:18")
 POSTGRES_DB = os.environ.get("SIMPLEBROKER_PG_TEST_DB", "taut_test")
 POSTGRES_USER = os.environ.get("SIMPLEBROKER_PG_TEST_USER", "postgres")
 POSTGRES_PASSWORD = os.environ.get("SIMPLEBROKER_PG_TEST_PASSWORD", "postgres")
+PG_TEST_DEFAULT_WORKERS = "4"
 
 
 def _run(
@@ -453,7 +454,7 @@ def pytest_pg_main(argv: list[str] | None = None) -> int:
     ) = _route_pytest_args(pytest_args)
     shared_marker = _merge_marker_expressions(shared_marker, extra_marker_expr)
     extension_marker = _merge_marker_expressions("pg_only", extra_marker_expr)
-    numprocesses = numprocesses or "auto"
+    numprocesses = numprocesses or PG_TEST_DEFAULT_WORKERS
     dist_mode = dist_mode or "loadgroup"
     container_name: str | None = None
 

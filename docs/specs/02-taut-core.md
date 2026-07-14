@@ -1085,6 +1085,12 @@ Implementation boundaries:
 - Extension tests marked `pg_only` must prove package import, plugin
   availability, `.taut.toml` selection, sidecar compatibility, and cleanup
   against a real Docker Postgres database.
+- `bin/pytest-pg` defaults to a fixed four-worker pressure lane so host CPU
+  counts cannot turn release verification into unbounded process and database
+  oversubscription. An explicit pytest `-n` remains an operator override.
+- Concurrency proofs must hold their controlled transaction until the test
+  coordinator releases it in cleanup. A self-expiring helper-thread lease must
+  not manufacture a lock release under scheduler load.
 - Release remains GitHub-only and is governed by [TAUT-12.5]. Postgres
   extension releases use `taut_pg/vX.Y.Z`.
 

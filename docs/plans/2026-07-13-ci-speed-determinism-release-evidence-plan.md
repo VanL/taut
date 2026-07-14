@@ -542,6 +542,15 @@ Observed locally on macOS/Python 3.14.4 on 2026-07-13:
   current core/Summon wheels still ran the four historical builds and all six
   installed compatibility cases.
 
+The first real 0.6.2 release attempt exposed one additional orchestration race:
+`bin/pytest-pg --fast` mapped `-n auto` to 50 local workers, and a lock-holder
+probe thread released its transaction after a five-second self-expiring wait
+before the descheduled coordinator could inspect it. Production advisory-lock
+behavior remained correct in the adjacent end-to-end contention proof and all
+three GitHub PG lanes. The runner now defaults to a fixed four-worker pressure
+lane, and the probe holds the transaction until coordinator-owned cleanup
+releases it. The corrected PG gate must pass before release tags are pushed.
+
 Post-rollout success means lower Test workflow wall time and compute, no
 coverage-only test run, no `node down` from the two reactor tests, strict
 local-LLM failures with complete event evidence, and one Test plus one PG Test
@@ -634,6 +643,7 @@ actionable issues.
 |----------|------------------|-----------------|-----------|---------------|
 | [TAUT-11] | Run the serial installed selector in every root matrix cell. | Run it in six factor-covering cells using the active matrix interpreter. | Covers every supported Python and OS while removing four redundant three-wheel environments. | Promoted into [TAUT-11] and implementation docs. |
 | [TAUT-12.5] | Observe for 90 minutes using a 40-minute flat-job estimate. | Observe for 95 minutes inside a 110-minute gate job. | The actual Test DAG has a 45-minute critical path because coverage depends on the 30-minute test jobs. | Promoted into [TAUT-12.5]. |
+| [TAUT-12.1] | Let `bin/pytest-pg` choose `-n auto`, while a helper thread self-released its controlled lock after five seconds. | Default to four PG workers and let coordinator cleanup release the controlled transaction. | Host CPU count is not a useful database-pressure contract; oversubscription can starve the observer and manufacture a lock failure. | Promoted into [TAUT-12.1] and implementation docs. |
 
 ## Out of Scope
 

@@ -590,7 +590,7 @@ def test_pytest_pg_main_reports_keyboard_interrupt(
     assert "Interrupted" in capsys.readouterr().err
 
 
-def test_pg_runner_command_uses_explicit_xdist_defaults(
+def test_pg_runner_command_uses_bounded_xdist_defaults(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     commands: list[list[str]] = []
@@ -622,5 +622,5 @@ def test_pg_runner_command_uses_explicit_xdist_defaults(
     pytest_commands = [command for command in commands if "pytest" in command]
     assert pytest_commands
     for command in pytest_commands:
-        assert command[command.index("-n") + 1] == "auto"
+        assert command[command.index("-n") + 1] == "4"
         assert command[command.index("--dist") + 1] == "loadgroup"

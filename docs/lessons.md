@@ -639,6 +639,13 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   an existing local `.venv` can otherwise hide a clean-runner failure where the
   child environment correctly lacks `pytest`.
 
+- 2026-07-14: A helper-thread timeout is a state transition, not just a test
+  timeout. If expiry releases a real transaction or lock, scheduler starvation
+  can manufacture the behavior the test is meant to reject. Keep the resource
+  held until coordinator-owned cleanup releases it, and bound machine-derived
+  parallelism so a high-core host cannot turn a pressure test into process and
+  database oversubscription.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

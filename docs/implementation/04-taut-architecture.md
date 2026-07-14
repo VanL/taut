@@ -462,6 +462,13 @@ The canonical full local verification block lives in `README.md` under
 focused state, Docker Postgres, docs-reference, release-helper, and metadata
 tests named by the active plan before running that canonical block.
 
+`bin/pytest-pg` owns a fixed four-worker default for both its shared and
+PG-only suites. This is a repeatable concurrency-pressure lane, not a request
+to mirror the host's logical CPU count. Operators may pass an explicit pytest
+`-n` override. PostgreSQL lock tests use coordinator-owned events to retain
+controlled transactions until cleanup releases them; helper threads do not
+release real locks merely because the coordinator was descheduled.
+
 Also run the active plan's grep gates for private imports, unexpected consuming
 broker APIs, SQL outside `taut/state/_sql.py`, and live-write path drift.
 Expected exceptions: `taut/watcher.py` consumes notification queues during

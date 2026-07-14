@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,35 @@ from taut.client import TautClient
 from taut.state import POSTGRES_SQL_DIALECT, SqlSidecarTautState
 
 pytestmark = pytest.mark.pg_only
+
+
+def _wait_for_advisory_lock_waiter(
+    connection: psycopg.Connection[Any],
+    *,
+    backend_pid: int,
+    timeout: float = 5.0,
+) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM pg_locks
+                    WHERE pid = %s
+                      AND locktype = 'advisory'
+                      AND NOT granted
+                )
+                """,
+                (backend_pid,),
+            )
+            if cursor.fetchone() == (True,):
+                return
+        time.sleep(0.01)
+    pytest.fail(
+        f"Postgres backend {backend_pid} never waited for the held advisory lock"
+    )
 
 
 def test_taut_sidecar_schema_initializes_under_postgres(
@@ -128,6 +158,7 @@ def test_taut_member_route_uniqueness_uses_postgres_constraints(
 
 def test_postgres_member_create_and_alias_create_share_one_route_namespace(
     taut_pg_project: Path,
+    raw_pg_conn: psycopg.Connection[Any],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.chdir(taut_pg_project)
@@ -157,6 +188,7 @@ def test_postgres_member_create_and_alias_create_share_one_route_namespace(
     second_attempted = threading.Event()
     release_first = threading.Event()
     second_acquired = threading.Event()
+    second_backend_pid: list[int] = []
     call_count = 0
     count_lock = threading.Lock()
     original_lock = sql_state._acquire_advisory_lock
@@ -169,8 +201,11 @@ def test_postgres_member_create_and_alias_create_share_one_route_namespace(
         if call_index == 0:
             original_lock(*args, **kwargs)
             first_acquired.set()
-            assert release_first.wait(timeout=5)
+            release_first.wait()
             return
+        session = args[0]
+        pid_rows = list(session.run("SELECT pg_backend_pid()", fetch=True))
+        second_backend_pid.append(int(pid_rows[0][0]))
         second_attempted.set()
         original_lock(*args, **kwargs)
         second_acquired.set()
@@ -213,10 +248,17 @@ def test_postgres_member_create_and_alias_create_share_one_route_namespace(
     try:
         with ThreadPoolExecutor(max_workers=2) as pool:
             futures = [pool.submit(create_member), pool.submit(create_alias)]
-            assert first_acquired.wait(timeout=5)
-            assert second_attempted.wait(timeout=5)
-            assert not second_acquired.wait(timeout=0.1)
-            release_first.set()
+            try:
+                assert first_acquired.wait(timeout=5)
+                assert second_attempted.wait(timeout=5)
+                assert len(second_backend_pid) == 1
+                _wait_for_advisory_lock_waiter(
+                    raw_pg_conn,
+                    backend_pid=second_backend_pid[0],
+                )
+                assert not second_acquired.is_set()
+            finally:
+                release_first.set()
             outcomes = [future.result(timeout=10) for future in futures]
         assert sum(outcome is None for outcome in outcomes) == 1
         assert sum(isinstance(outcome, IntegrityError) for outcome in outcomes) == 1
