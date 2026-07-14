@@ -706,6 +706,14 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   authoritative owner lookup proves the race. An integrity error alone is not
   that proof.
 
+- 2026-07-14: A thread event immediately before a blocking call proves only
+  that the thread reached that line; it does not prove that the scheduler let
+  the call reach the external system. For deterministic database contention
+  tests, hold the first real lock, gate the second contender at the same
+  recorded boundary, release both together, and assert the committed state.
+  Do not poll a timeout-bound negative condition based on an “about to call”
+  signal.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

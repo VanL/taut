@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.7 - 2026-07-14
+
+- Made the PostgreSQL cross-table route-race proof scheduler-independent. The
+  test now holds the first real advisory lock until both contenders reach the
+  same lock-key boundary, proves that lock unavailable from an independent
+  connection, then releases them together and still requires exactly one
+  commit and one `IntegrityError`.
+
 ## 0.6.6 - 2026-07-14
 
 - Filtered empty, built-in Unicode whitespace, and Unicode `Cf`-only `say` and

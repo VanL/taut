@@ -551,6 +551,29 @@ three GitHub PG lanes. The runner now defaults to a fixed four-worker pressure
 lane, and the probe holds the transaction until coordinator-owned cleanup
 releases it. The corrected PG gate must pass before release tags are pushed.
 
+The first real 0.6.6 release attempt exposed the remaining half of that test
+race in the Python 3.11 PostgreSQL lane. The second contender set an “about to
+lock” event before calling the advisory-lock helper, but that event did not
+prove server-side progress. Targeted diagnostics at a local reproduction
+showed the correct granted `taut:route:contended` lock and no waiter during the
+full observation window. The supported conclusion is that the second SQL
+statement was not visible in PostgreSQL after the event; scheduler or
+client-side delay is the best inference, but no thread stack was captured to
+distinguish them. Production used the same lock key on both paths.
+
+The corrected proof no longer infers database progress from a Python event or
+polls a negative condition. The first transaction acquires and holds the real
+advisory lock. The second records the same exact lock key and waits at a
+coordinator-owned gate. An independent connection must fail a nonblocking
+attempt to acquire that exact real lock. Releasing both together leaves the
+first transaction holding the database lock while the second attempts it; the
+test still requires one committed claimant, one `IntegrityError`, and the
+correct stored owner. Bounded worker gates plus transaction-local lock and
+statement timeouts preserve failure cleanup. Before the fix, the exact Python
+3.11 four-worker lane failed locally twice, including iteration 6, with only
+the granted lock visible. After the fix, 50 consecutive exact-lane repetitions
+passed.
+
 Post-rollout success means lower Test workflow wall time and compute, no
 coverage-only test run, no `node down` from the two reactor tests, strict
 local-LLM failures with complete event evidence, and one Test plus one PG Test
@@ -637,6 +660,18 @@ The follow-up reviewer reran the signal, workflow-evidence, release, selector,
 and installed-wheel checks after these fixes and reported no remaining
 actionable issues.
 
+Post-0.6.6 failure review (repository subagent), 2026-07-14:
+
+| Priority | Finding | Disposition |
+|----------|---------|-------------|
+| P1 | Releasing two lock-boundary wrappers together could still let one transaction finish before the other ran, so the test might pass with the advisory helper disabled. | Accepted. While the first transaction is held, an independent connection now must fail `pg_try_advisory_xact_lock` for the exact recorded route key. A controlled no-op mutation of the production helper made this assertion fail immediately; restoration returned the test to green. |
+| P2 | Unbounded worker gates and cleanup beginning only after both submissions could turn setup or database stalls into executor shutdown hangs. | Accepted. Cleanup now covers submission, worker gates are bounded, and transaction-local lock and statement timeouts bound database waits. |
+| P2 | “Descheduled for five seconds” was stronger than the retained lock-table evidence. | Accepted. The plan now states the supported observation (no waiter became visible after the Python event) and labels scheduler or client-side delay as an inference because no thread stack was captured. |
+
+After those dispositions, the controlled lock-helper mutation failed at the
+new real-lock assertion, the restored focused test passed, and 50 consecutive
+Python 3.11 four-worker PG-only lanes passed.
+
 ## Deviation Log
 
 | Spec ref | Planned behavior | Actual behavior | Rationale | Spec proposal |
@@ -644,6 +679,7 @@ actionable issues.
 | [TAUT-11] | Run the serial installed selector in every root matrix cell. | Run it in six factor-covering cells using the active matrix interpreter. | Covers every supported Python and OS while removing four redundant three-wheel environments. | Promoted into [TAUT-11] and implementation docs. |
 | [TAUT-12.5] | Observe for 90 minutes using a 40-minute flat-job estimate. | Observe for 95 minutes inside a 110-minute gate job. | The actual Test DAG has a 45-minute critical path because coverage depends on the 30-minute test jobs. | Promoted into [TAUT-12.5]. |
 | [TAUT-12.1] | Let `bin/pytest-pg` choose `-n auto`, while a helper thread self-released its controlled lock after five seconds. | Default to four PG workers and let coordinator cleanup release the controlled transaction. | Host CPU count is not a useful database-pressure contract; oversubscription can starve the observer and manufacture a lock failure. | Promoted into [TAUT-12.1] and implementation docs. |
+| [TAUT-12.1] | Infer that a contender submitted its advisory-lock SQL from a Python event immediately before the call, then poll `pg_locks` for its backend PID. | Hold the first real lock, prove it unavailable through a nonblocking attempt from an independent connection, gate the second at the same recorded lock-key boundary, and release both together before asserting the one-winner database state. | A Python event proves code position, not server-side progress; a database-side nonblocking attempt proves actual lock ownership without waiting. | Test and implementation guidance now state the deterministic handoff and bounded cleanup. |
 
 ## Out of Scope
 

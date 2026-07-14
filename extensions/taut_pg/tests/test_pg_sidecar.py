@@ -3,7 +3,6 @@ from __future__ import annotations
 import subprocess
 import sys
 import threading
-import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -30,33 +29,19 @@ from taut.state import POSTGRES_SQL_DIALECT, SqlSidecarTautState
 pytestmark = pytest.mark.pg_only
 
 
-def _wait_for_advisory_lock_waiter(
+def _assert_advisory_lock_held(
     connection: psycopg.Connection[Any],
     *,
-    backend_pid: int,
-    timeout: float = 5.0,
+    key: str,
 ) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT EXISTS (
-                    SELECT 1
-                    FROM pg_locks
-                    WHERE pid = %s
-                      AND locktype = 'advisory'
-                      AND NOT granted
-                )
-                """,
-                (backend_pid,),
-            )
-            if cursor.fetchone() == (True,):
-                return
-        time.sleep(0.01)
-    pytest.fail(
-        f"Postgres backend {backend_pid} never waited for the held advisory lock"
-    )
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT pg_try_advisory_xact_lock(hashtextextended(%s, 0))",
+            (key,),
+        )
+        acquired = cursor.fetchone()
+    connection.rollback()
+    assert acquired == (False,), f"advisory lock {key!r} was not held"
 
 
 def test_taut_sidecar_schema_initializes_under_postgres(
@@ -187,28 +172,32 @@ def test_postgres_member_create_and_alias_create_share_one_route_namespace(
     first_acquired = threading.Event()
     second_attempted = threading.Event()
     release_first = threading.Event()
-    second_acquired = threading.Event()
-    second_backend_pid: list[int] = []
+    lock_keys: list[str] = []
     call_count = 0
     count_lock = threading.Lock()
     original_lock = sql_state._acquire_advisory_lock
 
+    def wait_for_release() -> None:
+        if not release_first.wait(timeout=10):
+            raise RuntimeError("route-lock test coordinator did not release contenders")
+
     def observe_route_lock(*args: Any, **kwargs: Any) -> None:
         nonlocal call_count
+        session = args[0]
+        session.run("SET LOCAL lock_timeout = '5s'")
+        session.run("SET LOCAL statement_timeout = '10s'")
         with count_lock:
             call_index = call_count
             call_count += 1
+            lock_keys.append(str(args[2]))
         if call_index == 0:
             original_lock(*args, **kwargs)
             first_acquired.set()
-            release_first.wait()
+            wait_for_release()
             return
-        session = args[0]
-        pid_rows = list(session.run("SELECT pg_backend_pid()", fetch=True))
-        second_backend_pid.append(int(pid_rows[0][0]))
         second_attempted.set()
+        wait_for_release()
         original_lock(*args, **kwargs)
-        second_acquired.set()
 
     monkeypatch.setattr(sql_state, "_acquire_advisory_lock", observe_route_lock)
 
@@ -247,16 +236,18 @@ def test_postgres_member_create_and_alias_create_share_one_route_namespace(
 
     try:
         with ThreadPoolExecutor(max_workers=2) as pool:
-            futures = [pool.submit(create_member), pool.submit(create_alias)]
             try:
+                futures = [pool.submit(create_member), pool.submit(create_alias)]
                 assert first_acquired.wait(timeout=5)
                 assert second_attempted.wait(timeout=5)
-                assert len(second_backend_pid) == 1
-                _wait_for_advisory_lock_waiter(
+                assert lock_keys == [
+                    "taut:route:contended",
+                    "taut:route:contended",
+                ]
+                _assert_advisory_lock_held(
                     raw_pg_conn,
-                    backend_pid=second_backend_pid[0],
+                    key="taut:route:contended",
                 )
-                assert not second_acquired.is_set()
             finally:
                 release_first.set()
             outcomes = [future.result(timeout=10) for future in futures]

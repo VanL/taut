@@ -191,6 +191,17 @@ the advisory lock supplies the missing cross-table name/alias namespace.
 `SqlSidecarTautState` passes its resolved dialect into only those operations,
 while portable and SQLite dialects remain no-ops.
 
+The PostgreSQL contention proof coordinates at that lock boundary rather than
+polling `pg_locks` after a Python-side “about to lock” event. The first
+transaction acquires and retains the real route lock; the second contender
+records the same normalized key and waits at the test gate. An independent
+connection must fail `pg_try_advisory_xact_lock` for that exact key before the
+gate opens. Releasing both then forces the database lock and the final
+one-success/one-conflict state to prove the contract without assuming that a
+thread reaching a Python line has submitted its next SQL statement. Bounded
+worker gates and transaction-local lock and statement timeouts turn cleanup
+defects into ordinary failures rather than stuck executor shutdown.
+
 Taut-owned JSON is decoded according to the column contract, not with a
 generic fallback. Nullable member/thread metadata maps SQL `NULL` to an empty
 object. Malformed JSON, a wrong top-level type, required claim evidence that
