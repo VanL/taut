@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "taut-summon"
-version = "0.6.2"
+version = "0.6.3"
 description = "Summon extension for Taut: host an agent harness as a workspace member"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -16,7 +16,7 @@ authors = [
 dependencies = [
     # Floor is the paired core version shipping the shared BaseReactor
     # lifecycle used by the summon control reactor.
-    "taut>=0.6.2",
+    "taut>=0.6.3",
 ]
 
 [project.scripts]

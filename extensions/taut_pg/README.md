@@ -25,8 +25,8 @@ GitHub Release into the same environment. `taut-pg` uses its own
 version:
 
 ```bash
-pipx install "git+https://github.com/VanL/taut.git@v0.6.2"
-pipx inject taut ./taut_pg-0.6.2-py3-none-any.whl
+pipx install "git+https://github.com/VanL/taut.git@v0.6.3"
+pipx inject taut ./taut_pg-0.6.3-py3-none-any.whl
 ```
 
 Do not use a PyPI install command for `taut-pg` until the project documents
