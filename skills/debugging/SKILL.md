@@ -42,7 +42,7 @@ lands with a proof that the failure cannot silently return.
 - The fix itself, its regression test, and any contract consumers the
   root cause implicates (Golden Rule 5: update all consumers together)
 - If the root cause is a spec-vs-code disagreement, the deviation path in
-  `../../docs/agent-context/decision-hierarchy.md` applies — do not
+  `docs/agent-context/decision-hierarchy.md` applies — do not
   silently "fix" code to match your inference
 
 ## Workflow

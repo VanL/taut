@@ -65,7 +65,8 @@ conversation die in conversation.
      no implementation against a governing spec. When it firms up,
      return here.
    - **Trivial** → no plan; just do it with normal verification.
-     Triviality is judged by [DOM-5]'s criteria — no intended-behavior
+     Triviality is judged by [DOM-15]'s class-1/2 definitions (built on
+     [DOM-5]'s criteria) — no intended-behavior
      change, no boundary crossed, no reusable workflow introduced, a
      zero-context engineer would not guess wrong — never by file count. A
      one-file spec or contract edit is not trivial.

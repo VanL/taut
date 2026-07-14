@@ -65,7 +65,10 @@ small and hot while git history holds everything raw.
 
 ### 1. Derive the trigger counts (never trust a stored number)
 
-Read the watermarks in `docs/coalescing.md`, then compute:
+Read the watermarks in `docs/coalescing.md`, then compute. The state
+file owns the repo-local ledger format: when it declares a derivation
+command, use that command — the bullet grep below is the default for
+dated-bullet ledgers only.
 
 - Lessons past watermark — dated entries newer than the lessons watermark:
 
