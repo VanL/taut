@@ -646,6 +646,18 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   parallelism so a high-core host cannot turn a pressure test into process and
   database oversubscription.
 
+- 2026-07-14: Release target selection and verification scope are separate
+  concerns. If each target conditionally selects its “relevant” suites, a new
+  extension can ship without proving its interaction with another extension.
+  Plan one repository-wide sequence per release invocation, not one sequence per
+  selected package; keep any human override explicit and leave separately owned
+  artifact compatibility gates non-skippable.
+
+- 2026-07-14: Live-test enablement and strictness are orthogonal. A strict flag
+  can still produce a skipped release gate if the test first sees `CI` or an
+  inherited disable and never enters strict setup. Release environments must
+  force both the enable flag and strict mode, with an executable test for each.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

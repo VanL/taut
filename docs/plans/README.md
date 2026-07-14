@@ -44,6 +44,10 @@ Risky plans are blocked if they do not make explicit:
 
 ## Active Plans
 
+- `2026-07-14-universal-release-gates-plan.md` — make every package release
+  target use one universal core, PostgreSQL, and Summon local gate by default,
+  preserve the explicit human override, and require both canonical exact-SHA
+  workflows without enqueueing duplicate matrices.
 - `2026-07-13-ci-speed-determinism-release-evidence-plan.md` — remove
   coverage-only test reruns, give expensive artifacts and signal probes safe
   owners, keep strict local-LLM CI proof, and reuse exact-SHA test artifacts

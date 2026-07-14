@@ -581,9 +581,12 @@ logging policy and streams.
   credential-free transport proof without pretending to cover provider
   onboarding; it prewires the synthetic PTY member as already onboarded so
   detached CI tests injection and model transport rather than the human attach
-  chord. External PTY harnesses have a default local readiness probe and
-  an opt-in strict mode (`TAUT_SUMMON_LIVE_HARNESS_STRICT=1`) that prewires
-  the temp database and fails on readiness or injection catch-up gaps.
+  chord. External PTY harnesses have a default local readiness probe and an
+  opt-in strict mode (`TAUT_SUMMON_LIVE_HARNESS_STRICT=1`) that prewires the
+  temp database and fails on readiness or injection catch-up gaps. Release
+  prechecks explicitly enable that lane with `TAUT_SUMMON_LIVE_HARNESS=1` as
+  well as selecting strict mode; strictness alone does not override an inherited
+  disabled live-test environment.
 - **Weft congruence is contract, not code**: STOP/STATUS/PING verbs and
   queue roles per [SUM-9]; no weft imports, no vendored weft agent code.
 
@@ -652,17 +655,23 @@ External-live and local-LLM lanes retain their known-safe
 `-n 1 --dist loadgroup` boundaries and select only `requires_live_harness` or
 `requires_local_llm`. Their non-live diagnostics remain in the unit selector,
 and a collection proof keeps the unit/live partitions disjoint and complete.
-Release prechecks also set
-`TAUT_SUMMON_LIVE_HARNESS_STRICT=1` locally for the external-live lane so
-installed provider CLIs fail instead of skipping when detached onboarding
-would otherwise be reported as not ready. The external-provider live lane
-proves detached readiness and injection catch-up; the local LLM lane is the
-deterministic sentinel-posting proof. CI runs the deterministic selector in a
-fresh `taut-summon process` matrix job rather than after broad root and summon
-unit suites, and does not serialize isolated matrix hosts for SQLite safety.
+Release prechecks set both `TAUT_SUMMON_LIVE_HARNESS=1` and
+`TAUT_SUMMON_LIVE_HARNESS_STRICT=1` locally for the external-live lane so an
+inherited disable cannot skip it and installed provider CLIs fail instead of
+skipping when detached onboarding would otherwise be reported as not ready.
+The external-provider live lane proves detached readiness and injection
+catch-up; the local LLM lane is the deterministic sentinel-posting proof. Every
+release target runs these lanes by default as part of one repository-wide
+precheck sequence; `--skip-checks` is the explicit human override. CI runs the
+deterministic selector in a fresh `taut-summon process` matrix job rather than
+after broad root and summon unit suites, and does not serialize isolated matrix
+hosts for SQLite safety.
 
 ## Related Plans
 
+- `docs/plans/2026-07-14-universal-release-gates-plan.md` — universal local
+  release verification, explicit live enablement plus strictness, and PG
+  evidence for the Summon tag.
 - `docs/plans/2026-07-13-ci-speed-determinism-release-evidence-plan.md` —
   strict local-LLM evidence, existing-lane coverage, and release reuse of
   exact-SHA canonical test artifacts.

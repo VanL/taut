@@ -72,26 +72,35 @@ The helper accepts `core`/`pg`/`summon` targets plus `all`;
 `all --version X.Y.Z` coordinates all three manifests, while target-specific
 versions remain independent. A real publishing run is allowed only from
 `main` or `master`, checked once before any preparation mutation; dry-run and
-checks-only remain branch-independent. After checking and building the exact
-preparation commit, the helper revalidates branch, HEAD, the full clean
-worktree/index, GitHub Release state, and local/remote tags. Only then may it
-push the branch, mutate or push tags, or cross the GitHub publication boundary.
-Branch and tag commands name the tested commit explicitly, and remote tag
-replacement uses an exact force-with-lease deletion before the explicit tag
-push. Checkout or tag drift therefore fails instead of redirecting the
-release. `--checks-only` never reconciles or commits; `--dry-run` prints the
-same ordering without writes. The helper has no PyPI upload path while the
-`taut` package-name request is unresolved.
+checks-only remain branch-independent. By default, every target and `all` run
+one identical universal precheck sequence: root, PostgreSQL, all four Summon
+lanes, full-repository lint/format, and the three collision-safe mypy owners.
+Target selection controls metadata, ordinary builds, tags, and publication,
+not default verification scope. `--checks-only` runs that one sequence without
+mutation. `--skip-checks` remains an explicit human override; separately owned
+artifact builds and paired-wheel compatibility gates still run.
 
-For core or summon releases, it also starts summon local-LLM preparation before
-the precheck sequence: reuse a configured loopback endpoint if it already
-serves the model; otherwise start a disposable loopback Ollama container and
-build the bounded served model while root and PG gates run. The release helper
-waits on that endpoint at the dedicated local-LLM lane and runs it with
-`TAUT_SUMMON_LOCAL_LLM=1`, so a missing local model is a release failure rather
-than a hidden skip. External live harnesses run in a separate strict one-worker
-lane from the local-LLM lane to keep each SQLite process workload in a fresh
-pytest invocation.
+After checking and building the exact preparation commit, the helper
+revalidates branch, HEAD, the full clean worktree/index, GitHub Release state,
+and local/remote tags. Only then may it push the branch, mutate or push tags, or
+cross the GitHub publication boundary. Branch and tag commands name the tested
+commit explicitly, and remote tag replacement uses an exact force-with-lease
+deletion before the explicit tag push. Checkout or tag drift therefore fails
+instead of redirecting the release. `--checks-only` never reconciles or
+commits; `--dry-run` prints the same ordering without writes. The helper has no
+PyPI upload path while the `taut` package-name request is unresolved.
+
+For every target whose prechecks run, the helper starts one Summon local-LLM
+preparation before the precheck sequence: reuse a configured loopback endpoint
+if it already serves the model; otherwise start a disposable loopback Ollama
+container and build the bounded served model while root and PG gates run. The
+helper waits on that endpoint only at the dedicated local-LLM lane and runs it
+with `TAUT_SUMMON_LOCAL_LLM=1`, so a missing local model is a release failure
+rather than a hidden skip. External live harnesses run in a separate one-worker
+lane with both `TAUT_SUMMON_LIVE_HARNESS=1` and
+`TAUT_SUMMON_LIVE_HARNESS_STRICT=1`; enablement and strict prewired behavior
+cannot be disabled by an inherited environment. The separate lane keeps each
+SQLite process workload in a fresh pytest invocation.
 GitHub Actions mirrors those process boundaries without duplicating work.
 `.github/workflows/test.yml` owns normal push/PR gates and remains reusable.
 Its representative Ubuntu root/unit and deterministic-process cells collect
@@ -116,9 +125,10 @@ binds the release tag family and version to the package.
 evidence and does not rebuild those packages.
 
 The three tag gates call `bin/require-green-workflows.py`; they do not call the
-test workflows. The observer selects canonical push evidence by repository,
-head repository, workflow path, branch, event, exact commit peeled from either
-a lightweight or annotated tag, and latest attempt,
+test workflows. Every tag requires both root Test and PostgreSQL Test evidence
+for its exact peeled commit. The observer selects canonical push evidence by
+repository, head repository, workflow path, branch, event, exact commit peeled
+from either a lightweight or annotated tag, and latest attempt,
 then pins the package bundle by immutable artifact id and GitHub archive
 digest. Its 95-minute observer bound covers the 45-minute Test critical path,
 queueing, and API visibility; the enclosing job has 110 minutes including
@@ -477,6 +487,7 @@ watch, `taut/client/_notifications.py::NotificationsMixin.inbox` claims notifica
 
 ## Related Plans
 
+- `docs/plans/2026-07-14-universal-release-gates-plan.md`
 - `docs/plans/2026-07-13-ci-speed-determinism-release-evidence-plan.md`
 - `docs/plans/2026-07-12-lazy-command-extensions-and-rich-tui-composition-plan.md`
 - `docs/plans/2026-07-12-automatic-display-name-capitalization-plan.md`

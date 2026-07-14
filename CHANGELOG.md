@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.3 - 2026-07-14
+
+- Made every release target run one universal root, PostgreSQL, and Summon
+  precheck sequence by default while retaining `--skip-checks` as an explicit
+  human override.
+- Forced release live-harness execution and strict prewired mode together, and
+  made local Ollama preparation lifecycle-safe for every target.
+- Required every package tag to observe both canonical exact-commit workflows
+  without dispatching duplicate test matrices or rebuilding release artifacts.
+
 ## 0.6.2 - 2026-07-14
 
 - Made signal and PTY integration failures deterministic and diagnostic without

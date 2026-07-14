@@ -1257,37 +1257,49 @@ Helper obligations:
   tree changes. A later proof failure leaves the local preparation commit
   unpushed and the branch clean. The helper never resets or silently rolls back
   files.
-- Run the relevant local gates against the clean local preparation commit and
-  before any branch push, tag creation or replacement, tag push, or publication
-  unless `--skip-checks` is set:
+- Each publishing invocation runs one universal precheck sequence, regardless
+  of whether its selected target set contains one package or all packages,
+  against its clean local preparation commit and before any branch push, tag
+  creation or replacement, tag push, or publication unless `--skip-checks` is
+  set. `--checks-only` runs that same single sequence without mutation. The
+  sequence is:
   root pytest partitioned into `not slow and not installed_wheel` plus a fresh
-  serial `not slow and installed_wheel` invocation,
-  `bin/pytest-pg --fast` for core or PG releases, the
-  `extensions/taut_summon/tests` suite for core or summon releases split into
-  non-process, deterministic `xdist_group` process, strict external-live, and
-  local-LLM lanes, ruff over root plus touched extension paths, and split mypy
-  lanes so extension `conftest.py` modules do not collide. The process/live/LLM
-  lanes are isolated from unrelated summon tests because they drive multiple
-  real processes against shared SQLite files. The deterministic process lane is
-  a fixed-width pressure proof: local release checks run it with
-  `-n 4 --dist load`. Its `xdist_group("process")` marker selects and co-locates
-  the lane in broad default runs, but every selected test owns test-local
-  resources because the isolated release invocation uses `--dist load` and
-  intentionally ignores group co-location. Strict external-live and local-LLM
-  lanes retain their existing known-safe `-n 1 --dist loadgroup` boundaries
-  and select only `requires_live_harness` or `requires_local_llm`, respectively.
-  Non-live diagnostics in those files remain owned by the unit lane. All three
-  run as fresh pytest invocations rather than one long worker.
-- For core or summon releases, require the summon local-LLM lane locally. The
-  helper starts local LLM preparation at the beginning of prechecks so Docker
-  image/model setup can overlap root and PG checks. It uses an existing
-  loopback endpoint when the configured model is already listed; otherwise it
-  starts a disposable loopback Ollama container with the same bounded model
-  shape as CI, waits for the served model only when the dedicated local-LLM lane
-  is reached, and runs that lane with `TAUT_SUMMON_LOCAL_LLM=1`. A separate
-  external-live lane runs installed external harnesses in strict prewired mode
-  (`TAUT_SUMMON_LIVE_HARNESS_STRICT=1`) so local release checks do not pass by
-  skipping already-installed provider CLIs for onboarding.
+  serial `not slow and installed_wheel` invocation, `bin/pytest-pg --fast`, the
+  `extensions/taut_summon/tests` suite split into non-process, deterministic
+  `xdist_group` process, strict external-live, and local-LLM lanes, ruff over
+  root and both extension paths, and split mypy lanes so extension
+  `conftest.py` modules do not collide. Target selection controls metadata,
+  ordinary package builds, tags, and publication, not the default verification
+  scope. `--skip-checks` remains an explicit human override for dry-run and
+  publishing commands.
+
+  The process/live/LLM lanes are isolated from unrelated summon tests because
+  they drive multiple real processes against shared SQLite files. The
+  deterministic process lane is a fixed-width pressure proof: local release
+  checks run it with `-n 4 --dist load`. Its `xdist_group("process")` marker
+  selects and co-locates the lane in broad default runs, but every selected test
+  owns test-local resources because the isolated release invocation uses
+  `--dist load` and intentionally ignores group co-location. Strict
+  external-live and local-LLM lanes retain their existing known-safe
+  `-n 1 --dist loadgroup` boundaries and select only
+  `requires_live_harness` or `requires_local_llm`, respectively. Non-live
+  diagnostics in those files remain owned by the unit lane. All three run as
+  fresh pytest invocations rather than one long worker.
+- For every target whose prechecks run, require the summon local-LLM lane
+  locally. The helper starts one local-LLM preparation at the beginning of
+  prechecks so Docker image/model setup can overlap root and PostgreSQL checks,
+  waits immediately before the local-LLM selector, passes the prepared endpoint
+  and model, and closes preparation after success or failure. It uses an
+  existing loopback endpoint when the configured model is already listed;
+  otherwise it starts a disposable loopback Ollama container with the same
+  bounded model shape as CI, waits for the served model only when the dedicated
+  local-LLM lane is reached, and runs that lane with
+  `TAUT_SUMMON_LOCAL_LLM=1`. A separate external-live lane runs installed
+  external harnesses in strict prewired mode and explicitly sets both
+  `TAUT_SUMMON_LIVE_HARNESS=1` and
+  `TAUT_SUMMON_LIVE_HARNESS_STRICT=1`; inherited `CI` or a disabled live env
+  cannot turn an enabled precheck into skips. Missing, unready, or failing
+  external providers and local models are fatal when prechecks run.
 - In `.github/workflows/test.yml`, keep summon's deterministic process lane
   aligned with the release helper selector:
   `xdist_group and not requires_live_harness and not requires_local_llm`. Run
@@ -1338,9 +1350,10 @@ Workflow obligations:
   successfully for the exact commit peeled from the release tag, canonical
   branch, source/head
   repository, latest attempt, and `push` event. It normalizes API `path@ref`
-  values rather than trusting display names or path strings. Core and PG tags
-  require root plus PG evidence; Summon requires root evidence. The three tag
-  gates do not invoke test workflows. Each observer makes one repository-wide
+  values rather than trusting display names or path strings. Every package tag
+  requires successful root Test and PostgreSQL Test evidence for the exact
+  peeled tag commit. The three tag gates observe those canonical workflows and
+  never invoke them. Each observer makes one repository-wide
   runs-list request per poll and filters workflow files locally. A
   rate-limit-signature 403 or 429 respects the server reset within the bounded
   observer window; 401, non-rate-limit 403, malformed responses, and completed
@@ -1403,6 +1416,9 @@ verification.
 
 ## Related Plans
 
+- `docs/plans/2026-07-14-universal-release-gates-plan.md` — one universal
+  default local release boundary, explicit human override, and root-plus-PG
+  exact-SHA evidence for every package tag.
 - `docs/plans/2026-07-13-ci-speed-determinism-release-evidence-plan.md` —
   coverage ownership, installed-wheel and signal isolation, strict local-LLM
   evidence, and exact-SHA release artifact reuse.

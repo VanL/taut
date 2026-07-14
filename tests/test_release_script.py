@@ -1119,6 +1119,169 @@ def test_precheck_commands_select_dev_extra_and_include_typed_release_helper() -
     ) in commands
 
 
+@pytest.mark.parametrize("target_key", ("core", "pg", "summon", "all"))
+def test_every_target_set_plans_one_literal_universal_precheck_sequence(
+    target_key: str,
+) -> None:
+    release = _load_release_module()
+    targets = (
+        release.BATCH_RELEASE_TARGETS
+        if target_key == "all"
+        else (release.CANONICAL_TARGETS[target_key],)
+    )
+    expected = (
+        (
+            "uv",
+            "run",
+            "--extra",
+            "dev",
+            "pytest",
+            "-m",
+            "not slow and not installed_wheel",
+        ),
+        (
+            "uv",
+            "run",
+            "--extra",
+            "dev",
+            "pytest",
+            "-m",
+            "not slow and installed_wheel",
+            "-n",
+            "0",
+        ),
+        ("uv", "run", "./bin/pytest-pg", "--fast"),
+        (
+            "uv",
+            "run",
+            "--extra",
+            "dev",
+            "pytest",
+            "extensions/taut_summon/tests",
+            "-m",
+            "not xdist_group",
+        ),
+        (
+            "uv",
+            "run",
+            "--extra",
+            "dev",
+            "pytest",
+            "extensions/taut_summon/tests",
+            "-m",
+            "xdist_group and not requires_live_harness and not requires_local_llm",
+            "-n",
+            "4",
+            "--dist",
+            "load",
+        ),
+        (
+            "uv",
+            "run",
+            "--extra",
+            "dev",
+            "pytest",
+            "extensions/taut_summon/tests/test_live_harness.py",
+            "-m",
+            "requires_live_harness",
+            "-n",
+            "1",
+            "--dist",
+            "loadgroup",
+        ),
+        (
+            "uv",
+            "run",
+            "--extra",
+            "dev",
+            "pytest",
+            "extensions/taut_summon/tests/test_live_local_llm.py",
+            "-m",
+            "requires_local_llm",
+            "-n",
+            "1",
+            "--dist",
+            "loadgroup",
+        ),
+        (
+            "uv",
+            "run",
+            "--extra",
+            "dev",
+            "ruff",
+            "check",
+            "taut",
+            "tests",
+            "bin",
+            "extensions/taut_pg/taut_pg",
+            "extensions/taut_pg/tests",
+            "bin/pytest-pg",
+            "extensions/taut_summon/taut_summon",
+            "extensions/taut_summon/tests",
+        ),
+        (
+            "uv",
+            "run",
+            "--extra",
+            "dev",
+            "ruff",
+            "format",
+            "--check",
+            "taut",
+            "tests",
+            "bin",
+            "extensions/taut_pg/taut_pg",
+            "extensions/taut_pg/tests",
+            "bin/pytest-pg",
+            "extensions/taut_summon/taut_summon",
+            "extensions/taut_summon/tests",
+        ),
+        (
+            "uv",
+            "run",
+            "--extra",
+            "dev",
+            "mypy",
+            "taut",
+            "tests",
+            "bin/release.py",
+            "bin/release-artifact.py",
+            "bin/require-green-workflows.py",
+            "--config-file",
+            "pyproject.toml",
+        ),
+        (
+            "uv",
+            "run",
+            "--extra",
+            "dev",
+            "mypy",
+            "taut/_scripts.py",
+            "extensions/taut_pg/taut_pg",
+            "extensions/taut_pg/tests",
+            "extensions/taut_pg/tests/conftest.py",
+            "--config-file",
+            "pyproject.toml",
+        ),
+        (
+            "uv",
+            "run",
+            "--extra",
+            "dev",
+            "mypy",
+            "extensions/taut_summon/taut_summon",
+            "extensions/taut_summon/tests",
+            "extensions/taut_summon/tests/conftest.py",
+            "--config-file",
+            "pyproject.toml",
+        ),
+    )
+
+    commands = release.build_precheck_commands_for_targets(targets)
+
+    assert commands == expected
+
+
 def test_pg_precheck_commands_include_pg_gate_and_extension_checks() -> None:
     release = _load_release_module()
 
@@ -1199,6 +1362,7 @@ def test_summon_precheck_env_splits_live_and_local_llm_lanes() -> None:
     )
 
     assert live_env["PYTEST_ADDOPTS"] == "-x --maxfail=1"
+    assert live_env["TAUT_SUMMON_LIVE_HARNESS"] == "1"
     assert live_env["TAUT_SUMMON_LIVE_HARNESS_STRICT"] == "1"
     assert "TAUT_SUMMON_LOCAL_LLM" not in live_env
     assert local_llm_env["PYTEST_ADDOPTS"] == "-x --maxfail=1"
@@ -1226,10 +1390,17 @@ def test_local_llm_model_probe_treats_startup_disconnect_as_not_ready(
     )
 
 
+@pytest.mark.parametrize("target_key", ("core", "pg", "summon", "all"))
 def test_prechecks_start_local_llm_before_other_release_gates(
+    target_key: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     release = _load_release_module()
+    targets = (
+        release.BATCH_RELEASE_TARGETS
+        if target_key == "all"
+        else (release.CANONICAL_TARGETS[target_key],)
+    )
     events: list[tuple[str, object]] = []
     commands = (
         ("root-tests",),
@@ -1261,7 +1432,7 @@ def test_prechecks_start_local_llm_before_other_release_gates(
             events.append(("close", None))
 
     def fake_build_precheck_commands_for_targets(targets: tuple[object, ...]) -> Any:
-        assert targets == (release.ROOT_TARGET, release.SUMMON_TARGET)
+        assert targets == expected_targets
         return commands
 
     def fake_run_command(
@@ -1292,10 +1463,8 @@ def test_prechecks_start_local_llm_before_other_release_gates(
     )
     monkeypatch.setattr(release, "run_command", fake_run_command)
 
-    release.run_prechecks_for_targets(
-        (release.ROOT_TARGET, release.SUMMON_TARGET),
-        dry_run=False,
-    )
+    expected_targets = targets
+    release.run_prechecks_for_targets(targets, dry_run=False)
 
     assert events == [
         ("init", False),
@@ -1308,6 +1477,58 @@ def test_prechecks_start_local_llm_before_other_release_gates(
         ("wait", None),
         ("run", release.SUMMON_LOCAL_LLM_TEST_COMMAND),
         ("run", ("lint",)),
+        ("close", None),
+    ]
+
+
+@pytest.mark.parametrize("target_key", ("core", "pg", "summon"))
+def test_every_single_target_closes_local_llm_after_an_earlier_gate_failure(
+    target_key: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _load_release_module()
+    events: list[tuple[str, object]] = []
+    earlier_gate = ("earlier-gate",)
+
+    class FakeLocalLlmPreparation:
+        env_overrides: dict[str, str] = {}
+
+        def __init__(self, *, dry_run: bool) -> None:
+            events.append(("init", dry_run))
+
+        def start(self) -> None:
+            events.append(("start", None))
+
+        def wait_ready(self) -> None:
+            events.append(("wait", None))
+
+        def close(self) -> None:
+            events.append(("close", None))
+
+    monkeypatch.setattr(release, "LocalLlmPreparation", FakeLocalLlmPreparation)
+    monkeypatch.setattr(
+        release,
+        "build_precheck_commands_for_targets",
+        lambda _targets: (earlier_gate, release.SUMMON_LOCAL_LLM_TEST_COMMAND),
+    )
+
+    def fail_earlier_gate(command: tuple[str, ...], **_kwargs: object) -> None:
+        events.append(("run", command))
+        if command == earlier_gate:
+            raise subprocess.CalledProcessError(1, command)
+
+    monkeypatch.setattr(release, "run_command", fail_earlier_gate)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        release.run_prechecks_for_targets(
+            (release.CANONICAL_TARGETS[target_key],),
+            dry_run=False,
+        )
+
+    assert events == [
+        ("init", False),
+        ("start", None),
+        ("run", earlier_gate),
         ("close", None),
     ]
 
@@ -1955,10 +2176,31 @@ def test_parse_args_accepts_positional_all_and_target_compat() -> None:
 
     assert release.parse_args(["all"]).target == "all"
     assert release.parse_args(["--target", "pg"]).target == "pg"
-    assert release.parse_args(["summon", "--skip-checks"]).target == "summon"
 
     with pytest.raises(SystemExit):
         release.parse_args(["pg", "--target", "summon"])
+
+
+@pytest.mark.parametrize("target", ("all", "core", "pg", "summon"))
+def test_skip_checks_remains_an_explicit_human_override(target: str) -> None:
+    release = _load_release_module()
+
+    args = release.parse_args([target, "--skip-checks"])
+
+    assert args.target == target
+    assert args.skip_checks is True
+
+
+def test_skip_checks_help_labels_the_human_override(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    release = _load_release_module()
+
+    with pytest.raises(SystemExit) as raised:
+        release.parse_args(["--help"])
+
+    assert raised.value.code == 0
+    assert "explicit human override" in capsys.readouterr().out.lower()
 
 
 def test_discover_unpublished_releases_filters_published_targets(

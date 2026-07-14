@@ -396,9 +396,7 @@ def test_setup_uv_steps_have_tight_timeouts() -> None:
             )
 
 
-def _assert_exact_sha_release_observer(
-    name: str, *, artifact_prefix: str, requires_pg: bool
-) -> str:
+def _assert_exact_sha_release_observer(name: str, *, artifact_prefix: str) -> str:
     workflow = _workflow(name)
     evidence = _job_block(workflow, "release-evidence")
     publish = _job_block(workflow, "publish-release")
@@ -410,11 +408,8 @@ def _assert_exact_sha_release_observer(
     assert "GITHUB_SHA: ${{ steps.tag.outputs.tag_commit }}" in evidence
     assert "tag_commit: ${{ steps.tag.outputs.tag_commit }}" in evidence
     assert "python bin/require-green-workflows.py wait" in evidence
-    assert "--workflow root=.github/workflows/test.yml" in evidence
-    if requires_pg:
-        assert "--workflow pg=.github/workflows/test-pg-extension.yml" in evidence
-    else:
-        assert "--workflow pg=" not in evidence
+    assert evidence.count("--workflow root=.github/workflows/test.yml") == 1
+    assert evidence.count("--workflow pg=.github/workflows/test-pg-extension.yml") == 1
     assert "--artifact-workflow root" in evidence
     assert f"--artifact-prefix {artifact_prefix}" in evidence
     assert "GITHUB_TOKEN: ${{ github.token }}" in evidence
@@ -452,7 +447,6 @@ def test_core_release_gate_observes_exact_sha_without_rerunning_tests() -> None:
     workflow = _assert_exact_sha_release_observer(
         "release-gate.yml",
         artifact_prefix="release-taut",
-        requires_pg=True,
     )
 
     assert "package_name: taut" in workflow
@@ -478,7 +472,6 @@ def test_pg_release_gate_is_github_only() -> None:
     workflow = _assert_exact_sha_release_observer(
         "release-gate-pg.yml",
         artifact_prefix="release-taut-pg",
-        requires_pg=True,
     )
     lower_workflow = workflow.lower()
 
@@ -494,7 +487,6 @@ def test_summon_release_gate_is_github_only() -> None:
     workflow = _assert_exact_sha_release_observer(
         "release-gate-summon.yml",
         artifact_prefix="release-taut-summon",
-        requires_pg=False,
     )
     lower_workflow = workflow.lower()
 

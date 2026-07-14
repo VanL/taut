@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Repo-local GitHub-only release helper for Taut maintainers."""
+"""Repo-local GitHub-only release helper governed by [TAUT-12.5]."""
 
 from __future__ import annotations
 
@@ -1285,34 +1285,17 @@ def build_precheck_commands_for_targets(
     if not targets:
         fail("At least one release target is required")
 
-    target_keys = {target.key for target in targets}
-    run_pg = ROOT_TARGET.key in target_keys or PG_TARGET.key in target_keys
-    run_summon = ROOT_TARGET.key in target_keys or SUMMON_TARGET.key in target_keys
-
-    tool_paths = ROOT_TOOL_PATHS
-    if run_pg:
-        tool_paths = (*tool_paths, *PG_TOOL_PATHS)
-    if run_summon:
-        tool_paths = (*tool_paths, *SUMMON_TOOL_PATHS)
-    tool_paths = _unique_strings(tool_paths)
-
-    commands: list[Command] = [*ROOT_TEST_COMMANDS]
-    if run_pg:
-        commands.append(PG_TEST_COMMAND)
-    if run_summon:
-        commands.extend(SUMMON_TEST_COMMANDS)
-    commands.extend(
-        [
-            _ruff_check_command(tool_paths),
-            _ruff_format_command(tool_paths),
-            _mypy_command(ROOT_MYPY_PATHS),
-        ]
+    tool_paths = _unique_strings((*ROOT_TOOL_PATHS, *PG_TOOL_PATHS, *SUMMON_TOOL_PATHS))
+    return (
+        *ROOT_TEST_COMMANDS,
+        PG_TEST_COMMAND,
+        *SUMMON_TEST_COMMANDS,
+        _ruff_check_command(tool_paths),
+        _ruff_format_command(tool_paths),
+        _mypy_command(ROOT_MYPY_PATHS),
+        _mypy_command(PG_MYPY_PATHS),
+        _mypy_command(SUMMON_MYPY_PATHS),
     )
-    if run_pg:
-        commands.append(_mypy_command(PG_MYPY_PATHS))
-    if run_summon:
-        commands.append(_mypy_command(SUMMON_MYPY_PATHS))
-    return tuple(commands)
 
 
 def build_precheck_commands(target: ReleaseTarget = ROOT_TARGET) -> tuple[Command, ...]:
@@ -1392,6 +1375,7 @@ def _precheck_env_overrides(
 ) -> dict[str, str]:
     overrides = dict(PRECHECK_ENV_OVERRIDES)
     if command == SUMMON_LIVE_HARNESS_TEST_COMMAND:
+        overrides["TAUT_SUMMON_LIVE_HARNESS"] = "1"
         overrides["TAUT_SUMMON_LIVE_HARNESS_STRICT"] = "1"
     if command == SUMMON_LOCAL_LLM_TEST_COMMAND:
         overrides["TAUT_SUMMON_LOCAL_LLM"] = "1"
@@ -1401,8 +1385,7 @@ def _precheck_env_overrides(
 
 
 def _targets_need_local_llm_preparation(targets: tuple[ReleaseTarget, ...]) -> bool:
-    target_keys = {target.key for target in targets}
-    return ROOT_TARGET.key in target_keys or SUMMON_TARGET.key in target_keys
+    return bool(targets)
 
 
 def run_prechecks_for_targets(
@@ -1924,7 +1907,10 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--skip-checks",
         action="store_true",
-        help="Skip pytest, ruff, and mypy prechecks.",
+        help=(
+            "Explicit human override: skip pytest, ruff, and mypy prechecks. "
+            "Artifact build and compatibility gates still run."
+        ),
     )
     parser.add_argument(
         "--retag",
