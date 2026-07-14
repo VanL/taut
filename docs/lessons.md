@@ -1,5 +1,8 @@
 # Lessons Learned
 
+Startup context is the Golden Rules plus entries after the watermark in
+`docs/coalescing.md`; the rest of this ledger is searchable history.
+
 Use this file for durable, project-level lessons that should influence future
 sessions.
 
@@ -210,7 +213,10 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   explicit marker guard so PG coverage cannot silently collapse to SQLite-only.
 
 - 2026-07-02: Verification-lessons fold synced from agent-guidance
-  (2026-07-02 working tree; record the commit SHA when agent-guidance
+  (2026-07-02 working tree; pinned 2026-07-14: that fold landed as
+  agent-guidance `5927481`, and the 2026-07-14 wave adopted by
+  `docs/plans/2026-07-14-agent-guidance-propagation-plan.md` is
+  agent-guidance `2f7eff6`; original note said: record the commit SHA when agent-guidance
   commits). Landed here as Golden Rule 13, engineering-principles §12/§13
   and the §8 reproduce-claims amendment, testing-patterns Patterns 5–6, the
   adversarial-acceptance-probes runbook, the decision-hierarchy

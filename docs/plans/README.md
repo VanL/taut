@@ -44,6 +44,10 @@ Risky plans are blocked if they do not make explicit:
 
 ## Active Plans
 
+- `2026-07-14-agent-guidance-propagation-plan.md` — adopt the 2026-07-14
+  agent-guidance wave ([DOM-14] coalescing, [DOM-15] task classification,
+  review lens, crosswalk, four skills) with SHA-pinned provenance.
+
 - `2026-07-14-universal-release-gates-plan.md` — make every package release
   target use one universal core, PostgreSQL, and Summon local gate by default,
   preserve the explicit human override, and require both canonical exact-SHA
@@ -77,3 +81,10 @@ Risky plans are blocked if they do not make explicit:
 - `2026-07-09-taut-reactor-safety-plan.md` — two-track core watcher and
   Summon control-reactor lifecycle, ownership, wake, recovery, and supervision
   hardening plan.
+
+## Retired Plans
+
+One line per retired plan; the body lives in git at the source SHA.
+
+| Plan | Dates | Outcome | Absorbed into | Source SHA |
+|------|-------|---------|---------------|------------|

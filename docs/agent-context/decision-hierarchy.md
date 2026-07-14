@@ -12,6 +12,17 @@ Use this order whenever instructions or context seem inconsistent:
 6. Existing code and test patterns.
 7. Agent inference.
 
+## Classify Before the Preflight
+
+Before the repository preflight or first edit — after explicit user
+instructions and safety constraints, which always rank higher —
+declare the task class per [DOM-15] in
+`docs/specs/01-development-documentation-operating-model.md`. The
+class decides whether the full preflight below applies (classes 3+)
+or the abbreviated four-item record defined in [DOM-15]'s class-2 row
+suffices (classes 1–2 use their commit message or handoff report).
+The class is a claim; escalators are one-way and declared.
+
 ## Required Preflight Before Edits
 
 - List the requested outcomes as a checklist.

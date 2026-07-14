@@ -27,6 +27,11 @@ To refresh this inventory:
 
 ## Current Observed Availability
 
+Probe mechanics and the review-eligibility rung (liveness +
+write-attempt containment) are owned by `skills/call-agent/SKILL.md`
+step 6; statuses below predate that skill's adoption and should be
+re-derived by its probes on this machine.
+
 Last refreshed: 2026-07-13
 
 | Agent family | Status | Notes |

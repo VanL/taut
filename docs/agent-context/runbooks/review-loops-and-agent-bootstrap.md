@@ -48,6 +48,9 @@ The repository inventory lives in:
 
 - `docs/implementation/03-agent-inventory.md`
 
+Invocation mechanics (per-agent commands, read-only postures, probe
+procedure) are owned by `skills/call-agent/SKILL.md`.
+
 ## 2. Independent Review Requirement
 
 For non-trivial plans and completed work, run an independent review.
@@ -76,7 +79,11 @@ Always point the reviewer at:
 - any important tests or verification commands
 
 Do not ask the reviewer to implement. The point is to surface errors, bad
-ideas, and latent ambiguities before the work is treated as done.
+ideas, latent ambiguities, and performative overengineering — process,
+abstraction, or ceremony that does not address a real risk or improve
+correctness — before the work is treated as done. A review that only ever
+adds requirements is itself a warning sign; findings that remove
+unnecessary machinery count fully.
 
 When the reviewer is a sandboxed CLI agent (for example `codex exec`):
 
@@ -104,8 +111,11 @@ Use this or a close variant:
 
 > Read the plan at [path] and its `## Proposed Spec Delta` (if present),
 > including the named promotion strategy. Carefully examine the plan, the
-> proposed spec text, and the associated code. Look for errors, bad ideas, and
-> latent ambiguities. Don't do any implementation, but answer carefully: Could
+> proposed spec text, and the associated code. Look for errors, bad ideas,
+> latent ambiguities, and performative overengineering — process,
+> abstraction, or ceremony that does not address a real risk or improve
+> correctness; recommending removal is as valuable as recommending
+> additions. Don't do any implementation, but answer carefully: Could
 > you implement this confidently and correctly against the delta as promoted,
 > if asked?
 

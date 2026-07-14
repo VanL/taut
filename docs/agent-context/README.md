@@ -22,7 +22,9 @@ guides link here rather than copying it.
 4. Read `engineering-principles.md`.
 5. Read the relevant runbook(s) in `runbooks/`.
 6. Read `lessons.md`.
-7. Read `../lessons.md`.
+7. Read `../lessons.md` — required startup reading is the **Golden Rules
+   plus dated entries after the lessons watermark** (see
+   `../coalescing.md`); older entries are searchable reference.
 8. Read the relevant spec, active plan, and implementation note for the task.
 9. Read the relevant skill under `../../skills/` when one exists.
 10. For delegation or independent review, read
@@ -44,6 +46,8 @@ guides link here rather than copying it.
   for accepting agent-built tools
 - `maintaining-traceability.md`: how to keep docs synchronized during delivery
 - `skills-lifecycle.md`: how to add, update, and retire reusable skills
+- `external-skill-suites.md`: precedence and crosswalk for external skill
+  suites (superpowers, gstack, Every's compound engineering)
 
 ## What Belongs Here
 
@@ -61,6 +65,10 @@ guides link here rather than copying it.
 
 - Keep files short, operational, and repository-owned.
 - Prefer checklists and direct rules over long prose.
+- When `../coalescing.md` shows a tripped threshold, report it and respond
+  per [DOM-14]: a checked-deferred line with derived counts, or a full
+  sweep (its own unit of work) on user request, at twice the threshold, or
+  at a completion boundary. The session-start check itself is read-only.
 - When a repeated mistake shows up, add a lesson in `../lessons.md` and
   strengthen a runbook if the fix should become reusable guidance.
 - When plans keep failing at boundaries, strengthen `writing-plans.md` or

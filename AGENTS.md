@@ -43,8 +43,11 @@ in `docs/agent-context/decision-hierarchy.md`.
 - Red-green TDD is the default for behavior changes; exceptions must be
   explicit and name the substitute proof
   (see `docs/agent-context/runbooks/testing-patterns.md`, rule 5).
-- Non-trivial changes should start with a dated plan in `docs/plans/`
-  (see [DOM-5] in `docs/specs/01-development-documentation-operating-model.md`).
+- Classify every task per [DOM-15]; classes 3+ start with a dated plan
+  in `docs/plans/` (see [DOM-5] and [DOM-15] in
+  `docs/specs/01-development-documentation-operating-model.md`), while
+  classes 1–2 record their plan in the commit message, PR description,
+  or handoff report.
 - Risky or boundary-crossing changes should also read
   `docs/agent-context/runbooks/hardening-plans.md` and treat its checklist as
   required, not optional. Risky includes async or deferred work, contract

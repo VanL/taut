@@ -3,7 +3,9 @@
 This directory contains reusable task-scoped instructions for recurring work in
 this repository.
 
-Skills are optional. The empty extension point is intentional: create one only
+Skills are optional. Current skills: `coalescing/`, `debugging/`,
+`brainstorming-to-plan/`, `call-agent/` (adopted 2026-07-14 from
+agent-guidance via the propagation plan). Create a new one only
 after a real workflow has repeated and stabilized. Do not invent a skill merely
 to populate this directory. Start from `skills/_template/SKILL.md` when a
 workflow qualifies.

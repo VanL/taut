@@ -90,6 +90,11 @@ Treat `hardening-plans.md` as required input when any of these are true:
 - Prefer descriptive filenames.
 - Use a date prefix for new plans when possible:
   `YYYY-MM-DD-short-name-plan.md`.
+- Classes 0–2 per [DOM-15] do not produce plan files — their record
+  lives in the commit history or handoff report. This runbook governs
+  classes 3 and above. Class-3+ plans carry a mandatory `Class:`
+  metadata line stating the class and trigger reasoning; a post-hoc
+  class claim with no mid-flight escalator history is a review smell.
 
 ## Required Plan Sections
 
@@ -464,8 +469,11 @@ Recommended prompt:
 
 > Read the plan at [path] and its `## Proposed Spec Delta` (if present),
 > including the named promotion strategy. Carefully examine the plan, the
-> proposed spec text, and the associated code. Look for errors, bad ideas, and
-> latent ambiguities. Don't do any implementation, but answer carefully: Could
+> proposed spec text, and the associated code. Look for errors, bad ideas,
+> latent ambiguities, and performative overengineering — process,
+> abstraction, or ceremony that does not address a real risk or improve
+> correctness; recommending removal is as valuable as recommending
+> additions. Don't do any implementation, but answer carefully: Could
 > you implement this confidently and correctly against the delta as promoted,
 > if asked?
 
@@ -558,6 +566,45 @@ under `## Related Plans` or `## Plans`.
 When the touched spec already contains nearby implementation notes such as
 `_Implementation snapshot_`, `_Implementation status_`, or
 `_Implementation mapping_`, update those notes in the same change.
+
+## Plan Lifecycle and Retirement
+
+Plans move through: `draft` → `active` → `completed` or `superseded` →
+`retired`. Status lives in the plan index (`docs/plans/README.md`), not in
+ceremony inside the plan file.
+
+- **Active plans have a mutability boundary**: task instructions and
+  checklists stay current and mutable — stale instructions are worse than
+  edited ones, and git preserves prior versions; decision, deviation, and
+  review logs are append-only. At closure the whole plan becomes
+  immutable.
+- **Completed and superseded plans are harvest candidates.** They stay in
+  the tree until the coalescing sweep retires them.
+- **The harvest gate — all four before deletion, no exceptions:**
+  1. deviation log closed (no `pending` spec proposals)
+  2. durable rationale absorbed into the governing spec or implementation
+     doc (or explicitly judged not durable)
+  3. lessons extracted to `docs/lessons.md` where applicable
+  4. every spec `## Related Plans` backlink converted to the retired
+     citation form (see `maintaining-traceability.md`)
+- **Superseded plans additionally require** the superseding plan to name
+  what it inherits (open deviation rows, decided-but-unbuilt behavior)
+  before the predecessor retires.
+- **Retirement is two-step: soft-retire, then delete.** The sweep performs
+  the soft retirement — status flips to `retired-pending` in the index,
+  backlinks convert to the retired citation form, and the ledger line is
+  written (name, date range, one-sentence outcome, what absorbed it,
+  source SHA). Physical deletion happens in a dedicated follow-up change only
+  after a second agent or the user verifies the harvest gate. Never
+  soft-retire and delete in the same change, and never create a
+  retired/archived plans directory — git is the archive.
+- **Exemplar plans are exempt.** The status index may mark a plan
+  `exemplar` (bootstrap or operating-model foundation plans that serve as
+  onboarding examples). Exemplars are not retirement candidates until the
+  index note says their exemplar role has been superseded.
+- Record the source SHA as a mainline commit that actually contains the
+  plan's final state; with squash merges, the squashed mainline commit is
+  the one to cite.
 
 ## Anti-Patterns
 

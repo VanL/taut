@@ -52,7 +52,9 @@ Use the narrowest real proof that still exercises the behavior under review.
      debt must be enumerated and burned down before any release
    - throwaway spikes that will be discarded or re-implemented
      test-first
-   - docs- or config-only changes verified by inspection
+   - docs- or config-only changes verified by inspection, only when no
+     reproducible check (link check, grep gate, doc test) is available —
+     if one exists, it is the failing test and must be used
 
    "The test is hard to write" is a design signal, not an exception — it
    usually means the seam is wrong (see rule 3).

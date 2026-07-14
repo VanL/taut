@@ -77,6 +77,15 @@ Before calling the work done, check:
   citation updates; the repo's traceability or self-check gate rerun (named
   command and result)
 
+Retired-plan citation form: when a plan is retired, spec backlinks change
+from a live path to a non-path citation:
+`- retired: 2026-05-02-example-plan — source <source_sha>; see the ledger
+in docs/plans/README.md`. The source SHA is a commit verifiably
+containing the plan file. This keeps the traceability gate clean (no dead
+path claims) while preserving the retrieval cue. Do not leave live-path
+backlinks to deleted plans, and do not delete the backlink itself — the
+spec's plan history remains part of its record.
+
 ## Minimum Traceability Chain
 
 For any material feature or behavior change, maintain this chain:
