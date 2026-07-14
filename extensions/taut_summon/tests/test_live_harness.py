@@ -236,6 +236,12 @@ def test_live_status_fatal_reason_names_control_health_gap() -> None:
     assert reason == "driver control health is degraded"
 
 
+def test_live_status_fatal_reason_names_missing_control_health() -> None:
+    reason = _fatal_readiness_reason(_status_with_details())
+
+    assert reason == "driver control health is missing"
+
+
 def test_live_status_not_ready_reason_allows_plain_alive_status() -> None:
     status = _status_with_details(control_health="ok")
 
