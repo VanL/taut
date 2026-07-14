@@ -44,6 +44,9 @@ Risky plans are blocked if they do not make explicit:
 
 ## Active Plans
 
+- `2026-07-13-release-metadata-preparation-plan.md` — make release metadata a
+  deterministic helper-owned preparation phase before consistency gates, while
+  keeping changelog prose human-owned and irreversible release actions last.
 - `2026-07-13-summon-stop-release-race-plan.md` — hypothesis-driven diagnosis
   and root fix for the second-generation rich-host PTY STOP/release race while
   preserving fixed-width xdist load and existing timeout budgets.

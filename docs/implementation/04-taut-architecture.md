@@ -37,11 +37,12 @@ message writes, notification writes, and read cursor semantics. The CLI only
 parses arguments and renders results. This keeps one operational path for every
 verb and prevents CLI behavior from drifting away from the Python API.
 
-The load-bearing supported SimpleBroker floor is 5.3.0; a release manifest may
-declare a stronger compatible floor. The other core runtime dependency is
-`psutil`. SimpleBroker owns the storage and queue substrate; `psutil` is scoped to
-cross-platform process metadata for identity capture so taut does not rely on
-fragile platform-specific argv parsing for the core recognition path.
+The load-bearing supported SimpleBroker floor is 5.3.2. It includes
+interruptible watcher bootstrap while PhaseLock or SQLite connection setup is
+blocked. The other core runtime dependency is `psutil`. SimpleBroker owns the
+storage and queue substrate; `psutil` is scoped to cross-platform process
+metadata for identity capture so taut does not rely on fragile platform-
+specific argv parsing for the core recognition path.
 `taut-pg` is a separate project under `extensions/taut_pg`; it installs
 `simplebroker-pg` beside Taut but does not add a root runtime dependency.
 The private `taut._broker_retry` module remains only as an import-compatible,
@@ -56,21 +57,38 @@ own target parsing, queue construction, SQL, identity, CLI rendering, or
 watcher behavior.
 
 Release tooling lives in `bin/release.py`. Its boundary is repository hygiene,
-not runtime behavior: it verifies that `pyproject.toml` and
-`taut/_constants.py` stay in sync, runs the typed/lint/build release gates,
-plans root `vX.Y.Z` tag actions plus extension `taut_pg/vX.Y.Z` and
-`taut_summon/vX.Y.Z` tag actions, syncs first-party dependency floors, and
-checks GitHub Release state. It accepts `core`/`pg`/`summon` targets plus `all`
-for current unpublished versions. It deliberately has no PyPI upload path while
-the `taut` package-name request is unresolved. For core or summon releases, it
-also starts summon local-LLM preparation before the precheck sequence: reuse a
-configured loopback endpoint if it already serves the model; otherwise start a
-disposable loopback Ollama container and build the bounded served model while
-root and PG gates run. The release helper waits on that endpoint at the
-dedicated local-LLM lane and runs it with `TAUT_SUMMON_LOCAL_LLM=1`, so a
-missing local model is a release failure rather than a hidden skip. External
-live harnesses run in a separate strict one-worker lane from the local-LLM lane
-to keep each SQLite process workload in a fresh pytest invocation.
+not runtime behavior. Each package manifest owns its version. A target-specific
+release changes only that selected version, while every normal invocation
+reconciles all derived copies: the core constant, README tags and wheel names,
+both extension core floors, the root Summon and SimpleBroker PG dev floors,
+every root README SimpleBroker requirement, and the retained Summon lock. The
+lock refresh is selective (`uv lock --upgrade-package simplebroker`) so
+preparation does not absorb unrelated tool upgrades. The helper stages only
+that fixed metadata allowlist and creates a local preparation commit before
+pytest, type, lint, and build gates. A later gate failure therefore leaves a
+clean, unpushed commit that can be inspected or reused on a rerun.
+
+The helper accepts `core`/`pg`/`summon` targets plus `all`;
+`all --version X.Y.Z` coordinates all three manifests, while target-specific
+versions remain independent. After checking and building the exact preparation
+commit, it revalidates branch, HEAD, the full clean worktree/index, GitHub Release state,
+and local/remote tags. Only then may it push the branch, mutate or push tags, or
+cross the GitHub publication boundary. Branch and tag commands name the tested
+commit explicitly, and remote tag replacement uses an exact force-with-lease
+deletion before the explicit tag push. Checkout or tag drift therefore fails
+instead of redirecting the release. `--checks-only` never reconciles or commits;
+`--dry-run` prints the same ordering without writes. The helper has no PyPI
+upload path while the `taut` package-name request is unresolved.
+
+For core or summon releases, it also starts summon local-LLM preparation before
+the precheck sequence: reuse a configured loopback endpoint if it already
+serves the model; otherwise start a disposable loopback Ollama container and
+build the bounded served model while root and PG gates run. The release helper
+waits on that endpoint at the dedicated local-LLM lane and runs it with
+`TAUT_SUMMON_LOCAL_LLM=1`, so a missing local model is a release failure rather
+than a hidden skip. External live harnesses run in a separate strict one-worker
+lane from the local-LLM lane to keep each SQLite process workload in a fresh
+pytest invocation.
 GitHub Actions mirrors that boundary: `.github/workflows/test.yml` owns normal
 push/PR gates and is reusable, `.github/workflows/release-gate.yml` runs on
 `v*` tags, reuses the root and PG test workflows, verifies that the tag still
@@ -90,11 +108,11 @@ Core and Summon are one paired reactor release boundary. The single owner of
 that proof is `bin/build-and-check-release-wheels.py`: it builds fresh core
 and Summon wheels in isolated temporary directories, then passes those exact
 artifacts to the `bin/check-core-summon-wheel-matrix.py` checker. Core and
-Summon release
-paths run the proof after builds and before any commit, tag, push, or publish,
-including `--skip-checks`; a PG-only release does not run it. The same owner
-checks the retained Summon lock's resolved SimpleBroker version and compiles
-the PG manifest into its temporary artifact root to prove the resolved
+Summon release paths run the proof after the local preparation commit,
+prechecks, and builds, but before any branch push, tag mutation, tag push, or
+publication, including `--skip-checks`; a PG-only release does not run it. The
+same owner checks the retained Summon lock's resolved SimpleBroker version and
+compiles the PG manifest into its temporary artifact root to prove the resolved
 `simplebroker-pg` floor. The repository does not retain a PG lockfile.
 
 All production taut-owned relational state flows through `taut/state/`.

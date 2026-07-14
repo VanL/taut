@@ -9,7 +9,7 @@ Quick pointers to the key guidance documents in this repository.
 | `AGENTS.md` | Canonical agent entry point |
 | `CLAUDE.md` | Alias for tools that expect Claude-style root guidance |
 | `README.md` | Product face and current CLI/API behavior contract (see `docs/specs/02-taut-core.md`) |
-| `bin/release.py` | GitHub-only release helper for version/README sync, changelog and release gates, non-mutating `--checks-only`, summon local-LLM preparation, namespaced tags, and `all` batches |
+| `bin/release.py` | GitHub-only release helper for manifest-owned metadata reconciliation, exact-path local preparation commits, changelog/check/build gates, non-mutating `--checks-only`, final remote-state fences, namespaced tags, and coordinated `all --version` batches |
 | `bin/pytest-pg` | Docker-backed Postgres test runner for shared root tests and `taut-pg` tests |
 | `bin/check-required-coverage-paths.py` | Post-combine coverage-data checker for required child-process and critical Summon execution paths |
 | `bin/check-core-summon-wheel-matrix.py` | Isolated six-case core/Summon wheel-matrix checker retaining the 0.5.0 reactor floor and adding the 0.5.4 command-rollout floor |
@@ -97,7 +97,7 @@ Quick pointers to the key guidance documents in this repository.
 | `taut/commands/` | Versioned command manifests/protocol, deterministic installed-command registry, root dispatcher, shared renderers, lazy per-verb adapters, and the temporary reserved Summon compatibility bridge |
 | `tests/` | Contract tests using real SQLite files, shared backend markers, and subprocess CLI |
 | `tests/test_docs_references.py` | Maintained-source path and local/external citation-family gate |
-| `tests/test_project_metadata_consistency.py` | Package and retained-lock versions, dependency floors, README pins, and wheel-name consistency gate |
+| `tests/test_project_metadata_consistency.py` | Relational gate comparing constants, first-party floors, README pins, wheel names, and retained-lock versions to their owning package manifests |
 | `extensions/taut_pg/` | Separate `taut-pg` project with extension metadata, README, and PG-only tests |
 | `extensions/taut_summon/` | Separate `taut-summon` project: lazy public facade, typed controller/models and host-interaction seam, thin CLI renderer, driver, adapters, ledger, control plane, persona, and real-process conformance suite |
 

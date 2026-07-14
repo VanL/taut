@@ -19,7 +19,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Final, Literal, NoReturn
@@ -69,6 +69,15 @@ TAUT_DEPENDENCY_PATTERN: Final[re.Pattern[str]] = re.compile(
 )
 TAUT_SUMMON_DEPENDENCY_PATTERN: Final[re.Pattern[str]] = re.compile(
     r'(?m)^(\s*"taut-summon>=)([^"]+)(",\s*)$'
+)
+SIMPLEBROKER_DEPENDENCY_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r'(?m)^\s*"simplebroker>=(\d+\.\d+\.\d+)",\s*$'
+)
+SIMPLEBROKER_PG_DEPENDENCY_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r'(?m)^(\s*"simplebroker-pg>=)([^"]+)(",\s*)$'
+)
+README_SIMPLEBROKER_DEPENDENCY_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"simplebroker>=\d+\.\d+\.\d+"
 )
 CORE_README_TAG_PATTERN: Final[re.Pattern[str]] = re.compile(r"@v\d+\.\d+\.\d+")
 PG_WHEEL_PATTERN: Final[re.Pattern[str]] = re.compile(
@@ -324,6 +333,20 @@ def validate_version(version: str) -> str:
     return normalized
 
 
+def _version_key(version: str) -> tuple[int, int, int]:
+    normalized = validate_version(version)
+    major, minor, patch = normalized.split(".")
+    return int(major), int(minor), int(patch)
+
+
+def require_not_backdated(current_version: str, target_version: str) -> None:
+    if _version_key(target_version) < _version_key(current_version):
+        fail(
+            f"Refusing to backdate package version {current_version} to "
+            f"{target_version}"
+        )
+
+
 def require_changelog_heading(
     version: str,
     *,
@@ -345,11 +368,7 @@ def _read_version(path: Path, pattern: re.Pattern[str], label: str) -> str:
 
 
 def read_current_version(target: ReleaseTarget = ROOT_TARGET) -> str:
-    pyproject_version = _read_version(
-        target.pyproject_path,
-        PYPROJECT_VERSION_PATTERN,
-        display_path(target.pyproject_path),
-    )
+    pyproject_version = read_manifest_version(target)
     if target.constants_path is None:
         return pyproject_version
     constants_version = _read_version(
@@ -364,6 +383,16 @@ def read_current_version(target: ReleaseTarget = ROOT_TARGET) -> str:
             f"{display_path(target.constants_path)} has {constants_version}"
         )
     return pyproject_version
+
+
+def read_manifest_version(target: ReleaseTarget = ROOT_TARGET) -> str:
+    """Read the package-owned version without consulting derived copies."""
+
+    return _read_version(
+        target.pyproject_path,
+        PYPROJECT_VERSION_PATTERN,
+        display_path(target.pyproject_path),
+    )
 
 
 def read_target_version(target: ReleaseTarget) -> str:
@@ -425,6 +454,35 @@ def sync_readme_version_examples(
             _replace_all(path, SUMMON_WHEEL_PATTERN, replacement)
 
 
+def sync_readme_simplebroker_requirement(
+    *,
+    root_pyproject_path: Path = PYPROJECT_PATH,
+    root_readme_path: Path = ROOT_README_PATH,
+) -> str:
+    """Copy the root manifest's exact SimpleBroker floor to every README copy."""
+
+    manifest_text = root_pyproject_path.read_text(encoding="utf-8")
+    matches = SIMPLEBROKER_DEPENDENCY_PATTERN.findall(manifest_text)
+    if len(matches) != 1:
+        fail(
+            "Expected one exact unmarked simplebroker>=X.Y.Z dependency in "
+            f"{display_path(root_pyproject_path)}"
+        )
+    floor = validate_version(matches[0])
+    readme_text = root_readme_path.read_text(encoding="utf-8")
+    updated, count = README_SIMPLEBROKER_DEPENDENCY_PATTERN.subn(
+        f"simplebroker>={floor}", readme_text
+    )
+    if count == 0:
+        fail(
+            "Expected at least one simplebroker>=X.Y.Z requirement in "
+            f"{display_path(root_readme_path)}"
+        )
+    if updated != readme_text:
+        root_readme_path.write_text(updated, encoding="utf-8")
+    return floor
+
+
 def write_version_files(version: str, target: ReleaseTarget = ROOT_TARGET) -> None:
     normalized = validate_version(version)
     _replace_version(
@@ -446,7 +504,7 @@ def write_version_files(version: str, target: ReleaseTarget = ROOT_TARGET) -> No
         "taut-pg",
         "taut-summon",
     }:
-        root_version = read_current_version(ROOT_TARGET)
+        root_version = read_manifest_version(ROOT_TARGET)
         _replace_version(
             target.pyproject_path,
             TAUT_DEPENDENCY_PATTERN,
@@ -496,6 +554,33 @@ def sync_root_summon_dev_dependency(
     return summon_version
 
 
+def sync_root_pg_dev_dependency(
+    *,
+    root_pyproject_path: Path = PYPROJECT_PATH,
+    pg_pyproject_path: Path = PG_PYPROJECT_PATH,
+) -> str | None:
+    """Set the root dev SimpleBroker PG floor from the PG manifest."""
+
+    pg_text = pg_pyproject_path.read_text(encoding="utf-8")
+    pg_matches = SIMPLEBROKER_PG_DEPENDENCY_PATTERN.findall(pg_text)
+    if len(pg_matches) != 1:
+        fail(
+            "Expected one exact simplebroker-pg>=X.Y.Z dependency in "
+            f"{display_path(pg_pyproject_path)}"
+        )
+    floor = validate_version(pg_matches[0][1])
+    root_text = root_pyproject_path.read_text(encoding="utf-8")
+    updated, count = SIMPLEBROKER_PG_DEPENDENCY_PATTERN.subn(
+        rf"\g<1>{floor}\g<3>", root_text, count=1
+    )
+    if count != 1:
+        fail("Expected one simplebroker-pg dependency in root pyproject.toml")
+    if updated == root_text:
+        return None
+    root_pyproject_path.write_text(updated, encoding="utf-8")
+    return floor
+
+
 def sync_summon_core_dependency(
     *,
     root_pyproject_path: Path = PYPROJECT_PATH,
@@ -503,24 +588,88 @@ def sync_summon_core_dependency(
 ) -> str | None:
     """Set Summon's taut floor to the exact local core version."""
 
+    return sync_extension_core_dependency(
+        root_pyproject_path=root_pyproject_path,
+        extension_pyproject_path=summon_pyproject_path,
+        extension_label="taut-summon",
+    )
+
+
+def sync_pg_core_dependency(
+    *,
+    root_pyproject_path: Path = PYPROJECT_PATH,
+    pg_pyproject_path: Path = PG_PYPROJECT_PATH,
+) -> str | None:
+    """Set PG's taut floor to the exact local core version."""
+
+    return sync_extension_core_dependency(
+        root_pyproject_path=root_pyproject_path,
+        extension_pyproject_path=pg_pyproject_path,
+        extension_label="taut-pg",
+    )
+
+
+def sync_extension_core_dependency(
+    *,
+    root_pyproject_path: Path,
+    extension_pyproject_path: Path,
+    extension_label: str,
+) -> str | None:
+    """Set one first-party extension's taut floor to the local core version."""
+
     root_version = _read_version(
         root_pyproject_path,
         PYPROJECT_VERSION_PATTERN,
         display_path(root_pyproject_path),
     )
-    text = summon_pyproject_path.read_text(encoding="utf-8")
+    text = extension_pyproject_path.read_text(encoding="utf-8")
     updated, count = TAUT_DEPENDENCY_PATTERN.subn(
         rf"\g<1>{root_version}\g<2>", text, count=1
     )
     if count != 1:
         fail(
-            "Could not update taut-summon taut dependency in "
-            f"{display_path(summon_pyproject_path)}"
+            f"Could not update {extension_label} taut dependency in "
+            f"{display_path(extension_pyproject_path)}"
         )
     if updated == text:
         return None
-    summon_pyproject_path.write_text(updated, encoding="utf-8")
+    extension_pyproject_path.write_text(updated, encoding="utf-8")
     return root_version
+
+
+def prepare_release_metadata(
+    target_versions: tuple[tuple[ReleaseTarget, str], ...],
+) -> None:
+    """Reconcile all deterministic metadata owned by the selected manifests."""
+
+    if not target_versions:
+        fail("At least one release target is required")
+    requested_versions = {
+        target.key: validate_version(version) for target, version in target_versions
+    }
+    ordered_targets = (ROOT_TARGET, PG_TARGET, SUMMON_TARGET)
+    versions = {
+        target.key: (
+            requested_versions[target.key]
+            if target.key in requested_versions
+            else read_manifest_version(target)
+        )
+        for target in ordered_targets
+    }
+    for target in ordered_targets:
+        write_version_files(versions[target.key], target)
+
+    _sync_root_release_dependencies()
+    floor = sync_readme_simplebroker_requirement()
+    print(f"Synchronized README requirement: simplebroker>={floor}")
+
+    for target in ordered_targets:
+        actual = read_current_version(target)
+        expected = versions[target.key]
+        if actual != expected:
+            fail(
+                f"Prepared {target.package_name} version {actual}, expected {expected}"
+            )
 
 
 def format_command(command: Command) -> str:
@@ -573,7 +722,7 @@ def run_command(
     prefix = _format_command_prefix(env_overrides)
     formatted = format_command(command)
     command_text = f"+ {prefix} {formatted}" if prefix else f"+ {formatted}"
-    print(f"{command_text}{_format_cwd_suffix(cwd)}")
+    print(f"{command_text}{_format_cwd_suffix(cwd)}", flush=True)
     if dry_run:
         return
     subprocess.run(
@@ -890,8 +1039,14 @@ def current_branch() -> str:
     return branch
 
 
-def push_current_branch(*, dry_run: bool) -> None:
-    branch = capture_command(("git", "rev-parse", "--abbrev-ref", "HEAD"))
+def push_current_branch(
+    *,
+    dry_run: bool,
+    branch: str | None = None,
+    head_commit: str | None = None,
+) -> None:
+    if branch is None:
+        branch = capture_command(("git", "rev-parse", "--abbrev-ref", "HEAD"))
     if branch == "HEAD":
         if dry_run:
             print(
@@ -899,7 +1054,12 @@ def push_current_branch(*, dry_run: bool) -> None:
             )
             return
         fail("Cannot release from a detached HEAD")
-    run_command(("git", "push"), dry_run=dry_run)
+    if head_commit is None:
+        head_commit = current_head_commit()
+    run_command(
+        ("git", "push", "origin", f"{head_commit}:refs/heads/{branch}"),
+        dry_run=dry_run,
+    )
 
 
 def is_dirty_worktree() -> bool:
@@ -1040,9 +1200,10 @@ def resolve_target_version(
     requested_version: str | None,
     target: ReleaseTarget = ROOT_TARGET,
 ) -> tuple[str, str, ReleaseState]:
-    current_version = read_current_version(target)
+    current_version = read_manifest_version(target)
     target_version = current_version if requested_version is None else requested_version
     target_version = validate_version(target_version)
+    require_not_backdated(current_version, target_version)
     state = inspect_release_state(target, target_version)
     if state.published:
         if requested_version is None:
@@ -1132,6 +1293,20 @@ def _unique_steps(steps: tuple[CommandStep, ...]) -> tuple[CommandStep, ...]:
     return tuple(unique)
 
 
+def build_preparation_steps_for_targets(
+    targets: tuple[ReleaseTarget, ...],
+) -> tuple[CommandStep, ...]:
+    if not targets:
+        fail("At least one release target is required")
+    return (
+        CommandStep(
+            ("uv", "lock", "--upgrade-package", "simplebroker"),
+            "Refresh retained taut-summon dependencies selectively",
+            cwd=SUMMON_EXTENSION_DIR,
+        ),
+    )
+
+
 def build_postupdate_steps_for_targets(
     targets: tuple[ReleaseTarget, ...],
 ) -> tuple[CommandStep, ...]:
@@ -1140,14 +1315,6 @@ def build_postupdate_steps_for_targets(
 
     target_keys = {target.key for target in targets}
     steps: list[CommandStep] = []
-    if target_keys & {ROOT_TARGET.key, SUMMON_TARGET.key}:
-        steps.append(
-            CommandStep(
-                ("uv", "lock"),
-                "Lock taut-summon extension dependencies",
-                cwd=SUMMON_EXTENSION_DIR,
-            )
-        )
     if ROOT_TARGET.key in target_keys:
         steps.append(CommandStep(("uv", "build"), "Build taut source and wheel"))
     if PG_TARGET.key in target_keys:
@@ -1248,11 +1415,22 @@ def run_postupdate_steps(target: ReleaseTarget, *, dry_run: bool) -> None:
         _run_postupdate_step(step, dry_run=dry_run)
 
 
-def _release_file_paths(target: ReleaseTarget) -> tuple[Path, ...]:
-    paths = list(target_version_files(target))
-    if target == ROOT_TARGET:
-        paths.append(SUMMON_PYPROJECT_PATH)
-    if target in {ROOT_TARGET, SUMMON_TARGET} and SUMMON_UV_LOCK_PATH.exists():
+def run_preparation_steps(targets: tuple[ReleaseTarget, ...], *, dry_run: bool) -> None:
+    for step in build_preparation_steps_for_targets(targets):
+        _run_postupdate_step(step, dry_run=dry_run)
+
+
+def _release_file_paths(_target: ReleaseTarget) -> tuple[Path, ...]:
+    paths = [
+        PYPROJECT_PATH,
+        CONSTANTS_PATH,
+        ROOT_README_PATH,
+        PG_PYPROJECT_PATH,
+        PG_README_PATH,
+        SUMMON_PYPROJECT_PATH,
+        SUMMON_README_PATH,
+    ]
+    if SUMMON_UV_LOCK_PATH.exists():
         paths.append(SUMMON_UV_LOCK_PATH)
     return tuple(paths)
 
@@ -1306,6 +1484,26 @@ def release_files_changed_for_targets(targets: tuple[ReleaseTarget, ...]) -> boo
         return True
     detail = result.stderr.strip() or result.stdout.strip() or "unknown git error"
     fail(f"Unable to inspect release file changes: {detail}")
+
+
+def commit_release_preparation(
+    targets: tuple[ReleaseTarget, ...], *, message: str
+) -> tuple[bool, str]:
+    """Commit only the deterministic release allowlist and return its HEAD."""
+
+    changed = release_files_changed_for_targets(targets)
+    if changed:
+        run_command(("git", "add", *_release_file_args_for_targets(targets)))
+        run_command(("git", "commit", "-m", message))
+    else:
+        print("No release commit needed; release files already match manifests")
+    preparation_commit = current_head_commit()
+    if is_dirty_worktree():
+        fail(
+            "Release preparation did not leave a clean worktree; no remote "
+            "release action ran"
+        )
+    return changed, preparation_commit
 
 
 def _short_commit(commit: str) -> str:
@@ -1392,13 +1590,30 @@ def prepare_tag(action: TagAction, *, dry_run: bool) -> None:
         return
 
     if action.action in {"replace_local", "replace_remote"}:
-        if action.state.local_tag_commit is not None:
-            run_command(("git", "tag", "-d", tag_name), dry_run=dry_run)
+        run_command(
+            ("git", "tag", "-f", tag_name, action.head_commit),
+            dry_run=dry_run,
+        )
+    else:
+        run_command(
+            ("git", "tag", tag_name, action.head_commit),
+            dry_run=dry_run,
+        )
 
     if action.action == "replace_remote":
-        run_command(("git", "push", "--delete", "origin", tag_name), dry_run=dry_run)
-
-    run_command(("git", "tag", tag_name), dry_run=dry_run)
+        expected = action.state.remote_tag_commit
+        if expected is None:
+            fail(f"Cannot lease remote tag replacement for missing {tag_name}")
+        run_command(
+            (
+                "git",
+                "push",
+                f"--force-with-lease=refs/tags/{tag_name}:{expected}",
+                "origin",
+                f":refs/tags/{tag_name}",
+            ),
+            dry_run=dry_run,
+        )
 
 
 def push_tag(action: TagAction, *, dry_run: bool) -> None:
@@ -1406,7 +1621,15 @@ def push_tag(action: TagAction, *, dry_run: bool) -> None:
     if action.action == "reuse_remote":
         print(_remote_tag_reuse_note(action.state))
         return
-    run_command(("git", "push", "origin", tag_name), dry_run=dry_run)
+    run_command(
+        (
+            "git",
+            "push",
+            "origin",
+            f"{action.head_commit}:refs/tags/{tag_name}",
+        ),
+        dry_run=dry_run,
+    )
 
 
 def print_release_summary(
@@ -1440,22 +1663,72 @@ def print_publish_note() -> None:
 
 def discover_unpublished_releases(
     targets: tuple[ReleaseTarget, ...] = BATCH_RELEASE_TARGETS,
+    *,
+    requested_version: str | None = None,
 ) -> tuple[ReleaseCandidate, ...]:
-    candidates: list[ReleaseCandidate] = []
+    normalized_requested = (
+        validate_version(requested_version) if requested_version is not None else None
+    )
+    planned_versions: list[tuple[ReleaseTarget, str, str]] = []
     for target in targets:
-        current_version = read_target_version(target)
-        state = inspect_release_state(target, current_version)
+        current_version = read_manifest_version(target)
+        release_version = normalized_requested or current_version
+        require_not_backdated(current_version, release_version)
+        planned_versions.append((target, current_version, release_version))
+
+    candidates: list[ReleaseCandidate] = []
+    for target, current_version, release_version in planned_versions:
+        state = inspect_release_state(target, release_version)
         if state.published:
             continue
         candidates.append(
             ReleaseCandidate(
                 target=target,
                 current_version=current_version,
-                release_version=current_version,
+                release_version=release_version,
                 state=state,
             )
         )
     return tuple(candidates)
+
+
+def require_fresh_release_fence(
+    candidates: tuple[ReleaseCandidate, ...],
+    *,
+    preparation_branch: str,
+    preparation_commit: str,
+) -> tuple[ReleaseCandidate, ...]:
+    """Revalidate the tested checkout and remote state before mutation."""
+
+    branch = current_branch()
+    if branch != preparation_branch:
+        fail(
+            f"Release branch changed from {preparation_branch} to {branch}; "
+            "no remote release action ran"
+        )
+    head = current_head_commit()
+    if head != preparation_commit:
+        fail(
+            f"Release HEAD changed from {_short_commit(preparation_commit)} to "
+            f"{_short_commit(head)}; no remote release action ran"
+        )
+    if is_dirty_worktree():
+        fail(
+            "Worktree or index changed after release checks; no remote release "
+            "action ran"
+        )
+
+    refreshed: list[ReleaseCandidate] = []
+    for candidate in candidates:
+        state = inspect_release_state(candidate.target, candidate.release_version)
+        if state.published:
+            fail(
+                f"{candidate.target.package_name} {candidate.release_version} "
+                "became a GitHub Release during local checks; no remote release "
+                "action ran"
+            )
+        refreshed.append(replace(candidate, state=state))
+    return tuple(refreshed)
 
 
 def _candidate_targets(
@@ -1526,7 +1799,7 @@ def _print_dry_run_root_dependency_notes(
 ) -> None:
     if _candidate_for_target(candidates, ROOT_TARGET) is None:
         return
-    summon_version = read_target_version(SUMMON_TARGET)
+    summon_version = read_manifest_version(SUMMON_TARGET)
     print(
         "dry-run: would ensure root dev dependency requires "
         f"taut-summon>={summon_version}"
@@ -1546,6 +1819,16 @@ def _sync_root_release_dependencies() -> None:
         print("Root dev dependency already matches taut-summon")
     else:
         print(f"Updated root dev dependency: taut-summon>={summon_dependency_version}")
+    pg_runtime_floor = sync_root_pg_dev_dependency()
+    if pg_runtime_floor is None:
+        print("Root dev dependency already matches simplebroker-pg")
+    else:
+        print(f"Updated root dev dependency: simplebroker-pg>={pg_runtime_floor}")
+    pg_dependency_version = sync_pg_core_dependency()
+    if pg_dependency_version is None:
+        print("taut-pg dependency already matches taut")
+    else:
+        print(f"Updated taut-pg dependency: taut>={pg_dependency_version}")
     core_dependency_version = sync_summon_core_dependency()
     if core_dependency_version is None:
         print("taut-summon dependency already matches taut")
@@ -1582,7 +1865,8 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--version",
         help=(
             "Target version in X.Y.Z form. Defaults to the current package "
-            "version when it has not been published yet. Not valid with all."
+            "version when it has not been published yet. With all, coordinates "
+            "all three package manifests."
         ),
     )
     execution_mode = parser.add_mutually_exclusive_group()
@@ -1631,16 +1915,14 @@ def _dry_run_postupdate_steps(targets: tuple[ReleaseTarget, ...]) -> None:
 
 
 def _run_batch_release(args: argparse.Namespace) -> int:
-    if args.version is not None:
-        fail(
-            "--version cannot be used with target 'all'. Update package version "
-            "files first, then run `bin/release.py all`."
-        )
-
     if args.checks_only:
         release_targets = tuple(CANONICAL_TARGETS.values())
-        for target in release_targets:
-            require_changelog_heading(read_target_version(target))
+        if args.version is not None:
+            target_version = validate_version(args.version)
+            require_changelog_heading(target_version)
+        else:
+            for target in release_targets:
+                require_changelog_heading(read_target_version(target))
         _require_command("uv")
         run_prechecks_for_targets(release_targets, dry_run=False)
         print("Checks passed; no release files, artifacts, tags, or remotes changed.")
@@ -1650,7 +1932,7 @@ def _run_batch_release(args: argparse.Namespace) -> int:
     if dirty and not args.dry_run:
         fail("Worktree is dirty; commit or stash changes before releasing")
 
-    candidates = discover_unpublished_releases()
+    candidates = discover_unpublished_releases(requested_version=args.version)
     if not candidates:
         if dirty:
             print("dry-run: worktree is dirty; a real release would stop here")
@@ -1663,11 +1945,29 @@ def _run_batch_release(args: argparse.Namespace) -> int:
         require_changelog_heading(candidate.release_version)
 
     release_targets = _candidate_targets(candidates)
+    preparation_targets = (
+        BATCH_RELEASE_TARGETS if args.version is not None else release_targets
+    )
+    if args.version is not None:
+        target_version = validate_version(args.version)
+        preparation_versions = tuple(
+            (target, target_version) for target in preparation_targets
+        )
+    else:
+        preparation_versions = tuple(
+            (candidate.target, candidate.release_version) for candidate in candidates
+        )
+    preparation_branch = "<dry-run>" if args.dry_run else current_branch()
     initial_head_commit = current_head_commit()
+    version_change_planned = any(
+        candidate.current_version != candidate.release_version
+        for candidate in candidates
+    )
+    planning_head = PENDING_RELEASE_COMMIT if args.dry_run else initial_head_commit
     tag_actions = _plan_candidate_tag_actions(
         candidates,
-        head_commit=initial_head_commit,
-        version_changed=False,
+        head_commit=planning_head,
+        version_changed=version_change_planned or args.dry_run,
         retag=args.retag,
     )
     _print_batch_release_plan(candidates, tag_actions)
@@ -1677,26 +1977,45 @@ def _run_batch_release(args: argparse.Namespace) -> int:
             print("dry-run: worktree is dirty; a real release would stop here")
         if args.publish:
             print_publish_note()
-        if not args.skip_checks:
-            run_prechecks_for_targets(release_targets, dry_run=True)
-        print("dry-run: would reuse current unpublished version files")
-        _print_dry_run_root_dependency_notes(candidates)
-        _dry_run_postupdate_steps(release_targets)
         print(
-            "dry-run: would create one release commit if generated release files "
-            "change during post-update checks"
+            "dry-run: would prepare "
+            + ", ".join(
+                f"{target.package_name} {version}"
+                for target, version in preparation_versions
+            )
+        )
+        print("dry-run: would reconcile every manifest-owned derived copy")
+        print(
+            "dry-run: tag planning assumes reconciliation creates a local commit; "
+            "the real command reuses HEAD when preparation is already exact"
+        )
+        _print_dry_run_root_dependency_notes(candidates)
+        run_preparation_steps(preparation_targets, dry_run=True)
+        print(
+            "dry-run: would create one local preparation commit if generated "
+            "release files change"
         )
         run_command(
-            ("git", "add", *_release_file_args_for_targets(release_targets)),
+            ("git", "add", *_release_file_args_for_targets(preparation_targets)),
             dry_run=True,
         )
         run_command(
             ("git", "commit", "-m", _batch_release_commit_message(candidates)),
             dry_run=True,
         )
+        if not args.skip_checks:
+            run_prechecks_for_targets(preparation_targets, dry_run=True)
+        _dry_run_postupdate_steps(release_targets)
+        print(
+            "dry-run: would revalidate branch, HEAD, clean worktree, GitHub "
+            "Release state, and tags before remote actions"
+        )
         for candidate in candidates:
             prepare_tag(tag_actions[candidate.target.key], dry_run=True)
-        push_current_branch(dry_run=True)
+        push_current_branch(
+            dry_run=True,
+            head_commit=PENDING_RELEASE_COMMIT,
+        )
         for candidate in candidates:
             push_tag(tag_actions[candidate.target.key], dry_run=True)
         print(
@@ -1709,33 +2028,38 @@ def _run_batch_release(args: argparse.Namespace) -> int:
     if args.publish:
         print_publish_note()
 
-    if not args.skip_checks:
-        run_prechecks_for_targets(release_targets, dry_run=False)
+    prepare_release_metadata(preparation_versions)
+    run_preparation_steps(preparation_targets, dry_run=False)
+    release_commit_created, preparation_commit = commit_release_preparation(
+        preparation_targets,
+        message=_batch_release_commit_message(candidates),
+    )
 
-    if _candidate_for_target(candidates, ROOT_TARGET) is not None:
-        _sync_root_release_dependencies()
+    if not args.skip_checks:
+        run_prechecks_for_targets(preparation_targets, dry_run=False)
 
     for step in build_postupdate_steps_for_targets(release_targets):
         _run_postupdate_step(step, dry_run=False)
 
-    release_commit_created = release_files_changed_for_targets(release_targets)
-    if release_commit_created:
-        run_command(("git", "add", *_release_file_args_for_targets(release_targets)))
-        run_command(("git", "commit", "-m", _batch_release_commit_message(candidates)))
-    else:
-        print("No release commit needed; release files already match target versions")
-
-    head_commit = current_head_commit()
+    candidates = require_fresh_release_fence(
+        candidates,
+        preparation_branch=preparation_branch,
+        preparation_commit=preparation_commit,
+    )
     tag_actions = _plan_candidate_tag_actions(
         candidates,
-        head_commit=head_commit,
+        head_commit=preparation_commit,
         version_changed=release_commit_created,
         retag=args.retag,
     )
 
     for candidate in candidates:
         prepare_tag(tag_actions[candidate.target.key], dry_run=False)
-    push_current_branch(dry_run=False)
+    push_current_branch(
+        dry_run=False,
+        branch=preparation_branch,
+        head_commit=preparation_commit,
+    )
     for candidate in candidates:
         push_tag(tag_actions[candidate.target.key], dry_run=False)
 
@@ -1776,15 +2100,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     require_changelog_heading(target_version)
     version_changed = target_version != current_version
+    preparation_branch = "<dry-run>" if args.dry_run else current_branch()
     initial_head_commit = current_head_commit()
-    planning_head = (
-        PENDING_RELEASE_COMMIT
-        if version_changed and args.dry_run
-        else initial_head_commit
-    )
+    planning_head = PENDING_RELEASE_COMMIT if args.dry_run else initial_head_commit
     tag_action = plan_tag_action(
         state,
-        version_changed=version_changed,
+        version_changed=version_changed or args.dry_run,
         head_commit=planning_head,
         retag=args.retag,
     )
@@ -1799,43 +2120,44 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         if dirty:
             print("dry-run: worktree is dirty; a real release would stop here")
-        if not args.skip_checks:
-            run_prechecks(target, dry_run=True)
-        if version_changed:
-            print(
-                "dry-run: would update "
-                + ", ".join(display_path(path) for path in target_version_files(target))
-            )
-        else:
-            print(
-                f"dry-run: current {target.package_name} version {target_version} "
-                "is unpublished; would reuse existing version files"
-            )
+        print(
+            "dry-run: would reconcile deterministic release metadata for "
+            f"{target.package_name} {target_version}"
+        )
+        print(
+            "dry-run: tag planning assumes reconciliation creates a local commit; "
+            "the real command reuses HEAD when preparation is already exact"
+        )
         if target == ROOT_TARGET:
-            summon_version = read_target_version(SUMMON_TARGET)
+            summon_version = read_manifest_version(SUMMON_TARGET)
             print(
                 "dry-run: would ensure root dev dependency requires "
                 f"taut-summon>={summon_version}"
             )
+        run_preparation_steps((target,), dry_run=True)
+        print("dry-run: would commit the exact release-file allowlist if changed")
+        run_command(("git", "add", *_release_file_args(target)), dry_run=True)
+        run_command(
+            (
+                "git",
+                "commit",
+                "-m",
+                f"Release {target.package_name} {target_version}",
+            ),
+            dry_run=True,
+        )
+        if not args.skip_checks:
+            run_prechecks(target, dry_run=True)
         run_postupdate_steps(target, dry_run=True)
-        if version_changed:
-            run_command(("git", "add", *_release_file_args(target)), dry_run=True)
-            run_command(
-                (
-                    "git",
-                    "commit",
-                    "-m",
-                    f"Release {target.package_name} {target_version}",
-                ),
-                dry_run=True,
-            )
-        else:
-            print(
-                "dry-run: no release commit needed unless generated release files "
-                "change during post-update checks"
-            )
+        print(
+            "dry-run: would revalidate branch, HEAD, clean worktree, GitHub "
+            "Release state, and tags before remote actions"
+        )
         prepare_tag(tag_action, dry_run=True)
-        push_current_branch(dry_run=True)
+        push_current_branch(
+            dry_run=True,
+            head_commit=PENDING_RELEASE_COMMIT,
+        )
         push_tag(tag_action, dry_run=True)
         print(
             f"dry-run: next step is to wait for {target.release_workflow} "
@@ -1845,44 +2167,41 @@ def main(argv: list[str] | None = None) -> int:
 
     _require_command("uv")
 
+    prepare_release_metadata(((target, target_version),))
+    run_preparation_steps((target,), dry_run=False)
+    release_commit_created, preparation_commit = commit_release_preparation(
+        (target,),
+        message=f"Release {target.package_name} {target_version}",
+    )
+
     if not args.skip_checks:
         run_prechecks(target, dry_run=False)
 
-    if version_changed:
-        write_version_files(target_version, target)
-        print(
-            "Updated version files: "
-            + ", ".join(display_path(path) for path in target_version_files(target))
-        )
-    else:
-        print(
-            f"Reusing current unpublished {target.package_name} version "
-            f"{target_version}; version files unchanged"
-        )
-
-    if target == ROOT_TARGET:
-        _sync_root_release_dependencies()
-
     run_postupdate_steps(target, dry_run=False)
 
-    release_commit_created = version_changed or release_files_changed(target)
-    if release_commit_created:
-        run_command(("git", "add", *_release_file_args(target)))
-        run_command(
-            ("git", "commit", "-m", f"Release {target.package_name} {target_version}")
-        )
-    else:
-        print("No release commit needed; release files already match target version")
-
-    head_commit = current_head_commit()
+    candidate = ReleaseCandidate(
+        target=target,
+        current_version=current_version,
+        release_version=target_version,
+        state=state,
+    )
+    (candidate,) = require_fresh_release_fence(
+        (candidate,),
+        preparation_branch=preparation_branch,
+        preparation_commit=preparation_commit,
+    )
     tag_action = plan_tag_action(
-        state,
+        candidate.state,
         version_changed=release_commit_created,
-        head_commit=head_commit,
+        head_commit=preparation_commit,
         retag=args.retag,
     )
     prepare_tag(tag_action, dry_run=False)
-    push_current_branch(dry_run=False)
+    push_current_branch(
+        dry_run=False,
+        branch=preparation_branch,
+        head_commit=preparation_commit,
+    )
     push_tag(tag_action, dry_run=False)
     print(
         f"Next step: wait for {target.release_workflow} on {state.tag_name}. "

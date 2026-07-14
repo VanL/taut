@@ -27,10 +27,11 @@ does not own ledger, control, or driver orchestration.
 Historical blocker note: the 2026-07-09 process-lane PING failure was traced to
 the dependency release rather than worked around with transient long-lived
 handles or per-turn cleanup. SimpleBroker 5.2.2 was the first release with the
-required persistent-session visibility behavior; 5.3.0 is the supported floor
-because the shared core reactor requires live waiter replacement. The 5.2.0 reactor
-example remains the ownership-model provenance, not the supported runtime
-floor.
+required persistent-session visibility behavior; 5.3.0 added the live waiter
+replacement required by the shared core reactor; and 5.3.2 is the supported
+floor because cancellation must also interrupt locked watcher bootstrap. The
+5.2.0 reactor example remains the ownership-model provenance, not the supported
+runtime floor.
 
 ## Governing Spec References
 
@@ -497,10 +498,11 @@ or inherited wait template. It does not classify
 `malformed summon session row` errors as transient in Taut. If SimpleBroker
 still leaks a lock/busy contention failure after its own budget, the fix belongs
 in SimpleBroker or the dependency selection, not in a second retry wrapper.
-SimpleBroker 5.3.0 is the minimum supported runtime. Its reference reactor and
-persistent session design provide one process-local session with
-owner-thread-local cores;
-the 5.1.x per-operation release pattern was buggy and is unsupported.
+SimpleBroker 5.3.2 is the minimum supported runtime. Its reference reactor and
+persistent session design provide one process-local session with owner-thread-
+local cores, and cancellation can interrupt watcher bootstrap while PhaseLock
+or SQLite connection setup is blocked. The 5.1.x per-operation release pattern
+was buggy and is unsupported.
 
 The real-process test harness follows the same posture. Readiness is a
 correlated PING/STATUS reply from the expected driver evidence; session rows and

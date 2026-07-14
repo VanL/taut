@@ -281,13 +281,14 @@ an accident. Two consequences are binding:
   CLI/client work, persistent owned handles for long-lived actors, and
   `close()` at owned lifetime end.
 
-  The `simplebroker>=5.3.1` floor is load-bearing. Version 5.2.0 supplies the
-  reference ownership model, and 5.2.2 first passed Taut's persistent-owner
+  The `simplebroker>=5.3.2` floor is load-bearing. Version 5.2.0 supplies the
+  reference ownership model, 5.2.2 first passed Taut's persistent-owner
   process/control proof, 5.3.0 supplies the public live activity-waiter
-  replacement contract, and 5.3.1 makes `Queue.write()` return the exact
-  committed message id. Persistent Queue handles
-  for one resolved target share a process-local broker session; each driving
-  thread receives its own thread-local backend core. Releasing an ordinary operation
+  replacement contract, 5.3.1 makes `Queue.write()` return the exact committed
+  message id, and 5.3.2 makes watcher bootstrap cancellation interrupt locked
+  PhaseLock and SQLite connection setup. Persistent Queue handles for one
+  resolved target share a process-local broker session; each driving thread
+  receives its own thread-local backend core. Releasing an ordinary operation
   ends only its active-operation lease; it does not recycle the owning thread's
   cached core or end the Queue lease. `Queue.cleanup_connections()` explicitly
   recycles active handles while retaining the Queue lease, and `Queue.close()`
@@ -643,7 +644,7 @@ through read-only identity resolution. It does not update activity, record an
 identity claim, inspect unread state, or create membership. Long-lived
 extensions use it to reconcile their own thread-scoped resources.
 
-Core runtime dependencies: exactly `simplebroker>=5.3.1` and `psutil`. The
+Core runtime dependencies: exactly `simplebroker>=5.3.2` and `psutil`. The
 optional `taut-pg` extension adds `simplebroker-pg` and its driver dependencies
 in the same environment as Taut. Python ≥ 3.11. The CLI uses argparse, not a CLI
 framework.
@@ -1188,25 +1189,50 @@ Release targets:
 - `summon` releases `taut-summon` from `extensions/taut_summon` with a
   `taut_summon/vX.Y.Z` tag and
   `.github/workflows/release-gate-summon.yml`.
-- `all` releases every current package version that does not already have a
-  GitHub Release. `--version` is invalid with `all`; maintainers must edit
-  package version files first when preparing a multi-package version bump.
+- `all` releases every requested package version that does not already have a
+  GitHub Release. With `--version X.Y.Z`, the helper prepares all three package
+  manifests at that coordinated version. Without `--version`, each package's
+  manifest remains the source for its current version. Package versions are
+  otherwise independent; consistency gates compare derived copies to the
+  manifest that owns them rather than requiring unrelated package versions to
+  match.
 
 Helper obligations:
 
 - Accept both positional target form (`bin/release.py pg`) and the older
   `--target pg` form.
-- Before release, reject dirty worktrees unless `--dry-run` is set, reject
-  already-published GitHub Releases, and plan local/remote tag actions without
-  force-pushing tags. Retagging deletes the remote tag first and then pushes the
-  recreated tag.
-- Keep version files synchronized: root `pyproject.toml` and
-  `taut/_constants.py`; extension `pyproject.toml` files; each first-party
-  extension's `taut>=...` floor to the current root version; and the root dev
-  dependency `taut-summon>=...` to the current local `taut-summon` version.
-- Track generated release files when committing, including
-  `extensions/taut_summon/uv.lock` for the summon extension.
-- Run the relevant local gates before mutation unless `--skip-checks` is set:
+- Before release, reject dirty worktrees unless `--dry-run` is set, reject or
+  exclude already-published GitHub Releases according to the existing single
+  target and resumable batch rules, and plan local/remote tag actions without
+  force-pushing tags. Retagging deletes the freshly inspected remote tag under
+  an exact `--force-with-lease` expectation and then pushes the recreated tag.
+  Validate the human-authored changelog heading before generated metadata
+  changes.
+- Prepare deterministic metadata before running release prechecks. Change only
+  the selected package versions, but reconcile every manifest-owned derived
+  copy on every normal release invocation: root `taut/_constants.py`, README
+  tag and wheel examples, both extension `taut>=...` floors, the root dev
+  `taut-summon>=...` and `simplebroker-pg>=...` floors, every exact root README
+  SimpleBroker requirement occurrence, and the retained
+  `extensions/taut_summon/uv.lock`. Each package manifest owns its version; the
+  root manifest owns the core constant and SimpleBroker requirement; the root
+  version owns both extension `taut>=...` floors; the Summon manifest owns the
+  root dev `taut-summon>=...` floor; and the PG manifest owns the root dev
+  `simplebroker-pg>=...` floor.
+  Refresh the Summon lock selectively with
+  `uv lock --upgrade-package simplebroker`; do not refresh or retain a PG
+  lockfile.
+- Stage only the release-file allowlist and create the local
+  release-preparation commit before prechecks. The prechecks verify that exact
+  commit. `--checks-only` remains non-mutating and reports drift; `--dry-run`
+  prints the same prepare, commit, verify, and remote-action order without
+  writing. A writer or lock failure may leave only helper-generated working-
+  tree changes. A later proof failure leaves the local preparation commit
+  unpushed and the branch clean. The helper never resets or silently rolls back
+  files.
+- Run the relevant local gates against the clean local preparation commit and
+  before any branch push, tag creation or replacement, tag push, or publication
+  unless `--skip-checks` is set:
   root pytest, `bin/pytest-pg --fast` for core or PG releases, the
   `extensions/taut_summon/tests` suite for core or summon releases split into
   non-process, deterministic `xdist_group` process, strict external-live, and
@@ -1242,8 +1268,17 @@ Helper obligations:
   CI job with a prepared loopback Ollama model. External-provider live harnesses
   are a strict local release gate unless CI grows explicit credentials/tooling
   for those provider CLIs.
-- After version sync, build the selected package artifacts and run
-  `uv lock` in `extensions/taut_summon` when the summon package is selected.
+- After metadata preparation and prechecks, build the selected package
+  artifacts. The Summon lock has already been refreshed during preparation.
+- Keep branch pushes, tag creation or replacement, tag pushes, and publication
+  after prechecks, normal artifact builds, and the paired core/Summon wheel
+  check. Immediately before remote action, verify that the branch and `HEAD`
+  still name the preparation commit, the index and worktree are clean, and
+  fresh GitHub Release plus local/remote tag state remains compatible with the
+  planned action. Branch and tag push refspecs name the preparation commit
+  explicitly, and local tag creation names that commit explicitly, so checkout
+  drift after the fence cannot redirect a remote action. Any detected drift or
+  failed remote lease fails closed and requires a rerun.
 
 Workflow obligations:
 
@@ -1277,13 +1312,14 @@ the supplied core wheel is admitted exactly rather than excluded by a
 superficially stronger floor.
 
 Every non-dry-run `core`, `summon`, or matching `all` release builds both
-wheels from the same checkout into a fresh temporary artifact root and runs
+wheels from the same clean preparation commit into a fresh temporary artifact root and runs
 the core/Summon wheel-matrix checker with their explicit paths after both
-builds and before any release commit, tag, or push. The gate still runs under
-`--skip-checks`; dry-run prints the ordered build and verification commands.
-PG-only releases do not run it. The reusable test workflow exposes a default-
-false paired-verification input enabled by the core and Summon release gates;
-it verifies after both fresh builds and before either publication job can run.
+builds and before any branch push, tag creation or replacement, tag push, or
+publication. The gate still runs under `--skip-checks`; dry-run prints the
+ordered build and verification commands. PG-only releases do not run it. The
+reusable test workflow exposes a default-false paired-verification input enabled
+by the core and Summon release gates; it verifies after both fresh builds and
+before either publication job can run.
 
 ## Implementation Mapping
 
@@ -1295,6 +1331,9 @@ it verifies after both fresh builds and before either publication job can run.
 
 ## Related Plans
 
+- `docs/plans/2026-07-13-release-metadata-preparation-plan.md` — manifest-owned
+  metadata reconciliation, exact-path local preparation commits, and remote
+  release fences.
 - `docs/plans/2026-07-13-bounded-summon-process-test-parallelism-plan.md` —
   fixed-width deterministic process pressure locally and in CI while preserving
   fresh one-worker external-live and local-LLM boundaries.

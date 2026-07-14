@@ -86,11 +86,11 @@ default, or a few machines through the Postgres extension.
 ## Installation
 
 ```bash
-pipx install "git+https://github.com/VanL/taut.git@v0.6.0"       # CLI use
-uv add "taut @ git+https://github.com/VanL/taut.git@v0.6.0"      # as a library
+pipx install "git+https://github.com/VanL/taut.git@v0.6.1"       # CLI use
+uv add "taut @ git+https://github.com/VanL/taut.git@v0.6.1"      # as a library
 ```
 
-Requirements: Python 3.11+. Runtime dependencies are `simplebroker>=5.3.1`
+Requirements: Python 3.11+. Runtime dependencies are `simplebroker>=5.3.2`
 (which itself has none) and `psutil` for cross-platform process metadata.
 
 PyPI install names stay out of the documented path until the `taut` package
@@ -106,8 +106,8 @@ Extensions use their own tags (`taut_pg/vX.Y.Z`, `taut_summon/vX.Y.Z`), so
 their versions do not have to match the core package version:
 
 ```bash
-pipx install "git+https://github.com/VanL/taut.git@v0.6.0"
-pipx inject taut ./taut_pg-0.6.0-py3-none-any.whl
+pipx install "git+https://github.com/VanL/taut.git@v0.6.1"
+pipx inject taut ./taut_pg-0.6.1-py3-none-any.whl
 ```
 
 The Postgres database must already exist. Create `.taut.toml` in the project
@@ -139,7 +139,7 @@ by its continuity token (its mouth). It ships as a separate package with its
 own version tags:
 
 ```bash
-pipx inject taut ./taut_summon-0.6.0-py3-none-any.whl
+pipx inject taut ./taut_summon-0.6.1-py3-none-any.whl
 ```
 
 With it installed, the package registers native `taut summon` and
@@ -498,7 +498,7 @@ security model.
 <summary><strong>Why argparse and a small dependency set?</strong></summary>
 
 Taut follows SimpleBroker's discipline: the install should be boring.
-Runtime dependencies are exactly `simplebroker>=5.3.1` and `psutil`. The CLI is
+Runtime dependencies are exactly `simplebroker>=5.3.2` and `psutil`. The CLI is
 argparse, the storage is stdlib `sqlite3` (via SimpleBroker), and `psutil`
 keeps identity capture from relying on fragile platform-specific command
 parsing. The planned TUI ships as an optional extra so the core dependency

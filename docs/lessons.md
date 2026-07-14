@@ -589,6 +589,14 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   of bug because scheduler load only changes which exception scope owns the
   transition.
 
+- 2026-07-13: A consistency test should verify derived state, not become a
+  second source for the same release literal. Put ownership in package
+  manifests, make the explicit release workflow reconcile every derived copy
+  and commit its exact allowlist before running the gate, then test relations
+  such as “README floor equals manifest floor.” Keep human-authored inputs such
+  as changelog prose as pre-mutation checks. This turns serial metadata failures
+  into one deterministic preparation step without weakening the release fence.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent
