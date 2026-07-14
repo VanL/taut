@@ -28,10 +28,12 @@ Historical blocker note: the 2026-07-09 process-lane PING failure was traced to
 the dependency release rather than worked around with transient long-lived
 handles or per-turn cleanup. SimpleBroker 5.2.2 was the first release with the
 required persistent-session visibility behavior; 5.3.0 added the live waiter
-replacement required by the shared core reactor; and 5.3.2 is the supported
-floor because cancellation must also interrupt locked watcher bootstrap. The
-5.2.0 reactor example remains the ownership-model provenance, not the supported
-runtime floor.
+replacement required by the shared core reactor; 5.3.2 made cancellation
+interrupt locked watcher bootstrap; and 5.3.3 is the supported floor because
+it also removes unsafe path-name-based runner cleanup and initializes
+timestamp-conflict metrics before concurrent first writes. The 5.2.0 reactor
+example remains the ownership-model provenance, not the supported runtime
+floor.
 
 ## Governing Spec References
 
@@ -107,6 +109,12 @@ in a server DSN remain redacted. The terminal-mode mouth path is reactor-owned b
 the driver's persistent client. The driver never posts chat on the member's
 behalf outside terminal mode — a hard invariant, because two speakers under one
 identity is the double-speak failure ([SUM-6]/[SUM-9]).
+
+Terminal mode delegates message validity to core. The event pump catches only
+public `BlankMessageError` before its general `TautError` branch. That exact
+typed result creates no row or failure log and the same provider generation
+continues. Every other post failure still reaches the existing error log. This
+keeps one classifier in core and avoids teaching Summon a second Unicode rule.
 
 ### Captive process, free agent ([SUM-2])
 
@@ -498,11 +506,13 @@ or inherited wait template. It does not classify
 `malformed summon session row` errors as transient in Taut. If SimpleBroker
 still leaks a lock/busy contention failure after its own budget, the fix belongs
 in SimpleBroker or the dependency selection, not in a second retry wrapper.
-SimpleBroker 5.3.2 is the minimum supported runtime. Its reference reactor and
-persistent session design provide one process-local session with owner-thread-
-local cores, and cancellation can interrupt watcher bootstrap while PhaseLock
-or SQLite connection setup is blocked. The 5.1.x per-operation release pattern
-was buggy and is unsupported.
+SimpleBroker 5.3.3 is the minimum supported runtime. Its reference reactor and
+persistent session design provide one process-local session with
+owner-thread-local cores; cancellation can interrupt watcher bootstrap while
+PhaseLock or SQLite connection setup is blocked; runner cleanup does not infer
+ownership from path names; and timestamp-conflict metrics exist before
+concurrent first writes. The 5.1.x per-operation release pattern was buggy and
+is unsupported.
 
 The real-process test harness follows the same posture. Readiness is a
 correlated PING/STATUS reply from the expected driver evidence; session rows and
@@ -624,7 +634,7 @@ require a separately drained subprocess pipe.
 | [SUM-3], command registration, name/provider resolution, CLI help, database discovery, and exit classes | `extensions/taut_summon/taut_summon/command_manifest.py`, `extensions/taut_summon/taut_summon/commands/`, `extensions/taut_summon/taut_summon/controller.py`, `extensions/taut_summon/taut_summon/cli.py` | `extensions/taut_summon/tests/test_controller.py`, `extensions/taut_summon/tests/test_summon_cli.py` parser-inventory, help-phrase, grammar, discovery, and exit-class tests; installed current-interpreter ownership, parity, and import-floor cases in `tests/test_core_summon_wheel_matrix.py`; real root adapter lifecycle in `extensions/taut_summon/tests/test_driver.py` |
 | [SUM-4], bootstrap, identity, presence | `extensions/taut_summon/taut_summon/_driver.py`, `extensions/taut_summon/taut_summon/_state.py` | `extensions/taut_summon/tests/test_driver.py` |
 | [SUM-5], ears injection contract | `extensions/taut_summon/taut_summon/_driver.py` | `extensions/taut_summon/tests/test_driver.py`, `extensions/taut_summon/tests/test_conformance.py` |
-| [SUM-6], mouth CLI contract | `extensions/taut_summon/taut_summon/_driver.py`, `extensions/taut_summon/taut_summon/_persona.py` | `extensions/taut_summon/tests/test_driver.py`, `extensions/taut_summon/tests/test_persona.py` |
+| [SUM-6], mouth CLI contract | `extensions/taut_summon/taut_summon/_driver.py`, `extensions/taut_summon/taut_summon/_persona.py` | `extensions/taut_summon/tests/test_driver.py`, including real-process blank-then-visible and nonblank-post-failure cases; `extensions/taut_summon/tests/test_persona.py`; installed paired exception proof in `tests/test_core_summon_wheel_matrix.py` |
 | [SUM-7.1], [SUM-7.2], adapters | `extensions/taut_summon/taut_summon/_adapter.py`, `extensions/taut_summon/taut_summon/_stream.py`, `extensions/taut_summon/taut_summon/_pty.py`, `extensions/taut_summon/taut_summon/_scripted.py`, `extensions/taut_summon/taut_summon/_claude.py` | `extensions/taut_summon/tests/test_scripted_adapter.py`, `extensions/taut_summon/tests/test_claude_adapter.py`, `extensions/taut_summon/tests/test_pty_adapter.py` |
 | [SUM-7.4], PTY shell adapter | `extensions/taut_summon/taut_summon/_pty.py`, `extensions/taut_summon/taut_summon/_driver.py` | `extensions/taut_summon/tests/test_pty_adapter.py`, PTY cases in `extensions/taut_summon/tests/test_driver.py`, `extensions/taut_summon/tests/test_live_harness.py` |
 | [SUM-8], session ledger and guard | `extensions/taut_summon/taut_summon/_state.py` | `extensions/taut_summon/tests/test_state.py`, `extensions/taut_summon/tests/test_driver.py` |
@@ -673,6 +683,8 @@ hosts for SQLite safety.
 
 ## Related Plans
 
+- `docs/plans/2026-07-14-blank-message-no-op-plan.md` — typed core blank result
+  and terminal-mode continuation.
 - `docs/plans/2026-07-14-universal-release-gates-plan.md` — universal local
   release verification, explicit live enablement plus strictness, and PG
   evidence for the Summon tag.

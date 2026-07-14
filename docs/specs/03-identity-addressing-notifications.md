@@ -105,8 +105,16 @@ itself.
 
 ### [IAN-3.2] Identity claim hashes
 
-Every resolved command captures best-effort local evidence and canonicalizes it
-into an identity claim. The claim hash format is:
+Taut captures best-effort local evidence when it is needed to infer or create a
+member, to associate the current process claim through `rejoin`, or to render
+current evidence through `whoami --explain`. Either a resolved explicit name or
+alias, or a valid continuity token when no explicit `as` is supplied, is
+sufficient to select the acting member for an ordinary operation and does not
+require process/session capture. Whenever local evidence is captured, Taut
+canonicalizes it into an identity claim. Canonicalization computes the claim
+hash in memory; it does not by itself insert or refresh
+`taut_identity_claims`. Persistence follows [IAN-3.3], member creation, or
+`rejoin` only. The claim hash format is:
 
 ```text
 ^ic_[a-z0-9]{52}$
@@ -134,13 +142,24 @@ belong to only one member. A member can have many claim hashes.
 
 Resolution order:
 
-1. Explicit `--as NAME_OR_ALIAS` / `TAUT_AS`, if present, resolves the current
-   name or alias. If no member exists and the command may create a member, Taut
-   creates a member with that name and associates the current claim when one is
-   available.
-2. Continuity token, if present, resolves to its member and records a
-   `continuity_token` claim.
-3. Captured claim hash match resolves to the associated member.
+1. Explicit `--as NAME_OR_ALIAS` / `TAUT_AS`, if present, is authoritative for
+   the ordinary operation and remains ahead of token and inferred evidence.
+   Taut validates and resolves the current name or alias before capturing local
+   evidence. An existing member is selected without writing the current process
+   claim or changing its anchor or fingerprint. If no member exists and the
+   operation may create one, Taut captures local evidence once, creates the
+   member with that name, and associates the current claim when it is unclaimed.
+   An operation that cannot create a member fails or remains a guest according
+   to its existing contract without probing identity or creating a throwaway
+   member.
+2. A continuity token, when no explicit `as` selector is present, resolves to
+   its member without capturing local process/session evidence. A state-changing
+   resolution records or refreshes the `continuity_token` claim and activity
+   exactly as before; it does not write the current process claim or change the
+   member anchor or fingerprint. An invalid token fails without falling back to
+   inferred identity.
+3. When neither deterministic selector is supplied, Taut captures local
+   evidence. A captured claim-hash match resolves to the associated member.
 4. Agent anchor match: when no claim hash matches and the capture is an
    agent capture, resolution may match a stored member anchor by the stable
    triple (`host_id`, `anchor_pid`, `anchor_start_time`) against the
@@ -157,6 +176,18 @@ Resolution order:
    member only when the command can still succeed after creating that member.
    Membership-gated writes, such as channel `say` and `reply`, must not create
    throwaway members before failing membership or missing-target validation.
+
+Acting-member selection and process-claim association are separate operations.
+For an existing member, `as` and token selectors affect the current operation
+but do not teach future selector-free resolution a new process claim.
+Selector-free resolution may still resolve through claim-hash continuity under
+item 3 and record process claims through anchor healing and human fallback under
+items 4–5. `rejoin` is the sole explicit command that associates the current
+process claim with a caller-chosen existing member, including when its target is
+selected by token. Taut performs no deferred or background identity verification
+or claim association. A process may therefore act as different members through
+explicit selectors without the first selection becoming a silent durable
+binding.
 
 No resolution path silently changes a member name. Name changes are explicit
 through [IAN-4.4].
@@ -175,9 +206,12 @@ same fail-not-adopt behavior.
 
 ### [IAN-3.4] Rejoin
 
-`taut rejoin NAME_OR_ALIAS` means "associate the current identity claim with the
-member selected by this name or alias." It does not merge message history, does
-not rename the member, and does not rewrite old messages.
+`taut rejoin NAME_OR_ALIAS` means "associate the current process claim with the
+member selected by this name or alias." The target may instead be selected by a
+continuity token or by the global `--as` selector. Supplying both a name/alias
+and a token, or otherwise leaving more than one selector active, fails as an
+ambiguous request. Rejoin does not merge message history, does not rename the
+member, and does not rewrite old messages.
 
 If the current claim is already associated with a different member, `rejoin`
 fails and names the conflicting current member. There is no implicit merge.
@@ -465,6 +499,9 @@ fields and must not depend on notification text formatting.
 
 ### [IAN-7.3] Notification write ordering
 
+A blank attempt filtered under [TAUT-6.5] never becomes a source message and
+never enters mention, reply, or `dm_started` notification dispatch.
+
 For a mention, Taut writes the source chat message first. Notification writes
 come after the source message succeeds.
 
@@ -515,11 +552,13 @@ and text remain unchanged.
 Taut must use a public SimpleBroker queue-rename API for broker queue renames.
 Taut must not update SimpleBroker-owned message tables directly.
 
-Taut requires `simplebroker>=5.3.2` and `taut-pg` requires
-`simplebroker-pg>=3.2.1`. This compatible pair supplies atomic write ids, the
+Taut requires `simplebroker>=5.3.3` and `taut-pg` requires
+`simplebroker-pg>=3.2.2`. This compatible pair supplies atomic write ids, the
 rename-capable backend handshake, safe persistent-reactor ownership, public
 live activity-waiter replacement, and interruptible watcher bootstrap during
-locked PhaseLock and SQLite connection setup. The
+locked PhaseLock and SQLite connection setup. It also includes corrected
+runner cleanup and initialized timestamp-conflict metrics for concurrent first
+writes. The
 implementation must use `simplebroker.open_broker(...).rename_queue(...)`
 against Taut's resolved broker target; it must not assume `Queue.rename()` or
 a module-level `simplebroker.rename_queue()` exists.
@@ -545,6 +584,15 @@ or report the interrupted rename.
   Automatic member creation may choose a deterministic fallback.
 - Claim collision: if the same claim hash is already mapped to another member,
   resolution uses that member. `rejoin` to a different member fails loudly.
+- Explicit-selector and process-claim disagreement: the explicit `as` member or
+  token member wins for the current operation. The existing process claim
+  remains owned by its current member; ordinary selection neither steals nor
+  rewrites it.
+- Missing deterministic selector target: a supplied explicit name with no
+  matching member on a non-creating operation fails or remains a guest under
+  the operation's existing `allow_guest` contract, without local identity
+  inference or member creation. An invalid token fails with the existing token
+  error. Neither case falls back to a different claim-derived member.
 - Name change after mention: pending and historical notifications keep the
   actor and matched route-token snapshots from event time.
 - Name change after direct message: the direct-message queue stays the same
@@ -578,8 +626,25 @@ Required proofs:
   same `from_id`
 - messages written after a name change use the new `from` snapshot and the
   same `from_id`
-- `taut rejoin NAME_OR_ALIAS` associates a new claim hash with the same
-  `member_id`
+- `taut rejoin NAME_OR_ALIAS` and `taut rejoin --token TOKEN` each associate a
+  new process claim hash with the same `member_id`
+- each deterministic selector class independently selects the acting member for
+  an ordinary state-changing operation without requesting local process/session
+  capture: either an existing explicit name or alias, or a valid token when no
+  explicit `as` is supplied
+- existing explicit and token selection do not change process-claim ownership,
+  anchor, or fingerprint; token selection retains its declared
+  `continuity_token` claim/activity effects
+- a supplied explicit name with no matching member captures exactly once when a
+  creation-capable operation creates it, but a non-creating or
+  membership-gated operation creates no throwaway member and does not probe
+  identity
+- selector-free resolution still captures and exercises claim-hash, anchor,
+  human, and allowed-creation behavior
+- `rejoin` captures and associates the current process claim, while
+  `whoami --explain` captures current evidence without silently associating it
+- ordinary selector resolution performs no deferred or background identity
+  verification or claim association
 - `@name` direct messages route to the member id currently owning the name
 - alias-route direct messages route to the member id currently owning the alias
   when an alias exists; public alias-management tests belong with the future
@@ -598,6 +663,12 @@ Required proofs:
 
 ## Related Plans
 
+- `docs/plans/2026-07-14-blank-message-no-op-plan.md` — ensures filtered
+  blank attempts never become notification sources.
+- `docs/plans/2026-07-14-trusted-identity-selector-fast-path-plan.md` — trust
+  existing `as`/token selectors without process capture, preserve
+  creation-gated first-contact claims, and keep `rejoin` as explicit process
+  claim association.
 - `docs/plans/2026-07-12-automatic-display-name-capitalization-plan.md` —
   automatic human/agent display casing, route-aware candidate selection, and
   the Pi/Tau/Phi family.

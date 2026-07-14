@@ -1,4 +1,4 @@
-"""Command adapter for associating current evidence with an existing member."""
+"""Command adapter for associating the current process claim with a member."""
 
 from __future__ import annotations
 
@@ -11,8 +11,10 @@ from taut.commands._rendering import emit_members
 class RejoinCommand:
     def configure_parser(self, parser: CommandArgumentParser) -> None:
         parser.description = (
-            "Rejoin by NAME_OR_ALIAS, continuity token, or the global --as selector. "
-            "Continuity tokens are not authentication."
+            "Select an existing member by NAME_OR_ALIAS, continuity token, or the "
+            "global --as selector, then associate the current process claim with "
+            "that member. Rejoin does not rename the member. Continuity tokens are "
+            "not authentication."
         )
         parser.add_argument(
             "name_or_alias",

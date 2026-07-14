@@ -23,6 +23,13 @@ or the abbreviated four-item record defined in [DOM-15]'s class-2 row
 suffices (classes 1–2 use their commit message or handoff report).
 The class is a claim; escalators are one-way and declared.
 
+The sole exception to Class 2's usual reversibility and no-[DOM-5]-trigger
+requirements is [DOM-15]'s explicitly requested routine release through
+unchanged `bin/release.py`. It has no dated release plan. Classify product work,
+preparation outside the helper, machinery or gate changes, manual publication,
+override flags, and recovery outside [TAUT-12.5]'s built-in resumable path
+separately.
+
 ## Required Preflight Before Edits
 
 - List the requested outcomes as a checklist.

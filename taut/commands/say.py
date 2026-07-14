@@ -14,7 +14,8 @@ class SayCommand:
     def configure_parser(self, parser: CommandArgumentParser) -> None:
         parser.description = (
             "Post TEXT to TARGET. Use '-' for stdin; when TEXT is omitted, piped "
-            "stdin is read automatically. Empty text and arbitrary UTF-8 are allowed."
+            "stdin is read automatically. Blank text is ignored with silent exit 2; "
+            "other UTF-8 is preserved exactly."
         )
         parser.add_argument(
             "target",

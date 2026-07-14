@@ -84,13 +84,21 @@ Treat `hardening-plans.md` as required input when any of these are true:
 - the work introduces new persistence, temp-file, or cleanup lifecycle
 - the change contains a one-way door or destructive edge
 
+The narrow routine-release exception in [DOM-15] is the only exception to
+these trigger-based plan and hardening rules. An explicitly requested release
+through unchanged `bin/release.py`, with every [TAUT-12.5]-required normal gate
+enabled, is Class 2 and has no dated release plan. Product changes, preparation
+outside the helper, machinery changes, `--skip-checks`, `--retag`, manual
+publication, and recovery outside the built-in resumable path are separate work
+and classify normally.
+
 ## File Placement
 
 - Put plans in `docs/plans/`.
 - Prefer descriptive filenames.
 - Use a date prefix for new plans when possible:
   `YYYY-MM-DD-short-name-plan.md`.
-- Classes 0–2 per [DOM-15] do not produce plan files — their record
+- Classes 0–2 per [DOM-15] do not produce plan files; their record
   lives in the commit history or handoff report. This runbook governs
   classes 3 and above. Class-3+ plans carry a mandatory `Class:`
   metadata line stating the class and trigger reasoning; a post-hoc

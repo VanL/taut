@@ -303,6 +303,26 @@ def test_installed_new_core_with_current_summon_uses_official_command_adapters(
     }
 
 
+def test_installed_core_summon_pair_shares_blank_message_exception(
+    tmp_path: Path,
+    installed_command_fixture: Any,
+) -> None:
+    """[TAUT-8.3, SUM-6] The paired wheel imports the typed core outcome."""
+
+    environment = installed_command_fixture.create_isolated(tmp_path / "blank-error")
+    _assert_wheels_installed(environment, installed_command_fixture.summon_wheel)
+
+    result = environment.run_python(
+        "from taut import BlankMessageError, EmptyResultError; "
+        "import taut_summon._driver; "
+        "assert issubclass(BlankMessageError, EmptyResultError); "
+        "print(BlankMessageError.__name__)"
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "BlankMessageError\n"
+
+
 @pytest.mark.parametrize(
     ("root_args", "standalone_args"),
     [

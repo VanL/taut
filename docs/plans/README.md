@@ -4,8 +4,10 @@ This directory contains dated implementation plans.
 
 ## Rules
 
-- Use plans for non-trivial changes, architectural work, or any change where a
-  zero-context engineer would otherwise need to rediscover the approach.
+- Follow [DOM-15]: Classes 3 and above use dated plans; Classes 1 and 2 keep
+  their record in git or the handoff. The sole irreversible Class 2 exception
+  is an explicitly requested routine release through unchanged `bin/release.py`
+  with every [TAUT-12.5]-required normal gate enabled.
 - Prefer filenames like `YYYY-MM-DD-short-name-plan.md`.
 - Plans should cite exact spec sections when they exist.
 - Plans should stay current enough to reflect what is being implemented.
@@ -44,6 +46,21 @@ Risky plans are blocked if they do not make explicit:
 
 ## Active Plans
 
+- `2026-07-14-routine-release-classification-plan.md` — classify explicitly
+  requested releases through unchanged normal machinery as Class 2 without a
+  dated release plan, while preserving escalation for bypasses, retagging,
+  manual publication, recovery outside the built-in resumable path, and
+  machinery changes.
+- `2026-07-14-blank-message-no-op-plan.md` — treat empty, runtime-Unicode
+  whitespace, and `Cf`-only user messages as typed no-ops, with silent CLI
+  exit 2 and Summon terminal-mode handling.
+- `2026-07-14-trusted-identity-selector-fast-path-plan.md` — preserve
+  selector-free identity magic while letting existing `as` and token selectors
+  bypass process capture, keeping creation command-gated and `rejoin` the sole
+  explicit process-claim association path.
+- `2026-07-14-taut-tui-cross-reference-correction-plan.md` — correct the
+  stale [TAUT-1] TUI citation from watcher section [TAUT-8.4] to the rich-TUI
+  roadmap contract in [TAUT-12.4], with no behavior change.
 - `2026-07-14-agent-guidance-propagation-plan.md` — adopt the 2026-07-14
   agent-guidance wave ([DOM-14] coalescing, [DOM-15] task classification,
   review lens, crosswalk, four skills) with SHA-pinned provenance.

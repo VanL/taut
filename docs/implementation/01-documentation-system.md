@@ -18,6 +18,8 @@ repo-specific boundaries are documented in
 - `docs/specs/01-development-documentation-operating-model.md` [DOM-4]
 - `docs/specs/01-development-documentation-operating-model.md` [DOM-7]
 - `docs/specs/01-development-documentation-operating-model.md` [DOM-8]
+- `docs/specs/01-development-documentation-operating-model.md` [DOM-15]
+- `docs/specs/02-taut-core.md` [TAUT-12.5]
 
 ## Design Rationale
 
@@ -44,6 +46,17 @@ Combining those roles makes documents harder to trust and easier to let drift.
 The repository treats documentation maintenance as part of completion because
 the main failure mode in agentic development is silent drift between intent,
 execution, and implementation.
+
+### Planning Cost Follows Novelty
+
+Task classification scales planning and review effort, not verification.
+Classes 1 and 2 keep a compact record in git or the handoff; classes 3 and
+above use dated plans. A normal release is the narrow exception to Class 2's
+usual reversibility rule because `bin/release.py` already owns the hardening:
+universal local gates, exact-SHA CI evidence, tag fences, artifact checks, and
+built-in resumable batches. Only execution of that unchanged path receives the
+exception. Product work, machinery changes, disabled gates, override flags,
+manual publication, and recovery outside the built-in path classify normally.
 
 ### Scaffold Boundary
 
@@ -81,7 +94,8 @@ These roles should stay distinct even as taut grows.
 When work changes product code or its governing boundaries:
 
 1. add or update the governing spec first
-2. create a dated plan for non-trivial work
+2. classify the unit under [DOM-15]; create a dated plan for Class 3 and above,
+   while Classes 1 and 2 keep their record in git or the handoff
 3. for risky work, harden the plan before implementation by making invariants,
    hidden couplings, anti-mocking guidance, rollback or rollout, and one-way
    doors explicit

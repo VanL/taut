@@ -29,19 +29,20 @@ To refresh this inventory:
 
 Probe mechanics and the review-eligibility rung (liveness +
 write-attempt containment) are owned by `skills/call-agent/SKILL.md`
-step 6; statuses below predate that skill's adoption and should be
-re-derived by its probes on this machine.
+step 6. Claude and Grok were refreshed through that workflow on this machine;
+the remaining statuses predate the skill's adoption and should be re-derived
+before use.
 
-Last refreshed: 2026-07-13
+Last refreshed: 2026-07-14
 
 | Agent family | Status | Notes |
 |--------------|--------|-------|
-| Claude | verified usable | `/opt/homebrew/bin/claude`, version 2.1.201. A keychain-authenticated read-only implementation review completed successfully on 2026-07-13. File/environment-only auth heuristics reported a false negative, so verify with a small direct prompt before treating `AUTH_MISSING` as authoritative on macOS. |
+| Claude | verified usable; review-eligible | `/opt/homebrew/bin/claude`, version 2.1.207. Liveness passed and prior plan-mode write-attempt containment remains verified. A 2026-07-14 full review exceeded the 540-second bound after 33 tool calls without reaching `end_turn`; diagnosis found buffered output and an undersized bound, not auth, flag drift, or a process hang. The invocation row needs follow-up to add an actual `--tools` boundary and streaming output before another large review. |
 | Codex | verified usable | `/opt/homebrew/bin/codex`, version 0.144.1. This 2026-07-11 task and its independent review run through Codex successfully. |
 | Gemini | present | `/opt/homebrew/bin/gemini`, version 0.46.0. Version probe passed 2026-07-11; prior credential failure was not re-probed. |
 | Qwen | present | `/opt/homebrew/bin/qwen`, version 0.17.0. Version probe passed 2026-07-11; prior model-access failure was not re-probed. |
 | Kimi | present | `/Users/van/.kimi-code/bin/kimi`, version 0.23.5. Version probe passed 2026-07-11; prior credential failure was not re-probed. |
-| Grok | present | `/Users/van/.local/bin/grok`, version 0.2.93. Version probe passed 2026-07-11; the prior hanging review was not re-probed. |
+| Grok | verified usable; review-eligible | `/Users/van/.local/bin/grok`, version 0.2.101. Two plan reviews completed with `EndTurn` on 2026-07-14 under the OS-enforced read-only sandbox; no sandbox fail-open warning or repository write was observed. Write-attempt containment was verified when the `call-agent` skill was adopted. |
 
 ## Review Preference
 

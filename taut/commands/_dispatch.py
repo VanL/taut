@@ -596,6 +596,10 @@ def _render_execution_error(
     context: CommandContext,
     exc: BaseException,
 ) -> int:
+    from taut._exceptions import BlankMessageError
+
+    if isinstance(exc, BlankMessageError):
+        return 2
     if isinstance(exc, CommandError):
         code = exc.exit_code
     elif isinstance(exc, SystemExit):

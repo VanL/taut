@@ -53,6 +53,7 @@ from simplebroker import BrokerTarget, Queue
 from simplebroker.ext import BrokerError
 
 from taut import (
+    BlankMessageError,
     IdentityError,
     NotFoundError,
     NotInitializedError,
@@ -1123,6 +1124,8 @@ class SummonDriver:
                 if terminal_thread is not None:
                     try:
                         mouth.say(terminal_thread, event.text)
+                    except BlankMessageError:
+                        pass
                     except TautError as exc:
                         logger.error("terminal-mode post failed: %s", exc)
                 else:

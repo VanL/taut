@@ -85,8 +85,10 @@ from taut_summon.interaction import (
 from taut_summon.models import SummonOperationError, SummonRequest
 
 import taut.client._identity as core_identity_module
+from taut._constants import META_QUEUE_NAME
 from taut.client import Member, Message, Notification, TautClient
 from taut.identity import capture_process
+from taut.state import SQLITE_SQL_DIALECT, SqlSidecarTautState
 
 pty = pytest.importorskip("pty", reason="POSIX PTY tests require the pty module")
 
@@ -2211,6 +2213,94 @@ def test_terminal_mode_posts_assistant_text_to_single_thread(
     driver.wait_for_message("settle-marker")
     assert not any("echo:" in m for m in driver.messages())
 
+    assert driver.stop() == 0
+
+
+def test_terminal_mode_ignores_blank_event_and_posts_next_text(
+    summon_db: Path,
+    tmp_path: Path,
+    driver_factory: Callable[..., DriverProcess],
+) -> None:
+    """[SUM-6, SUM-12] Blank core result is silent and pump stays live."""
+
+    blank = " \u00a0\u200b\u2060"
+    visible = "visible after blank"
+    driver = driver_factory(
+        summon_db,
+        "scripted",
+        "general",
+        scenario={
+            "on_start": [
+                {"assistant_text": blank},
+                {"assistant_text": visible},
+            ]
+        },
+        extra_args=("--terminal",),
+        tag="terminal-blank",
+    )
+    driver.wait_for_start()
+
+    def _visible_posted() -> bool:
+        try:
+            log = _client(summon_db).log("general")
+        except Exception:
+            return False
+        return any(
+            message.from_name == "Scripted" and message.text == visible
+            for message in log
+        )
+
+    wait_until(_visible_posted, message="visible post after blank event")
+    scripted_text = [
+        message.text
+        for message in _client(summon_db).log("general")
+        if message.from_name == "Scripted" and message.kind == "message"
+    ]
+    assert scripted_text == [visible]
+    assert "terminal-mode post failed" not in driver.stderr_tail()
+    assert driver.stop() == 0
+
+
+def test_terminal_mode_still_logs_nonblank_core_post_failure(
+    summon_db: Path,
+    tmp_path: Path,
+    driver_factory: Callable[..., DriverProcess],
+) -> None:
+    """[SUM-6] Only BlankMessageError is silent."""
+
+    driver = driver_factory(
+        summon_db,
+        "scripted",
+        "general",
+        scenario={
+            "on_start": [
+                {"sleep": 1.5},
+                {"assistant_text": "visible but blocked"},
+            ]
+        },
+        extra_args=("--terminal",),
+        tag="terminal-post-error",
+    )
+    driver.wait_for_start()
+    queue = Queue(META_QUEUE_NAME, db_path=str(summon_db))
+    try:
+        SqlSidecarTautState(queue, SQLITE_SQL_DIALECT).start_channel_rename(
+            old_name="general",
+            new_name="ops",
+            affected=[{"old": "general", "new": "ops"}],
+            started_ts=queue.generate_timestamp(),
+        )
+    finally:
+        queue.close()
+
+    wait_until(
+        lambda: (
+            "terminal-mode post failed: incomplete channel rename"
+            in driver.stderr_tail()
+        ),
+        message="nonblank terminal post failure log",
+    )
+    assert driver.proc.poll() is None
     assert driver.stop() == 0
 
 

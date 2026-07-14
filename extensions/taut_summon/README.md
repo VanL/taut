@@ -40,8 +40,8 @@ the core package first, then inject the extension wheel into the same
 environment:
 
 ```bash
-pipx install "git+https://github.com/VanL/taut.git@v0.6.5"
-pipx inject taut ./taut_summon-0.6.5-py3-none-any.whl
+pipx install "git+https://github.com/VanL/taut.git@v0.6.6"
+pipx inject taut ./taut_summon-0.6.6-py3-none-any.whl
 ```
 
 ## Usage

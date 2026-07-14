@@ -18,15 +18,18 @@ from ._models import Member
 
 class IdentityMixin(_ClientBase):
     def whoami(self, *, explain: bool = False) -> Member:
-        resolved = self._resolve_member(create=False)
+        resolved = self._resolve_member(create=False, _require_capture=explain)
         if resolved.row is None:
             raise IdentityError("unrecognized caller")
+        explanation: dict[str, Any] | None = None
+        if explain:
+            if resolved.capture is None:
+                raise AssertionError("identity explanation requires capture evidence")
+            explanation = identity.explain_capture(resolved.capture, resolved.rule)
         return self._member_from_row(
             resolved.row,
             capture=resolved.capture,
-            explain=identity.explain_capture(resolved.capture, resolved.rule)
-            if explain
-            else None,
+            explain=explanation,
         )
 
     def who(self, thread: str | None = None) -> list[Member]:
@@ -131,6 +134,7 @@ class IdentityMixin(_ClientBase):
         persona: str | None = None,
         allow_guest: bool = False,
         _touch_activity: bool = True,
+        _require_capture: bool = False,
     ) -> _ResolvedMember:
         if not _touch_activity and (create or persona is not None):
             raise ValueError(
@@ -138,9 +142,20 @@ class IdentityMixin(_ClientBase):
             )
         self.last_created_member = None
         self.last_candidates = []
-        capture = self._capture()
-        claim = identity.claim_for_capture(capture)
+        capture: identity.IdentityCapture | None = None
+        claim: identity.IdentityClaim | None = None
         active_ts: int | None = None
+
+        def ensure_evidence() -> tuple[
+            identity.IdentityCapture, identity.IdentityClaim
+        ]:
+            nonlocal capture, claim
+            if capture is None:
+                capture = self._capture()
+                claim = identity.claim_for_capture(capture)
+            if claim is None:
+                raise AssertionError("captured identity evidence requires a claim")
+            return capture, claim
 
         def next_active_ts() -> int:
             nonlocal active_ts
@@ -156,7 +171,8 @@ class IdentityMixin(_ClientBase):
                 if not create and not allow_guest:
                     raise NotFoundError(f"member not found: {explicit}")
                 if not create:
-                    return _ResolvedMember(None, capture, claim, rule="guest")
+                    return _ResolvedMember(None, capture, rule="guest")
+                capture, claim = ensure_evidence()
                 row = self._create_member(
                     capture,
                     claim=claim,
@@ -165,12 +181,14 @@ class IdentityMixin(_ClientBase):
                     active_ts=next_active_ts(),
                     force_new=force_new,
                 )
-                return self._created_resolution(row, capture, claim, "explicit --as")
+                return self._created_resolution(row, capture, "explicit --as")
             if force_new:
                 # [TAUT-8.1]/[IAN-3.3] ``join(new=True)`` is a creation
                 # request, not an adoption mode.  Refuse before allocating an
                 # activity timestamp or mutating the existing member.
                 raise IdentityError(f"member name already exists: {explicit}")
+            if _require_capture:
+                capture, claim = ensure_evidence()
             if _touch_activity:
                 self._state.update_member_activity(row["member_id"], next_active_ts())
                 if persona is not None:
@@ -178,18 +196,22 @@ class IdentityMixin(_ClientBase):
                         self._state.update_member_persona(row["member_id"], persona)
                         or row
                     )
-            return _ResolvedMember(row, capture, claim, rule="explicit --as")
+            return _ResolvedMember(row, capture, rule="explicit --as")
 
         if self.token:
             row = self._state.get_member_by_token(self.token)
             if row is None:
                 raise TokenError("TAUT_TOKEN does not match a taut member")
+            if _require_capture:
+                capture, claim = ensure_evidence()
             if _touch_activity:
                 active = next_active_ts()
                 token_claim = identity.claim_for_token(self.token)
                 self._record_claim(row, token_claim, active)
                 self._state.update_member_activity(row["member_id"], active)
-            return _ResolvedMember(row, capture, claim, rule="continuity token")
+            return _ResolvedMember(row, capture, rule="continuity token")
+
+        capture, claim = ensure_evidence()
 
         if not force_new:
             row = self._state.get_member_by_claim_hash(claim.claim_hash)
@@ -203,7 +225,7 @@ class IdentityMixin(_ClientBase):
                             self._state.update_member_persona(row["member_id"], persona)
                             or row
                         )
-                return _ResolvedMember(row, capture, claim, rule="identity claim")
+                return _ResolvedMember(row, capture, rule="identity claim")
 
         if not force_new and capture.kind == "agent":
             # [IAN-3.3] step 4: a live anchor that changed mutable claim
@@ -214,10 +236,8 @@ class IdentityMixin(_ClientBase):
                 if not _touch_activity:
                     owner = self._state.get_member_by_claim_hash(claim.claim_hash)
                     if owner is not None:
-                        return _ResolvedMember(
-                            owner, capture, claim, rule="identity claim"
-                        )
-                    return _ResolvedMember(row, capture, claim, rule="anchor match")
+                        return _ResolvedMember(owner, capture, rule="identity claim")
+                    return _ResolvedMember(row, capture, rule="anchor match")
                 active = next_active_ts()
                 try:
                     # Heal: record the current claim so subsequent commands
@@ -238,9 +258,7 @@ class IdentityMixin(_ClientBase):
                                 )
                                 or owner
                             )
-                        return _ResolvedMember(
-                            owner, capture, claim, rule="identity claim"
-                        )
+                        return _ResolvedMember(owner, capture, rule="identity claim")
                     # Same member or no owner: proceed with the anchor match
                     # without the healing claim.
                 self._state.update_member_activity(row["member_id"], active)
@@ -249,7 +267,7 @@ class IdentityMixin(_ClientBase):
                         self._state.update_member_persona(row["member_id"], persona)
                         or row
                     )
-                return _ResolvedMember(row, capture, claim, rule="anchor match")
+                return _ResolvedMember(row, capture, rule="anchor match")
 
         if capture.kind == "human" and not force_new:
             row = self._state.get_member_by_uid(
@@ -258,16 +276,14 @@ class IdentityMixin(_ClientBase):
             )
             if row is not None:
                 if not _touch_activity:
-                    return _ResolvedMember(
-                        row, capture, claim, rule="human uid fallback"
-                    )
+                    return _ResolvedMember(row, capture, rule="human uid fallback")
                 active = next_active_ts()
                 self._state.update_member_activity(row["member_id"], active)
                 self._record_claim(row, claim, active)
-                return _ResolvedMember(row, capture, claim, rule="human uid fallback")
+                return _ResolvedMember(row, capture, rule="human uid fallback")
 
         if not create:
-            return _ResolvedMember(None, capture, claim, rule="guest")
+            return _ResolvedMember(None, capture, rule="guest")
 
         members = self._state.list_members()
         candidates = identity.rank_candidates(capture, members)
@@ -279,7 +295,7 @@ class IdentityMixin(_ClientBase):
             active_ts=next_active_ts(),
             force_new=force_new,
         )
-        resolved = self._created_resolution(row, capture, claim, "new identity")
+        resolved = self._created_resolution(row, capture, "new identity")
         resolved.candidates = candidates
         self.last_candidates = [
             (candidate["display_name"], reasons) for candidate, reasons in candidates
@@ -290,7 +306,6 @@ class IdentityMixin(_ClientBase):
         self,
         row: MemberRow,
         capture: identity.IdentityCapture,
-        claim: identity.IdentityClaim,
         rule: str,
     ) -> _ResolvedMember:
         member = self.last_created_member
@@ -300,7 +315,6 @@ class IdentityMixin(_ClientBase):
         return _ResolvedMember(
             row=row,
             capture=capture,
-            claim=claim,
             created=True,
             created_token=row["token"],
             rule=rule,
@@ -361,7 +375,7 @@ class IdentityMixin(_ClientBase):
             except IntegrityError as exc:
                 resolved = (
                     None
-                    if force_new
+                    if force_new or not auto_named
                     else self._state.get_member_by_claim_hash(claim.claim_hash)
                 )
                 if resolved is not None:
@@ -388,12 +402,16 @@ class IdentityMixin(_ClientBase):
                 try:
                     self._record_claim(member, claim, active_ts)
                 except IntegrityError:
-                    if force_new:
-                        return member
                     resolved = self._state.get_member_by_claim_hash(claim.claim_hash)
-                    if resolved is not None:
-                        return resolved
-                    raise
+                    if resolved is None:
+                        raise
+                    # Explicit selection remains authoritative even if another
+                    # process wins the claim race. The new member survives
+                    # without stealing that claim; only selector-free automatic
+                    # creation may resolve to the claim owner instead.
+                    if force_new or not auto_named:
+                        return member
+                    return resolved
             return member
         raise AssertionError("unreachable: member-creation retry loop fell through")
 

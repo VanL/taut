@@ -15,6 +15,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_PUBLIC_EXPORTS = [
     "AmbiguousMessageError",
     "BackendNotSupportedError",
+    "BlankMessageError",
     "EmptyResultError",
     "IdentityError",
     "Member",
@@ -55,6 +56,7 @@ def _typed_public_surface(
 
 def test_exception_leaves_are_public_exports() -> None:
     assert taut.__all__ == EXPECTED_PUBLIC_EXPORTS
+    assert issubclass(taut.BlankMessageError, taut.EmptyResultError)
     assert taut.NotFoundError.__name__ == "NotFoundError"
     assert taut.TokenError.__name__ == "TokenError"
     assert taut.TautWatcher.__name__ == "TautWatcher"

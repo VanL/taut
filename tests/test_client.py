@@ -15,6 +15,7 @@ from taut import addressing
 from taut._constants import META_QUEUE_NAME
 from taut._exceptions import (
     AmbiguousMessageError,
+    BlankMessageError,
     EmptyResultError,
     IdentityError,
     MembershipError,
@@ -22,6 +23,7 @@ from taut._exceptions import (
     NotInitializedError,
     TautError,
     ThreadNameError,
+    TokenError,
 )
 from taut.client import Message, TautClient
 from taut.commands._rendering import format_unread_count
@@ -48,6 +50,24 @@ def next_meta_timestamp(tmp_path: Path) -> int:
         queue.close()
 
 
+def capture_requests(
+    client: TautClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[identity.IdentityCapture]:
+    """Observe full capture selection while preserving the real capture path."""
+
+    real_capture = client._capture
+    requests: list[identity.IdentityCapture] = []
+
+    def counted_capture() -> identity.IdentityCapture:
+        capture = real_capture()
+        requests.append(capture)
+        return capture
+
+    monkeypatch.setattr(client, "_capture", counted_capture)
+    return requests
+
+
 def test_explicit_missing_path_does_not_auto_create(tmp_path: Path) -> None:
     with pytest.raises(NotInitializedError):
         TautClient(db_path=tmp_path / ".taut.db")
@@ -67,6 +87,196 @@ def test_join_starts_at_now_and_other_member_message_is_unread(tmp_path: Path) -
     assert [message.text for message in unread] == ["hello"]
     with pytest.raises(EmptyResultError):
         claude.read("general")
+
+
+def test_blank_channel_say_precedes_routing_and_leaves_state_unchanged(
+    tmp_path: Path,
+) -> None:
+    """[TAUT-6.5] Blank input is rejected before identity or message work."""
+
+    van = client(tmp_path, "van")
+    van.join("general")
+    created = van.last_created_member
+    assert created is not None
+    before_member = van._state.get_member(created.member_id)
+    before_membership = van._state.get_membership(
+        thread="general", member_id=created.member_id
+    )
+    before_threads = van._state.list_threads(include_internal=True)
+    before_messages = [(item.ts, item.text) for item in van.log("general")]
+
+    with pytest.raises(BlankMessageError):
+        van.say("not a valid target!", " \t\u200b\u2060\n")
+
+    assert van._state.get_member(created.member_id) == before_member
+    assert (
+        van._state.get_membership(thread="general", member_id=created.member_id)
+        == before_membership
+    )
+    assert van._state.list_threads(include_internal=True) == before_threads
+    assert [(item.ts, item.text) for item in van.log("general")] == before_messages
+
+
+def test_blank_first_dm_creates_no_thread_membership_or_notification(
+    tmp_path: Path,
+) -> None:
+    """[TAUT-6.5, IAN-7.3] A filtered first DM has no domain footprint."""
+
+    van = client(tmp_path, "van")
+    bob = existing_client(tmp_path, "bob")
+    van.join("general")
+    bob.join("general")
+    van_member = van.whoami()
+    before_member = van._state.get_member(van_member.member_id)
+    before_threads = van._state.list_threads(include_internal=True)
+    before_memberships = van._state.list_memberships(van_member.member_id)
+
+    with pytest.raises(BlankMessageError):
+        van.say("@bob", "\ufeff")
+
+    assert van._state.get_member(van_member.member_id) == before_member
+    assert van._state.list_threads(include_internal=True) == before_threads
+    assert van._state.list_memberships(van_member.member_id) == before_memberships
+    with pytest.raises(EmptyResultError):
+        bob.inbox()
+
+
+def test_blank_say_precedes_existing_member_membership_failure(
+    tmp_path: Path,
+) -> None:
+    """[TAUT-6.5] Blank-first also wins for a known nonmember."""
+
+    van = client(tmp_path, "van")
+    bob = existing_client(tmp_path, "bob")
+    van.join("general")
+    bob.join("general")
+    bob.leave("general")
+    member = bob.whoami()
+    before_member = bob._state.get_member(member.member_id)
+    before_messages = [(item.ts, item.text) for item in van.log("general")]
+
+    with pytest.raises(BlankMessageError):
+        bob.say("general", " \u200b")
+
+    assert bob._state.get_member(member.member_id) == before_member
+    assert (
+        bob._state.get_membership(thread="general", member_id=member.member_id) is None
+    )
+    assert [(item.ts, item.text) for item in van.log("general")] == before_messages
+
+
+def test_blank_say_and_reply_create_no_mention_or_reply_notifications(
+    tmp_path: Path,
+) -> None:
+    """[TAUT-6.5, IAN-7.3] Blank input never reaches notification dispatch."""
+
+    van = client(tmp_path, "van")
+    bob = existing_client(tmp_path, "bob")
+    van.join("general")
+    bob.join("general")
+    root = bob.say("general", "root")
+    before_messages = [(item.ts, item.text) for item in van.log("general")]
+
+    with pytest.raises(BlankMessageError):
+        van.say("general", "\u00a0\u200b")
+    with pytest.raises(BlankMessageError):
+        van.reply("general", str(root.ts), "\u200d")
+
+    assert [(item.ts, item.text) for item in van.log("general")] == before_messages
+    with pytest.raises(EmptyResultError):
+        bob.inbox()
+
+
+def test_blank_first_reply_precedes_parent_lookup_and_creates_no_subthread(
+    tmp_path: Path,
+) -> None:
+    """[TAUT-6.5] A filtered reply resolves no parent and creates no state."""
+
+    van = client(tmp_path, "van")
+    van.join("general")
+    root = van.say("general", "root")
+    member = van.whoami()
+    before_member = van._state.get_member(member.member_id)
+    before_threads = van._state.list_threads(include_internal=True)
+    before_memberships = van._state.list_memberships(member.member_id)
+    before_messages = [(item.ts, item.text) for item in van.log("general")]
+
+    with pytest.raises(BlankMessageError):
+        van.reply("general", "missing-parent", "\u00a0\u200d")
+
+    assert van._state.get_member(member.member_id) == before_member
+    assert van._state.list_threads(include_internal=True) == before_threads
+    assert van._state.list_memberships(member.member_id) == before_memberships
+    assert [(item.ts, item.text) for item in van.log("general")] == before_messages
+    assert van._state.get_thread(f"general.{root.ts}") is None
+
+
+def test_blank_message_precedes_incomplete_rename_guard(tmp_path: Path) -> None:
+    """[TAUT-6.5] Blank classification is the public method's first operation."""
+
+    van = client(tmp_path, "van")
+    van.join("general")
+    _start_rename_marker(
+        tmp_path,
+        old_name="general",
+        new_name="ops",
+        affected=[{"old": "general", "new": "ops"}],
+    )
+
+    with pytest.raises(BlankMessageError):
+        van.say("general", "\u200b")
+    with pytest.raises(BlankMessageError):
+        van.reply("general", "1234", "\u200b")
+
+
+def test_nonblank_text_round_trips_exactly_with_blank_class_characters(
+    tmp_path: Path,
+) -> None:
+    """[TAUT-6.5] Accepted text is neither trimmed nor normalized."""
+
+    van = client(tmp_path, "van")
+    van.join("general")
+    text = " \u200b\U0001f469\u200d\U0001f4bb\u2060 \n"
+
+    message = van.say("general", text)
+
+    assert message.text == text
+    assert van.log("general")[-1].text == text
+
+
+def test_historical_blank_envelopes_and_foreign_bodies_remain_readable(
+    tmp_path: Path,
+) -> None:
+    """[TAUT-6.3, TAUT-6.5] Filtering is write-entry-only, not read-side."""
+
+    van = client(tmp_path, "van")
+    van.join("general")
+    created = van.last_created_member
+    assert created is not None
+    queue = van.queue("general")
+    blank_envelope_ts = queue.generate_timestamp()
+    foreign_ts = queue.generate_timestamp()
+    queue.insert_messages(
+        [
+            (
+                encode_envelope(
+                    from_id=created.member_id,
+                    from_name="van",
+                    kind="message",
+                    text="",
+                ),
+                blank_envelope_ts,
+            ),
+            ("", foreign_ts),
+        ]
+    )
+
+    by_ts = {item.ts: item for item in van.log("general")}
+
+    assert by_ts[blank_envelope_ts].text == ""
+    assert by_ts[blank_envelope_ts].kind == "message"
+    assert by_ts[foreign_ts].text == ""
+    assert by_ts[foreign_ts].kind == "foreign"
 
 
 def test_read_without_thread_reads_all_membership_unread(tmp_path: Path) -> None:
@@ -639,23 +849,26 @@ def test_member_creation_returns_stable_member_id_name_and_token(
     assert "van" not in member.member_id.lower()
 
 
-def test_member_creation_conflict_re_resolves_matching_claim(tmp_path: Path) -> None:
+def test_member_creation_explicit_conflict_does_not_adopt_matching_claim(
+    tmp_path: Path,
+) -> None:
     van = client(tmp_path, "van")
     van.join("general")
     existing = van.whoami()
     capture = van._capture()
     claim = identity.claim_for_capture(capture)
 
-    resolved = van._create_member(
-        capture,
-        claim=claim,
-        name="van",
-        persona=None,
-        active_ts=next_meta_timestamp(tmp_path),
-        force_new=False,
-    )
+    with pytest.raises(IdentityError):
+        van._create_member(
+            capture,
+            claim=claim,
+            name="van",
+            persona=None,
+            active_ts=next_meta_timestamp(tmp_path),
+            force_new=False,
+        )
 
-    assert resolved["member_id"] == existing.member_id
+    assert van.whoami().member_id == existing.member_id
 
 
 def test_member_creation_force_new_does_not_re_resolve_matching_claim(
@@ -896,6 +1109,62 @@ def test_unknown_dm_target_is_not_found(tmp_path: Path) -> None:
 
     with pytest.raises(NotFoundError):
         van.say("@missing", "no")
+
+
+def test_unknown_dm_target_fails_before_missing_actor_capture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[IAN-3.3]: DM target validation precedes actor creation."""
+
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    missing_actor = TautClient(
+        db_path=tmp_path / ".taut.db",
+        as_name="alice",
+        identity_capture=_anchor_capture(cwd="/workspace/alice"),
+    )
+    capture_calls = capture_requests(missing_actor, monkeypatch)
+
+    with pytest.raises(NotFoundError, match="member not found: @bob"):
+        missing_actor.say("@bob", "no target")
+
+    assert capture_calls == []
+    assert missing_actor._state.get_member_by_route_key("alice") is None
+
+
+def test_dm_existing_target_allows_missing_actor_creation_with_one_capture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[IAN-3.3]: a viable DM may create its explicitly named actor."""
+
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    db = tmp_path / ".taut.db"
+    bob = TautClient(db_path=db, as_name="bob")
+    bob.join("general")
+    bob_member = bob.last_created_member
+    assert bob_member is not None
+    actor_capture = _anchor_capture(cwd="/workspace/alice")
+    actor_claim = identity.claim_for_capture(actor_capture)
+    alice = TautClient(
+        db_path=db,
+        as_name="alice",
+        identity_capture=actor_capture,
+    )
+    capture_calls = capture_requests(alice, monkeypatch)
+
+    message = alice.say("@bob", "hello")
+
+    assert capture_calls == [actor_capture]
+    created = alice.last_created_member
+    assert created is not None
+    assert message.from_id == created.member_id
+    assert message.thread == addressing.dm_queue_name(
+        created.member_id, bob_member.member_id
+    )
+    claim_row = alice._state.get_identity_claim(actor_claim.claim_hash)
+    assert claim_row is not None
+    assert claim_row["member_id"] == created.member_id
 
 
 def test_mention_notification_is_claimed_without_touching_chat_history(
@@ -1501,7 +1770,10 @@ def test_automatic_name_skips_alias_owned_route(tmp_path: Path) -> None:
     assert automatic.whoami().name == "Codette"
 
 
-def test_anchor_match_recovers_member_after_anchor_chdir(tmp_path: Path) -> None:
+def test_anchor_match_recovers_member_after_anchor_chdir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """[IAN-3.3] step 4: a live anchor that chdir()s keeps its member."""
     TautClient.init(db_path=tmp_path / ".taut.db")
     db = tmp_path / ".taut.db"
@@ -1511,8 +1783,12 @@ def test_anchor_match_recovers_member_after_anchor_chdir(tmp_path: Path) -> None
     established.join("general")
     member = established.whoami()
 
-    moved = TautClient(db_path=db, identity_capture=after).whoami(explain=True)
+    moved_client = TautClient(db_path=db, identity_capture=after)
+    capture_calls = capture_requests(moved_client, monkeypatch)
 
+    moved = moved_client.whoami(explain=True)
+
+    assert capture_calls == [after]
     assert moved.member_id == member.member_id
     assert moved.explain is not None
     assert moved.explain["rule"] == "anchor match"
@@ -1574,6 +1850,7 @@ def test_join_new_skips_anchor_match(tmp_path: Path) -> None:
 
 def test_join_new_with_occupied_explicit_name_fails_without_adopting_or_mutating(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """[TAUT-8.1]/[IAN-3.3]: explicit fresh creation is fail-not-adopt."""
 
@@ -1593,9 +1870,11 @@ def test_join_new_with_occupied_explicit_name_fails_without_adopting_or_mutating
         as_name="reviewer",
         identity_capture=_anchor_capture(cwd="/workspace/contender"),
     )
+    capture_calls = capture_requests(contender, monkeypatch)
     with pytest.raises(IdentityError, match="already exists"):
         contender.join("general", new=True)
 
+    assert capture_calls == []
     after = owner._state.get_member(created.member_id)
     assert after is not None
     assert after["member_id"] == before["member_id"]
@@ -1669,6 +1948,611 @@ def test_explicit_as_outranks_anchor_match(tmp_path: Path) -> None:
     assert resolved.name == "other"
     assert resolved.explain is not None
     assert resolved.explain["rule"] == "explicit --as"
+
+
+def test_existing_explicit_selector_skips_capture_and_preserves_process_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[TAUT-5]/[IAN-3.3]: ``as`` selects without teaching identity."""
+
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    db = tmp_path / ".taut.db"
+    established_capture = _anchor_capture(cwd="/workspace/established")
+    owner = TautClient(
+        db_path=db,
+        as_name="reviewer",
+        identity_capture=established_capture,
+    )
+    owner.join("general")
+    created = owner.last_created_member
+    assert created is not None
+    established_claim = identity.claim_for_capture(established_capture)
+    established_claim_before = owner._state.get_identity_claim(
+        established_claim.claim_hash
+    )
+    assert established_claim_before is not None
+    before = owner._state.get_member(created.member_id)
+    assert before is not None
+
+    selected_capture = _anchor_capture(cwd="/workspace/selected")
+    selected_claim = identity.claim_for_capture(selected_capture)
+    speaker = TautClient(
+        db_path=db,
+        as_name="reviewer",
+        identity_capture=selected_capture,
+    )
+    assert speaker._state.get_identity_claim(selected_claim.claim_hash) is None
+    capture_calls = capture_requests(speaker, monkeypatch)
+
+    message = speaker.say("general", "selected explicitly")
+
+    assert capture_calls == []
+    assert message.from_id == created.member_id
+    assert message.from_name == "reviewer"
+    after = speaker._state.get_member(created.member_id)
+    assert after is not None
+    assert after["last_active_ts"] > before["last_active_ts"]
+    assert after["anchor_pid"] == before["anchor_pid"]
+    assert after["anchor_start_time"] == before["anchor_start_time"]
+    assert after["fingerprint"] == before["fingerprint"]
+    assert (
+        speaker._state.get_identity_claim(established_claim.claim_hash)
+        == established_claim_before
+    )
+    assert speaker._state.get_identity_claim(selected_claim.claim_hash) is None
+
+
+def test_valid_token_selector_skips_capture_and_preserves_token_activity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[TAUT-5]/[IAN-3.3]: token selection keeps token, not process, claims."""
+
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    db = tmp_path / ".taut.db"
+    established_capture = _anchor_capture(cwd="/workspace/established")
+    owner = TautClient(
+        db_path=db,
+        as_name="reviewer",
+        identity_capture=established_capture,
+    )
+    owner.join("general")
+    created = owner.last_created_member
+    assert created is not None
+    assert created.token is not None
+    established_claim = identity.claim_for_capture(established_capture)
+    established_claim_before = owner._state.get_identity_claim(
+        established_claim.claim_hash
+    )
+    assert established_claim_before is not None
+    before = owner._state.get_member(created.member_id)
+    assert before is not None
+
+    selected_capture = _anchor_capture(cwd="/workspace/token-selected")
+    selected_claim = identity.claim_for_capture(selected_capture)
+    token_claim = identity.claim_for_token(created.token)
+    speaker = TautClient(
+        db_path=db,
+        token=created.token,
+        identity_capture=selected_capture,
+    )
+    assert speaker._state.get_identity_claim(selected_claim.claim_hash) is None
+    assert speaker._state.get_identity_claim(token_claim.claim_hash) is None
+    capture_calls = capture_requests(speaker, monkeypatch)
+
+    message = speaker.say("general", "selected by token")
+
+    assert capture_calls == []
+    assert message.from_id == created.member_id
+    token_claim_row = speaker._state.get_identity_claim(token_claim.claim_hash)
+    assert token_claim_row is not None
+    assert token_claim_row["member_id"] == created.member_id
+    assert token_claim_row["claim_kind"] == "continuity_token"
+    after_first = speaker._state.get_member(created.member_id)
+    assert after_first is not None
+    assert after_first["last_active_ts"] > before["last_active_ts"]
+
+    second_message = speaker.say("general", "selected by token again")
+
+    assert capture_calls == []
+    assert second_message.from_id == created.member_id
+    refreshed_token_claim = speaker._state.get_identity_claim(token_claim.claim_hash)
+    assert refreshed_token_claim is not None
+    assert refreshed_token_claim["last_seen_ts"] > token_claim_row["last_seen_ts"]
+    after_second = speaker._state.get_member(created.member_id)
+    assert after_second is not None
+    assert after_second["last_active_ts"] > after_first["last_active_ts"]
+    assert refreshed_token_claim["last_seen_ts"] == after_second["last_active_ts"]
+    assert after_second["anchor_pid"] == before["anchor_pid"]
+    assert after_second["anchor_start_time"] == before["anchor_start_time"]
+    assert after_second["fingerprint"] == before["fingerprint"]
+    assert (
+        speaker._state.get_identity_claim(established_claim.claim_hash)
+        == established_claim_before
+    )
+    assert speaker._state.get_identity_claim(selected_claim.claim_hash) is None
+
+
+def test_existing_alias_selector_skips_capture_and_selects_owner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[IAN-2.3]/[IAN-3.3]: an alias is a sufficient explicit selector."""
+
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    db = tmp_path / ".taut.db"
+    owner = TautClient(
+        db_path=db,
+        as_name="reviewer",
+        identity_capture=_anchor_capture(cwd="/workspace/established"),
+    )
+    owner.join("general")
+    created = owner.last_created_member
+    assert created is not None
+    owner._state.add_member_alias(
+        member_id=created.member_id,
+        alias="review-alias",
+        created_ts=next_meta_timestamp(tmp_path),
+    )
+    selected_capture = _anchor_capture(cwd="/workspace/alias-selected")
+    selected_claim = identity.claim_for_capture(selected_capture)
+    speaker = TautClient(
+        db_path=db,
+        as_name="review-alias",
+        identity_capture=selected_capture,
+    )
+    capture_calls = capture_requests(speaker, monkeypatch)
+
+    message = speaker.say("general", "selected by alias")
+
+    assert capture_calls == []
+    assert message.from_id == created.member_id
+    assert message.from_name == "reviewer"
+    assert speaker._state.get_identity_claim(selected_claim.claim_hash) is None
+
+
+def test_explicit_selector_outranks_token_without_touching_token_member(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[IAN-3.3]: ordinary ``as`` precedence does not consume the token."""
+
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    db = tmp_path / ".taut.db"
+    explicit_owner = TautClient(
+        db_path=db,
+        as_name="explicit-owner",
+        identity_capture=_anchor_capture(pid=101, start_time="explicit-start"),
+    )
+    explicit_owner.join("general")
+    explicit_member = explicit_owner.last_created_member
+    assert explicit_member is not None
+    token_owner = TautClient(
+        db_path=db,
+        as_name="token-owner",
+        identity_capture=_anchor_capture(pid=202, start_time="token-start"),
+    )
+    token_owner.join("general")
+    token_member = token_owner.last_created_member
+    assert token_member is not None
+    assert token_member.token is not None
+    token_before = token_owner._state.get_member(token_member.member_id)
+    assert token_before is not None
+    token_claim = identity.claim_for_token(token_member.token)
+    assert token_owner._state.get_identity_claim(token_claim.claim_hash) is None
+
+    speaker = TautClient(
+        db_path=db,
+        as_name="explicit-owner",
+        token=token_member.token,
+        identity_capture=_anchor_capture(cwd="/workspace/selected"),
+    )
+    capture_calls = capture_requests(speaker, monkeypatch)
+
+    message = speaker.say("general", "explicit wins")
+
+    assert capture_calls == []
+    assert message.from_id == explicit_member.member_id
+    token_after = speaker._state.get_member(token_member.member_id)
+    assert token_after is not None
+    assert token_after["last_active_ts"] == token_before["last_active_ts"]
+    assert speaker._state.get_identity_claim(token_claim.claim_hash) is None
+
+
+def test_invalid_token_fails_without_capture_or_inferred_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[IAN-9]: an invalid deterministic selector is a terminal error."""
+
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    db = tmp_path / ".taut.db"
+    owner = TautClient(
+        db_path=db,
+        as_name="reviewer",
+        identity_capture=_anchor_capture(),
+    )
+    owner.join("general")
+    before_log = [(message.ts, message.text) for message in owner.log("general")]
+    invalid = TautClient(
+        db_path=db,
+        token="not-a-member-token",
+        identity_capture=_anchor_capture(cwd="/workspace/would-match"),
+    )
+    capture_calls = capture_requests(invalid, monkeypatch)
+
+    with pytest.raises(TokenError, match="TAUT_TOKEN does not match"):
+        invalid.say("general", "must not fall back")
+    with pytest.raises(TokenError, match="TAUT_TOKEN does not match"):
+        invalid.whoami(explain=True)
+
+    assert capture_calls == []
+    assert [
+        (message.ts, message.text) for message in owner.log("general")
+    ] == before_log
+
+
+def test_missing_explicit_channel_actor_fails_without_capture_or_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[IAN-3.3]: membership-gated writes never create throwaway actors."""
+
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    db = tmp_path / ".taut.db"
+    owner = TautClient(db_path=db, as_name="reviewer")
+    owner.join("general")
+    before_members = [member.member_id for member in owner.who()]
+    before_log = [(message.ts, message.text) for message in owner.log("general")]
+    missing = TautClient(
+        db_path=db,
+        as_name="missing",
+        identity_capture=_anchor_capture(cwd="/workspace/missing"),
+    )
+    capture_calls = capture_requests(missing, monkeypatch)
+
+    with pytest.raises(NotFoundError, match="member not found: missing"):
+        missing.say("general", "must not create")
+
+    assert capture_calls == []
+    assert missing._state.get_member_by_route_key("missing") is None
+    assert [member.member_id for member in owner.who()] == before_members
+    assert [
+        (message.ts, message.text) for message in owner.log("general")
+    ] == before_log
+
+
+def test_missing_explicit_read_only_selector_remains_guest_without_capture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[IAN-3.3]/[IAN-9]: allow-guest resolution stays read-only."""
+
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    db = tmp_path / ".taut.db"
+    owner = TautClient(db_path=db, as_name="reviewer")
+    owner.join("general")
+    created = owner.last_created_member
+    assert created is not None
+    before = owner._state.get_member(created.member_id)
+    assert before is not None
+    guest = TautClient(
+        db_path=db,
+        as_name="missing",
+        identity_capture=_anchor_capture(cwd="/workspace/missing-guest"),
+    )
+    capture_calls = capture_requests(guest, monkeypatch)
+
+    members = guest.who()
+
+    assert capture_calls == []
+    assert [member.member_id for member in members] == [created.member_id]
+    assert guest._state.get_member_by_route_key("missing") is None
+    after = guest._state.get_member(created.member_id)
+    assert after is not None
+    assert after["last_active_ts"] == before["last_active_ts"]
+
+
+def test_missing_explicit_join_captures_once_and_associates_unclaimed_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[IAN-3.3]: creation-capable first contact captures exactly once."""
+
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    db = tmp_path / ".taut.db"
+    creation_capture = _anchor_capture(cwd="/workspace/first-contact")
+    creation_claim = identity.claim_for_capture(creation_capture)
+    newcomer = TautClient(
+        db_path=db,
+        as_name="newcomer",
+        identity_capture=creation_capture,
+    )
+    capture_calls = capture_requests(newcomer, monkeypatch)
+
+    newcomer.join("general")
+
+    assert capture_calls == [creation_capture]
+    created = newcomer.last_created_member
+    assert created is not None
+    assert created.name == "newcomer"
+    assert newcomer.joined_thread_names() == ("general",)
+    claim_row = newcomer._state.get_identity_claim(creation_claim.claim_hash)
+    assert claim_row is not None
+    assert claim_row["member_id"] == created.member_id
+
+
+def test_missing_explicit_creation_never_steals_an_owned_process_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[IAN-3.3]: explicit creation stays reachable when its claim is owned."""
+
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    db = tmp_path / ".taut.db"
+    shared_capture = _anchor_capture(cwd="/workspace/shared")
+    shared_claim = identity.claim_for_capture(shared_capture)
+    owner = TautClient(
+        db_path=db,
+        as_name="owner",
+        identity_capture=shared_capture,
+    )
+    owner.join("general")
+    owner_member = owner.last_created_member
+    assert owner_member is not None
+    newcomer = TautClient(
+        db_path=db,
+        as_name="newcomer",
+        identity_capture=shared_capture,
+    )
+    capture_calls = capture_requests(newcomer, monkeypatch)
+
+    newcomer.join("general")
+
+    assert capture_calls == [shared_capture]
+    created = newcomer.last_created_member
+    assert created is not None
+    assert created.token is not None
+    assert created.member_id != owner_member.member_id
+    claim_row = newcomer._state.get_identity_claim(shared_claim.claim_hash)
+    assert claim_row is not None
+    assert claim_row["member_id"] == owner_member.member_id
+    assert newcomer.whoami().member_id == created.member_id
+    assert (
+        TautClient(db_path=db, token=created.token).whoami().member_id
+        == created.member_id
+    )
+
+
+def test_selector_free_claim_resolution_still_captures_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[IAN-3.3]: automatic identity remains the selector-free default."""
+
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    db = tmp_path / ".taut.db"
+    automatic_capture = _anchor_capture(cwd="/workspace/automatic")
+    owner = TautClient(db_path=db, identity_capture=automatic_capture)
+    owner.join("general")
+    created = owner.last_created_member
+    assert created is not None
+    actor = TautClient(db_path=db, identity_capture=automatic_capture)
+    capture_calls = capture_requests(actor, monkeypatch)
+
+    message = actor.say("general", "automatic")
+
+    assert capture_calls == [automatic_capture]
+    assert message.from_id == created.member_id
+
+
+@pytest.mark.parametrize("selector_kind", ["name", "token"])
+def test_rejoin_selector_captures_once_and_associates_process_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    selector_kind: str,
+) -> None:
+    """[IAN-3.4]: rejoin is deliberate caller-chosen process association."""
+
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    db = tmp_path / ".taut.db"
+    owner = TautClient(
+        db_path=db,
+        as_name="reviewer",
+        identity_capture=_anchor_capture(pid=101, start_time="owner-start"),
+    )
+    owner.join("general")
+    created = owner.last_created_member
+    assert created is not None
+    assert created.token is not None
+    rejoin_capture = _anchor_capture(
+        pid=202,
+        start_time="rejoin-start",
+        cwd="/workspace/rejoin",
+    )
+    assert rejoin_capture.anchor is not None
+    rejoin_claim = identity.claim_for_capture(rejoin_capture)
+    claimant = TautClient(db_path=db, identity_capture=rejoin_capture)
+    capture_calls = capture_requests(claimant, monkeypatch)
+
+    if selector_kind == "name":
+        member = claimant.rejoin("reviewer")
+    else:
+        member = claimant.rejoin(token=created.token)
+
+    assert capture_calls == [rejoin_capture]
+    assert member.member_id == created.member_id
+    claim_row = claimant._state.get_identity_claim(rejoin_claim.claim_hash)
+    assert claim_row is not None
+    assert claim_row["member_id"] == created.member_id
+    updated = claimant._state.get_member(created.member_id)
+    assert updated is not None
+    assert updated["anchor_pid"] == rejoin_capture.anchor.pid
+    assert updated["anchor_start_time"] == rejoin_capture.anchor.start_time
+
+
+@pytest.mark.parametrize("selector_kind", ["name", "token"])
+def test_rejoin_claim_collision_captures_once_without_mutating_members(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    selector_kind: str,
+) -> None:
+    """[IAN-3.4]/[IAN-9]: rejoin never steals an owned process claim."""
+
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    db = tmp_path / ".taut.db"
+    target = TautClient(
+        db_path=db,
+        as_name="target",
+        identity_capture=_anchor_capture(pid=101, start_time="target-start"),
+    )
+    target.join("general")
+    target_member = target.last_created_member
+    assert target_member is not None
+    assert target_member.token is not None
+    occupied_capture = _anchor_capture(pid=202, start_time="occupied-start")
+    occupied_claim = identity.claim_for_capture(occupied_capture)
+    occupied = TautClient(
+        db_path=db,
+        as_name="occupied",
+        identity_capture=occupied_capture,
+    )
+    occupied.join("general")
+    occupied_member = occupied.last_created_member
+    assert occupied_member is not None
+    target_before = occupied._state.get_member(target_member.member_id)
+    occupied_before = occupied._state.get_member(occupied_member.member_id)
+    claim_before = occupied._state.get_identity_claim(occupied_claim.claim_hash)
+    assert target_before is not None
+    assert occupied_before is not None
+    assert claim_before is not None
+    claimant = TautClient(db_path=db, identity_capture=occupied_capture)
+    capture_calls = capture_requests(claimant, monkeypatch)
+
+    with pytest.raises(
+        IdentityError,
+        match="current identity claim already belongs to occupied",
+    ):
+        if selector_kind == "name":
+            claimant.rejoin("target")
+        else:
+            claimant.rejoin(token=target_member.token)
+
+    assert capture_calls == [occupied_capture]
+    assert claimant._state.get_member(target_member.member_id) == target_before
+    assert claimant._state.get_member(occupied_member.member_id) == occupied_before
+    assert claimant._state.get_identity_claim(occupied_claim.claim_hash) == claim_before
+
+
+@pytest.mark.parametrize(
+    ("selector_kind", "expected_rule"),
+    [("as", "explicit --as"), ("token", "continuity token")],
+)
+def test_selector_whoami_explain_captures_without_associating_process_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    selector_kind: str,
+    expected_rule: str,
+) -> None:
+    """[IAN-3.2]: explanation observes evidence without persisting it."""
+
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    db = tmp_path / ".taut.db"
+    owner = TautClient(
+        db_path=db,
+        as_name="reviewer",
+        identity_capture=_anchor_capture(pid=101, start_time="owner-start"),
+    )
+    owner.join("general")
+    created = owner.last_created_member
+    assert created is not None
+    assert created.token is not None
+    before = owner._state.get_member(created.member_id)
+    assert before is not None
+    diagnostic_capture = _anchor_capture(
+        pid=202,
+        start_time="diagnostic-start",
+        cwd="/workspace/diagnostic",
+    )
+    diagnostic_claim = identity.claim_for_capture(diagnostic_capture)
+    if selector_kind == "as":
+        observer = TautClient(
+            db_path=db,
+            as_name="reviewer",
+            identity_capture=diagnostic_capture,
+        )
+    else:
+        observer = TautClient(
+            db_path=db,
+            token=created.token,
+            identity_capture=diagnostic_capture,
+        )
+    capture_calls = capture_requests(observer, monkeypatch)
+
+    explained = observer.whoami(explain=True)
+
+    assert capture_calls == [diagnostic_capture]
+    assert explained.member_id == created.member_id
+    assert explained.explain is not None
+    assert explained.explain["rule"] == expected_rule
+    explained_anchor = explained.explain["anchor"]
+    assert isinstance(explained_anchor, dict)
+    assert explained_anchor["pid"] == 202
+    assert observer._state.get_identity_claim(diagnostic_claim.claim_hash) is None
+    after = observer._state.get_member(created.member_id)
+    assert after is not None
+    assert after["anchor_pid"] == before["anchor_pid"]
+    assert after["anchor_start_time"] == before["anchor_start_time"]
+    assert after["fingerprint"] == before["fingerprint"]
+
+
+@pytest.mark.parametrize("selector_kind", ["as", "token"])
+def test_read_only_selector_resolution_skips_capture_and_state_writes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    selector_kind: str,
+) -> None:
+    """[TAUT-8.3]/[IAN-3.3]: read-only selection stays fully read-only."""
+
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    db = tmp_path / ".taut.db"
+    owner = TautClient(db_path=db, as_name="reviewer")
+    owner.join("general")
+    created = owner.last_created_member
+    assert created is not None
+    assert created.token is not None
+    before = owner._state.get_member(created.member_id)
+    assert before is not None
+    token_claim = identity.claim_for_token(created.token)
+    assert owner._state.get_identity_claim(token_claim.claim_hash) is None
+    meta = Queue(META_QUEUE_NAME, db_path=str(db))
+    try:
+        before_high_water = meta.refresh_last_ts()
+        if selector_kind == "as":
+            viewer = TautClient(
+                db_path=db,
+                as_name="reviewer",
+                identity_capture=_anchor_capture(cwd="/workspace/read-only"),
+            )
+        else:
+            viewer = TautClient(
+                db_path=db,
+                token=created.token,
+                identity_capture=_anchor_capture(cwd="/workspace/read-only"),
+            )
+        capture_calls = capture_requests(viewer, monkeypatch)
+
+        names = viewer.joined_thread_names()
+        after_high_water = meta.refresh_last_ts()
+    finally:
+        meta.close()
+
+    assert names == ("general",)
+    assert capture_calls == []
+    assert viewer._state.get_member(created.member_id) == before
+    assert after_high_water == before_high_water
+    assert viewer._state.get_identity_claim(token_claim.claim_hash) is None
 
 
 def test_first_contact_join_retries_next_name_after_losing_race(
@@ -1797,6 +2681,132 @@ def test_explicit_name_collision_keeps_failing_loudly(
         loser.join("general")
 
     assert [member.name for member in winner.who()] == ["dup"]
+
+
+def test_explicit_name_collision_never_adopts_current_claim_owner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[IAN-3.3]: a name race cannot override explicit selector authority."""
+
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    db = tmp_path / ".taut.db"
+    owner_capture = _anchor_capture(pid=301, start_time="owner-start")
+    owner = TautClient(db_path=db, as_name="owner", identity_capture=owner_capture)
+    owner.join("general")
+    owner_member = owner.whoami()
+    winner = TautClient(
+        db_path=db,
+        as_name="newcomer",
+        identity_capture=_anchor_capture(pid=302, start_time="winner-start"),
+    )
+    loser = TautClient(
+        db_path=db,
+        as_name="newcomer",
+        identity_capture=owner_capture,
+    )
+
+    original_insert = SqlSidecarTautState.insert_member
+    fired = {"done": False}
+
+    def racing_insert(self: SqlSidecarTautState, **kwargs: object) -> object:
+        if (
+            self is loser._state
+            and kwargs.get("display_name") == "newcomer"
+            and not fired["done"]
+        ):
+            fired["done"] = True
+            winner.join("general")
+        return original_insert(self, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(SqlSidecarTautState, "insert_member", racing_insert)
+
+    with pytest.raises(IdentityError):
+        loser.join("general")
+
+    assert loser.last_created_member is None
+    assert owner.whoami().member_id == owner_member.member_id
+    assert winner.whoami().name == "newcomer"
+
+
+def test_explicit_creation_claim_race_keeps_new_member_authoritative(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[IAN-3.3]: a claim race cannot replace a newly inserted explicit member."""
+
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    db = tmp_path / ".taut.db"
+    owner = TautClient(
+        db_path=db,
+        as_name="owner",
+        identity_capture=_anchor_capture(pid=401, start_time="owner-start"),
+    )
+    owner.join("owners")
+    owner_member = owner.whoami()
+    selected_capture = _anchor_capture(pid=402, start_time="selected-start")
+    selected_claim = identity.claim_for_capture(selected_capture)
+    creator = TautClient(
+        db_path=db,
+        as_name="newcomer",
+        identity_capture=selected_capture,
+    )
+
+    original_add = SqlSidecarTautState.add_identity_claim
+    fired = {"done": False}
+
+    def racing_add(self: SqlSidecarTautState, **kwargs: object) -> object:
+        if (
+            self is creator._state
+            and kwargs.get("claim_hash") == selected_claim.claim_hash
+            and kwargs.get("member_id") != owner_member.member_id
+            and not fired["done"]
+        ):
+            fired["done"] = True
+            owner_kwargs = dict(kwargs)
+            owner_kwargs["member_id"] = owner_member.member_id
+            original_add(self, **owner_kwargs)  # type: ignore[arg-type]
+        return original_add(self, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(SqlSidecarTautState, "add_identity_claim", racing_add)
+
+    creator.join("general")
+
+    created = creator.last_created_member
+    assert created is not None
+    assert created.name == "newcomer"
+    assert creator.joined_thread_names() == ("general",)
+    assert owner.joined_thread_names() == ("owners",)
+    claim_row = creator._state.get_identity_claim(selected_claim.claim_hash)
+    assert claim_row is not None
+    assert claim_row["member_id"] == owner_member.member_id
+
+
+def test_explicit_creation_unowned_claim_integrity_failure_remains_fatal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[IAN-3.3]: recovery requires proof that another member owns the claim."""
+
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    db = tmp_path / ".taut.db"
+    selected_capture = _anchor_capture(pid=403, start_time="selected-start")
+    selected_claim = identity.claim_for_capture(selected_capture)
+    creator = TautClient(
+        db_path=db,
+        as_name="newcomer",
+        identity_capture=selected_capture,
+    )
+
+    def failing_add(self: SqlSidecarTautState, **kwargs: object) -> object:
+        raise IntegrityError("injected claim integrity failure")
+
+    monkeypatch.setattr(SqlSidecarTautState, "add_identity_claim", failing_add)
+
+    with pytest.raises(IntegrityError, match="injected claim integrity failure"):
+        creator.join("general")
+
+    assert creator._state.get_identity_claim(selected_claim.claim_hash) is None
 
 
 def test_dm_mention_of_non_participant_creates_no_notification(tmp_path: Path) -> None:

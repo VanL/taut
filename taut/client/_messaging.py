@@ -12,11 +12,13 @@ from taut import addressing
 from taut._constants import MESSAGE_ID_RE
 from taut._exceptions import (
     AmbiguousMessageError,
+    BlankMessageError,
     EmptyResultError,
     MembershipError,
     NotFoundError,
     ThreadNameError,
 )
+from taut._message_text import is_blank_message_text
 from taut.envelope import encode_envelope
 from taut.state import MemberRow, MembershipRow
 
@@ -27,6 +29,8 @@ from ._models import Message
 
 class MessagingMixin(_ClientBase):
     def say(self, target: str, text: str) -> Message:
+        if is_blank_message_text(text):
+            raise BlankMessageError("blank message")
         address = addressing.parse_target(target, allow_dm=True)
         self._ensure_no_incomplete_channel_rename()
         if address.kind == "dm":
@@ -46,6 +50,8 @@ class MessagingMixin(_ClientBase):
         return self._say_chat_thread(address.thread, member, text)
 
     def reply(self, thread: str, msg_id: str, text: str) -> Message:
+        if is_blank_message_text(text):
+            raise BlankMessageError("blank message")
         thread = addressing.validate_chat_thread_name(thread, allow_subthread=False)
         self._ensure_no_incomplete_channel_rename()
         if self._state.get_thread(thread) is None:

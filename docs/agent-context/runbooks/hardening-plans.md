@@ -37,6 +37,14 @@ Treat hardening as mandatory when any of these are true:
 - new persistence, temp-file, or cleanup lifecycle is introduced
 - the change includes a one-way door or destructive edge
 
+The sole trigger override is [DOM-15]'s narrow routine-release exception.
+Executing unchanged `bin/release.py` at the user's request, with all
+[TAUT-12.5]-required normal gates enabled, is Class 2 and needs no dated or
+hardened release plan. The exception does not cover the product work being
+released, release preparation outside the helper, machinery changes, disabled
+gates, override flags, manual publication, or recovery outside the helper's
+built-in resumable path.
+
 ## Core Failure Mode
 
 The most common planning failure is describing what to build without describing

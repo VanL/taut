@@ -13,6 +13,7 @@ from taut._constants import __version__
 from taut._exceptions import (
     AmbiguousMessageError,
     BackendNotSupportedError,
+    BlankMessageError,
     EmptyResultError,
     IdentityError,
     MembershipError,
@@ -42,6 +43,7 @@ _LAZY_EXPORTS = {
 __all__ = [
     "AmbiguousMessageError",
     "BackendNotSupportedError",
+    "BlankMessageError",
     "EmptyResultError",
     "IdentityError",
     "Member",

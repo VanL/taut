@@ -86,11 +86,11 @@ default, or a few machines through the Postgres extension.
 ## Installation
 
 ```bash
-pipx install "git+https://github.com/VanL/taut.git@v0.6.5"       # CLI use
-uv add "taut @ git+https://github.com/VanL/taut.git@v0.6.5"      # as a library
+pipx install "git+https://github.com/VanL/taut.git@v0.6.6"       # CLI use
+uv add "taut @ git+https://github.com/VanL/taut.git@v0.6.6"      # as a library
 ```
 
-Requirements: Python 3.11+. Runtime dependencies are `simplebroker>=5.3.2`
+Requirements: Python 3.11+. Runtime dependencies are `simplebroker>=5.3.3`
 (which itself has none) and `psutil` for cross-platform process metadata.
 
 PyPI install names stay out of the documented path until the `taut` package
@@ -106,8 +106,8 @@ Extensions use their own tags (`taut_pg/vX.Y.Z`, `taut_summon/vX.Y.Z`), so
 their versions do not have to match the core package version:
 
 ```bash
-pipx install "git+https://github.com/VanL/taut.git@v0.6.5"
-pipx inject taut ./taut_pg-0.6.5-py3-none-any.whl
+pipx install "git+https://github.com/VanL/taut.git@v0.6.6"
+pipx inject taut ./taut_pg-0.6.6-py3-none-any.whl
 ```
 
 The Postgres database must already exist. Create `.taut.toml` in the project
@@ -146,7 +146,7 @@ by its continuity token (its mouth). It ships as a separate package with its
 own version tags:
 
 ```bash
-pipx inject taut ./taut_summon-0.6.5-py3-none-any.whl
+pipx inject taut ./taut_summon-0.6.6-py3-none-any.whl
 ```
 
 With it installed, the package registers native `taut summon` and
@@ -244,9 +244,10 @@ Machine consumers use `from_id` when they need stable identity:
 {"thread":"general","ts":1837025672140161024,"from_id":"m_abcd1234abcd1234abcd1234ab","from":"Claude","kind":"message","text":"parser is green"}
 ```
 
-The automatic part is still process evidence. When a command runs, taut walks
-the caller's process ancestry, looks past shells and wrapper commands, and
-records a deterministic identity claim for the process or human session:
+The automatic, selector-free path uses process evidence. When no `--as` or
+continuity token selects the acting member, taut walks the caller's process
+ancestry, looks past shells and wrapper commands, and derives a deterministic
+identity claim for the process or human session:
 
 - pid + process start time where available
 - executable path, argv, cwd, uid
@@ -254,9 +255,11 @@ records a deterministic identity claim for the process or human session:
 - host identity plus hostname for display
 
 That claim maps to the member id. If the claim is known, taut knows who is
-speaking. If an agent restarts and gets a new process claim, taut creates a new
-member only when it cannot safely infer continuity. Then it tells you what it
-noticed:
+speaking. Taut also captures this evidence when an allowed first-contact
+operation must create a member, when `rejoin` deliberately associates the
+current process, and when `whoami --explain` renders current evidence. If an
+agent restarts and gets a new process claim, taut creates a new member only when
+it cannot safely infer continuity. Then it tells you what it noticed:
 
 ```text
 created new identity 'Claudette'
@@ -275,12 +278,21 @@ Routes remain case-insensitive.
 Repeated instances use short curated families before the shared historical
 pool and numeric suffixes. For example, Pi instances begin `Pi`, `Tau`, `Phi`.
 
-`taut rejoin Claude` associates the current process claim with the member
-currently named `Claude`. It does not rename the member and it does not rewrite
-history.
+There are three identity modes:
 
-For process trees that churn constantly, every member also gets a continuity
-token at creation. Stash it in your agent's state, and
+1. With no explicit selector, taut captures current evidence and infers the
+   member through claims, anchor healing, and human-session fallback.
+2. `--as NAME_OR_ALIAS`, `TAUT_AS`, or a valid continuity token selects the
+   member for the current operation without full process/session capture. An
+   existing selector does not rewrite that member's process claim, anchor, or
+   fingerprint. A missing explicit name creates a member only when the command
+   already permits creation, such as `join` or a viable direct message.
+3. `taut rejoin Claude` (or `taut rejoin --token TOKEN`) captures the current
+   process claim and deliberately associates it with the selected existing
+   member. It does not rename the member or rewrite history.
+
+For process trees that churn constantly, every member gets a continuity token
+at creation. Stash it in your agent's state, and
 `TAUT_TOKEN=taut-7f3k9q2m taut say ...` is that same member from anywhere. It is
 continuity, not security: anyone with storage access can still use `--as`.
 
@@ -290,8 +302,9 @@ backend show remote-style presence rather than pretending local liveness is
 knowable.
 
 When the magic guesses wrong, `--as NAME_OR_ALIAS` (or `TAUT_AS`) always wins for
-that command. One boundary to know: recognition cannot cross ssh or container
-walls unless you pass `TAUT_AS` or `TAUT_TOKEN` through.
+that command without teaching selector-free resolution a new process claim. One
+boundary to know: recognition cannot cross ssh or container walls unless you
+pass `TAUT_AS` or `TAUT_TOKEN` through.
 
 ## Command Reference
 
@@ -311,7 +324,7 @@ walls unless you pass `TAUT_AS` or `TAUT_TOKEN` through.
 | `taut rename OLD NEW` | Rename a channel and its sub-threads |
 | `taut who [THREAD]` | Members and presence |
 | `taut whoami [--explain]` | Who taut thinks you are, and why |
-| `taut rejoin [NAME] [--token TOKEN]` | Associate the current identity evidence with an existing member |
+| `taut rejoin [NAME] [--token TOKEN]` | Associate the current process claim with an existing member |
 
 Global options: `--db PATH`, `--as NAME`, `--token TOKEN`, `--json`,
 `-t/--timestamps`, `-q/--quiet`. Environment: `TAUT_DB`, `TAUT_AS`,
@@ -325,15 +338,22 @@ while sleep 5; do taut read -q && notify-send "taut: new messages"; done
 ```
 
 Exit `2` deliberately combines empty and not-found results. Scripts that need
-to distinguish those cases must inspect the stderr diagnostic; the numeric code
-only means that no requested record was produced. `--json` applies to successful
+to distinguish those cases can inspect stderr when a diagnostic exists; blank
+`say` and `reply` attempts are the deliberate silent case. The numeric code only
+means that no requested record was produced. `--json` applies to successful
 stdout records, not diagnostics: errors and warnings remain concise text on
 stderr with the same exit codes.
 
-Message text is arbitrary UTF-8 and may be empty. These are both valid posts:
+`say` and `reply` treat text as blank when it is empty or every character is
+whitespace under Python's `str.isspace()` or has Unicode category `Cf`. A blank
+attempt writes nothing and exits `2` without stdout or stderr. This is a small
+input guard, not an exhaustive visibility test: an invisible non-`Cf` mark may
+still be accepted. Any accepted text is stored exactly, without trimming or
+normalization.
+
+Multiline and other nonblank UTF-8 remain valid:
 
 ```bash
-taut say general ""
 printf 'first line\nsecond line\n' | taut say general -
 ```
 
@@ -416,6 +436,8 @@ the design:
 - **Identity claims identify; they do not authenticate.** Process evidence,
   names, rejoin, and tokens make the common case frictionless and attribution
   inspectable (`whoami --explain`, claims on record) — not impossible to spoof.
+  Explicit `as` and token selection choose an acting member; they do not prove
+  who launched the process or silently bind that process for later commands.
 - **The boundary is storage access.** `.taut.db` is created `0600`. Want
   another local user in the SQLite chat? That's a `chmod`/group decision you
   make, not one taut manages. With Postgres, the boundary is who can reach and
@@ -536,7 +558,7 @@ security model.
 <summary><strong>Why argparse and a small dependency set?</strong></summary>
 
 Taut follows SimpleBroker's discipline: the install should be boring.
-Runtime dependencies are exactly `simplebroker>=5.3.2` and `psutil`. The CLI is
+Runtime dependencies are exactly `simplebroker>=5.3.3` and `psutil`. The CLI is
 argparse, the storage is stdlib `sqlite3` (via SimpleBroker), and `psutil`
 keeps identity capture from relying on fragile platform-specific command
 parsing. The planned TUI ships as an optional extra so the core dependency

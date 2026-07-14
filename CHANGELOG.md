@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.6.6 - 2026-07-14
+
+- Filtered empty, built-in Unicode whitespace, and Unicode `Cf`-only `say` and
+  `reply` input before routing or state work. The Python API raises public
+  `BlankMessageError`; the CLI exits 2 without output; accepted text remains
+  exact and existing stored blank or foreign messages remain readable.
+- Made Summon terminal mode silently continue after that typed blank result
+  while retaining error logs for every other core posting failure.
+- Made existing explicit name/alias and continuity-token selectors bypass full
+  process capture for ordinary operations without changing durable process
+  claim ownership. Selector-free inference remains automatic, token activity
+  still refreshes, and `rejoin` remains the explicit association operation.
+- Raised the SimpleBroker floors to 5.3.3 for core and 3.2.2 for Taut-PG,
+  picking up safe runner cleanup and initialized timestamp-conflict metrics.
+- Raised the paired core, Taut-PG, and Summon metadata to 0.6.6 so first-party
+  extensions cannot resolve against a core missing the new public exception.
+
 ## 0.6.5 - 2026-07-14
 
 - Made Windows `taut init` reject control-bearing SQLite targets before broker

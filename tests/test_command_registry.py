@@ -2513,7 +2513,6 @@ def test_registry_say_posts_json_through_real_client(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("text_args", "stdin_text", "expected"),
     [
-        (("",), "unused", ""),
         (("snowman ☃\nsecond line",), "unused", "snowman ☃\nsecond line"),
         (("-",), "from stdin\n", "from stdin\n"),
         ((), "piped body", "piped body"),
@@ -2552,6 +2551,38 @@ def test_registry_say_text_sources_preserve_exact_text(
     client = TautClient(db_path=str(db_path), as_name="van")
     try:
         assert client.log("general")[-1].text == expected
+    finally:
+        client.close()
+
+
+def test_registry_say_blank_text_is_a_silent_empty_result(tmp_path: Path) -> None:
+    """[TAUT-6.5, TAUT-8.1] Registry dispatch preserves the blank no-op."""
+
+    from taut.client import TautClient
+    from taut.commands._dispatch import dispatch
+    from taut.commands._registry import CommandRegistry
+
+    db_path = tmp_path / "chat.db"
+    _seed_channel(db_path, "van")
+    stdout = StringIO()
+    stderr = StringIO()
+
+    result = dispatch(
+        ["--db", str(db_path), "--as", "van", "say", "general", ""],
+        registry=CommandRegistry(entry_points=()),
+        stdin=StringIO("unused"),
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+    assert result == 2
+    assert stdout.getvalue() == ""
+    assert stderr.getvalue() == ""
+    client = TautClient(db_path=str(db_path), as_name="van")
+    try:
+        assert not [
+            message for message in client.log("general") if message.kind == "message"
+        ]
     finally:
         client.close()
 

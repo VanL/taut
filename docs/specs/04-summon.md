@@ -345,7 +345,10 @@ own-send history, so [SUM-10] audits separately.) Consequences, all required:
   `supports_terminal_mode`; the driver checks it before enabling terminal
   mode and warns + disables when false. To *watch* a PTY-hosted agent, a
   human attaches ([SUM-7.4]) rather than having assistant text mirrored to
-  chat.
+  chat. A terminal-mode assistant event rejected by core with
+  `BlankMessageError` is a silent no-op: Summon writes no chat row, logs no
+  terminal-mode post failure, and continues the same generation. Every other
+  posting failure retains the existing error and supervision behavior.
 - The persona template ([SUM-10]) makes the mouth contract explicit to
   the agent, including "never answer in a thread other than the one you
   mean" and "if you cannot run taut, say nothing rather than print to
@@ -831,11 +834,13 @@ durable conversation; the harness session is an optimization of it.
   — a stuck harness can always be stopped.
   The control reactor follows SimpleBroker 5.2.0's reference
   persistent-session and thread-local-core ownership model, with
-  SimpleBroker 5.3.2 or newer required for the supported reactor lane. Version
+  SimpleBroker 5.3.3 or newer required for the supported reactor lane. Version
   5.2.2 first proved persistent process visibility; 5.3.2 makes cancellation
   interrupt watcher bootstrap while PhaseLock or SQLite connection setup is
-  blocked. Operation release ends only the active lease; the owner thread
-  retains its core until explicit cleanup or close.
+  blocked; and 5.3.3 removes unsafe path-name-based runner cleanup and
+  initializes timestamp-conflict metrics before concurrent first writes.
+  Operation release ends only the active lease; the owner thread retains its
+  core until explicit cleanup or close.
   Summon must not recreate that release policy in extension-specific retry or
   cleanup code, and it must not run on SimpleBroker 5.1.x.
 
@@ -1053,6 +1058,10 @@ existing release-before-ack ordering.
   gates, or it belongs in the live lanes below.
 - Driver tests run real multi-process flows (a second CLI process
   writing to the watched thread), matching [TAUT-11] discipline.
+- A real scripted-provider process emits a blank assistant event followed by
+  visible text in terminal mode. Against a real broker and driver, the blank
+  event creates no message or error log, the visible event posts exactly, and
+  STOP remains responsive.
 - Schema tests build version-2 claim rows directly and prove both successful
   mixed-case normalization and fail-before-mutation handling for colliding case
   variants.
@@ -1218,6 +1227,8 @@ public operation errors to exit 1.
 
 ## Related Plans
 
+- `docs/plans/2026-07-14-blank-message-no-op-plan.md` — silent terminal-mode
+  handling for core-filtered blank assistant events.
 - `docs/plans/2026-07-14-terminal-output-safety-plan.md` — shared terminal-text
   safety defaults for Summon command/diagnostic output, coordinated core floor,
   and an explicit byte-transparent PTY exemption.

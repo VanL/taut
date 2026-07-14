@@ -18,7 +18,8 @@ class ReplyCommand:
     def configure_parser(self, parser: CommandArgumentParser) -> None:
         parser.description = (
             "Reply to MSG_ID in THREAD. MSG_ID is a full 19-digit id or a unique "
-            "suffix of at least 4 digits from the most recent 1,000 messages."
+            "suffix of at least 4 digits from the most recent 1,000 messages. Blank "
+            "text is ignored with silent exit 2."
         )
         parser.add_argument(
             "thread", metavar="THREAD", help="Parent thread containing MSG_ID."

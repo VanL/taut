@@ -19,7 +19,12 @@ from hypothesis.stateful import (
     run_state_machine_as_test,
 )
 
-from taut._exceptions import EmptyResultError, MembershipError, NotFoundError
+from taut._exceptions import (
+    BlankMessageError,
+    EmptyResultError,
+    MembershipError,
+    NotFoundError,
+)
 from taut.client import Message, TautClient
 
 pytestmark = pytest.mark.sqlite_only
@@ -144,6 +149,10 @@ class ClientMembershipCursorMachine(RuleBasedStateMachine):
 
     @rule(actor=ACTOR, text=TEXT)
     def post(self, actor: Actor, text: str) -> None:
+        if not text or text.isspace():
+            with pytest.raises(BlankMessageError, match="^blank message$"):
+                self.clients[actor].say("general", text)
+            return
         if actor == "bob" and not self.joined["bob"]:
             if self.known["bob"]:
                 with pytest.raises(

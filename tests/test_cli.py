@@ -130,6 +130,29 @@ def test_cli_json_join_say_log(tmp_path: Path) -> None:
     ]
 
 
+def test_cli_as_creation_is_command_gated(tmp_path: Path) -> None:
+    """[TAUT-5]/[IAN-3.3]: join may create; channel say may not."""
+
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    rc, out, err = run_cli("--as", "alice", "join", "general", "--json", cwd=tmp_path)
+    assert rc == 0, err
+    alice = json.loads(out.splitlines()[0])
+
+    rc, out, err = run_cli(
+        "--as", "bob", "say", "general", "must not create", cwd=tmp_path
+    )
+
+    assert rc == 2
+    assert out == ""
+    assert "member not found: bob" in err
+    rc, out, err = run_cli("who", "--json", cwd=tmp_path)
+    assert rc == 0, err
+    members = [json.loads(line) for line in out.splitlines()]
+    assert [(member["member_id"], member["name"]) for member in members] == [
+        (alice["member_id"], "alice")
+    ]
+
+
 def test_cli_human_log_groups_messages_by_thread(tmp_path: Path) -> None:
     assert run_cli("init", cwd=tmp_path)[0] == 0
     assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
@@ -963,15 +986,19 @@ def test_every_cli_parser_action_has_useful_help() -> None:
         ),
         (
             ("say", "--help"),
-            ("stdin", "TEXT", "-"),
+            ("stdin", "TEXT", "-", "Blank", "silent exit 2"),
         ),
         (
             ("reply", "--help"),
-            ("19-digit", "suffix", "at least 4", "stdin"),
+            ("19-digit", "suffix", "at least 4", "stdin", "Blank", "silent exit 2"),
         ),
         (
             ("log", "--help"),
             ("ISO 8601", "unix", "19-digit", "most recent"),
+        ),
+        (
+            ("rejoin", "--help"),
+            ("current process claim", "existing member", "not authentication"),
         ),
     ],
 )
@@ -2013,6 +2040,92 @@ def test_cli_say_without_text_posts_piped_stdin(tmp_path: Path) -> None:
 
     assert rc == 0, err
     assert "piped body" in _log_texts(tmp_path, "general")
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "say-empty-human",
+        "say-unicode-json",
+        "say-unicode-quiet",
+        "say-dash-stdin",
+        "say-omitted-pipe",
+        "reply-missing-parent",
+    ],
+)
+def test_cli_blank_writes_are_silent_exit_2_without_state(
+    tmp_path: Path,
+    case: str,
+) -> None:
+    """[TAUT-6.5, TAUT-8.1] All input paths share one silent no-op."""
+
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    root_ts = _say_ts(tmp_path, "van", "general", "root")
+    before = list(_log_texts(tmp_path, "general"))
+    stdin: str | None = None
+    args: tuple[str, ...]
+    if case == "say-empty-human":
+        args = ("--as", "van", "say", "general", "")
+    elif case == "say-unicode-json":
+        args = ("--as", "van", "--json", "say", "general", "\u00a0\u200b")
+    elif case == "say-unicode-quiet":
+        args = ("--as", "van", "--quiet", "say", "general", "\u2060")
+    elif case == "say-dash-stdin":
+        args = ("--as", "van", "say", "general", "-")
+        stdin = " \t\u200d\n"
+    elif case == "say-omitted-pipe":
+        args = ("--as", "van", "say", "general")
+        stdin = "\ufeff"
+    else:
+        args = ("--as", "van", "reply", "general", "missing-parent", "\u200b")
+
+    rc, out, err = run_cli(*args, cwd=tmp_path, stdin=stdin)
+
+    assert rc == 2
+    assert out == ""
+    assert err == ""
+    assert _log_texts(tmp_path, "general") == before
+    rc, out, err = run_cli("list", "--all", "--json", cwd=tmp_path)
+    assert rc == 0, err
+    assert f"general.{root_ts}" not in {
+        json.loads(line)["thread"] for line in out.splitlines()
+    }
+
+
+def test_cli_terminal_policy_preflight_wins_over_blank_human_input(
+    tmp_path: Path,
+) -> None:
+    """[TAUT-6.5, TAUT-8.1] Human safety preflight keeps prior priority."""
+
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    _write_terminal_project_config(tmp_path, escape_patterns=("[",))
+
+    db = tmp_path / ".taut.db"
+    rc, out, err = run_cli(
+        "--db", db, "--as", "van", "say", "general", "", cwd=tmp_path
+    )
+
+    assert rc == 1
+    assert out == ""
+    assert err == "terminal output policy is unavailable"
+
+    rc, out, err = run_cli(
+        "--db",
+        db,
+        "--as",
+        "van",
+        "--json",
+        "say",
+        "general",
+        "",
+        cwd=tmp_path,
+    )
+
+    assert rc == 2
+    assert out == ""
+    assert err == ""
 
 
 # --- summon/dismiss delegation verbs ([TAUT-8.1] D4, spec 04 [SUM-3]) ------

@@ -685,6 +685,27 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   platform forbids the supplied storage target, reject it before dependency
   setup and retain a platform-specific CLI firing test for that failure path.
 
+- 2026-07-14: A lazily loaded command has two help owners: its lightweight
+  manifest summary for root help and its command adapter description for
+  subcommand help. When contract wording changes, update and fire tests for
+  both owners; importing the adapter into root help would defeat the lazy-load
+  boundary rather than solve the drift.
+
+- 2026-07-14: Classify use of a hardened workflow separately from changes to
+  that workflow. An explicitly requested release through unchanged normal
+  machinery can stay small because the machinery owns gates, fences, evidence,
+  and resumable retries. Product work, disabled gates, override flags, manual
+  publication, machinery changes, and ad hoc recovery retain their normal
+  higher classifications.
+
+- 2026-07-14: Race recovery must preserve selector precedence. A shared
+  creation helper cannot blindly return the owner of a colliding inferred
+  claim when the caller explicitly selected a different name. Cross the
+  selector role with both the insert-collision and post-insert claim-collision
+  windows in deterministic real-state tests, and recover only after an
+  authoritative owner lookup proves the race. An integrity error alone is not
+  that proof.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

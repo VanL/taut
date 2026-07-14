@@ -121,6 +121,14 @@ For this operating model, treat a change as risky when any of these are true:
 - it introduces a one-way door, destructive edge, new persistence, temp-file,
   cleanup, or deferred-input lifecycle
 
+The narrow routine-release exception in [DOM-15] overrides the non-trivial
+and risky trigger lists above only for execution of the established release
+path itself. The exception does not transfer to product changes, preparation
+outside `bin/release.py`, release-machinery changes, disabled gates, override
+flags, manual publication, or ad hoc recovery that cannot be completed by
+reinvoking the unchanged release path. Classify those as separate work against
+the normal triggers.
+
 Risky plans are not review-ready until they also make explicit:
 
 - hidden couplings and boundary-crossing state
@@ -370,6 +378,24 @@ change requires — not by what the author chooses to produce:
 | 5 — Spec-changing | **[DOM-6] requires a spec change** (whether or not one has been drafted), or any normative spec text is edited — including clarification-only edits, which use promotion strategy D per `writing-plans.md` §4c | Class 3 plus spec baseline, exact proposed delta, named promotion strategy; the hardening-plans checklist **only if a [DOM-5] risky trigger also fires** — otherwise declare `hardening: N/A — no risky trigger` | Class 3 reviews plus independent review of the delta before the spec-promotion slice; review-before-implementation when hardening applies |
 | +P — Process-changing (modifier, not a class) | The change is [DOM-6]-material to how future work is **planned, implemented, reviewed, or verified** — regardless of which surface hosts it. A non-material edit to a skill or runbook (a typo, a link fix) is not +P; a material process change hiding in an "implementation" doc is | Declared as `Class N+P`; effective requirements are `max(N, 5)`'s | Effective class's review plus pre-landing review, different agent family preferred |
 
+Routine release execution is the sole Class 2 exception to Class 2's
+reversibility and no-[DOM-5]-trigger requirements. It applies only when the
+user explicitly requests a release and the agent invokes the documented
+`bin/release.py` path for the requested target without changing the release
+machinery or disabling any normal gate required by [TAUT-12.5]. The
+abbreviated Class 2 preflight records the requested target and version, release
+invariants, and the exact normal verification command; no dated release plan
+is created.
+Publication is observable and irreversible, so this is never Class 1.
+Product changes and preparation outside `bin/release.py` are separate units
+of work and do not inherit the exception. `--skip-checks`, `--retag`, tag
+movement, manual tag or artifact publication, and any recovery that departs
+from the unchanged `bin/release.py` path are outside the exception and are
+classified against [DOM-5]/[DOM-6] normally. Reinvoking the same normal command
+after a failed or partially completed release remains inside the exception when
+[TAUT-12.5]'s built-in resumable path is sufficient; classify any separate
+corrective change before that rerun.
+
 Rules:
 
 - the review and verification floors accumulate; planning artifacts
@@ -413,7 +439,8 @@ Classification fixtures. This table is [DOM-15]'s enumerable contract
 repository adopting this section ships a structural checker that fails
 when a fixture names an unknown class, a class or the `+P` modifier
 has no fixture, a class-1/2 fixture omits its negative-trigger facts,
-or the cumulative-requirements rule is absent (this repository:
+the routine-release exception fixture is absent, or the
+cumulative-requirements rule is absent (this repository:
 `bin/check-dom15-fixtures`, exit nonzero on violation). Semantic
 classification of real tasks remains judgment, verified by the
 declared-claim line and by review; repositories with test harnesses
@@ -433,6 +460,7 @@ checker enforces presence, review enforces meaning.
 | Same fix, but no spec, no stated user requirement, no contract test — intent evidence absent | 3 |
 | Fix spanning a producer and a consumer — given: the two sides are distinct major surfaces, so a [DOM-5] non-trivial trigger fires | 3 |
 | Same shape, but both sides live inside one module — reversible, spec-cited intent, and no other [DOM-5] trigger fires | 2 |
+| Explicit user request is intent evidence for a routine release through unchanged `bin/release.py`; every [TAUT-12.5]-required normal gate remains enabled; the [DOM-15] routine-release exception overrides reversibility and [DOM-5] triggers for release execution only; no bypass, retag, manual publication, or recovery outside that unchanged path is involved; built-in resumable reinvocation under [TAUT-12.5] remains the same routine release | 2 |
 | Implement an already-specified CLI flag — CLI shape changes ([DOM-5] risky) | 4 |
 | Introduce background or deferred processing whose intended behavior an existing spec already governs — a [DOM-5] risky trigger fires; no [DOM-6] spec change is required | 4 |
 | Clarify normative spec wording, behavior unchanged — normative spec text edited; no risky trigger, so `hardening: N/A` | 5 (strategy D) |
@@ -460,3 +488,6 @@ The original documentation-system bootstrap predates the retained plan
 archive; plans in `docs/plans/` cite this spec's [DOM-*] codes when they
 touch the operating model.
 - `docs/plans/2026-07-14-agent-guidance-propagation-plan.md`
+- `docs/plans/2026-07-14-routine-release-classification-plan.md`: added the
+  narrow Class 2 exception for explicitly requested execution of unchanged
+  normal release machinery.

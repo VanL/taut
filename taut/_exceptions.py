@@ -39,6 +39,10 @@ class EmptyResultError(TautError):
     """Raised when a command succeeded but matched no messages or rows."""
 
 
+class BlankMessageError(EmptyResultError):
+    """Raised when a proposed user message contains only blank characters."""
+
+
 class NotFoundError(EmptyResultError):
     """Raised when a requested thread, member, or message does not exist."""
 

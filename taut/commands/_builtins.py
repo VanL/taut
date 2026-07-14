@@ -44,7 +44,7 @@ BUILTIN_SPECS = (
     _spec("whoami", "Show the identity Taut resolved for this caller."),
     _spec(
         "rejoin",
-        "Associate current identity evidence with an existing member.",
+        "Associate the current process claim with an existing member.",
         globals_=_REJOIN_GLOBALS,
     ),
 )

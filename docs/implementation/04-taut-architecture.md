@@ -37,6 +37,16 @@ message writes, notification writes, and read cursor semantics. The CLI only
 parses arguments and renders results. This keeps one operational path for every
 verb and prevents CLI behavior from drifting away from the Python API.
 
+User-authored message filtering has one core owner:
+`taut/_message_text.py`. `MessagingMixin.say()` and `reply()` call its
+built-in Unicode whitespace-or-`Cf` predicate as their literal first
+operation. A blank result raises public `BlankMessageError` before target,
+identity, thread, membership, notification, or cursor work. The dispatcher
+alone maps that exact subtype to silent exit 2. It does not silence other
+`EmptyResultError` values. The check is absent from `_write_message`, decoding,
+and read paths so structural notices, foreign bodies, and stored history keep
+their prior meaning. Accepted strings are passed to the envelope unchanged.
+
 `TautClient.init()` also owns the narrow Windows SQLite filename preflight.
 Windows rejects U+0000 through U+001F in path components, while passing such a
 target into broker setup can otherwise wait in lock coordination before the
@@ -44,12 +54,13 @@ filesystem error surfaces. Core rejects those paths before constructing
 `Queue`; it does not broaden this into a portable filename policy, so POSIX
 acceptance and non-SQLite targets remain unchanged.
 
-The load-bearing supported SimpleBroker floor is 5.3.2. It includes
+The load-bearing supported SimpleBroker floor is 5.3.3. It includes
 interruptible watcher bootstrap while PhaseLock or SQLite connection setup is
-blocked. The other core runtime dependency is `psutil`. SimpleBroker owns the
-storage and queue substrate; `psutil` is scoped to cross-platform process
-metadata for identity capture so taut does not rely on fragile platform-
-specific argv parsing for the core recognition path.
+blocked, corrected runner cleanup, and initialized timestamp-conflict metrics
+before concurrent first writes. The other core runtime dependency is `psutil`.
+SimpleBroker owns the storage and queue substrate; `psutil` is scoped to
+cross-platform process metadata for identity capture so taut does not rely on
+fragile platform-specific argv parsing for the core recognition path.
 `taut-pg` is a separate project under `extensions/taut_pg`; it installs
 `simplebroker-pg` beside Taut but does not add a root runtime dependency.
 The private `taut._broker_retry` module remains only as an import-compatible,
@@ -243,27 +254,47 @@ queue and is skipped silently — the same posture as the fresh path's
 `queue_exists(old)` guard — while both names present means a foreign queue
 occupies the target and aborts loudly before any mutation.
 
-Identity resolution orders its evidence from explicit to inferred: explicit
-selection (`--as`), continuity token, claim-hash match, agent anchor match,
-then human host/uid fallback ([IAN-3.3]). The anchor-match step exists
-because the claim hash deliberately includes mutable process facts (working
-directory, tty, process group): a live agent that calls `chdir()`
-invalidates its own hash without restarting. The stable
-(`host_id`, `anchor_pid`, `anchor_start_time`) triple recovers that
-continuity — but only below claim-hash precedence, never under `join --new`,
-and never across hosts. An anchor match immediately records the current
-claim hash for the member ("healing"), which keeps the fallback
-self-limiting: the very next command resolves at the cheaper claim-hash
-step, and a healing race against a concurrent process is settled in favor
-of the claim-hash owner because step-3 semantics outrank the fallback.
+Identity resolution separates deterministic acting-member selection from local
+evidence inference and durable process-claim association ([IAN-3.3]). An
+existing explicit name or alias selects first without full process/session
+capture. A missing explicit route captures only after the command reaches an
+allowed creation path. A valid continuity token selects second, when no
+explicit `as` exists, and retains its token-claim/activity writes without
+associating the current process. Invalid deterministic selectors terminate;
+they never fall through to inferred evidence.
+
+Only selector-free resolution captures before claim-hash match, agent anchor
+match, and human host/uid fallback. The anchor-match step exists because the
+claim hash deliberately includes mutable process facts (working directory,
+tty, process group): a live agent that calls `chdir()` invalidates its own hash
+without restarting. The stable (`host_id`, `anchor_pid`, `anchor_start_time`)
+triple recovers that continuity, but only below claim-hash precedence, never
+under `join --new`, and never across hosts. An anchor match immediately records
+the current claim hash for the member ("healing"), which keeps the fallback
+self-limiting: the next command resolves at the cheaper claim-hash step, and a
+healing race against a concurrent process is settled in favor of the
+claim-hash owner because step-3 semantics outrank the fallback.
+
+`rejoin` captures because it is the explicit command for binding the current
+process claim to a caller-chosen existing member. `whoami --explain` captures
+for diagnostics but does not persist that evidence. The resolver memoizes
+capture and claim only within one synchronous operation; it does not cache a
+complete capture across commands. There is no deferred identity verification
+or association because a later claim collision could not be reported by the
+operation that appeared to succeed.
 
 First contact retries auto-chosen names because `choose_name` is
 deterministic from the anchor basename seed — simultaneous first contacts
 collide by construction, not by accident. Each bounded retry re-mints all
 three unique values (name, member id, token) inside the loop body so a
-stale candidate can never be reused across attempts. Explicit `--as` names
-get exactly one attempt and fail loudly: a collision on a chosen name is a
-user decision to surface, not noise to retry through.
+stale candidate can never be reused across attempts. Explicit `--as` names on
+creation-capable first contact get exactly one attempt and fail loudly: a
+collision on a chosen name is a user decision to surface, not noise to retry
+through. Claim-race recovery is role-aware for the same reason. Selector-free
+automatic creation may resolve to the member that won the current claim, but
+explicit creation never substitutes that member for the caller's selected
+name. If another member owns or wins the process claim after the explicit row
+is inserted, the new explicit member survives without stealing the claim.
 
 Automatic human and agent names share one display rule ([IAN-4.2]): normalize
 the login or process seed, then uppercase its first lowercase ASCII letter.
@@ -473,6 +504,7 @@ durable machine contract.
 | Path | Owner |
 |---|---|
 | `taut/_constants.py` | Version, config translation, name rules, identity constants |
+| `taut/_message_text.py` | Built-in Unicode blank classifier for user-authored message entry points |
 | `taut/_broker_retry.py` | Fail-closed prior-Summon import compatibility; no active retry behavior |
 | `taut/addressing.py` | Target parsing, channel/sub-thread validation, and internal queue naming |
 | `taut/_scripts.py` | Developer helper logic for `bin/pytest-pg` |
@@ -504,11 +536,12 @@ requirement or auditing implementation coverage.
 | [TAUT-3.2], project resolution, config, and Windows SQLite path preflight | `taut/_constants.py::load_config`, `taut/client/_base.py::_ClientBase._resolve_target`, `taut/client/__init__.py::TautClient.init` | `tests/test_project_config.py`, `tests/test_cli.py::test_init_uses_project_config_postgres_backend`, `test_windows_sqlite_target_validation_rejects_every_control`, `test_posix_sqlite_target_validation_preserves_control_bearing_paths`, and `test_cli_windows_control_bearing_database_target_fails_fast` |
 | [TAUT-3.3], [TAUT-3.4], sidecar schema and version gate | `taut/state/_sql.py::SqlSidecarTautState.ensure_schema`, `taut/state/__init__.py::TautState` | `tests/test_state_contract.py`, `tests/test_shared_contract.py`, `extensions/taut_pg/tests/test_pg_sidecar.py::test_postgres_concurrent_empty_schema_initializers_converge` |
 | [TAUT-4], channels, membership, replies, reads, logs, and listing | `taut/client/_threads.py::ThreadsMixin.join`, `leave`, `list_threads`; `taut/client/_messaging.py::MessagingMixin.say`, `reply`, `read_unread`, `log`; `taut/client/_identity.py::IdentityMixin.who` | `tests/test_client.py`, `tests/test_cli.py`, `tests/test_shared_contract.py` |
-| [TAUT-5], [IAN-3], [IAN-4], identity claims, recognition, automatic display names, rejoin, and name changes | `taut/identity.py`, `taut/state/_sql.py::route_keys_in_use`, `taut/client/_identity.py::IdentityMixin._resolve_member`, `_create_member`, `rejoin`, `set_name` | `tests/test_identity.py`, `tests/test_client.py::test_automatic_*`, `test_repeated_pi_agents_use_capitalized_curated_names`, `tests/test_shared_contract.py::test_project_automatic_name_skips_alias_owned_route_contract`, `tests/test_cli.py::test_rejoin_*` |
+| [TAUT-5], [IAN-3], [IAN-4], identity claims, deterministic selector capture, recognition, automatic display names, rejoin, and name changes | `taut/identity.py`, `taut/state/_sql.py::route_keys_in_use`, `taut/client/_identity.py::IdentityMixin._resolve_member`, `_create_member`, `rejoin`, `set_name` | `tests/test_identity.py`; `tests/test_client.py::test_existing_explicit_selector_skips_capture_and_preserves_process_identity`, `test_valid_token_selector_skips_capture_and_preserves_token_activity`, selector creation/guest/rejoin/explain cases, and `test_automatic_*`; `tests/test_identity_performance.py` (manual evidence, not a timing contract); `tests/test_shared_contract.py::test_project_automatic_name_skips_alias_owned_route_contract`; `tests/test_cli.py::test_rejoin_*` |
 | [TAUT-6], message envelopes and sender snapshots | `taut/envelope.py`, `taut/client/_codec.py::message_from_body`, `message_from_decoded`, `taut/client/_messaging.py::MessagingMixin._write_message` | `tests/test_envelope.py`, `tests/test_client.py::test_set_name_changes_current_name_without_changing_member_id` |
+| [TAUT-6.5], blank user messages and exact accepted text | `taut/_message_text.py::is_blank_message_text`, `taut/_exceptions.py::BlankMessageError`, `taut/client/_messaging.py::MessagingMixin.say`, `reply`, and `taut/commands/_dispatch.py::_render_execution_error` | `tests/test_message_text.py`; blank, precedence, historical-read, and exact-text cases in `tests/test_client.py`, `tests/test_cli.py`, and `tests/test_shared_contract.py`; paired import proof in `tests/test_core_summon_wheel_matrix.py` |
 | [TAUT-6.4], [TAUT-8.3], [TAUT-8.6], [TAUT-9], terminal text safety and exact-data boundaries | `taut/terminal.py::escape_terminal_text`, `taut/defaults.toml`, `taut/commands/_rendering.py::write_human_line`, dispatcher/parser diagnostics, and the Summon command/log adapters | `tests/test_terminal_text.py`, terminal-control cases in `tests/test_cli.py` and `tests/test_command_registry.py`, `tests/test_architecture_boundaries.py::test_first_party_terminal_sink_inventory_is_explicit`, and the touched Summon CLI/driver/PTY tests |
 | [TAUT-7], read cursors and chat-history peek discipline | `taut/client/_messaging.py::MessagingMixin.read_unread`, `_implicit_subthread_membership`; `taut/client/_threads.py::_thread_from_row`, `_unread_count`; `taut/state/_sql.py` membership and cursor helpers | `tests/test_client.py` cursor, caught-up-list, saturation, and list-race cases; `tests/test_client_stateful.py`; `tests/test_state_contract.py`; `tests/test_shared_contract.py` |
-| [TAUT-8.1], [TAUT-8.2], CLI behavior, rendering, JSON, help, and exit codes | `taut/cli.py` | `tests/test_cli.py` parser-inventory, help-phrase, explicit-argv, subprocess, rendering, and exit-class tests; `tests/test_public_api.py` |
+| [TAUT-8.1], [TAUT-8.2], CLI behavior, rendering, JSON, help, and exit codes | `taut/cli.py`, `taut/commands/_dispatch.py`, and per-verb command adapters | `tests/test_cli.py` parser-inventory, help-phrase, explicit-argv, subprocess, rendering, blank-input, and exit-class tests; `tests/test_public_api.py` |
 | [TAUT-8.6], command manifests, installed discovery, dispatch, parser/context policy, and lazy loading | `taut/commands/` | `tests/test_command_registry.py`, `tests/test_lazy_imports.py`, `tests/test_architecture_boundaries.py`, installed-wheel cases in `tests/test_core_summon_wheel_matrix.py` |
 | [TAUT-8.3], Python API objects and verb semantics | `taut/client/__init__.py::TautClient`, `taut/client/_models.py`, the client mixins, and lazy root export `taut.escape_terminal_text` | `tests/test_public_api.py`, `tests/test_client.py`, `tests/test_terminal_text.py`, `tests/test_lazy_imports.py` |
 | [TAUT-8.4], [TAUT-8.5], watcher behavior and shared reactor lifecycle | `taut/watcher.py::BaseReactor`, `taut/watcher.py::TautWatcher`, `taut/_watch_runtime.py`, `taut/client/_watching.py`, `taut/client/__init__.py::TautClient.watch`, `taut/commands/watch.py` | `tests/test_watcher.py` ownership, stop, wake, cursor replay, construction cleanup, explicit-target resolution, terminal-stop, poison, ordering, and same-instance tests; `tests/test_cli.py::test_cli_watch_json_flushes_records_while_live`, `test_cli_watch_closed_pipe_exits_0_without_advancing_cursor`, `test_cli_watch_policy_failure_stops_without_advancing_cursor`; `tests/test_architecture_boundaries.py::test_first_party_reactors_inherit_guarded_lifecycle_templates`; `tests/test_shared_contract.py::test_project_watcher_receives_cli_write`; `extensions/taut_pg/tests/test_reactor.py` native-waiter rebind and forced polling-fallback tests |
@@ -545,6 +578,7 @@ watch, `taut/client/_notifications.py::NotificationsMixin.inbox` claims notifica
 
 ## Related Plans
 
+- `docs/plans/2026-07-14-blank-message-no-op-plan.md`
 - `docs/plans/2026-07-14-smaller-quality-followups-plan.md`
 - `docs/plans/2026-07-14-universal-release-gates-plan.md`
 - `docs/plans/2026-07-13-ci-speed-determinism-release-evidence-plan.md`

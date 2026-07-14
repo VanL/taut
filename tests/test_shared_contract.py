@@ -22,6 +22,7 @@ from taut_summon._state import (
 import taut.identity as identity
 from taut._constants import META_QUEUE_NAME
 from taut._exceptions import (
+    BlankMessageError,
     EmptyResultError,
     MembershipError,
     NotFoundError,
@@ -98,6 +99,28 @@ def test_project_client_join_say_read_contract(taut_project: Path) -> None:
     assert result.db
     assert message.thread == "general"
     assert [item.text for item in bob.read("general")][-1:] == ["shared hello"]
+
+
+def test_project_blank_say_has_no_shared_backend_state(taut_project: Path) -> None:
+    """[TAUT-6.5] The blank guard fires on every supported real backend."""
+
+    TautClient.init()
+    van = TautClient(as_name="van")
+    van.join("general")
+    created = van.last_created_member
+    assert created is not None
+    before_member = van._state.get_member(created.member_id)
+    before_threads = van._state.list_threads(include_internal=True)
+    before_memberships = van._state.list_memberships(created.member_id)
+    before_messages = [(item.ts, item.text) for item in van.log("general")]
+
+    with pytest.raises(BlankMessageError):
+        van.say("missing target!", "\u00a0\u200b")
+
+    assert van._state.get_member(created.member_id) == before_member
+    assert van._state.list_threads(include_internal=True) == before_threads
+    assert van._state.list_memberships(created.member_id) == before_memberships
+    assert [(item.ts, item.text) for item in van.log("general")] == before_messages
 
 
 def test_project_reply_creates_subthread_contract(taut_project: Path) -> None:

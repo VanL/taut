@@ -79,8 +79,7 @@ def _incomplete_channel_rename_message(rename: ChannelRenameRow) -> str:
 @dataclass(slots=True)
 class _ResolvedMember:
     row: MemberRow | None
-    capture: identity.IdentityCapture
-    claim: identity.IdentityClaim
+    capture: identity.IdentityCapture | None
     created: bool = False
     created_token: str | None = None
     candidates: list[tuple[MemberRow, list[str]]] | None = None
@@ -209,6 +208,7 @@ class _ClientBase(ABC):
         persona: str | None = None,
         allow_guest: bool = False,
         _touch_activity: bool = True,
+        _require_capture: bool = False,
     ) -> _ResolvedMember: ...
 
     @abstractmethod

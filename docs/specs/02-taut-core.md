@@ -42,8 +42,8 @@ obligations defined in [TAUT-12]:
 
 - non-SQL state mappings beyond the SQL sidecar path (`taut-pg` remains SQL)
 - captive agents (`summon`): hosting an agent process as a thread member
-- the TUI (named as a surface in [TAUT-8.4]; it gets its own spec before
-  implementation)
+- the TUI (governed by the roadmap commitment in [TAUT-12.4]; it gets its
+  own spec before implementation)
 
 Out of scope as non-goals (not deferred ambiguity):
 
@@ -304,12 +304,14 @@ an accident. Two consequences are binding:
   CLI/client work, persistent owned handles for long-lived actors, and
   `close()` at owned lifetime end.
 
-  The `simplebroker>=5.3.2` floor is load-bearing. Version 5.2.0 supplies the
+  The `simplebroker>=5.3.3` floor is load-bearing. Version 5.2.0 supplies the
   reference ownership model, 5.2.2 first passed Taut's persistent-owner
   process/control proof, 5.3.0 supplies the public live activity-waiter
   replacement contract, 5.3.1 makes `Queue.write()` return the exact committed
   message id, and 5.3.2 makes watcher bootstrap cancellation interrupt locked
-  PhaseLock and SQLite connection setup. Persistent Queue handles for one
+  PhaseLock and SQLite connection setup. Version 5.3.3 removes unsafe
+  path-name-based runner cleanup and initializes timestamp-conflict metrics
+  before concurrent first writes. Persistent Queue handles for one
   resolved target share a process-local broker session; each driving thread
   receives its own thread-local backend core. Releasing an ordinary operation
   ends only its active-operation lease; it does not recycle the owning thread's
@@ -412,7 +414,7 @@ Core obligations:
 - Names are mutable current values. The CLI may accept a name, and may resolve
   an existing alias where the schema contains one, but core state, cursors,
   memberships, direct messages, and notifications use `member_id`.
-- `taut rejoin NAME_OR_ALIAS` associates the current identity claim with the
+- `taut rejoin NAME_OR_ALIAS` associates the current process claim with the
   selected member. It does not rename the member or rewrite history.
 - `taut set name NAME` updates the acting member's current display name and
   route key. It does not alter old message envelopes.
@@ -421,6 +423,16 @@ Core obligations:
   opaque `member_id`.
 - `TAUT_TOKEN` remains continuity, not authentication. It is another way to
   resolve a member inside the weak trust model from [TAUT-9].
+- Resolution distinguishes acting-member selection from local identity
+  inference and durable process-claim association. For ordinary operations,
+  either a resolved explicit `--as` / `TAUT_AS` name or alias, or a valid
+  continuity token when no explicit `as` is supplied, selects the acting
+  member without capturing local process/session evidence. Explicit `as`
+  remains ahead of token in the ordinary resolution order. These selectors do
+  not associate, replace, or heal the current process claim, anchor, or
+  fingerprint for an existing member. When neither selector is supplied, Taut
+  captures local evidence and applies [IAN-3.3]. Member creation, `rejoin`, and
+  explicit evidence diagnostics capture when [IAN-3] requires it.
 
 ## 6. Message Envelope [TAUT-6]
 
@@ -459,10 +471,12 @@ to a queue. Foreign bodies must never crash or stall any taut surface.
 
 ### [TAUT-6.4] Limits
 
-Body size and content limits are SimpleBroker's (10 MB default). Taut adds
-no storage limit of its own; `text` is arbitrary UTF-8 including newlines and
-terminal control characters. Storage, Python API objects, and `--json` output
-preserve that exact content.
+Body size and content limits for accepted messages are SimpleBroker's (10 MB
+default). Taut adds no storage-size limit of its own. Except for new blank
+`say` and `reply` attempts filtered under [TAUT-6.5], `text` may otherwise
+contain arbitrary UTF-8, including newlines and terminal control characters.
+Storage, Python API objects, and `--json` output preserve the exact content of
+every accepted or already-stored message.
 
 Human-readable terminal output is a separate presentation boundary. By
 default, each Taut-owned dynamic text field is passed through the public
@@ -537,6 +551,33 @@ emit controls by design. The temporary previous-version Summon compatibility
 bridge can escape non-LF controls in redirected Python text, but it treats
 every LF already emitted by legacy code as a structural line terminator
 because the formatted stream no longer exposes content-field boundaries.
+
+### [TAUT-6.5] Blank user messages
+
+A proposed user message is blank when its text is empty or every character
+returns true from `str.isspace()` or has Unicode general category `Cf` from
+`unicodedata.category()` in the running supported Python interpreter. This is
+a best-effort chat-input guard, not an exhaustive renderer-visibility or
+Unicode `Default_Ignorable_Code_Point` contract. Its edge membership may
+change when Taut's supported Python runtime changes.
+
+`TautClient.say()` and `TautClient.reply()` filter blank text as their first
+operation and raise public `BlankMessageError`, a subclass of
+`EmptyResultError`. The check precedes target parsing, incomplete-rename
+checks, identity/activity work, queue/timestamp work, and all thread,
+membership, message, notification, and cursor mutation. Blank filtering thus
+wins over later target, parent-message, membership, and rename failures.
+Parsing, text acquisition, storage/schema bootstrap, and client construction
+that occur before the method call keep their existing priority. For human
+CLI output, terminal-policy preflight occurs before command execution; an
+unavailable policy therefore retains its existing diagnostic exit 1 and
+wins over blank filtering.
+
+If any character is outside the predicate, Taut stores the complete original
+string exactly, including surrounding whitespace and `Cf` characters. It
+does not trim, normalize, or strip. Existing stored messages, foreign broker
+bodies, envelope decoding, and structural join/leave/creation notices remain
+readable and are not filtered.
 
 ## 7. Read Model [TAUT-7]
 
@@ -630,8 +671,8 @@ later token is command-local. `--version` is a root action before the verb.
 | `join THREAD [--as NAME_OR_ALIAS] [--persona TEXT] [--new]` | Register identity if needed (`--new` forces a fresh member), create a channel if needed, add membership (cursor at now, [TAUT-7.4]), write notice. `--persona` sets/updates the member's persona. | 0; 1 error |
 | `leave THREAD` | Remove membership, write notice. | 0; 1 error; 2 not a member |
 | `set name NAME` | Change the acting member's current display name and route key. Does not rewrite old messages. | 0; 1 error/name collision; 2 unrecognized |
-| `say TARGET [TEXT\|-]` | Post a message (stdin with `-` or when piped and TEXT omitted). `TARGET` may be a channel, sub-thread, or `@name` direct message target ([IAN-5]). Channel and sub-thread targets require membership. Prints message id with `-t`. | 0; 1 error; 2 not a member / no such member |
-| `reply THREAD MSG_ID [TEXT\|-]` | Post into the sub-thread of MSG_ID, creating it on first reply. Requires membership in THREAD. A full 19-digit id resolves exactly (peek by id — works for any message ever written). A suffix ≥ 4 digits resolves via a bounded public-API scan of the most recent 1,000 message ids of THREAD; ambiguous → error listing candidates. | 0; 1 error (incl. ambiguous suffix); 2 no such message / not a member |
+| `say TARGET [TEXT\|-]` | Post a message (stdin with `-` or when piped and TEXT omitted). Blank text is filtered before routing under [TAUT-6.5]. `TARGET` may be a channel, sub-thread, or `@name` direct-message target ([IAN-5]). Channel and sub-thread targets require membership. Prints message id with `-t` only when a message is written. | 0 wrote; 1 error; 2 blank filtered / not a member / no such member |
+| `reply THREAD MSG_ID [TEXT\|-]` | Post into the sub-thread of MSG_ID, creating it on first reply. Blank text is filtered before parent resolution under [TAUT-6.5]. Requires membership in THREAD. A full 19-digit id resolves exactly. A suffix >= 4 digits resolves via a bounded public-API scan of the most recent 1,000 message ids of THREAD; ambiguous -> error listing candidates. | 0 wrote; 1 error (including ambiguous suffix); 2 blank filtered / no such message / not a member |
 | `read [THREAD]` | Show unread (all joined threads when bare, grouped), advance cursor through displayed messages. Reads are paged: one invocation displays and marks seen up to 1,000 unread messages per thread; callers drain larger backlogs by rerunning until exit 2. Requires a resolved member; explicit THREAD requires membership (sub-threads implicit-join per [TAUT-4.3]). | 0 showed messages; 1 error; 2 nothing unread / not a member (hint on stderr) |
 | `inbox` | Claim and show pending notifications for the acting member. Notifications are consumed; source chat history is not changed. | 0 showed notifications; 1 error; 2 nothing pending |
 | `log THREAD [--since TS] [--limit N]` | Show history. No cursor movement. `--limit N` selects the most recent N messages after `--since`, rendered in chronological order. | 0; 1; 2 empty |
@@ -640,7 +681,7 @@ later token is command-local. `--version` is a root action before the verb.
 | `rename OLD NEW` | Rename a channel and every registered one-level sub-thread under it. Uses SimpleBroker's public queue rename API and sidecar rename markers. Does not rewrite message bodies. | 0; 1 error/collision/invalid name; 2 no such channel |
 | `who [THREAD]` | Members and presence (thread members, or all members when bare). | 0; 1 error; 2 no such thread |
 | `whoami [--explain]` | Resolved identity; with `--explain`, the evidence and rule. | 0 resolved; 1 error (incl. invalid token); 2 unrecognized |
-| `rejoin [NAME_OR_ALIAS] [--token TOKEN]` | Associate the current identity claim with the selected member ([IAN-3.4]). Target: name or alias if given, else `--token` (subcommand or global), else global `--as`; name/alias combined with any `--token` is an error. | 0; 1 error/collision/ambiguous selectors; 2 no such member/token |
+| `rejoin [NAME_OR_ALIAS] [--token TOKEN]` | Associate the current process claim with the selected member ([IAN-3.4]). Target: name or alias if given, else `--token` (subcommand or global), else global `--as`; name/alias combined with any `--token` is an error. | 0; 1 error/collision/ambiguous selectors; 2 no such member/token |
 | `summon PROVIDER_OR_NAME [THREAD ...]` | Provided by the separately installed `taut-summon` command package through [TAUT-8.6]. Without a compatible provider, exit 1 with a one-line install hint. Behavior lives in spec 04. | per spec 04 |
 | `dismiss NAME` | Provided by the same package and command interface; maps to Summon's stop operation. | per spec 04 |
 
@@ -657,6 +698,12 @@ subcommands, missing or malformed arguments rejected by the parser — are
 errors and exit 1, never 2. Exit 2 is reserved for the empty/not-found
 class so that polling idioms like `taut read -q && handle_new` cannot
 mistake a typo for "nothing new". `--help` and `--version` exit 0.
+
+A blank `say` or `reply` filtered under [TAUT-6.5] is an empty-result exit 2,
+not success and not an error. It emits no stdout or stderr in human, JSON, or
+quiet mode because no record or diagnostic was produced. Human-mode terminal
+policy preflight retains priority: if the policy is unavailable, the command
+exits 1 with its existing fixed diagnostic before blank filtering runs.
 
 Help text is part of the agent-usable surface: every option and positional names
 its purpose, message-id suffix and timestamp forms are discoverable from the
@@ -680,11 +727,12 @@ exit classes apply equally to built-in and extension command adapters.
   a defined JSON shape** — an agent must never have to guess:
   - message objects (`read`, `log`, `watch`): `thread`, `ts`, `from_id`,
     `from`, `kind`, `text`;
-  - writing verbs (`say`, `reply`) echo the message object they wrote —
-    same fields. The robust id-capture idiom is
-    `taut say t "x" --json | jq -r 'select(has("ts")).ts'`, because a
-    first-ever use may emit a leading creation line (next bullet) that
-    has no `ts`;
+  - writing verbs (`say`, `reply`) echo the message object they wrote, with the
+    same fields as read messages. A blank attempt filtered under [TAUT-6.5]
+    writes no message, emits no human or JSON record, and exits 2. For a
+    successful write, the robust id-capture idiom remains
+    `taut say t "x" --json | jq -r 'select(has("ts")).ts'`, because a first-ever
+    use may emit a leading creation line with no `ts`;
   - notification objects (`inbox`, `watch`): `type`, `to_id`, `actor_id`,
     `actor_name`, `thread`, `message_ts`, plus `matched` for mention
     notifications;
@@ -725,10 +773,15 @@ exit classes apply equally to built-in and extension command adapters.
 argument-parsing layer over it — every CLI behavior above must be
 reachable through one public client method with the same semantics (the
 SimpleBroker/Weft layering rule: CLI and library share one operational
-model). Public exports from `taut`: `TautClient`, `TautWatcher`,
-`Message`, `Thread`, `Member`, the exception hierarchy rooted at
-`TautError`, `escape_terminal_text`, and `__version__`. The package ships typed
-(`py.typed`).
+model). Public exports from `taut`: `TautClient`, `TautWatcher`, `Message`,
+`Thread`, `Member`, the exception hierarchy rooted at `TautError` including
+`BlankMessageError`, `escape_terminal_text`, and `__version__`. The package
+ships typed (`py.typed`).
+
+`BlankMessageError` is a public subclass of `EmptyResultError`. It is the
+Python API result for a filtered [TAUT-6.5] `say` or `reply`, allowing both
+methods to retain `Message` as their success type. No message id or related
+domain state exists after this exception.
 
 `TautClient.set_persona(persona: str | None) -> Member` resolves the client's
 selected identity, raises `IdentityError` when none resolves, and atomically
@@ -742,7 +795,7 @@ through read-only identity resolution. It does not update activity, record an
 identity claim, inspect unread state, or create membership. Long-lived
 extensions use it to reconcile their own thread-scoped resources.
 
-Core runtime dependencies: exactly `simplebroker>=5.3.2` and `psutil`. The
+Core runtime dependencies: exactly `simplebroker>=5.3.3` and `psutil`. The
 optional `taut-pg` extension adds `simplebroker-pg` and its driver dependencies
 in the same environment as Taut. Python ≥ 3.11. The CLI uses argparse, not a CLI
 framework.
@@ -1125,6 +1178,8 @@ implied by docs or output.
   cursors are shared, monotonic writes make the union safe ([TAUT-7.2]).
 - Unparseable `--since` value: SimpleBroker's parser error is surfaced
   verbatim, exit 1.
+- Blank `say` or `reply`: raise `BlankMessageError` before route/state work;
+  the CLI exits 2 silently and no message-domain side effect occurs.
 
 ## 11. Verification Expectations [TAUT-11]
 
@@ -1150,6 +1205,14 @@ posture:
 - CLI tests drive the real console entry point (subprocess or
   `run_cli`-style harness as in SimpleBroker) and assert exit codes 0/1/2
   and `--json` field names per [TAUT-8.2].
+- Predicate tests cover empty text, ASCII and non-ASCII whitespace, common
+  `Cf` zero-width/format characters, mixtures, and visible text containing
+  such characters without claiming exhaustive Unicode visibility. A named
+  invisible non-`Cf` counterexample remains accepted to pin the boundary.
+- Real client and CLI tests prove channel, first-DM, and first-reply blank
+  attempts leave identity/activity, thread, membership, queue, message,
+  notification, and cursor state unchanged; CLI modes exit 2 silently; and
+  accepted text remains exact. Shared coverage runs on SQLite and PostgreSQL.
 - Envelope encode/decode gets a property-based round-trip test including
   `from_id`, sender-name snapshots, and foreign-body inputs.
 - Multi-process write/read interleaving over one database is exercised at
@@ -1550,6 +1613,16 @@ verification.
 
 ## Related Plans
 
+- `docs/plans/2026-07-14-blank-message-no-op-plan.md` — built-in Unicode
+  blank-input guard, typed empty result, silent CLI exit 2, and Summon
+  terminal-mode adaptation.
+- `docs/plans/2026-07-14-taut-tui-cross-reference-correction-plan.md` —
+  corrects the stale [TAUT-1] TUI citation from watcher section [TAUT-8.4]
+  to the rich-TUI roadmap contract in [TAUT-12.4].
+- `docs/plans/2026-07-14-trusted-identity-selector-fast-path-plan.md` —
+  conditional identity capture for trusted `as`/token selectors while
+  preserving selector-free inference, creation gates, and explicit `rejoin`
+  association.
 - `docs/plans/2026-07-14-smaller-quality-followups-plan.md` — real
   PostgreSQL polling-fallback coverage, bounded client state-machine coverage,
   and a measured caught-up unread-list fast path that preserves [TAUT-7.3].
