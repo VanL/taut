@@ -34,7 +34,7 @@ tune with a run-log note, not ad hoc.
 
 | Tier | Distilled through | Source SHA |
 |------|-------------------|------------|
-| Lessons | (none — first sweep pending) | — |
+| Lessons | 2026-06-14 | `c09e95e` |
 | Plans | (none — first sweep pending; the plans README's Active Plans list is the status source) | — |
 | Promotion | (none — first derivation pending) | — |
 
@@ -46,7 +46,7 @@ does.
 
 | Tier | Checked through (date, SHA) | Counts at check | Reason deferred | Reconsider when |
 |------|------------------------------|-----------------|-----------------|-----------------|
-| Lessons | 2026-07-14, adoption | 85 past (no) watermark — tripped at adoption | First sweep is taut's own authorized unit of work; dedup against taut's Golden Rules is mandatory | User authorizes taut's first sweep |
+| Lessons | 2026-07-14, first sweep executed | 79 past watermark — above threshold 20, but every one is within the 30-day age floor | Checked-deferred: nothing foldable until entries age | The 2026-07-08 block (43 entries) crosses the age floor on 2026-08-07 |
 | Plans | 2026-07-14, adoption | not derived | Derive at first sweep from the Active Plans list and plan contents | First sweep runs |
 | Promotion | 2026-07-14, adoption | not derived | Derive at first sweep | First sweep runs |
 
@@ -57,4 +57,5 @@ spot-check against the diff. `checked-deferred` lines are valid runs.
 
 | Date | Tier(s) | Source SHA | Claim |
 |------|---------|------------|-------|
+| 2026-07-14 | Lessons | `c09e95e` | First sweep (user-authorized): six cold entries (2026-06-12) examined; three folded into a pointer line — each verified distilled into the spec tree (read-only resolution contract, [TAUT-12.3] reuse modes, [TAUT-8.4] cursor discipline); three kept verbatim because their claimed or expected distillation homes could not be verified (type-check-tests rule, identity argv classification, watcher construction-vs-refresh phases) — flagged as future runbook/spec candidates. Watermark advanced to 2026-06-14. Remaining 79 entries all within age floor → checked-deferred. Doc gates green. |
 | 2026-07-14 | — | — | Layer adopted from agent-guidance `2f7eff6`. Lessons derived count 85 past (no) watermark — tripped, deferred to an authorized first sweep. No fold performed. |

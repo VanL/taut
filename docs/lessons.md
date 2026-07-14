@@ -166,37 +166,19 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   bootstrap exception survives only with its test debt enumerated and
   burned down before release.
 
-- 2026-06-12: Allocate broker timestamps only after a command is known to
-  mutate taut state. A timestamp generated for convenience still updates the
-  broker's high-water mark; doing that during guest read-only identity
-  resolution violates the "nothing is written" contract and can distort
-  thread metadata if later code reads database-wide timestamp hints.
-
 - 2026-06-12: Treat watcher construction validation and watcher refresh as
   different phases. Explicit watch filters should fail fast when no initial
   membership exists, but a missing membership during refresh is normal
   convergence and should drop the queue, clear per-thread transient state, and
   keep the watcher alive.
 
-- 2026-06-12: Two different reuse modes, chosen by the shape of the
-  source. Vendor whole-and-faithfully when the source is one stable
-  class (taut's multi-queue watcher: copied entire, provenance recorded,
-  diffable against upstream). For an evolving multi-part subsystem
-  (Weft's agent task), partial vendoring is reimplementation in denial —
-  the extraction cuts exactly the interactions where bugs live and the
-  copy drifts. There, copy the *contract* (verbs, queue shapes,
-  semantics, with divergences documented) and transfer findings as a
-  portable executable conformance suite both projects run, not as prose
-  lessons. See `docs/specs/02-taut-core.md` [TAUT-12.3].
-
-- 2026-06-12: Consume-oriented watcher primitives do not transfer to
-  broadcast/history semantics unmodified. Weft's `MultiQueueWatcher` PEEK
-  mode head-peeks (`peek_one()`), so without a per-queue cursor it
-  re-delivers the head message and never lets the queue go inactive. Any
-  peek-based consumer needs cursor-aware fetch *and* cursor-aware pending
-  checks (`peek_many(after_timestamp=…)` + `has_pending(after_timestamp=…)`).
-  See `docs/specs/02-taut-core.md` [TAUT-8.4] and comprehension Q1/Q2 in
-  `docs/plans/2026-06-12-taut-foundation-plan.md`.
+- 2026-06-12 (3 entries): early-foundation corrections, verified
+  distilled into the spec tree — read-only identity resolution writes
+  nothing (`docs/specs/02-taut-core.md`, guest resolution contract),
+  vendor-whole vs contract-copy reuse modes ([TAUT-12.3]), and
+  cursor-aware peek discipline for broadcast watchers ([TAUT-8.4], read
+  model). (distilled from 3 entries, 2026-06-12..2026-06-12, source
+  c09e95e)
 
 - 2026-06-17: Treat cross-backend integer types as an executable portability
   invariant, not a naming convention. SQLite accepts SimpleBroker's 64-bit
