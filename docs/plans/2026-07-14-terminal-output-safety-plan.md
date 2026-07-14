@@ -1120,9 +1120,16 @@ implementation with no remaining blocker.
   lag through public typed `SummonController.status()` while keeping the real
   provider process and CLI stop path. The same 8-provider strict command moved
   from 8/8 deterministic failures to 8/8 passes without changing a timeout.
-- Final verification and review: all scoped gates pass and independent review
-  approved the final diff. The owner subsequently authorized commit and 0.6.4
-  release subject to the ordinary release gates.
+- The pushed 0.6.4 release candidate then failed the Windows 3.11, 3.13, and
+  3.14 root cells. One terminal-safety test used ESC, BEL, and TAB in a real
+  SQLite filename. POSIX permits that filename; Windows does not, and broker
+  setup reached the test's 20-second subprocess bound. The rendering proof is
+  now a direct `InitResult` boundary test, while persona behavior retains real
+  CLI/storage coverage on a portable path. Independent review correctly noted
+  that the incident also exposed a production hang path, so core now rejects
+  Windows control-bearing SQLite targets before queue construction and a real
+  Windows CLI firing test owns the fixed exit-1 diagnostic. The correction is
+  slated for 0.6.5 without increasing a timeout or skipping a supported cell.
 
 ### 20.3 Verification evidence
 

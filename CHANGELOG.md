@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.5 - 2026-07-14
+
+- Made Windows `taut init` reject control-bearing SQLite targets before broker
+  queue and lock setup, with a fixed path-free diagnostic instead of a delayed
+  filesystem failure.
+- Made terminal-safety release coverage portable across Windows and POSIX by
+  proving unsafe database-target rendering without requiring the filesystem to
+  accept control bytes in a filename. Real CLI and storage coverage continues
+  to use an explicit valid target, without relying on longer timeouts.
+
 ## 0.6.4 - 2026-07-14
 
 - Added the public `taut.escape_terminal_text` display transform and packaged

@@ -19,7 +19,9 @@ from simplebroker import Queue
 import taut.cli as cli
 from taut import addressing
 from taut._constants import META_QUEUE_NAME
-from taut.client import Message
+from taut._exceptions import TautError
+from taut.client import InitResult, Message, _validate_sqlite_path
+from taut.commands._rendering import emit_init as _emit_init
 from taut.commands._rendering import format_message_time as _format_message_time
 from taut.commands._rendering import format_unread_count as _format_unread_count
 from taut.commands._rendering import human_message_row as _human_message_row
@@ -291,16 +293,89 @@ def test_cli_notification_actor_thread_and_foreign_raw_are_human_safe_json_exact
     assert raw["raw"] == foreign
 
 
-def test_cli_persona_and_database_target_are_escaped_only_for_humans(
+def test_init_database_target_is_escaped_only_for_humans() -> None:
+    # Exercise the renderer directly because Windows rejects control characters
+    # in filenames. The CLI's explicit-target integration is covered with valid
+    # paths below and elsewhere in this module.
+    controlled = "db\x1b]0;title\x07\t.sqlite"
+    result = InitResult(db=controlled, created=True)
+    human_stream = StringIO()
+
+    _emit_init(
+        result,
+        json_output=False,
+        quiet=False,
+        stdout=human_stream,
+    )
+
+    human = human_stream.getvalue()
+    assert r"db\x1b]0;title\a\t.sqlite" in human
+    _assert_only_structural_newlines(human)
+
+    json_stream = StringIO()
+    _emit_init(
+        result,
+        json_output=True,
+        quiet=False,
+        stdout=json_stream,
+    )
+    assert json.loads(json_stream.getvalue())["db"] == controlled
+
+
+@pytest.mark.parametrize(
+    "codepoint",
+    range(0x20),
+    ids=lambda codepoint: f"U+{codepoint:04X}",
+)
+def test_windows_sqlite_target_validation_rejects_every_control(
+    codepoint: int,
+) -> None:
+    with pytest.raises(
+        TautError,
+        match="invalid SQLite database path on Windows: control characters",
+    ):
+        _validate_sqlite_path(
+            Path(f"db{chr(codepoint)}.sqlite"),
+            platform="nt",
+        )
+
+
+def test_posix_sqlite_target_validation_preserves_control_bearing_paths() -> None:
+    _validate_sqlite_path(
+        Path("db\x00\x07\t\x1f.sqlite"),
+        platform="posix",
+    )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows filename contract")
+def test_cli_windows_control_bearing_database_target_fails_fast(
     tmp_path: Path,
 ) -> None:
     controlled = tmp_path / "db\x1b]0;title\x07\t.sqlite"
+
+    rc, out, err = run_cli(
+        "--db",
+        str(controlled),
+        "init",
+        cwd=tmp_path,
+        timeout=10.0,
+    )
+
+    assert rc == 1
+    assert out == ""
+    assert err == (
+        "invalid SQLite database path on Windows: control characters are not allowed"
+    )
+    assert not controlled.exists()
+
+
+def test_cli_persona_is_escaped_only_for_humans(tmp_path: Path) -> None:
+    controlled = tmp_path / "controlled.sqlite"
     persona = "builder\noperator\x1b]52;c;Y2xpcGJvYXJk\x07\x9b"
 
     rc, human, err = run_cli("--db", str(controlled), "init", cwd=tmp_path)
     assert rc == 0, err
-    assert r"db\x1b]0;title\a\t.sqlite" in human
-    _assert_only_structural_newlines(human)
+    assert str(controlled) in human
 
     assert (
         run_cli(

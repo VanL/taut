@@ -134,6 +134,13 @@ directory explicitly (`target_for_directory`), creates the SQLite database or
 initializes the configured non-SQLite target by opening it, and installs the
 sidecar schema ([TAUT-3.3]).
 
+On Windows, a resolved SQLite path containing any U+0000 through U+001F
+control character is invalid. `taut init` rejects it before constructing a
+SimpleBroker queue or entering broker lock/setup work, exits 1, and reports the
+fixed printable diagnostic `invalid SQLite database path on Windows: control
+characters are not allowed`. The path itself is not echoed. POSIX path
+acceptance is unchanged.
+
 v0.2.0 supports SQLite in the core package and Postgres through the separate
 `taut-pg` extension. Postgres selection uses `.taut.toml` with SimpleBroker's
 project-config shape:

@@ -677,6 +677,14 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   failure. Read operational state through a typed API or explicit JSON path;
   reserve human-output assertions for presentation behavior.
 
+- 2026-07-14: A terminal-safety test must not require the filesystem to accept
+  terminal control bytes as a filename. POSIX permits names that Windows
+  rejects, so the test can stall in a dependency's setup or lock path instead
+  of proving rendering. Test raw-to-safe output at the renderer boundary, then
+  keep real CLI and storage integration on a portable valid path. If a
+  platform forbids the supplied storage target, reject it before dependency
+  setup and retain a platform-specific CLI firing test for that failure path.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

@@ -44,6 +44,23 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+def _validate_sqlite_path(
+    path: Path,
+    *,
+    platform: str | None = None,
+) -> None:
+    """Reject Windows control-bearing paths before broker lock setup."""
+
+    effective_platform = os.name if platform is None else platform
+    if effective_platform == "nt" and any(
+        ord(character) < 0x20 for character in str(path)
+    ):
+        raise TautError(
+            "invalid SQLite database path on Windows: control characters are not allowed"
+        )
+
+
 __all__ = [
     "InitResult",
     "Member",
@@ -93,6 +110,8 @@ class TautClient(
             db_file = (
                 Path(target_obj.target) if target_obj.backend_name == "sqlite" else None
             )
+        if db_file is not None:
+            _validate_sqlite_path(db_file)
         created = False if db_file is None else not db_file.exists()
         if db_file is not None and created:
             # Fail fast with a one-line diagnostic: without this check an

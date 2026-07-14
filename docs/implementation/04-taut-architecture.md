@@ -37,6 +37,13 @@ message writes, notification writes, and read cursor semantics. The CLI only
 parses arguments and renders results. This keeps one operational path for every
 verb and prevents CLI behavior from drifting away from the Python API.
 
+`TautClient.init()` also owns the narrow Windows SQLite filename preflight.
+Windows rejects U+0000 through U+001F in path components, while passing such a
+target into broker setup can otherwise wait in lock coordination before the
+filesystem error surfaces. Core rejects those paths before constructing
+`Queue`; it does not broaden this into a portable filename policy, so POSIX
+acceptance and non-SQLite targets remain unchanged.
+
 The load-bearing supported SimpleBroker floor is 5.3.2. It includes
 interruptible watcher bootstrap while PhaseLock or SQLite connection setup is
 blocked. The other core runtime dependency is `psutil`. SimpleBroker owns the
@@ -494,7 +501,7 @@ requirement or auditing implementation coverage.
 
 | Spec area | Primary code owners | Contract tests |
 |---|---|---|
-| [TAUT-3.2], project resolution and config | `taut/_constants.py::load_config`, `taut/client/_base.py::_ClientBase._resolve_target`, `taut/client/__init__.py::TautClient.init` | `tests/test_project_config.py`, `tests/test_cli.py::test_init_uses_project_config_postgres_backend` |
+| [TAUT-3.2], project resolution, config, and Windows SQLite path preflight | `taut/_constants.py::load_config`, `taut/client/_base.py::_ClientBase._resolve_target`, `taut/client/__init__.py::TautClient.init` | `tests/test_project_config.py`, `tests/test_cli.py::test_init_uses_project_config_postgres_backend`, `test_windows_sqlite_target_validation_rejects_every_control`, `test_posix_sqlite_target_validation_preserves_control_bearing_paths`, and `test_cli_windows_control_bearing_database_target_fails_fast` |
 | [TAUT-3.3], [TAUT-3.4], sidecar schema and version gate | `taut/state/_sql.py::SqlSidecarTautState.ensure_schema`, `taut/state/__init__.py::TautState` | `tests/test_state_contract.py`, `tests/test_shared_contract.py`, `extensions/taut_pg/tests/test_pg_sidecar.py::test_postgres_concurrent_empty_schema_initializers_converge` |
 | [TAUT-4], channels, membership, replies, reads, logs, and listing | `taut/client/_threads.py::ThreadsMixin.join`, `leave`, `list_threads`; `taut/client/_messaging.py::MessagingMixin.say`, `reply`, `read_unread`, `log`; `taut/client/_identity.py::IdentityMixin.who` | `tests/test_client.py`, `tests/test_cli.py`, `tests/test_shared_contract.py` |
 | [TAUT-5], [IAN-3], [IAN-4], identity claims, recognition, automatic display names, rejoin, and name changes | `taut/identity.py`, `taut/state/_sql.py::route_keys_in_use`, `taut/client/_identity.py::IdentityMixin._resolve_member`, `_create_member`, `rejoin`, `set_name` | `tests/test_identity.py`, `tests/test_client.py::test_automatic_*`, `test_repeated_pi_agents_use_capitalized_curated_names`, `tests/test_shared_contract.py::test_project_automatic_name_skips_alias_owned_route_contract`, `tests/test_cli.py::test_rejoin_*` |
