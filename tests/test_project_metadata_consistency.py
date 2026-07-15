@@ -185,3 +185,9 @@ def test_mcp_user_docs_expose_the_console_and_release_target() -> None:
     assert install_command in mcp
     assert "uv run python bin/release.py mcp --dry-run" in root
     assert "taut_mcp/vX.Y.Z" in root
+    normalized_root = " ".join(root.split())
+    normalized_mcp = " ".join(mcp.split())
+    assert "this configuration does not mean a release has been published" in (
+        normalized_root
+    )
+    assert "configuring that path does not publish a release" in normalized_mcp
