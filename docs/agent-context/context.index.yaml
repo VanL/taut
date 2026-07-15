@@ -37,6 +37,8 @@ documents:
     role: operational_runbook
   - path: docs/agent-context/runbooks/external-skill-suites.md
     role: operational_runbook
+  - path: docs/agent-context/runbooks/designing-agent-facing-interfaces.md
+    role: operational_runbook
   - path: docs/agent-context/lessons.md
     role: lessons_pointer
   - path: docs/lessons.md

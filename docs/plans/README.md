@@ -46,6 +46,9 @@ Risky plans are blocked if they do not make explicit:
 
 ## Active Plans
 
+- `2026-07-14-agent-interfaces-runbook-adoption-plan.md` — adopt the
+  designing-agent-facing-interfaces runbook from agent-guidance `a4b4345`
+  (completed; kept for its review dispositions).
 - `2026-07-14-routine-release-classification-plan.md` — classify explicitly
   requested releases through unchanged normal machinery as Class 2 without a
   dated release plan, while preserving escalation for bypasses, retagging,
