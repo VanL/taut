@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.7.0] - 2026-07-15
+## 0.7.0 - 2026-07-15
 
 - Added the version-coordinated `taut-mcp` extension: a
   connection-scoped stdio server with 15 explicit workspace-scoped tools, one
