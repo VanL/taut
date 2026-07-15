@@ -93,6 +93,42 @@ def test_create_and_verify_bundle_with_normalized_package_name(tmp_path: Path) -
     assert {path.name for path in files} == {path.name for path in publish.iterdir()}
 
 
+def test_verify_bundle_accepts_only_mcp_tag_family(tmp_path: Path) -> None:
+    module = _load_module()
+    package = _package(tmp_path, name="taut-mcp")
+    dist = _distributions(tmp_path, name="taut-mcp")
+    bundle = tmp_path / "bundle"
+    commit = "a" * 40
+    module.create_bundle(
+        package_dir=package,
+        dist_dir=dist,
+        output_dir=bundle,
+        commit=commit,
+    )
+
+    module.verify_bundle(
+        package_dir=package,
+        bundle_dir=bundle,
+        expected_commit=commit,
+        expected_tag_name="taut_mcp/v1.2.3",
+        output_dir=None,
+    )
+    for invalid_tag in (
+        "v1.2.3",
+        "taut_mcp/1.2.3",
+        "taut_mcp/v1.2.4",
+        "taut_pg/v1.2.3",
+    ):
+        with pytest.raises(module.ReleaseArtifactError, match="release tag"):
+            module.verify_bundle(
+                package_dir=package,
+                bundle_dir=bundle,
+                expected_commit=commit,
+                expected_tag_name=invalid_tag,
+                output_dir=None,
+            )
+
+
 @pytest.mark.parametrize(
     ("mutation", "message"),
     (

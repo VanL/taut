@@ -150,6 +150,27 @@ failure crosses the CLI boundary as one fixed fatal diagnostic and exit 1;
 the underlying exception is never rendered. Malformed requests that the SDK
 can reject without ending the stdio session remain recoverable protocol input.
 
+### Release bytes and backend evidence have different owners
+
+`taut-mcp` participates in the repository's GitHub-only release system as the
+`mcp` target and uses `taut_mcp/vX.Y.Z` tags. The canonical root Test workflow
+is the sole release-byte owner. It builds the exact core and MCP wheels,
+installs them together in a fresh environment, runs the MCP console version
+smoke, and wraps the MCP wheel/sdist pair in an immutable commit-bound bundle.
+The MCP tag gate waits for exact-SHA root, PostgreSQL, and MCP workflow
+evidence, then gives that root-produced bundle to the generic no-rebuild
+release workflow.
+
+The dedicated MCP workflow owns compatibility and live-backend behavior, not
+publication bytes. Its matrix runs the complete suite with a real PostgreSQL
+service; its quality job runs package-local Ruff, mypy, and an ordinary build.
+The root Test workflow also has one separate non-PG MCP coverage producer. It
+installs editable local MCP and PG packages because the test `conftest.py`
+imports `taut_pg` at collection time, but it starts no database and excludes
+`pg_only`. The same-run aggregator requires the named shard and the unique
+connection-rate debit line. This split avoids both false PostgreSQL claims and
+cross-workflow coverage artifact coupling.
+
 ## Boundaries and Invariants
 
 - The MCP/asyncio thread owns registry status, cap seats, admission slots,
@@ -180,7 +201,9 @@ can reject without ending the stdio session remain recoverable protocol input.
 | `extensions/taut_mcp/taut_mcp/_commands.py` | explicit public-client command dispatch and record conversion |
 | `extensions/taut_mcp/taut_mcp/_claude_channel.py` | isolated fixed-payload experimental notification model and send call |
 | `extensions/taut_mcp/tests/` | real SQLite/stdio lifecycle, tool, resource, subscription, cancellation, and adversarial proof; optional live PostgreSQL conformance |
-| `.github/workflows/test-mcp-extension.yml` | required SQLite/PostgreSQL test matrix, quality gates, and unpublished artifact build |
+| `.github/workflows/test.yml` | sole MCP release-byte owner, exact core/MCP wheel smoke, and same-run non-PG MCP coverage producer/aggregator |
+| `.github/workflows/test-mcp-extension.yml` | required SQLite/PostgreSQL test matrix, package-local quality gates, and ordinary disposable build; no release bytes |
+| `.github/workflows/release-gate-mcp.yml` | `taut_mcp/v*` exact-SHA observer and handoff of the immutable root-produced MCP bundle |
 
 Verify a change at the owner boundary. Use real Taut clients, broker queues,
 child threads, and stdio for behavior. Fake only an MCP notification sink or
@@ -206,4 +229,5 @@ and plan evidence whenever ownership or rationale changes.
 
 ## Related Plan
 
+- `docs/plans/2026-07-15-taut-mcp-release-integration-plan.md`
 - `docs/plans/2026-07-14-taut-mcp-extension-plan.md`

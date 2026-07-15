@@ -13,6 +13,19 @@
   identity by accident.
 - Added per-call `limit` paging to `TautClient.read()` and `read_unread()` with
   exact cursor advancement and a 1,000-message per-thread default.
+- Added `taut-mcp` as the fourth GitHub-only release-helper target, including
+  coordinated `all` metadata/lock preparation, the `taut_mcp/vX.Y.Z` tag
+  family, and an MCP tag observer that requires exact-commit root,
+  PostgreSQL, and MCP workflow evidence. This configures the release path; it
+  does not itself create a tag or GitHub Release.
+- Made the canonical root Test workflow the sole `taut-mcp` release-byte
+  owner. It builds and installs the exact core/MCP wheels together, smokes the
+  `taut-mcp` console, and uploads an immutable attempt-qualified MCP bundle;
+  the dedicated MCP workflow remains the real PostgreSQL and quality owner.
+- Added a same-run non-PostgreSQL MCP coverage producer and required its named
+  shard plus the unique connection-rate debit line in the existing aggregate
+  report. The producer installs local `taut-pg` only for collection-time
+  imports and does not claim live-backend evidence.
 
 ## 0.6.7 - 2026-07-14
 

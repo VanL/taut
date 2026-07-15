@@ -66,6 +66,14 @@ stdio handlers execute on a capturable running `asyncio` loop and that the
 public SDK permits the [MCP-8] wake/future bridge. If not, stop and revise the
 bridge rather than infer compatibility from the SDK's current AnyIO facade.
 
+Repository publication is GitHub-only. `taut-mcp` is the `mcp` release target
+in [TAUT-12.5], uses the `taut_mcp/vX.Y.Z` tag family, and is published only by
+`.github/workflows/release-gate-mcp.yml` from the immutable root-Test bundle for
+the exact green tag commit. The release workflow never rebuilds the package and
+never uploads it to PyPI. Configuring this release path does not itself publish
+a version; a GitHub Release exists only after a later explicit tag operation
+succeeds.
+
 The server starts with no workspace attached and can complete MCP
 initialization in that state. Project and identity selection occur only
 through `attach_workspace` in [MCP-4]/[MCP-5]. There is no process-wide
@@ -1601,12 +1609,20 @@ Required proof includes:
   Taut clients, queues, state adapters, child reactors, and connection reactor
   remain real
 
-The repository CI owner for this proof is
-`.github/workflows/test-mcp-extension.yml`. Its test lane supplies a real
-PostgreSQL service and runs the complete extension suite without skipping
-`pg_only`; its separate quality lane runs Ruff, formatting, strict mypy, and
-the extension build. A local no-DSN run may skip PostgreSQL tests for speed,
-but that skipped run is not backend-conformance evidence.
+`.github/workflows/test-mcp-extension.yml` owns MCP compatibility and
+backend-conformance evidence: its test matrix supplies a real PostgreSQL
+service and runs the complete extension suite without skipping `pg_only`, while
+its quality lane runs Ruff, formatting, strict mypy, and an ordinary build. A
+local no-DSN run may skip PostgreSQL tests for speed, but that run is not
+backend-conformance evidence. For publication, [TAUT-12.5]'s canonical root
+Test workflow separately builds and smokes the exact core/MCP wheels, creates
+the immutable MCP release bundle, and uploads it as the sole release-byte
+owner. The same root workflow owns one MCP `not pg_only` coverage producer in
+its root system environment and combines that named shard into the existing
+same-run report; root coverage source includes `taut_mcp`, and the required
+unique rate-admission marker makes a missing, empty, or path-misconfigured shard
+fatal. Live MCP PostgreSQL behavior remains owned by the required canonical MCP
+compatibility workflow.
 
 ## Implementation Mapping
 
@@ -1621,4 +1637,5 @@ but that skipped run is not backend-conformance evidence.
 
 ## Related Plans
 
+- `docs/plans/2026-07-15-taut-mcp-release-integration-plan.md`
 - `docs/plans/2026-07-14-taut-mcp-extension-plan.md`

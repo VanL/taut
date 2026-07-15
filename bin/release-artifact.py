@@ -22,6 +22,7 @@ RELEASE_TAG_PREFIXES = {
     "taut": "",
     "taut-pg": "taut_pg/",
     "taut-summon": "taut_summon/",
+    "taut-mcp": "taut_mcp/",
 }
 
 

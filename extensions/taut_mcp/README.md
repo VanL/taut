@@ -10,8 +10,17 @@ The version-1 surface is specified in `docs/specs/05-taut-mcp.md`. It exposes
 The resource reports notification pointers, not every unread chat message, and
 does not claim notifications or advance read cursors.
 
-This package is under implementation and is not yet published. From this
-checkout, use its package-local environment:
+The repository has a GitHub-only release path for this package, but configuring
+that path does not publish a release. After the matching core tag and MCP wheel
+exist, install both into one environment:
+
+```bash
+pipx install "git+https://github.com/VanL/taut.git@v0.7.0"
+pipx inject --include-apps taut ./taut_mcp-0.7.0-py3-none-any.whl
+taut-mcp
+```
+
+From this checkout, use its package-local environment:
 
 ```bash
 uv sync --directory extensions/taut_mcp --extra dev

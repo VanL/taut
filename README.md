@@ -178,8 +178,18 @@ exposes 15 explicit workspace-scoped tools plus the repeatable
 `taut://notifications/current` resource. The resource reports notification
 pointers only; reading it does not claim them or advance chat cursors.
 
-The package is implemented in this checkout but is not yet published. Run it
-from its isolated extension environment:
+The package is implemented and wired into the GitHub-only release path, but
+this configuration does not mean a release has been published. After the
+matching core and MCP GitHub Releases exist, install their exact artifacts into
+one environment:
+
+```bash
+pipx install "git+https://github.com/VanL/taut.git@v0.7.0"
+pipx inject --include-apps taut ./taut_mcp-0.7.0-py3-none-any.whl
+taut-mcp
+```
+
+To run from this checkout instead, use the isolated extension environment:
 
 ```bash
 uv sync --directory extensions/taut_mcp --extra dev
@@ -645,17 +655,19 @@ uv run python bin/release.py --dry-run
 uv run python bin/release.py --version X.Y.Z
 uv run python bin/release.py pg --dry-run
 uv run python bin/release.py summon --dry-run
+uv run python bin/release.py mcp --dry-run
 uv run python bin/release.py all --dry-run
 ```
 
 The helper updates version files, runs the release gates, manages root
-`vX.Y.Z` tags plus extension `taut_pg/vX.Y.Z` and `taut_summon/vX.Y.Z` tags,
-syncs first-party dependency floors, and pushes to GitHub. Core and summon
-release gates require the summon local-LLM smoke locally; the helper starts the
-loopback Ollama/model setup early and overlaps it with other checks when it
-cannot reuse an already-ready endpoint. Tag pushes run the GitHub Actions
-release gate, which creates the GitHub Release and uploads the built
-source/wheel artifacts. It does not upload to PyPI.
+`vX.Y.Z` tags plus extension `taut_pg/vX.Y.Z`, `taut_summon/vX.Y.Z`, and
+`taut_mcp/vX.Y.Z` tags, syncs first-party dependency floors and retained locks,
+and pushes to GitHub. Every target runs the same universal local prechecks,
+including the explicit non-PostgreSQL MCP lane. Live MCP PostgreSQL proof comes
+from the required canonical MCP workflow, not from skipped local cases. Tag
+pushes run the package's GitHub Actions release gate, which requires the exact
+commit's root, PostgreSQL, and MCP workflows before publishing the immutable
+root-workflow bundle. It does not rebuild and does not upload to PyPI.
 
 ## License
 

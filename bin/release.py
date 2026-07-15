@@ -36,6 +36,10 @@ SUMMON_EXTENSION_DIR: Final[Path] = PROJECT_ROOT / "extensions" / "taut_summon"
 SUMMON_PYPROJECT_PATH: Final[Path] = SUMMON_EXTENSION_DIR / "pyproject.toml"
 SUMMON_README_PATH: Final[Path] = SUMMON_EXTENSION_DIR / "README.md"
 SUMMON_UV_LOCK_PATH: Final[Path] = SUMMON_EXTENSION_DIR / "uv.lock"
+MCP_EXTENSION_DIR: Final[Path] = PROJECT_ROOT / "extensions" / "taut_mcp"
+MCP_PYPROJECT_PATH: Final[Path] = MCP_EXTENSION_DIR / "pyproject.toml"
+MCP_README_PATH: Final[Path] = MCP_EXTENSION_DIR / "README.md"
+MCP_UV_LOCK_PATH: Final[Path] = MCP_EXTENSION_DIR / "uv.lock"
 RELEASE_WHEEL_SET_CHECKER: Final[Path] = (
     PROJECT_ROOT / "bin" / "build-and-check-release-wheels.py"
 )
@@ -43,6 +47,7 @@ RELEASE_WHEEL_SET_CHECKER: Final[Path] = (
 ROOT_RELEASE_WORKFLOW: Final[str] = ".github/workflows/release-gate.yml"
 PG_RELEASE_WORKFLOW: Final[str] = ".github/workflows/release-gate-pg.yml"
 SUMMON_RELEASE_WORKFLOW: Final[str] = ".github/workflows/release-gate-summon.yml"
+MCP_RELEASE_WORKFLOW: Final[str] = ".github/workflows/release-gate-mcp.yml"
 GITHUB_API_BASE: Final[str] = "https://api.github.com"
 HTTP_TIMEOUT_SECONDS: Final[float] = 15.0
 PENDING_RELEASE_COMMIT: Final[str] = "<pending release commit>"
@@ -70,6 +75,9 @@ TAUT_DEPENDENCY_PATTERN: Final[re.Pattern[str]] = re.compile(
 TAUT_SUMMON_DEPENDENCY_PATTERN: Final[re.Pattern[str]] = re.compile(
     r'(?m)^(\s*"taut-summon>=)([^"]+)(",\s*)$'
 )
+TAUT_PG_DEPENDENCY_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r'(?m)^(\s*"taut-pg>=)([^"]+)(",\s*)$'
+)
 SIMPLEBROKER_DEPENDENCY_PATTERN: Final[re.Pattern[str]] = re.compile(
     r'(?m)^\s*"simplebroker>=(\d+\.\d+\.\d+)",\s*$'
 )
@@ -85,6 +93,9 @@ PG_WHEEL_PATTERN: Final[re.Pattern[str]] = re.compile(
 )
 SUMMON_WHEEL_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"taut_summon-\d+\.\d+\.\d+-py3-none-any\.whl"
+)
+MCP_WHEEL_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"taut_mcp-\d+\.\d+\.\d+-py3-none-any\.whl"
 )
 
 PYTEST_PREFIX: Final[Command] = ("uv", "run", "--extra", "dev", "pytest")
@@ -148,6 +159,20 @@ SUMMON_TEST_COMMANDS: Final[tuple[Command, ...]] = (
     SUMMON_LIVE_HARNESS_TEST_COMMAND,
     SUMMON_LOCAL_LLM_TEST_COMMAND,
 )
+MCP_TEST_COMMAND: Final[Command] = (
+    "uv",
+    "run",
+    "--project",
+    "extensions/taut_mcp",
+    "--extra",
+    "dev",
+    "pytest",
+    "extensions/taut_mcp/tests",
+    "-m",
+    "not pg_only",
+    "-n",
+    "0",
+)
 RUFF_CHECK_PREFIX: Final[Command] = ("uv", "run", "--extra", "dev", "ruff", "check")
 RUFF_FORMAT_PREFIX: Final[Command] = (
     "uv",
@@ -191,6 +216,44 @@ SUMMON_MYPY_PATHS: Final[Command] = (
     "extensions/taut_summon/taut_summon",
     "extensions/taut_summon/tests",
     "extensions/taut_summon/tests/conftest.py",
+)
+MCP_RUFF_CHECK_COMMAND: Final[Command] = (
+    "uv",
+    "run",
+    "--project",
+    "extensions/taut_mcp",
+    "--extra",
+    "dev",
+    "ruff",
+    "check",
+    "extensions/taut_mcp/taut_mcp",
+    "extensions/taut_mcp/tests",
+)
+MCP_RUFF_FORMAT_COMMAND: Final[Command] = (
+    "uv",
+    "run",
+    "--project",
+    "extensions/taut_mcp",
+    "--extra",
+    "dev",
+    "ruff",
+    "format",
+    "--check",
+    "extensions/taut_mcp/taut_mcp",
+    "extensions/taut_mcp/tests",
+)
+MCP_MYPY_COMMAND: Final[Command] = (
+    "uv",
+    "run",
+    "--project",
+    "extensions/taut_mcp",
+    "--extra",
+    "dev",
+    "mypy",
+    "extensions/taut_mcp/taut_mcp",
+    "extensions/taut_mcp/tests",
+    "--config-file",
+    "extensions/taut_mcp/pyproject.toml",
 )
 PRECHECK_ENV_OVERRIDES: Final[dict[str, str]] = {"PYTEST_ADDOPTS": "-x --maxfail=1"}
 LOCAL_LLM_DEFAULT_ENDPOINT: Final[str] = "http://127.0.0.1:11434/v1"
@@ -322,21 +385,35 @@ SUMMON_TARGET: Final[ReleaseTarget] = ReleaseTarget(
     pypi_publish=False,
     release_workflow=SUMMON_RELEASE_WORKFLOW,
 )
+MCP_TARGET: Final[ReleaseTarget] = ReleaseTarget(
+    name="mcp",
+    package_name="taut-mcp",
+    package_dir=Path("extensions/taut_mcp"),
+    pyproject_path=MCP_PYPROJECT_PATH,
+    constants_path=None,
+    tag_namespace="taut_mcp",
+    github_release=True,
+    pypi_publish=False,
+    release_workflow=MCP_RELEASE_WORKFLOW,
+)
 TARGETS: Final[dict[str, ReleaseTarget]] = {
     "core": ROOT_TARGET,
     "root": ROOT_TARGET,
     "taut": ROOT_TARGET,
     "pg": PG_TARGET,
     "summon": SUMMON_TARGET,
+    "mcp": MCP_TARGET,
 }
 CANONICAL_TARGETS: Final[dict[str, ReleaseTarget]] = {
     "core": ROOT_TARGET,
     "pg": PG_TARGET,
     "summon": SUMMON_TARGET,
+    "mcp": MCP_TARGET,
 }
 BATCH_RELEASE_TARGETS: Final[tuple[ReleaseTarget, ...]] = (
     PG_TARGET,
     SUMMON_TARGET,
+    MCP_TARGET,
     ROOT_TARGET,
 )
 
@@ -435,19 +512,6 @@ def _replace_version(
     path.write_text(updated, encoding="utf-8")
 
 
-def target_version_files(target: ReleaseTarget) -> tuple[Path, ...]:
-    paths = [target.pyproject_path]
-    if target.constants_path is not None:
-        paths.append(target.constants_path)
-    if target == ROOT_TARGET:
-        paths.extend((ROOT_README_PATH, PG_README_PATH, SUMMON_README_PATH))
-    elif target == PG_TARGET:
-        paths.extend((ROOT_README_PATH, PG_README_PATH))
-    elif target == SUMMON_TARGET:
-        paths.extend((ROOT_README_PATH, SUMMON_README_PATH))
-    return tuple(paths)
-
-
 def _replace_all(path: Path, pattern: re.Pattern[str], replacement: str) -> None:
     text = path.read_text(encoding="utf-8")
     updated, count = pattern.subn(replacement, text)
@@ -463,10 +527,16 @@ def sync_readme_version_examples(
     root_readme_path: Path = ROOT_README_PATH,
     pg_readme_path: Path = PG_README_PATH,
     summon_readme_path: Path = SUMMON_README_PATH,
+    mcp_readme_path: Path = MCP_README_PATH,
 ) -> None:
     normalized = validate_version(version)
     if target == ROOT_TARGET:
-        for path in (root_readme_path, pg_readme_path, summon_readme_path):
+        for path in (
+            root_readme_path,
+            pg_readme_path,
+            summon_readme_path,
+            mcp_readme_path,
+        ):
             _replace_all(path, CORE_README_TAG_PATTERN, f"@v{normalized}")
         return
     if target == PG_TARGET:
@@ -478,6 +548,11 @@ def sync_readme_version_examples(
         replacement = f"taut_summon-{normalized}-py3-none-any.whl"
         for path in (root_readme_path, summon_readme_path):
             _replace_all(path, SUMMON_WHEEL_PATTERN, replacement)
+        return
+    if target == MCP_TARGET:
+        replacement = f"taut_mcp-{normalized}-py3-none-any.whl"
+        for path in (root_readme_path, mcp_readme_path):
+            _replace_all(path, MCP_WHEEL_PATTERN, replacement)
 
 
 def sync_readme_simplebroker_requirement(
@@ -524,11 +599,12 @@ def write_version_files(version: str, target: ReleaseTarget = ROOT_TARGET) -> No
             rf'\g<1>"{normalized}"',
             display_path(target.constants_path),
         )
-    if target in {ROOT_TARGET, PG_TARGET, SUMMON_TARGET}:
+    if target in {ROOT_TARGET, PG_TARGET, SUMMON_TARGET, MCP_TARGET}:
         sync_readme_version_examples(target, normalized)
-    if target in (PG_TARGET, SUMMON_TARGET) or target.package_name in {
+    if target in (PG_TARGET, SUMMON_TARGET, MCP_TARGET) or target.package_name in {
         "taut-pg",
         "taut-summon",
+        "taut-mcp",
     }:
         root_version = read_manifest_version(ROOT_TARGET)
         _replace_version(
@@ -635,6 +711,47 @@ def sync_pg_core_dependency(
     )
 
 
+def sync_mcp_core_dependency(
+    *,
+    root_pyproject_path: Path = PYPROJECT_PATH,
+    mcp_pyproject_path: Path = MCP_PYPROJECT_PATH,
+) -> str | None:
+    """Set MCP's taut floor to the exact local core version."""
+
+    return sync_extension_core_dependency(
+        root_pyproject_path=root_pyproject_path,
+        extension_pyproject_path=mcp_pyproject_path,
+        extension_label="taut-mcp",
+    )
+
+
+def sync_mcp_pg_dev_dependency(
+    *,
+    pg_pyproject_path: Path = PG_PYPROJECT_PATH,
+    mcp_pyproject_path: Path = MCP_PYPROJECT_PATH,
+) -> str | None:
+    """Set MCP's development-only taut-pg floor to the local PG version."""
+
+    pg_version = _read_version(
+        pg_pyproject_path,
+        PYPROJECT_VERSION_PATTERN,
+        display_path(pg_pyproject_path),
+    )
+    text = mcp_pyproject_path.read_text(encoding="utf-8")
+    updated, count = TAUT_PG_DEPENDENCY_PATTERN.subn(
+        rf"\g<1>{pg_version}\g<3>", text, count=1
+    )
+    if count != 1:
+        fail(
+            "Expected one taut-pg development dependency in "
+            f"{display_path(mcp_pyproject_path)}"
+        )
+    if updated == text:
+        return None
+    mcp_pyproject_path.write_text(updated, encoding="utf-8")
+    return pg_version
+
+
 def sync_extension_core_dependency(
     *,
     root_pyproject_path: Path,
@@ -673,7 +790,7 @@ def prepare_release_metadata(
     requested_versions = {
         target.key: validate_version(version) for target, version in target_versions
     }
-    ordered_targets = (ROOT_TARGET, PG_TARGET, SUMMON_TARGET)
+    ordered_targets = (ROOT_TARGET, PG_TARGET, SUMMON_TARGET, MCP_TARGET)
     versions = {
         target.key: (
             requested_versions[target.key]
@@ -1290,11 +1407,15 @@ def build_precheck_commands_for_targets(
         *ROOT_TEST_COMMANDS,
         PG_TEST_COMMAND,
         *SUMMON_TEST_COMMANDS,
+        MCP_TEST_COMMAND,
         _ruff_check_command(tool_paths),
         _ruff_format_command(tool_paths),
+        MCP_RUFF_CHECK_COMMAND,
+        MCP_RUFF_FORMAT_COMMAND,
         _mypy_command(ROOT_MYPY_PATHS),
         _mypy_command(PG_MYPY_PATHS),
         _mypy_command(SUMMON_MYPY_PATHS),
+        MCP_MYPY_COMMAND,
     )
 
 
@@ -1325,6 +1446,11 @@ def build_preparation_steps_for_targets(
             "Refresh retained taut-summon dependencies selectively",
             cwd=SUMMON_EXTENSION_DIR,
         ),
+        CommandStep(
+            ("uv", "lock"),
+            "Reconcile retained taut-mcp dependencies",
+            cwd=MCP_EXTENSION_DIR,
+        ),
     )
 
 
@@ -1350,6 +1476,13 @@ def build_postupdate_steps_for_targets(
             CommandStep(
                 ("uv", "build", SUMMON_TARGET.package_dir.as_posix()),
                 "Build taut-summon source and wheel",
+            )
+        )
+    if MCP_TARGET.key in target_keys:
+        steps.append(
+            CommandStep(
+                ("uv", "build", MCP_TARGET.package_dir.as_posix()),
+                "Build taut-mcp source and wheel",
             )
         )
     if target_keys & {ROOT_TARGET.key, SUMMON_TARGET.key}:
@@ -1450,9 +1583,13 @@ def _release_file_paths(_target: ReleaseTarget) -> tuple[Path, ...]:
         PG_README_PATH,
         SUMMON_PYPROJECT_PATH,
         SUMMON_README_PATH,
+        MCP_PYPROJECT_PATH,
+        MCP_README_PATH,
     ]
     if SUMMON_UV_LOCK_PATH.exists():
         paths.append(SUMMON_UV_LOCK_PATH)
+    if MCP_UV_LOCK_PATH.exists():
+        paths.append(MCP_UV_LOCK_PATH)
     return tuple(paths)
 
 
@@ -1855,6 +1992,16 @@ def _sync_root_release_dependencies() -> None:
         print("taut-summon dependency already matches taut")
     else:
         print(f"Updated taut-summon dependency: taut>={core_dependency_version}")
+    mcp_core_version = sync_mcp_core_dependency()
+    if mcp_core_version is None:
+        print("taut-mcp dependency already matches taut")
+    else:
+        print(f"Updated taut-mcp dependency: taut>={mcp_core_version}")
+    mcp_pg_version = sync_mcp_pg_dev_dependency()
+    if mcp_pg_version is None:
+        print("taut-mcp development dependency already matches taut-pg")
+    else:
+        print(f"Updated taut-mcp development dependency: taut-pg>={mcp_pg_version}")
 
 
 def _require_command(name: str) -> None:
@@ -1871,7 +2018,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         choices=target_choices,
         default=None,
         help=(
-            "Package to release: core, pg, summon, or all current unpublished "
+            "Package to release: core, pg, summon, mcp, or all current unpublished "
             "versions. Defaults to core. The root/taut aliases also select core."
         ),
     )
@@ -1887,7 +2034,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         help=(
             "Target version in X.Y.Z form. Defaults to the current package "
             "version when it has not been published yet. With all, coordinates "
-            "all three package manifests."
+            "all four package manifests."
         ),
     )
     execution_mode = parser.add_mutually_exclusive_group()

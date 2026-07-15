@@ -1863,11 +1863,14 @@ only code and tests that exist and have passed at that point.
 - `extensions/taut_summon/` and `extensions/taut_pg/` establish separate
   package, lock, typing, and test-lane conventions. They are patterns, not
   dependencies of `taut-mcp`.
-- Root release metadata, `bin/release.py`, artifact allowlists, wheel-matrix
-  scripts, and three release workflows currently know only core, PG, and
-  Summon. This plan stops at an integration-ready, buildable wheel. Publication
-  requires a separate release-integration plan because extending universal
-  release policy is process-changing work, not an incidental package edit.
+- This plan's original boundary stopped at an integration-ready, buildable
+  wheel because extending universal release policy is process-changing work,
+  not an incidental package edit. The owner later approved the separate Class
+  5 `docs/plans/2026-07-15-taut-mcp-release-integration-plan.md`. That follow-on
+  owns the fourth `mcp` helper target, root-produced immutable MCP bundle,
+  three-workflow exact-SHA tag gate, and same-run non-PG coverage shard. This
+  plan still owns MCP runtime behavior and does not claim that configuring the
+  follow-on path published a GitHub Release.
 
 Proposed extension layout:
 
@@ -2369,8 +2372,9 @@ deferred-with-owner-and-trigger dispositions in section 16.
   without another cursor advance before MCP may claim that recovery.
 - A core dependency on MCP or an MCP-specific branch in SQLite/PostgreSQL
   state code.
-- Publication, tags, release workflows, artifact allowlists, or changes to the
-  universal release policy. Those require a separate process-classified plan.
+- An actual tag push, GitHub Release creation, PyPI publication, or release
+  announcement. The separately reviewed release-integration plan configures
+  helper/workflow/allowlist support but performs none of those owner actions.
 
 ## 16. Review Findings and Dispositions
 
@@ -2996,7 +3000,8 @@ not hidden as success.
   control fields.
 - [ ] Cleanup is owner-thread, bounded, idempotent, and tested through real
   transport closure.
-- [ ] The package is described as integration-ready, not released; publication
-  remains a separately reviewed process change.
+- [ ] The package is described as release-configured, not released; the
+  separately reviewed integration plan changes helper/workflow configuration,
+  while an actual tag and GitHub Release remain later owner actions.
 - [ ] Spec, implementation note, README, code, tests, plan, and indexes form a
   closed traceability chain before completion is claimed.

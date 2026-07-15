@@ -46,6 +46,10 @@ Risky plans are blocked if they do not make explicit:
 
 ## Active Plans
 
+- `2026-07-15-taut-mcp-release-integration-plan.md` — add `taut-mcp` as the
+  fourth GitHub-only exact-SHA release target, root-owned immutable artifact,
+  universal release proof member, and same-run MCP coverage producer without
+  performing a release.
 - `2026-07-15-per-call-read-limit-plan.md` — make unread page size a
   per-call core keyword with exact cursor pagination, a 1,000 core default,
   a 100-message MCP default, and shared SQLite/PostgreSQL firing tests.

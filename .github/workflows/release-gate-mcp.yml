@@ -1,9 +1,9 @@
-name: Release Gate
+name: Release Gate (taut-mcp)
 
 on:
   push:
     tags:
-      - "v*"
+      - "taut_mcp/v*"
 
 permissions:
   actions: read
@@ -59,21 +59,21 @@ jobs:
             --workflow pg=.github/workflows/test-pg-extension.yml \
             --workflow mcp=.github/workflows/test-mcp-extension.yml \
             --artifact-workflow root \
-            --artifact-prefix release-taut
+            --artifact-prefix release-taut-mcp
 
   publish-release:
     needs: release-evidence
     uses: ./.github/workflows/release.yml
     with:
-      package_name: taut
-      package_dir: .
+      package_name: taut-mcp
+      package_dir: extensions/taut_mcp
       tag_name: ${{ github.ref_name }}
       release_ref: ${{ needs.release-evidence.outputs.tag_commit }}
       expected_tag_commit: ${{ needs.release-evidence.outputs.tag_commit }}
       evidence_run_id: ${{ needs.release-evidence.outputs.artifact_run_id }}
       evidence_run_attempt: ${{ needs.release-evidence.outputs.artifact_run_attempt }}
       evidence_branch: ${{ needs.release-evidence.outputs.artifact_head_branch }}
-      artifact_prefix: release-taut
+      artifact_prefix: release-taut-mcp
       artifact_id: ${{ needs.release-evidence.outputs.artifact_id }}
       artifact_digest: ${{ needs.release-evidence.outputs.artifact_digest }}
       artifact_repository_id: ${{ needs.release-evidence.outputs.artifact_repository_id }}

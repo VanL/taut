@@ -92,25 +92,29 @@ Release tooling lives in `bin/release.py`. Its boundary is repository hygiene,
 not runtime behavior. Each package manifest owns its version. A target-specific
 release changes only that selected version, while every normal invocation
 reconciles all derived copies: the core constant, README tags and wheel names,
-both extension core floors, the root Summon and SimpleBroker PG dev floors,
-every root README SimpleBroker requirement, and the retained Summon lock. The
-lock refresh is selective (`uv lock --upgrade-package simplebroker`) so
-preparation does not absorb unrelated tool upgrades. The helper stages only
-that fixed metadata allowlist and creates a local preparation commit before
-pytest, type, lint, and build gates. A later gate failure therefore leaves a
-clean, unpushed commit that can be inspected or reused on a rerun.
+all three extension core floors, the root Summon and SimpleBroker PG dev floors,
+MCP's development-only `taut-pg` floor, every root README SimpleBroker
+requirement, and the retained Summon and MCP locks. The Summon lock refresh is
+selective (`uv lock --upgrade-package simplebroker`); the MCP project uses a
+plain `uv lock` because its local core/PG sources and SDK range must reconcile
+without a targeted dependency upgrade. The helper stages only that fixed
+metadata allowlist and creates a local preparation commit before pytest, type,
+lint, and build gates. A later gate failure therefore leaves a clean, unpushed
+commit that can be inspected or reused on a rerun.
 
-The helper accepts `core`/`pg`/`summon` targets plus `all`;
-`all --version X.Y.Z` coordinates all three manifests, while target-specific
+The helper accepts `core`/`pg`/`summon`/`mcp` targets plus `all`;
+`all --version X.Y.Z` coordinates all four manifests, while target-specific
 versions remain independent. A real publishing run is allowed only from
 `main` or `master`, checked once before any preparation mutation; dry-run and
 checks-only remain branch-independent. By default, every target and `all` run
 one identical universal precheck sequence: root, PostgreSQL, all four Summon
-lanes, full-repository lint/format, and the three collision-safe mypy owners.
-Target selection controls metadata, ordinary builds, tags, and publication,
-not default verification scope. `--checks-only` runs that one sequence without
-mutation. `--skip-checks` remains an explicit human override; separately owned
-artifact builds and paired-wheel compatibility gates still run.
+lanes, the explicit MCP `not pg_only` lane, root/PG/Summon lint/format,
+package-local MCP lint/format, and four collision-safe mypy owners. The local
+MCP lane is a fast gate, not PostgreSQL evidence. Target selection controls
+metadata, ordinary builds, tags, and publication, not default verification
+scope. `--checks-only` runs that one sequence without mutation. `--skip-checks`
+remains an explicit human override; separately owned artifact builds and
+paired-wheel compatibility gates still run.
 
 After checking and building the exact preparation commit, the helper
 revalidates branch, HEAD, the full clean worktree/index, GitHub Release state,
@@ -137,8 +141,15 @@ GitHub Actions mirrors those process boundaries without duplicating work.
 `.github/workflows/test.yml` owns normal push/PR gates and remains reusable.
 Its representative Ubuntu root/unit and deterministic-process cells collect
 coverage while running their existing selectors; the prepared local-LLM job
-owns the live shard. The final coverage job only downloads, combines, checks,
-and reports those shards. The root matrix partitions non-slow tests into a
+owns the live shard. A separate same-workflow MCP producer installs editable
+local MCP and PG packages into the root coverage environment, then runs only
+`not pg_only`. The PG package is collection support because MCP's root
+`conftest.py` imports `taut_pg` before marker filtering; this job starts no
+database. The final coverage job depends on all four producers and only
+downloads, combines, checks, and reports their named shards. Root coverage
+source includes `taut_mcp`, and the required unique rate-bucket debit line
+makes an absent or path-misconfigured MCP shard fatal. The root matrix
+partitions non-slow tests into a
 broad lane and one fresh serial installed-wheel lane, so the wheel-building
 fixture has one worker owner per selected cell. That environment uses the
 matrix interpreter. CI factor-covers installed artifacts across every Python
@@ -146,19 +157,22 @@ version on Ubuntu and one representative for each other supported OS, reducing
 ten identical-style wheel lanes to six without dropping either version or OS
 coverage.
 
-On canonical branch pushes, the Test packaging job builds core, Summon, and PG
-once. It passes the explicit core/Summon wheel paths to the paired checker,
-installs the PG wheel with that core wheel in a clean venv, then uses
-`bin/release-artifact.py` to create three attempt-qualified bundles. Each
+On canonical branch pushes, the Test packaging job builds core, Summon, PG, and
+MCP once. It passes the explicit core/Summon wheel paths to the paired checker,
+installs PG with the exact core wheel in one clean venv, and installs MCP with
+the exact core wheel in another before running `taut-mcp --version`. It then
+uses `bin/release-artifact.py` to create four attempt-qualified bundles. Each
 bundle contains one wheel, one sdist, and an inner manifest bound to package
 name/version, commit, exact file names, and SHA-256 digests. Verification also
 binds the release tag family and version to the package.
 `.github/workflows/test-pg-extension.yml` remains the real Docker Postgres
-evidence and does not rebuild those packages.
+evidence for the shared backend. `.github/workflows/test-mcp-extension.yml`
+runs the complete MCP suite with its own real PostgreSQL service plus MCP-owned
+quality checks. Neither extension workflow produces release bytes.
 
-The three tag gates call `bin/require-green-workflows.py`; they do not call the
-test workflows. Every tag requires both root Test and PostgreSQL Test evidence
-for its exact peeled commit. The observer selects canonical push evidence by
+The four tag gates call `bin/require-green-workflows.py`; they do not call the
+test workflows. Every tag requires root Test, PostgreSQL Test, and MCP Test
+evidence for its exact peeled commit. The observer selects canonical push evidence by
 repository, head repository, workflow path, branch, event, exact commit peeled
 from either a lightweight or annotated tag, and latest attempt,
 then pins the package bundle by immutable artifact id and GitHub archive
@@ -571,6 +585,7 @@ queue high-water mark.
 | `bin/pytest-pg` | Docker-backed Postgres test runner for shared and extension suites |
 | `extensions/taut_pg/` | Separate `taut-pg` package, docs, and PG-only tests |
 | `extensions/taut_summon/` | Separate `taut-summon` package, summon driver/adapters, docs, and real-process tests |
+| `extensions/taut_mcp/` | Separate `taut-mcp` package, stdio protocol adapter, package-local quality gates, and cross-backend conformance tests |
 | `.github/workflows/` | GitHub Actions test and GitHub-only release publication gates |
 | `tests/` | Contract tests against real SQLite files, shared backend tests, and subprocess CLI |
 

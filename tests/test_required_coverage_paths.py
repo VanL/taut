@@ -60,3 +60,12 @@ def test_required_coverage_paths_accepts_all_markers(tmp_path: Path) -> None:
     data.write()
 
     assert module.missing_required_paths(data_file) == []
+
+
+def test_required_coverage_paths_includes_unique_mcp_rate_debit() -> None:
+    module = _load_module()
+    path = "extensions/taut_mcp/taut_mcp/_connection_reactor.py"
+
+    assert module.REQUIRED_MARKERS[Path(path)] == "self._bucket_tokens -= 1.0"
+    source = (PROJECT_ROOT / path).read_text(encoding="utf-8")
+    assert source.count("self._bucket_tokens -= 1.0") == 1

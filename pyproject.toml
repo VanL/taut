@@ -140,7 +140,7 @@ ignore = [
 known-first-party = ["taut"]
 
 [tool.coverage.run]
-source = ["taut", "taut_summon"]
+source = ["taut", "taut_summon", "taut_mcp"]
 parallel = true
 concurrency = ["thread", "multiprocessing"]
 patch = ["subprocess"]

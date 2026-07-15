@@ -1495,8 +1495,10 @@ Release targets:
 - `summon` releases `taut-summon` from `extensions/taut_summon` with a
   `taut_summon/vX.Y.Z` tag and
   `.github/workflows/release-gate-summon.yml`.
+- `mcp` releases `taut-mcp` from `extensions/taut_mcp` with a
+  `taut_mcp/vX.Y.Z` tag and `.github/workflows/release-gate-mcp.yml`.
 - `all` releases every requested package version that does not already have a
-  GitHub Release. With `--version X.Y.Z`, the helper prepares all three package
+  GitHub Release. With `--version X.Y.Z`, the helper prepares all four package
   manifests at that coordinated version. Without `--version`, each package's
   manifest remains the source for its current version. Package versions are
   otherwise independent; consistency gates compare derived copies to the
@@ -1510,7 +1512,7 @@ Helper obligations:
 - A publishing release runs from `main` or `master`, the branches that produce
   canonical push-triggered CI evidence. One shared guard rejects a topic branch
   or detached `HEAD` before release metadata mutation for `all`, `core`, `pg`,
-  and `summon`. Dry-run and checks-only remain usable from other branches
+  `summon`, and `mcp`. Dry-run and checks-only remain usable from other branches
   because they do not publish.
 - Before release, reject dirty worktrees unless `--dry-run` is set, reject or
   exclude already-published GitHub Releases according to the existing single
@@ -1522,16 +1524,17 @@ Helper obligations:
 - Prepare deterministic metadata before running release prechecks. Change only
   the selected package versions, but reconcile every manifest-owned derived
   copy on every normal release invocation: root `taut/_constants.py`, README
-  tag and wheel examples, both extension `taut>=...` floors, the root dev
+  tag and wheel examples, all three extension `taut>=...` floors, the root dev
   `taut-summon>=...` and `simplebroker-pg>=...` floors, every exact root README
-  SimpleBroker requirement occurrence, and the retained
-  `extensions/taut_summon/uv.lock`. Each package manifest owns its version; the
-  root manifest owns the core constant and SimpleBroker requirement; the root
-  version owns both extension `taut>=...` floors; the Summon manifest owns the
-  root dev `taut-summon>=...` floor; and the PG manifest owns the root dev
-  `simplebroker-pg>=...` floor.
-  Refresh the Summon lock selectively with
-  `uv lock --upgrade-package simplebroker`; do not refresh or retain a PG
+  SimpleBroker requirement occurrence, and the retained Summon and MCP locks.
+  Each package manifest owns its version; the root manifest owns the core
+  constant and SimpleBroker requirement; the root version owns every
+  first-party extension `taut>=...` floor; the Summon manifest owns the root dev
+  `taut-summon>=...` floor; the PG manifest owns the root dev
+  `simplebroker-pg>=...` floor; and the MCP manifest owns its MCP SDK range and
+  its dev-only `taut-pg` compatibility floor. Refresh the Summon lock
+  selectively with `uv lock --upgrade-package simplebroker`; reconcile the MCP
+  lock with plain `uv lock` in its project; do not refresh or retain a PG
   lockfile.
 - Stage only the release-file allowlist and create the local
   release-preparation commit before prechecks. The prechecks verify that exact
@@ -1546,16 +1549,17 @@ Helper obligations:
   against its clean local preparation commit and before any branch push, tag
   creation or replacement, tag push, or publication unless `--skip-checks` is
   set. `--checks-only` runs that same single sequence without mutation. The
-  sequence is:
-  root pytest partitioned into `not slow and not installed_wheel` plus a fresh
-  serial `not slow and installed_wheel` invocation, `bin/pytest-pg --fast`, the
-  `extensions/taut_summon/tests` suite split into non-process, deterministic
-  `xdist_group` process, strict external-live, and local-LLM lanes, ruff over
-  root and both extension paths, and split mypy lanes so extension
-  `conftest.py` modules do not collide. Target selection controls metadata,
-  ordinary package builds, tags, and publication, not the default verification
-  scope. `--skip-checks` remains an explicit human override for dry-run and
-  publishing commands.
+  sequence is: root pytest partitioned into `not slow and not installed_wheel`
+  plus a fresh serial `not slow and installed_wheel` invocation,
+  `bin/pytest-pg --fast`, the four isolated Summon lanes, one explicit MCP
+  `not pg_only` lane under the MCP project, existing root/PG/Summon Ruff paths,
+  package-local MCP Ruff lint/format, and four collision-safe mypy owners
+  including an explicit MCP project-local command with its package config. The
+  local MCP lane never treats excluded PostgreSQL cases as evidence; the
+  required canonical MCP workflow supplies that live-backend proof. Target
+  selection controls metadata, ordinary package builds, tags, and publication,
+  not the default verification scope. `--skip-checks` remains an explicit human
+  override for dry-run and publishing commands.
 
   The process/live/LLM lanes are isolated from unrelated summon tests because
   they drive multiple real processes against shared SQLite files. The
@@ -1600,12 +1604,31 @@ Helper obligations:
   not invoked merely to inflate coverage. External-provider live harnesses are
   a strict local release gate unless CI grows explicit credentials/tooling for
   those provider CLIs.
+  The canonical Test workflow also owns MCP coverage. One independent MCP
+  coverage job installs the root development environment plus editable local
+  MCP and PG projects into the runner's system environment. The PG project is
+  required because the MCP suite's root `conftest.py` imports `taut_pg` during
+  collection, before marker filtering; installing it does not start or require
+  a PostgreSQL service. The job runs the explicit `not pg_only` MCP suite under
+  the root coverage tool and configuration on one representative Python
+  version, and uploads a named shard from the same workflow run. It runs on
+  every root Test workflow event for which the always-running aggregator
+  requires the shard. Root coverage configuration includes `taut_mcp` as
+  source. The existing coverage report job depends on that producer, downloads
+  and combines its shard with root and Summon shards, and requires execution of
+  the unique non-PG rate-admission line `self._bucket_tokens -= 1.0` in
+  `extensions/taut_mcp/taut_mcp/_connection_reactor.py` before generating the
+  report. The MCP compatibility workflow remains the sole live-PostgreSQL MCP
+  conformance owner and does not become a second coverage owner.
   Every root OS/Python cell still runs the source contract. The installed-wheel
   lane uses factor coverage: all four supported Python versions on Ubuntu,
   plus one macOS and one Windows representative, with the active matrix
   interpreter used inside the fresh wheel environment.
-- After metadata preparation and prechecks, build the selected package
-  artifacts. The Summon lock has already been refreshed during preparation.
+- After metadata preparation and prechecks, build each selected package's
+  artifacts. The Summon and MCP locks have already been reconciled during
+  preparation. Core/Summon retain their separate paired-wheel compatibility
+  proof; selecting MCP adds its ordinary package build without changing that
+  paired boundary.
 - Keep branch pushes, tag creation or replacement, tag pushes, and publication
   after prechecks, normal artifact builds, and the paired core/Summon wheel
   check. Immediately before remote action, verify that the branch and `HEAD`
@@ -1618,26 +1641,28 @@ Helper obligations:
 
 Workflow obligations:
 
-- Canonical `push` runs of `.github/workflows/test.yml` and
-  `.github/workflows/test-pg-extension.yml` are the test evidence for a release
-  SHA. On canonical `main`/`master` pushes, the root workflow performs the
-  release-grade paired core/Summon wheel check against the distributions it
-  built, builds the PG distribution, and proves in a fresh environment that
-  the PG wheel installs with that core wheel, imports `taut_pg`, and is
-  discoverable as a plugin. It uploads separate core, Summon, and PG bundles;
-  the PG workflow remains real database evidence and does not duplicate package
-  construction. Pull-request and manual runs retain ordinary packaging smoke
-  but do not produce release evidence. Each release bundle records the exact
-  commit, package name/version, file allowlist, and SHA-256 digests, and its
-  name identifies the workflow attempt that produced it.
+- Canonical `push` runs of `.github/workflows/test.yml`,
+  `.github/workflows/test-pg-extension.yml`, and
+  `.github/workflows/test-mcp-extension.yml` are the test evidence for a
+  release SHA. On canonical `main`/`master` pushes, the root workflow remains
+  the sole release-byte owner: it builds core, Summon, PG, and MCP, runs the
+  existing paired and PG wheel checks plus a fresh core/MCP wheel installation
+  and `taut-mcp` console smoke, and uploads four separate immutable provenance
+  bundles. The PG workflow remains real database evidence for the shared PG
+  surface; the MCP workflow runs its complete suite with a real PostgreSQL
+  service plus its quality gates. Neither extension workflow produces release
+  bytes. Pull-request and manual runs retain ordinary packaging smoke but do not
+  produce release evidence. Each release bundle records the exact commit,
+  package name/version, file allowlist, and SHA-256 digests, and its name
+  identifies the workflow attempt that produced it.
 - Each tag gate waits for the required canonical workflow file or id to finish
   successfully for the exact commit peeled from the release tag, canonical
   branch, source/head
   repository, latest attempt, and `push` event. It normalizes API `path@ref`
   values rather than trusting display names or path strings. Every package tag
-  requires successful root Test and PostgreSQL Test evidence for the exact
-  peeled tag commit. The three tag gates observe those canonical workflows and
-  never invoke them. Each observer makes one repository-wide
+  requires successful root Test, PostgreSQL Test, and MCP Test evidence for the
+  exact peeled tag commit. The four tag gates observe those canonical workflows
+  and never invoke them. Each observer makes one repository-wide
   runs-list request per poll and filters workflow files locally. A
   rate-limit-signature 403 or 429 respects the server reset within the bounded
   observer window; 401, non-rate-limit 403, malformed responses, and completed
@@ -1650,17 +1675,18 @@ Workflow obligations:
   checkout, setup, tag peeling, observation, and cancellation overhead.
   Seeing only an older-attempt artifact remains pollable during the bounded
   two-minute artifact-visibility window; absence of the current-attempt
-  artifact after that window is fatal.
+  artifact after that window is fatal. Each gate pins its package bundle from
+  the root Test workflow by immutable artifact id and GitHub archive digest.
 - `.github/workflows/release.yml` downloads the one expected, non-expired
   package artifact for the eligible workflow attempt by immutable artifact id,
   with repository, run id, and GitHub archive SHA-256 digest verified from REST
   metadata. It then verifies the embedded commit/package/version/file hashes
   against the checked-out peeled tag commit, verifies that the tag family and
-  version are exactly `vX.Y.Z` for `taut`, `taut_pg/vX.Y.Z` for `taut-pg`, or
-  `taut_summon/vX.Y.Z` for `taut-summon`, rechecks that the remote tag is
-  current, and publishes those exact files. It does not rebuild distributions
-  and is the only artifact publisher. It must not contain PyPI upload or
-  Trusted Publishing steps.
+  version are exactly `vX.Y.Z` for `taut`, `taut_pg/vX.Y.Z` for `taut-pg`,
+  `taut_summon/vX.Y.Z` for `taut-summon`, or `taut_mcp/vX.Y.Z` for `taut-mcp`,
+  rechecks that the remote tag is current, and publishes those exact files. It
+  does not rebuild distributions and is the only artifact publisher. It must
+  not contain PyPI upload or Trusted Publishing steps.
 
 Core and `taut-summon` reactor changes ship as a paired release. The release
 helper synchronizes the Summon `taut>=` floor to the exact new core version,
@@ -1702,6 +1728,9 @@ verification.
 
 ## Related Plans
 
+- `docs/plans/2026-07-15-taut-mcp-release-integration-plan.md` — fourth MCP
+  release target, exact-SHA release gates, root-owned immutable bundle, and
+  same-run MCP coverage aggregation.
 - `docs/plans/2026-07-14-taut-mcp-extension-plan.md` — optional stdio MCP
   extension, read-only notification peek, workspace-scoped identity, reactor
   hierarchy, explicit tool/resource contracts, and cross-backend conformance.

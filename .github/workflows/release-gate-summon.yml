@@ -57,6 +57,7 @@ jobs:
           python bin/require-green-workflows.py wait \
             --workflow root=.github/workflows/test.yml \
             --workflow pg=.github/workflows/test-pg-extension.yml \
+            --workflow mcp=.github/workflows/test-mcp-extension.yml \
             --artifact-workflow root \
             --artifact-prefix release-taut-summon
 

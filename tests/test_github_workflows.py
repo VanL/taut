@@ -217,13 +217,14 @@ def test_summon_live_files_have_disjoint_unit_and_live_owners(
 def test_coverage_reuses_existing_ubuntu_lanes_and_aggregates_without_tests() -> None:
     config = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text("utf-8"))
     run_config = config["tool"]["coverage"]["run"]
-    assert run_config["source"] == ["taut", "taut_summon"]
+    assert run_config["source"] == ["taut", "taut_summon", "taut_mcp"]
     assert run_config["patch"] == ["subprocess"]
 
     workflow = _workflow("test.yml")
     root_job = _job_block(workflow, "test")
     process_job = _job_block(workflow, "summon-process")
     llm_job = _job_block(workflow, "summon-local-llm")
+    mcp_job = _job_block(workflow, "mcp-coverage")
     coverage_job = _job_block(workflow, "coverage")
 
     representative = "matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13'"
@@ -239,17 +240,27 @@ def test_coverage_reuses_existing_ubuntu_lanes_and_aggregates_without_tests() ->
     assert "steps.summon_unit_coverage.outcome != 'skipped'" in root_job
     assert "steps.summon_process_coverage.outcome != 'skipped'" in process_job
     assert "steps.local_llm_coverage.outcome != 'skipped'" in llm_job
+    assert "python -m coverage run --parallel-mode -m pytest" in mcp_job
+    assert "extensions/taut_mcp/tests" in mcp_job
+    assert '-m "not pg_only" -n 0' in mcp_job
+    assert '-e "./extensions/taut_pg"' in mcp_job
+    assert '-e "./extensions/taut_mcp"' in mcp_job
+    assert "services:" not in mcp_job
+    assert "\n    if:" not in mcp_job.split("    steps:", maxsplit=1)[0]
 
     for job, artifact in (
         (root_job, "coverage-data-root-unit"),
         (process_job, "coverage-data-summon-process"),
         (llm_job, "coverage-data-local-llm"),
+        (mcp_job, "coverage-data-mcp"),
     ):
         assert "if: ${{ always()" in job
         assert artifact in job
         assert "include-hidden-files: true" in job
 
-    assert "needs: [test, summon-process, summon-local-llm]" in coverage_job
+    assert (
+        "needs: [test, summon-process, summon-local-llm, mcp-coverage]" in coverage_job
+    )
     assert "pattern: coverage-data-*" in coverage_job
     assert "merge-multiple: true" in coverage_job
     assert "python -m coverage combine coverage-data" in coverage_job
@@ -363,10 +374,14 @@ def test_canonical_packaging_builds_and_smokes_each_release_artifact_once() -> N
     assert "python -m venv /tmp/taut-pg-wheel-smoke" in packaging
     assert "import taut_pg" in packaging
     assert 'get_backend_plugin("postgres")' in packaging
-    assert packaging.count("python bin/release-artifact.py create") == 3
-    assert packaging.count("${{ github.run_attempt }}") >= 3
-    assert packaging.count(canonical) >= 3
-    for package in ("taut", "taut-summon", "taut-pg"):
+    assert "uv build --out-dir release-dist/mcp extensions/taut_mcp" in packaging
+    assert "python -m venv /tmp/taut-mcp-wheel-smoke" in packaging
+    assert "release-dist/core/*.whl release-dist/mcp/*.whl" in packaging
+    assert "taut-mcp --version" in packaging
+    assert packaging.count("python bin/release-artifact.py create") == 4
+    assert packaging.count("${{ github.run_attempt }}") >= 4
+    assert packaging.count(canonical) >= 4
+    for package in ("taut", "taut-summon", "taut-pg", "taut-mcp"):
         assert f"release-{package}-attempt-${{{{ github.run_attempt }}}}" in packaging
 
 
@@ -376,6 +391,7 @@ def test_setup_uv_steps_have_tight_timeouts() -> None:
         "test-pg-extension.yml",
         "release.yml",
         "release-gate-summon.yml",
+        "release-gate-mcp.yml",
     ):
         lines = _workflow(name).splitlines()
         setup_uv_lines = [
@@ -384,7 +400,7 @@ def test_setup_uv_steps_have_tight_timeouts() -> None:
             if "uses: astral-sh/setup-uv@" in line
         ]
 
-        if name in {"release.yml", "release-gate-summon.yml"}:
+        if name in {"release.yml", "release-gate-summon.yml", "release-gate-mcp.yml"}:
             assert setup_uv_lines == []
             continue
         assert setup_uv_lines, name
@@ -410,6 +426,9 @@ def _assert_exact_sha_release_observer(name: str, *, artifact_prefix: str) -> st
     assert "python bin/require-green-workflows.py wait" in evidence
     assert evidence.count("--workflow root=.github/workflows/test.yml") == 1
     assert evidence.count("--workflow pg=.github/workflows/test-pg-extension.yml") == 1
+    assert (
+        evidence.count("--workflow mcp=.github/workflows/test-mcp-extension.yml") == 1
+    )
     assert "--artifact-workflow root" in evidence
     assert f"--artifact-prefix {artifact_prefix}" in evidence
     assert "GITHUB_TOKEN: ${{ github.token }}" in evidence
@@ -484,6 +503,8 @@ def test_mcp_workflow_runs_sqlite_postgres_quality_and_build_gates() -> None:
     )
     assert "mypy extensions/taut_mcp/taut_mcp extensions/taut_mcp/tests" in workflow
     assert "uv build --project extensions/taut_mcp" in workflow
+    assert "release-artifact.py" not in workflow
+    assert "release-taut-mcp" not in workflow
 
 
 def test_pg_release_gate_is_github_only() -> None:
@@ -511,6 +532,21 @@ def test_summon_release_gate_is_github_only() -> None:
     assert 'tags:\n      - "taut_summon/v*"' in workflow
     assert "package_name: taut-summon" in workflow
     assert "package_dir: extensions/taut_summon" in workflow
+    assert "uv publish" not in lower_workflow
+    assert "pypi" not in lower_workflow
+    assert "trusted-publishing" not in lower_workflow
+
+
+def test_mcp_release_gate_is_github_only() -> None:
+    workflow = _assert_exact_sha_release_observer(
+        "release-gate-mcp.yml",
+        artifact_prefix="release-taut-mcp",
+    )
+    lower_workflow = workflow.lower()
+
+    assert 'tags:\n      - "taut_mcp/v*"' in workflow
+    assert "package_name: taut-mcp" in workflow
+    assert "package_dir: extensions/taut_mcp" in workflow
     assert "uv publish" not in lower_workflow
     assert "pypi" not in lower_workflow
     assert "trusted-publishing" not in lower_workflow

@@ -239,9 +239,11 @@ def test_sync_readme_version_examples_updates_only_selected_artifact(
     root = tmp_path / "README.md"
     pg = tmp_path / "pg.md"
     summon = tmp_path / "summon.md"
+    mcp = tmp_path / "mcp.md"
     root.write_text(
         "core @v0.5.2\n./taut_pg-0.5.2-py3-none-any.whl\n"
-        "./taut_summon-0.5.2-py3-none-any.whl\n",
+        "./taut_summon-0.5.2-py3-none-any.whl\n"
+        "./taut_mcp-0.5.2-py3-none-any.whl\n",
         encoding="utf-8",
     )
     pg.write_text(
@@ -252,6 +254,10 @@ def test_sync_readme_version_examples_updates_only_selected_artifact(
         "core @v0.5.2\n./taut_summon-0.5.2-py3-none-any.whl\n",
         encoding="utf-8",
     )
+    mcp.write_text(
+        "core @v0.5.2\n./taut_mcp-0.5.2-py3-none-any.whl\n",
+        encoding="utf-8",
+    )
 
     release.sync_readme_version_examples(
         release.ROOT_TARGET,
@@ -259,6 +265,7 @@ def test_sync_readme_version_examples_updates_only_selected_artifact(
         root_readme_path=root,
         pg_readme_path=pg,
         summon_readme_path=summon,
+        mcp_readme_path=mcp,
     )
     release.sync_readme_version_examples(
         release.PG_TARGET,
@@ -266,6 +273,7 @@ def test_sync_readme_version_examples_updates_only_selected_artifact(
         root_readme_path=root,
         pg_readme_path=pg,
         summon_readme_path=summon,
+        mcp_readme_path=mcp,
     )
     release.sync_readme_version_examples(
         release.SUMMON_TARGET,
@@ -273,17 +281,30 @@ def test_sync_readme_version_examples_updates_only_selected_artifact(
         root_readme_path=root,
         pg_readme_path=pg,
         summon_readme_path=summon,
+        mcp_readme_path=mcp,
+    )
+    release.sync_readme_version_examples(
+        release.MCP_TARGET,
+        "0.5.6",
+        root_readme_path=root,
+        pg_readme_path=pg,
+        summon_readme_path=summon,
+        mcp_readme_path=mcp,
     )
 
     assert root.read_text(encoding="utf-8") == (
         "core @v0.5.3\n./taut_pg-0.5.4-py3-none-any.whl\n"
         "./taut_summon-0.5.5-py3-none-any.whl\n"
+        "./taut_mcp-0.5.6-py3-none-any.whl\n"
     )
     assert pg.read_text(encoding="utf-8") == (
         "core @v0.5.3\n./taut_pg-0.5.4-py3-none-any.whl\n"
     )
     assert summon.read_text(encoding="utf-8") == (
         "core @v0.5.3\n./taut_summon-0.5.5-py3-none-any.whl\n"
+    )
+    assert mcp.read_text(encoding="utf-8") == (
+        "core @v0.5.3\n./taut_mcp-0.5.6-py3-none-any.whl\n"
     )
 
 
@@ -335,6 +356,7 @@ def test_prepare_release_metadata_repairs_all_derived_copies_idempotently(
     (tmp_path / "taut").mkdir()
     (tmp_path / "extensions" / "taut_pg").mkdir(parents=True)
     (tmp_path / "extensions" / "taut_summon").mkdir(parents=True)
+    (tmp_path / "extensions" / "taut_mcp").mkdir(parents=True)
     (tmp_path / "pyproject.toml").write_text(
         "\n".join(
             (
@@ -368,10 +390,17 @@ def test_prepare_release_metadata_repairs_all_derived_copies_idempotently(
         'dependencies = [\n    "taut>=0.5.0",\n]\n',
         encoding="utf-8",
     )
+    (tmp_path / "extensions" / "taut_mcp" / "pyproject.toml").write_text(
+        '[project]\nname = "taut-mcp"\nversion = "0.5.0"\n'
+        'dependencies = [\n    "taut>=0.5.0",\n    "mcp>=1.28.1,<2",\n]\n'
+        '[project.optional-dependencies]\ndev = [\n    "taut-pg>=0.5.0",\n]\n',
+        encoding="utf-8",
+    )
     (tmp_path / "README.md").write_text(
         "core @v0.5.0\n"
         "taut_pg-0.5.0-py3-none-any.whl\n"
         "taut_summon-0.5.0-py3-none-any.whl\n"
+        "taut_mcp-0.5.0-py3-none-any.whl\n"
         "simplebroker>=5.3.0\nsimplebroker>=5.3.1\n",
         encoding="utf-8",
     )
@@ -383,11 +412,16 @@ def test_prepare_release_metadata_repairs_all_derived_copies_idempotently(
         "core @v0.5.0\ntaut_summon-0.5.0-py3-none-any.whl\n",
         encoding="utf-8",
     )
+    (tmp_path / "extensions" / "taut_mcp" / "README.md").write_text(
+        "core @v0.5.0\ntaut_mcp-0.5.0-py3-none-any.whl\n",
+        encoding="utf-8",
+    )
     release = _load_release_module(script)
     target_versions = (
         (release.ROOT_TARGET, "0.6.1"),
         (release.PG_TARGET, "0.6.2"),
         (release.SUMMON_TARGET, "0.6.3"),
+        (release.MCP_TARGET, "0.6.4"),
     )
 
     release.prepare_release_metadata(target_versions)
@@ -401,6 +435,8 @@ def test_prepare_release_metadata_repairs_all_derived_copies_idempotently(
             tmp_path / "extensions" / "taut_pg" / "README.md",
             tmp_path / "extensions" / "taut_summon" / "pyproject.toml",
             tmp_path / "extensions" / "taut_summon" / "README.md",
+            tmp_path / "extensions" / "taut_mcp" / "pyproject.toml",
+            tmp_path / "extensions" / "taut_mcp" / "README.md",
         )
     }
     release.prepare_release_metadata(target_versions)
@@ -420,6 +456,14 @@ def test_prepare_release_metadata_repairs_all_derived_copies_idempotently(
         '"taut>=0.6.1",'
         in first[tmp_path / "extensions" / "taut_summon" / "pyproject.toml"]
     )
+    assert (
+        '"taut>=0.6.1",'
+        in first[tmp_path / "extensions" / "taut_mcp" / "pyproject.toml"]
+    )
+    assert (
+        '"taut-pg>=0.6.2",'
+        in first[tmp_path / "extensions" / "taut_mcp" / "pyproject.toml"]
+    )
     assert first[tmp_path / "README.md"].count("simplebroker>=5.3.2") == 2
     assert "0.5.0" not in "".join(first.values())
 
@@ -432,6 +476,7 @@ def test_target_specific_preparation_preserves_other_manifest_versions(
         release.ROOT_TARGET: "0.6.1",
         release.PG_TARGET: "0.5.9",
         release.SUMMON_TARGET: "0.5.8",
+        release.MCP_TARGET: "0.5.7",
     }
     prepared_versions = dict(manifest_versions)
     prepared_versions[release.PG_TARGET] = "0.6.2"
@@ -462,6 +507,7 @@ def test_target_specific_preparation_preserves_other_manifest_versions(
         (release.ROOT_TARGET, "0.6.1"),
         (release.PG_TARGET, "0.6.2"),
         (release.SUMMON_TARGET, "0.5.8"),
+        (release.MCP_TARGET, "0.5.7"),
     ]
 
 
@@ -475,6 +521,7 @@ def test_public_release_flow_commits_preparation_then_reuses_it_after_failure(
     (tmp_path / "taut").mkdir()
     (tmp_path / "extensions" / "taut_pg").mkdir(parents=True)
     (tmp_path / "extensions" / "taut_summon").mkdir(parents=True)
+    (tmp_path / "extensions" / "taut_mcp").mkdir(parents=True)
     (tmp_path / "pyproject.toml").write_text(
         '[project]\nname = "taut"\nversion = "0.6.1"\n'
         'dependencies = [\n    "simplebroker>=5.3.2",\n]\n'
@@ -497,10 +544,17 @@ def test_public_release_flow_commits_preparation_then_reuses_it_after_failure(
         'dependencies = [\n    "taut>=0.5.0",\n]\n',
         encoding="utf-8",
     )
+    (tmp_path / "extensions" / "taut_mcp" / "pyproject.toml").write_text(
+        '[project]\nname = "taut-mcp"\nversion = "0.6.1"\n'
+        'dependencies = [\n    "taut>=0.5.0",\n    "mcp>=1.28.1,<2",\n]\n'
+        '[project.optional-dependencies]\ndev = [\n    "taut-pg>=0.5.0",\n]\n',
+        encoding="utf-8",
+    )
     (tmp_path / "README.md").write_text(
         "core @v0.5.0\n"
         "taut_pg-0.5.0-py3-none-any.whl\n"
         "taut_summon-0.5.0-py3-none-any.whl\n"
+        "taut_mcp-0.5.0-py3-none-any.whl\n"
         "simplebroker>=5.3.0\nsimplebroker>=5.3.1\n",
         encoding="utf-8",
     )
@@ -512,7 +566,14 @@ def test_public_release_flow_commits_preparation_then_reuses_it_after_failure(
         "core @v0.5.0\ntaut_summon-0.5.0-py3-none-any.whl\n",
         encoding="utf-8",
     )
+    (tmp_path / "extensions" / "taut_mcp" / "README.md").write_text(
+        "core @v0.5.0\ntaut_mcp-0.5.0-py3-none-any.whl\n",
+        encoding="utf-8",
+    )
     (tmp_path / "extensions" / "taut_summon" / "uv.lock").write_text(
+        "stale retained lock\n", encoding="utf-8"
+    )
+    (tmp_path / "extensions" / "taut_mcp" / "uv.lock").write_text(
         "stale retained lock\n", encoding="utf-8"
     )
     (tmp_path / "CHANGELOG.md").write_text(
@@ -552,10 +613,16 @@ def test_public_release_flow_commits_preparation_then_reuses_it_after_failure(
     ) -> None:
         if command[:2] == ("uv", "lock"):
             events.append("lock")
-            release.SUMMON_UV_LOCK_PATH.write_text(
-                "taut=0.6.1\ntaut-summon=0.6.1\nsimplebroker=5.3.2\n",
-                encoding="utf-8",
-            )
+            if cwd == release.SUMMON_EXTENSION_DIR:
+                release.SUMMON_UV_LOCK_PATH.write_text(
+                    "taut=0.6.1\ntaut-summon=0.6.1\nsimplebroker=5.3.2\n",
+                    encoding="utf-8",
+                )
+            elif cwd == release.MCP_EXTENSION_DIR:
+                release.MCP_UV_LOCK_PATH.write_text(
+                    "taut=0.6.1\ntaut-pg=0.6.1\ntaut-mcp=0.6.1\n",
+                    encoding="utf-8",
+                )
             return
         if command[:2] == ("git", "add"):
             events.append("git-add")
@@ -614,13 +681,14 @@ def test_public_release_flow_commits_preparation_then_reuses_it_after_failure(
         ).splitlines()
     )
     assert changed_paths == set(release._release_file_args(release.ROOT_TARGET))  # noqa: SLF001
-    assert events == ["lock", "git-add", "git-commit", "precheck-1"]
+    assert events == ["lock", "lock", "git-add", "git-commit", "precheck-1"]
     assert release.is_dirty_worktree() is False
 
     events.clear()
     assert release.main(["core"]) == 0
     assert release.current_head_commit() == preparation_head
     assert events == [
+        "lock",
         "lock",
         "precheck-2",
         "build",
@@ -630,20 +698,6 @@ def test_public_release_flow_commits_preparation_then_reuses_it_after_failure(
         "push-tag",
     ]
     assert release.is_dirty_worktree() is False
-
-
-def test_summon_target_tracks_root_and_extension_readme_examples() -> None:
-    release = _load_release_module()
-
-    assert release.ROOT_README_PATH in release.target_version_files(
-        release.SUMMON_TARGET
-    )
-    assert release.SUMMON_README_PATH in release.target_version_files(
-        release.SUMMON_TARGET
-    )
-    assert release.ROOT_README_PATH in release._release_file_paths(  # noqa: SLF001
-        release.SUMMON_TARGET
-    )
 
 
 def test_require_changelog_heading_rejects_missing_target(tmp_path: Path) -> None:
@@ -747,6 +801,31 @@ def test_sync_summon_core_dependency_updates_exact_root_floor(
     assert '"taut>=0.6.0",' in summon_pyproject_path.read_text(encoding="utf-8")
 
 
+def test_sync_mcp_pg_dev_dependency_uses_pg_manifest_version(tmp_path: Path) -> None:
+    release = _load_release_module()
+    pg_pyproject_path = tmp_path / "extensions" / "taut_pg" / "pyproject.toml"
+    mcp_pyproject_path = tmp_path / "extensions" / "taut_mcp" / "pyproject.toml"
+    pg_pyproject_path.parent.mkdir(parents=True)
+    mcp_pyproject_path.parent.mkdir(parents=True)
+    pg_pyproject_path.write_text(
+        '[project]\nname = "taut-pg"\nversion = "0.7.1"\n',
+        encoding="utf-8",
+    )
+    mcp_pyproject_path.write_text(
+        '[project]\nname = "taut-mcp"\nversion = "0.7.0"\n'
+        '[project.optional-dependencies]\ndev = [\n    "taut-pg>=0.7.0",\n]\n',
+        encoding="utf-8",
+    )
+
+    updated = release.sync_mcp_pg_dev_dependency(
+        pg_pyproject_path=pg_pyproject_path,
+        mcp_pyproject_path=mcp_pyproject_path,
+    )
+
+    assert updated == "0.7.1"
+    assert '"taut-pg>=0.7.1",' in mcp_pyproject_path.read_text(encoding="utf-8")
+
+
 def test_release_sync_updates_all_first_party_dependency_directions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -769,6 +848,14 @@ def test_release_sync_updates_all_first_party_dependency_directions(
         calls.append("pg-runtime-to-root-dev")
         return "3.2.1"
 
+    def sync_mcp_to_root() -> str:
+        calls.append("mcp-to-root")
+        return "0.6.0"
+
+    def sync_pg_to_mcp_dev() -> str:
+        calls.append("pg-to-mcp-dev")
+        return "0.6.0"
+
     monkeypatch.setattr(
         release,
         "sync_root_summon_dev_dependency",
@@ -785,6 +872,12 @@ def test_release_sync_updates_all_first_party_dependency_directions(
         "sync_root_pg_dev_dependency",
         sync_pg_runtime_to_root_dev,
     )
+    monkeypatch.setattr(release, "sync_mcp_core_dependency", sync_mcp_to_root)
+    monkeypatch.setattr(
+        release,
+        "sync_mcp_pg_dev_dependency",
+        sync_pg_to_mcp_dev,
+    )
 
     release._sync_root_release_dependencies()  # noqa: SLF001
 
@@ -793,6 +886,8 @@ def test_release_sync_updates_all_first_party_dependency_directions(
         "pg-runtime-to-root-dev",
         "pg-to-root",
         "summon-to-root",
+        "mcp-to-root",
+        "pg-to-mcp-dev",
     ]
 
 
@@ -827,6 +922,85 @@ def test_summon_target_uses_namespaced_github_tag() -> None:
         release.SUMMON_TARGET.release_workflow
         == ".github/workflows/release-gate-summon.yml"
     )
+
+
+def test_mcp_target_uses_namespaced_github_tag_and_joins_batch() -> None:
+    release = _load_release_module()
+
+    assert release.MCP_TARGET.package_name == "taut-mcp"
+    assert release.MCP_TARGET.package_dir == Path("extensions/taut_mcp")
+    assert release.MCP_TARGET.tag_for_version("0.7.0") == "taut_mcp/v0.7.0"
+    assert (
+        release.MCP_TARGET.release_workflow == ".github/workflows/release-gate-mcp.yml"
+    )
+    assert release.MCP_TARGET.github_release is True
+    assert release.MCP_TARGET.pypi_publish is False
+    assert release.CANONICAL_TARGETS["mcp"] == release.MCP_TARGET
+    assert release.BATCH_RELEASE_TARGETS == (
+        release.PG_TARGET,
+        release.SUMMON_TARGET,
+        release.MCP_TARGET,
+        release.ROOT_TARGET,
+    )
+
+
+def test_mcp_precheck_lock_build_and_quality_are_package_local() -> None:
+    release = _load_release_module()
+
+    commands = release.build_precheck_commands(release.MCP_TARGET)
+    assert (
+        "uv",
+        "run",
+        "--project",
+        "extensions/taut_mcp",
+        "--extra",
+        "dev",
+        "pytest",
+        "extensions/taut_mcp/tests",
+        "-m",
+        "not pg_only",
+        "-n",
+        "0",
+    ) in commands
+    assert (
+        "uv",
+        "run",
+        "--project",
+        "extensions/taut_mcp",
+        "--extra",
+        "dev",
+        "ruff",
+        "check",
+        "extensions/taut_mcp/taut_mcp",
+        "extensions/taut_mcp/tests",
+    ) in commands
+    assert (
+        "uv",
+        "run",
+        "--project",
+        "extensions/taut_mcp",
+        "--extra",
+        "dev",
+        "mypy",
+        "extensions/taut_mcp/taut_mcp",
+        "extensions/taut_mcp/tests",
+        "--config-file",
+        "extensions/taut_mcp/pyproject.toml",
+    ) in commands
+
+    preparation = release.build_preparation_steps_for_targets((release.MCP_TARGET,))
+    assert any(
+        step.command == ("uv", "lock") and step.cwd == release.MCP_EXTENSION_DIR
+        for step in preparation
+    )
+    builds = release.build_postupdate_steps(release.MCP_TARGET)
+    assert builds[0].command == ("uv", "build", "extensions/taut_mcp")
+
+
+def test_target_version_files_helper_is_removed() -> None:
+    release = _load_release_module()
+
+    assert not hasattr(release, "target_version_files")
 
 
 def test_inspect_release_state_is_github_only(
@@ -1119,7 +1293,7 @@ def test_precheck_commands_select_dev_extra_and_include_typed_release_helper() -
     ) in commands
 
 
-@pytest.mark.parametrize("target_key", ("core", "pg", "summon", "all"))
+@pytest.mark.parametrize("target_key", ("core", "pg", "summon", "mcp", "all"))
 def test_every_target_set_plans_one_literal_universal_precheck_sequence(
     target_key: str,
 ) -> None:
@@ -1206,6 +1380,20 @@ def test_every_target_set_plans_one_literal_universal_precheck_sequence(
         (
             "uv",
             "run",
+            "--project",
+            "extensions/taut_mcp",
+            "--extra",
+            "dev",
+            "pytest",
+            "extensions/taut_mcp/tests",
+            "-m",
+            "not pg_only",
+            "-n",
+            "0",
+        ),
+        (
+            "uv",
+            "run",
             "--extra",
             "dev",
             "ruff",
@@ -1235,6 +1423,31 @@ def test_every_target_set_plans_one_literal_universal_precheck_sequence(
             "bin/pytest-pg",
             "extensions/taut_summon/taut_summon",
             "extensions/taut_summon/tests",
+        ),
+        (
+            "uv",
+            "run",
+            "--project",
+            "extensions/taut_mcp",
+            "--extra",
+            "dev",
+            "ruff",
+            "check",
+            "extensions/taut_mcp/taut_mcp",
+            "extensions/taut_mcp/tests",
+        ),
+        (
+            "uv",
+            "run",
+            "--project",
+            "extensions/taut_mcp",
+            "--extra",
+            "dev",
+            "ruff",
+            "format",
+            "--check",
+            "extensions/taut_mcp/taut_mcp",
+            "extensions/taut_mcp/tests",
         ),
         (
             "uv",
@@ -1274,6 +1487,19 @@ def test_every_target_set_plans_one_literal_universal_precheck_sequence(
             "extensions/taut_summon/tests/conftest.py",
             "--config-file",
             "pyproject.toml",
+        ),
+        (
+            "uv",
+            "run",
+            "--project",
+            "extensions/taut_mcp",
+            "--extra",
+            "dev",
+            "mypy",
+            "extensions/taut_mcp/taut_mcp",
+            "extensions/taut_mcp/tests",
+            "--config-file",
+            "extensions/taut_mcp/pyproject.toml",
         ),
     )
 
@@ -1390,7 +1616,7 @@ def test_local_llm_model_probe_treats_startup_disconnect_as_not_ready(
     )
 
 
-@pytest.mark.parametrize("target_key", ("core", "pg", "summon", "all"))
+@pytest.mark.parametrize("target_key", ("core", "pg", "summon", "mcp", "all"))
 def test_prechecks_start_local_llm_before_other_release_gates(
     target_key: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -1481,7 +1707,7 @@ def test_prechecks_start_local_llm_before_other_release_gates(
     ]
 
 
-@pytest.mark.parametrize("target_key", ("core", "pg", "summon"))
+@pytest.mark.parametrize("target_key", ("core", "pg", "summon", "mcp"))
 def test_every_single_target_closes_local_llm_after_an_earlier_gate_failure(
     target_key: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -1541,7 +1767,7 @@ def test_pg_postupdate_builds_extension_path() -> None:
     assert steps[0].command == ("uv", "build", "extensions/taut_pg")
 
 
-def test_summon_preparation_selectively_locks_before_artifact_builds() -> None:
+def test_summon_preparation_reconciles_both_retained_locks_before_builds() -> None:
     release = _load_release_module()
 
     preparation_steps = release.build_preparation_steps_for_targets(
@@ -1550,9 +1776,11 @@ def test_summon_preparation_selectively_locks_before_artifact_builds() -> None:
     build_steps = release.build_postupdate_steps(release.SUMMON_TARGET)
 
     assert [step.command for step in preparation_steps] == [
-        ("uv", "lock", "--upgrade-package", "simplebroker")
+        ("uv", "lock", "--upgrade-package", "simplebroker"),
+        ("uv", "lock"),
     ]
     assert preparation_steps[0].cwd == release.SUMMON_EXTENSION_DIR
+    assert preparation_steps[1].cwd == release.MCP_EXTENSION_DIR
     assert build_steps[0].command == ("uv", "build", "extensions/taut_summon")
     assert build_steps[1].command == (
         sys.executable,
@@ -1560,15 +1788,17 @@ def test_summon_preparation_selectively_locks_before_artifact_builds() -> None:
     )
 
 
-def test_pg_preparation_refreshes_retained_summon_lock() -> None:
+def test_pg_preparation_reconciles_both_retained_extension_locks() -> None:
     release = _load_release_module()
 
     steps = release.build_preparation_steps_for_targets((release.PG_TARGET,))
 
     assert [step.command for step in steps] == [
-        ("uv", "lock", "--upgrade-package", "simplebroker")
+        ("uv", "lock", "--upgrade-package", "simplebroker"),
+        ("uv", "lock"),
     ]
     assert steps[0].cwd == release.SUMMON_EXTENSION_DIR
+    assert steps[1].cwd == release.MCP_EXTENSION_DIR
 
 
 def test_core_postupdate_checks_fresh_paired_release_wheels_after_build() -> None:
@@ -1598,8 +1828,10 @@ def test_core_dry_run_executes_preparation_then_artifact_plan(
         dry_run: bool = False,
         **_kwargs: object,
     ) -> None:
-        if command[:2] == ("uv", "lock"):
+        if command == ("uv", "lock", "--upgrade-package", "simplebroker"):
             assert cwd == release.SUMMON_EXTENSION_DIR
+        elif command == ("uv", "lock"):
+            assert cwd == release.MCP_EXTENSION_DIR
         else:
             assert cwd == release.PROJECT_ROOT
         calls.append((command, dry_run))
@@ -1611,6 +1843,7 @@ def test_core_dry_run_executes_preparation_then_artifact_plan(
 
     assert calls == [
         (("uv", "lock", "--upgrade-package", "simplebroker"), True),
+        (("uv", "lock"), True),
         (("uv", "build"), True),
         (
             (
@@ -1715,6 +1948,7 @@ def test_release_wheel_failure_leaves_preparation_commit_and_stops_remote_mutati
 
     assert commands == [
         ("uv", "lock", "--upgrade-package", "simplebroker"),
+        ("uv", "lock"),
         (
             "git",
             "add",
@@ -1791,6 +2025,7 @@ def test_version_changed_core_prepares_and_commits_before_prechecks_and_builds(
         release.ROOT_TARGET: "0.6.0",
         release.PG_TARGET: "0.5.9",
         release.SUMMON_TARGET: "0.5.8",
+        release.MCP_TARGET: "0.5.7",
     }
     monkeypatch.setattr(
         release,
@@ -1873,9 +2108,11 @@ def test_version_changed_core_prepares_and_commits_before_prechecks_and_builds(
         "write:core:0.6.0",
         "write:pg:0.5.9",
         "write:summon:0.5.8",
+        "write:mcp:0.5.7",
         "sync-paired-floors",
         "sync-simplebroker-readme",
         "uv:lock:--upgrade-package:simplebroker",
+        "uv:lock",
         "git-add",
         "git-commit",
         "prechecks",
@@ -1894,6 +2131,7 @@ def test_explicit_batch_version_prepares_all_manifests_but_skips_published_actio
     manifest_versions = {
         release.PG_TARGET: "0.5.9",
         release.SUMMON_TARGET: "0.5.8",
+        release.MCP_TARGET: "0.5.6",
         release.ROOT_TARGET: "0.5.7",
     }
     writes: list[tuple[str, str]] = []
@@ -1949,7 +2187,7 @@ def test_explicit_batch_version_prepares_all_manifests_but_skips_published_actio
         targets: tuple[Any, ...], *, message: str
     ) -> tuple[bool, str]:
         preparation_targets.append(tuple(target.key for target in targets))
-        assert message == "Release taut-summon 0.6.0, taut 0.6.0"
+        assert message == "Release taut-summon 0.6.0, taut-mcp 0.6.0, taut 0.6.0"
         return True, "prepared"
 
     monkeypatch.setattr(
@@ -1991,17 +2229,19 @@ def test_explicit_batch_version_prepares_all_manifests_but_skips_published_actio
         ("core", "0.6.0"),
         ("pg", "0.6.0"),
         ("summon", "0.6.0"),
+        ("mcp", "0.6.0"),
     ]
     assert preparation_targets == [
-        ("pg", "summon", "core"),
-        ("pg", "summon", "core"),
+        ("pg", "summon", "mcp", "core"),
+        ("pg", "summon", "mcp", "core"),
     ]
-    assert build_targets == [("summon", "core")]
+    assert build_targets == [("summon", "mcp", "core")]
     assert inspected_targets.count("pg") == 1
     assert inspected_targets.count("summon") == 2
+    assert inspected_targets.count("mcp") == 2
     assert inspected_targets.count("core") == 2
-    assert prepared_tags == ["summon", "core"]
-    assert pushed_tags == ["summon", "core"]
+    assert prepared_tags == ["summon", "mcp", "core"]
+    assert pushed_tags == ["summon", "mcp", "core"]
     assert branch_pushes == [("main", "prepared")]
 
 
@@ -2012,6 +2252,7 @@ def test_explicit_batch_version_rejects_backdating_before_remote_inspection(
     versions = {
         release.PG_TARGET: "0.6.0",
         release.SUMMON_TARGET: "0.6.1",
+        release.MCP_TARGET: "0.6.0",
         release.ROOT_TARGET: "0.6.0",
     }
     monkeypatch.setattr(
@@ -2104,6 +2345,7 @@ def test_clean_rerun_reuses_preparation_commit_without_duplicate_commit(
     )
     assert commands == [
         ("uv", "lock", "--upgrade-package", "simplebroker"),
+        ("uv", "lock"),
         ("uv", "build"),
         (sys.executable, str(release.RELEASE_WHEEL_SET_CHECKER)),
     ]
@@ -2181,7 +2423,7 @@ def test_parse_args_accepts_positional_all_and_target_compat() -> None:
         release.parse_args(["pg", "--target", "summon"])
 
 
-@pytest.mark.parametrize("target", ("all", "core", "pg", "summon"))
+@pytest.mark.parametrize("target", ("all", "core", "pg", "summon", "mcp"))
 def test_skip_checks_remains_an_explicit_human_override(target: str) -> None:
     release = _load_release_module()
 
@@ -2212,6 +2454,7 @@ def test_discover_unpublished_releases_filters_published_targets(
         versions = {
             release.PG_TARGET: "0.5.0",
             release.SUMMON_TARGET: "0.5.0",
+            release.MCP_TARGET: "0.5.0",
             release.ROOT_TARGET: "0.5.0",
         }
         return versions[target]
@@ -2228,11 +2471,17 @@ def test_discover_unpublished_releases_filters_published_targets(
     monkeypatch.setattr(release, "inspect_release_state", fake_inspect_release_state)
 
     candidates = release.discover_unpublished_releases(
-        (release.PG_TARGET, release.SUMMON_TARGET, release.ROOT_TARGET)
+        (
+            release.PG_TARGET,
+            release.SUMMON_TARGET,
+            release.MCP_TARGET,
+            release.ROOT_TARGET,
+        )
     )
 
     assert [candidate.target for candidate in candidates] == [
         release.SUMMON_TARGET,
+        release.MCP_TARGET,
         release.ROOT_TARGET,
     ]
 
@@ -2253,6 +2502,9 @@ def test_release_file_paths_for_targets_dedupes_root_files() -> None:
         release.SUMMON_PYPROJECT_PATH,
         release.SUMMON_README_PATH,
         release.SUMMON_UV_LOCK_PATH,
+        release.MCP_PYPROJECT_PATH,
+        release.MCP_README_PATH,
+        release.MCP_UV_LOCK_PATH,
     }
     assert len(paths) == len(set(paths))
 
@@ -2439,7 +2691,7 @@ def test_checks_only_rejects_dry_run_and_skip_checks() -> None:
         release.parse_args(["--checks-only", "--skip-checks"])
 
 
-@pytest.mark.parametrize("target", ("all", "core", "pg", "summon"))
+@pytest.mark.parametrize("target", ("all", "core", "pg", "summon", "mcp"))
 @pytest.mark.parametrize("branch", ("topic/ci-work", "HEAD"))
 def test_publishing_targets_reject_noncanonical_branch_before_mutation(
     target: str,

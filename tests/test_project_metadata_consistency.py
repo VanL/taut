@@ -41,6 +41,7 @@ def test_package_versions_and_derived_metadata_match_their_owners() -> None:
     summon = _project("extensions/taut_summon/pyproject.toml")
     root_version = str(root["version"])
     mcp_version = str(mcp["version"])
+    pg_version = str(pg["version"])
     summon_version = str(summon["version"])
     constants = (REPO_ROOT / "taut" / "_constants.py").read_text(encoding="utf-8")
     constant_match = re.search(r'__version__(?::[^=]+)? = "([^"]+)"', constants)
@@ -62,6 +63,12 @@ def test_package_versions_and_derived_metadata_match_their_owners() -> None:
     assert isinstance(dev, list)
     assert f"simplebroker-pg>={simplebroker_pg_floor}" in dev
     assert f"taut-summon>={summon_version}" in dev
+
+    mcp_optional = mcp["optional-dependencies"]
+    assert isinstance(mcp_optional, dict)
+    mcp_dev = mcp_optional["dev"]
+    assert isinstance(mcp_dev, list)
+    assert f"taut-pg>={pg_version}" in mcp_dev
 
     summon_lock = _manifest("extensions/taut_summon/uv.lock")
     packages = summon_lock["package"]
@@ -98,6 +105,7 @@ def test_package_versions_and_derived_metadata_match_their_owners() -> None:
         if isinstance(package, dict) and "name" in package
     }
     assert locked_by_name["taut"].get("version") == root_version
+    assert locked_by_name["taut-pg"].get("version") == pg_version
     assert locked_by_name["taut-mcp"].get("version") == mcp_version
     assert locked_by_name["mcp"].get("version") == "1.28.1"
     mcp_metadata = locked_by_name["taut-mcp"].get("metadata")
@@ -115,6 +123,7 @@ def test_readme_install_examples_match_current_manifests() -> None:
     root_version = str(root_project["version"])
     pg_version = str(_project("extensions/taut_pg/pyproject.toml")["version"])
     summon_version = str(_project("extensions/taut_summon/pyproject.toml")["version"])
+    mcp_version = str(_project("extensions/taut_mcp/pyproject.toml")["version"])
     simplebroker_floor = _dependency_floor(root_project, "simplebroker")
     root = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     pg = (REPO_ROOT / "extensions" / "taut_pg" / "README.md").read_text(
@@ -123,21 +132,27 @@ def test_readme_install_examples_match_current_manifests() -> None:
     summon = (REPO_ROOT / "extensions" / "taut_summon" / "README.md").read_text(
         encoding="utf-8"
     )
+    mcp = (REPO_ROOT / "extensions" / "taut_mcp" / "README.md").read_text(
+        encoding="utf-8"
+    )
 
     assert f"@v{root_version}" in root
     assert f"@v{root_version}" in pg
     assert f"@v{root_version}" in summon
+    assert f"@v{root_version}" in mcp
     assert f"taut_pg-{pg_version}-py3-none-any.whl" in root
     assert f"taut_pg-{pg_version}-py3-none-any.whl" in pg
     assert f"taut_summon-{summon_version}-py3-none-any.whl" in root
     assert f"taut_summon-{summon_version}-py3-none-any.whl" in summon
+    assert f"taut_mcp-{mcp_version}-py3-none-any.whl" in root
+    assert f"taut_mcp-{mcp_version}-py3-none-any.whl" in mcp
     assert "taut_summon-X.Y.Z-py3-none-any.whl" not in root
     readme_simplebroker_floors = re.findall(r"simplebroker>=(\d+\.\d+\.\d+)", root)
     assert readme_simplebroker_floors
     assert set(readme_simplebroker_floors) == {simplebroker_floor}
 
     stale_tag = re.compile(r"@v(?!" + re.escape(root_version) + r"\b)\d+\.\d+\.\d+")
-    for text in (root, pg, summon):
+    for text in (root, pg, summon, mcp):
         assert stale_tag.search(text) is None
 
     stale_pg_wheel = re.compile(
@@ -148,7 +163,25 @@ def test_readme_install_examples_match_current_manifests() -> None:
         + re.escape(summon_version)
         + r"\b)\d+\.\d+\.\d+-py3-none-any\.whl"
     )
+    stale_mcp_wheel = re.compile(
+        r"taut_mcp-(?!" + re.escape(mcp_version) + r"\b)\d+\.\d+\.\d+-py3-none-any\.whl"
+    )
     for text in (root, pg):
         assert stale_pg_wheel.search(text) is None
     for text in (root, summon):
         assert stale_summon_wheel.search(text) is None
+    for text in (root, mcp):
+        assert stale_mcp_wheel.search(text) is None
+
+
+def test_mcp_user_docs_expose_the_console_and_release_target() -> None:
+    root = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    mcp = (REPO_ROOT / "extensions" / "taut_mcp" / "README.md").read_text(
+        encoding="utf-8"
+    )
+
+    install_command = "pipx inject --include-apps taut ./taut_mcp-"
+    assert install_command in root
+    assert install_command in mcp
+    assert "uv run python bin/release.py mcp --dry-run" in root
+    assert "taut_mcp/vX.Y.Z" in root

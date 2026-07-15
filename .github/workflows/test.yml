@@ -183,6 +183,56 @@ jobs:
           if-no-files-found: error
           include-hidden-files: true
 
+  mcp-coverage:
+    name: taut-mcp non-PG coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        timeout-minutes: 5
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        timeout-minutes: 5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        timeout-minutes: 5
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            extensions/taut_pg/pyproject.toml
+            extensions/taut_mcp/pyproject.toml
+
+      - name: Install root coverage tools and local MCP dependencies
+        timeout-minutes: 10
+        run: |
+          uv pip install --system -e ".[dev]" -e "./extensions/taut_pg" -e "./extensions/taut_mcp"
+
+      - name: Run taut-mcp non-PG tests with coverage
+        id: mcp_coverage
+        timeout-minutes: 10
+        env:
+          COVERAGE_PROCESS_START: ${{ github.workspace }}/pyproject.toml
+          COVERAGE_FILE: ${{ github.workspace }}/.coverage.mcp
+        run: |
+          python -m coverage erase
+          python -m coverage run --parallel-mode -m pytest extensions/taut_mcp/tests -v --tb=short -m "not pg_only" -n 0
+
+      - name: Upload MCP coverage data
+        if: ${{ always() && steps.mcp_coverage.outcome != 'skipped' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-data-mcp
+          path: ${{ github.workspace }}/.coverage.mcp.*
+          if-no-files-found: error
+          include-hidden-files: true
+
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -451,6 +501,11 @@ jobs:
         run: |
           uv build --out-dir release-dist/pg extensions/taut_pg
 
+      - name: Build taut-mcp extension package
+        timeout-minutes: 10
+        run: |
+          uv build --out-dir release-dist/mcp extensions/taut_mcp
+
       - name: Check paired release wheels
         if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
         shell: bash
@@ -489,6 +544,16 @@ jobs:
           assert get_backend_plugin("postgres").name == "postgres"
           PY
 
+      - name: Smoke test taut-mcp wheel with paired core
+        if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
+        shell: bash
+        timeout-minutes: 10
+        run: |
+          python -m venv /tmp/taut-mcp-wheel-smoke
+          source /tmp/taut-mcp-wheel-smoke/bin/activate
+          python -m pip install release-dist/core/*.whl release-dist/mcp/*.whl
+          taut-mcp --version
+
       - name: Create release provenance bundles
         if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
         timeout-minutes: 5
@@ -496,6 +561,7 @@ jobs:
           python bin/release-artifact.py create --package-dir . --dist-dir release-dist/core --output-dir release-bundles/taut --commit "${{ github.sha }}"
           python bin/release-artifact.py create --package-dir extensions/taut_summon --dist-dir release-dist/summon --output-dir release-bundles/taut-summon --commit "${{ github.sha }}"
           python bin/release-artifact.py create --package-dir extensions/taut_pg --dist-dir release-dist/pg --output-dir release-bundles/taut-pg --commit "${{ github.sha }}"
+          python bin/release-artifact.py create --package-dir extensions/taut_mcp --dist-dir release-dist/mcp --output-dir release-bundles/taut-mcp --commit "${{ github.sha }}"
 
       - name: Upload core release evidence
         if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
@@ -524,10 +590,19 @@ jobs:
           if-no-files-found: error
           include-hidden-files: true
 
+      - name: Upload MCP release evidence
+        if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-taut-mcp-attempt-${{ github.run_attempt }}
+          path: release-bundles/taut-mcp/
+          if-no-files-found: error
+          include-hidden-files: true
+
   coverage:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: [test, summon-process, summon-local-llm]
+    needs: [test, summon-process, summon-local-llm, mcp-coverage]
     if: ${{ always() && !cancelled() }}
 
     steps:
