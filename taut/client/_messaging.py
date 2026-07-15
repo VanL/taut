@@ -141,10 +141,24 @@ class MessagingMixin(_ClientBase):
         )
         return message
 
-    def read(self, thread: str | None = None) -> list[Message]:
-        return self.read_unread(thread)
+    def read(
+        self,
+        thread: str | None = None,
+        *,
+        limit: int = 1000,
+    ) -> list[Message]:
+        return self.read_unread(thread, limit=limit)
 
-    def read_unread(self, thread: str | None = None) -> list[Message]:
+    def read_unread(
+        self,
+        thread: str | None = None,
+        *,
+        limit: int = 1000,
+    ) -> list[Message]:
+        if isinstance(limit, bool) or not isinstance(limit, int):
+            raise TypeError("limit must be an integer")
+        if not 1 <= limit <= 1000:
+            raise ValueError("limit must be between 1 and 1000")
         self._ensure_no_incomplete_channel_rename()
         resolved = self._resolve_member(create=False)
         member = self._require_member(resolved)
@@ -168,7 +182,7 @@ class MessagingMixin(_ClientBase):
             raw_messages = cast(
                 list[tuple[str, int]],
                 queue.peek_many(
-                    1000,
+                    limit,
                     with_timestamps=True,
                     after_timestamp=membership["last_seen_ts"],
                 ),

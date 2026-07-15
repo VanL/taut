@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Added per-call `limit` paging to `TautClient.read()` and `read_unread()` with
+  exact cursor advancement and a 1,000-message per-thread default.
+
 ## 0.6.7 - 2026-07-14
 
 - Made the PostgreSQL cross-table route-race proof scheduler-independent. The

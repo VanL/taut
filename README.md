@@ -408,7 +408,7 @@ client.join("general")
 message = client.say("general", "build finished: 312 passed")
 print(message.ts)
 
-for msg in client.read():       # advances this member's cursors
+for msg in client.read(limit=100):  # up to 100 per joined thread; advances cursors
     print(msg.thread, msg.from_id, msg.from_name, msg.text)
 
 def handle(event):

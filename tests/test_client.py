@@ -291,6 +291,161 @@ def test_read_without_thread_reads_all_membership_unread(tmp_path: Path) -> None
     assert [message.text for message in unread] == ["bob joined", "broadcast"]
 
 
+def test_unread_limit_without_thread_applies_per_joined_thread(
+    tmp_path: Path,
+) -> None:
+    reader = client(tmp_path, "reader")
+    reader.join("alpha")
+    reader.join("beta")
+    writer = existing_client(tmp_path, "writer")
+    writer.join("alpha")
+    writer.join("beta")
+    reader.read()
+    writer.say("alpha", "alpha 1")
+    writer.say("alpha", "alpha 2")
+    writer.say("beta", "beta 1")
+    writer.say("beta", "beta 2")
+
+    first_pages = reader.read(limit=1)
+    second_pages = reader.read_unread(limit=1)
+
+    assert len(first_pages) == 2
+    assert {(message.thread, message.text) for message in first_pages} == {
+        ("alpha", "alpha 1"),
+        ("beta", "beta 1"),
+    }
+    assert len(second_pages) == 2
+    assert {(message.thread, message.text) for message in second_pages} == {
+        ("alpha", "alpha 2"),
+        ("beta", "beta 2"),
+    }
+    with pytest.raises(EmptyResultError):
+        reader.read(limit=1)
+
+
+@pytest.mark.parametrize(
+    ("method_name", "limit"),
+    [("read", 0), ("read", 1001), ("read_unread", 0), ("read_unread", 1001)],
+)
+def test_unread_limit_rejects_out_of_range_before_peek_or_cursor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    method_name: str,
+    limit: int,
+) -> None:
+    van = client(tmp_path, "van")
+    van.join("general")
+    bob = existing_client(tmp_path, "bob")
+    bob.join("general")
+    bob.say("general", "still unread")
+    member_id = van.whoami().member_id
+    membership_before = van._state.get_membership(
+        thread="general",
+        member_id=member_id,
+    )
+    assert membership_before is not None
+    peek_calls: list[object] = []
+
+    def reject_peek(*args: object, **kwargs: object) -> object:
+        peek_calls.append((args, kwargs))
+        raise AssertionError("invalid limit reached Queue.peek_many")
+
+    monkeypatch.setattr(Queue, "peek_many", reject_peek)
+
+    method = getattr(van, method_name)
+    with pytest.raises(
+        ValueError,
+        match="^limit must be between 1 and 1000$",
+    ):
+        method("general", limit=limit)
+
+    membership_after = van._state.get_membership(
+        thread="general",
+        member_id=member_id,
+    )
+    assert membership_after == membership_before
+    assert peek_calls == []
+
+
+@pytest.mark.parametrize("method_name", ["read", "read_unread"])
+@pytest.mark.parametrize("limit", [True, 1.0, "1"])
+def test_unread_limit_rejects_non_integer_before_peek_or_cursor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    method_name: str,
+    limit: object,
+) -> None:
+    van = client(tmp_path, "van")
+    van.join("general")
+    bob = existing_client(tmp_path, "bob")
+    bob.join("general")
+    bob.say("general", "still unread")
+    member_id = van.whoami().member_id
+    membership_before = van._state.get_membership(
+        thread="general",
+        member_id=member_id,
+    )
+    assert membership_before is not None
+    peek_calls: list[object] = []
+
+    def reject_peek(*args: object, **kwargs: object) -> object:
+        peek_calls.append((args, kwargs))
+        raise AssertionError("invalid limit reached Queue.peek_many")
+
+    monkeypatch.setattr(Queue, "peek_many", reject_peek)
+
+    method = getattr(van, method_name)
+    with pytest.raises(TypeError, match="^limit must be an integer$"):
+        method("general", limit=limit)
+
+    membership_after = van._state.get_membership(
+        thread="general",
+        member_id=member_id,
+    )
+    assert membership_after == membership_before
+    assert peek_calls == []
+
+
+def test_invalid_unread_limit_does_not_implicitly_join_subthread(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reader = client(tmp_path, "reader")
+    reader.join("general")
+    writer = existing_client(tmp_path, "writer")
+    writer.join("general")
+    root = writer.say("general", "root")
+    reply = writer.reply("general", str(root.ts), "threaded")
+    reader_id = reader.whoami().member_id
+    parent_before = reader._state.get_membership(
+        thread="general",
+        member_id=reader_id,
+    )
+    assert parent_before is not None
+    assert (
+        reader._state.get_membership(thread=reply.thread, member_id=reader_id) is None
+    )
+    peek_calls: list[object] = []
+
+    def reject_peek(*args: object, **kwargs: object) -> object:
+        peek_calls.append((args, kwargs))
+        raise AssertionError("invalid limit reached Queue.peek_many")
+
+    monkeypatch.setattr(Queue, "peek_many", reject_peek)
+
+    with pytest.raises(ValueError, match="^limit must be between 1 and 1000$"):
+        reader.read(reply.thread, limit=0)
+
+    assert (
+        reader._state.get_membership(thread=reply.thread, member_id=reader_id) is None
+    )
+    assert (
+        reader._state.get_membership(thread="general", member_id=reader_id)
+        == parent_before
+    )
+    assert peek_calls == []
+
+
 def test_read_unread_advances_cursor_once_for_a_full_thread_page(
     tmp_path: Path,
 ) -> None:
@@ -338,6 +493,36 @@ def test_read_unread_advances_cursor_once_for_a_full_thread_page(
     assert membership["last_seen_ts"] == timestamps[-1]
 
 
+def test_unread_limit_accepts_one_and_one_thousand(tmp_path: Path) -> None:
+    van = client(tmp_path, "van")
+    van.join("general")
+    member_id = van.whoami().member_id
+    queue = van.queue("general")
+    bodies = [
+        encode_envelope(
+            from_id=member_id,
+            from_name="van",
+            kind="message",
+            text=f"message {index}",
+        )
+        for index in range(1001)
+    ]
+    timestamps = [queue.generate_timestamp() for _ in bodies]
+    queue.insert_messages(list(zip(bodies, timestamps, strict=True)))
+
+    first = van.read_unread("general", limit=1)
+    membership = van._state.get_membership(thread="general", member_id=member_id)
+    assert [message.ts for message in first] == timestamps[:1]
+    assert membership is not None
+    assert membership["last_seen_ts"] == timestamps[0]
+
+    remaining = van.read("general", limit=1000)
+    membership = van._state.get_membership(thread="general", member_id=member_id)
+    assert [message.ts for message in remaining] == timestamps[1:]
+    assert membership is not None
+    assert membership["last_seen_ts"] == timestamps[-1]
+
+
 def test_read_unread_does_not_advance_a_page_when_decoding_raises(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -370,7 +555,7 @@ def test_read_unread_does_not_advance_a_page_when_decoding_raises(
     monkeypatch.setattr(messaging, "message_from_body", fail_second)
 
     with pytest.raises(RuntimeError, match="decoder fault"):
-        van.read_unread("general")
+        van.read_unread("general", limit=2)
 
     membership = van._state.get_membership(thread="general", member_id=member_id)
     assert membership is not None

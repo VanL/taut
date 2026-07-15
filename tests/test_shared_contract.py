@@ -101,6 +101,45 @@ def test_project_client_join_say_read_contract(taut_project: Path) -> None:
     assert [item.text for item in bob.read("general")][-1:] == ["shared hello"]
 
 
+def test_project_read_limit_paginates_without_skipping(taut_project: Path) -> None:
+    """[TAUT-7.2] A bounded unread cursor advances through returned rows only."""
+
+    TautClient.init()
+    reader = TautClient(as_name="reader")
+    writer = TautClient(as_name="writer")
+    reader.join("general")
+    writer.join("general")
+    reader.read("general")
+    reader_id = reader.whoami().member_id
+    written = [writer.say("general", f"message {index}") for index in range(250)]
+
+    pages: list[list[Message]] = []
+    cursor_timestamps: list[int] = []
+    for _ in range(3):
+        pages.append(reader.read("general", limit=100))
+        membership = reader._state.get_membership(
+            thread="general",
+            member_id=reader_id,
+        )
+        assert membership is not None
+        cursor_timestamps.append(membership["last_seen_ts"])
+
+    assert [len(page) for page in pages] == [100, 100, 50]
+    for page_index, page in enumerate(pages):
+        start = page_index * 100
+        expected = written[start : start + 100]
+        assert [message.text for message in page] == [
+            f"message {index}" for index in range(start, start + len(expected))
+        ]
+        assert [message.ts for message in page] == [message.ts for message in expected]
+        assert cursor_timestamps[page_index] == page[-1].ts
+
+    returned_timestamps = [message.ts for page in pages for message in page]
+    assert returned_timestamps == [message.ts for message in written]
+    with pytest.raises(EmptyResultError):
+        reader.read("general", limit=100)
+
+
 def test_project_blank_say_has_no_shared_backend_state(taut_project: Path) -> None:
     """[TAUT-6.5] The blank guard fires on every supported real backend."""
 

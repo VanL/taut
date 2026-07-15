@@ -602,6 +602,27 @@ strictly a high-water mark of *seen* message timestamps:
   catching up).
 - Cursor writes are monotonic: `last_seen_ts` only increases.
 
+Public unread reads are bounded per call. `TautClient.read()` and
+`TautClient.read_unread()` accept a keyword-only `limit` with an inclusive
+range of 1 through 1,000 and a core default of 1,000. The value is request
+policy, not project, client-construction, or persistent configuration.
+Validation precedes chat-history peeking, decoding, implicit membership, and
+cursor movement. A non-integer value, including `bool`, raises `TypeError`;
+an integer outside the range raises `ValueError`. The exact messages are
+`limit must be an integer` and `limit must be between 1 and 1000`,
+respectively.
+
+For an explicit thread, the limit bounds the oldest unread page. Taut decodes
+that whole page before advancing its membership cursor once to the highest
+timestamp among the returned messages. Messages beyond the page stay unread
+for a later call. With no thread argument, the same limit applies
+independently to every joined chat thread, so the combined return may exceed
+the numeric limit.
+
+Callers that need a smaller page must pass the limit into core. They must not
+fetch a larger page, slice the returned list, and discard the rest, because
+the larger read has already marked every fetched message seen.
+
 ### [TAUT-7.3] Unread
 
 A thread is unread for a member iff
@@ -777,6 +798,14 @@ model). Public exports from `taut`: `TautClient`, `TautWatcher`, `Message`,
 `Thread`, `Member`, the exception hierarchy rooted at `TautError` including
 `BlankMessageError`, `escape_terminal_text`, and `__version__`. The package
 ships typed (`py.typed`).
+
+The unread signatures are
+`TautClient.read(thread: str | None = None, *, limit: int = 1000) ->
+list[Message]` and
+`TautClient.read_unread(thread: str | None = None, *, limit: int = 1000) ->
+list[Message]`. `read()` delegates to `read_unread()` and exposes no second
+pagination or validation path. The CLI continues to call the core default;
+adapters may choose a smaller surface default and pass it explicitly.
 
 `BlankMessageError` is a public subclass of `EmptyResultError`. It is the
 Python API result for a filtered [TAUT-6.5] `say` or `reply`, allowing both
@@ -1180,6 +1209,10 @@ implied by docs or output.
   verbatim, exit 1.
 - Blank `say` or `reply`: raise `BlankMessageError` before route/state work;
   the CLI exits 2 silently and no message-domain side effect occurs.
+- Invalid unread limit: reject before any chat-history read, implicit
+  membership, decode, or cursor mutation. Wrong runtime type raises
+  `TypeError` with `limit must be an integer`; an integer outside 1 through
+  1,000 raises `ValueError` with `limit must be between 1 and 1000`.
 
 ## 11. Verification Expectations [TAUT-11]
 
@@ -1188,6 +1221,14 @@ posture:
 
 - The broker is never mocked. All client, CLI, and watcher tests run
   against real `.taut.db` files in temp dirs.
+- One shared public-client contract test runs on real SQLite and PostgreSQL,
+  creates 250 unread messages, and reads them with a limit of 100 as exact
+  oldest-first pages of 100, 100, and 50. It proves each cursor stops at the
+  last returned message and the next page has no gap or duplicate. Focused
+  core tests prove range boundaries, both public entry points, invalid values
+  with no broker peek/cursor write/implicit membership, and the per-joined-
+  thread rather than aggregate meaning of a no-thread limit. The broker and
+  sidecar state remain real in every case.
 - Identity tests spawn real child processes where process evidence matters and
   assert claim creation, claim matching, rejoin, token acts-as from an unrelated
   process tree, stable `member_id`, and mutable names. Unit tests may cover
@@ -1613,6 +1654,9 @@ verification.
 
 ## Related Plans
 
+- `docs/plans/2026-07-15-per-call-read-limit-plan.md` — bounded per-call
+  unread pages, exact cursor advancement, shared SQLite/PostgreSQL proof, and
+  a smaller MCP surface default without post-read slicing.
 - `docs/plans/2026-07-14-blank-message-no-op-plan.md` — built-in Unicode
   blank-input guard, typed empty result, silent CLI exit 2, and Summon
   terminal-mode adaptation.

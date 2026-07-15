@@ -213,9 +213,15 @@ Membership removal is one `DELETE ... RETURNING` transaction, so concurrent
 callers observe exactly one successful removal. `RETURNING` is not a newly
 imposed floor: SimpleBroker already requires SQLite >= 3.35.0 (the release that
 introduced `RETURNING`) and Postgres supports it, so this adds no dependency
-beyond the existing state-backend baseline. `read_unread` decodes a whole
-thread page before advancing that thread's cursor once to the page's highest
-timestamp; a decoder failure leaves the page cursor unchanged.
+beyond the existing state-backend baseline. `read_unread` first validates its
+keyword-only per-call limit as a non-boolean integer in `1..1000`, before
+rename, identity, membership, queue, decode, or cursor work. It passes that
+limit into the broker peek for each selected membership, so a no-thread call
+may return up to the limit from every joined chat thread. It decodes each whole
+returned page before advancing that thread's cursor once to the page's highest
+timestamp; a decoder failure leaves the page cursor unchanged. `read` is a
+thin delegating alias, and the CLI omits the keyword to preserve its
+1,000-per-thread default.
 
 Every live chat write uses SimpleBroker's atomic `Queue.write(body)` and takes
 the committed message id from that same call ([TAUT-3.4]). Allocating an id with
@@ -551,7 +557,7 @@ requirement or auditing implementation coverage.
 | [TAUT-6], message envelopes and sender snapshots | `taut/envelope.py`, `taut/client/_codec.py::message_from_body`, `message_from_decoded`, `taut/client/_messaging.py::MessagingMixin._write_message` | `tests/test_envelope.py`, `tests/test_client.py::test_set_name_changes_current_name_without_changing_member_id` |
 | [TAUT-6.5], blank user messages and exact accepted text | `taut/_message_text.py::is_blank_message_text`, `taut/_exceptions.py::BlankMessageError`, `taut/client/_messaging.py::MessagingMixin.say`, `reply`, and `taut/commands/_dispatch.py::_render_execution_error` | `tests/test_message_text.py`; blank, precedence, historical-read, and exact-text cases in `tests/test_client.py`, `tests/test_cli.py`, and `tests/test_shared_contract.py`; paired import proof in `tests/test_core_summon_wheel_matrix.py` |
 | [TAUT-6.4], [TAUT-8.3], [TAUT-8.6], [TAUT-9], terminal text safety and exact-data boundaries | `taut/terminal.py::escape_terminal_text`, `taut/defaults.toml`, `taut/commands/_rendering.py::write_human_line`, dispatcher/parser diagnostics, and the Summon command/log adapters | `tests/test_terminal_text.py`, terminal-control cases in `tests/test_cli.py` and `tests/test_command_registry.py`, `tests/test_architecture_boundaries.py::test_first_party_terminal_sink_inventory_is_explicit`, and the touched Summon CLI/driver/PTY tests |
-| [TAUT-7], read cursors and chat-history peek discipline | `taut/client/_messaging.py::MessagingMixin.read_unread`, `_implicit_subthread_membership`; `taut/client/_threads.py::_thread_from_row`, `_unread_count`; `taut/state/_sql.py` membership and cursor helpers | `tests/test_client.py` cursor, caught-up-list, saturation, and list-race cases; `tests/test_client_stateful.py`; `tests/test_state_contract.py`; `tests/test_shared_contract.py` |
+| [TAUT-7], read cursors, bounded per-call unread pages, and chat-history peek discipline | `taut/client/_messaging.py::MessagingMixin.read`, `read_unread`, `_implicit_subthread_membership`; `taut/client/_threads.py::_thread_from_row`, `_unread_count`; `taut/state/_sql.py` membership and cursor helpers | `tests/test_client.py` limit validation, per-thread bounds, cursor, decode-failure, caught-up-list, saturation, and list-race cases; `tests/test_client_stateful.py`; `tests/test_state_contract.py`; `tests/test_shared_contract.py::test_project_read_limit_paginates_without_skipping` on SQLite and PostgreSQL |
 | [TAUT-8.1], [TAUT-8.2], CLI behavior, rendering, JSON, help, and exit codes | `taut/cli.py`, `taut/commands/_dispatch.py`, and per-verb command adapters | `tests/test_cli.py` parser-inventory, help-phrase, explicit-argv, subprocess, rendering, blank-input, and exit-class tests; `tests/test_public_api.py` |
 | [TAUT-8.6], command manifests, installed discovery, dispatch, parser/context policy, and lazy loading | `taut/commands/` | `tests/test_command_registry.py`, `tests/test_lazy_imports.py`, `tests/test_architecture_boundaries.py`, installed-wheel cases in `tests/test_core_summon_wheel_matrix.py` |
 | [TAUT-8.3], Python API objects and verb semantics | `taut/client/__init__.py::TautClient`, `taut/client/_models.py`, the client mixins, and lazy root export `taut.escape_terminal_text` | `tests/test_public_api.py`, `tests/test_client.py`, `tests/test_terminal_text.py`, `tests/test_lazy_imports.py` |

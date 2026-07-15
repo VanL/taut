@@ -46,9 +46,17 @@ Risky plans are blocked if they do not make explicit:
 
 ## Active Plans
 
+- `2026-07-15-per-call-read-limit-plan.md` — make unread page size a
+  per-call core keyword with exact cursor pagination, a 1,000 core default,
+  a 100-message MCP default, and shared SQLite/PostgreSQL firing tests.
 - `2026-07-14-agent-interfaces-runbook-adoption-plan.md` — adopt the
   designing-agent-facing-interfaces runbook from agent-guidance `a4b4345`
   (completed; kept for its review dispositions).
+- `2026-07-14-taut-mcp-extension-plan.md` — propose a separately packaged,
+  client-lifetime stdio MCP server with dynamic path-scoped workspace
+  attachment, a master connection reactor over token-bound workspace reactors,
+  explicit CLI-shaped tools, an aggregate read-only current-notifications
+  resource, standard edge hints, and an optional experimental Claude adapter.
 - `2026-07-14-routine-release-classification-plan.md` — classify explicitly
   requested releases through unchanged normal machinery as Class 2 without a
   dated release plan, while preserving escalation for bypasses, retagging,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import subprocess
 import sys
 from pathlib import Path
@@ -78,6 +79,15 @@ def test_lazy_public_exports_cache_and_unknown_names_fail_normally() -> None:
 
 def test_every_public_export_resolves() -> None:
     assert {name for name in taut.__all__ if not hasattr(taut, name)} == set()
+
+
+def test_unread_limit_is_keyword_only_with_core_default() -> None:
+    for method_name in ("read", "read_unread"):
+        parameters = inspect.signature(getattr(taut.TautClient, method_name)).parameters
+
+        assert parameters["thread"].default is None
+        assert parameters["limit"].kind is inspect.Parameter.KEYWORD_ONLY
+        assert parameters["limit"].default == 1000
 
 
 def test_lazy_exports_are_the_owning_module_objects() -> None:
