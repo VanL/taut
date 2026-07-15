@@ -28,6 +28,10 @@ stay aligned instead of competing.
    harness as an ordinary workspace member — injection ears, CLI mouth,
    provider adapters, session ledger, control plane, persona, and
    conformance suite
+5. `05-taut-mcp.md` - the optional MCP extension spec: stdio lifecycle,
+   dynamic workspace attachment, per-workspace identity, explicit CLI-shaped
+   tools, the aggregate read-only notifications resource, edge hints, host
+   adapters, and conformance
 
 ## Naming
 

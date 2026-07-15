@@ -13,15 +13,39 @@ from ._models import Notification
 
 
 class NotificationsMixin(_ClientBase):
+    def peek_inbox(self, *, limit: int = 1000) -> list[Notification]:
+        """Return pending notifications without claiming them.
+
+        Governed by [TAUT-8.3] and [IAN-7.4].
+        """
+
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        return self._notification_records(limit=limit, consume=False)
+
     def inbox(self, *, limit: int = 1000) -> list[Notification]:
-        resolved = self._resolve_member(create=False)
-        member = self._require_member(resolved)
-        queue = self.queue(addressing.notification_queue_name(member["member_id"]))
-        rows = cast(list[tuple[str, int]], queue.read_many(limit, with_timestamps=True))
-        notifications = [notification_from_body(body, ts) for body, ts in rows]
+        notifications = self._notification_records(limit=limit, consume=True)
         if not notifications:
             raise EmptyResultError("nothing pending")
         return notifications
+
+    def _notification_records(
+        self,
+        *,
+        limit: int,
+        consume: bool,
+    ) -> list[Notification]:
+        """Select and decode notification records through the core-owned path."""
+
+        resolved = self._resolve_member(
+            create=False,
+            _touch_activity=consume,
+        )
+        member = self._require_member(resolved)
+        queue = self.queue(addressing.notification_queue_name(member["member_id"]))
+        read = queue.read_many if consume else queue.peek_many
+        rows = cast(list[tuple[str, int]], read(limit, with_timestamps=True))
+        return [notification_from_body(body, ts) for body, ts in rows]
 
     def _write_notification(self, *, to_id: str, payload: dict[str, Any]) -> None:
         queue = self.queue(addressing.notification_queue_name(to_id))

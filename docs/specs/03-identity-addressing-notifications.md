@@ -520,6 +520,12 @@ normal history.
 This tradeoff is intentional. Notifications are wakeups and pointers, not
 durable chat history.
 
+A read-only notification peek may expose current pending notification
+pointers without claiming them. Peek is observational and does not advance a
+notification or chat cursor, create or heal identity, touch activity, or
+acknowledge delivery. A later consuming read may therefore return the same
+notifications, while another consumer may remove them before the next peek.
+
 ## 8. Channel Rename [IAN-8]
 
 ### [IAN-8.1] Rename semantics
@@ -654,6 +660,9 @@ Required proofs:
   scoped to the DM participants when the source queue is a direct-message
   queue
 - notification reads claim notifications and do not affect chat history
+- read-only notification peek preserves pointer count/order and all member,
+  identity, activity, cursor, and acknowledgement state; consuming read still
+  claims the same pointers under the existing contract
 - a second session for the same member can drain notifications; no per-device
   state exists
 - channels cannot contain dots or use reserved special names
@@ -663,6 +672,8 @@ Required proofs:
 
 ## Related Plans
 
+- `docs/plans/2026-07-14-taut-mcp-extension-plan.md` — read-only notification
+  peek plus the optional MCP resource and consuming-inbox split.
 - `docs/plans/2026-07-14-blank-message-no-op-plan.md` — ensures filtered
   blank attempts never become notification sources.
 - `docs/plans/2026-07-14-trusted-identity-selector-fast-path-plan.md` — trust

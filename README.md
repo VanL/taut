@@ -86,8 +86,8 @@ default, or a few machines through the Postgres extension.
 ## Installation
 
 ```bash
-pipx install "git+https://github.com/VanL/taut.git@v0.6.7"       # CLI use
-uv add "taut @ git+https://github.com/VanL/taut.git@v0.6.7"      # as a library
+pipx install "git+https://github.com/VanL/taut.git@v0.7.0"       # CLI use
+uv add "taut @ git+https://github.com/VanL/taut.git@v0.7.0"      # as a library
 ```
 
 Requirements: Python 3.11+. Runtime dependencies are `simplebroker>=5.3.3`
@@ -106,8 +106,8 @@ Extensions use their own tags (`taut_pg/vX.Y.Z`, `taut_summon/vX.Y.Z`), so
 their versions do not have to match the core package version:
 
 ```bash
-pipx install "git+https://github.com/VanL/taut.git@v0.6.7"
-pipx inject taut ./taut_pg-0.6.7-py3-none-any.whl
+pipx install "git+https://github.com/VanL/taut.git@v0.7.0"
+pipx inject taut ./taut_pg-0.7.0-py3-none-any.whl
 ```
 
 The Postgres database must already exist. Create `.taut.toml` in the project
@@ -146,7 +146,7 @@ by its continuity token (its mouth). It ships as a separate package with its
 own version tags:
 
 ```bash
-pipx inject taut ./taut_summon-0.6.7-py3-none-any.whl
+pipx inject taut ./taut_summon-0.7.0-py3-none-any.whl
 ```
 
 With it installed, the package registers native `taut summon` and
@@ -168,6 +168,29 @@ taut dismiss reviewer       # clean shutdown, ledger released
 The full contract is `docs/specs/04-summon.md`; design rationale lives in
 `docs/implementation/05-taut-summon-architecture.md` and
 `docs/implementation/06-command-extensions.md`.
+
+### MCP Extension
+
+`taut-mcp` is a separate, connection-scoped stdio adapter for MCP clients. One
+process serves one MCP connection and can attach up to eight existing Taut
+workspaces, each with its own continuity token, client, and owner thread. It
+exposes 15 explicit workspace-scoped tools plus the repeatable
+`taut://notifications/current` resource. The resource reports notification
+pointers only; reading it does not claim them or advance chat cursors.
+
+The package is implemented in this checkout but is not yet published. Run it
+from its isolated extension environment:
+
+```bash
+uv sync --directory extensions/taut_mcp --extra dev
+uv run --directory extensions/taut_mcp taut-mcp
+```
+
+Use `--claude-channel` only for Claude hosts that support the experimental
+channel capability. It sends a fixed wake cue with no Taut content; standard
+resource subscriptions and manual reads remain the portable interface. The
+full contract is `docs/specs/05-taut-mcp.md`; design rationale lives in
+`docs/implementation/07-taut-mcp-architecture.md`.
 
 ## Quick Start
 
@@ -596,16 +619,19 @@ git clone git@github.com:VanL/taut.git && cd taut
 uv sync --all-extras
 uv run --extra dev pytest
 uv run --extra dev pytest extensions/taut_summon/tests
+uv run --project extensions/taut_mcp --extra dev pytest extensions/taut_mcp/tests
 uv run ./bin/pytest-pg --fast
-uv run ruff check taut tests bin extensions/taut_pg/taut_pg extensions/taut_pg/tests extensions/taut_summon/taut_summon extensions/taut_summon/tests
-uv run ruff format --check taut tests bin extensions/taut_pg/taut_pg extensions/taut_pg/tests extensions/taut_summon/taut_summon extensions/taut_summon/tests
+uv run ruff check taut tests bin extensions/taut_pg/taut_pg extensions/taut_pg/tests extensions/taut_summon/taut_summon extensions/taut_summon/tests extensions/taut_mcp/taut_mcp extensions/taut_mcp/tests
+uv run ruff format --check taut tests bin extensions/taut_pg/taut_pg extensions/taut_pg/tests extensions/taut_summon/taut_summon extensions/taut_summon/tests extensions/taut_mcp/taut_mcp extensions/taut_mcp/tests
 uv run --extra dev mypy taut tests bin/release.py extensions/taut_pg/taut_pg extensions/taut_pg/tests --config-file pyproject.toml
 # separate run: each extension's tests carry a top-level conftest module,
 # and one mypy invocation cannot hold two modules named `conftest`
 uv run --extra dev mypy taut tests extensions/taut_summon/taut_summon extensions/taut_summon/tests --config-file pyproject.toml
+uv run --project extensions/taut_mcp --extra dev mypy extensions/taut_mcp/taut_mcp extensions/taut_mcp/tests --config-file extensions/taut_mcp/pyproject.toml
 uv build
 uv build extensions/taut_pg
 uv build extensions/taut_summon
+uv build extensions/taut_mcp
 ```
 
 Tests follow the house anti-mocking rule: the broker is never mocked,

@@ -50,7 +50,7 @@ class Message:
 
 @dataclass(frozen=True, slots=True)
 class Notification:
-    """A consumed notification pointer."""
+    """A notification pointer returned by a consuming read or read-only peek."""
 
     type: str
     to_id: str | None

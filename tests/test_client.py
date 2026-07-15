@@ -6,13 +6,14 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from simplebroker import Queue, open_broker
+from simplebroker import BrokerTarget, Queue, open_broker, resolve_broker_target
 from simplebroker.ext import IntegrityError
 
+import taut.client._base as client_base
 import taut.client._messaging as messaging
 import taut.identity as identity
 from taut import addressing
-from taut._constants import META_QUEUE_NAME
+from taut._constants import META_QUEUE_NAME, load_config
 from taut._exceptions import (
     AmbiguousMessageError,
     BlankMessageError,
@@ -73,6 +74,142 @@ def test_explicit_missing_path_does_not_auto_create(tmp_path: Path) -> None:
         TautClient(db_path=tmp_path / ".taut.db")
 
     assert not (tmp_path / ".taut.db").exists()
+
+
+def test_resolved_target_config_handoff_bypasses_ambient_resolution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[TAUT-3.2] A resolved target is frozen without process-global cwd."""
+
+    project = tmp_path / "project"
+    project.mkdir()
+    db = project / ".taut.db"
+    TautClient.init(db_path=db)
+    config = load_config({"BROKER_BUSY_TIMEOUT": 1234})
+    config["TEST_NESTED"] = {"value": "frozen"}
+    target = resolve_broker_target(project, config=config)
+    assert target is not None
+    target.backend_options["nested"] = {"value": "frozen"}
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    ambient_db = elsewhere / "ambient.db"
+    monkeypatch.chdir(elsewhere)
+    monkeypatch.setenv("TAUT_DB", str(ambient_db))
+
+    def unexpected_ambient_config(*_: object, **__: object) -> dict[str, object]:
+        raise AssertionError("resolved handoff must not reload ambient config")
+
+    monkeypatch.setattr(client_base, "load_config", unexpected_ambient_config)
+
+    client = TautClient(
+        broker_target=target,
+        broker_config=config,
+        as_name="van",
+    )
+    client.join("general")
+
+    assert client.target == target
+    assert isinstance(client.target, BrokerTarget)
+    assert client.config["BROKER_BUSY_TIMEOUT"] == 1234
+    assert client.joined_thread_names() == ("general",)
+    assert not ambient_db.exists()
+    config["BROKER_BUSY_TIMEOUT"] = 9999
+    assert client.config["BROKER_BUSY_TIMEOUT"] == 1234
+    config["TEST_NESTED"]["value"] = "mutated"
+    assert client.config["TEST_NESTED"] == {"value": "frozen"}
+    target.backend_options["nested"]["value"] = "mutated"
+    assert client.target.backend_options["nested"] == {"value": "frozen"}
+
+
+def test_client_can_ignore_ambient_identity_for_explicit_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[TAUT-8.3] Multi-workspace embedders isolate explicit identity."""
+
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    selected = TautClient(db_path=db, as_name="selected")
+    selected.join("general")
+    selected_member = selected.last_created_member
+    assert selected_member is not None
+    assert selected_member.token is not None
+    ambient = TautClient(db_path=db, as_name="ambient")
+    ambient.join("general")
+    ambient_member = ambient.last_created_member
+    assert ambient_member is not None
+
+    monkeypatch.setenv("TAUT_AS", "ambient")
+    monkeypatch.setenv("TAUT_TOKEN", "wrong-ambient-token")
+
+    isolated = TautClient(
+        db_path=db,
+        token=selected_member.token,
+        inherit_environment_identity=False,
+    )
+
+    assert isolated.whoami().member_id == selected_member.member_id
+    assert isolated.whoami().member_id != ambient_member.member_id
+
+
+def test_resolved_target_config_handoff_rejects_incomplete_or_conflicting_args(
+    tmp_path: Path,
+) -> None:
+    """[TAUT-3.2] Resolved target/config are an exclusive argument pair."""
+
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    config = load_config()
+    target = BrokerTarget("sqlite", str(db))
+
+    with pytest.raises(ValueError, match="broker_target and broker_config"):
+        TautClient(broker_target=target)
+    with pytest.raises(ValueError, match="broker_target and broker_config"):
+        TautClient(broker_config=config)
+    with pytest.raises(ValueError, match="broker_target and broker_config"):
+        TautClient(db_path=db, broker_config=config)
+    with pytest.raises(
+        ValueError, match="broker_target cannot be combined with db_path"
+    ):
+        TautClient(
+            db_path=db,
+            broker_target=target,
+            broker_config=config,
+        )
+
+
+def test_resolved_sqlite_target_handoff_does_not_create_database(
+    tmp_path: Path,
+) -> None:
+    """[TAUT-3.2] A handed-off SQLite target must already exist."""
+
+    missing = tmp_path / "missing.db"
+
+    with pytest.raises(NotInitializedError):
+        TautClient(
+            broker_target=BrokerTarget("sqlite", str(missing)),
+            broker_config=load_config(),
+        )
+
+    assert not missing.exists()
+
+
+def test_resolved_sqlite_target_handoff_rejects_relative_path_or_directory(
+    tmp_path: Path,
+) -> None:
+    """[TAUT-3.2] A handed-off SQLite target is one absolute database file."""
+
+    with pytest.raises(ValueError, match="SQLite path must be absolute"):
+        TautClient(
+            broker_target=BrokerTarget("sqlite", "relative.db"),
+            broker_config=load_config(),
+        )
+    with pytest.raises(NotInitializedError):
+        TautClient(
+            broker_target=BrokerTarget("sqlite", str(tmp_path)),
+            broker_config=load_config(),
+        )
 
 
 def test_join_starts_at_now_and_other_member_message_is_unread(tmp_path: Path) -> None:
@@ -1370,6 +1507,128 @@ def test_mention_notification_is_claimed_without_touching_chat_history(
     with pytest.raises(EmptyResultError):
         bob.inbox()
     assert message.text in [item.text for item in bob.log("general")]
+
+
+def test_peek_inbox_repeats_without_claiming_or_touching_member(
+    tmp_path: Path,
+) -> None:
+    """[TAUT-8.3]/[IAN-7.4] Peek is a repeatable observational view."""
+
+    van = client(tmp_path, "van")
+    bob = existing_client(tmp_path, "bob")
+    van.join("general")
+    bob.join("general")
+    member = bob.whoami()
+    message = van.say("general", "hello @bob")
+    before_member = bob._state.get_member(member.member_id)
+
+    first = bob.peek_inbox()
+    second = bob.peek_inbox()
+
+    assert [(item.type, item.message_ts) for item in first] == [("mention", message.ts)]
+    assert second == first
+    assert bob._state.get_member(member.member_id) == before_member
+    assert bob.inbox() == first
+    with pytest.raises(EmptyResultError):
+        bob.inbox()
+
+
+@pytest.mark.parametrize("limit", [0, -1])
+def test_peek_inbox_rejects_nonpositive_limit_before_identity_resolution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    limit: int,
+) -> None:
+    """[TAUT-8.3] Invalid bounds do not enter identity selection."""
+
+    owner = client(tmp_path, "owner")
+    before_members = owner._state.list_members()
+    ghost = existing_client(tmp_path, "ghost")
+
+    def unexpected_resolution(**_: object) -> None:
+        raise AssertionError("identity resolution must not run")
+
+    monkeypatch.setattr(ghost, "_resolve_member", unexpected_resolution)
+
+    with pytest.raises(ValueError, match="limit must be positive"):
+        ghost.peek_inbox(limit=limit)
+
+    assert owner._state.list_members() == before_members
+
+
+def test_peek_inbox_missing_token_binding_does_not_recreate_member(
+    tmp_path: Path,
+) -> None:
+    """[TAUT-8.3] A removed token binding is not healed or recreated."""
+
+    owner = client(tmp_path, "owner")
+    owner.join("general")
+    created = owner.last_created_member
+    assert created is not None
+    assert created.token is not None
+    member_id = created.member_id
+    observer = TautClient(
+        db_path=tmp_path / ".taut.db",
+        token=created.token,
+    )
+    with owner._meta_queue.sidecar(transaction=True) as session:
+        session.run(
+            "UPDATE taut_members SET token = NULL WHERE member_id = ?", (member_id,)
+        )
+    member_after_unbind = owner._state.get_member(member_id)
+    members_after_unbind = owner._state.list_members()
+    assert member_after_unbind is not None
+
+    with pytest.raises(TokenError, match="TAUT_TOKEN does not match a taut member"):
+        observer.peek_inbox()
+
+    assert owner._state.get_member(member_id) == member_after_unbind
+    assert owner._state.list_members() == members_after_unbind
+
+
+def test_peek_inbox_removed_bound_member_is_not_recreated(tmp_path: Path) -> None:
+    """[TAUT-11] A deleted token-bound member stays deleted after peek."""
+
+    owner = client(tmp_path, "owner")
+    owner.join("general")
+    created = owner.last_created_member
+    assert created is not None
+    assert created.token is not None
+    member_id = created.member_id
+    observer = TautClient(db_path=tmp_path / ".taut.db", token=created.token)
+    with owner._meta_queue.sidecar(transaction=True) as session:
+        session.run(
+            "DELETE FROM taut_identity_claims WHERE member_id = ?", (member_id,)
+        )
+        session.run("DELETE FROM taut_member_aliases WHERE member_id = ?", (member_id,))
+        session.run("DELETE FROM taut_membership WHERE member_id = ?", (member_id,))
+        session.run("DELETE FROM taut_members WHERE member_id = ?", (member_id,))
+    members_after_removal = owner._state.list_members()
+
+    with pytest.raises(TokenError, match="TAUT_TOKEN does not match a taut member"):
+        observer.peek_inbox()
+
+    assert owner._state.list_members() == members_after_removal
+
+
+def test_peek_inbox_decodes_malformed_pointer_without_claiming_it(
+    tmp_path: Path,
+) -> None:
+    """[TAUT-8.3] Peek and inbox share the core notification decoder."""
+
+    bob = client(tmp_path, "bob")
+    bob.join("general")
+    member_id = bob.whoami().member_id
+    queue = bob.queue(addressing.notification_queue_name(member_id))
+    ts = queue.generate_timestamp()
+    queue.insert_messages([("not json", ts)])
+
+    peeked = bob.peek_inbox()
+    consumed = bob.inbox()
+
+    assert peeked == consumed
+    assert peeked[0].type == "foreign"
+    assert peeked[0].warning == "malformed notification"
 
 
 def test_reply_notifies_parent_author_until_they_join_child(tmp_path: Path) -> None:

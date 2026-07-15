@@ -1,7 +1,16 @@
 # Changelog
 
-## Unreleased
+## [0.7.0] - 2026-07-15
 
+- Added the version-coordinated `taut-mcp` extension: a
+  connection-scoped stdio server with 15 explicit workspace-scoped tools, one
+  owner-thread client per attached workspace, a read-only aggregate
+  notification resource, standard resource-update hints, and an opt-in fixed-
+  cue Claude channel adapter.
+- Added public `TautClient.peek_inbox()`, resolved broker-target/config handoff,
+  and explicit ambient-identity inheritance control for safe multi-workspace
+  embedding without claiming notification pointers or selecting process-wide
+  identity by accident.
 - Added per-call `limit` paging to `TautClient.read()` and `read_unread()` with
   exact cursor advancement and a 1,000-message per-thread default.
 

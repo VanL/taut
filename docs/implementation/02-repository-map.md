@@ -18,6 +18,7 @@ Quick pointers to the key guidance documents in this repository.
 | `bin/require-green-workflows.py` | Observes canonical exact-SHA workflow evidence and selects attempt-bound release artifacts by immutable id and archive digest |
 | `.github/workflows/test.yml` | Push/PR/reusable pytest, lint, type, existing-lane coverage, canonical packaging, and release-evidence artifact gates |
 | `.github/workflows/test-pg-extension.yml` | Push/PR/reusable Docker Postgres gate for `taut-pg` |
+| `.github/workflows/test-mcp-extension.yml` | Push/PR/reusable SQLite and live-PostgreSQL behavior, quality, and build gate for the unpublished `taut-mcp` extension |
 | `.github/workflows/release-gate.yml` | `v*` tag observer that requires exact-SHA Test and PG Test evidence before publishing the tested core artifact |
 | `.github/workflows/release-gate-pg.yml` | `taut_pg/v*` tag observer that requires exact-SHA Test and PG Test evidence before publishing the tested `taut-pg` artifact |
 | `.github/workflows/release-gate-summon.yml` | `taut_summon/v*` tag observer that requires exact-SHA Test and PG Test evidence before publishing the tested `taut-summon` artifact |
@@ -55,6 +56,7 @@ Quick pointers to the key guidance documents in this repository.
 | `docs/specs/02-taut-core.md` | Taut core spec: storage, threads, envelope, read model, surfaces, trust model |
 | `docs/specs/03-identity-addressing-notifications.md` | Identity, addressing, and notifications spec: member ids, names, DMs, queue namespace, rename |
 | `docs/specs/04-summon.md` | Summon extension spec: agent harness as member, injection ears, CLI mouth, adapters, session ledger, control plane |
+| `docs/specs/05-taut-mcp.md` | MCP extension spec: connection lifecycle, multi-workspace attachment, explicit tools, notification resource, subscriptions, and host hints |
 | `docs/plans/README.md` | Plan directory rules |
 | `docs/plans/2026-06-12-taut-foundation-plan.md` | Historical foundation implementation plan |
 | `docs/plans/2026-06-18-member-identity-addressing-plan.md` | Implemented plan for member ids, addressing, notifications, and channel rename |
@@ -84,6 +86,7 @@ Quick pointers to the key guidance documents in this repository.
 | `docs/implementation/04-taut-architecture.md` | Taut implementation rationale, boundaries, dependencies, and key files |
 | `docs/implementation/05-taut-summon-architecture.md` | Summon extension rationale: ears/mouth split, three-thread driver, session ledger, control plane, and SimpleBroker handle ownership |
 | `docs/implementation/06-command-extensions.md` | Static and installed command registration, registry/dispatch ownership, lazy imports, extension packaging, and rich composition guidance |
+| `docs/implementation/07-taut-mcp-architecture.md` | MCP reactor-over-reactors rationale: workspace ownership, explicit tool dispatch, cached notification resource, edge hints, and cancellation boundaries |
 | `docs/lessons.md` | Canonical lessons ledger |
 
 ## Product Code
@@ -108,6 +111,7 @@ Quick pointers to the key guidance documents in this repository.
 | `tests/test_project_metadata_consistency.py` | Relational gate comparing constants, first-party floors, README pins, wheel names, and retained-lock versions to their owning package manifests |
 | `extensions/taut_pg/` | Separate `taut-pg` project with extension metadata, README, and PG-only tests |
 | `extensions/taut_summon/` | Separate `taut-summon` project: lazy public facade, typed controller/models and host-interaction seam, thin CLI renderer, driver, adapters, ledger, control plane, persona, and real-process conformance suite |
+| `extensions/taut_mcp/` | Separate `taut-mcp` project: connection-scoped stdio server, master connection reactor, one owner-thread reactor per attached workspace, explicit tool schemas, notification resource, and optional Claude channel hint |
 
 ## Skills
 

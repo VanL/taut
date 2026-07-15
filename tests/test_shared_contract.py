@@ -8,7 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from simplebroker import Queue, open_broker
+from simplebroker import Queue, open_broker, resolve_broker_target
 from simplebroker.ext import IntegrityError
 from taut_summon._state import (
     LEDGER_QUEUE_NAME,
@@ -20,13 +20,15 @@ from taut_summon._state import (
 )
 
 import taut.identity as identity
-from taut._constants import META_QUEUE_NAME
+from taut import addressing
+from taut._constants import META_QUEUE_NAME, load_config
 from taut._exceptions import (
     BlankMessageError,
     EmptyResultError,
     MembershipError,
     NotFoundError,
     TautError,
+    TokenError,
 )
 from taut.client import Message, Notification, TautClient
 from tests.conftest import build_cli_env, run_cli
@@ -99,6 +101,40 @@ def test_project_client_join_say_read_contract(taut_project: Path) -> None:
     assert result.db
     assert message.thread == "general"
     assert [item.text for item in bob.read("general")][-1:] == ["shared hello"]
+
+
+def test_project_resolved_target_config_handoff_contract(
+    taut_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[TAUT-3.2] Frozen target handoff is backend-shared and cwd-free."""
+
+    TautClient.init()
+    config = load_config()
+    target = resolve_broker_target(taut_project, config=config)
+    assert target is not None
+    elsewhere = taut_project.parent / "outside-taut-project"
+    elsewhere.mkdir(exist_ok=True)
+    ambient_db = elsewhere / "ambient.db"
+    monkeypatch.chdir(elsewhere)
+    monkeypatch.setenv("TAUT_DB", str(ambient_db))
+    writer = TautClient(
+        broker_target=target,
+        broker_config=config,
+        as_name="writer",
+    )
+    reader = TautClient(
+        broker_target=target,
+        broker_config=config,
+        as_name="reader",
+    )
+
+    writer.join("general")
+    reader.join("general")
+    written = writer.say("general", "resolved handoff")
+
+    assert [item.ts for item in reader.read("general")] == [written.ts]
+    assert not ambient_db.exists()
 
 
 def test_project_read_limit_paginates_without_skipping(taut_project: Path) -> None:
@@ -688,6 +724,88 @@ def test_project_notifications_claim_without_touching_history_contract(
     with pytest.raises(EmptyResultError):
         bob.inbox()
     assert "ping @bob @bob" in [message.text for message in bob.log("general")]
+
+
+def test_project_notification_peek_is_observational_contract(
+    taut_project: Path,
+) -> None:
+    """[TAUT-8.3]/[IAN-7.4] Peek is ordered and read-only on each backend."""
+
+    TautClient.init()
+    owner = TautClient(as_name="reviewer")
+    owner.join("general")
+    created = owner.last_created_member
+    assert created is not None
+    assert created.token is not None
+    observer = TautClient(token=created.token)
+    token_claim = identity.claim_for_token(created.token)
+    assert observer._state.get_identity_claim(token_claim.claim_hash) is None
+    assert observer.peek_inbox() == []
+    assert observer._state.get_identity_claim(token_claim.claim_hash) is None
+    observer.whoami()
+    established_claim = observer._state.get_identity_claim(token_claim.claim_hash)
+    assert established_claim is not None
+    speaker = TautClient(as_name="speaker")
+    speaker.join("general")
+    written = [
+        speaker.say("general", "first @reviewer"),
+        speaker.say("general", "second @reviewer"),
+    ]
+    member_before = observer._state.get_member(created.member_id)
+    memberships_before = observer._state.list_memberships(created.member_id)
+    claim_before = observer._state.get_identity_claim(token_claim.claim_hash)
+    assert member_before is not None
+    assert claim_before == established_claim
+    meta = observer.queue(META_QUEUE_NAME)
+    notifications = observer.queue(
+        addressing.notification_queue_name(created.member_id)
+    )
+    try:
+        meta_high_water_before = meta.refresh_last_ts()
+        stats_before = notifications.stats()
+
+        first = observer.peek_inbox(limit=1)
+        repeated_first = observer.peek_inbox(limit=1)
+        all_pending = observer.peek_inbox(limit=2)
+
+        meta_high_water_after = meta.refresh_last_ts()
+        stats_after = notifications.stats()
+    finally:
+        notifications.close()
+        meta.close()
+
+    assert [item.message_ts for item in first] == [written[0].ts]
+    assert repeated_first == first
+    assert [item.message_ts for item in all_pending] == [
+        message.ts for message in written
+    ]
+    assert observer._state.get_member(created.member_id) == member_before
+    assert observer._state.list_memberships(created.member_id) == memberships_before
+    assert observer._state.get_identity_claim(token_claim.claim_hash) == claim_before
+    assert meta_high_water_after == meta_high_water_before
+    assert stats_after == stats_before
+
+    assert observer.inbox(limit=2) == all_pending
+    member_after_consume = observer._state.get_member(created.member_id)
+    claim_after_consume = observer._state.get_identity_claim(token_claim.claim_hash)
+    assert member_after_consume is not None
+    assert claim_after_consume is not None
+    assert member_after_consume["last_active_ts"] > member_before["last_active_ts"]
+    assert claim_after_consume["last_seen_ts"] > claim_before["last_seen_ts"]
+    assert observer.peek_inbox() == []
+    with pytest.raises(EmptyResultError):
+        observer.inbox()
+
+    with observer._meta_queue.sidecar(transaction=True) as session:
+        session.run(
+            "UPDATE taut_members SET token = NULL WHERE member_id = ?",
+            (created.member_id,),
+        )
+    member_after_unbind = observer._state.get_member(created.member_id)
+    assert member_after_unbind is not None
+    with pytest.raises(TokenError, match="TAUT_TOKEN does not match a taut member"):
+        observer.peek_inbox()
+    assert observer._state.get_member(created.member_id) == member_after_unbind
 
 
 def test_project_channel_rename_moves_subthreads_contract(

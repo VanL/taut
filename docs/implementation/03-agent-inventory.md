@@ -33,11 +33,11 @@ step 6. Claude and Grok were refreshed through that workflow on this machine;
 the remaining statuses predate the skill's adoption and should be re-derived
 before use.
 
-Last refreshed: 2026-07-14
+Last refreshed: 2026-07-15
 
 | Agent family | Status | Notes |
 |--------------|--------|-------|
-| Claude | verified usable; review-eligible | `/opt/homebrew/bin/claude`, version 2.1.207. Liveness passed and prior plan-mode write-attempt containment remains verified. A 2026-07-14 full review exceeded the 540-second bound after 33 tool calls without reaching `end_turn`; diagnosis found buffered output and an undersized bound, not auth, flag drift, or a process hang. The invocation row needs follow-up to add an actual `--tools` boundary and streaming output before another large review. |
+| Claude | verified usable; review-eligible | `/opt/homebrew/bin/claude`, version 2.1.207. Liveness and prior plan-mode write-attempt containment remain verified. On 2026-07-15 the default Fable model returned a quota 429 while explicit `--model sonnet` and `--model opus` succeeded. One large tool-less JSON review consumed output but returned an empty top-level result, and resume then hit `cache_control cannot be set for empty text blocks`; bounded direct-text calls with only Read/Grep/Glob completed. The MCP implementation owner requires Opus for further Claude reviews in that thread. Review wrappers must inspect stdout JSON on nonzero exit, not only stderr. |
 | Codex | verified usable | `/opt/homebrew/bin/codex`, version 0.144.1. This 2026-07-11 task and its independent review run through Codex successfully. |
 | Gemini | present | `/opt/homebrew/bin/gemini`, version 0.46.0. Version probe passed 2026-07-11; prior credential failure was not re-probed. |
 | Qwen | present | `/opt/homebrew/bin/qwen`, version 0.17.0. Version probe passed 2026-07-11; prior model-access failure was not re-probed. |

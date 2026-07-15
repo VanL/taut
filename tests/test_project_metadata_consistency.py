@@ -37,8 +37,10 @@ def _version_tuple(version: str) -> tuple[int, int, int]:
 def test_package_versions_and_derived_metadata_match_their_owners() -> None:
     root = _project("pyproject.toml")
     pg = _project("extensions/taut_pg/pyproject.toml")
+    mcp = _project("extensions/taut_mcp/pyproject.toml")
     summon = _project("extensions/taut_summon/pyproject.toml")
     root_version = str(root["version"])
+    mcp_version = str(mcp["version"])
     summon_version = str(summon["version"])
     constants = (REPO_ROOT / "taut" / "_constants.py").read_text(encoding="utf-8")
     constant_match = re.search(r'__version__(?::[^=]+)? = "([^"]+)"', constants)
@@ -51,6 +53,8 @@ def test_package_versions_and_derived_metadata_match_their_owners() -> None:
     simplebroker_pg_floor = _dependency_floor(pg, "simplebroker-pg")
     assert _version_tuple(simplebroker_pg_floor) >= (3, 2, 1)
     assert _dependency_floor(summon, "taut") == root_version
+    assert _dependency_floor(mcp, "taut") == root_version
+    assert "mcp>=1.28.1,<2" in mcp["dependencies"]  # type: ignore[operator]
 
     optional = root["optional-dependencies"]
     assert isinstance(optional, dict)
@@ -84,6 +88,26 @@ def test_package_versions_and_derived_metadata_match_their_owners() -> None:
     assert _version_tuple(locked_simplebroker_version) >= _version_tuple(
         simplebroker_floor
     )
+
+    mcp_lock = _manifest("extensions/taut_mcp/uv.lock")
+    mcp_packages = mcp_lock["package"]
+    assert isinstance(mcp_packages, list)
+    locked_by_name = {
+        str(package["name"]): package
+        for package in mcp_packages
+        if isinstance(package, dict) and "name" in package
+    }
+    assert locked_by_name["taut"].get("version") == root_version
+    assert locked_by_name["taut-mcp"].get("version") == mcp_version
+    assert locked_by_name["mcp"].get("version") == "1.28.1"
+    mcp_metadata = locked_by_name["taut-mcp"].get("metadata")
+    assert isinstance(mcp_metadata, dict)
+    requirements = mcp_metadata.get("requires-dist")
+    assert isinstance(requirements, list)
+    assert {
+        "name": "mcp",
+        "specifier": ">=1.28.1,<2",
+    } in requirements
 
 
 def test_readme_install_examples_match_current_manifests() -> None:

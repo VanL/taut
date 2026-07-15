@@ -22,3 +22,4 @@ read order stay aligned instead of competing.
 4. `04-taut-architecture.md`
 5. `05-taut-summon-architecture.md`
 6. `06-command-extensions.md`
+7. `07-taut-mcp-architecture.md`

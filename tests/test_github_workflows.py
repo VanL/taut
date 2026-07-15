@@ -468,6 +468,24 @@ def test_pg_workflow_is_reusable_and_runs_pg_helper() -> None:
     )
 
 
+def test_mcp_workflow_runs_sqlite_postgres_quality_and_build_gates() -> None:
+    workflow = _workflow("test-mcp-extension.yml")
+
+    assert "workflow_call:" in workflow
+    assert "image: postgres:18" in workflow
+    assert "SIMPLEBROKER_PG_TEST_DSN:" in workflow
+    assert "job.services.postgres.ports[5432]" in workflow
+    assert (
+        "uv run --project extensions/taut_mcp --extra dev pytest "
+        "extensions/taut_mcp/tests"
+    ) in workflow
+    assert (
+        "ruff check extensions/taut_mcp/taut_mcp extensions/taut_mcp/tests" in workflow
+    )
+    assert "mypy extensions/taut_mcp/taut_mcp extensions/taut_mcp/tests" in workflow
+    assert "uv build --project extensions/taut_mcp" in workflow
+
+
 def test_pg_release_gate_is_github_only() -> None:
     workflow = _assert_exact_sha_release_observer(
         "release-gate-pg.yml",

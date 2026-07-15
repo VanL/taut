@@ -134,6 +134,20 @@ directory explicitly (`target_for_directory`), creates the SQLite database or
 initializes the configured non-SQLite target by opening it, and installs the
 sidecar schema ([TAUT-3.3]).
 
+An embedding caller that has already completed the same project-resolution
+operation may construct `TautClient` with `broker_target=BrokerTarget` and
+`broker_config=Mapping[str, Any]`. The two arguments are a pair: supplying only
+one raises `ValueError`, and `broker_target` is mutually exclusive with
+`db_path`. `broker_config` is the resolved `load_config()` mapping used to
+produce that target. This handoff bypasses current-directory and `TAUT_DB`
+storage selection so a caller can freeze one resolved project without changing
+process-global state. It does not make DSN strings valid `db_path` values, alter
+identity selectors, or permit database creation. A handed-off SQLite target
+must name an absolute path that resolves to an existing file; a handed-off
+non-SQLite target retains its backend name, target, and backend options. The
+client copies the resolved config and target backend-options mapping at the
+constructor boundary, so later caller mutation cannot change the attachment.
+
 On Windows, a resolved SQLite path containing any U+0000 through U+001F
 control character is invalid. `taut init` rejects it before constructing a
 SimpleBroker queue or entering broker lock/setup work, exits 1, and reports the
@@ -819,6 +833,16 @@ create, join, or leave a thread; write a notice; or alter membership/cursor
 state. This is the public embedding seam for persona-only updates such as
 Summon re-summon.
 
+`TautClient(..., inherit_environment_identity: bool = True)` controls only
+the constructor's fallback to the process-wide `TAUT_AS` and `TAUT_TOKEN`
+identity selectors. The default preserves the CLI and ordinary embedding
+behavior: a missing explicit selector may inherit its corresponding
+environment value. When false, the client ignores both environment variables
+and uses only the explicit `as_name=` and `token=` arguments. Storage
+selection, identity-resolution precedence, and all later identity semantics
+are unchanged. Long-lived multi-workspace embedders use false so one
+process-wide identity cannot override a workspace's explicit binding.
+
 `joined_thread_names()` returns the acting member's current chat-thread names
 through read-only identity resolution. It does not update activity, record an
 identity claim, inspect unread state, or create membership. Long-lived
@@ -854,6 +878,19 @@ Accessing the lazy root export may load only standard-library configuration and
 regex support; it must not import client, state, watcher, command-discovery,
 Summon, PTY, or TUI implementations. Its public failures are the `TypeError`,
 `ValueError`, and fixed-message `RuntimeError` cases defined by [TAUT-6.4].
+
+`TautClient.peek_inbox(limit=1000)` returns up to `limit` current notification
+records in notification queue order without claiming pointers. It resolves
+only an existing member through `create=False` and `_touch_activity=False`
+and performs no identity creation/healing, activity touch, cursor change, or
+acknowledgement write. `limit` must be positive or raises `ValueError`; the
+public API has no smaller MCP presentation cap. An empty inbox returns `[]`;
+it does not raise `EmptyResultError`. If the selected member no longer
+resolves, it propagates the same identity-resolution exception as `inbox()`;
+for a missing continuity-token binding this is `TokenError`. `inbox()` remains
+the consuming operation. This backend-neutral method owns notification queue
+selection and body decoding so protocol extensions do not reproduce internal
+queue rules.
 
 ### [TAUT-8.4] Watcher
 
@@ -1236,6 +1273,17 @@ posture:
   client or CLI paths.
 - Addressing and notification tests follow [IAN-10]. They must use real
   broker-backed queues and sidecar state, not mocked schema or queue helpers.
+- Resolved `broker_target`/`broker_config` handoff works from a current
+  directory outside the project on real SQLite and PostgreSQL targets, bypasses
+  ambient `TAUT_DB` storage selection, rejects incomplete or conflicting
+  argument pairs, rejects relative or non-file SQLite targets, defensively
+  copies caller-owned mappings, and never creates a missing SQLite target.
+- `peek_inbox()` and `inbox()` observe the same ordered notification records,
+  but only `inbox()` claims pointers; empty peek is `[]`; repeated peek is
+  idempotent; and member, identity claim, activity, queue cursor, and
+  acknowledgement state are unchanged over real SQLite and PostgreSQL state;
+  a removed bound member produces the existing identity-resolution exception
+  without recreating identity.
 - Watcher tests run a live `TautWatcher` against concurrent writer
   processes and prove: no message lost, no message re-dispatched after
   cursor advance, cursor persisted, `add_queue` on mid-watch join, no
@@ -1654,6 +1702,9 @@ verification.
 
 ## Related Plans
 
+- `docs/plans/2026-07-14-taut-mcp-extension-plan.md` — optional stdio MCP
+  extension, read-only notification peek, workspace-scoped identity, reactor
+  hierarchy, explicit tool/resource contracts, and cross-backend conformance.
 - `docs/plans/2026-07-15-per-call-read-limit-plan.md` — bounded per-call
   unread pages, exact cursor advancement, shared SQLite/PostgreSQL proof, and
   a smaller MCP surface default without post-read slicing.

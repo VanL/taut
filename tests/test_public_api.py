@@ -90,6 +90,29 @@ def test_unread_limit_is_keyword_only_with_core_default() -> None:
         assert parameters["limit"].default == 1000
 
 
+def test_notification_peek_limit_is_keyword_only_with_core_default() -> None:
+    """[TAUT-8.3] The public peek keeps the core 1,000-record bound."""
+
+    parameters = inspect.signature(taut.TautClient.peek_inbox).parameters
+
+    assert parameters["limit"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameters["limit"].default == 1000
+
+
+def test_client_environment_identity_inheritance_is_keyword_only_and_defaulted() -> (
+    None
+):
+    """[TAUT-8.3] Existing callers retain ambient identity inheritance."""
+
+    parameters = inspect.signature(taut.TautClient).parameters
+
+    assert (
+        parameters["inherit_environment_identity"].kind
+        is inspect.Parameter.KEYWORD_ONLY
+    )
+    assert parameters["inherit_environment_identity"].default is True
+
+
 def test_lazy_exports_are_the_owning_module_objects() -> None:
     from taut.client import Member, Message, Notification, TautClient, Thread
     from taut.terminal import escape_terminal_text

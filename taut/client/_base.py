@@ -6,7 +6,9 @@ import json
 import os
 import tomllib
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from collections.abc import Mapping
+from copy import deepcopy
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -106,15 +108,30 @@ class _ClientBase(ABC):
         self,
         *,
         db_path: str | Path | None = None,
+        broker_target: BrokerTarget | None = None,
+        broker_config: Mapping[str, Any] | None = None,
         as_name: str | None = None,
         token: str | None = None,
         identity_capture: identity.IdentityCapture | None = None,
         persistent: bool = False,
+        inherit_environment_identity: bool = True,
     ) -> None:
-        self.config = load_config()
-        self.target = self._resolve_target(db_path)
-        self.as_name = as_name or os.environ.get("TAUT_AS")
-        self.token = token or os.environ.get("TAUT_TOKEN")
+        if (broker_target is None) != (broker_config is None):
+            raise ValueError(
+                "broker_target and broker_config must be supplied together"
+            )
+        if broker_target is not None and db_path is not None:
+            raise ValueError("broker_target cannot be combined with db_path")
+        self.config = (
+            load_config() if broker_config is None else deepcopy(dict(broker_config))
+        )
+        self.target = self._resolve_target(db_path, broker_target=broker_target)
+        if inherit_environment_identity:
+            self.as_name = as_name or os.environ.get("TAUT_AS")
+            self.token = token or os.environ.get("TAUT_TOKEN")
+        else:
+            self.as_name = as_name
+            self.token = token
         self.identity_capture = identity_capture
         self._persistent = persistent
         self._queue_cache: dict[str, Queue] = {}
@@ -164,7 +181,23 @@ class _ClientBase(ABC):
             queue.close()
         self._queue_cache.clear()
 
-    def _resolve_target(self, db_path: str | Path | None) -> BrokerTarget | str:
+    def _resolve_target(
+        self,
+        db_path: str | Path | None,
+        *,
+        broker_target: BrokerTarget | None = None,
+    ) -> BrokerTarget | str:
+        if broker_target is not None:
+            if broker_target.backend_name == "sqlite":
+                sqlite_path = Path(broker_target.target)
+                if not sqlite_path.is_absolute():
+                    raise ValueError("broker_target SQLite path must be absolute")
+                if not sqlite_path.is_file():
+                    raise NotInitializedError(NO_DATABASE_MESSAGE)
+            return replace(
+                broker_target,
+                backend_options=deepcopy(dict(broker_target.backend_options)),
+            )
         explicit = db_path or os.environ.get("TAUT_DB")
         if explicit is not None:
             path = Path(explicit).expanduser()

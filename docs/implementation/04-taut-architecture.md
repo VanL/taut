@@ -5,7 +5,7 @@
 This document explains the core implementation boundary: the default `.taut.db`
 storage boundary, optional `taut-pg` extension boundary, identity resolution,
 message read/write path, watcher, and CLI/API split. The TUI, summon extension,
-and non-SQL state mappings remain out of scope.
+MCP extension, and non-SQL state mappings remain out of scope.
 
 Implementation status: the current code implements the member-id,
 mutable-name, direct-message, notification, and channel-rename model specified
@@ -36,6 +36,20 @@ in `docs/specs/03-identity-addressing-notifications.md`.
 message writes, notification writes, and read cursor semantics. The CLI only
 parses arguments and renders results. This keeps one operational path for every
 verb and prevents CLI behavior from drifting away from the Python API.
+
+Long-lived embedding hosts may resolve a project before they construct the
+client that owns its database handles. The paired `broker_target` and
+`broker_config` constructor arguments carry that already resolved SimpleBroker
+context into `TautClient` without consulting `cwd` or `TAUT_DB`. Core still
+requires an absolute existing SQLite file before opening a queue. It copies the
+resolved config and the target's mutable backend-options mapping at the
+boundary, so a host cannot change a live attachment by mutating objects it
+passed earlier. The pair is mutually exclusive with the path-only `db_path`
+selector, so this lower-level handoff does not turn a DSN into a public path
+selector. The target owns backend selection after handoff; the config retains
+the resolved queue-operation policy and is not re-read from ambient state. This
+seam exists in core because it is useful to any multi-project embedding host;
+`taut-mcp` is its first consumer.
 
 User-authored message filtering has one core owner:
 `taut/_message_text.py`. `MessagingMixin.say()` and `reply()` call its
@@ -484,13 +498,31 @@ the shortest unique suffix in the same 1,000-message window as `reply` and the
 full id when no shorter suffix is safe. JSON notification fields remain the
 durable machine contract.
 
+Notification observation has two deliberately different public operations.
+`NotificationsMixin.inbox()` resolves through the ordinary activity-touching
+identity path and claims pending pointers. `peek_inbox()` uses the same queue
+selection and decoder but resolves only an existing member without activity or
+claim writes and calls SimpleBroker's non-consuming `peek_many`. That makes the
+peek suitable for bounded extension-side observation while keeping queue names,
+payload compatibility, and malformed-pointer handling in core. It is not a
+durable subscription: another consumer can claim a pointer between peeks, and
+the source chat message remains the recovery record.
+
+There is no second Taut acknowledgement table. For this contract,
+acknowledgement state is the notification queue's pending-versus-claimed state,
+while chat cursor state is the stored membership rows. The cross-backend proof
+therefore snapshots notification queue statistics and every membership for the
+selected member, along with the member row, continuity-token claim, and metadata
+queue high-water mark.
+
 ## Boundaries and Invariants
 
 - Storage: `.taut.db` is the default durable target. SQLite WAL/shm companions
   are SQLite-managed transients. Under `taut-pg`, `.taut.toml` is config and
   durable chat state lives in the configured Postgres schema.
-- Project resolution: `TautClient` resolves a target before any queue is opened.
-  Only `TautClient.init()` creates a database.
+- Project resolution: `TautClient` resolves a target before any queue is opened,
+  or receives one paired with the exact resolved broker config through its
+  explicit embedding handoff. Only `TautClient.init()` creates a database.
 - Backend selection: `--db`, `db_path=`, and `TAUT_DB` remain filesystem path
   selectors. Postgres is selected only through `.taut.toml`.
 - SimpleBroker API: taut imports from `simplebroker` and `simplebroker.ext`
@@ -550,7 +582,7 @@ requirement or auditing implementation coverage.
 
 | Spec area | Primary code owners | Contract tests |
 |---|---|---|
-| [TAUT-3.2], project resolution, config, and Windows SQLite path preflight | `taut/_constants.py::load_config`, `taut/client/_base.py::_ClientBase._resolve_target`, `taut/client/__init__.py::TautClient.init` | `tests/test_project_config.py`, `tests/test_cli.py::test_init_uses_project_config_postgres_backend`, `test_windows_sqlite_target_validation_rejects_every_control`, `test_posix_sqlite_target_validation_preserves_control_bearing_paths`, and `test_cli_windows_control_bearing_database_target_fails_fast` |
+| [TAUT-3.2], project resolution, resolved target/config handoff, and Windows SQLite path preflight | `taut/_constants.py::load_config`, `taut/client/_base.py::_ClientBase.__init__`, `_resolve_target`, `taut/client/__init__.py::TautClient.init` | resolved-handoff, argument-pair, missing-target cases in `tests/test_client.py`; `tests/test_shared_contract.py::test_project_resolved_target_config_handoff_contract` on SQLite and PostgreSQL; `tests/test_project_config.py`; `tests/test_cli.py::test_init_uses_project_config_postgres_backend`, `test_windows_sqlite_target_validation_rejects_every_control`, `test_posix_sqlite_target_validation_preserves_control_bearing_paths`, and `test_cli_windows_control_bearing_database_target_fails_fast` |
 | [TAUT-3.3], [TAUT-3.4], sidecar schema and version gate | `taut/state/_sql.py::SqlSidecarTautState.ensure_schema`, `taut/state/__init__.py::TautState` | `tests/test_state_contract.py`, `tests/test_shared_contract.py`, `extensions/taut_pg/tests/test_pg_sidecar.py::test_postgres_concurrent_empty_schema_initializers_converge` |
 | [TAUT-4], channels, membership, replies, reads, logs, and listing | `taut/client/_threads.py::ThreadsMixin.join`, `leave`, `list_threads`; `taut/client/_messaging.py::MessagingMixin.say`, `reply`, `read_unread`, `log`; `taut/client/_identity.py::IdentityMixin.who` | `tests/test_client.py`, `tests/test_cli.py`, `tests/test_shared_contract.py` |
 | [TAUT-5], [IAN-3], [IAN-4], identity claims, deterministic selector capture, recognition, automatic display names, rejoin, and name changes | `taut/identity.py`, `taut/state/_sql.py::route_keys_in_use`, `taut/client/_identity.py::IdentityMixin._resolve_member`, `_create_member`, `rejoin`, `set_name` | `tests/test_identity.py`; `tests/test_client.py::test_existing_explicit_selector_skips_capture_and_preserves_process_identity`, `test_valid_token_selector_skips_capture_and_preserves_token_activity`, selector creation/guest/rejoin/explain cases, and `test_automatic_*`; `tests/test_identity_performance.py` (manual evidence, not a timing contract); `tests/test_shared_contract.py::test_project_automatic_name_skips_alias_owned_route_contract`; `tests/test_cli.py::test_rejoin_*` |
@@ -560,11 +592,11 @@ requirement or auditing implementation coverage.
 | [TAUT-7], read cursors, bounded per-call unread pages, and chat-history peek discipline | `taut/client/_messaging.py::MessagingMixin.read`, `read_unread`, `_implicit_subthread_membership`; `taut/client/_threads.py::_thread_from_row`, `_unread_count`; `taut/state/_sql.py` membership and cursor helpers | `tests/test_client.py` limit validation, per-thread bounds, cursor, decode-failure, caught-up-list, saturation, and list-race cases; `tests/test_client_stateful.py`; `tests/test_state_contract.py`; `tests/test_shared_contract.py::test_project_read_limit_paginates_without_skipping` on SQLite and PostgreSQL |
 | [TAUT-8.1], [TAUT-8.2], CLI behavior, rendering, JSON, help, and exit codes | `taut/cli.py`, `taut/commands/_dispatch.py`, and per-verb command adapters | `tests/test_cli.py` parser-inventory, help-phrase, explicit-argv, subprocess, rendering, blank-input, and exit-class tests; `tests/test_public_api.py` |
 | [TAUT-8.6], command manifests, installed discovery, dispatch, parser/context policy, and lazy loading | `taut/commands/` | `tests/test_command_registry.py`, `tests/test_lazy_imports.py`, `tests/test_architecture_boundaries.py`, installed-wheel cases in `tests/test_core_summon_wheel_matrix.py` |
-| [TAUT-8.3], Python API objects and verb semantics | `taut/client/__init__.py::TautClient`, `taut/client/_models.py`, the client mixins, and lazy root export `taut.escape_terminal_text` | `tests/test_public_api.py`, `tests/test_client.py`, `tests/test_terminal_text.py`, `tests/test_lazy_imports.py` |
+| [TAUT-8.3], Python API objects, notification peek, and verb semantics | `taut/client/__init__.py::TautClient`, `taut/client/_models.py`, `taut/client/_notifications.py::NotificationsMixin.peek_inbox`, the other client mixins, and lazy root export `taut.escape_terminal_text` | `tests/test_public_api.py`, `tests/test_client.py` notification-peek and other client contracts, `tests/test_shared_contract.py::test_project_notification_peek_is_observational_contract` on SQLite and PostgreSQL, `tests/test_terminal_text.py`, `tests/test_lazy_imports.py` |
 | [TAUT-8.4], [TAUT-8.5], watcher behavior and shared reactor lifecycle | `taut/watcher.py::BaseReactor`, `taut/watcher.py::TautWatcher`, `taut/_watch_runtime.py`, `taut/client/_watching.py`, `taut/client/__init__.py::TautClient.watch`, `taut/commands/watch.py` | `tests/test_watcher.py` ownership, stop, wake, cursor replay, construction cleanup, explicit-target resolution, terminal-stop, poison, ordering, and same-instance tests; `tests/test_cli.py::test_cli_watch_json_flushes_records_while_live`, `test_cli_watch_closed_pipe_exits_0_without_advancing_cursor`, `test_cli_watch_policy_failure_stops_without_advancing_cursor`; `tests/test_architecture_boundaries.py::test_first_party_reactors_inherit_guarded_lifecycle_templates`; `tests/test_shared_contract.py::test_project_watcher_receives_cli_write`; `extensions/taut_pg/tests/test_reactor.py` native-waiter rebind and forced polling-fallback tests |
 | [IAN-4], alias/name route namespace | `taut/state/_sql.py` member and alias helpers, `taut/_constants.py::route_key`, `validate_member_name` | `tests/test_state_contract.py`, `tests/test_client.py::test_set_name_changes_current_name_without_changing_member_id`, PostgreSQL create/rename-versus-alias races in `extensions/taut_pg/tests/test_pg_sidecar.py` |
 | [IAN-5], [IAN-6], addressing and special queue names | `taut/addressing.py`, `taut/client/_messaging.py::MessagingMixin.say`, `_say_dm`; `taut/client/_threads.py::_thread_from_row` | `tests/test_addressing.py`, `tests/test_client.py::test_direct_message_queue_is_stable_across_name_change`, `test_channel_names_reject_dots_and_reserved_words` |
-| [IAN-7], notification payloads and claiming | `taut/client/_messaging.py::_write_mention_notifications`; `taut/client/_codec.py::notification_from_body`; `taut/client/_notifications.py::_write_notification`, `inbox`; `taut/watcher.py` notification path | `tests/test_client.py::test_mention_notification_is_claimed_without_touching_chat_history`, `tests/test_watcher.py` |
+| [IAN-7], notification payloads, observational peek, and claiming | `taut/client/_messaging.py::_write_mention_notifications`; `taut/client/_codec.py::notification_from_body`; `taut/client/_notifications.py::_write_notification`, `peek_inbox`, `inbox`; `taut/watcher.py` notification path | notification-peek and consuming-inbox cases in `tests/test_client.py`; `tests/test_shared_contract.py::test_project_notification_peek_is_observational_contract`; `tests/test_watcher.py` |
 | [IAN-8], channel rename and partial-rename reporting | `taut/client/_threads.py::ThreadsMixin.rename_channel`, `taut/client/_base.py::_ClientBase._ensure_no_incomplete_channel_rename`; `taut/state/_sql.py` rename helpers | `tests/test_client.py::test_rename_channel_moves_messages_and_subthreads`, `test_incomplete_channel_rename_blocks_chat_history_operations`, `tests/test_state_contract.py`, shared rename tests |
 | [TAUT-12.1], Postgres extension boundary | `extensions/taut_pg/`, `taut/_scripts.py`, `bin/pytest-pg` | `extensions/taut_pg/tests/`, `tests/test_shared_contract.py` under `bin/pytest-pg` |
 

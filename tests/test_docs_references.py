@@ -72,6 +72,7 @@ LOCAL_SPEC_FILES = {
     "TAUT": REPO_ROOT / "docs" / "specs" / "02-taut-core.md",
     "IAN": REPO_ROOT / "docs" / "specs" / "03-identity-addressing-notifications.md",
     "SUM": REPO_ROOT / "docs" / "specs" / "04-summon.md",
+    "MCP": REPO_ROOT / "docs" / "specs" / "05-taut-mcp.md",
 }
 
 # These cite contracts copied from upstream projects. They are provenance,
