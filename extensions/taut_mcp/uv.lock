@@ -1143,7 +1143,7 @@ wheels = [
 
 [[package]]
 name = "taut"
-version = "0.7.0"
+version = "0.7.1"
 source = { editable = "../../" }
 dependencies = [
     { name = "psutil" },
@@ -1171,7 +1171,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "taut-mcp"
-version = "0.7.0"
+version = "0.7.1"
 source = { editable = "." }
 dependencies = [
     { name = "mcp" },
@@ -1207,7 +1207,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "taut-pg"
-version = "0.7.0"
+version = "0.7.1"
 source = { editable = "../taut_pg" }
 dependencies = [
     { name = "simplebroker-pg" },

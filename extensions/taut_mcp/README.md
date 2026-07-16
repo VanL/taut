@@ -15,8 +15,8 @@ that path does not publish a release. After the matching core tag and MCP wheel
 exist, install both into one environment:
 
 ```bash
-pipx install "git+https://github.com/VanL/taut.git@v0.7.0"
-pipx inject --include-apps taut ./taut_mcp-0.7.0-py3-none-any.whl
+pipx install "git+https://github.com/VanL/taut.git@v0.7.1"
+pipx inject --include-apps taut ./taut_mcp-0.7.1-py3-none-any.whl
 taut-mcp
 ```
 

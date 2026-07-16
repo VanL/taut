@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "taut-mcp"
-version = "0.7.0"
+version = "0.7.1"
 description = "MCP extension for attaching agent sessions to Taut workspaces"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -15,7 +15,7 @@ authors = [
 ]
 dependencies = [
     "mcp>=1.28.1,<2",
-    "taut>=0.7.0",
+    "taut>=0.7.1",
 ]
 
 [project.scripts]
@@ -29,7 +29,7 @@ dev = [
     "pytest-timeout>=2.4.0",
     "pytest-xdist>=3.0",
     "ruff>=0.1.0",
-    "taut-pg>=0.7.0",
+    "taut-pg>=0.7.1",
     "types-jsonschema>=4.0",
 ]
 
