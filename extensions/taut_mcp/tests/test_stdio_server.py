@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
 import json
 import os
@@ -185,6 +186,11 @@ cli.main([])
 def test_broken_stdout_after_initialize_is_a_clean_transport_exit() -> None:
     """[MCP-3] A peer-closing output pipe after connection exits zero."""
 
+    def peer_closed(exc: OSError) -> bool:
+        return isinstance(exc, BrokenPipeError) or (
+            os.name == "nt" and exc.errno == errno.EINVAL
+        )
+
     process = subprocess.Popen(
         [sys.executable, "-m", "taut_mcp"],
         cwd=EXTENSION_ROOT,
@@ -240,13 +246,15 @@ def test_broken_stdout_after_initialize_is_a_clean_transport_exit() -> None:
                     + "\n"
                 )
             process.stdin.flush()
-        except BrokenPipeError:
-            pass
+        except OSError as exc:
+            if not peer_closed(exc):
+                raise
         time.sleep(0.1)
         try:
             process.stdin.close()
-        except BrokenPipeError:
-            pass
+        except OSError as exc:
+            if not peer_closed(exc):
+                raise
         returncode = process.wait(timeout=5)
         stderr = process.stderr.read()
         assert returncode == 0, stderr
@@ -263,8 +271,9 @@ def test_broken_stdout_after_initialize_is_a_clean_transport_exit() -> None:
         if not process.stdin.closed:
             try:
                 process.stdin.close()
-            except BrokenPipeError:
-                pass
+            except OSError as exc:
+                if not peer_closed(exc):
+                    raise
         if not process.stdout.closed:
             process.stdout.close()
         process.stderr.close()
