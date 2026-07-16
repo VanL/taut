@@ -183,6 +183,21 @@ cli.main([])
 
 
 @pytest.mark.timeout(10)
+def test_windows_einval_is_a_broken_output_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[MCP-3] Windows' closed-stdout mapping receives clean-exit policy."""
+
+    from taut_mcp import cli
+
+    monkeypatch.setattr(cli.os, "name", "nt")
+    closed = OSError(errno.EINVAL, "Invalid argument")
+    assert cli._is_broken_transport(closed)
+    assert cli._is_broken_transport(ExceptionGroup("stdio", [closed]))
+    assert not cli._is_broken_transport(OSError(errno.EBADF, "Bad handle"))
+
+
+@pytest.mark.timeout(10)
 def test_broken_stdout_after_initialize_is_a_clean_transport_exit() -> None:
     """[MCP-3] A peer-closing output pipe after connection exits zero."""
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import errno
 import os
 from collections.abc import Sequence
 from typing import Never
@@ -20,6 +21,9 @@ def _is_broken_transport(error: BaseException) -> bool:
         error,
         (BrokenPipeError, anyio.BrokenResourceError, anyio.ClosedResourceError),
     ):
+        return True
+    # Windows reports EINVAL rather than EPIPE when the peer closes stdout.
+    if os.name == "nt" and isinstance(error, OSError) and error.errno == errno.EINVAL:
         return True
     if isinstance(error, BaseExceptionGroup):
         return bool(error.exceptions) and all(
