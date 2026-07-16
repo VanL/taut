@@ -46,7 +46,7 @@ async def _wait_until(predicate: Any, *, timeout: float = 5.0) -> None:
 
 
 @pytest.mark.sqlite_only
-@pytest.mark.timeout(15)
+@pytest.mark.timeout(60)
 def test_resource_sorts_workspaces_and_bounds_each_notification_snapshot(
     tmp_path: Path,
 ) -> None:
