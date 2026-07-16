@@ -46,10 +46,9 @@ Risky plans are blocked if they do not make explicit:
 
 ## Active Plans
 
-- `2026-07-15-taut-0.7.1-portability-and-coverage-plan.md` — add one macOS
-  and one Windows SQLite-only MCP lane, recover direct root coverage lost to
-  incomplete xdist worker collection, correct the MCP publication record, and
-  ship the narrow changes in a coordinated 0.7.1 release.
+- `2026-07-15-taut-0.7.1-portability-and-coverage-plan.md` — completed macOS
+  and Windows SQLite-only MCP proof, direct root coverage recovery,
+  publication-record correction, and coordinated 0.7.1 release.
 - `2026-07-15-taut-mcp-release-integration-plan.md` — add `taut-mcp` as the
   fourth GitHub-only exact-SHA release target, root-owned immutable artifact,
   universal release proof member, and same-run MCP coverage producer without
