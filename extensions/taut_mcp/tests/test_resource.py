@@ -253,7 +253,13 @@ def test_native_activity_wake_is_immediate_but_bursts_are_paced(
             await _wait_until(lambda: len(updates) == 1)
             updates.clear()
 
-            await asyncio.sleep(0.35)
+            # A completed command starts a fresh observational-backstop interval.
+            # Keep that independent poll from racing this native-wake pacing proof.
+            await reactor.execute_tool(
+                str(attached["workspace"]),
+                "whoami",
+                {},
+            )
             other.say("general", "first @selected")
             started = asyncio.get_running_loop().time()
             waiter.fire()
