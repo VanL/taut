@@ -16,9 +16,9 @@ Quick pointers to the key guidance documents in this repository.
 | `bin/build-and-check-release-wheels.py` | Fresh-build owner, or paired explicit-current-wheel consumer in canonical CI, that retains the historical wheel builds before invoking the six-case matrix checker |
 | `bin/release-artifact.py` | Creates and verifies commit-bound release bundles containing one wheel, one sdist, and an inner SHA-256 manifest |
 | `bin/require-green-workflows.py` | Observes canonical exact-SHA workflow evidence and selects attempt-bound release artifacts by immutable id and archive digest |
-| `.github/workflows/test.yml` | Push/PR/reusable pytest, lint, type, same-run root/Summon/MCP coverage aggregation, and sole canonical release-byte production for all four packages |
+| `.github/workflows/test.yml` | Push/PR/reusable pytest, lint, type, deterministic serial direct root/Summon unit coverage plus same-run process/MCP aggregation, and sole canonical release-byte production for all four packages |
 | `.github/workflows/test-pg-extension.yml` | Push/PR/reusable Docker Postgres gate for `taut-pg` |
-| `.github/workflows/test-mcp-extension.yml` | Push/PR/reusable SQLite and live-PostgreSQL MCP behavior, package-local quality, and disposable build gate; never a release-byte owner |
+| `.github/workflows/test-mcp-extension.yml` | Push/PR/reusable Ubuntu SQLite/live-PostgreSQL MCP behavior, representative macOS/Windows non-PG compatibility, package-local quality, and disposable build gate; never a release-byte owner |
 | `.github/workflows/release-gate.yml` | `v*` tag observer that requires exact-SHA Test, PG Test, and MCP Test evidence before publishing the root-produced core artifact |
 | `.github/workflows/release-gate-pg.yml` | `taut_pg/v*` tag observer that requires exact-SHA Test, PG Test, and MCP Test evidence before publishing the root-produced `taut-pg` artifact |
 | `.github/workflows/release-gate-summon.yml` | `taut_summon/v*` tag observer that requires exact-SHA Test, PG Test, and MCP Test evidence before publishing the root-produced `taut-summon` artifact |
@@ -80,6 +80,7 @@ Quick pointers to the key guidance documents in this repository.
 | `docs/plans/2026-07-13-ci-speed-determinism-release-evidence-plan.md` | Reviewed implementation plan for existing-lane coverage, deterministic worker/process ownership, strict local-LLM evidence, canonical package artifacts, and exact-SHA release gates |
 | `docs/plans/2026-07-14-universal-release-gates-plan.md` | Reviewed implementation and release plan for one default all-extension local gate, explicit human override, and both exact-SHA workflow requirements for every tag |
 | `docs/plans/2026-07-15-taut-mcp-release-integration-plan.md` | Reviewed implementation plan for the fourth release target, root-owned MCP bundle, three-workflow exact-SHA gates, and same-run MCP coverage shard |
+| `docs/plans/2026-07-15-taut-0.7.1-portability-and-coverage-plan.md` | Reviewed patch-release plan for macOS/Windows MCP proof, complete direct coverage ownership, publication-record correction, and coordinated 0.7.1 release |
 | `docs/plans/2026-07-14-terminal-output-safety-plan.md` | Reviewed implementation plan for packaged and project-customizable terminal-text policy, public extension API, human renderer coverage, and raw PTY exemption |
 | `docs/plans/2026-07-14-blank-message-no-op-plan.md` | Reviewed implementation plan for the built-in Unicode blank-input guard, typed empty result, silent CLI exit 2, and Summon terminal-mode adaptation |
 | `docs/implementation/00-implementation-index.md` | Numbered entry point for implementation docs |

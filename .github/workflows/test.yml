@@ -70,7 +70,7 @@ jobs:
           COVERAGE_FILE: ${{ github.workspace }}/.coverage.root-unit
         run: |
           python -m coverage erase
-          python -m coverage run --parallel-mode -m pytest -v --tb=short -m "not slow and not installed_wheel" --durations=100 --durations-min=0.5 -o faulthandler_timeout=720 --timeout=900 --timeout-method=thread --full-trace
+          python -m coverage run --parallel-mode -m pytest -v --tb=short -m "not slow and not installed_wheel" -n 0 --durations=100 --durations-min=0.5 -o faulthandler_timeout=720 --timeout=900 --timeout-method=thread --full-trace
 
       - name: Run installed-wheel tests
         if: ${{ !cancelled() && steps.install.outcome == 'success' && ((matrix.os == 'ubuntu-latest' && matrix.python-version != '3.13') || (matrix.os == 'macos-latest' && matrix.python-version == '3.13') || (matrix.os == 'windows-latest' && matrix.python-version == '3.11')) }}
@@ -101,7 +101,7 @@ jobs:
           COVERAGE_PROCESS_START: ${{ github.workspace }}/pyproject.toml
           COVERAGE_FILE: ${{ github.workspace }}/.coverage.root-unit
         run: |
-          python -m coverage run --parallel-mode -m pytest extensions/taut_summon/tests -v --tb=short -m "not xdist_group"
+          python -m coverage run --parallel-mode -m pytest extensions/taut_summon/tests -v --tb=short -m "not xdist_group" -n 0
 
       - name: Upload root and unit coverage data
         if: ${{ always() && matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13' && (steps.root_coverage.outcome != 'skipped' || steps.summon_unit_coverage.outcome != 'skipped') }}

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.1 - 2026-07-15
+
+- Added macOS and Windows SQLite MCP compatibility jobs at a representative
+  Python version, reusing the full non-PostgreSQL suite without claiming live
+  backend evidence or multiplying the supported-Python matrix.
+- Made direct root and Summon unit coverage collection serial in the canonical
+  coverage owner. This removes xdist scheduling from the two lanes whose raw
+  artifact retained only one worker and caused the 0.7.0 aggregate to omit 378
+  previously covered core and CLI statements.
+- Corrected the MCP implementation record to reflect the published 0.7.0
+  package and its exact-SHA Test, MCP, release-gate, and GitHub Release
+  evidence.
+
 ## 0.7.0 - 2026-07-15
 
 - Added the version-coordinated `taut-mcp` extension: a

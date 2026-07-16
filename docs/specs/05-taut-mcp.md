@@ -1637,5 +1637,6 @@ compatibility workflow.
 
 ## Related Plans
 
+- `docs/plans/2026-07-15-taut-0.7.1-portability-and-coverage-plan.md`
 - `docs/plans/2026-07-15-taut-mcp-release-integration-plan.md`
 - `docs/plans/2026-07-14-taut-mcp-extension-plan.md`

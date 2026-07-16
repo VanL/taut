@@ -13,10 +13,17 @@ The execution history and review record live in
 `docs/plans/2026-07-14-taut-mcp-extension-plan.md`. This note owns current
 implementation rationale and edit points, not protocol requirements.
 
-Implementation status: `extensions/taut_mcp/` contains the version-coordinated
-0.7.0 package and real stdio server. It is not yet published. The portable
-surface is 15 explicit tools plus `taut://notifications/current`; the optional
-Claude channel is only a best-effort wake hint.
+Implementation status: `extensions/taut_mcp/` contains the
+version-coordinated package and real stdio server. It was first published as
+0.7.0 from commit `8dfed910d0429226f2faaab776166ad5fd261189`, with root Test
+run [29455388946](https://github.com/VanL/taut/actions/runs/29455388946), MCP
+run [29455389050](https://github.com/VanL/taut/actions/runs/29455389050), MCP
+release gate
+[29455393317](https://github.com/VanL/taut/actions/runs/29455393317), and the
+[`taut_mcp/v0.7.0` GitHub Release](https://github.com/VanL/taut/releases/tag/taut_mcp/v0.7.0)
+as evidence. The portable surface is 15 explicit tools plus
+`taut://notifications/current`; the optional Claude channel is only a
+best-effort wake hint.
 
 ## Governing Spec References
 
@@ -162,14 +169,20 @@ evidence, then gives that root-produced bundle to the generic no-rebuild
 release workflow.
 
 The dedicated MCP workflow owns compatibility and live-backend behavior, not
-publication bytes. Its matrix runs the complete suite with a real PostgreSQL
-service; its quality job runs package-local Ruff, mypy, and an ordinary build.
-The root Test workflow also has one separate non-PG MCP coverage producer. It
-installs editable local MCP and PG packages because the test `conftest.py`
-imports `taut_pg` at collection time, but it starts no database and excludes
-`pg_only`. The same-run aggregator requires the named shard and the unique
-connection-rate debit line. This split avoids both false PostgreSQL claims and
-cross-workflow coverage artifact coupling.
+publication bytes. Its Ubuntu matrix runs the complete suite with a real
+PostgreSQL service across the supported Python span. One small companion matrix
+runs the same non-PG suite on macOS and Windows at a representative Python
+version, proving filesystem identity, stdio, and SQLite behavior without
+claiming PostgreSQL conformance. Its quality job runs package-local Ruff, mypy,
+and an ordinary build. The root Test workflow also has one separate non-PG MCP
+coverage producer. It installs editable local MCP and PG packages because the
+test `conftest.py` imports `taut_pg` at collection time, but it starts no
+database and excludes `pg_only`. The same-run aggregator requires the named
+shard and the unique connection-rate debit line. Direct root and Summon unit
+coverage run serially so xdist scheduling cannot omit a worker's measurements;
+ordinary compatibility matrices and the intentional Summon process topology
+remain parallel. This split avoids false PostgreSQL claims, incomplete direct
+coverage, and cross-workflow coverage artifact coupling.
 
 ## Boundaries and Invariants
 
@@ -202,7 +215,7 @@ cross-workflow coverage artifact coupling.
 | `extensions/taut_mcp/taut_mcp/_claude_channel.py` | isolated fixed-payload experimental notification model and send call |
 | `extensions/taut_mcp/tests/` | real SQLite/stdio lifecycle, tool, resource, subscription, cancellation, and adversarial proof; optional live PostgreSQL conformance |
 | `.github/workflows/test.yml` | sole MCP release-byte owner, exact core/MCP wheel smoke, and same-run non-PG MCP coverage producer/aggregator |
-| `.github/workflows/test-mcp-extension.yml` | required SQLite/PostgreSQL test matrix, package-local quality gates, and ordinary disposable build; no release bytes |
+| `.github/workflows/test-mcp-extension.yml` | required Ubuntu SQLite/PostgreSQL matrix, representative macOS/Windows non-PG compatibility matrix, package-local quality gates, and ordinary disposable build; no release bytes |
 | `.github/workflows/release-gate-mcp.yml` | `taut_mcp/v*` exact-SHA observer and handoff of the immutable root-produced MCP bundle |
 
 Verify a change at the owner boundary. Use real Taut clients, broker queues,
@@ -229,5 +242,6 @@ and plan evidence whenever ownership or rationale changes.
 
 ## Related Plan
 
+- `docs/plans/2026-07-15-taut-0.7.1-portability-and-coverage-plan.md`
 - `docs/plans/2026-07-15-taut-mcp-release-integration-plan.md`
 - `docs/plans/2026-07-14-taut-mcp-extension-plan.md`

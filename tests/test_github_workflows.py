@@ -235,7 +235,13 @@ def test_coverage_reuses_existing_ubuntu_lanes_and_aggregates_without_tests() ->
     assert representative in root_job
     assert representative in process_job
     assert "python -m coverage erase" in root_job
-    assert "python -m coverage run --parallel-mode -m pytest" in root_job
+    root_coverage_commands = [
+        line.strip()
+        for line in root_job.splitlines()
+        if "python -m coverage run --parallel-mode -m pytest" in line
+    ]
+    assert len(root_coverage_commands) == 3
+    assert all("-n 0" in command for command in root_coverage_commands)
     assert "python -m coverage run --parallel-mode -m pytest" in process_job
     assert "-n 2 --dist load" in process_job
     assert "python -m coverage run --parallel-mode -m pytest" in llm_job

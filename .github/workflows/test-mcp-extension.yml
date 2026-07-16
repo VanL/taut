@@ -68,6 +68,42 @@ jobs:
         run: |
           uv run --project extensions/taut_mcp --extra dev pytest extensions/taut_mcp/tests -v --tb=short -n 0 --durations=25 --durations-min=0.5 --timeout=900 --timeout-method=thread
 
+  test-mcp-sqlite-os:
+    name: test-mcp SQLite (${{ matrix.os }}, py3.13)
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        timeout-minutes: 5
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        timeout-minutes: 5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        timeout-minutes: 5
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            extensions/taut_mcp/pyproject.toml
+            extensions/taut_mcp/uv.lock
+            extensions/taut_pg/pyproject.toml
+
+      - name: Run SQLite MCP tests
+        timeout-minutes: 20
+        run: |
+          uv run --project extensions/taut_mcp --extra dev pytest extensions/taut_mcp/tests -v --tb=short -m "not pg_only" -n 0 --durations=25 --durations-min=0.5 --timeout=900 --timeout-method=thread
+
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 20
