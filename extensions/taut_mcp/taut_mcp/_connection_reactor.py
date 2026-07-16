@@ -923,6 +923,8 @@ class ConnectionReactor:
         self._reap_dead_owners()
 
     def _reap_dead_owners(self) -> None:
+        if self._closing:
+            return
         for generation, candidate in list(self._candidates.items()):
             if candidate.owner.thread.is_alive():
                 continue

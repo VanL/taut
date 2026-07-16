@@ -742,6 +742,26 @@ def test_canceled_attach_waiter_does_not_cancel_started_child_lifecycle(
 
 @pytest.mark.sqlite_only
 @pytest.mark.timeout(10)
+def test_normal_shutdown_does_not_report_child_fault(tmp_path: Path) -> None:
+    """[MCP-11] Intentionally stopped owners are not child failures."""
+
+    workspace, token, _ = _create_workspace(tmp_path, "selected")
+
+    async def scenario() -> None:
+        diagnostics: list[str] = []
+        reactor = ConnectionReactor(
+            asyncio.get_running_loop(),
+            diagnostic=diagnostics.append,
+        )
+        await reactor.attach_workspace(str(workspace), token)
+        await reactor.aclose()
+        assert diagnostics == []
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(10)
 def test_child_fault_is_isolated_and_reported_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

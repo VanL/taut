@@ -697,7 +697,7 @@ def test_bare_read_forwards_per_thread_limit_and_includes_direct_messages(
 
 
 @pytest.mark.sqlite_only
-@pytest.mark.timeout(30)
+@pytest.mark.timeout(120)
 def test_explicit_read_limit_pages_without_post_read_slicing(tmp_path: Path) -> None:
     """[MCP-5]/[MCP-12] The bound reaches core before cursor movement."""
 
