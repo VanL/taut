@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import queue
 import subprocess
@@ -148,6 +149,7 @@ def test_connection_token_bucket_uses_continuous_refill_without_refund() -> None
 
 
 def test_thread_start_failure_clears_hidden_candidate_fingerprint(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """[MCP-4] Removing an unstarted hidden seat clears its digest first."""
@@ -176,7 +178,9 @@ def test_thread_start_failure_clears_hidden_candidate_fingerprint(
             with _tool_error(
                 "workspace attachment failed; use list_workspaces before retrying"
             ):
-                await reactor.attach_workspace("/absolute/workspace", "secret-token")
+                await reactor.attach_workspace(
+                    str(tmp_path / "workspace"), "secret-token"
+                )
             assert audited.cleared_before_pop == [True]
         finally:
             await reactor.aclose()
@@ -655,33 +659,42 @@ def test_periodic_peek_marks_lost_identity_without_healing_it(tmp_path: Path) ->
 
     async def scenario() -> None:
         reactor = ConnectionReactor(asyncio.get_running_loop())
-        attached = await reactor.attach_workspace(str(workspace), token)
-        canonical = str(attached["workspace"])
-        admin = TautClient(db_path=workspace / ".taut.db", as_name="selected")
-        with admin._meta_queue.sidecar(transaction=True) as session:
-            session.run(
-                "UPDATE taut_members SET token = NULL WHERE member_id = ?",
-                (member_id,),
-            )
-        admin.close()
+        try:
+            attached = await reactor.attach_workspace(str(workspace), token)
+            canonical = str(attached["workspace"])
+            admin = TautClient(db_path=workspace / ".taut.db", as_name="selected")
+            with admin._meta_queue.sidecar(transaction=True) as session:
+                session.run(
+                    "UPDATE taut_members SET token = NULL WHERE member_id = ?",
+                    (member_id,),
+                )
+            admin.close()
 
-        await _wait_until(
-            lambda: reactor.list_workspaces()["records"][0]["status"] == "identity_lost"
-        )
-        assert reactor._entries[canonical].fingerprint is None
-        assert reactor.current_text == (
-            '{"workspaces":[{"member_id":"'
-            + member_id
-            + '","notifications":[],"status":"identity_lost",'
-            '"truncated":false,"workspace":"' + canonical + '"}]}'
-        )
-        with _tool_error("workspace identity lost; detach and reattach"):
-            await reactor.execute_tool(canonical, "whoami", {})
-        with _tool_error("workspace identity lost; detach and reattach"):
-            await reactor.attach_workspace(canonical, token)
-        detached = await reactor.detach_workspace(canonical)
-        assert detached["records"][0]["status"] == "detached"
-        await reactor.aclose()
+            await _wait_until(
+                lambda: (
+                    reactor.list_workspaces()["records"][0]["status"] == "identity_lost"
+                )
+            )
+            assert reactor._entries[canonical].fingerprint is None
+            assert json.loads(reactor.current_text) == {
+                "workspaces": [
+                    {
+                        "member_id": member_id,
+                        "notifications": [],
+                        "status": "identity_lost",
+                        "truncated": False,
+                        "workspace": canonical,
+                    }
+                ]
+            }
+            with _tool_error("workspace identity lost; detach and reattach"):
+                await reactor.execute_tool(canonical, "whoami", {})
+            with _tool_error("workspace identity lost; detach and reattach"):
+                await reactor.attach_workspace(canonical, token)
+            detached = await reactor.detach_workspace(canonical)
+            assert detached["records"][0]["status"] == "detached"
+        finally:
+            await reactor.aclose()
 
     asyncio.run(scenario())
 
