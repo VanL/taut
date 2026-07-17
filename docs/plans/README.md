@@ -46,6 +46,11 @@ Risky plans are blocked if they do not make explicit:
 
 ## Active Plans
 
+- `2026-07-17-agent-guidance-propagation-plan.md` — land the agent-guidance
+  delta wave (source `b248e1c`): [DOM-14] fold-unit trigger promotion, six
+  coalescing-skill method refinements, the new interface-review skill,
+  writing-plans and review-loops additions, the unified verdict vocabulary,
+  and the call-agent review-brief standard.
 - `2026-07-15-taut-0.7.1-portability-and-coverage-plan.md` — completed macOS
   and Windows SQLite-only MCP proof, direct root coverage recovery,
   publication-record correction, and coordinated 0.7.1 release.

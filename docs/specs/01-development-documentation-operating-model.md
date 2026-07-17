@@ -310,7 +310,14 @@ Requirements:
 - each repository keeps coalescing state in `docs/coalescing.md`: declared
   per-tier thresholds, per-tier watermarks, and a one-line-per-run log
 - coalescing triggers are event-derived, not calendar-based: counts are
-  computed from the watermark and the current tree, never stored
+  computed from the watermark and the current tree, never stored, and are
+  denominated in the repository's fold unit — a domain-grouped ledger
+  counts per section, not repo-wide — counting only fold-eligible (cold,
+  unfolded) material; the fold unit and its matching progress model are
+  declared in the repository's `docs/coalescing.md` (per-section
+  watermarks for domain-grouped ledgers; a fold-records index, not a date
+  cursor, for ledgers folded by theme-cluster across dates, since a date
+  cursor falsely claims older unfolded material behind it was folded)
 - the session-start trigger check is read-only: a tripped threshold is
   reported to the user, never acted on mid-task. All coalescing writes —
   including checked-deferred records — happen only inside an authorized

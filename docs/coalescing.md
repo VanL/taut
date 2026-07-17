@@ -19,6 +19,31 @@ landing authorization.
 Counts are always derived from watermarks and the current tree — never
 stored, never trusted from memory.
 
+## Fold Unit and Progress Model
+
+Per [DOM-14], each tier's trigger count is denominated in this repo's
+fold unit and counts only cold, unfolded material:
+
+- **Lessons.** The fold unit is the **repo-wide dated ledger entry**:
+  `docs/lessons.md` is a single chronological bullet list, not a
+  domain-grouped set of sections, so the count is repo-wide (not
+  per-section) over entries past the lessons watermark that are also past
+  the age floor. The progress model is the **lessons watermark used as an
+  examined-through date cursor**: taut folds oldest-first and advances the
+  watermark only past entries it has examined and dispositioned (folded,
+  summarized, or kept-verbatim as a named future candidate), so no
+  unexamined material hides behind the cursor. If the ledger ever splits
+  into domain sections, switch to per-section watermarks; if folding ever
+  becomes theme-cluster-across-dates rather than oldest-first, switch to a
+  fold-records index — a bare date cursor would then falsely claim older
+  unfolded material behind it was folded.
+- **Plans.** The fold unit is the individual plan; progress is tracked by
+  the retired-plans ledger in `docs/plans/README.md`, not a cursor —
+  completed/superseded plans with no retired-ledger line are the eligible
+  count.
+- **Promotion.** The fold unit is the workflow theme; progress is the
+  promotion watermark over distinct citations since it.
+
 ## Thresholds
 
 Calibrated for taut's volume (85 dated ledger entries at adoption);
