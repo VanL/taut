@@ -58,6 +58,16 @@ class MessageDeletion:
 
 
 @dataclass(frozen=True, slots=True)
+class MessageReaction:
+    """Receipt for one exact-message reaction operation."""
+
+    thread: str
+    message_ts: int
+    reaction: str
+    audience_count: int
+
+
+@dataclass(frozen=True, slots=True)
 class Notification:
     """A notification pointer returned by a consuming read or read-only peek."""
 
@@ -68,6 +78,7 @@ class Notification:
     thread: str | None
     message_ts: int | None
     matched: str | None = None
+    reaction: str | None = None
     ts: int | None = None
     warning: str | None = None
     raw: str | None = None
@@ -86,5 +97,6 @@ Member.__module__ = "taut.client"
 Thread.__module__ = "taut.client"
 Message.__module__ = "taut.client"
 MessageDeletion.__module__ = "taut.client"
+MessageReaction.__module__ = "taut.client"
 Notification.__module__ = "taut.client"
 InitResult.__module__ = "taut.client"

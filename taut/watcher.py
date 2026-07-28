@@ -1115,8 +1115,9 @@ class BaseReactor(MultiQueueWatcher):
                 if wait_timeout is not None and wait_timeout > 0:
                     self.wait_for_activity(timeout=wait_timeout)
         except StopWatching:
-            if not (self._stop_requested or self._stop_event.is_set()):
-                raise
+            # SimpleBroker uses this exception as terminal handler control flow.
+            # The handler may raise it before the reactor stop flag is visible.
+            pass
         finally:
             with self._drive_owner_lock:
                 self._drive_loop_active = False

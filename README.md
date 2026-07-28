@@ -86,11 +86,11 @@ default, or a few machines through the Postgres extension.
 ## Installation
 
 ```bash
-pipx install "git+https://github.com/VanL/taut.git@v0.7.1"       # CLI use
-uv add "taut @ git+https://github.com/VanL/taut.git@v0.7.1"      # as a library
+pipx install "git+https://github.com/VanL/taut.git@v0.8.0"       # CLI use
+uv add "taut @ git+https://github.com/VanL/taut.git@v0.8.0"      # as a library
 ```
 
-Requirements: Python 3.11+. Runtime dependencies are `simplebroker>=5.3.3`
+Requirements: Python 3.11+. Runtime dependencies are `simplebroker>=5.6.1`
 (which itself has none) and `psutil` for cross-platform process metadata.
 
 PyPI install names stay out of the documented path until the `taut` package
@@ -106,8 +106,8 @@ Extensions use their own tags (`taut_pg/vX.Y.Z`, `taut_summon/vX.Y.Z`), so
 their versions do not have to match the core package version:
 
 ```bash
-pipx install "git+https://github.com/VanL/taut.git@v0.7.1"
-pipx inject taut ./taut_pg-0.7.1-py3-none-any.whl
+pipx install "git+https://github.com/VanL/taut.git@v0.8.0"
+pipx inject taut ./taut_pg-0.8.0-py3-none-any.whl
 ```
 
 The Postgres database must already exist. Create `.taut.toml` in the project
@@ -136,6 +136,24 @@ because Taut does not have a public backend creation signal. `TAUT_DB`,
 `--db`, and `db_path=` remain filesystem path selectors; `.taut.toml` is the
 Postgres door.
 
+Message reactions use the packaged `ack` and `blocked` vocabulary. A complete
+project `.taut.toml` can replace it. For example, for the default SQLite
+target:
+
+```toml
+version = 1
+backend = "sqlite"
+target = ".taut.db"
+
+[reactions]
+values = ["ack", "blocked", "done"]
+```
+
+Values are unique lowercase ASCII slugs. The local list replaces the packaged
+list rather than extending it; `values = []` disables outbound reactions.
+Each `TautClient` freezes the resolved list at construction, so restart a
+long-lived client or MCP attachment after changing the file.
+
 ### Summon Extension
 
 `taut-summon` hosts an existing agent harness (Claude Code, or any resumable
@@ -146,7 +164,7 @@ by its continuity token (its mouth). It ships as a separate package with its
 own version tags:
 
 ```bash
-pipx inject taut ./taut_summon-0.7.1-py3-none-any.whl
+pipx inject taut ./taut_summon-0.8.0-py3-none-any.whl
 ```
 
 With it installed, the package registers native `taut summon` and
@@ -174,7 +192,7 @@ The full contract is `docs/specs/04-summon.md`; design rationale lives in
 `taut-mcp` is a separate, connection-scoped stdio adapter for MCP clients. One
 process serves one MCP connection and can attach up to eight existing Taut
 workspaces, each with its own continuity token, client, and owner thread. It
-exposes 15 explicit workspace-scoped tools plus the repeatable
+exposes 18 explicit workspace-scoped tools plus the repeatable
 `taut://notifications/current` resource. The resource reports notification
 pointers only; reading it does not claim them or advance chat cursors.
 
@@ -184,8 +202,8 @@ matching core and MCP GitHub Releases exist, install their exact artifacts into
 one environment:
 
 ```bash
-pipx install "git+https://github.com/VanL/taut.git@v0.7.1"
-pipx inject --include-apps taut ./taut_mcp-0.7.1-py3-none-any.whl
+pipx install "git+https://github.com/VanL/taut.git@v0.8.0"
+pipx inject --include-apps taut ./taut_mcp-0.8.0-py3-none-any.whl
 taut-mcp
 ```
 
@@ -351,6 +369,7 @@ pass `TAUT_AS` or `TAUT_TOKEN` through.
 | `taut reply THREAD MSG_ID [TEXT\|-]` | Reply in a sub-thread, creating it on first reply |
 | `taut message show MSG_ID` | Show one visible message without claiming it; advances that thread's seen cursor through the message |
 | `taut message delete MSG_ID` | Delete one of your own ordinary messages; no related state is cascaded |
+| `taut message react MSG_ID REACTION` | Advance seen state and best-effort broadcast a consumable reaction pointer to the message's current non-actor audience |
 | `taut read [THREAD]` | Show unread and advance your bookmark; bare = all your threads |
 | `taut inbox` | Claim and show notification pointers for mentions and new DMs |
 | `taut log THREAD [--since TS] [--limit N]` | Show history; never moves your bookmark |
@@ -363,7 +382,8 @@ pass `TAUT_AS` or `TAUT_TOKEN` through.
 
 Global options: `--db PATH`, `--as NAME`, `--token TOKEN`, `--json`,
 `-t/--timestamps`, `-q/--quiet`. Environment: `TAUT_DB`, `TAUT_AS`,
-`TAUT_TOKEN`. That's the whole configuration surface.
+`TAUT_TOKEN`. Project reaction and terminal-rendering policy live in
+`.taut.toml`.
 
 **Exit codes** (SimpleBroker's convention): `0` success, `1` error, `2`
 empty / nothing new / not found. So this is a polling inbox:
@@ -411,6 +431,14 @@ digits are the part that varies. Suffix search covers the thread's most
 recent 1,000 messages. `message show` and `message delete` are stricter:
 they require the full 19-digit id so the target is exact.
 
+`message react` also requires the full id. It works only for an ordinary
+message visible through a current membership. The audience is the current
+exact channel, sub-thread, or validated DM membership, minus the actor. A
+reaction is a consumable notification, not retained chat state; repeats create
+distinct events. The actor's high-water cursor advances before one atomic
+best-effort broadcast. A broadcast warning does not rewind the cursor and is
+not safe to blind-retry because commit may already have occurred.
+
 `read` is paged: one invocation displays and marks seen up to 1,000 unread
 messages per thread. To drain a large backlog, run `taut read` again until it
 exits `2` for nothing unread.
@@ -444,7 +472,7 @@ cursor-tracked, membership-aware, with its fan-in waiter installed through
 SimpleBroker's watcher lifecycle hooks):
 
 ```python
-from taut import Message, MessageDeletion, TautClient
+from taut import Message, MessageDeletion, MessageReaction, TautClient
 
 client = TautClient()           # finds .taut.db like git finds .git
                                 # (or TautClient(db_path="…"))
@@ -452,6 +480,10 @@ client.join("general")
 message = client.say("general", "build finished: 312 passed")
 print(message.ts)
 shown = client.show_message(str(message.ts))  # peek; advances seen through it
+reaction: MessageReaction = client.react_to_message(
+    str(message.ts), "ack"
+)  # requires another current member; best-effort pointer fanout
+print(reaction.audience_count)
 deleted: MessageDeletion = client.delete_message(str(message.ts))
 
 for msg in client.read(limit=100):  # up to 100 per joined thread; advances cursors
@@ -461,7 +493,7 @@ def handle(event):
     if isinstance(event, Message):
         print(event.thread, event.from_name, event.text)
     else:
-        print("notification", event.type, event.thread)
+        print("notification", event.type, event.thread, event.reaction)
 
 watcher = client.watch(handle)
 thread = watcher.start()        # or watcher.run_forever() to block
@@ -547,8 +579,8 @@ broker itself. `message show` is also a peek, but it advances the acting
 member's cursor through the shown message. `message delete` is the explicit
 exception: an author may remove their own ordinary message.
 
-Notification inboxes are different. They are pointers for pings and new direct
-messages, so `taut inbox` and `taut watch` claim them. If two sessions are the
+Notification inboxes are different. They are pointers for pings, new direct
+messages, and reactions, so `taut inbox` and `taut watch` claim them. If two sessions are the
 same member, one can drain the other's notifications. That is the intended
 single-directory model. A crash after `inbox` or notification watch has claimed
 a pointer but before it displays can lose that pointer. A notification pointer
@@ -607,7 +639,7 @@ security model.
 <summary><strong>Why argparse and a small dependency set?</strong></summary>
 
 Taut follows SimpleBroker's discipline: the install should be boring.
-Runtime dependencies are exactly `simplebroker>=5.3.3` and `psutil`. The CLI is
+Runtime dependencies are exactly `simplebroker>=5.6.1` and `psutil`. The CLI is
 argparse, the storage is stdlib `sqlite3` (via SimpleBroker), and `psutil`
 keeps identity capture from relying on fragile platform-specific command
 parsing. The planned TUI ships as an optional extra so the core dependency

@@ -69,7 +69,9 @@ def _write_terminal_project_config(
         lines.append(f"inherit_defaults = {str(inherit_defaults).lower()}")
     rendered_patterns = ", ".join(json.dumps(item) for item in escape_patterns)
     lines.extend((f"escape_patterns = [{rendered_patterns}]", ""))
-    (root / ".taut.toml").write_text("\n".join(lines), encoding="utf-8")
+    config_path = root / ".taut.toml"
+    config_path.write_text("\n".join(lines), encoding="utf-8")
+    config_path.chmod(0o600)
 
 
 def test_cli_human_glyphs_fall_back_for_legacy_stdout_encoding() -> None:
@@ -178,6 +180,119 @@ def test_cli_message_show_reuses_human_message_rendering(tmp_path: Path) -> None
     assert "general" in out
     assert "inspect me" in out
     assert err == ""
+
+
+def test_cli_message_react_returns_exact_receipt_json(tmp_path: Path) -> None:
+    assert run_cli("init", "--json", cwd=tmp_path)[0] == 0
+    for name in ("alice", "bob", "carol"):
+        assert run_cli("--as", name, "join", "general", "--json", cwd=tmp_path)[0] == 0
+    target = _say_ts(tmp_path, "bob", "general", "status?")
+
+    rc, out, err = run_cli(
+        "--as",
+        "alice",
+        "message",
+        "react",
+        str(target),
+        "ack",
+        "--json",
+        cwd=tmp_path,
+    )
+
+    assert rc == 0, err
+    assert json.loads(out) == {
+        "thread": "general",
+        "message_ts": target,
+        "reaction": "ack",
+        "audience_count": 2,
+    }
+    assert err == ""
+
+
+def test_cli_message_react_human_and_quiet_output(tmp_path: Path) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    for name in ("alice", "bob"):
+        assert run_cli("--as", name, "join", "general", cwd=tmp_path)[0] == 0
+    first = _say_ts(tmp_path, "bob", "general", "first")
+    second = _say_ts(tmp_path, "bob", "general", "second")
+
+    rc, out, err = run_cli(
+        "--as", "alice", "message", "react", str(first), "blocked", cwd=tmp_path
+    )
+
+    assert rc == 0, err
+    assert out == (
+        f"reacted blocked to message {first} in general (1 current recipients)"
+    )
+    assert err == ""
+
+    rc, out, err = run_cli(
+        "--as",
+        "alice",
+        "message",
+        "react",
+        str(second),
+        "ack",
+        "--quiet",
+        cwd=tmp_path,
+    )
+
+    assert rc == 0
+    assert out == ""
+    assert err == ""
+
+
+def test_cli_message_react_argument_boundaries(tmp_path: Path) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "alice", "join", "general", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "bob", "join", "general", cwd=tmp_path)[0] == 0
+    target = _say_ts(tmp_path, "bob", "general", "target")
+
+    for args in (
+        ("message", "react"),
+        ("message", "react", str(target)),
+        ("message", "react", str(target), "ack", "extra"),
+    ):
+        rc, out, _err = run_cli("--as", "alice", *args, cwd=tmp_path)
+        assert rc == 1
+        assert out == ""
+
+    rc, out, err = run_cli(
+        "--as",
+        "alice",
+        "message",
+        "react",
+        str(target),
+        "--",
+        "--ack",
+        cwd=tmp_path,
+    )
+    assert rc == 1
+    assert out == ""
+    assert err == "reaction must match ^[a-z0-9][a-z0-9_-]{0,31}$"
+
+
+def test_cli_message_react_empty_and_missing_targets_exit_2(tmp_path: Path) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "alice", "join", "general", cwd=tmp_path)[0] == 0
+    target = _say_ts(tmp_path, "alice", "general", "only member")
+
+    rc, out, err = run_cli(
+        "--as", "alice", "message", "react", str(target), "ack", cwd=tmp_path
+    )
+
+    assert rc == 2
+    assert out == ""
+    assert err == ""
+
+    missing = "1800000000000000001"
+    rc, out, err = run_cli(
+        "--as", "alice", "message", "react", missing, "ack", cwd=tmp_path
+    )
+
+    assert rc == 2
+    assert out == ""
+    assert err == f"message not found or not reactable: {missing}"
 
 
 def test_cli_message_delete_returns_exact_receipt_json(tmp_path: Path) -> None:
@@ -480,7 +595,7 @@ def test_cli_message_root_and_nested_usage(tmp_path: Path) -> None:
     rc, out, err = run_cli("--help", cwd=tmp_path)
     assert rc == 0
     assert "message" in out
-    assert "Inspect or delete one message by exact id." in out
+    assert "Inspect, delete, or react to one message by exact id." in out
     assert err == ""
 
     rc, out, err = run_cli("message", cwd=tmp_path)
@@ -1141,6 +1256,109 @@ def test_core_human_renderer_inventory_escapes_every_dynamic_model_field() -> No
     assert records[2]["thread"] == probe
     assert records[3]["actor_name"] == probe
     assert records[4]["raw"] == probe
+
+
+def test_reaction_notification_has_pointer_human_and_json_rendering() -> None:
+    from taut.client import Notification
+    from taut.commands._rendering import emit_notifications
+
+    notification = Notification(
+        type="reaction",
+        to_id=None,
+        actor_id="m_" + "a" * 26,
+        actor_name="alice",
+        thread="general",
+        message_ts=1_800_000_000_000_000_001,
+        reaction="ack",
+    )
+    human = StringIO()
+    emit_notifications(
+        [notification],
+        client=None,
+        json_output=False,
+        quiet=False,
+        stdout=human,
+        stderr=StringIO(),
+    )
+    machine = StringIO()
+    emit_notifications(
+        [notification],
+        client=None,
+        json_output=True,
+        quiet=False,
+        stdout=machine,
+        stderr=StringIO(),
+    )
+
+    assert human.getvalue().endswith(
+        " alice reacted ack to message 1800000000000000001 in general; "
+        "inspect: taut message show 1800000000000000001\n"
+    )
+    assert json.loads(machine.getvalue()) == {
+        "type": "reaction",
+        "to_id": None,
+        "actor_id": "m_" + "a" * 26,
+        "actor_name": "alice",
+        "thread": "general",
+        "message_ts": 1_800_000_000_000_000_001,
+        "reaction": "ack",
+    }
+
+
+def test_message_reaction_receipt_renders_warning_and_quiet_suppresses_both() -> None:
+    from types import SimpleNamespace
+
+    from taut.client import MessageReaction
+    from taut.commands._rendering import emit_message_reaction
+
+    receipt = MessageReaction(
+        thread="general",
+        message_ts=1_800_000_000_000_000_001,
+        reaction="ack",
+        audience_count=2,
+    )
+    client = cast(
+        TautClient,
+        SimpleNamespace(
+            last_notification_warnings=[
+                "reaction notification broadcast failed: offline"
+            ]
+        ),
+    )
+    stdout = StringIO()
+    stderr = StringIO()
+
+    emit_message_reaction(
+        client,
+        receipt,
+        json_output=True,
+        quiet=False,
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+    assert json.loads(stdout.getvalue()) == {
+        "thread": "general",
+        "message_ts": 1_800_000_000_000_000_001,
+        "reaction": "ack",
+        "audience_count": 2,
+    }
+    assert stderr.getvalue() == (
+        "warning: reaction notification broadcast failed: offline\n"
+    )
+
+    quiet_stdout = StringIO()
+    quiet_stderr = StringIO()
+    emit_message_reaction(
+        client,
+        receipt,
+        json_output=False,
+        quiet=True,
+        stdout=quiet_stdout,
+        stderr=quiet_stderr,
+    )
+    assert quiet_stdout.getvalue() == ""
+    assert quiet_stderr.getvalue() == ""
 
 
 def test_cli_human_log_timestamps_prepend_message_ids(tmp_path: Path) -> None:

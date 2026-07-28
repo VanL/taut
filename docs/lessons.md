@@ -721,6 +721,13 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   whose read side effects would change the user's position merely to decide
   what hint to print.
 
+- 2026-07-28: Raising a dependency floor can change control-flow semantics
+  outside the new API that motivated the bump. After a floor change, run the
+  existing integration contracts against the resolved dependency, especially
+  watcher stop, retry, and warning paths. Adapt at the public exception or
+  operation boundary; do not clone dependency internals to preserve an old
+  incidental behavior.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

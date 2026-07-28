@@ -46,6 +46,106 @@ async def _wait_until(predicate: Any, *, timeout: float = 5.0) -> None:
 
 
 @pytest.mark.sqlite_only
+@pytest.mark.timeout(15)
+def test_reaction_appears_in_recipient_resource_and_inbox_consumes_it(
+    tmp_path: Path,
+) -> None:
+    """[MCP-5]/[MCP-7] Outgoing reaction receipts and recipient pointers stay distinct."""
+
+    workspace, recipient_token, actor = _workspace(
+        tmp_path,
+        "workspace",
+        selected_name="recipient",
+        other_name="actor",
+    )
+    actor_member = actor.last_created_member
+    assert actor_member is not None
+    assert actor_member.token is not None
+    source = actor.say("general", "react to this")
+
+    async def scenario() -> None:
+        recipient_reactor = ConnectionReactor(asyncio.get_running_loop())
+        actor_reactor = ConnectionReactor(asyncio.get_running_loop())
+        try:
+            recipient_attached = await recipient_reactor.attach_workspace(
+                str(workspace),
+                recipient_token,
+            )
+            actor_attached = await actor_reactor.attach_workspace(
+                str(workspace),
+                actor_member.token or "",
+            )
+            result = await actor_reactor.execute_tool(
+                str(actor_attached["workspace"]),
+                "react_to_message",
+                {"msg_id": str(source.ts), "reaction": "ack"},
+            )
+            assert result["records"] == [
+                {
+                    "audience_count": 1,
+                    "message_ts": source.ts,
+                    "reaction": "ack",
+                    "thread": "general",
+                }
+            ]
+            assert (
+                json.loads(actor_reactor.current_text)["workspaces"][0]["notifications"]
+                == []
+            )
+
+            await _wait_until(
+                lambda: (
+                    json.loads(recipient_reactor.current_text)["workspaces"][0][
+                        "notifications"
+                    ]
+                    == [
+                        {
+                            "actor_id": actor_member.member_id,
+                            "actor_name": "actor",
+                            "message_ts": source.ts,
+                            "reaction": "ack",
+                            "thread": "general",
+                            "to_id": None,
+                            "type": "reaction",
+                        }
+                    ]
+                ),
+                timeout=1.5,
+            )
+            claimed = await recipient_reactor.execute_tool(
+                str(recipient_attached["workspace"]),
+                "inbox",
+                {"limit": 1},
+            )
+            assert claimed["record_type"] == "notification"
+            assert claimed["records"] == [
+                {
+                    "actor_id": actor_member.member_id,
+                    "actor_name": "actor",
+                    "message_ts": source.ts,
+                    "reaction": "ack",
+                    "thread": "general",
+                    "to_id": None,
+                    "type": "reaction",
+                }
+            ]
+            assert (
+                json.loads(recipient_reactor.current_text)["workspaces"][0][
+                    "notifications"
+                ]
+                == []
+            )
+        finally:
+            await actor_reactor.aclose()
+            await recipient_reactor.aclose()
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        actor.close()
+
+
+@pytest.mark.sqlite_only
 @pytest.mark.timeout(60)
 def test_resource_sorts_workspaces_and_bounds_each_notification_snapshot(
     tmp_path: Path,

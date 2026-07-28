@@ -22,6 +22,7 @@ if TYPE_CHECKING:
         Member,
         Message,
         MessageDeletion,
+        MessageReaction,
         Notification,
         TautClient,
         Thread,
@@ -196,6 +197,30 @@ def emit_message_deletion(
         )
 
 
+def emit_message_reaction(
+    client: TautClient,
+    reaction: MessageReaction,
+    *,
+    json_output: bool,
+    quiet: bool,
+    stdout: TextIO,
+    stderr: TextIO,
+) -> None:
+    """Render one successful best-effort reaction receipt and its warnings."""
+
+    if not quiet:
+        if json_output:
+            write_json(stdout, reaction_object(reaction))
+        else:
+            write_human_line(
+                stdout,
+                f"reacted {reaction.reaction} to message {reaction.message_ts} "
+                f"in {reaction.thread} "
+                f"({reaction.audience_count} current recipients)",
+            )
+    emit_notification_warnings(client, quiet=quiet, stderr=stderr)
+
+
 def emit_members(
     members: list[Member],
     *,
@@ -296,6 +321,16 @@ def emit_notifications(
                 f"{notification.actor_name} started a direct message in "
                 f"{notification.thread}; read: taut read",
             )
+        elif notification.type == "reaction":
+            assert notification.message_ts is not None
+            assert notification.reaction is not None
+            write_human_line(
+                stdout,
+                f"{format_message_time(notification.message_ts)} "
+                f"{notification.actor_name} reacted {notification.reaction} "
+                f"to message {notification.message_ts} in {notification.thread}; "
+                f"inspect: taut message show {notification.message_ts}",
+            )
         else:
             write_human_line(
                 stdout,
@@ -374,6 +409,15 @@ def deletion_object(deletion: MessageDeletion) -> dict[str, Any]:
     }
 
 
+def reaction_object(reaction: MessageReaction) -> dict[str, Any]:
+    return {
+        "thread": reaction.thread,
+        "message_ts": reaction.message_ts,
+        "reaction": reaction.reaction,
+        "audience_count": reaction.audience_count,
+    }
+
+
 def member_object(member: Member, *, include_token: bool) -> dict[str, Any]:
     obj: dict[str, Any] = {
         "member_id": member.member_id,
@@ -415,6 +459,8 @@ def notification_object(notification: Notification) -> dict[str, Any]:
     }
     if notification.matched is not None:
         obj["matched"] = notification.matched
+    if notification.reaction is not None:
+        obj["reaction"] = notification.reaction
     if notification.warning is not None:
         obj["warning"] = notification.warning
     if notification.raw is not None and notification.type == "foreign":

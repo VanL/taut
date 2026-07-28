@@ -410,6 +410,33 @@ def test_base_reactor_exception_finalizes_and_reraises(
     assert close_calls == 1
 
 
+def test_base_reactor_stop_watching_returns_normally_without_prior_stop_request(
+    tmp_path: Path,
+) -> None:
+    stop_state_at_handler: list[bool] = []
+
+    def stop_handler(
+        _body: str,
+        _timestamp: int,
+        _context: QueueMessageContext,
+    ) -> None:
+        stop_state_at_handler.append(watcher._stop_requested)
+        raise StopWatching
+
+    watcher = BaseReactor(
+        queue_configs={"stop.input": {"handler": stop_handler}},
+        db=tmp_path / ".taut.db",
+    )
+    with Queue("stop.input", db_path=str(tmp_path / ".taut.db")) as writer:
+        writer.write("stop normally")
+
+    watcher.run_until_stopped()
+
+    assert stop_state_at_handler == [False]
+    assert watcher._drive_loop_active is False
+    assert watcher._resources_closed is True
+
+
 def test_base_reactor_background_owner_closes_current_waiter(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2200,6 +2227,41 @@ def test_watcher_claims_mention_notification_without_consuming_chat(
         with pytest.raises(EmptyResultError):
             bob.inbox()
         assert "hello @bob" in [message.text for message in bob.log("foo")]
+    finally:
+        watcher.stop()
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+
+
+def test_watcher_claims_reaction_notification_without_source_preflight(
+    tmp_path: Path,
+) -> None:
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    alice = TautClient(db_path=tmp_path / ".taut.db", as_name="alice")
+    bob = TautClient(db_path=tmp_path / ".taut.db", as_name="bob")
+    alice.join("foo")
+    bob.join("foo")
+    target = alice.say("foo", "temporary target")
+    seen: list[Message | Notification] = []
+    watcher = alice.watch(seen.append, threads=["foo"])
+    thread = watcher.start()
+    try:
+        _wait_until(thread.is_alive)
+
+        bob.react_to_message(str(target.ts), "ack")
+        alice.delete_message(str(target.ts))
+
+        _wait_until(
+            lambda: any(
+                isinstance(item, Notification)
+                and item.type == "reaction"
+                and item.message_ts == target.ts
+                and item.reaction == "ack"
+                for item in seen
+            )
+        )
+        with pytest.raises(EmptyResultError):
+            alice.inbox()
     finally:
         watcher.stop()
         thread.join(timeout=2)

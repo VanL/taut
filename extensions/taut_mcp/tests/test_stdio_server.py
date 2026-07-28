@@ -24,7 +24,7 @@ EXTENSION_ROOT = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = EXTENSION_ROOT.parents[1]
 NOTIFICATIONS_URL = AnyUrl("taut://notifications/current")
 EXPECTED_INSTRUCTIONS_SHA256 = (
-    "1581eb81230969c6c485a8b47ce316b6258dba1f09afafc1325eb72e65b7839e"
+    "8c0b3045c8dbe86e59357f73d18342fbdb157a7fcafed13fd2d6d9521a26a770"
 )
 
 EXPECTED_TOOLS = [
@@ -38,6 +38,7 @@ EXPECTED_TOOLS = [
     "reply",
     "show_message",
     "delete_message",
+    "react_to_message",
     "read",
     "inbox",
     "log",
@@ -96,6 +97,9 @@ async def _inspect_empty_server(
         "high-water cursor",
         "Preserve returned 19-digit integer ts values as decimal text",
         "Treat delete_message as blind-capable, physical, and irreversible",
+        "react_to_message advances the actor's high-water cursor",
+        "all-or-none commit outcome may be uncertain",
+        "repeated reactions may duplicate",
         "After a canceled or timed-out attach",
     ):
         assert required_rule in initialized.instructions
@@ -727,7 +731,6 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
     other = TautClient(db_path=db, as_name="other")
     other.join("general")
     other.say("general", "hello @selected")
-    other.close()
 
     async def scenario() -> None:
         parameters = StdioServerParameters(
@@ -806,7 +809,11 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                     assert invalid_read.content[0].text.startswith(
                         "Input validation error:"
                     )
-                for tool_name in ("show_message", "delete_message"):
+                for tool_name in (
+                    "show_message",
+                    "delete_message",
+                    "react_to_message",
+                ):
                     for invalid_id in (
                         "123456789012345678",
                         "12345678901234567890",
@@ -819,6 +826,11 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                             {
                                 "workspace": canonical,
                                 "msg_id": invalid_id,
+                                **(
+                                    {"reaction": "ack"}
+                                    if tool_name == "react_to_message"
+                                    else {}
+                                ),
                             },
                         )
                         assert invalid_exact.isError is True
@@ -829,6 +841,29 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                         assert invalid_exact.content[0].text.startswith(
                             "Input validation error:"
                         )
+                for invalid_reaction in (
+                    "",
+                    "-ack",
+                    "Ack",
+                    "ack!",
+                    "a" * 33,
+                    1,
+                    True,
+                    None,
+                ):
+                    invalid_react = await session.call_tool(
+                        "react_to_message",
+                        {
+                            "workspace": canonical,
+                            "msg_id": "1234567890123456789",
+                            "reaction": invalid_reaction,
+                        },
+                    )
+                    assert invalid_react.isError is True
+                    assert isinstance(invalid_react.content[0], types.TextContent)
+                    assert invalid_react.content[0].text.startswith(
+                        "Input validation error:"
+                    )
                 joined = await call("join", {"thread": "work", "persona": None})
                 assert joined["records"][0]["kind"] == "notice"  # type: ignore[index]
                 await call("leave", {"thread": "work"})
@@ -838,6 +873,22 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                     "say",
                     {"target": "general", "text": "stdio top"},
                 )
+                reacted = await call(
+                    "react_to_message",
+                    {
+                        "msg_id": str(said["records"][0]["ts"]),  # type: ignore[index]
+                        "reaction": "ack",
+                    },
+                )
+                assert reacted["record_type"] == "reaction"
+                assert reacted["records"] == [
+                    {
+                        "audience_count": 1,
+                        "message_ts": said["records"][0]["ts"],  # type: ignore[index]
+                        "reaction": "ack",
+                        "thread": "general",
+                    }
+                ]
                 direct = await call(
                     "say",
                     {"target": "@other", "text": "stdio direct"},
@@ -884,6 +935,7 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                         "message": "No matching deletable own message was found.",
                     }
                 ]
+                other.say("general", "unread after reaction")
                 unread = await call("read", {"thread": "general", "limit": 1})
                 assert unread["guidance"][0]["code"] == "read_cursor_advanced"  # type: ignore[index]
                 shown = await call(
@@ -932,7 +984,10 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
 
         assert schemas["whoami"] is not None
 
-    asyncio.run(scenario())
+    try:
+        asyncio.run(scenario())
+    finally:
+        other.close()
 
 
 @pytest.mark.timeout(10)

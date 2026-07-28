@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import importlib.metadata as importlib_metadata
+import tomllib
+from importlib import resources
 from pathlib import Path
 
 import pytest
+from simplebroker import resolve_broker_target
 
 from taut._constants import PROJECT_CONFIG_NAME, load_config
 from taut._exceptions import NotInitializedError, TautError
@@ -40,6 +43,230 @@ def _write_embedded_taut_config(path: Path, *, target: str) -> None:
         ),
         encoding="utf-8",
     )
+
+
+def _write_reaction_project_config(path: Path, reaction_lines: list[str]) -> None:
+    path.write_text(
+        "\n".join(
+            [
+                "version = 1",
+                'backend = "sqlite"',
+                'target = ".taut.db"',
+                "",
+                *reaction_lines,
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_packaged_reaction_defaults_are_ordered() -> None:
+    with resources.files("taut").joinpath("defaults.toml").open("rb") as stream:
+        document = tomllib.load(stream)
+
+    assert document["reactions"]["values"] == ["ack", "blocked"]
+
+
+@pytest.mark.parametrize(
+    "packaged_text",
+    [
+        "[terminal_text]\nescape_patterns = []\n",
+        "[reactions]\nvalues = 'ack'\n",
+        "[reactions]\nvalues = ['LOUD!']\n",
+    ],
+)
+def test_invalid_packaged_reaction_defaults_use_fixed_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    packaged_text: str,
+) -> None:
+    import taut._reactions as reactions
+
+    (tmp_path / "defaults.toml").write_text(packaged_text, encoding="utf-8")
+    monkeypatch.setattr(reactions.resources, "files", lambda _package: tmp_path)
+
+    with pytest.raises(
+        TautError,
+        match="^reaction configuration is unavailable$",
+    ):
+        reactions.load_reaction_values(None)
+
+
+@pytest.mark.parametrize(
+    ("reaction_lines", "expected"),
+    [
+        (["[reactions]", "future_key = true"], ("ack", "blocked")),
+        (
+            ["[reactions]", 'values = ["ack", "done", "blocked"]'],
+            ("ack", "done", "blocked"),
+        ),
+        (["[reactions]", "values = []"], ()),
+    ],
+)
+def test_project_reaction_values_inherit_replace_or_disable(
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    reaction_lines: list[str],
+    expected: tuple[str, ...],
+) -> None:
+    _write_reaction_project_config(
+        tmp_path / PROJECT_CONFIG_NAME,
+        reaction_lines,
+    )
+    monkeypatch.chdir(tmp_path)
+    TautClient.init()
+
+    client = TautClient(as_name="van")
+    try:
+        assert client._reaction_values == expected
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize(
+    ("reaction_lines", "invalid_value"),
+    [
+        (["reactions = []"], None),
+        (["[reactions]", 'values = "ack"'], None),
+        (["[reactions]", "values = [1]"], None),
+        (["[reactions]", 'values = ["ack", "ack"]'], None),
+        (["[reactions]", 'values = ["ack", "LOUD!"]'], "LOUD!"),
+    ],
+)
+def test_invalid_project_reaction_values_fail_without_echoing_values(
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    reaction_lines: list[str],
+    invalid_value: str | None,
+) -> None:
+    _write_reaction_project_config(
+        tmp_path / PROJECT_CONFIG_NAME,
+        reaction_lines,
+    )
+    monkeypatch.chdir(tmp_path)
+    TautClient.init()
+
+    with pytest.raises(TautError) as caught:
+        TautClient(as_name="van")
+
+    assert str(caught.value) == (
+        "invalid .taut.toml: [reactions].values must be a list of unique "
+        "lowercase ASCII slugs"
+    )
+    if invalid_value is not None:
+        assert invalid_value not in str(caught.value)
+
+
+def test_reaction_values_are_frozen_per_client_construction(
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / PROJECT_CONFIG_NAME
+    _write_reaction_project_config(
+        config_path,
+        ["[reactions]", 'values = ["first"]'],
+    )
+    monkeypatch.chdir(tmp_path)
+    TautClient.init()
+    first = TautClient(as_name="van")
+
+    _write_reaction_project_config(
+        config_path,
+        ["[reactions]", 'values = ["second"]'],
+    )
+    second = TautClient(as_name="van")
+    try:
+        assert first._reaction_values == ("first",)
+        assert second._reaction_values == ("second",)
+    finally:
+        first.close()
+        second.close()
+
+
+def test_handed_off_target_uses_its_own_reaction_config(
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    _write_reaction_project_config(
+        project / PROJECT_CONFIG_NAME,
+        ["[reactions]", 'values = ["project-only"]'],
+    )
+    monkeypatch.chdir(project)
+    TautClient.init()
+    config = load_config()
+    target = resolve_broker_target(project, config=config)
+    assert target is not None
+
+    unrelated = tmp_path / "unrelated"
+    unrelated.mkdir()
+    _write_reaction_project_config(
+        unrelated / PROJECT_CONFIG_NAME,
+        ["[reactions]", 'values = ["wrong-project"]'],
+    )
+    monkeypatch.chdir(unrelated)
+    client = TautClient(
+        broker_target=target,
+        broker_config=config,
+        as_name="van",
+    )
+    try:
+        assert client._reaction_values == ("project-only",)
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize("selector", ["db_path", "TAUT_DB"])
+def test_explicit_path_selectors_use_packaged_reaction_defaults(
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    selector: str,
+) -> None:
+    database = tmp_path / "selected.db"
+    TautClient.init(db_path=database)
+    _write_reaction_project_config(
+        tmp_path / PROJECT_CONFIG_NAME,
+        ["[reactions]", 'values = ["cwd-only"]'],
+    )
+    monkeypatch.chdir(tmp_path)
+    if selector == "TAUT_DB":
+        monkeypatch.setenv("TAUT_DB", str(database))
+        client = TautClient(as_name="van")
+    else:
+        client = TautClient(db_path=database, as_name="van")
+    try:
+        assert client._reaction_values == ("ack", "blocked")
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize("alternate_name", [".broker.toml", "pyproject.toml"])
+def test_alternate_config_files_do_not_supply_reaction_values(
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    alternate_name: str,
+) -> None:
+    database = tmp_path / ".taut.db"
+    TautClient.init(db_path=database)
+    _write_reaction_project_config(
+        tmp_path / alternate_name,
+        ["[reactions]", 'values = ["alternate-only"]'],
+    )
+    monkeypatch.chdir(tmp_path)
+
+    client = TautClient(db_path=database, as_name="van")
+    try:
+        assert client._reaction_values == ("ack", "blocked")
+    finally:
+        client.close()
 
 
 def test_load_config_pins_ambient_broker_backend_to_sqlite(

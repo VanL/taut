@@ -124,13 +124,21 @@ class _RuntimeImportVisitor(ast.NodeVisitor):
                 "whoami",
                 "rejoin",
                 "set",
-                "message",
                 "read",
                 "inbox",
                 "log",
                 "list",
                 "rename",
             )
+        ),
+        (
+            Path("taut/commands/message.py"),
+            {
+                "taut._exceptions",
+                "taut.commands._protocol",
+                "taut.commands._rendering",
+            },
+            set(),
         ),
         (
             Path("taut/commands/reply.py"),

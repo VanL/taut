@@ -3112,6 +3112,11 @@ def test_registry_command_help_resolves_adapter(verb: str) -> None:
             "usage: taut message delete",
             "Physically and irreversibly delete",
         ),
+        (
+            ["message", "react", "--help"],
+            "usage: taut message react",
+            "best-effort broadcasts",
+        ),
     ],
 )
 def test_registry_message_help_is_nested_and_does_not_initialize_client(
@@ -3138,6 +3143,8 @@ def test_registry_message_help_is_nested_and_does_not_initialize_client(
     assert usage in stdout.getvalue()
     if len(argv) == 3:
         assert "MSG_ID" in stdout.getvalue()
+    if argv[1:2] == ["react"]:
+        assert "REACTION" in stdout.getvalue()
     assert teaching_text in stdout.getvalue()
     assert stderr.getvalue() == ""
 

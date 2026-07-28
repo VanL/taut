@@ -23,6 +23,7 @@ EXPECTED_PUBLIC_EXPORTS = [
     "MembershipError",
     "Message",
     "MessageDeletion",
+    "MessageReaction",
     "NotInitializedError",
     "NotFoundError",
     "Notification",
@@ -44,6 +45,7 @@ def _typed_public_surface(
     member: taut.Member,
     message: taut.Message,
     deletion: taut.MessageDeletion,
+    reaction: taut.MessageReaction,
     notification: taut.Notification,
     thread: taut.Thread,
 ) -> tuple[
@@ -52,10 +54,11 @@ def _typed_public_surface(
     taut.Member,
     taut.Message,
     taut.MessageDeletion,
+    taut.MessageReaction,
     taut.Notification,
     taut.Thread,
 ]:
-    return client, watcher, member, message, deletion, notification, thread
+    return client, watcher, member, message, deletion, reaction, notification, thread
 
 
 def test_exception_leaves_are_public_exports() -> None:
@@ -71,6 +74,8 @@ def test_exception_leaves_are_public_exports() -> None:
     assert "Notification" in taut.__all__
     assert taut.MessageDeletion.__name__ == "MessageDeletion"
     assert "MessageDeletion" in taut.__all__
+    assert taut.MessageReaction.__name__ == "MessageReaction"
+    assert "MessageReaction" in taut.__all__
 
 
 def test_lazy_public_exports_cache_and_unknown_names_fail_normally() -> None:
@@ -123,6 +128,7 @@ def test_lazy_exports_are_the_owning_module_objects() -> None:
         Member,
         Message,
         MessageDeletion,
+        MessageReaction,
         Notification,
         TautClient,
         Thread,
@@ -133,6 +139,7 @@ def test_lazy_exports_are_the_owning_module_objects() -> None:
     assert taut.Member is Member
     assert taut.Message is Message
     assert taut.MessageDeletion is MessageDeletion
+    assert taut.MessageReaction is MessageReaction
     assert taut.Notification is Notification
     assert taut.TautClient is TautClient
     assert taut.TautWatcher is TautWatcher

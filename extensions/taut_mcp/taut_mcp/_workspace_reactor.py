@@ -57,6 +57,15 @@ INVALID_UTF8_PATH = (
     "workspace path is not valid UTF-8; provide an absolute UTF-8 workspace path"
 )
 NOTIFICATION_BACKSTOP_SECONDS = 0.5
+_REACTION_CONFIGURATION_ERRORS = frozenset(
+    {
+        "reaction configuration is unavailable",
+        (
+            "invalid .taut.toml: [reactions].values must be a list of unique "
+            "lowercase ASCII slugs"
+        ),
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -383,6 +392,14 @@ def run_workspace_reactor(
                     pending = tuple(client.peek_inbox(limit=101))
                 except (IdentityError, TokenError):
                     emit(WorkspaceFailed(generation, "validation", IDENTITY_INVALID))
+                    return
+                except TautError as exc:
+                    message = (
+                        CONFIGURATION_UNAVAILABLE
+                        if str(exc) in _REACTION_CONFIGURATION_ERRORS
+                        else ATTACHMENT_FAILED
+                    )
+                    emit(WorkspaceFailed(generation, "validation", message))
                     return
                 except Exception as exc:
                     del exc

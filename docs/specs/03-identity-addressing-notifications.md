@@ -468,6 +468,12 @@ direct-message queue, but its author may later physically delete it under
 [TAUT-7.6]. The notification row survives unchanged and `message_ts` then
 becomes a stale pointer.
 
+A reaction notification is one such pointer. It records a configured
+lightweight response to an ordinary message. It is not maintained message
+state, an aggregate, or a reaction count. Each intended current member inbox
+receives an independent row; a missing implicit inbox is established by that
+row. Consuming one member's row affects no other member.
+
 ### [IAN-7.2] Notification payload
 
 Notification queue bodies are JSON objects:
@@ -484,18 +490,29 @@ Notification queue bodies are JSON objects:
 }
 ```
 
-Required fields:
+Fields by notification type:
 
 | Field | Meaning |
 |---|---|
-| `type` | `mention`, `dm_started`, or `reply` |
-| `to_id` | recipient member id |
+| `type` | `mention`, `dm_started`, `reply`, or `reaction` |
+| `to_id` | recipient member id; omitted from a stored reaction body and decoded as null |
 | `actor_id` | member id that caused the notification |
 | `actor_name` | actor display-name snapshot at event time |
 | `thread` | source chat queue |
 | `message_ts` | source message timestamp |
 
-`matched` is required for `mention` and omitted for `dm_started` and `reply`.
+`matched` is required for `mention` and omitted for `dm_started`, `reply`, and
+`reaction`. A reaction instead requires `reaction`, a lowercase ASCII slug
+matching `^[a-z0-9][a-z0-9_-]{0,31}$`. The receiving client validates that
+grammar, not its local outbound reaction allowlist. A missing, non-string, or
+syntactically invalid value is malformed/foreign under the existing tolerant
+notification contract. Unknown fields remain ignored.
+
+Reaction bodies contain the common actor snapshot, `thread`, `message_ts`, and
+required `reaction`, but omit recipient-specific `to_id`. The identical body
+is broadcast to exact inbox names, whose queues supply the routing. Public
+`Notification.to_id` is therefore null for reactions; public notification
+records add `reaction` only for `type == "reaction"`.
 
 A `reply` notification points the author of a parent message to activity in
 that message's child thread. Taut emits one for each reply while the parent
@@ -529,6 +546,16 @@ write remains successful. The implementation should surface a warning when the
 CLI can do so without corrupting JSON output. It must not roll back the source
 message or rewrite history.
 
+Reaction fanout follows [TAUT-7.7]. After target lookup, a nonempty
+current-audience snapshot, and actor cursor advancement, Taut calls public
+SimpleBroker exact-name broadcast once with `create_missing=True`.
+SimpleBroker atomically writes the identical body to every distinct requested
+inbox name, including a name with no retained row, or writes none. A raised
+call may be outcome-ambiguous and warns, but the `audience_count` operation
+receipt makes no delivery claim. Taut neither retries nor rewinds the actor
+cursor. A later membership change, source claim, or source deletion does not
+rewrite an already emitted pointer.
+
 ### [IAN-7.4] Notification reads
 
 Notification reads use claim/read broker APIs. Reading a notification removes
@@ -539,6 +566,14 @@ another consumer claimed it, or broker/registry state diverged.
 
 This tradeoff is intentional. Notifications are wakeups and pointers, not
 durable chat history.
+
+Reaction pointers are claimed, peeked, and watched like other notifications.
+Those recipient operations never move a source chat cursor. Human reaction
+rendering always advertises `message show`; it does not preflight the source.
+A stale action returns that command's ordinary content-free empty result. This
+deliberately differs from mention reply-action preflight: `reply` mutates and
+has a confusing dead-source failure, while `message show` is a safe read with
+an established empty result.
 
 A read-only notification peek may expose current pending notification
 pointers without claiming them. Peek is observational and does not advance a
@@ -590,8 +625,8 @@ and text remain unchanged.
 Taut must use a public SimpleBroker queue-rename API for broker queue renames.
 Taut must not update SimpleBroker-owned message tables directly.
 
-Taut requires `simplebroker>=5.3.3` and `taut-pg` requires
-`simplebroker-pg>=3.2.2`. This compatible pair supplies atomic write ids, the
+Taut requires `simplebroker>=5.6.1` and `taut-pg` requires
+`simplebroker-pg>=3.3.1`. This compatible pair supplies atomic write ids, the
 rename-capable backend handshake, safe persistent-reactor ownership, public
 live activity-waiter replacement, and interruptible watcher bootstrap during
 locked PhaseLock and SQLite connection setup. It also includes corrected
@@ -645,6 +680,14 @@ or report the interrupted rename.
 - Notification source deleted: the mention, reply, or `dm_started` pointer
   remains byte-for-byte consumable. Human mention rendering omits a reply
   action when its cursor-neutral exact source peek misses.
+- Reaction receiver configuration differs: a structurally valid reaction
+  still decodes when the receiver's local emission list omits that value.
+- Reaction inbox absent at broadcast selection: `create_missing=True`
+  establishes it with the reaction row. A member who joins after the audience
+  snapshot misses the event, while one who leaves after the snapshot may
+  receive a stale pointer.
+- Repeated reaction or retry after an uncertain result: duplicate independent
+  notification rows are valid.
 - Reply origin deleted: the registered child thread and its history survive;
   direct child addressing works and new root-based reply creation fails.
 - Sole direct-message row deleted: the deterministic registry and both
@@ -718,11 +761,23 @@ Required proofs:
   contact emits no second `dm_started`
 - channels cannot contain dots or use reserved special names
 - unregistered broker queues remain invisible
+- reaction fanout reaches each current exact-thread recipient inbox except the
+  actor, stays exact to child membership, intersects direct-message membership
+  with registry metadata, reports `audience_count` from that final
+  post-intersection set, and establishes never-used and post-vacuum inboxes
+- the operation receipt reports only the intended `audience_count`; an
+  outcome-ambiguous broadcast exception warns and causes no Taut retry
+- reactions are consumed independently per recipient; receiver allowlists do
+  not reject valid inbound values; malformed values become foreign; stale
+  `message show` actions return empty without renderer preflight
 - channel rename, when enabled by a public SimpleBroker rename API, renames the
   channel and every registered sub-thread and updates sidecar references
 
 ## Related Plans
 
+- `docs/plans/2026-07-28-message-react-plan.md` — reaction notification
+  payloads, full-audience exact fanout, non-delivery receipts, and stale
+  pointer behavior.
 - `docs/plans/2026-07-27-message-show-delete-plan.md` — author-owned physical
   deletion, orphaned subthreads, stable empty DMs, stale notification pointers,
   and cursor-neutral notification rendering.

@@ -6,7 +6,7 @@ existing Taut workspaces with their existing continuity tokens. The process is
 not a daemon and retains no attachment state after disconnect.
 
 The version-1 surface is specified in `docs/specs/05-taut-mcp.md`. It exposes
-17 explicit tools plus the read-only `taut://notifications/current` resource.
+18 explicit tools plus the read-only `taut://notifications/current` resource.
 The resource reports notification pointers, not every unread chat message, and
 does not claim notifications or advance read cursors.
 
@@ -20,13 +20,20 @@ notifications, memberships, cursors, DM state, or sub-threads. Keep message
 ids as decimal strings in JavaScript clients because their integer values can
 exceed JavaScript's exact-number range.
 
+Call `react_to_message` with the canonical `workspace`, exact `msg_id`, and a
+reaction allowed by that workspace's attachment-time configuration. Reacting
+advances the actor's high-water cursor and attempts one atomic best-effort
+broadcast of a consumable pointer to the current non-actor audience. It does
+not create or edit chat history. A warning means the all-or-none broadcast
+outcome may be uncertain, so a blind retry can create duplicate reactions.
+
 The repository has a GitHub-only release path for this package, but configuring
 that path does not publish a release. After the matching core tag and MCP wheel
 exist, install both into one environment:
 
 ```bash
-pipx install "git+https://github.com/VanL/taut.git@v0.7.1"
-pipx inject --include-apps taut ./taut_mcp-0.7.1-py3-none-any.whl
+pipx install "git+https://github.com/VanL/taut.git@v0.8.0"
+pipx inject --include-apps taut ./taut_mcp-0.8.0-py3-none-any.whl
 taut-mcp
 ```
 

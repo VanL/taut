@@ -199,6 +199,17 @@ MESSAGE_NOT_DELETED_GUIDANCE = [
     }
 ]
 
+MESSAGE_REACTION_NOT_SENT_GUIDANCE = [
+    {
+        "action": (
+            "Verify the full 19-digit message id, current membership, and that "
+            "another current thread member exists before retrying."
+        ),
+        "code": "message_reaction_not_sent",
+        "message": "No reactable message with a current recipient was found.",
+    }
+]
+
 
 def command_result(
     *,
@@ -213,6 +224,8 @@ def command_result(
         guidance = READ_GUIDANCE
     elif name == "delete_message" and not records:
         guidance = MESSAGE_NOT_DELETED_GUIDANCE
+    elif name == "react_to_message" and not records:
+        guidance = MESSAGE_REACTION_NOT_SENT_GUIDANCE
     else:
         guidance = []
     return {
@@ -236,6 +249,8 @@ def _notification_record(notification: Notification) -> dict[str, Any]:
     }
     if notification.matched is not None:
         record["matched"] = notification.matched
+    if notification.reaction is not None:
+        record["reaction"] = notification.reaction
     return record
 
 

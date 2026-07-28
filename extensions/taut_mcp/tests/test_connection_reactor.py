@@ -16,7 +16,7 @@ import pytest
 
 import taut_mcp._connection_reactor as connection_reactor
 import taut_mcp._workspace_reactor as workspace_reactor
-from taut import TautClient
+from taut import TautClient, TautError
 from taut_mcp._connection_reactor import (
     ConnectionReactor,
     WorkspaceToolError,
@@ -201,6 +201,24 @@ def test_fixed_attachment_rejections_pin_literal_recovery_text(
     invalid_config.mkdir()
     (invalid_config / ".taut.toml").write_text("version = [", encoding="utf-8")
     workspace, token, _ = _create_workspace(tmp_path, "selected")
+    invalid_reaction_workspace, invalid_reaction_token, _ = _create_workspace(
+        tmp_path,
+        "invalid-reaction",
+    )
+    (invalid_reaction_workspace / ".taut.toml").write_text(
+        "\n".join(
+            [
+                "version = 1",
+                'backend = "sqlite"',
+                'target = ".taut.db"',
+                "",
+                "[reactions]",
+                'values = ["Ack"]',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
 
     async def scenario() -> None:
         reactor = ConnectionReactor(asyncio.get_running_loop())
@@ -230,12 +248,48 @@ def test_fixed_attachment_rejections_pin_literal_recovery_text(
                     str(invalid_config), "participant-controlled-token"
                 )
             with _tool_error(
+                "workspace configuration or backend unavailable; fix the workspace configuration or backend and retry"
+            ):
+                await reactor.attach_workspace(
+                    str(invalid_reaction_workspace),
+                    invalid_reaction_token,
+                )
+            with _tool_error(
                 "workspace identity invalid; provide a valid existing continuity token"
             ):
                 await reactor.attach_workspace(
                     str(workspace), "participant-controlled-invalid-token"
                 )
             assert token not in " ".join(reactor.list_workspaces()["warnings"])
+        finally:
+            await reactor.aclose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(10)
+def test_unrelated_client_validation_error_keeps_generic_attachment_mapping(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[MCP-3] Only the two reaction-config diagnostics use config mapping."""
+
+    workspace, token, _ = _create_workspace(tmp_path, "selected")
+
+    def fail_client(*args: object, **kwargs: object) -> TautClient:
+        del args, kwargs
+        raise TautError("participant-controlled unrelated failure")
+
+    monkeypatch.setattr(workspace_reactor, "TautClient", fail_client)
+
+    async def scenario() -> None:
+        reactor = ConnectionReactor(asyncio.get_running_loop())
+        try:
+            with _tool_error(
+                "workspace attachment failed; use list_workspaces before retrying"
+            ):
+                await reactor.attach_workspace(str(workspace), token)
         finally:
             await reactor.aclose()
 
@@ -456,14 +510,25 @@ def test_hidden_candidate_uses_the_normative_routing_matrix(
                 "workspace not attached; use list_workspaces and the exact canonical identifier"
             ):
                 await reactor.execute_tool(str(workspace), "whoami", {})
-            for tool_name in ("show_message", "delete_message"):
+            for tool_name in (
+                "show_message",
+                "delete_message",
+                "react_to_message",
+            ):
                 with _tool_error(
                     "workspace not attached; use list_workspaces and the exact canonical identifier"
                 ):
                     await reactor.execute_tool(
                         str(workspace),
                         tool_name,
-                        {"msg_id": "1234567890123456789"},
+                        {
+                            "msg_id": "1234567890123456789",
+                            **(
+                                {"reaction": "ack"}
+                                if tool_name == "react_to_message"
+                                else {}
+                            ),
+                        },
                     )
             with _tool_error("workspace busy; retry after backoff"):
                 await reactor.attach_workspace(str(workspace), token)

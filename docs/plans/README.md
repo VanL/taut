@@ -46,6 +46,16 @@ Risky plans are blocked if they do not make explicit:
 
 ## Active Plans
 
+- `2026-07-28-coalescing-wave-plan.md` — derive all [DOM-14] tier counts,
+  harvest plan and promotion candidates, and record an additive-only wave that
+  preserves the live product worktree and defers retirement to a
+  landing-authorized follow-up.
+- `2026-07-28-message-react-plan.md` — implemented and locally verified, but
+  uncommitted, configured exact-message reactions as per-recipient consumable
+  notification pointers across Python, nested CLI, and MCP. The implementation
+  uses current exact-thread membership, excludes the actor, advances the
+  actor's high-water cursor, and makes one best-effort SimpleBroker 5.6.1
+  full-requested-set broadcast without maintained reaction state.
 - `2026-07-27-message-show-delete-plan.md` — add exact-ID
   `message show` and author-only physical `message delete` across the Python
   API, nested CLI, and MCP; show advances the acting member's existing

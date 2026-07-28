@@ -186,6 +186,20 @@ def test_postgres_exact_message_tools_use_public_core_contract(
             )
             assert shown["record_type"] == "message"
             assert shown["records"][0]["text"] == "pg exact show"
+            reacted = await reactor.execute_tool(
+                canonical,
+                "react_to_message",
+                {"msg_id": str(shown_target.ts), "reaction": "ack"},
+            )
+            assert reacted["record_type"] == "reaction"
+            assert reacted["records"] == [
+                {
+                    "audience_count": 1,
+                    "message_ts": shown_target.ts,
+                    "reaction": "ack",
+                    "thread": "general",
+                }
+            ]
             deleted = await reactor.execute_tool(
                 canonical,
                 "delete_message",

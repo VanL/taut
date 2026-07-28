@@ -33,10 +33,12 @@ commands a second protocol would make parser, error, stream, and cleanup policy
 drift. One interface with two discovery sources is the smaller design.
 
 A core-owned entry may expose a nested local grammar. The built-in `message`
-entry owns `show` and `delete` beneath one noun (`taut message show MSG_ID`,
-`taut message delete MSG_ID`). The registry still sees one top-level command;
-the selected adapter owns the subcommand parser and dispatch. This does not
-create a cross-package nested namespace.
+entry owns `show`, `delete`, and `react` beneath one noun
+(`taut message show MSG_ID`, `taut message delete MSG_ID`, and
+`taut message react MSG_ID REACTION`). The registry still sees one top-level
+command; the selected adapter owns the subcommand parser and dispatch. This
+does not create a cross-package nested namespace or dynamically reflect
+project reaction values into static help.
 
 "Local" does not mean "found by scanning this checkout." Registration follows
 the active Python environment:

@@ -30,7 +30,13 @@ from taut._exceptions import (
     TautError,
     TokenError,
 )
-from taut.client import Message, MessageDeletion, Notification, TautClient
+from taut.client import (
+    Message,
+    MessageDeletion,
+    MessageReaction,
+    Notification,
+    TautClient,
+)
 from tests.conftest import build_cli_env, run_cli
 
 pytestmark = pytest.mark.shared
@@ -119,6 +125,33 @@ def test_project_exact_show_and_delete_contract(taut_project: Path) -> None:
     )
     with pytest.raises(NotFoundError, match=rf"^message not found: {message.ts}$"):
         reader.show_message(str(message.ts))
+
+
+def test_project_message_reaction_contract(taut_project: Path) -> None:
+    TautClient.init()
+    alice = TautClient(as_name="alice")
+    bob = TautClient(as_name="bob")
+    carol = TautClient(as_name="carol")
+    for member in (alice, bob, carol):
+        member.join("general")
+    target = bob.say("general", "shared reaction target")
+
+    receipt = alice.react_to_message(str(target.ts), "ack")
+
+    assert receipt == MessageReaction(
+        thread="general",
+        message_ts=target.ts,
+        reaction="ack",
+        audience_count=2,
+    )
+    for recipient in (bob, carol):
+        notification = recipient.inbox()[0]
+        assert notification.type == "reaction"
+        assert notification.to_id is None
+        assert notification.actor_name == "alice"
+        assert notification.thread == "general"
+        assert notification.message_ts == target.ts
+        assert notification.reaction == "ack"
 
 
 def test_project_resolved_target_config_handoff_contract(

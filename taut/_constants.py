@@ -15,7 +15,7 @@ import re
 from collections.abc import Mapping
 from typing import Any, Final
 
-__version__: Final[str] = "0.7.1"
+__version__: Final[str] = "0.8.0"
 
 DEFAULT_DB_NAME: Final[str] = ".taut.db"
 PROJECT_CONFIG_NAME: Final[str] = ".taut.toml"
@@ -29,6 +29,7 @@ MEMBER_NAME_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{
 MEMBER_ID_RE: Final[re.Pattern[str]] = re.compile(r"^m_[a-z0-9]{26,52}$")
 CLAIM_HASH_RE: Final[re.Pattern[str]] = re.compile(r"^ic_[a-z0-9]{52}$")
 MESSAGE_ID_RE: Final[re.Pattern[str]] = re.compile(r"^[0-9]{19}$")
+REACTION_SLUG_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 RESERVED_QUEUE_PREFIXES: Final[frozenset[str]] = frozenset(
     {"dm", "notify", "sys", "taut"}
 )

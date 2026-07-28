@@ -1,15 +1,25 @@
-"""Explicit public-API dispatch for the fourteen CLI-shaped MCP tools."""
+"""Explicit public-API dispatch for the fifteen CLI-shaped MCP tools."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import TypeAlias
 
-from taut import Member, Message, MessageDeletion, Notification, TautClient, Thread
+from taut import (
+    Member,
+    Message,
+    MessageDeletion,
+    MessageReaction,
+    Notification,
+    TautClient,
+    Thread,
+)
 
 CommandScalar: TypeAlias = str | int | bool | None
 CommandArguments: TypeAlias = tuple[tuple[str, CommandScalar], ...]
-CommandRecord: TypeAlias = Message | MessageDeletion | Notification | Member | Thread
+CommandRecord: TypeAlias = (
+    Message | MessageDeletion | MessageReaction | Notification | Member | Thread
+)
 
 RECORD_TYPE_BY_TOOL = {
     "join": "message",
@@ -19,6 +29,7 @@ RECORD_TYPE_BY_TOOL = {
     "reply": "message",
     "show_message": "message",
     "delete_message": "deletion",
+    "react_to_message": "reaction",
     "read": "message",
     "inbox": "notification",
     "log": "message",
@@ -94,6 +105,13 @@ def execute_command(
         records = (client.show_message(_required_string(arguments, "msg_id")),)
     elif name == "delete_message":
         records = (client.delete_message(_required_string(arguments, "msg_id")),)
+    elif name == "react_to_message":
+        records = (
+            client.react_to_message(
+                _required_string(arguments, "msg_id"),
+                _required_string(arguments, "reaction"),
+            ),
+        )
     elif name == "read":
         records = tuple(
             client.read(
@@ -155,6 +173,13 @@ def record_object(record: CommandRecord) -> dict[str, object]:
             "thread": record.thread,
             "ts": record.ts,
         }
+    if isinstance(record, MessageReaction):
+        return {
+            "audience_count": record.audience_count,
+            "message_ts": record.message_ts,
+            "reaction": record.reaction,
+            "thread": record.thread,
+        }
     if isinstance(record, Notification):
         notification: dict[str, object] = {
             "actor_id": record.actor_id,
@@ -166,6 +191,8 @@ def record_object(record: CommandRecord) -> dict[str, object]:
         }
         if record.matched is not None:
             notification["matched"] = record.matched
+        if record.reaction is not None:
+            notification["reaction"] = record.reaction
         return notification
     if isinstance(record, Member):
         return {

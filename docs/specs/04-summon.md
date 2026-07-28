@@ -834,11 +834,13 @@ durable conversation; the harness session is an optimization of it.
   — a stuck harness can always be stopped.
   The control reactor follows SimpleBroker 5.2.0's reference
   persistent-session and thread-local-core ownership model, with
-  SimpleBroker 5.3.3 or newer required for the supported reactor lane. Version
+  SimpleBroker 5.6.1 or newer required for the supported reactor lane. Version
   5.2.2 first proved persistent process visibility; 5.3.2 makes cancellation
   interrupt watcher bootstrap while PhaseLock or SQLite connection setup is
   blocked; and 5.3.3 removes unsafe path-name-based runner cleanup and
   initializes timestamp-conflict metrics before concurrent first writes.
+  Version 5.6.1 is the repository-wide floor that also supplies core reaction
+  fanout's full-requested-set exact-name broadcast.
   Operation release ends only the active lease; the owner thread retains its
   core until explicit cleanup or close.
   Summon must not recreate that release policy in extension-specific retry or

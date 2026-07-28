@@ -7,11 +7,11 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, cast
 
-from simplebroker import Queue
+from simplebroker import Queue, open_broker
 from simplebroker.ext import TimestampError, TimestampGenerator
 
 from taut import addressing
-from taut._constants import MESSAGE_ID_RE
+from taut._constants import MESSAGE_ID_RE, REACTION_SLUG_RE
 from taut._exceptions import (
     AmbiguousMessageError,
     BlankMessageError,
@@ -24,9 +24,9 @@ from taut._message_text import is_blank_message_text
 from taut.envelope import encode_envelope
 from taut.state import MemberRow, MembershipRow
 
-from ._base import _ClientBase
+from ._base import _ClientBase, _json_dumps
 from ._codec import message_from_body
-from ._models import Message, MessageDeletion
+from ._models import Message, MessageDeletion, MessageReaction
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +83,81 @@ class MessagingMixin(_ClientBase):
         return MessageDeletion(
             thread=located.message.thread,
             ts=located.message.ts,
+        )
+
+    def react_to_message(self, msg_id: str, reaction: str) -> MessageReaction:
+        """React to one visible ordinary message with consumable pointers."""
+
+        exact = _validate_exact_message_id(msg_id)
+        _validate_reaction(reaction, self._reaction_values)
+        self._ensure_no_incomplete_channel_rename()
+        resolved = self._resolve_member(create=False)
+        member = self._require_member(resolved)
+        candidates: list[str] = []
+        for membership in self._state.list_memberships(member["member_id"]):
+            row = self._state.get_thread(membership["thread"])
+            if row is None or row["kind"] not in {"channel", "subthread", "dm"}:
+                continue
+            candidates.append(membership["thread"])
+        located = self._locate_exact_message(exact, candidates)
+        if (
+            located is None
+            or located.message.kind != "message"
+            or located.message.from_id is None
+        ):
+            raise NotFoundError(f"message not found or not reactable: {msg_id}")
+
+        recipient_ids = {
+            row["member_id"]
+            for row in self._state.list_thread_members(located.message.thread)
+        }
+        thread_row = self._state.get_thread(located.message.thread)
+        if thread_row is None:
+            raise NotFoundError(f"message not found or not reactable: {msg_id}")
+        if thread_row["kind"] == "dm":
+            participants = self._dm_participants(located.message.thread)
+            if participants is None or member["member_id"] not in participants:
+                raise NotFoundError(f"message not found or not reactable: {msg_id}")
+            recipient_ids.intersection_update(participants)
+        recipient_ids.discard(member["member_id"])
+        if not recipient_ids:
+            raise EmptyResultError("no reaction recipients")
+
+        self._state.advance_cursor(
+            thread=located.message.thread,
+            member_id=member["member_id"],
+            seen_ts=located.message.ts,
+        )
+        body = _json_dumps(
+            {
+                "type": "reaction",
+                "actor_id": member["member_id"],
+                "actor_name": member["display_name"],
+                "thread": located.message.thread,
+                "message_ts": located.message.ts,
+                "reaction": reaction,
+            }
+        )
+        queue_names = tuple(
+            addressing.notification_queue_name(recipient_id)
+            for recipient_id in sorted(recipient_ids)
+        )
+        try:
+            with open_broker(self.target, config=self.config) as broker:
+                broker.broadcast(
+                    body,
+                    queue_names=queue_names,
+                    create_missing=True,
+                )
+        except Exception as exc:
+            self.last_notification_warnings.append(
+                f"reaction notification broadcast failed: {exc}"
+            )
+        return MessageReaction(
+            thread=located.message.thread,
+            message_ts=located.message.ts,
+            reaction=reaction,
+            audience_count=len(queue_names),
         )
 
     def say(self, target: str, text: str) -> Message:
@@ -621,3 +696,15 @@ def _validate_exact_message_id(msg_id: str) -> int:
         return TimestampGenerator.validate(msg_id, exact=True)
     except TimestampError as exc:
         raise ValueError("msg_id must be a full 19-digit message id") from exc
+
+
+def _validate_reaction(reaction: str, allowed: tuple[str, ...]) -> None:
+    if not isinstance(reaction, str):
+        raise TypeError("reaction must be a string")
+    if REACTION_SLUG_RE.fullmatch(reaction) is None:
+        raise ValueError("reaction must match ^[a-z0-9][a-z0-9_-]{0,31}$")
+    if reaction in allowed:
+        return
+    if not allowed:
+        raise ValueError("message reactions are disabled by project configuration")
+    raise ValueError(f"reaction must be one of: {', '.join(allowed)}")

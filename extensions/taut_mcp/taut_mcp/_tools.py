@@ -10,6 +10,7 @@ from mcp import types
 CHANNEL_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,63}$"
 CHAT_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,63}(?:\.[0-9]{19})?$"
 MEMBER_NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+REACTION_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,31}$"
 
 ATTACH_WORKSPACE_DESCRIPTION = (
     "Absolute local directory containing an existing Taut project. Attachment "
@@ -49,6 +50,11 @@ EXACT_MESSAGE_ID_DESCRIPTION = (
     "Exact native Taut message id as a 19-digit decimal string. Preserve it as "
     "text; suffixes, whitespace, signs, and numeric JSON values are invalid."
 )
+REACTION_DESCRIPTION = (
+    "Configured lowercase ASCII reaction slug matching "
+    "^[a-z0-9][a-z0-9_-]{0,31}$. Used only by react_to_message; the schema is "
+    "not an enum because the attached workspace config remains authoritative."
+)
 
 RECORD_TYPE_BY_TOOL = {
     "attach_workspace": "workspace",
@@ -61,6 +67,7 @@ RECORD_TYPE_BY_TOOL = {
     "reply": "message",
     "show_message": "message",
     "delete_message": "deletion",
+    "react_to_message": "reaction",
     "read": "message",
     "inbox": "notification",
     "log": "message",
@@ -148,6 +155,33 @@ _RECORD_SCHEMAS: dict[str, dict[str, Any]] = {
         "required": ["thread", "ts", "deleted"],
         "type": "object",
     },
+    "reaction": {
+        "additionalProperties": False,
+        "properties": {
+            "audience_count": {
+                "description": (
+                    "Current authorized non-actor recipient count; not a "
+                    "delivery or consumption receipt."
+                ),
+                "minimum": 1,
+                "type": "integer",
+            },
+            "message_ts": {
+                "description": "Reacted-to Taut message timestamp/id.",
+                "type": "integer",
+            },
+            "reaction": {
+                "description": "Configured reaction slug sent by the actor.",
+                "type": "string",
+            },
+            "thread": {
+                "description": "Exact Taut thread containing the source message.",
+                "type": "string",
+            },
+        },
+        "required": ["thread", "message_ts", "reaction", "audience_count"],
+        "type": "object",
+    },
     "notification": {
         "additionalProperties": False,
         "properties": {
@@ -161,6 +195,10 @@ _RECORD_SCHEMAS: dict[str, dict[str, Any]] = {
             },
             "matched": {
                 "description": "Mention text that matched, when supplied.",
+                "type": "string",
+            },
+            "reaction": {
+                "description": "Reaction slug for a reaction notification.",
                 "type": "string",
             },
             "message_ts": {
@@ -555,6 +593,25 @@ TOOL_DEFINITIONS = (
             "msg_id": _EXACT_MESSAGE_ID,
         },
         ("workspace", "msg_id"),
+        _annotations(
+            read_only=False,
+            destructive=True,
+            idempotent=False,
+            open_world=True,
+        ),
+    ),
+    ToolDefinition(
+        "react_to_message",
+        "Send one configured reaction to the current audience of an exact ordinary message, excluding this member. Validates against the workspace's attachment-time reaction vocabulary, advances this member's high-water cursor through the target, then attempts one atomic best-effort notification broadcast to every requested inbox. Repeating may deliver duplicates.",
+        {
+            "workspace": _WORKSPACE,
+            "msg_id": _EXACT_MESSAGE_ID,
+            "reaction": _string(
+                REACTION_DESCRIPTION,
+                pattern=REACTION_PATTERN,
+            ),
+        },
+        ("workspace", "msg_id", "reaction"),
         _annotations(
             read_only=False,
             destructive=True,

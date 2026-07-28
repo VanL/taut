@@ -82,6 +82,7 @@ Quick pointers to the key guidance documents in this repository.
 | `docs/plans/2026-07-15-taut-mcp-release-integration-plan.md` | Reviewed implementation plan for the fourth release target, root-owned MCP bundle, three-workflow exact-SHA gates, and same-run MCP coverage shard |
 | `docs/plans/2026-07-15-taut-0.7.1-portability-and-coverage-plan.md` | Reviewed patch-release plan for macOS/Windows MCP proof, complete direct coverage ownership, publication-record correction, and coordinated 0.7.1 release |
 | `docs/plans/2026-07-27-message-show-delete-plan.md` | Reviewed implementation plan for exact message show/delete across the Python, CLI, and MCP surfaces |
+| `docs/plans/2026-07-28-message-react-plan.md` | Reviewed implementation plan for configured best-effort message reactions across Python, CLI, notification, and MCP surfaces |
 | `docs/plans/2026-07-14-terminal-output-safety-plan.md` | Reviewed implementation plan for packaged and project-customizable terminal-text policy, public extension API, human renderer coverage, and raw PTY exemption |
 | `docs/plans/2026-07-14-blank-message-no-op-plan.md` | Reviewed implementation plan for the built-in Unicode blank-input guard, typed empty result, silent CLI exit 2, and Summon terminal-mode adaptation |
 | `docs/implementation/00-implementation-index.md` | Numbered entry point for implementation docs |
@@ -106,7 +107,7 @@ Quick pointers to the key guidance documents in this repository.
 | `taut/envelope.py` | Message envelope encode/decode and foreign-message fallback |
 | `taut/state/` | Internal Taut state interface, SQL dialect marker, and sidecar SQL adapter |
 | `taut/identity.py` | Process fingerprint capture, anchor selection, presence checks |
-| `taut/client/` | Public Python API package: facade plus identity, messaging (including exact show/delete), notification, thread mixins, and plain SimpleBroker queue ownership |
+| `taut/client/` | Public Python API package: facade plus identity, messaging (including exact show/delete/react), notification, thread mixins, and plain SimpleBroker queue ownership |
 | `taut/watcher.py` | Shared `BaseReactor`, vendored multi-queue scheduling, and cursor-aware `TautWatcher` with persistent owned queue handles |
 | `taut/cli.py` | Thin console entry point into the registry-backed dispatcher |
 | `taut/commands/` | Versioned command manifests/protocol, deterministic installed-command registry, root dispatcher, shared renderers, lazy per-verb adapters, and the temporary reserved Summon compatibility bridge |

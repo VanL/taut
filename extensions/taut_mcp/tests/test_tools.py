@@ -15,9 +15,14 @@ from simplebroker import BrokerTarget
 
 import taut.identity as identity
 import taut_mcp._workspace_reactor as workspace_reactor
-from taut import MessageDeletion, TautClient
+from taut import MessageDeletion, Notification, TautClient
 from taut_mcp._commands import RECORD_TYPE_BY_TOOL, execute_command, record_object
-from taut_mcp._connection_reactor import ConnectionReactor, WorkspaceToolError
+from taut_mcp._connection_reactor import (
+    ConnectionReactor,
+    WorkspaceToolError,
+    _notification_record,
+    command_result,
+)
 from taut_mcp._tools import TOOLS
 
 READ_GUIDANCE = [
@@ -42,6 +47,17 @@ MESSAGE_NOT_DELETED_GUIDANCE = [
         ),
         "code": "message_not_deleted",
         "message": "No matching deletable own message was found.",
+    }
+]
+
+MESSAGE_REACTION_NOT_SENT_GUIDANCE = [
+    {
+        "action": (
+            "Verify the full 19-digit message id, current membership, and that "
+            "another current thread member exists before retrying."
+        ),
+        "code": "message_reaction_not_sent",
+        "message": "No reactable message with a current recipient was found.",
     }
 ]
 
@@ -148,6 +164,13 @@ def _assert_result(
             {},
         ),
         (
+            "react_to_message",
+            {"msg_id": "1234567890123456789", "reaction": "ack"},
+            "react_to_message",
+            ("1234567890123456789", "ack"),
+            {},
+        ),
+        (
             "read",
             {"thread": None, "limit": 17},
             "read",
@@ -224,6 +247,62 @@ def test_message_deletion_record_encoding_is_closed_and_content_free() -> None:
     }
 
 
+def test_message_reaction_and_notification_encodings_are_closed() -> None:
+    from taut import MessageReaction
+
+    reaction = MessageReaction(
+        thread="general",
+        message_ts=1_234_567_890_123_456_789,
+        reaction="ack",
+        audience_count=2,
+    )
+    notification = Notification(
+        type="reaction",
+        to_id=None,
+        actor_id="m_actor",
+        actor_name="actor",
+        thread="general",
+        message_ts=reaction.message_ts,
+        reaction="ack",
+    )
+
+    assert record_object(reaction) == {
+        "audience_count": 2,
+        "message_ts": 1_234_567_890_123_456_789,
+        "reaction": "ack",
+        "thread": "general",
+    }
+    assert record_object(notification) == {
+        "actor_id": "m_actor",
+        "actor_name": "actor",
+        "message_ts": 1_234_567_890_123_456_789,
+        "reaction": "ack",
+        "thread": "general",
+        "to_id": None,
+        "type": "reaction",
+    }
+    assert _notification_record(notification) == record_object(notification)
+
+
+def test_empty_reaction_result_has_content_free_guidance() -> None:
+    payload = command_result(
+        name="react_to_message",
+        record_type="reaction",
+        records=[],
+        warnings=[],
+        workspace="/workspace",
+    )
+
+    assert payload == {
+        "empty": True,
+        "guidance": MESSAGE_REACTION_NOT_SENT_GUIDANCE,
+        "record_type": "reaction",
+        "records": [],
+        "warnings": [],
+        "workspace": "/workspace",
+    }
+
+
 @pytest.mark.sqlite_only
 @pytest.mark.timeout(15)
 def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
@@ -233,10 +312,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
 
     workspace, token = _workspace_with_two_members(tmp_path)
     other = TautClient(db_path=workspace / ".taut.db", as_name="other")
-    try:
-        other_owned = other.say("general", "not deletable by selected")
-    finally:
-        other.close()
+    other_owned = other.say("general", "not deletable by selected")
 
     async def scenario() -> None:
         reactor = ConnectionReactor(asyncio.get_running_loop())
@@ -277,6 +353,50 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
             )
             _assert_result(said, record_type="message", workspace=canonical)
             parent_ts = said["records"][0]["ts"]
+
+            reacted = await reactor.execute_tool(
+                canonical,
+                "react_to_message",
+                {"msg_id": str(parent_ts), "reaction": "ack"},
+            )
+            _assert_result(reacted, record_type="reaction", workspace=canonical)
+            assert reacted["records"] == [
+                {
+                    "audience_count": 1,
+                    "message_ts": parent_ts,
+                    "reaction": "ack",
+                    "thread": "general",
+                }
+            ]
+            reaction_notification = other.inbox()
+            assert len(reaction_notification) == 1
+            reacted_actor_id = reaction_notification[0].actor_id
+            assert reacted_actor_id is not None
+            assert record_object(reaction_notification[0]) == {
+                "actor_id": reacted_actor_id,
+                "actor_name": "renamed",
+                "message_ts": parent_ts,
+                "reaction": "ack",
+                "thread": "general",
+                "to_id": None,
+                "type": "reaction",
+            }
+
+            missing_reaction = await reactor.execute_tool(
+                canonical,
+                "react_to_message",
+                {
+                    "msg_id": "1234567890123456789",
+                    "reaction": "ack",
+                },
+            )
+            _assert_result(
+                missing_reaction,
+                record_type="reaction",
+                workspace=canonical,
+                guidance=MESSAGE_REACTION_NOT_SENT_GUIDANCE,
+            )
+            assert missing_reaction["records"] == []
 
             replied = await reactor.execute_tool(
                 canonical,
@@ -341,6 +461,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
             )
             assert not_author == repeated_delete
 
+            unread_after_reaction = other.say("general", "after reaction unread")
             unread = await reactor.execute_tool(
                 canonical,
                 "read",
@@ -353,7 +474,8 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
                 guidance=READ_GUIDANCE,
             )
             assert len(unread["records"]) == 1
-            assert unread["records"][0]["text"] == "other joined"
+            assert unread["records"][0]["ts"] == unread_after_reaction.ts
+            assert unread["records"][0]["text"] == "after reaction unread"
 
             shown = await reactor.execute_tool(
                 canonical,
@@ -436,7 +558,10 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
         finally:
             await reactor.aclose()
 
-    asyncio.run(scenario())
+    try:
+        asyncio.run(scenario())
+    finally:
+        other.close()
 
 
 @pytest.mark.sqlite_only
@@ -563,13 +688,134 @@ def test_message_tools_reject_in_pattern_signed_int64_overflow(
             canonical = str(
                 (await reactor.attach_workspace(str(workspace), token))["workspace"]
             )
-            for tool_name in ("show_message", "delete_message"):
+            for tool_name in (
+                "show_message",
+                "delete_message",
+                "react_to_message",
+            ):
                 with _tool_error("msg_id must be a full 19-digit message id"):
                     await reactor.execute_tool(
                         canonical,
                         tool_name,
-                        {"msg_id": "9223372036854775808"},
+                        {
+                            "msg_id": "9223372036854775808",
+                            **(
+                                {"reaction": "ack"}
+                                if tool_name == "react_to_message"
+                                else {}
+                            ),
+                        },
                     )
+        finally:
+            await reactor.aclose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(15)
+def test_attached_workspaces_freeze_independent_reaction_vocabularies(
+    tmp_path: Path,
+) -> None:
+    """[MCP-3]/[MCP-5] Reaction allowlists are per attachment, not process-global."""
+
+    ack_workspace, ack_token = _workspace_with_two_members(tmp_path, "ack")
+    done_workspace, done_token = _workspace_with_two_members(
+        tmp_path,
+        "done",
+        "done_selected",
+        "done_other",
+    )
+
+    def configure(workspace: Path, value: str) -> None:
+        (workspace / ".taut.toml").write_text(
+            "\n".join(
+                [
+                    "version = 1",
+                    'backend = "sqlite"',
+                    'target = ".taut.db"',
+                    "",
+                    "[reactions]",
+                    f'values = ["{value}"]',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+    configure(ack_workspace, "ack")
+    configure(done_workspace, "done")
+    ack_source_client = TautClient(
+        db_path=ack_workspace / ".taut.db",
+        as_name="other",
+    )
+    done_source_client = TautClient(
+        db_path=done_workspace / ".taut.db",
+        as_name="done_other",
+    )
+    ack_source = ack_source_client.say("general", "ack target")
+    done_source = done_source_client.say("general", "done target")
+    ack_source_client.close()
+    done_source_client.close()
+
+    async def scenario() -> None:
+        reactor = ConnectionReactor(asyncio.get_running_loop())
+        try:
+            ack_canonical = str(
+                (await reactor.attach_workspace(str(ack_workspace), ack_token))[
+                    "workspace"
+                ]
+            )
+            done_canonical = str(
+                (await reactor.attach_workspace(str(done_workspace), done_token))[
+                    "workspace"
+                ]
+            )
+            ack_result = await reactor.execute_tool(
+                ack_canonical,
+                "react_to_message",
+                {"msg_id": str(ack_source.ts), "reaction": "ack"},
+            )
+            done_result = await reactor.execute_tool(
+                done_canonical,
+                "react_to_message",
+                {"msg_id": str(done_source.ts), "reaction": "done"},
+            )
+            assert ack_result["records"][0]["reaction"] == "ack"
+            assert done_result["records"][0]["reaction"] == "done"
+
+            with _tool_error("reaction must be one of: ack"):
+                await reactor.execute_tool(
+                    ack_canonical,
+                    "react_to_message",
+                    {"msg_id": str(ack_source.ts), "reaction": "done"},
+                )
+            with _tool_error("reaction must be one of: done"):
+                await reactor.execute_tool(
+                    done_canonical,
+                    "react_to_message",
+                    {"msg_id": str(done_source.ts), "reaction": "ack"},
+                )
+
+            configure(ack_workspace, "done")
+            frozen = await reactor.execute_tool(
+                ack_canonical,
+                "react_to_message",
+                {"msg_id": str(ack_source.ts), "reaction": "ack"},
+            )
+            assert frozen["records"][0]["reaction"] == "ack"
+
+            await reactor.detach_workspace(ack_canonical)
+            reattached = await reactor.attach_workspace(
+                str(ack_workspace),
+                ack_token,
+            )
+            refreshed = await reactor.execute_tool(
+                str(reattached["workspace"]),
+                "react_to_message",
+                {"msg_id": str(ack_source.ts), "reaction": "done"},
+            )
+            assert refreshed["records"][0]["reaction"] == "done"
         finally:
             await reactor.aclose()
 
@@ -625,12 +871,23 @@ def test_same_workspace_rejects_overlap_while_another_workspace_progresses(
 
             with _tool_error("workspace busy; retry after backoff"):
                 await reactor.execute_tool(slow, "who", {"thread": None})
-            for tool_name in ("show_message", "delete_message"):
+            for tool_name in (
+                "show_message",
+                "delete_message",
+                "react_to_message",
+            ):
                 with _tool_error("workspace busy; retry after backoff"):
                     await reactor.execute_tool(
                         slow,
                         tool_name,
-                        {"msg_id": "1234567890123456789"},
+                        {
+                            "msg_id": "1234567890123456789",
+                            **(
+                                {"reaction": "ack"}
+                                if tool_name == "react_to_message"
+                                else {}
+                            ),
+                        },
                     )
             with _tool_error("workspace busy; retry after backoff"):
                 await reactor.detach_workspace(slow)
@@ -1093,6 +1350,7 @@ def test_every_tool_declares_a_closed_common_output_schema() -> None:
         "reply": "message",
         "show_message": "message",
         "delete_message": "deletion",
+        "react_to_message": "reaction",
         "read": "message",
         "inbox": "notification",
         "log": "message",
@@ -1136,6 +1394,47 @@ def test_every_tool_declares_a_closed_common_output_schema() -> None:
         "required": ["thread", "ts", "deleted"],
         "type": "object",
     }
+    reaction_schema = next(
+        tool.outputSchema for tool in TOOLS if tool.name == "react_to_message"
+    )
+    assert reaction_schema is not None
+    assert reaction_schema["properties"]["records"]["items"] == {
+        "additionalProperties": False,
+        "properties": {
+            "audience_count": {
+                "description": (
+                    "Current authorized non-actor recipient count; not a "
+                    "delivery or consumption receipt."
+                ),
+                "minimum": 1,
+                "type": "integer",
+            },
+            "message_ts": {
+                "description": "Reacted-to Taut message timestamp/id.",
+                "type": "integer",
+            },
+            "reaction": {
+                "description": "Configured reaction slug sent by the actor.",
+                "type": "string",
+            },
+            "thread": {
+                "description": "Exact Taut thread containing the source message.",
+                "type": "string",
+            },
+        },
+        "required": ["thread", "message_ts", "reaction", "audience_count"],
+        "type": "object",
+    }
+    notification_schema = next(
+        tool.outputSchema for tool in TOOLS if tool.name == "inbox"
+    )
+    assert notification_schema is not None
+    assert notification_schema["properties"]["records"]["items"]["properties"][
+        "reaction"
+    ] == {
+        "description": "Reaction slug for a reaction notification.",
+        "type": "string",
+    }
 
 
 @pytest.mark.parametrize(
@@ -1150,7 +1449,9 @@ def test_every_tool_declares_a_closed_common_output_schema() -> None:
         None,
     ],
 )
-@pytest.mark.parametrize("tool_name", ["show_message", "delete_message"])
+@pytest.mark.parametrize(
+    "tool_name", ["show_message", "delete_message", "react_to_message"]
+)
 def test_exact_message_tool_schemas_reject_non_exact_string_ids(
     tool_name: str,
     invalid: object,
@@ -1159,7 +1460,11 @@ def test_exact_message_tool_schemas_reject_non_exact_string_ids(
 
     with pytest.raises(ValidationError):
         validate(
-            instance={"workspace": "/workspace", "msg_id": invalid},
+            instance={
+                "workspace": "/workspace",
+                "msg_id": invalid,
+                **({"reaction": "ack"} if tool_name == "react_to_message" else {}),
+            },
             schema=tool.inputSchema,
         )
 
@@ -1178,6 +1483,67 @@ def test_exact_message_tool_manifest_contract(tool_name: str) -> None:
         "pattern": r"^[0-9]{19}$",
         "type": "string",
     }
+    assert tool.annotations is not None
+    assert tool.annotations.model_dump(mode="json", exclude_none=True) == {
+        "destructiveHint": True,
+        "idempotentHint": False,
+        "openWorldHint": True,
+        "readOnlyHint": False,
+    }
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "",
+        "-ack",
+        "Ack",
+        "ack!",
+        "a" * 33,
+        1,
+        True,
+        None,
+    ],
+)
+def test_react_to_message_schema_rejects_malformed_reaction_slugs(
+    invalid: object,
+) -> None:
+    tool = next(tool for tool in TOOLS if tool.name == "react_to_message")
+
+    with pytest.raises(ValidationError):
+        validate(
+            instance={
+                "workspace": "/workspace",
+                "msg_id": "1234567890123456789",
+                "reaction": invalid,
+            },
+            schema=tool.inputSchema,
+        )
+
+
+def test_react_to_message_manifest_contract_has_no_static_enum() -> None:
+    tool = next(tool for tool in TOOLS if tool.name == "react_to_message")
+
+    assert tool.description == (
+        "Send one configured reaction to the current audience of an exact "
+        "ordinary message, excluding this member. Validates against the "
+        "workspace's attachment-time reaction vocabulary, advances this "
+        "member's high-water cursor through the target, then attempts one "
+        "atomic best-effort notification broadcast to every requested inbox. "
+        "Repeating may deliver duplicates."
+    )
+    assert tool.inputSchema["required"] == ["workspace", "msg_id", "reaction"]
+    assert tool.inputSchema["properties"]["reaction"] == {
+        "description": (
+            "Configured lowercase ASCII reaction slug matching "
+            "^[a-z0-9][a-z0-9_-]{0,31}$. Used only by react_to_message; the "
+            "schema is not an enum because the attached workspace config "
+            "remains authoritative."
+        ),
+        "pattern": r"^[a-z0-9][a-z0-9_-]{0,31}$",
+        "type": "string",
+    }
+    assert "enum" not in tool.inputSchema["properties"]["reaction"]
     assert tool.annotations is not None
     assert tool.annotations.model_dump(mode="json", exclude_none=True) == {
         "destructiveHint": True,
@@ -1211,7 +1577,7 @@ def test_exact_tool_manifest_snapshot() -> None:
         separators=(",", ":"),
     ).encode()
     assert hashlib.sha256(encoded).hexdigest() == (
-        "41679e6c4dc9dbb3d39795a36d1497a39e30684280e89367929bdd67a87d466c"
+        "f03f04d256e5b0c30ce7a0e6f51265c4d3319816eacdfa37c3e439f8b71a254b"
     )
 
     def assert_property_descriptions(schema: dict[str, object]) -> None:

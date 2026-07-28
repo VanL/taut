@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+from taut._constants import REACTION_SLUG_RE
 from taut.envelope import DecodedEnvelope, decode_envelope
 
 from ._models import Message, Notification
@@ -63,14 +64,24 @@ def notification_from_body(body: str, ts: int) -> Notification:
     thread = parsed.get("thread")
     message_ts = parsed.get("message_ts")
     matched = parsed.get("matched")
+    reaction = parsed.get("reaction")
+    is_reaction = notification_type == "reaction"
     if (
-        notification_type not in {"mention", "dm_started", "reply"}
-        or not isinstance(to_id, str)
+        notification_type not in {"mention", "dm_started", "reply", "reaction"}
+        or (not is_reaction and not isinstance(to_id, str))
         or not isinstance(actor_id, str)
         or not isinstance(actor_name, str)
         or not isinstance(thread, str)
+        or isinstance(message_ts, bool)
         or not isinstance(message_ts, int)
         or (notification_type == "mention" and not isinstance(matched, str))
+        or (
+            is_reaction
+            and (
+                not isinstance(reaction, str)
+                or REACTION_SLUG_RE.fullmatch(reaction) is None
+            )
+        )
     ):
         return Notification(
             type="foreign",
@@ -85,12 +96,17 @@ def notification_from_body(body: str, ts: int) -> Notification:
         )
     return Notification(
         type=notification_type,
-        to_id=to_id,
+        to_id=None if is_reaction else to_id,
         actor_id=actor_id,
         actor_name=actor_name,
         thread=thread,
         message_ts=message_ts,
-        matched=matched if isinstance(matched, str) else None,
+        matched=(
+            matched
+            if notification_type == "mention" and isinstance(matched, str)
+            else None
+        ),
+        reaction=reaction if is_reaction and isinstance(reaction, str) else None,
         ts=ts,
         raw=body,
     )

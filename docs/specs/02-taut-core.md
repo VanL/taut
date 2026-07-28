@@ -115,11 +115,26 @@ Default SQLite discovery does not require it; selecting Postgres does. When
 step 3 discovers `.taut.toml`, that file is authoritative for storage and must
 contain `version`, `backend`, and `target`, including when `backend = "sqlite"`.
 It may also contain the Taut-owned `[terminal_text]` settings defined by
-[TAUT-6.4]. Taut does not inspect `pyproject.toml`, `.broker.toml`, or any other
-project file for Taut settings, and does not combine project settings from
-multiple project files. The presentation-only case described by [TAUT-6.4]
-does not make a settings-only `.taut.toml` a valid step-3 storage
-configuration.
+[TAUT-6.4] and the optional Taut-owned `[reactions]` table. Packaged reaction
+defaults are `values = ["ack", "blocked"]`. A storage-authoritative
+`.taut.toml` may replace that ordered list; a missing table or key inherits
+the packaged values, while an explicit empty list disables outbound
+reactions. Values are unique lowercase ASCII strings matching
+`^[a-z0-9][a-z0-9_-]{0,31}$`; Taut does not normalize or deduplicate them.
+Invalid reaction configuration fails client construction. Unknown keys remain
+ignored.
+
+Reaction values are resolved from the selected `BrokerTarget.config_path` and
+frozen when `TautClient` is constructed. Explicit `db_path`/`TAUT_DB`
+selectors use packaged values and do not read an unrelated current-directory
+config. An MCP workspace freezes the same client snapshot until detach and
+reattach. This lookup is separate from SimpleBroker configuration translation
+and from [TAUT-6.4]'s current-directory presentation policy.
+
+Taut does not inspect `pyproject.toml`, `.broker.toml`, or any other project
+file for Taut settings, and does not combine project settings from multiple
+project files. The presentation-only case described by [TAUT-6.4] does not
+make a settings-only `.taut.toml` a valid step-3 storage configuration.
 
 Implementation contract: taut owns no backend-target search logic of its own.
 The upward storage search is one call:
@@ -321,14 +336,23 @@ an accident. Two consequences are binding:
   CLI/client work, persistent owned handles for long-lived actors, and
   `close()` at owned lifetime end.
 
-  The `simplebroker>=5.3.3` floor is load-bearing. Version 5.2.0 supplies the
+  The `simplebroker>=5.6.1` floor is load-bearing. Version 5.2.0 supplies the
   reference ownership model, 5.2.2 first passed Taut's persistent-owner
   process/control proof, 5.3.0 supplies the public live activity-waiter
   replacement contract, 5.3.1 makes `Queue.write()` return the exact committed
   message id, and 5.3.2 makes watcher bootstrap cancellation interrupt locked
   PhaseLock and SQLite connection setup. Version 5.3.3 removes unsafe
   path-name-based runner cleanup and initializes timestamp-conflict metrics
-  before concurrent first writes. Persistent Queue handles for one
+  before concurrent first writes. Version 5.6.0 adds default-existing
+  exact-name broadcast. Version 5.6.1 adds backend API v5 and
+  full-requested-set provisioning through
+  `open_broker(...).broadcast(message, queue_names=queue_names,
+  create_missing=True)`. That mode validates and deduplicates every requested
+  name before mutation, atomically writes one ordinary pending message to
+  every unique name including names with no retained row, or writes none. Taut
+  uses that mode exactly once for reaction fanout. It does not preflight queue
+  existence, treat the broker count as a delivery receipt, or access private
+  broker state. Persistent Queue handles for one
   resolved target share a process-local broker session; each driving thread
   receives its own thread-local backend core. Releasing an ordinary operation
   ends only its active-operation lease; it does not recycle the owning thread's
@@ -789,6 +813,53 @@ intact; later direct messaging reuses it. Notification pointers may become
 stale under [IAN-7]. Delete is not recall: a reader or watcher that fetched the
 row before commit may display it once. Its scan is O(registered chat threads).
 
+### [TAUT-7.7] Message reactions
+
+`TautClient.react_to_message(msg_id: str, reaction: str) ->
+MessageReaction` sends a lightweight response to one exact ordinary message.
+Message-id validation is [TAUT-7.6]. Reaction input is validated against
+[TAUT-3.2] before identity, lookup, cursor, or notification work. The local
+configured list controls emission only; inbound structurally valid reactions
+are not filtered by the receiver's list.
+
+Lookup uses only the acting member's current registered channel, sub-thread,
+and direct-message memberships. The target must decode as an ordinary message
+with a stable author. Missing, inaccessible, claimed, notice, foreign, or
+confidentiality-invalid direct-message targets raise
+`NotFoundError("message not found or not reactable: MSG_ID")`. Self-authored
+ordinary messages remain eligible.
+
+The intended audience is one snapshot of current membership in the target's
+exact thread, excluding the actor. A sub-thread never inherits parent
+members. A direct-message audience is additionally intersected with its
+validated two-member registry metadata. No intended recipient raises
+`EmptyResultError("no reaction recipients")` before cursor or notification
+mutation.
+
+Reacting advances the actor's existing high-water cursor through the target,
+with [TAUT-7.2]'s intervening-row effect, before fanout. Cursor failure emits
+no reaction. Taut then calls
+`open_broker(...).broadcast(body, queue_names=queue_names,
+create_missing=True)` once with the distinct exact non-actor notification
+queue names. SimpleBroker atomically writes one copy to every requested name,
+including a never-used or post-vacuum inbox, or writes none. Taut does not
+preflight queue existence, use private broker state, broaden the target with a
+pattern, loop over `Queue.write()`, or expose the broker return count.
+
+The broadcast remains best-effort auxiliary work. If it raises, Taut appends
+one `reaction notification broadcast failed: ERROR` warning and returns the
+ordinary operation receipt because that receipt makes no delivery claim. Taut
+does not retry, fail the reaction operation, or rewind the cursor. Repeats are
+distinct events and may duplicate. Concurrent membership change or source
+deletion may leave or omit one invocation-scoped stale pointer.
+
+`MessageReaction` is frozen and slotted with exact fields `thread`,
+`message_ts`, `reaction`, and `audience_count: int`. `audience_count` is the
+final authorized recipient-set size after actor exclusion and, for a DM,
+registry intersection. It equals the number of exact requested notification
+queue names, not a delivery or consumption receipt. The receipt contains no
+recipient identifiers.
+
 ## 8. Surfaces [TAUT-8]
 
 ### [TAUT-8.1] CLI verbs
@@ -818,6 +889,7 @@ later token is command-local. `--version` is a root action before the verb.
 | `reply THREAD MSG_ID [TEXT\|-]` | Post into the sub-thread of MSG_ID, creating it on first reply. Blank text is filtered before parent resolution under [TAUT-6.5]. Requires membership in THREAD. A full 19-digit id resolves exactly. A suffix >= 4 digits resolves via a bounded public-API scan of the most recent 1,000 message ids of THREAD; ambiguous -> error listing candidates. | 0 wrote; 1 error (including ambiguous suffix); 2 blank filtered / no such message / not a member |
 | `message show MSG_ID` | Show one exact full-id message from the acting member's current chat memberships, then advance that thread's high-water cursor through it. No implicit join. Use `log` for cursor-neutral known-thread inspection. | 0 showed; 1 malformed/out-of-range id or error; 2 unrecognized member / inaccessible or absent message |
 | `message delete MSG_ID` | Physically delete one exact author-owned ordinary message, including after leaving its thread. Irreversible, potentially blind, and no cascade. | 0 deleted; 1 malformed/out-of-range id or error; 2 unrecognized member / absent or not deletable |
+| `message react MSG_ID REACTION` | Send one configured reaction to current members of the exact source thread except the actor. Advances the actor's high-water cursor and attempts one atomic best-effort exact-name broadcast to every requested notification queue. A broadcast failure warns; repeating may duplicate. | 0 valid operation, including a broadcast warning; 1 malformed/config/cursor error; 2 unrecognized member / inaccessible, ineligible, or recipient-empty target |
 | `read [THREAD]` | Show unread (all joined threads when bare, grouped), advance cursor through displayed messages. Reads are paged: one invocation displays and marks seen up to 1,000 unread messages per thread; callers drain larger backlogs by rerunning until exit 2. Requires a resolved member; explicit THREAD requires membership (sub-threads implicit-join per [TAUT-4.3]). | 0 showed messages; 1 error; 2 nothing unread / not a member (hint on stderr) |
 | `inbox` | Claim and show pending notifications for the acting member. Notifications are consumed; source chat history is not changed. | 0 showed notifications; 1 error; 2 nothing pending |
 | `log THREAD [--since TS] [--limit N]` | Show history. No cursor movement. `--limit N` selects the most recent N messages after `--since`, rendered in chronological order. | 0; 1; 2 empty |
@@ -881,10 +953,17 @@ exit classes apply equally to built-in and extension command adapters.
     use may emit a leading creation line with no `ts`;
   - notification objects (`inbox`, `watch`): `type`, `to_id`, `actor_id`,
     `actor_name`, `thread`, `message_ts`, plus `matched` for mention
-    notifications;
+    notifications and `reaction` for reaction notifications. `to_id` is null
+    for reactions because one recipient-independent body is broadcast;
   - successful `message delete`: exactly `thread`, `ts`, `deleted`, where
     `deleted` is `true`; the receipt never echoes source text or author
     identity;
+  - successful `message react`: exactly `thread`, `message_ts`, `reaction`,
+    and `audience_count`. The count is the final authorized recipient-set size
+    after actor exclusion and DM registry intersection and makes no delivery
+    claim. It never lists recipient ids. Human
+    output is `reacted REACTION to message MSG_ID in THREAD (N current
+    recipients)`;
   - `join` and `leave` echo their notice's message object;
   - list objects (`list`): `thread`, `kind`, `parent`, `unread` (bool),
     `last_ts`. Direct-message list objects also include `members`, an array of
@@ -923,7 +1002,7 @@ argument-parsing layer over it — every CLI behavior above must be
 reachable through one public client method with the same semantics (the
 SimpleBroker/Weft layering rule: CLI and library share one operational
 model). Public exports from `taut`: `TautClient`, `TautWatcher`, `Message`,
-`MessageDeletion`, `Thread`, `Member`, the exception hierarchy rooted at
+`MessageDeletion`, `MessageReaction`, `Thread`, `Member`, the exception hierarchy rooted at
 `TautError` including `BlankMessageError`, `escape_terminal_text`, and
 `__version__`. The package ships typed (`py.typed`).
 
@@ -941,6 +1020,13 @@ The exact-message signatures are
 visibility, cursor, ownership, no-cascade, error, race, and receipt contracts
 are [TAUT-7.6]. `MessageDeletion` is a frozen, slotted public value object with
 exact fields `thread: str`, `ts: int`, and `deleted: bool = True`.
+
+`TautClient.react_to_message(msg_id: str, reaction: str) ->
+MessageReaction` follows [TAUT-7.7]. `MessageReaction` is a frozen, slotted
+public value object with exact fields `thread: str`, `message_ts: int`,
+`reaction: str`, and `audience_count: int`. The client's configured
+reaction tuple is an immutable construction-time snapshot used only to
+validate outbound values.
 
 `BlankMessageError` is a public subclass of `EmptyResultError`. It is the
 Python API result for a filtered [TAUT-6.5] `say` or `reply`, allowing both
@@ -969,7 +1055,7 @@ through read-only identity resolution. It does not update activity, record an
 identity claim, inspect unread state, or create membership. Long-lived
 extensions use it to reconcile their own thread-scoped resources.
 
-Core runtime dependencies: exactly `simplebroker>=5.3.3` and `psutil`. The
+Core runtime dependencies: exactly `simplebroker>=5.6.1` and `psutil`. The
 optional `taut-pg` extension adds `simplebroker-pg` and its driver dependencies
 in the same environment as Taut. Python ≥ 3.11. The CLI uses argparse, not a CLI
 framework.
@@ -1403,6 +1489,11 @@ implied by docs or output.
   registry and memberships survive and later contact reuses them. Deleted
   notification source: the pointer survives under [IAN-7]. Already-fetched
   chat delivery may display once; delete is not recall.
+- Reaction broadcast exception: the actor cursor remains advanced and
+  all or none of the requested rows may have committed before confirmation was
+  lost. Taut returns the non-delivery `audience_count` receipt, adds one
+  warning, and does not blind-retry. Source deletion does not rewrite an
+  already emitted reaction pointer.
 
 ## 11. Verification Expectations [TAUT-11]
 
@@ -1440,6 +1531,20 @@ posture:
   client or CLI paths.
 - Addressing and notification tests follow [IAN-10]. They must use real
   broker-backed queues and sidecar state, not mocked schema or queue helpers.
+- Shared real SQLite and PostgreSQL reaction contracts prove validation-first
+  behavior; current channel, exact-child, and confidentiality-checked
+  direct-message audiences; actor exclusion; cursor effects; one public
+  `broadcast(..., queue_names=..., create_missing=True)` call; full requested
+  target creation for never-used and post-vacuum inboxes; non-delivery
+  `audience_count`, including equality to the post-intersection DM recipient
+  count when sidecar membership has a corrupt extra member; warning-only
+  outcome-ambiguous exceptions; duplicates; and stale pointers. Tests must
+  include intended recipients with no broker queue row and must not replace
+  the broker, sidecar, locator, or queue paths with mocks.
+- A selector-safety probe must fail if reaction fanout invokes `broadcast`
+  without keyword-only `queue_names` and `create_missing=True`, or supplies
+  `pattern`. Selector-free broadcast would target every existing queue;
+  omitting creation would skip healthy empty inboxes. Neither is acceptable.
 - Resolved `broker_target`/`broker_config` handoff works from a current
   directory outside the project on real SQLite and PostgreSQL targets, bypasses
   ambient `TAUT_DB` storage selection, rejects incomplete or conflicting
@@ -1898,6 +2003,9 @@ verification.
 
 ## Related Plans
 
+- `docs/plans/2026-07-28-message-react-plan.md` — configured exact-message
+  reactions, full-audience exact-name broadcast, non-delivery receipts, cursor
+  effects, and coordinated Python/CLI/MCP proof.
 - `docs/plans/2026-07-27-message-show-delete-plan.md` — exact-message show,
   high-water cursor semantics, author-only physical deletion, no-cascade
   lifecycle, and coordinated CLI/Python/MCP proof.

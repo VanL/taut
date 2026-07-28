@@ -1,7 +1,18 @@
 # Changelog
 
-## Unreleased
+## 0.8.0 - 2026-07-28
 
+- Added configured message reactions across the Python client, nested CLI,
+  notification inbox/watcher paths, and MCP extension. Reactions advance the
+  actor's seen cursor, then use SimpleBroker's atomic exact-name broadcast as
+  a best-effort consumable pointer to the current non-actor audience.
+- Added packaged `ack` and `blocked` reaction defaults with strict
+  `.taut.toml` replacement, frozen client snapshots, duplicate-event semantics,
+  and fail-closed DM audience intersection. Raised the SimpleBroker floors to
+  5.6.1 for core and 3.3.1 for Taut-PG.
+- Aligned the Taut reactor with SimpleBroker 5.6.1 terminal
+  `StopWatching` control flow, preserving clean closed-sink and output-policy
+  shutdown without advancing an undelivered chat cursor.
 - Added exact-id `message show` and `message delete` operations across the
   Python client, CLI, and MCP extension. Show peeks and advances seen metadata;
   delete is limited to the acting author's ordinary messages and performs no

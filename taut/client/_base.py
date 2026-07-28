@@ -22,6 +22,7 @@ from taut._constants import (
     load_config,
 )
 from taut._exceptions import IdentityError, NotInitializedError, TautError
+from taut._reactions import load_reaction_values
 from taut.state import (
     ChannelRenameRow,
     MemberRow,
@@ -102,6 +103,7 @@ class _ClientBase(ABC):
     _meta_queue: Queue
     _persistent: bool
     _queue_cache: dict[str, Queue]
+    _reaction_values: tuple[str, ...]
     _state: TautState
 
     def __init__(
@@ -126,6 +128,10 @@ class _ClientBase(ABC):
             load_config() if broker_config is None else deepcopy(dict(broker_config))
         )
         self.target = self._resolve_target(db_path, broker_target=broker_target)
+        reaction_config_path = (
+            self.target.config_path if isinstance(self.target, BrokerTarget) else None
+        )
+        self._reaction_values = load_reaction_values(reaction_config_path)
         if inherit_environment_identity:
             self.as_name = as_name or os.environ.get("TAUT_AS")
             self.token = token or os.environ.get("TAUT_TOKEN")

@@ -4,7 +4,7 @@ import json
 import threading
 from collections.abc import Callable
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from simplebroker import BrokerTarget, Queue, open_broker, resolve_broker_target
@@ -27,10 +27,15 @@ from taut._exceptions import (
     ThreadNameError,
     TokenError,
 )
-from taut.client import Message, MessageDeletion, TautClient
+from taut.client import Message, MessageDeletion, MessageReaction, TautClient
 from taut.commands._rendering import format_unread_count
 from taut.envelope import encode_envelope
-from taut.state import SQLITE_SQL_DIALECT, MembershipRow, SqlSidecarTautState
+from taut.state import (
+    SQLITE_SQL_DIALECT,
+    MemberRow,
+    MembershipRow,
+    SqlSidecarTautState,
+)
 
 pytestmark = pytest.mark.sqlite_only
 
@@ -180,6 +185,488 @@ def test_show_message_returns_exact_row_and_advances_high_water_cursor(
     assert reader.queue("general").peek_one(exact_timestamp=target.ts) is not None
 
 
+def test_react_to_message_broadcasts_to_current_members_and_advances_cursor(
+    tmp_path: Path,
+) -> None:
+    alice = client(tmp_path, "alice")
+    bob = existing_client(tmp_path, "bob")
+    carol = existing_client(tmp_path, "carol")
+    for member in (alice, bob, carol):
+        member.join("general")
+    target = bob.say("general", "status?")
+
+    receipt = alice.react_to_message(str(target.ts), "ack")
+
+    assert (
+        receipt.thread,
+        receipt.message_ts,
+        receipt.reaction,
+        receipt.audience_count,
+    ) == ("general", target.ts, "ack", 2)
+    for recipient in (bob, carol):
+        notifications = recipient.inbox()
+        assert [
+            (
+                item.type,
+                item.to_id,
+                item.actor_name,
+                item.thread,
+                item.message_ts,
+                item.reaction,
+            )
+            for item in notifications
+        ] == [("reaction", None, "alice", "general", target.ts, "ack")]
+    with pytest.raises(EmptyResultError):
+        alice.inbox()
+    membership = alice._state.get_membership(
+        thread="general",
+        member_id=alice.whoami().member_id,
+    )
+    assert membership is not None
+    assert membership["last_seen_ts"] == target.ts
+    assert alice.queue("general").peek_one(exact_timestamp=target.ts) is not None
+
+
+def test_react_to_message_uses_monotonic_high_water_cursor_semantics(
+    tmp_path: Path,
+) -> None:
+    alice = client(tmp_path, "alice")
+    bob = existing_client(tmp_path, "bob")
+    alice.join("general")
+    bob.join("general")
+    alice.read("general")
+    earlier = bob.say("general", "earlier")
+    target = bob.say("general", "target")
+    later = bob.say("general", "later")
+
+    alice.react_to_message(str(target.ts), "ack")
+
+    assert [item.ts for item in alice.read("general")] == [later.ts]
+    alice.react_to_message(str(earlier.ts), "ack")
+    membership = alice._state.get_membership(
+        thread="general",
+        member_id=alice.whoami().member_id,
+    )
+    assert membership is not None
+    assert membership["last_seen_ts"] == later.ts
+    assert [item.reaction for item in bob.inbox()] == ["ack", "ack"]
+
+
+@pytest.mark.parametrize(
+    ("reaction", "exception", "message"),
+    [
+        (None, TypeError, "reaction must be a string"),
+        (True, TypeError, "reaction must be a string"),
+        ("Ack", ValueError, r"reaction must match \^\[a-z0-9\]"),
+        ("not-enabled", ValueError, "reaction must be one of: ack, blocked"),
+    ],
+)
+def test_react_to_message_validates_reaction_before_state_work(
+    tmp_path: Path,
+    reaction: object,
+    exception: type[Exception],
+    message: str,
+) -> None:
+    actor = client(tmp_path, "actor")
+    before_threads = actor._state.list_threads(include_internal=True)
+    before_members = actor._state.list_members()
+
+    with pytest.raises(exception, match=message):
+        actor.react_to_message("1800000000000000001", reaction)  # type: ignore[arg-type]
+
+    assert actor._state.list_threads(include_internal=True) == before_threads
+    assert actor._state.list_members() == before_members
+
+
+def test_react_to_message_reports_disabled_project_policy_before_state_work(
+    tmp_path: Path,
+) -> None:
+    actor = client(tmp_path, "actor")
+    actor._reaction_values = ()
+    before_threads = actor._state.list_threads(include_internal=True)
+
+    with pytest.raises(
+        ValueError,
+        match="^message reactions are disabled by project configuration$",
+    ):
+        actor.react_to_message("1800000000000000001", "ack")
+
+    assert actor._state.list_threads(include_internal=True) == before_threads
+
+
+def test_react_to_message_requires_an_ordinary_message(tmp_path: Path) -> None:
+    actor = client(tmp_path, "actor")
+    notice = actor.join("general")
+
+    with pytest.raises(
+        NotFoundError,
+        match=rf"^message not found or not reactable: {notice.ts}$",
+    ):
+        actor.react_to_message(str(notice.ts), "ack")
+
+
+def test_react_to_message_allows_self_authored_target_with_other_recipient(
+    tmp_path: Path,
+) -> None:
+    alice = client(tmp_path, "alice")
+    bob = existing_client(tmp_path, "bob")
+    alice.join("general")
+    bob.join("general")
+    target = alice.say("general", "my message")
+
+    receipt = alice.react_to_message(str(target.ts), "ack")
+
+    assert receipt.audience_count == 1
+    assert [item.reaction for item in bob.inbox()] == ["ack"]
+
+
+def test_react_to_message_requires_a_nonempty_audience_before_cursor_advance(
+    tmp_path: Path,
+) -> None:
+    actor = client(tmp_path, "actor")
+    actor.join("general")
+    target = actor.say("general", "only member")
+    actor_id = actor.whoami().member_id
+    before = actor._state.get_membership(thread="general", member_id=actor_id)
+    assert before is not None
+
+    with pytest.raises(EmptyResultError, match="^no reaction recipients$"):
+        actor.react_to_message(str(target.ts), "ack")
+
+    after = actor._state.get_membership(thread="general", member_id=actor_id)
+    assert after == before
+
+
+def test_react_to_message_uses_exact_subthread_membership(tmp_path: Path) -> None:
+    alice = client(tmp_path, "alice")
+    bob = existing_client(tmp_path, "bob")
+    carol = existing_client(tmp_path, "carol")
+    outsider = existing_client(tmp_path, "outsider")
+    for member in (alice, bob, carol, outsider):
+        member.join("general")
+    root = alice.say("general", "root")
+    target = bob.reply("general", str(root.ts), "subthread target")
+    carol.reply("general", str(root.ts), "joining the subthread")
+    alice.reply("general", str(root.ts), "joining to react")
+
+    receipt = alice.react_to_message(str(target.ts), "blocked")
+
+    assert receipt.audience_count == 2
+    assert [item.reaction for item in bob.inbox()] == ["blocked"]
+    assert [item.reaction for item in carol.inbox()] == ["blocked"]
+    with pytest.raises(EmptyResultError):
+        outsider.inbox()
+
+
+def test_react_to_message_snapshots_current_members_not_send_time_members(
+    tmp_path: Path,
+) -> None:
+    alice = client(tmp_path, "alice")
+    bob = existing_client(tmp_path, "bob")
+    departed = existing_client(tmp_path, "departed")
+    for member in (alice, bob, departed):
+        member.join("general")
+    target = bob.say("general", "target")
+    departed.leave("general")
+    late = existing_client(tmp_path, "late")
+    late.join("general")
+
+    receipt = alice.react_to_message(str(target.ts), "ack")
+
+    assert receipt.audience_count == 2
+    assert [item.reaction for item in bob.inbox()] == ["ack"]
+    assert [item.reaction for item in late.inbox()] == ["ack"]
+    with pytest.raises(EmptyResultError):
+        departed.inbox()
+
+
+def test_react_to_message_keeps_invocation_snapshot_across_membership_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    alice = client(tmp_path, "alice")
+    bob = existing_client(tmp_path, "bob")
+    departed = existing_client(tmp_path, "departed")
+    late = existing_client(tmp_path, "late")
+    for member in (alice, bob, departed):
+        member.join("general")
+    late.join("staging")
+    target = bob.say("general", "target")
+    departed_id = departed.whoami().member_id
+    late_id = late.whoami().member_id
+    real_list = SqlSidecarTautState.list_thread_members
+    snapshots = 0
+
+    def snapshot_then_change(
+        state: SqlSidecarTautState,
+        thread: str,
+    ) -> list[MemberRow]:
+        nonlocal snapshots
+        rows = real_list(state, thread)
+        if state is alice._state and thread == "general" and snapshots == 0:
+            snapshots += 1
+            departed._state.remove_membership(
+                thread="general",
+                member_id=departed_id,
+            )
+            late._state.add_membership(
+                thread="general",
+                member_id=late_id,
+                joined_ts=target.ts,
+                last_seen_ts=target.ts,
+            )
+        return rows
+
+    monkeypatch.setattr(
+        SqlSidecarTautState,
+        "list_thread_members",
+        snapshot_then_change,
+    )
+
+    receipt = alice.react_to_message(str(target.ts), "ack")
+
+    assert snapshots == 1
+    assert receipt.audience_count == 2
+    assert [item.reaction for item in bob.inbox()] == ["ack"]
+    assert [item.reaction for item in departed.inbox()] == ["ack"]
+    with pytest.raises(EmptyResultError):
+        late.inbox()
+
+
+def test_react_to_message_intersects_dm_membership_with_valid_participants(
+    tmp_path: Path,
+) -> None:
+    alice = client(tmp_path, "alice")
+    bob = existing_client(tmp_path, "bob")
+    outsider = existing_client(tmp_path, "outsider")
+    for member in (alice, bob, outsider):
+        member.join("general")
+    target = alice.say("@bob", "private target")
+    assert [item.type for item in bob.inbox()] == ["dm_started"]
+    outsider_id = outsider.whoami().member_id
+    outsider._state.add_membership(
+        thread=target.thread,
+        member_id=outsider_id,
+        joined_ts=target.ts,
+        last_seen_ts=0,
+    )
+
+    receipt = alice.react_to_message(str(target.ts), "ack")
+
+    assert receipt.audience_count == 1
+    assert [item.reaction for item in bob.inbox()] == ["ack"]
+    with pytest.raises(EmptyResultError):
+        outsider.inbox()
+    with pytest.raises(
+        NotFoundError,
+        match=rf"^message not found or not reactable: {target.ts}$",
+    ):
+        outsider.react_to_message(str(target.ts), "ack")
+
+
+def test_react_to_message_fails_closed_for_malformed_dm_metadata(
+    tmp_path: Path,
+) -> None:
+    alice = client(tmp_path, "alice")
+    bob = existing_client(tmp_path, "bob")
+    alice.join("general")
+    bob.join("general")
+    target = alice.say("@bob", "private target")
+    assert [item.type for item in bob.inbox()] == ["dm_started"]
+    with alice._meta_queue.sidecar(transaction=True) as session:
+        session.run(
+            "UPDATE taut_threads SET meta = ? WHERE name = ?",
+            ("{}", target.thread),
+        )
+
+    with pytest.raises(
+        NotFoundError,
+        match=rf"^message not found or not reactable: {target.ts}$",
+    ):
+        alice.react_to_message(str(target.ts), "ack")
+
+    with pytest.raises(EmptyResultError):
+        bob.inbox()
+
+
+def test_react_to_message_is_best_effort_after_cursor_advance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    alice = client(tmp_path, "alice")
+    bob = existing_client(tmp_path, "bob")
+    alice.join("general")
+    bob.join("general")
+    target = bob.say("general", "target")
+    calls: list[tuple[str, ...]] = []
+
+    class FailingBroker:
+        def __enter__(self) -> FailingBroker:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def broadcast(
+            self,
+            _body: str,
+            *,
+            queue_names: tuple[str, ...],
+            create_missing: bool,
+        ) -> None:
+            assert create_missing is True
+            calls.append(queue_names)
+            raise RuntimeError("offline")
+
+    monkeypatch.setattr(
+        messaging, "open_broker", lambda *_args, **_kwargs: FailingBroker()
+    )
+
+    receipt = alice.react_to_message(str(target.ts), "ack")
+
+    assert receipt == MessageReaction(
+        thread="general",
+        message_ts=target.ts,
+        reaction="ack",
+        audience_count=1,
+    )
+    assert calls == [(addressing.notification_queue_name(bob.whoami().member_id),)]
+    assert alice.last_notification_warnings == [
+        "reaction notification broadcast failed: offline"
+    ]
+    membership = alice._state.get_membership(
+        thread="general",
+        member_id=alice.whoami().member_id,
+    )
+    assert membership is not None
+    assert membership["last_seen_ts"] == target.ts
+
+
+def test_react_to_message_does_not_broadcast_when_cursor_advance_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    alice = client(tmp_path, "alice")
+    bob = existing_client(tmp_path, "bob")
+    alice.join("general")
+    bob.join("general")
+    target = bob.say("general", "target")
+
+    def fail_cursor(_state: SqlSidecarTautState, **_kwargs: object) -> None:
+        raise RuntimeError("cursor unavailable")
+
+    monkeypatch.setattr(SqlSidecarTautState, "advance_cursor", fail_cursor)
+    monkeypatch.setattr(
+        messaging,
+        "open_broker",
+        lambda *_args, **_kwargs: pytest.fail("broadcast ran before cursor commit"),
+    )
+
+    with pytest.raises(RuntimeError, match="^cursor unavailable$"):
+        alice.react_to_message(str(target.ts), "ack")
+
+    with pytest.raises(EmptyResultError):
+        bob.inbox()
+
+
+def test_react_to_message_repeats_as_distinct_consumable_events(
+    tmp_path: Path,
+) -> None:
+    alice = client(tmp_path, "alice")
+    bob = existing_client(tmp_path, "bob")
+    alice.join("general")
+    bob.join("general")
+    target = bob.say("general", "target")
+
+    alice.react_to_message(str(target.ts), "ack")
+    alice.react_to_message(str(target.ts), "ack")
+
+    assert [item.reaction for item in bob.inbox()] == ["ack", "ack"]
+
+
+def test_reaction_notification_peek_is_observational_and_inbox_consumes(
+    tmp_path: Path,
+) -> None:
+    alice = client(tmp_path, "alice")
+    bob = existing_client(tmp_path, "bob")
+    alice.join("general")
+    bob.join("general")
+    target = bob.say("general", "target")
+    alice.react_to_message(str(target.ts), "ack")
+
+    assert [item.reaction for item in bob.peek_inbox()] == ["ack"]
+    assert [item.reaction for item in bob.peek_inbox()] == ["ack"]
+    assert [item.reaction for item in bob.inbox()] == ["ack"]
+    with pytest.raises(EmptyResultError):
+        bob.inbox()
+
+
+def test_reaction_pointer_survives_source_message_deletion(tmp_path: Path) -> None:
+    alice = client(tmp_path, "alice")
+    bob = existing_client(tmp_path, "bob")
+    alice.join("general")
+    bob.join("general")
+    target = alice.say("general", "temporary")
+    bob.react_to_message(str(target.ts), "ack")
+
+    alice.delete_message(str(target.ts))
+
+    notification = alice.inbox()[0]
+    assert notification.type == "reaction"
+    assert notification.message_ts == target.ts
+    assert notification.reaction == "ack"
+
+
+def test_react_to_message_may_emit_stale_pointer_after_lookup_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    alice = client(tmp_path, "alice")
+    bob = existing_client(tmp_path, "bob")
+    alice.join("general")
+    bob.join("general")
+    target = bob.say("general", "delete after reaction lookup")
+    alice_id = alice.whoami().member_id
+    real_advance = SqlSidecarTautState.advance_cursor
+    deletions: list[MessageDeletion] = []
+
+    def advance_after_delete(
+        state: SqlSidecarTautState,
+        *,
+        thread: str,
+        member_id: str,
+        seen_ts: int,
+    ) -> None:
+        if (
+            state is alice._state
+            and member_id == alice_id
+            and seen_ts == target.ts
+            and not deletions
+        ):
+            deletions.append(bob.delete_message(str(target.ts)))
+        real_advance(
+            state,
+            thread=thread,
+            member_id=member_id,
+            seen_ts=seen_ts,
+        )
+
+    monkeypatch.setattr(
+        SqlSidecarTautState,
+        "advance_cursor",
+        advance_after_delete,
+    )
+
+    receipt = alice.react_to_message(str(target.ts), "ack")
+
+    assert receipt.audience_count == 1
+    assert deletions == [MessageDeletion(thread="general", ts=target.ts)]
+    assert bob.queue("general").peek_one(exact_timestamp=target.ts) is None
+    notification = bob.inbox()[0]
+    assert notification.type == "reaction"
+    assert notification.message_ts == target.ts
+
+
 def test_delete_message_removes_only_owned_exact_row_and_returns_receipt(
     tmp_path: Path,
 ) -> None:
@@ -269,6 +756,34 @@ def test_message_operations_validate_exact_id_before_state_work(
 
     assert van._state.list_threads(include_internal=True) == before_threads
     assert van._state.list_members() == before_members
+
+
+@pytest.mark.parametrize(
+    ("value", "exception", "message"),
+    [
+        (None, TypeError, "msg_id must be a string"),
+        (True, TypeError, "msg_id must be a string"),
+        ("1234", ValueError, "msg_id must be a full 19-digit message id"),
+        (
+            "123456789012345678x",
+            ValueError,
+            "msg_id must be a full 19-digit message id",
+        ),
+    ],
+)
+def test_react_to_message_validates_exact_id_before_state_work(
+    tmp_path: Path,
+    value: object,
+    exception: type[Exception],
+    message: str,
+) -> None:
+    actor = client(tmp_path, "actor")
+    before_threads = actor._state.list_threads(include_internal=True)
+
+    with pytest.raises(exception, match=rf"^{message}$"):
+        actor.react_to_message(value, "ack")  # type: ignore[arg-type]
+
+    assert actor._state.list_threads(include_internal=True) == before_threads
 
 
 def test_show_message_is_limited_to_current_memberships(tmp_path: Path) -> None:
@@ -486,7 +1001,7 @@ def test_show_message_scans_candidates_once_and_stops_at_match(
         if found:
             raise AssertionError("locator continued after its first exact match")
         calls.append(queue.name)
-        result = real_peek(queue, *args, **kwargs)
+        result = cast(Any, real_peek)(queue, *args, **kwargs)
         if result is not None:
             found = True
         return result
@@ -2802,6 +3317,106 @@ def test_mention_notification_without_matched_is_malformed(tmp_path: Path) -> No
 
     assert notifications[0].type == "foreign"
     assert notifications[0].warning == "malformed notification"
+
+
+def test_reaction_notification_decodes_without_recipient_specific_id(
+    tmp_path: Path,
+) -> None:
+    """[IAN-7.2] Inbound reaction syntax is independent of emission config."""
+
+    bob = client(tmp_path, "bob")
+    bob.join("general")
+    member_id = bob.whoami().member_id
+    queue = bob.queue(addressing.notification_queue_name(member_id))
+    ts = queue.generate_timestamp()
+    queue.insert_messages(
+        [
+            (
+                json.dumps(
+                    {
+                        "type": "reaction",
+                        "actor_id": "m_" + "a" * 26,
+                        "actor_name": "alice",
+                        "thread": "general",
+                        "message_ts": 1_800_000_000_000_000_001,
+                        "reaction": "done",
+                    }
+                ),
+                ts,
+            )
+        ]
+    )
+
+    notification = bob.inbox()[0]
+
+    assert notification.type == "reaction"
+    assert notification.to_id is None
+    assert notification.actor_name == "alice"
+    assert notification.message_ts == 1_800_000_000_000_000_001
+    assert notification.reaction == "done"
+
+
+@pytest.mark.parametrize(
+    "payload_update",
+    [
+        pytest.param({"reaction": None}, id="missing-reaction"),
+        pytest.param({"reaction": 1}, id="non-string-reaction"),
+        pytest.param({"reaction": "Ack"}, id="invalid-reaction-slug"),
+        pytest.param({"message_ts": "1800000000000000001"}, id="non-integer-message"),
+        pytest.param({"message_ts": True}, id="boolean-message"),
+        pytest.param({"actor_id": None}, id="missing-actor"),
+    ],
+)
+def test_malformed_reaction_notifications_decode_as_foreign(
+    tmp_path: Path,
+    payload_update: dict[str, object],
+) -> None:
+    bob = client(tmp_path, "bob")
+    bob.join("general")
+    payload: dict[str, object] = {
+        "type": "reaction",
+        "actor_id": "m_" + "a" * 26,
+        "actor_name": "alice",
+        "thread": "general",
+        "message_ts": 1_800_000_000_000_000_001,
+        "reaction": "ack",
+    }
+    payload.update(payload_update)
+    queue = bob.queue(addressing.notification_queue_name(bob.whoami().member_id))
+    queue.write(json.dumps(payload))
+
+    notification = bob.inbox()[0]
+
+    assert notification.type == "foreign"
+    assert notification.warning == "malformed notification"
+
+
+def test_reaction_notification_ignores_unknown_fields(tmp_path: Path) -> None:
+    bob = client(tmp_path, "bob")
+    bob.join("general")
+    queue = bob.queue(addressing.notification_queue_name(bob.whoami().member_id))
+    queue.write(
+        json.dumps(
+            {
+                "type": "reaction",
+                "actor_id": "m_" + "a" * 26,
+                "actor_name": "alice",
+                "thread": "general",
+                "message_ts": 1_800_000_000_000_000_001,
+                "reaction": "ack",
+                "to_id": "m_" + "b" * 26,
+                "matched": "@bob",
+                "future_field": {"ignored": True},
+            }
+        )
+    )
+
+    notification = bob.inbox()[0]
+
+    assert notification.type == "reaction"
+    assert notification.to_id is None
+    assert notification.matched is None
+    assert notification.reaction == "ack"
 
 
 def test_channel_names_reject_dots_and_reserved_words(tmp_path: Path) -> None:

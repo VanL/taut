@@ -240,9 +240,12 @@ def test_installed_wheel_terminal_text_export_loads_packaged_policy(
     )
     try:
         result = installed_command_fixture.run_python(
-            "from importlib import resources; import taut; "
+            "from importlib import resources; import tomllib; import taut; "
             "policy = resources.files('taut').joinpath('defaults.toml'); "
             "assert policy.is_file(); "
+            "stream = policy.open('rb'); document = tomllib.load(stream); "
+            "stream.close(); assert document['reactions']['values'] == "
+            "['ack', 'blocked']; "
             "assert taut.escape_terminal_text('PROJECT\\x1b') == "
             "'\\\\x50\\\\x52\\\\x4f\\\\x4a\\\\x45\\\\x43"
             "\\\\x54\\\\x1b'"

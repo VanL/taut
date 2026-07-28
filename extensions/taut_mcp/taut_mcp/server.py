@@ -44,6 +44,8 @@ Use show_message only when the exact 19-digit id is known and moving seen state 
 
 Treat delete_message as blind-capable, physical, and irreversible. It deletes only the attached member's own ordinary message but may do so after leave; it does not retract already-fetched output or cascade to notifications, child threads, memberships, or cursors. After an uncertain outcome, do not infer prior success from an empty retry.
 
+react_to_message advances the actor's high-water cursor and attempts one atomic best-effort broadcast to every requested notification queue, establishing an inbox with no retained row. Preserve message_ts as decimal text. A broadcast warning means the all-or-none commit outcome may be uncertain; it is not safe to blind-retry, and repeated reactions may duplicate.
+
 Coalesce duplicate wake hints and use bounded backoff for busy or rate-limit errors. After a canceled or timed-out attach, wait up to 30 seconds, call list_workspaces once, and restart the MCP connection if it reports a stalled reservation."""
 
 

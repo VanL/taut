@@ -21,7 +21,7 @@ run [29455389050](https://github.com/VanL/taut/actions/runs/29455389050), MCP
 release gate
 [29455393317](https://github.com/VanL/taut/actions/runs/29455393317), and the
 [`taut_mcp/v0.7.0` GitHub Release](https://github.com/VanL/taut/releases/tag/taut_mcp/v0.7.0)
-as evidence. The portable surface is 17 explicit tools plus
+as evidence. The portable surface is 18 explicit tools plus
 `taut://notifications/current`; the optional Claude channel is only a
 best-effort wake hint.
 
@@ -88,7 +88,7 @@ than silently selecting or healing another member.
 
 `_tools.py` declares a fixed manifest. It does not reflect the CLI command
 registry, so future core or extension commands cannot become remote tools by
-accident. `_commands.py` dispatches the 14 CLI-shaped tools directly to public
+accident. `_commands.py` dispatches the 15 CLI-shaped tools directly to public
 `TautClient` methods and serializes public value objects; it never launches the
 CLI or parses renderer output.
 
@@ -98,6 +98,14 @@ and advances the acting member's seen cursor through that id. `delete_message`
 returns a distinct deletion record, is restricted to the acting author's
 ordinary messages, and does not cascade into cursors, notifications, DM
 registry rows, memberships, or sub-threads.
+
+`react_to_message` is the fifteenth CLI-shaped tool. It calls the public
+client method directly with an exact id and schema-validated slug. Success is
+a distinct intended-audience receipt; empty audience and ineligible targets
+remain typed empty results. A best-effort broadcast exception remains success
+with the ordinary warnings array. The child keeps its attachment-time reaction
+vocabulary, so config changes require reattachment instead of cross-thread
+config mutation.
 
 Each ready workspace has one no-wait command slot. A second call returns busy
 instead of growing an unbounded per-workspace queue. Calls to other workspaces
@@ -218,7 +226,7 @@ coverage, and cross-workflow coverage artifact coupling.
 | `extensions/taut_mcp/taut_mcp/server.py` | MCP handlers, instructions, capabilities, stdio lifecycle, standard resource subscription wiring |
 | `extensions/taut_mcp/taut_mcp/_connection_reactor.py` | master registry, lifecycle arbitration, admission, results, aggregate text, edge trackers, teardown |
 | `extensions/taut_mcp/taut_mcp/_workspace_reactor.py` | child resolution, client ownership, command loop, observational notification service, native waiter |
-| `extensions/taut_mcp/taut_mcp/_tools.py` | exact 17-tool schemas, descriptions, annotations, output schemas |
+| `extensions/taut_mcp/taut_mcp/_tools.py` | exact 18-tool schemas, descriptions, annotations, output schemas |
 | `extensions/taut_mcp/taut_mcp/_commands.py` | explicit public-client command dispatch and record conversion |
 | `extensions/taut_mcp/taut_mcp/_claude_channel.py` | isolated fixed-payload experimental notification model and send call |
 | `extensions/taut_mcp/tests/` | real SQLite/stdio lifecycle, tool, resource, subscription, cancellation, and adversarial proof; optional live PostgreSQL conformance |
