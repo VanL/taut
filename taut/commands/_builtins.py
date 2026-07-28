@@ -34,6 +34,7 @@ BUILTIN_SPECS = (
     _spec("set", "Change a property of the acting member."),
     _spec("say", "Post to a channel, sub-thread, or direct-message target."),
     _spec("reply", "Reply in the sub-thread rooted at a message."),
+    _spec("message", "Inspect or delete one message by exact id."),
     _spec("read", "Show unread messages and advance chat cursors."),
     _spec("inbox", "Claim and show pending notification pointers."),
     _spec("log", "Show thread history without moving a cursor."),

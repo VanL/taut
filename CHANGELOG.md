@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Added exact-id `message show` and `message delete` operations across the
+  Python client, CLI, and MCP extension. Show peeks and advances seen metadata;
+  delete is limited to the acting author's ordinary messages and performs no
+  cascade.
+
 ## 0.7.1 - 2026-07-15
 
 - Added macOS and Windows SQLite MCP compatibility jobs at a representative

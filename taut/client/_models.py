@@ -49,6 +49,15 @@ class Message:
 
 
 @dataclass(frozen=True, slots=True)
+class MessageDeletion:
+    """Receipt for one physically deleted chat message."""
+
+    thread: str
+    ts: int
+    deleted: bool = True
+
+
+@dataclass(frozen=True, slots=True)
 class Notification:
     """A notification pointer returned by a consuming read or read-only peek."""
 
@@ -76,5 +85,6 @@ class InitResult:
 Member.__module__ = "taut.client"
 Thread.__module__ = "taut.client"
 Message.__module__ = "taut.client"
+MessageDeletion.__module__ = "taut.client"
 Notification.__module__ = "taut.client"
 InitResult.__module__ = "taut.client"

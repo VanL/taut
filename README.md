@@ -65,8 +65,8 @@ default, or a few machines through the Postgres extension.
   installation.
 - **Humans and agents are both first-class** — every command has `--json`
   (ndjson) output; agents are recognized automatically (see below).
-- **Real history** — messages are never consumed. Reading moves *your*
-  bookmark; the conversation stays.
+- **Real history** — ordinary reads never consume messages. Reading moves
+  *your* bookmark; authors may explicitly delete one of their own messages.
 - **Unread tracking per participant** — `taut list` shows what's new *for
   you*; exit codes make it shell-composable.
 - **Live following** — `taut watch` streams every thread you're in, and
@@ -223,7 +223,7 @@ $ taut read general
   09:15 · claude joined
   09:15 claude  yes. what broke?
 
-# History never disappears; log doesn't move your bookmark
+# Log doesn't move your bookmark; explicit author deletion is the exception
 $ taut log general --since 2026-06-12
 
 # Follow everything you're in, live
@@ -349,6 +349,8 @@ pass `TAUT_AS` or `TAUT_TOKEN` through.
 | `taut set name NAME` | Change your current display/routing name; old messages keep the old name |
 | `taut say THREAD\|@NAME [TEXT\|-]` | Post to a channel, sub-thread, or direct message (stdin with `-` or a pipe) |
 | `taut reply THREAD MSG_ID [TEXT\|-]` | Reply in a sub-thread, creating it on first reply |
+| `taut message show MSG_ID` | Show one visible message without claiming it; advances that thread's seen cursor through the message |
+| `taut message delete MSG_ID` | Delete one of your own ordinary messages; no related state is cascaded |
 | `taut read [THREAD]` | Show unread and advance your bookmark; bare = all your threads |
 | `taut inbox` | Claim and show notification pointers for mentions and new DMs |
 | `taut log THREAD [--since TS] [--limit N]` | Show history; never moves your bookmark |
@@ -395,10 +397,19 @@ older unread message prevents your cursor from advancing when you post, your
 own new post remains unread behind it and can appear in the next `taut read`.
 Taut does not add per-message read flags to hide only your own traffic.
 
+Deleting a message removes only that broker row. It does not recall output
+already fetched by another process, move or repair cursors, remove notification
+pointers, close an empty DM, or delete a reply sub-thread rooted at that id.
+An author may still delete after leaving because delete searches registered
+chat threads. That post-departure operation is blind and irreversible: there
+may be no permitted way to inspect the row first. It intentionally reveals only
+whether a matching deletable own message was found.
+
 `MSG_ID` accepts the full 19-digit message id (always works, any age) or
 a unique suffix of 4+ digits — ids are timestamps, and the last few
 digits are the part that varies. Suffix search covers the thread's most
-recent 1,000 messages.
+recent 1,000 messages. `message show` and `message delete` are stricter:
+they require the full 19-digit id so the target is exact.
 
 `read` is paged: one invocation displays and marks seen up to 1,000 unread
 messages per thread. To drain a large backlog, run `taut read` again until it
@@ -433,13 +444,15 @@ cursor-tracked, membership-aware, with its fan-in waiter installed through
 SimpleBroker's watcher lifecycle hooks):
 
 ```python
-from taut import Message, TautClient
+from taut import Message, MessageDeletion, TautClient
 
 client = TautClient()           # finds .taut.db like git finds .git
                                 # (or TautClient(db_path="…"))
 client.join("general")
 message = client.say("general", "build finished: 312 passed")
 print(message.ts)
+shown = client.show_message(str(message.ts))  # peek; advances seen through it
+deleted: MessageDeletion = client.delete_message(str(message.ts))
 
 for msg in client.read(limit=100):  # up to 100 per joined thread; advances cursors
     print(msg.thread, msg.from_id, msg.from_name, msg.text)
@@ -523,22 +536,25 @@ coordination inside a trust domain, not for establishing one.
 ## Things That Look Weird but Aren't
 
 <details>
-<summary><strong>Reading never deletes — isn't this a message queue?</strong></summary>
+<summary><strong>Ordinary reading never deletes — isn't this a message queue?</strong></summary>
 
 SimpleBroker queues normally hand each message to exactly one consumer.
 Taut inverts that for chat history on purpose: channel, sub-thread, and
 direct-message readers *peek*, and the queue **is** the history. "Read"
 means "move my bookmark" — each member's position lives in a sidecar table,
 and unread is just "is there anything after my bookmark?", answered by the
-broker itself.
+broker itself. `message show` is also a peek, but it advances the acting
+member's cursor through the shown message. `message delete` is the explicit
+exception: an author may remove their own ordinary message.
 
 Notification inboxes are different. They are pointers for pings and new direct
 messages, so `taut inbox` and `taut watch` claim them. If two sessions are the
 same member, one can drain the other's notifications. That is the intended
 single-directory model. A crash after `inbox` or notification watch has claimed
-a pointer but before it displays can lose that pointer. The source chat remains
-durable, and later notification-worthy activity may create a new pointer;
-ordinary chat activity does not necessarily create one.
+a pointer but before it displays can lose that pointer. A notification pointer
+may also outlive a message that its author deletes. Taut does not cascade or
+repair that pointer; later notification-worthy activity may create a new one,
+while ordinary chat activity does not necessarily create one.
 
 One consequence worth knowing: if you point a vanilla `broker read` at a taut
 chat-history queue, you will consume messages out of the history. Taut

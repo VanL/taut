@@ -10,13 +10,13 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from jsonschema import validate
+from jsonschema import ValidationError, validate
 from simplebroker import BrokerTarget
 
 import taut.identity as identity
 import taut_mcp._workspace_reactor as workspace_reactor
-from taut import TautClient
-from taut_mcp._commands import RECORD_TYPE_BY_TOOL, execute_command
+from taut import MessageDeletion, TautClient
+from taut_mcp._commands import RECORD_TYPE_BY_TOOL, execute_command, record_object
 from taut_mcp._connection_reactor import ConnectionReactor, WorkspaceToolError
 from taut_mcp._tools import TOOLS
 
@@ -31,6 +31,17 @@ READ_GUIDANCE = [
             "Read cursors advanced through the returned records; no message "
             "history was deleted."
         ),
+    }
+]
+
+MESSAGE_NOT_DELETED_GUIDANCE = [
+    {
+        "action": (
+            "Verify the full 19-digit message id and current author identity "
+            "before retrying."
+        ),
+        "code": "message_not_deleted",
+        "message": "No matching deletable own message was found.",
     }
 ]
 
@@ -123,6 +134,20 @@ def _assert_result(
             {},
         ),
         (
+            "show_message",
+            {"msg_id": "1234567890123456789"},
+            "show_message",
+            ("1234567890123456789",),
+            {},
+        ),
+        (
+            "delete_message",
+            {"msg_id": "1234567890123456789"},
+            "delete_message",
+            ("1234567890123456789",),
+            {},
+        ),
+        (
             "read",
             {"thread": None, "limit": 17},
             "read",
@@ -186,6 +211,19 @@ def test_each_ordinary_tool_is_a_thin_public_client_proxy(
     assert calls == [(method, positional, keywords)]
 
 
+def test_message_deletion_record_encoding_is_closed_and_content_free() -> None:
+    deletion = MessageDeletion(
+        thread="general",
+        ts=1_234_567_890_123_456_789,
+    )
+
+    assert record_object(deletion) == {
+        "deleted": True,
+        "thread": "general",
+        "ts": 1_234_567_890_123_456_789,
+    }
+
+
 @pytest.mark.sqlite_only
 @pytest.mark.timeout(15)
 def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
@@ -194,6 +232,11 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
     """[MCP-5]/[MCP-6] Every explicit ordinary tool has a real firing case."""
 
     workspace, token = _workspace_with_two_members(tmp_path)
+    other = TautClient(db_path=workspace / ".taut.db", as_name="other")
+    try:
+        other_owned = other.say("general", "not deletable by selected")
+    finally:
+        other.close()
 
     async def scenario() -> None:
         reactor = ConnectionReactor(asyncio.get_running_loop())
@@ -247,6 +290,57 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
             _assert_result(replied, record_type="message", workspace=canonical)
             assert replied["records"][0]["thread"] == f"general.{parent_ts}"
 
+            deletion_target = await reactor.execute_tool(
+                canonical,
+                "say",
+                {"target": "general", "text": "delete through MCP"},
+            )
+            deletion_ts = deletion_target["records"][0]["ts"]
+            deleted = await reactor.execute_tool(
+                canonical,
+                "delete_message",
+                {"msg_id": str(deletion_ts)},
+            )
+            _assert_result(deleted, record_type="deletion", workspace=canonical)
+            assert deleted["records"] == [
+                {
+                    "deleted": True,
+                    "thread": "general",
+                    "ts": deletion_ts,
+                }
+            ]
+
+            missing_show = await reactor.execute_tool(
+                canonical,
+                "show_message",
+                {"msg_id": "1234567890123456789"},
+            )
+            _assert_result(
+                missing_show,
+                record_type="message",
+                workspace=canonical,
+            )
+            assert missing_show["records"] == []
+
+            repeated_delete = await reactor.execute_tool(
+                canonical,
+                "delete_message",
+                {"msg_id": str(deletion_ts)},
+            )
+            _assert_result(
+                repeated_delete,
+                record_type="deletion",
+                workspace=canonical,
+                guidance=MESSAGE_NOT_DELETED_GUIDANCE,
+            )
+            assert repeated_delete["records"] == []
+            not_author = await reactor.execute_tool(
+                canonical,
+                "delete_message",
+                {"msg_id": str(other_owned.ts)},
+            )
+            assert not_author == repeated_delete
+
             unread = await reactor.execute_tool(
                 canonical,
                 "read",
@@ -260,6 +354,14 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
             )
             assert len(unread["records"]) == 1
             assert unread["records"][0]["text"] == "other joined"
+
+            shown = await reactor.execute_tool(
+                canonical,
+                "show_message",
+                {"msg_id": str(parent_ts)},
+            )
+            _assert_result(shown, record_type="message", workspace=canonical)
+            assert shown["records"] == [said["records"][0]]
 
             inbox = await reactor.execute_tool(
                 canonical,
@@ -339,6 +441,143 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
 
 @pytest.mark.sqlite_only
 @pytest.mark.timeout(15)
+def test_show_message_advances_exact_thread_high_water_without_show_guidance(
+    tmp_path: Path,
+) -> None:
+    workspace, token = _workspace_with_two_members(tmp_path)
+    db = workspace / ".taut.db"
+    selected = TautClient(db_path=db, token=token)
+    other = TautClient(db_path=db, as_name="other")
+    try:
+        selected.read("general", limit=1000)
+        older = other.say("general", "older unread")
+        target = other.say("general", "exact target")
+        later = other.say("general", "later unread")
+        selected_row = selected._state.get_member_by_token(token)
+        assert selected_row is not None
+        member_id = selected_row["member_id"]
+    finally:
+        selected.close()
+        other.close()
+
+    async def scenario() -> None:
+        reactor = ConnectionReactor(asyncio.get_running_loop())
+        observer = TautClient(db_path=db, token=token)
+        try:
+            canonical = str(
+                (await reactor.attach_workspace(str(workspace), token))["workspace"]
+            )
+            shown = await reactor.execute_tool(
+                canonical,
+                "show_message",
+                {"msg_id": str(target.ts)},
+            )
+            _assert_result(shown, record_type="message", workspace=canonical)
+            assert shown["records"][0]["text"] == "exact target"
+
+            membership = observer._state.get_membership(
+                thread="general",
+                member_id=member_id,
+            )
+            assert membership is not None
+            assert membership["last_seen_ts"] == target.ts
+            unread = await reactor.execute_tool(
+                canonical,
+                "read",
+                {"thread": "general", "limit": 100},
+            )
+            assert [record["ts"] for record in unread["records"]] == [later.ts]
+            assert older.ts < target.ts < later.ts
+        finally:
+            observer.close()
+            await reactor.aclose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(15)
+def test_delete_message_unrelated_dm_is_content_free_and_indistinguishable(
+    tmp_path: Path,
+) -> None:
+    workspace, token = _workspace_with_two_members(tmp_path)
+    db = workspace / ".taut.db"
+    other = TautClient(db_path=db, as_name="other")
+    third = TautClient(db_path=db, as_name="third")
+    try:
+        third.join("general")
+        secret = "private body must not cross MCP"
+        direct = other.say("@third", secret)
+    finally:
+        third.close()
+        other.close()
+
+    async def scenario() -> None:
+        reactor = ConnectionReactor(asyncio.get_running_loop())
+        try:
+            canonical = str(
+                (await reactor.attach_workspace(str(workspace), token))["workspace"]
+            )
+            ineligible = await reactor.execute_tool(
+                canonical,
+                "delete_message",
+                {"msg_id": str(direct.ts)},
+            )
+            author = TautClient(db_path=db, as_name="other")
+            try:
+                author.delete_message(str(direct.ts))
+            finally:
+                author.close()
+            missing = await reactor.execute_tool(
+                canonical,
+                "delete_message",
+                {"msg_id": str(direct.ts)},
+            )
+
+            assert ineligible == missing
+            _assert_result(
+                ineligible,
+                record_type="deletion",
+                workspace=canonical,
+                guidance=MESSAGE_NOT_DELETED_GUIDANCE,
+            )
+            encoded = json.dumps(ineligible, sort_keys=True)
+            for sensitive in (secret, direct.thread, "other", "third"):
+                assert sensitive not in encoded
+        finally:
+            await reactor.aclose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(15)
+def test_message_tools_reject_in_pattern_signed_int64_overflow(
+    tmp_path: Path,
+) -> None:
+    workspace, token = _workspace_with_two_members(tmp_path)
+
+    async def scenario() -> None:
+        reactor = ConnectionReactor(asyncio.get_running_loop())
+        try:
+            canonical = str(
+                (await reactor.attach_workspace(str(workspace), token))["workspace"]
+            )
+            for tool_name in ("show_message", "delete_message"):
+                with _tool_error("msg_id must be a full 19-digit message id"):
+                    await reactor.execute_tool(
+                        canonical,
+                        tool_name,
+                        {"msg_id": "9223372036854775808"},
+                    )
+        finally:
+            await reactor.aclose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(15)
 def test_same_workspace_rejects_overlap_while_another_workspace_progresses(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -386,6 +625,13 @@ def test_same_workspace_rejects_overlap_while_another_workspace_progresses(
 
             with _tool_error("workspace busy; retry after backoff"):
                 await reactor.execute_tool(slow, "who", {"thread": None})
+            for tool_name in ("show_message", "delete_message"):
+                with _tool_error("workspace busy; retry after backoff"):
+                    await reactor.execute_tool(
+                        slow,
+                        tool_name,
+                        {"msg_id": "1234567890123456789"},
+                    )
             with _tool_error("workspace busy; retry after backoff"):
                 await reactor.detach_workspace(slow)
 
@@ -845,6 +1091,8 @@ def test_every_tool_declares_a_closed_common_output_schema() -> None:
         "set_name": "member",
         "say": "message",
         "reply": "message",
+        "show_message": "message",
+        "delete_message": "deletion",
         "read": "message",
         "inbox": "notification",
         "log": "message",
@@ -864,6 +1112,79 @@ def test_every_tool_declares_a_closed_common_output_schema() -> None:
         )
         assert schema["properties"]["record_type"]["type"] == "string"
         assert schema["properties"]["records"]["items"]["additionalProperties"] is False
+
+    deletion_schema = next(
+        tool.outputSchema for tool in TOOLS if tool.name == "delete_message"
+    )
+    assert deletion_schema is not None
+    assert deletion_schema["properties"]["records"]["items"] == {
+        "additionalProperties": False,
+        "properties": {
+            "deleted": {
+                "const": True,
+                "description": "True for a successful physical deletion.",
+            },
+            "thread": {
+                "description": "Taut thread from which the message was deleted.",
+                "type": "string",
+            },
+            "ts": {
+                "description": "Deleted Taut message timestamp/id.",
+                "type": "integer",
+            },
+        },
+        "required": ["thread", "ts", "deleted"],
+        "type": "object",
+    }
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "123456789012345678",
+        "12345678901234567890",
+        " 1234567890123456789",
+        "+1234567890123456789",
+        1_234_567_890_123_456_789,
+        True,
+        None,
+    ],
+)
+@pytest.mark.parametrize("tool_name", ["show_message", "delete_message"])
+def test_exact_message_tool_schemas_reject_non_exact_string_ids(
+    tool_name: str,
+    invalid: object,
+) -> None:
+    tool = next(tool for tool in TOOLS if tool.name == tool_name)
+
+    with pytest.raises(ValidationError):
+        validate(
+            instance={"workspace": "/workspace", "msg_id": invalid},
+            schema=tool.inputSchema,
+        )
+
+
+@pytest.mark.parametrize("tool_name", ["show_message", "delete_message"])
+def test_exact_message_tool_manifest_contract(tool_name: str) -> None:
+    tool = next(tool for tool in TOOLS if tool.name == tool_name)
+
+    assert tool.inputSchema["required"] == ["workspace", "msg_id"]
+    assert tool.inputSchema["properties"]["msg_id"] == {
+        "description": (
+            "Exact native Taut message id as a 19-digit decimal string. "
+            "Preserve it as text; suffixes, whitespace, signs, and numeric JSON "
+            "values are invalid."
+        ),
+        "pattern": r"^[0-9]{19}$",
+        "type": "string",
+    }
+    assert tool.annotations is not None
+    assert tool.annotations.model_dump(mode="json", exclude_none=True) == {
+        "destructiveHint": True,
+        "idempotentHint": False,
+        "openWorldHint": True,
+        "readOnlyHint": False,
+    }
 
 
 def test_exact_tool_manifest_snapshot() -> None:
@@ -890,7 +1211,7 @@ def test_exact_tool_manifest_snapshot() -> None:
         separators=(",", ":"),
     ).encode()
     assert hashlib.sha256(encoded).hexdigest() == (
-        "98763d26f8a42d7ae65b8b96c1f8b554f90a9e5f6a84f3336061cdee438faa12"
+        "41679e6c4dc9dbb3d39795a36d1497a39e30684280e89367929bdd67a87d466c"
     )
 
     def assert_property_descriptions(schema: dict[str, object]) -> None:

@@ -1,15 +1,15 @@
-"""Explicit public-API dispatch for the twelve CLI-shaped MCP tools."""
+"""Explicit public-API dispatch for the fourteen CLI-shaped MCP tools."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import TypeAlias
 
-from taut import Member, Message, Notification, TautClient, Thread
+from taut import Member, Message, MessageDeletion, Notification, TautClient, Thread
 
 CommandScalar: TypeAlias = str | int | bool | None
 CommandArguments: TypeAlias = tuple[tuple[str, CommandScalar], ...]
-CommandRecord: TypeAlias = Message | Notification | Member | Thread
+CommandRecord: TypeAlias = Message | MessageDeletion | Notification | Member | Thread
 
 RECORD_TYPE_BY_TOOL = {
     "join": "message",
@@ -17,6 +17,8 @@ RECORD_TYPE_BY_TOOL = {
     "set_name": "member",
     "say": "message",
     "reply": "message",
+    "show_message": "message",
+    "delete_message": "deletion",
     "read": "message",
     "inbox": "notification",
     "log": "message",
@@ -88,6 +90,10 @@ def execute_command(
                 _required_string(arguments, "text"),
             ),
         )
+    elif name == "show_message":
+        records = (client.show_message(_required_string(arguments, "msg_id")),)
+    elif name == "delete_message":
+        records = (client.delete_message(_required_string(arguments, "msg_id")),)
     elif name == "read":
         records = tuple(
             client.read(
@@ -140,6 +146,12 @@ def record_object(record: CommandRecord) -> dict[str, object]:
             "from_id": record.from_id,
             "kind": record.kind,
             "text": record.text,
+            "thread": record.thread,
+            "ts": record.ts,
+        }
+    if isinstance(record, MessageDeletion):
+        return {
+            "deleted": record.deleted,
             "thread": record.thread,
             "ts": record.ts,
         }

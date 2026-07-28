@@ -35,7 +35,7 @@ from ._base import (
 )
 from ._identity import IdentityMixin
 from ._messaging import MessagingMixin
-from ._models import InitResult, Member, Message, Notification, Thread
+from ._models import InitResult, Member, Message, MessageDeletion, Notification, Thread
 from ._notifications import NotificationsMixin
 from ._threads import ThreadsMixin
 
@@ -65,6 +65,7 @@ __all__ = [
     "InitResult",
     "Member",
     "Message",
+    "MessageDeletion",
     "Notification",
     "TautClient",
     "Thread",

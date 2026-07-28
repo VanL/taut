@@ -4,6 +4,7 @@ import json
 import threading
 from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 import pytest
 from simplebroker import BrokerTarget, Queue, open_broker, resolve_broker_target
@@ -26,7 +27,7 @@ from taut._exceptions import (
     ThreadNameError,
     TokenError,
 )
-from taut.client import Message, TautClient
+from taut.client import Message, MessageDeletion, TautClient
 from taut.commands._rendering import format_unread_count
 from taut.envelope import encode_envelope
 from taut.state import SQLITE_SQL_DIALECT, MembershipRow, SqlSidecarTautState
@@ -151,6 +152,970 @@ def test_client_can_ignore_ambient_identity_for_explicit_token(
 
     assert isolated.whoami().member_id == selected_member.member_id
     assert isolated.whoami().member_id != ambient_member.member_id
+
+
+def test_show_message_returns_exact_row_and_advances_high_water_cursor(
+    tmp_path: Path,
+) -> None:
+    reader = client(tmp_path, "reader")
+    reader.join("general")
+    writer = existing_client(tmp_path, "writer")
+    writer.join("general")
+    reader.read("general")
+    earlier = writer.say("general", "earlier unread")
+    target = writer.say("general", "exact target")
+    later = writer.say("general", "later unread")
+
+    shown = reader.show_message(str(target.ts))
+
+    assert shown == target
+    membership = reader._state.get_membership(
+        thread="general",
+        member_id=reader.whoami().member_id,
+    )
+    assert membership is not None
+    assert membership["last_seen_ts"] == target.ts
+    assert [message.ts for message in reader.read("general")] == [later.ts]
+    assert reader.queue("general").peek_one(exact_timestamp=earlier.ts) is not None
+    assert reader.queue("general").peek_one(exact_timestamp=target.ts) is not None
+
+
+def test_delete_message_removes_only_owned_exact_row_and_returns_receipt(
+    tmp_path: Path,
+) -> None:
+    van = client(tmp_path, "van")
+    van.join("general")
+    before = van.say("general", "before")
+    target = van.say("general", "delete me")
+    after = van.say("general", "after")
+
+    deleted = van.delete_message(str(target.ts))
+
+    assert deleted == MessageDeletion(
+        thread="general",
+        ts=target.ts,
+        deleted=True,
+    )
+    queue = van.queue("general")
+    assert queue.peek_one(exact_timestamp=before.ts) is not None
+    assert queue.peek_one(exact_timestamp=target.ts) is None
+    assert queue.peek_one(exact_timestamp=after.ts) is not None
+    with pytest.raises(
+        NotFoundError,
+        match=rf"^message not found or not deletable: {target.ts}$",
+    ):
+        van.delete_message(str(target.ts))
+
+
+@pytest.mark.parametrize("method_name", ["show_message", "delete_message"])
+@pytest.mark.parametrize(
+    ("value", "exception", "message"),
+    [
+        (None, TypeError, "msg_id must be a string"),
+        (True, TypeError, "msg_id must be a string"),
+        (1234567890123456789, TypeError, "msg_id must be a string"),
+        ("1234", ValueError, "msg_id must be a full 19-digit message id"),
+        ("123456789012345678", ValueError, "msg_id must be a full 19-digit message id"),
+        (
+            "12345678901234567890",
+            ValueError,
+            "msg_id must be a full 19-digit message id",
+        ),
+        (
+            "123456789012345678x",
+            ValueError,
+            "msg_id must be a full 19-digit message id",
+        ),
+        (
+            "+1234567890123456789",
+            ValueError,
+            "msg_id must be a full 19-digit message id",
+        ),
+        (
+            "-1234567890123456789",
+            ValueError,
+            "msg_id must be a full 19-digit message id",
+        ),
+        (
+            " 1234567890123456789",
+            ValueError,
+            "msg_id must be a full 19-digit message id",
+        ),
+        (
+            "١٢٣٤٥٦٧٨٩٠١٢٣٤٥٦٧٨٩",
+            ValueError,
+            "msg_id must be a full 19-digit message id",
+        ),
+        (
+            "9223372036854775808",
+            ValueError,
+            "msg_id must be a full 19-digit message id",
+        ),
+    ],
+)
+def test_message_operations_validate_exact_id_before_state_work(
+    tmp_path: Path,
+    method_name: str,
+    value: object,
+    exception: type[Exception],
+    message: str,
+) -> None:
+    van = client(tmp_path, "van")
+    before_threads = van._state.list_threads(include_internal=True)
+    before_members = van._state.list_members()
+
+    with pytest.raises(exception, match=rf"^{message}$"):
+        getattr(van, method_name)(value)
+
+    assert van._state.list_threads(include_internal=True) == before_threads
+    assert van._state.list_members() == before_members
+
+
+def test_show_message_is_limited_to_current_memberships(tmp_path: Path) -> None:
+    alice = client(tmp_path, "alice")
+    alice.join("general")
+    bob = existing_client(tmp_path, "bob")
+    bob.join("general")
+    outsider = existing_client(tmp_path, "outsider")
+    outsider.join("general")
+    direct = alice.say("@bob", "private to alice and bob")
+
+    with pytest.raises(
+        NotFoundError,
+        match=rf"^message not found: {direct.ts}$",
+    ):
+        outsider.show_message(str(direct.ts))
+
+
+def test_show_message_returns_participant_dm_and_advances_its_cursor(
+    tmp_path: Path,
+) -> None:
+    alice = client(tmp_path, "alice")
+    alice.join("general")
+    bob = existing_client(tmp_path, "bob")
+    bob.join("general")
+    direct = alice.say("@bob", "private to alice and bob")
+    bob_id = bob.whoami().member_id
+
+    assert bob.show_message(str(direct.ts)) == direct
+    membership = bob._state.get_membership(
+        thread=direct.thread,
+        member_id=bob_id,
+    )
+    assert membership is not None
+    assert membership["last_seen_ts"] == direct.ts
+    assert bob.queue(direct.thread).peek_one(exact_timestamp=direct.ts) is not None
+
+
+def test_show_message_does_not_implicitly_join_an_unjoined_subthread(
+    tmp_path: Path,
+) -> None:
+    alice = client(tmp_path, "alice")
+    alice.join("general")
+    bob = existing_client(tmp_path, "bob")
+    bob.join("general")
+    outsider = existing_client(tmp_path, "outsider")
+    outsider.join("general")
+    root = alice.say("general", "root")
+    reply = bob.reply("general", str(root.ts), "child message")
+    outsider_id = outsider.whoami().member_id
+
+    with pytest.raises(
+        NotFoundError,
+        match=rf"^message not found: {reply.ts}$",
+    ):
+        outsider.show_message(str(reply.ts))
+
+    assert (
+        outsider._state.get_membership(
+            thread=reply.thread,
+            member_id=outsider_id,
+        )
+        is None
+    )
+
+
+def test_show_message_skips_notification_and_dangling_memberships(
+    tmp_path: Path,
+) -> None:
+    viewer = client(tmp_path, "viewer")
+    viewer.join("general")
+    member = viewer.whoami()
+    body = encode_envelope(
+        from_id=member.member_id,
+        from_name=member.name,
+        kind="message",
+        text="must remain out of chat lookup",
+    )
+    notification_thread = addressing.notification_queue_name(member.member_id)
+    notification_ts = viewer.queue(notification_thread).write(body)
+    viewer._state.upsert_thread(
+        name=notification_thread,
+        kind="notification",
+        parent=None,
+        origin_ts=None,
+        created_by=member.member_id,
+        meta={},
+        created_ts=notification_ts,
+    )
+    viewer._state.add_membership(
+        thread=notification_thread,
+        member_id=member.member_id,
+        joined_ts=notification_ts,
+        last_seen_ts=0,
+    )
+    dangling_thread = "dangling"
+    dangling_ts = viewer.queue(dangling_thread).write(body)
+    viewer._state.add_membership(
+        thread=dangling_thread,
+        member_id=member.member_id,
+        joined_ts=dangling_ts,
+        last_seen_ts=0,
+    )
+
+    for timestamp in (notification_ts, dangling_ts):
+        with pytest.raises(
+            NotFoundError,
+            match=rf"^message not found: {timestamp}$",
+        ):
+            viewer.show_message(str(timestamp))
+
+
+def test_show_message_returns_notice_and_foreign_message_shapes(
+    tmp_path: Path,
+) -> None:
+    viewer = client(tmp_path, "viewer")
+    notice = viewer.join("general")
+    foreign_ts = viewer.queue("general").write("foreign body")
+
+    assert viewer.show_message(str(notice.ts)) == notice
+    foreign = viewer.show_message(str(foreign_ts))
+
+    assert foreign.thread == "general"
+    assert foreign.ts == foreign_ts
+    assert foreign.kind == "foreign"
+    assert foreign.text == "foreign body"
+
+
+def test_show_message_never_regresses_an_equal_or_later_cursor(
+    tmp_path: Path,
+) -> None:
+    reader = client(tmp_path, "reader")
+    reader.join("general")
+    writer = existing_client(tmp_path, "writer")
+    writer.join("general")
+    reader.read("general")
+    earlier = writer.say("general", "earlier")
+    later = writer.say("general", "later")
+    reader_id = reader.whoami().member_id
+    reader._state.advance_cursor(
+        thread="general",
+        member_id=reader_id,
+        seen_ts=later.ts,
+    )
+
+    assert reader.show_message(str(earlier.ts)) == earlier
+    assert reader.show_message(str(later.ts)) == later
+    membership = reader._state.get_membership(
+        thread="general",
+        member_id=reader_id,
+    )
+    assert membership is not None
+    assert membership["last_seen_ts"] == later.ts
+
+
+def test_show_message_cursor_failure_emits_no_result_and_preserves_row(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    author = client(tmp_path, "author")
+    author.join("general")
+    reader = existing_client(tmp_path, "reader")
+    reader.join("general")
+    target = author.say("general", "cursor write must succeed first")
+    reader_id = reader.whoami().member_id
+    before = reader._state.get_membership(
+        thread="general",
+        member_id=reader_id,
+    )
+    assert before is not None
+
+    def fail_cursor_write(
+        _state: SqlSidecarTautState,
+        *,
+        thread: str,
+        member_id: str,
+        seen_ts: int,
+    ) -> None:
+        raise RuntimeError("injected cursor failure")
+
+    monkeypatch.setattr(SqlSidecarTautState, "advance_cursor", fail_cursor_write)
+
+    with pytest.raises(RuntimeError, match="injected cursor failure"):
+        reader.show_message(str(target.ts))
+
+    assert reader.queue("general").peek_one(exact_timestamp=target.ts) is not None
+    assert (
+        reader._state.get_membership(
+            thread="general",
+            member_id=reader_id,
+        )
+        == before
+    )
+
+
+def test_show_message_scans_candidates_once_and_stops_at_match(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    viewer = client(tmp_path, "viewer")
+    viewer.join("one")
+    viewer.join("two")
+    member_id = viewer.whoami().member_id
+    candidate_order = [
+        row["thread"] for row in viewer._state.list_memberships(member_id)
+    ]
+    target_thread = candidate_order[0]
+    target = viewer.say(target_thread, "first candidate owns target")
+    calls: list[str] = []
+    found = False
+    real_peek = Queue.peek_one
+
+    def track_peek(queue: Queue, *args: object, **kwargs: object) -> object:
+        nonlocal found
+        if found:
+            raise AssertionError("locator continued after its first exact match")
+        calls.append(queue.name)
+        result = real_peek(queue, *args, **kwargs)
+        if result is not None:
+            found = True
+        return result
+
+    monkeypatch.setattr(Queue, "peek_one", track_peek)
+
+    assert viewer.show_message(str(target.ts)) == target
+    assert calls == candidate_order[: calls.index(target_thread) + 1]
+    assert len(calls) == len(set(calls))
+
+
+def test_delete_message_is_author_only(tmp_path: Path) -> None:
+    alice = client(tmp_path, "alice")
+    alice.join("general")
+    bob = existing_client(tmp_path, "bob")
+    bob.join("general")
+    target = bob.say("general", "bob owns this")
+
+    with pytest.raises(
+        NotFoundError,
+        match=rf"^message not found or not deletable: {target.ts}$",
+    ):
+        alice.delete_message(str(target.ts))
+
+    assert alice.queue("general").peek_one(exact_timestamp=target.ts) is not None
+    assert bob.delete_message(str(target.ts)).ts == target.ts
+
+
+def test_unrelated_dm_delete_error_does_not_reveal_target_details(
+    tmp_path: Path,
+) -> None:
+    alice = client(tmp_path, "alice")
+    alice.join("general")
+    bob = existing_client(tmp_path, "bob")
+    bob.join("general")
+    outsider = existing_client(tmp_path, "outsider")
+    outsider.join("general")
+    secret = "private body that must not leak"
+    direct = alice.say("@bob", secret)
+
+    with pytest.raises(NotFoundError) as ineligible:
+        outsider.delete_message(str(direct.ts))
+    alice.delete_message(str(direct.ts))
+    with pytest.raises(NotFoundError) as missing:
+        outsider.delete_message(str(direct.ts))
+
+    expected = f"message not found or not deletable: {direct.ts}"
+    assert str(ineligible.value) == expected
+    assert str(missing.value) == expected
+    for sensitive in (secret, direct.thread, "alice", "bob"):
+        assert sensitive not in str(ineligible.value)
+
+
+def test_delete_message_allows_author_after_leaving_channel(tmp_path: Path) -> None:
+    van = client(tmp_path, "van")
+    van.join("general")
+    target = van.say("general", "delete after departure")
+    member_id = van.whoami().member_id
+    van.leave("general")
+    assert van._state.get_membership(thread="general", member_id=member_id) is None
+
+    with pytest.raises(
+        NotFoundError,
+        match=rf"^message not found: {target.ts}$",
+    ):
+        van.show_message(str(target.ts))
+    deletion = van.delete_message(str(target.ts))
+
+    assert deletion == MessageDeletion(thread="general", ts=target.ts)
+    assert van.queue("general").peek_one(exact_timestamp=target.ts) is None
+
+
+def test_delete_message_allows_author_after_leaving_subthread(tmp_path: Path) -> None:
+    van = client(tmp_path, "van")
+    van.join("general")
+    root = van.say("general", "root")
+    target = van.reply("general", str(root.ts), "delete after child departure")
+    member_id = van.whoami().member_id
+    van.leave(target.thread)
+    assert (
+        van._state.get_membership(
+            thread=target.thread,
+            member_id=member_id,
+        )
+        is None
+    )
+
+    assert van.delete_message(str(target.ts)) == MessageDeletion(
+        thread=target.thread,
+        ts=target.ts,
+    )
+    assert (
+        van._state.get_membership(
+            thread=target.thread,
+            member_id=member_id,
+        )
+        is None
+    )
+
+
+def test_delete_message_rejects_notice_and_foreign_rows(tmp_path: Path) -> None:
+    van = client(tmp_path, "van")
+    notice = van.join("general")
+    queue = van.queue("general")
+    foreign_ts = queue.write("foreign body")
+
+    for timestamp in (notice.ts, foreign_ts):
+        with pytest.raises(
+            NotFoundError,
+            match=rf"^message not found or not deletable: {timestamp}$",
+        ):
+            van.delete_message(str(timestamp))
+        assert queue.peek_one(exact_timestamp=timestamp) is not None
+
+
+def test_delete_message_always_passes_one_non_null_exact_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    van = client(tmp_path, "van")
+    van.join("general")
+    target = van.say("general", "never purge the queue")
+    message_ids: list[int | str | None] = []
+    real_delete = Queue.delete
+
+    def track_delete(
+        queue: Queue,
+        *,
+        message_id: int | str | None = None,
+    ) -> bool:
+        message_ids.append(message_id)
+        return real_delete(queue, message_id=message_id)
+
+    monkeypatch.setattr(Queue, "delete", track_delete)
+
+    assert van.delete_message(str(target.ts)).ts == target.ts
+    assert message_ids == [target.ts]
+
+
+def test_delete_message_skips_notification_and_unregistered_queues(
+    tmp_path: Path,
+) -> None:
+    van = client(tmp_path, "van")
+    van.join("general")
+    member = van.whoami()
+    body = encode_envelope(
+        from_id=member.member_id,
+        from_name=member.name,
+        kind="message",
+        text="not registered chat history",
+    )
+    notification_thread = addressing.notification_queue_name(member.member_id)
+    notification_ts = van.queue(notification_thread).write(body)
+    van._state.upsert_thread(
+        name=notification_thread,
+        kind="notification",
+        parent=None,
+        origin_ts=None,
+        created_by=member.member_id,
+        meta={},
+        created_ts=notification_ts,
+    )
+    unregistered_ts = van.queue("unregistered").write(body)
+
+    for timestamp in (notification_ts, unregistered_ts):
+        with pytest.raises(
+            NotFoundError,
+            match=rf"^message not found or not deletable: {timestamp}$",
+        ):
+            van.delete_message(str(timestamp))
+
+    assert (
+        van.queue(notification_thread).peek_one(exact_timestamp=notification_ts)
+        is not None
+    )
+    assert (
+        van.queue("unregistered").peek_one(exact_timestamp=unregistered_ts) is not None
+    )
+
+
+def test_deleted_cursor_target_leaves_later_reads_working(tmp_path: Path) -> None:
+    reader = client(tmp_path, "reader")
+    reader.join("general")
+    author = existing_client(tmp_path, "author")
+    author.join("general")
+    reader.read("general")
+    target = author.say("general", "cursor target")
+    assert reader.show_message(str(target.ts)) == target
+
+    author.delete_message(str(target.ts))
+    later = author.say("general", "after the deleted cursor gap")
+
+    assert [message.ts for message in reader.read("general")] == [later.ts]
+
+
+@pytest.mark.parametrize("target_position", ["below", "at", "above"])
+def test_delete_message_never_changes_other_member_cursor(
+    tmp_path: Path,
+    target_position: str,
+) -> None:
+    reader = client(tmp_path, "reader")
+    reader.join("general")
+    author = existing_client(tmp_path, "author")
+    author.join("general")
+    reader.read("general")
+    below = author.say("general", "below cursor")
+    at = author.say("general", "cursor target")
+    above = author.say("general", "above cursor")
+    reader_id = reader.whoami().member_id
+    reader._state.advance_cursor(
+        thread="general",
+        member_id=reader_id,
+        seen_ts=at.ts,
+    )
+
+    target = {"below": below, "at": at, "above": above}[target_position]
+    author.delete_message(str(target.ts))
+
+    membership = reader._state.get_membership(
+        thread="general",
+        member_id=reader_id,
+    )
+    assert membership is not None
+    assert membership["last_seen_ts"] == at.ts
+
+
+def test_delete_newest_message_recomputes_list_metadata_from_survivors(
+    tmp_path: Path,
+) -> None:
+    reader = client(tmp_path, "reader")
+    reader.join("general")
+    author = existing_client(tmp_path, "author")
+    author.join("general")
+    reader.read("general")
+    survivor = author.say("general", "survives")
+    newest = author.say("general", "deleted newest")
+    before = next(
+        thread for thread in reader.list_threads() if thread.name == "general"
+    )
+    assert before.last_ts == newest.ts
+
+    author.delete_message(str(newest.ts))
+
+    after = next(thread for thread in reader.list_threads() if thread.name == "general")
+    assert after.last_ts == survivor.ts
+    assert after.unread
+
+
+def test_concurrent_list_delete_staleness_converges_on_next_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reader = client(tmp_path, "reader")
+    reader.join("general")
+    author = existing_client(tmp_path, "author")
+    author.join("general")
+    reader.read("general")
+    survivor = author.say("general", "survives")
+    newest = author.say("general", "deleted during list")
+    real_latest = Queue.latest_pending_timestamp
+    deleted = False
+
+    def latest_then_delete(queue: Queue) -> int | None:
+        nonlocal deleted
+        result = real_latest(queue)
+        if queue.name == "general" and not deleted:
+            deleted = True
+            author.delete_message(str(newest.ts))
+        return result
+
+    monkeypatch.setattr(Queue, "latest_pending_timestamp", latest_then_delete)
+
+    raced = next(thread for thread in reader.list_threads() if thread.name == "general")
+    assert raced.last_ts == newest.ts
+    converged = next(
+        thread for thread in reader.list_threads() if thread.name == "general"
+    )
+    assert converged.last_ts == survivor.ts
+
+
+def test_claimed_before_lookup_is_invisible_to_show_and_delete(
+    tmp_path: Path,
+) -> None:
+    van = client(tmp_path, "van")
+    van.join("general")
+    target = van.say("general", "claimed before lookup")
+    queue = van.queue("general")
+    claimed = queue.read_one(exact_timestamp=target.ts, with_timestamps=True)
+    assert claimed is not None
+
+    with pytest.raises(
+        NotFoundError,
+        match=rf"^message not found: {target.ts}$",
+    ):
+        van.show_message(str(target.ts))
+    with pytest.raises(
+        NotFoundError,
+        match=rf"^message not found or not deletable: {target.ts}$",
+    ):
+        van.delete_message(str(target.ts))
+
+    assert (
+        queue.peek_one(
+            exact_timestamp=target.ts,
+            with_timestamps=True,
+            include_claimed=True,
+        )
+        == claimed
+    )
+
+
+def test_delete_message_physically_deletes_row_claimed_after_lookup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    van = client(tmp_path, "van")
+    van.join("general")
+    target = van.say("general", "claim between locate and delete")
+    claimer = van.queue("general")
+    real_delete = Queue.delete
+    claims: list[tuple[str, int] | None] = []
+
+    def delete_after_claim(
+        queue: Queue,
+        *,
+        message_id: int | str | None = None,
+    ) -> bool:
+        if queue.name == "general" and message_id == target.ts and not claims:
+            claimed = claimer.read_one(
+                exact_timestamp=target.ts,
+                with_timestamps=True,
+            )
+            claims.append(cast(tuple[str, int] | None, claimed))
+        return real_delete(queue, message_id=message_id)
+
+    monkeypatch.setattr(Queue, "delete", delete_after_claim)
+
+    deletion = van.delete_message(str(target.ts))
+
+    assert deletion == MessageDeletion(thread="general", ts=target.ts)
+    assert claims and claims[0] is not None
+    assert claims[0][1] == target.ts
+    assert (
+        claimer.peek_one(
+            exact_timestamp=target.ts,
+            include_claimed=True,
+        )
+        is None
+    )
+
+
+def test_concurrent_delete_message_has_exactly_one_winner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = client(tmp_path, "van")
+    first.join("general")
+    target = first.say("general", "one winner")
+    second = existing_client(tmp_path, "van")
+    delete_barrier = threading.Barrier(2, timeout=3.0)
+    real_delete = Queue.delete
+
+    def synchronized_delete(
+        queue: Queue,
+        *,
+        message_id: int | str | None = None,
+    ) -> bool:
+        if queue.name == "general" and message_id == target.ts:
+            delete_barrier.wait()
+        return real_delete(queue, message_id=message_id)
+
+    monkeypatch.setattr(Queue, "delete", synchronized_delete)
+    outcomes: list[MessageDeletion | BaseException | None] = [None, None]
+
+    def delete(index: int, actor: TautClient) -> None:
+        try:
+            outcomes[index] = actor.delete_message(str(target.ts))
+        except BaseException as exc:  # pragma: no cover - asserted below
+            outcomes[index] = exc
+
+    workers = [
+        threading.Thread(target=delete, args=(0, first)),
+        threading.Thread(target=delete, args=(1, second)),
+    ]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=5.0)
+
+    assert not any(worker.is_alive() for worker in workers)
+    receipts = [item for item in outcomes if isinstance(item, MessageDeletion)]
+    errors = [item for item in outcomes if isinstance(item, BaseException)]
+    assert receipts == [MessageDeletion(thread="general", ts=target.ts)]
+    assert len(errors) == 1
+    assert isinstance(errors[0], NotFoundError)
+    assert str(errors[0]) == f"message not found or not deletable: {target.ts}"
+
+
+def test_show_message_may_return_after_concurrent_delete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    author = client(tmp_path, "author")
+    author.join("general")
+    reader = existing_client(tmp_path, "reader")
+    reader.join("general")
+    target = author.say("general", "delete after show lookup")
+    reader_id = reader.whoami().member_id
+    real_advance_cursor = SqlSidecarTautState.advance_cursor
+    deletions: list[MessageDeletion] = []
+
+    def advance_after_delete(
+        state: SqlSidecarTautState,
+        *,
+        thread: str,
+        member_id: str,
+        seen_ts: int,
+    ) -> None:
+        if (
+            state is reader._state
+            and thread == "general"
+            and member_id == reader_id
+            and seen_ts == target.ts
+            and not deletions
+        ):
+            deletions.append(author.delete_message(str(target.ts)))
+        real_advance_cursor(
+            state,
+            thread=thread,
+            member_id=member_id,
+            seen_ts=seen_ts,
+        )
+
+    monkeypatch.setattr(
+        SqlSidecarTautState,
+        "advance_cursor",
+        advance_after_delete,
+    )
+
+    shown = reader.show_message(str(target.ts))
+
+    assert shown == target
+    assert deletions == [MessageDeletion(thread="general", ts=target.ts)]
+    assert reader.queue("general").peek_one(exact_timestamp=target.ts) is None
+    membership = reader._state.get_membership(
+        thread="general",
+        member_id=reader_id,
+    )
+    assert membership is not None
+    assert membership["last_seen_ts"] == target.ts
+
+
+def test_show_message_may_return_after_concurrent_leave(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    author = client(tmp_path, "author")
+    author.join("general")
+    reader = existing_client(tmp_path, "reader")
+    reader.join("general")
+    target = author.say("general", "leave after show lookup")
+    reader_id = reader.whoami().member_id
+    real_advance_cursor = SqlSidecarTautState.advance_cursor
+    leave_notices: list[Message] = []
+
+    def advance_after_leave(
+        state: SqlSidecarTautState,
+        *,
+        thread: str,
+        member_id: str,
+        seen_ts: int,
+    ) -> None:
+        if (
+            state is reader._state
+            and thread == "general"
+            and member_id == reader_id
+            and seen_ts == target.ts
+            and not leave_notices
+        ):
+            leave_notices.append(reader.leave("general"))
+        real_advance_cursor(
+            state,
+            thread=thread,
+            member_id=member_id,
+            seen_ts=seen_ts,
+        )
+
+    monkeypatch.setattr(
+        SqlSidecarTautState,
+        "advance_cursor",
+        advance_after_leave,
+    )
+
+    shown = reader.show_message(str(target.ts))
+
+    assert shown == target
+    assert len(leave_notices) == 1
+    assert reader._state.get_membership(thread="general", member_id=reader_id) is None
+
+
+def test_deleting_only_dm_message_preserves_thread_for_reuse(
+    tmp_path: Path,
+) -> None:
+    van = client(tmp_path, "van")
+    van.join("general")
+    bob = existing_client(tmp_path, "bob")
+    bob.join("general")
+    first = van.say("@bob", "first and temporarily only")
+    van_id = van.whoami().member_id
+    bob_id = bob.whoami().member_id
+    first_notifications = bob.peek_inbox()
+    assert [(item.type, item.message_ts) for item in first_notifications] == [
+        ("dm_started", first.ts)
+    ]
+    thread_before = van._state.get_thread(first.thread)
+    memberships_before = {
+        member_id: van._state.get_membership(
+            thread=first.thread,
+            member_id=member_id,
+        )
+        for member_id in (van_id, bob_id)
+    }
+
+    van.delete_message(str(first.ts))
+    assert van._state.get_thread(first.thread) == thread_before
+    assert {
+        member_id: van._state.get_membership(
+            thread=first.thread,
+            member_id=member_id,
+        )
+        for member_id in (van_id, bob_id)
+    } == memberships_before
+    empty_dm = next(
+        thread
+        for thread in van.list_threads(all_threads=True)
+        if thread.name == first.thread
+    )
+    assert empty_dm.last_ts is None
+    assert not empty_dm.unread
+    second = van.say("@bob", "reuse the existing dm")
+
+    assert second.thread == first.thread
+    assert van._state.get_thread(first.thread) == thread_before
+    memberships_after = {
+        member_id: van._state.get_membership(
+            thread=first.thread,
+            member_id=member_id,
+        )
+        for member_id in (van_id, bob_id)
+    }
+    assert all(row is not None for row in memberships_after.values())
+    assert {
+        member_id: row["joined_ts"]
+        for member_id, row in memberships_after.items()
+        if row is not None
+    } == {
+        member_id: row["joined_ts"]
+        for member_id, row in memberships_before.items()
+        if row is not None
+    }
+    assert bob.peek_inbox() == first_notifications
+
+
+def test_deleting_origin_preserves_orphan_subthread_and_listing(
+    tmp_path: Path,
+) -> None:
+    van = client(tmp_path, "van")
+    van.join("general")
+    root = van.say("general", "root")
+    child_message = van.reply("general", str(root.ts), "child survives")
+
+    van.delete_message(str(root.ts))
+
+    child = next(
+        thread
+        for thread in van.list_threads(all_threads=True)
+        if thread.name == child_message.thread
+    )
+    assert child.kind == "subthread"
+    assert child.parent == "general"
+    assert child.last_ts == child_message.ts
+    assert van.log(child.name) == [child_message]
+    continued = van.say(child.name, "still usable")
+    assert continued.thread == child.name
+    with pytest.raises(
+        NotFoundError,
+        match=rf"^message not found: {root.ts}$",
+    ):
+        van.reply("general", str(root.ts), "cannot recreate origin")
+
+
+def test_deleting_mentioned_message_leaves_stale_notification_pointer(
+    tmp_path: Path,
+) -> None:
+    author = client(tmp_path, "author")
+    author.join("general")
+    recipient = existing_client(tmp_path, "recipient")
+    recipient.join("general")
+    source = author.say("general", "hello @recipient")
+    before = recipient.peek_inbox()
+    assert [(item.type, item.message_ts) for item in before] == [("mention", source.ts)]
+
+    author.delete_message(str(source.ts))
+
+    assert recipient.peek_inbox() == before
+    assert recipient.inbox() == before
+    with pytest.raises(
+        NotFoundError,
+        match=rf"^message not found: {source.ts}$",
+    ):
+        recipient.show_message(str(source.ts))
+
+
+def test_deleting_reply_leaves_stale_reply_notification_pointer(
+    tmp_path: Path,
+) -> None:
+    parent_author = client(tmp_path, "parent")
+    parent_author.join("general")
+    replier = existing_client(tmp_path, "replier")
+    replier.join("general")
+    root = parent_author.say("general", "root")
+    reply = replier.reply("general", str(root.ts), "answer")
+    before = parent_author.peek_inbox()
+    assert [(item.type, item.message_ts) for item in before] == [("reply", reply.ts)]
+
+    replier.delete_message(str(reply.ts))
+
+    assert parent_author.peek_inbox() == before
+    assert parent_author.inbox() == before
 
 
 def test_resolved_target_config_handoff_rejects_incomplete_or_conflicting_args(
@@ -1913,6 +2878,7 @@ def test_incomplete_channel_rename_blocks_chat_history_operations(
 ) -> None:
     van = client(tmp_path, "van")
     van.join("general")
+    target = van.say("general", "blocked exact operation")
     queue = Queue(META_QUEUE_NAME, db_path=str(tmp_path / ".taut.db"))
     try:
         state = SqlSidecarTautState(queue, SQLITE_SQL_DIALECT)
@@ -1929,6 +2895,10 @@ def test_incomplete_channel_rename_blocks_chat_history_operations(
 
     with pytest.raises(TautError, match="incomplete channel rename"):
         van.log("general")
+    with pytest.raises(TautError, match="incomplete channel rename"):
+        van.show_message(str(target.ts))
+    with pytest.raises(TautError, match="incomplete channel rename"):
+        van.delete_message(str(target.ts))
 
 
 def _start_rename_marker(

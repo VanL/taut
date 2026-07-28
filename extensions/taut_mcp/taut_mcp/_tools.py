@@ -45,6 +45,10 @@ READ_THREAD_DESCRIPTION = (
 LIMIT_DESCRIPTION = (
     "Maximum records requested from one queue, from 1 through 1,000 inclusive."
 )
+EXACT_MESSAGE_ID_DESCRIPTION = (
+    "Exact native Taut message id as a 19-digit decimal string. Preserve it as "
+    "text; suffixes, whitespace, signs, and numeric JSON values are invalid."
+)
 
 RECORD_TYPE_BY_TOOL = {
     "attach_workspace": "workspace",
@@ -55,6 +59,8 @@ RECORD_TYPE_BY_TOOL = {
     "set_name": "member",
     "say": "message",
     "reply": "message",
+    "show_message": "message",
+    "delete_message": "deletion",
     "read": "message",
     "inbox": "notification",
     "log": "message",
@@ -121,6 +127,25 @@ _RECORD_SCHEMAS: dict[str, dict[str, Any]] = {
             "ts": {"description": "Taut message timestamp/id.", "type": "integer"},
         },
         "required": ["from", "from_id", "kind", "text", "thread", "ts"],
+        "type": "object",
+    },
+    "deletion": {
+        "additionalProperties": False,
+        "properties": {
+            "deleted": {
+                "const": True,
+                "description": "True for a successful physical deletion.",
+            },
+            "thread": {
+                "description": "Taut thread from which the message was deleted.",
+                "type": "string",
+            },
+            "ts": {
+                "description": "Deleted Taut message timestamp/id.",
+                "type": "integer",
+            },
+        },
+        "required": ["thread", "ts", "deleted"],
         "type": "object",
     },
     "notification": {
@@ -358,6 +383,10 @@ def _annotations(
 _WORKSPACE = _string(WORKSPACE_DESCRIPTION)
 _CHANNEL = _string(CHANNEL_DESCRIPTION, pattern=CHANNEL_PATTERN)
 _CHAT = _string(CHAT_DESCRIPTION, pattern=CHAT_PATTERN)
+_EXACT_MESSAGE_ID = _string(
+    EXACT_MESSAGE_ID_DESCRIPTION,
+    pattern=r"^[0-9]{19}$",
+)
 _LIMIT_100 = {
     "default": 100,
     "description": LIMIT_DESCRIPTION + " Defaults to 100 per selected thread.",
@@ -504,6 +533,36 @@ TOOL_DEFINITIONS = (
         ),
     ),
     ToolDefinition(
+        "show_message",
+        "Return one exact full-id message from this member's current chat memberships, then advance that thread's high-water cursor through the returned id. This may mark unseen intervening history seen. It never joins a thread; use `log` for cursor-neutral known-channel or sub-thread inspection.",
+        {
+            "workspace": _WORKSPACE,
+            "msg_id": _EXACT_MESSAGE_ID,
+        },
+        ("workspace", "msg_id"),
+        _annotations(
+            read_only=False,
+            destructive=True,
+            idempotent=False,
+            open_world=True,
+        ),
+    ),
+    ToolDefinition(
+        "delete_message",
+        "Physically and irreversibly delete one exact ordinary message authored by this member, including after leaving its thread. It does not cascade to notifications, sub-threads, memberships, cursors, or thread registry state and is not recall.",
+        {
+            "workspace": _WORKSPACE,
+            "msg_id": _EXACT_MESSAGE_ID,
+        },
+        ("workspace", "msg_id"),
+        _annotations(
+            read_only=False,
+            destructive=True,
+            idempotent=False,
+            open_world=True,
+        ),
+    ),
+    ToolDefinition(
         "read",
         "Return oldest unread messages and advance each selected read cursor through its own returned page. No message history is deleted. Use `log` to inspect channel or sub-thread history without moving a cursor. Omit `thread` only for all joined threads, including direct messages; this may return up to `limit × N` rows, where `N` is the number of selected joined non-notification chat threads. Prefer an explicit channel or sub-thread when direct messages are not needed.",
         {
@@ -524,7 +583,7 @@ TOOL_DEFINITIONS = (
     ),
     ToolDefinition(
         "inbox",
-        "Claim and return notification pointers from this member's inbox. This consumes the pointers; source chat history remains.",
+        "Claim and return notification pointers from this member's inbox. This consumes the pointers; source chat history is not changed by inbox but may already be author-deleted.",
         {"workspace": _WORKSPACE, "limit": _LIMIT_1000},
         ("workspace",),
         _annotations(

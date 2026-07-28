@@ -714,6 +714,13 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   Do not poll a timeout-bound negative condition based on an “about to call”
   signal.
 
+- 2026-07-27: A durable pointer can outlive the record that made it
+  actionable. Before rendering a follow-up command from a notification or
+  index row, revalidate the source through a cursor-neutral exact lookup and
+  omit the action when it is gone. Do not reuse a stateful convenience API
+  whose read side effects would change the user's position merely to decide
+  what hint to print.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

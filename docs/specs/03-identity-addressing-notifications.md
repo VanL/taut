@@ -20,6 +20,8 @@ In scope:
 - mention and direct-message notifications
 - channel rename semantics across channel queues, sub-thread queues, and
   sidecar state
+- the DM, sub-thread, and notification consequences of core
+  exact-message deletion
 - verification expectations for the identity, addressing, and notification
   contracts
 
@@ -28,7 +30,8 @@ Out of scope:
 - authentication, authorization, signing, encryption, or proof of identity
 - per-device notification fanout
 - private channel permissions beyond the existing storage-access trust model
-- message deletion, editing, retention, archival, or history rewrite
+- message editing, retention, archival, bulk deletion, or history rewrite
+  beyond the exact core deletion contract in [TAUT-7.6]
 - opaque channel ids for normal channels
 - nested sub-threads beyond one level
 
@@ -335,7 +338,9 @@ Rules:
 - Mentions written into a direct-message queue notify only the two DM
   participants. Mentioning any other member in a DM produces no
   notification for them: a DM must not leak its existence, queue name, or
-  activity to non-participants.
+  activity to non-participants. Exact-message delete may scan registered DMs
+  to find the acting author's own row, but an ineligible lookup must expose no
+  body, participant, thread, or existence detail ([TAUT-7.6]).
 
 ## 6. Queue Namespace [IAN-6]
 
@@ -388,7 +393,12 @@ A sub-thread queue name is:
 ```
 
 `origin_message_id` is the 19-digit SimpleBroker timestamp of the parent
-message. Sub-threads of sub-threads are not supported.
+message. Sub-threads of sub-threads are not supported. The registry relation
+survives physical deletion of that origin message. The resulting child is a
+permanent, addressable orphan: existing members may continue to post with
+`say <child-thread>`, while a new root-based `reply` fails because the parent
+row no longer resolves. Taut neither cascades the deletion nor repairs or
+removes the child.
 
 ### [IAN-6.4] Direct-message queues
 
@@ -406,6 +416,12 @@ dm_id = "d_" + base32_lower(sha256("taut-dm\0" + min(member_id_a, member_id_b) +
 
 Both participants map to the same queue regardless of who starts the
 conversation or what either member is named later.
+
+Physical deletion of the first, newest, or only direct-message row does not
+remove the deterministic thread registry or either membership. An empty
+registered DM remains a valid conversation and appears under list-all with no
+surviving `last_ts`. Later contact reuses the same queue and does not emit a
+second `dm_started` notification.
 
 Human renderers should label a direct-message queue by the other participant's
 current display name when there are exactly two participants. JSON surfaces must
@@ -445,9 +461,12 @@ notification consumes it for that member.
 
 ### [IAN-7.1] Notification purpose
 
-A notification is a small pointer telling a member that a relevant chat event
-exists elsewhere. It is not the source of truth. The source message remains in
-the channel, sub-thread, or direct-message queue.
+A notification is a small durable pointer telling a member that a relevant
+chat event occurred elsewhere. It is not the source of truth or a copy of the
+source body. The source initially exists in the channel, sub-thread, or
+direct-message queue, but its author may later physically delete it under
+[TAUT-7.6]. The notification row survives unchanged and `message_ts` then
+becomes a stale pointer.
 
 ### [IAN-7.2] Notification payload
 
@@ -490,9 +509,9 @@ queue.
 
 Membership is observed after the reply commits and immediately before
 notification dispatch. A concurrent join may therefore leave one stale
-disposable pointer; it never loses or duplicates the durable reply, and later
-replies use the new membership state. After a later leave, reply pointers
-resume.
+disposable pointer; it never duplicates the reply, and later replies use the
+new membership state. The reply may later be author-deleted while the pointer
+survives. After a later leave, reply pointers resume.
 
 Notification payloads may add fields later. Consumers must ignore unknown
 fields and must not depend on notification text formatting.
@@ -514,8 +533,9 @@ message or rewrite history.
 
 Notification reads use claim/read broker APIs. Reading a notification removes
 it from the recipient's notification inbox. A failed notification renderer may
-lose that notification; the source chat message remains available through
-normal history.
+lose that notification. The source chat message normally remains available
+through history, but may already be absent because its author deleted it,
+another consumer claimed it, or broker/registry state diverged.
 
 This tradeoff is intentional. Notifications are wakeups and pointers, not
 durable chat history.
@@ -525,6 +545,18 @@ pointers without claiming them. Peek is observational and does not advance a
 notification or chat cursor, create or heal identity, touch activity, or
 acknowledge delivery. A later consuming read may therefore return the same
 notifications, while another consumer may remove them before the next peek.
+
+Notification rendering treats `message_ts` as a fallible pointer. A mention
+may advertise the shortest usable `taut reply` action only after a
+cursor-neutral public exact `peek_one()` confirms that the top-level source
+still exists and the recipient remains a member. The renderer must not call
+`show_message()`, because showing the source would advance the recipient's
+chat high-water cursor. If the source is absent, the pointer remains
+renderable and consumable, but the dead reply action is omitted. Reply and
+`dm_started` pointer rendering retains its type-specific thread/read action;
+source deletion never rewrites the notification row. MCP notification
+snapshots remain notification-derived and receive no resource update merely
+because a source message was deleted.
 
 ## 8. Channel Rename [IAN-8]
 
@@ -608,7 +640,16 @@ or report the interrupted rename.
 - Foreign writes into notification queues: Taut drops or reports malformed
   notification bodies after claiming them. It must not crash the inbox reader.
 - Notification claimed but not displayed: allowed. Notifications are
-  best-effort pointers; chat history remains the durable source.
+  best-effort pointers; source history is usually available but may have been
+  author-deleted.
+- Notification source deleted: the mention, reply, or `dm_started` pointer
+  remains byte-for-byte consumable. Human mention rendering omits a reply
+  action when its cursor-neutral exact source peek misses.
+- Reply origin deleted: the registered child thread and its history survive;
+  direct child addressing works and new root-based reply creation fails.
+- Sole direct-message row deleted: the deterministic registry and both
+  memberships survive; later contact reuses them without another
+  `dm_started`.
 - Channel with dot: rejected. Dots are structural.
 - Channel named `dm`, `notify`, `sys`, or `taut`: rejected.
 - Partial channel rename: must be recoverable or loudly reportable; silent
@@ -665,6 +706,16 @@ Required proofs:
   claims the same pointers under the existing contract
 - a second session for the same member can drain notifications; no per-device
   state exists
+- deleting a mention, reply, or first-DM source leaves its notification
+  pointer byte-for-byte intact and consumable; a deleted mention source emits
+  no dead reply action, and the renderer's exact source check advances no chat
+  cursor
+- deleting an origin message preserves the registered child, its membership,
+  history, rendering, and direct-child `say` behavior while new root-based
+  `reply` fails
+- deleting the first or only direct-message row preserves its deterministic
+  registry and both memberships, list-all renders the empty DM, and later
+  contact emits no second `dm_started`
 - channels cannot contain dots or use reserved special names
 - unregistered broker queues remain invisible
 - channel rename, when enabled by a public SimpleBroker rename API, renames the
@@ -672,6 +723,9 @@ Required proofs:
 
 ## Related Plans
 
+- `docs/plans/2026-07-27-message-show-delete-plan.md` — author-owned physical
+  deletion, orphaned subthreads, stable empty DMs, stale notification pointers,
+  and cursor-neutral notification rendering.
 - `docs/plans/2026-07-14-taut-mcp-extension-plan.md` — read-only notification
   peek plus the optional MCP resource and consuming-inbox split.
 - `docs/plans/2026-07-14-blank-message-no-op-plan.md` — ensures filtered

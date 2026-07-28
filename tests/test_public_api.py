@@ -22,6 +22,7 @@ EXPECTED_PUBLIC_EXPORTS = [
     "Member",
     "MembershipError",
     "Message",
+    "MessageDeletion",
     "NotInitializedError",
     "NotFoundError",
     "Notification",
@@ -42,6 +43,7 @@ def _typed_public_surface(
     watcher: taut.TautWatcher,
     member: taut.Member,
     message: taut.Message,
+    deletion: taut.MessageDeletion,
     notification: taut.Notification,
     thread: taut.Thread,
 ) -> tuple[
@@ -49,10 +51,11 @@ def _typed_public_surface(
     taut.TautWatcher,
     taut.Member,
     taut.Message,
+    taut.MessageDeletion,
     taut.Notification,
     taut.Thread,
 ]:
-    return client, watcher, member, message, notification, thread
+    return client, watcher, member, message, deletion, notification, thread
 
 
 def test_exception_leaves_are_public_exports() -> None:
@@ -66,6 +69,8 @@ def test_exception_leaves_are_public_exports() -> None:
     assert "TautWatcher" in taut.__all__
     assert taut.Notification.__name__ == "Notification"
     assert "Notification" in taut.__all__
+    assert taut.MessageDeletion.__name__ == "MessageDeletion"
+    assert "MessageDeletion" in taut.__all__
 
 
 def test_lazy_public_exports_cache_and_unknown_names_fail_normally() -> None:
@@ -114,12 +119,20 @@ def test_client_environment_identity_inheritance_is_keyword_only_and_defaulted()
 
 
 def test_lazy_exports_are_the_owning_module_objects() -> None:
-    from taut.client import Member, Message, Notification, TautClient, Thread
+    from taut.client import (
+        Member,
+        Message,
+        MessageDeletion,
+        Notification,
+        TautClient,
+        Thread,
+    )
     from taut.terminal import escape_terminal_text
     from taut.watcher import TautWatcher
 
     assert taut.Member is Member
     assert taut.Message is Message
+    assert taut.MessageDeletion is MessageDeletion
     assert taut.Notification is Notification
     assert taut.TautClient is TautClient
     assert taut.TautWatcher is TautWatcher

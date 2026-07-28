@@ -24,7 +24,7 @@ EXTENSION_ROOT = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = EXTENSION_ROOT.parents[1]
 NOTIFICATIONS_URL = AnyUrl("taut://notifications/current")
 EXPECTED_INSTRUCTIONS_SHA256 = (
-    "5fb1d070c06849e503bdcbd1990d7a16f777fc3bf100154b10e636263e5ca1d1"
+    "1581eb81230969c6c485a8b47ce316b6258dba1f09afafc1325eb72e65b7839e"
 )
 
 EXPECTED_TOOLS = [
@@ -36,6 +36,8 @@ EXPECTED_TOOLS = [
     "set_name",
     "say",
     "reply",
+    "show_message",
+    "delete_message",
     "read",
     "inbox",
     "log",
@@ -90,6 +92,10 @@ async def _inspect_empty_server(
         "Do not timer-poll list, who, or whoami",
         "read with an explicit channel or sub-thread",
         "After an uncertain read, inspect list before retrying",
+        "Use show_message only when the exact 19-digit id is known",
+        "high-water cursor",
+        "Preserve returned 19-digit integer ts values as decimal text",
+        "Treat delete_message as blind-capable, physical, and irreversible",
         "After a canceled or timed-out attach",
     ):
         assert required_rule in initialized.instructions
@@ -800,6 +806,29 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                     assert invalid_read.content[0].text.startswith(
                         "Input validation error:"
                     )
+                for tool_name in ("show_message", "delete_message"):
+                    for invalid_id in (
+                        "123456789012345678",
+                        "12345678901234567890",
+                        1_234_567_890_123_456_789,
+                        True,
+                        None,
+                    ):
+                        invalid_exact = await session.call_tool(
+                            tool_name,
+                            {
+                                "workspace": canonical,
+                                "msg_id": invalid_id,
+                            },
+                        )
+                        assert invalid_exact.isError is True
+                        assert isinstance(
+                            invalid_exact.content[0],
+                            types.TextContent,
+                        )
+                        assert invalid_exact.content[0].text.startswith(
+                            "Input validation error:"
+                        )
                 joined = await call("join", {"thread": "work", "persona": None})
                 assert joined["records"][0]["kind"] == "notice"  # type: ignore[index]
                 await call("leave", {"thread": "work"})
@@ -823,8 +852,45 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                         "text": "stdio child",
                     },
                 )
+                deletion_target = await call(
+                    "say",
+                    {"target": "general", "text": "stdio delete"},
+                )
+                deletion_ts = deletion_target["records"][0]["ts"]  # type: ignore[index]
+                deleted = await call(
+                    "delete_message",
+                    {"msg_id": str(deletion_ts)},
+                )
+                assert deleted["record_type"] == "deletion"
+                assert deleted["records"] == [
+                    {
+                        "deleted": True,
+                        "thread": "general",
+                        "ts": deletion_ts,
+                    }
+                ]
+                repeated_delete = await call(
+                    "delete_message",
+                    {"msg_id": str(deletion_ts)},
+                )
+                assert repeated_delete["records"] == []
+                assert repeated_delete["guidance"] == [
+                    {
+                        "action": (
+                            "Verify the full 19-digit message id and current author "
+                            "identity before retrying."
+                        ),
+                        "code": "message_not_deleted",
+                        "message": "No matching deletable own message was found.",
+                    }
+                ]
                 unread = await call("read", {"thread": "general", "limit": 1})
                 assert unread["guidance"][0]["code"] == "read_cursor_advanced"  # type: ignore[index]
+                shown = await call(
+                    "show_message",
+                    {"msg_id": str(parent_ts)},
+                )
+                assert shown["records"][0] == said["records"][0]  # type: ignore[index]
                 claimed = await call("inbox", {"limit": 1000})
                 assert claimed["records"][0]["type"] == "mention"  # type: ignore[index]
                 current = await session.read_resource(NOTIFICATIONS_URL)
@@ -1225,7 +1291,7 @@ from taut_mcp import _connection_reactor
 def two_request_bucket(self):
     count = getattr(self, "_test_charge_count", 0) + 1
     self._test_charge_count = count
-    if count > 1:
+    if count > 2:
         raise _connection_reactor.WorkspaceToolError(
             _connection_reactor.RATE_LIMIT_EXCEEDED
         )
@@ -1257,7 +1323,26 @@ main([])
 
                 first_charged = await session.call_tool("list_workspaces", {})
                 assert first_charged.isError is False
-                limited_tool = await session.call_tool("list_workspaces", {})
+                missing_workspace = await session.call_tool(
+                    "show_message",
+                    {
+                        "workspace": "/not-attached",
+                        "msg_id": "1234567890123456789",
+                    },
+                )
+                assert missing_workspace.isError is True
+                assert isinstance(missing_workspace.content[0], types.TextContent)
+                assert missing_workspace.content[0].text == (
+                    "workspace not attached; use list_workspaces and the exact "
+                    "canonical identifier"
+                )
+                limited_tool = await session.call_tool(
+                    "delete_message",
+                    {
+                        "workspace": "/not-attached",
+                        "msg_id": "1234567890123456789",
+                    },
+                )
                 assert limited_tool.isError is True
                 assert isinstance(limited_tool.content[0], types.TextContent)
                 assert limited_tool.content[0].text == (

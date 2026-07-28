@@ -21,6 +21,7 @@ if TYPE_CHECKING:
         InitResult,
         Member,
         Message,
+        MessageDeletion,
         Notification,
         TautClient,
         Thread,
@@ -173,6 +174,26 @@ def emit_messages(
                     stream=stdout,
                 ),
             )
+
+
+def emit_message_deletion(
+    deletion: MessageDeletion,
+    *,
+    json_output: bool,
+    quiet: bool,
+    stdout: TextIO,
+) -> None:
+    """Render one successful exact-message deletion receipt."""
+
+    if quiet:
+        return
+    if json_output:
+        write_json(stdout, deletion_object(deletion))
+    else:
+        write_human_line(
+            stdout,
+            f"deleted message {deletion.ts} from {deletion.thread}",
+        )
 
 
 def emit_members(
@@ -345,6 +366,14 @@ def message_object(message: Message) -> dict[str, Any]:
     }
 
 
+def deletion_object(deletion: MessageDeletion) -> dict[str, Any]:
+    return {
+        "thread": deletion.thread,
+        "ts": deletion.ts,
+        "deleted": deletion.deleted,
+    }
+
+
 def member_object(member: Member, *, include_token: bool) -> dict[str, Any]:
     obj: dict[str, Any] = {
         "member_id": member.member_id,
@@ -504,6 +533,8 @@ def _mention_reply_id(
         return None
 
     full_id = str(message_ts)
+    if client.queue(thread).peek_one(exact_timestamp=message_ts) is None:
+        return None
     try:
         recent_ids = [str(message.ts) for message in client.log(thread, limit=1000)]
     except (EmptyResultError, NotFoundError):

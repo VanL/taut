@@ -456,6 +456,15 @@ def test_hidden_candidate_uses_the_normative_routing_matrix(
                 "workspace not attached; use list_workspaces and the exact canonical identifier"
             ):
                 await reactor.execute_tool(str(workspace), "whoami", {})
+            for tool_name in ("show_message", "delete_message"):
+                with _tool_error(
+                    "workspace not attached; use list_workspaces and the exact canonical identifier"
+                ):
+                    await reactor.execute_tool(
+                        str(workspace),
+                        tool_name,
+                        {"msg_id": "1234567890123456789"},
+                    )
             with _tool_error("workspace busy; retry after backoff"):
                 await reactor.attach_workspace(str(workspace), token)
             with _tool_error("workspace busy; retry after backoff"):

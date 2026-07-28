@@ -11,8 +11,8 @@ from taut.commands._rendering import emit_notifications
 class InboxCommand:
     def configure_parser(self, parser: CommandArgumentParser) -> None:
         parser.description = (
-            "Claim pending notification pointers. Source chat remains durable even "
-            "though claimed pointers are consumable."
+            "Claim pending notification pointers. Pointers are consumable and may "
+            "outlive an explicitly deleted source message."
         )
 
     def run(self, context: CommandContext, args: argparse.Namespace) -> int:

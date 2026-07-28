@@ -1887,6 +1887,63 @@ def test_taut_watcher_pending_history_waits_for_first_driven_turn(
         watcher.stop(join=False)
 
 
+def test_taut_watcher_skips_message_deleted_before_fetch(tmp_path: Path) -> None:
+    db_path = tmp_path / ".taut.db"
+    TautClient.init(db_path=db_path)
+    reader = TautClient(db_path=db_path, as_name="reader")
+    author = TautClient(db_path=db_path, as_name="author")
+    reader.join("foo")
+    author.join("foo")
+    _drain_unread(reader, "foo")
+    deleted = author.say("foo", "deleted before fetch")
+    author.delete_message(str(deleted.ts))
+    seen: list[int] = []
+    watcher = reader.watch(_record_message_timestamps(seen))
+    thread = watcher.start()
+    try:
+        _wait_until(thread.is_alive)
+
+        later = author.say("foo", "surviving later message")
+        _wait_until(lambda: later.ts in seen)
+        assert seen == [later.ts]
+    finally:
+        watcher.stop()
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+
+
+def test_taut_watcher_may_display_message_deleted_after_fetch(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / ".taut.db"
+    TautClient.init(db_path=db_path)
+    reader = TautClient(db_path=db_path, as_name="reader")
+    author = TautClient(db_path=db_path, as_name="author")
+    reader.join("foo")
+    author.join("foo")
+    _drain_unread(reader, "foo")
+    target = author.say("foo", "delete during delivery")
+    seen: list[int] = []
+
+    def record_then_delete(item: Message | Notification) -> None:
+        if isinstance(item, Message):
+            seen.append(item.ts)
+            if item.ts == target.ts:
+                author.delete_message(str(target.ts))
+
+    watcher = reader.watch(record_then_delete)
+    try:
+        watcher.process_once()
+        assert seen == [target.ts]
+        assert reader.queue("foo").peek_one(exact_timestamp=target.ts) is None
+        assert _thread_is_read(reader, "foo")
+
+        watcher.process_once()
+        assert seen == [target.ts]
+    finally:
+        watcher.stop(join=False)
+
+
 def test_taut_watcher_cursor_failure_replays_after_restart(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

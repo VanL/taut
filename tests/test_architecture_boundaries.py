@@ -124,6 +124,7 @@ class _RuntimeImportVisitor(ast.NodeVisitor):
                 "whoami",
                 "rejoin",
                 "set",
+                "message",
                 "read",
                 "inbox",
                 "log",

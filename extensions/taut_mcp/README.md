@@ -6,9 +6,19 @@ existing Taut workspaces with their existing continuity tokens. The process is
 not a daemon and retains no attachment state after disconnect.
 
 The version-1 surface is specified in `docs/specs/05-taut-mcp.md`. It exposes
-15 explicit tools plus the read-only `taut://notifications/current` resource.
+17 explicit tools plus the read-only `taut://notifications/current` resource.
 The resource reports notification pointers, not every unread chat message, and
 does not claim notifications or advance read cursors.
+
+After attaching a workspace, call `show_message` with its canonical
+`workspace` and the exact 19-digit `msg_id` to peek that message. The call
+advances the acting member's high-water seen cursor through the message; use
+`log` when inspection must be cursor-neutral. Call `delete_message` with the
+same inputs to delete an ordinary message authored by the acting member.
+Deletion is physical and irreversible, and it does not cascade to
+notifications, memberships, cursors, DM state, or sub-threads. Keep message
+ids as decimal strings in JavaScript clients because their integer values can
+exceed JavaScript's exact-number range.
 
 The repository has a GitHub-only release path for this package, but configuring
 that path does not publish a release. After the matching core tag and MCP wheel

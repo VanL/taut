@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Any, cast
 
 from simplebroker import Queue
@@ -24,10 +26,65 @@ from taut.state import MemberRow, MembershipRow
 
 from ._base import _ClientBase
 from ._codec import message_from_body
-from ._models import Message
+from ._models import Message, MessageDeletion
+
+
+@dataclass(frozen=True, slots=True)
+class _LocatedMessage:
+    queue: Queue
+    message: Message
 
 
 class MessagingMixin(_ClientBase):
+    def show_message(self, msg_id: str) -> Message:
+        """Peek one visible exact-id message and advance seen state through it."""
+
+        exact = _validate_exact_message_id(msg_id)
+        self._ensure_no_incomplete_channel_rename()
+        resolved = self._resolve_member(create=False)
+        member = self._require_member(resolved)
+        candidates: list[str] = []
+        for membership in self._state.list_memberships(member["member_id"]):
+            row = self._state.get_thread(membership["thread"])
+            if row is None or row["kind"] not in {"channel", "subthread", "dm"}:
+                continue
+            candidates.append(membership["thread"])
+        located = self._locate_exact_message(exact, candidates)
+        if located is None:
+            raise NotFoundError(f"message not found: {msg_id}")
+        self._state.advance_cursor(
+            thread=located.message.thread,
+            member_id=member["member_id"],
+            seen_ts=located.message.ts,
+        )
+        return located.message
+
+    def delete_message(self, msg_id: str) -> MessageDeletion:
+        """Physically delete one exact ordinary message owned by this member."""
+
+        exact = _validate_exact_message_id(msg_id)
+        self._ensure_no_incomplete_channel_rename()
+        resolved = self._resolve_member(create=False)
+        member = self._require_member(resolved)
+        candidates = [
+            row["name"]
+            for row in self._state.list_threads()
+            if row["kind"] in {"channel", "subthread", "dm"}
+        ]
+        located = self._locate_exact_message(exact, candidates)
+        if (
+            located is None
+            or located.message.kind != "message"
+            or located.message.from_id != member["member_id"]
+        ):
+            raise NotFoundError(f"message not found or not deletable: {msg_id}")
+        if not located.queue.delete(message_id=located.message.ts):
+            raise NotFoundError(f"message not found or not deletable: {msg_id}")
+        return MessageDeletion(
+            thread=located.message.thread,
+            ts=located.message.ts,
+        )
+
     def say(self, target: str, text: str) -> Message:
         if is_blank_message_text(text):
             raise BlankMessageError("blank message")
@@ -527,6 +584,23 @@ class MessagingMixin(_ClientBase):
             )
         return matches[0]
 
+    def _locate_exact_message(
+        self,
+        exact: int,
+        candidates: Iterable[str],
+    ) -> _LocatedMessage | None:
+        for thread in candidates:
+            queue = self.queue(thread)
+            found = queue.peek_one(exact_timestamp=exact, with_timestamps=True)
+            if found is None:
+                continue
+            body, timestamp = cast(tuple[str, int], found)
+            return _LocatedMessage(
+                queue=queue,
+                message=message_from_body(thread, body, timestamp),
+            )
+        return None
+
     def _parse_since(self, since: str | int | None) -> int | None:
         if since is None:
             return None
@@ -536,3 +610,14 @@ class MessagingMixin(_ClientBase):
             return TimestampGenerator.validate(since)
         except TimestampError as exc:
             raise ValueError(str(exc)) from exc
+
+
+def _validate_exact_message_id(msg_id: str) -> int:
+    if not isinstance(msg_id, str):
+        raise TypeError("msg_id must be a string")
+    if MESSAGE_ID_RE.fullmatch(msg_id) is None:
+        raise ValueError("msg_id must be a full 19-digit message id")
+    try:
+        return TimestampGenerator.validate(msg_id, exact=True)
+    except TimestampError as exc:
+        raise ValueError("msg_id must be a full 19-digit message id") from exc

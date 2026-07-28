@@ -14,7 +14,7 @@ runtime remains documented in `docs/implementation/05-taut-summon-architecture.m
 
 ## The Core Shape
 
-Every top-level verb has the same two pieces:
+Every top-level registry entry has the same two pieces:
 
 1. A lightweight `CommandSpec` says what root help and selection need to know.
 2. A factory creates a fresh command adapter only after that verb is selected.
@@ -31,6 +31,12 @@ The distinction is deliberate. Making built-ins self-discover through package
 metadata would add failure modes without adding capability. Giving installed
 commands a second protocol would make parser, error, stream, and cleanup policy
 drift. One interface with two discovery sources is the smaller design.
+
+A core-owned entry may expose a nested local grammar. The built-in `message`
+entry owns `show` and `delete` beneath one noun (`taut message show MSG_ID`,
+`taut message delete MSG_ID`). The registry still sees one top-level command;
+the selected adapter owns the subcommand parser and dispatch. This does not
+create a cross-package nested namespace.
 
 "Local" does not mean "found by scanning this checkout." Registration follows
 the active Python environment:
@@ -402,9 +408,11 @@ For a new installed extension command:
 7. Update the governing spec, this guide, package README, repository map, and
    changelog for public or ownership changes.
 
-Version 1 is intentionally small: top-level verbs only, no aliases, priority,
-hot reload, nested cross-package namespace, or dependency graph. Add one of
-those only for a concrete product need with its own compatibility plan.
+Version 1 is intentionally small: top-level registry entries only, no aliases,
+priority, hot reload, nested cross-package namespace, or dependency graph.
+A selected adapter may own nested local grammar, as the core `message` command
+does. Add a shared nested namespace only for a concrete product need with its
+own compatibility plan.
 
 ## Related Plan
 

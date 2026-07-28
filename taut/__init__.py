@@ -26,13 +26,21 @@ from taut._exceptions import (
 )
 
 if TYPE_CHECKING:
-    from taut.client import Member, Message, Notification, TautClient, Thread
+    from taut.client import (
+        Member,
+        Message,
+        MessageDeletion,
+        Notification,
+        TautClient,
+        Thread,
+    )
     from taut.terminal import escape_terminal_text
     from taut.watcher import TautWatcher
 
 _LAZY_EXPORTS = {
     "Member": ("taut.client", "Member"),
     "Message": ("taut.client", "Message"),
+    "MessageDeletion": ("taut.client", "MessageDeletion"),
     "Notification": ("taut.client", "Notification"),
     "TautClient": ("taut.client", "TautClient"),
     "TautWatcher": ("taut.watcher", "TautWatcher"),
@@ -49,6 +57,7 @@ __all__ = [
     "Member",
     "MembershipError",
     "Message",
+    "MessageDeletion",
     "NotInitializedError",
     "NotFoundError",
     "Notification",

@@ -46,6 +46,11 @@ Risky plans are blocked if they do not make explicit:
 
 ## Active Plans
 
+- `2026-07-27-message-show-delete-plan.md` — add exact-ID
+  `message show` and author-only physical `message delete` across the Python
+  API, nested CLI, and MCP; show advances the acting member's existing
+  high-water seen cursor, while delete performs no notification, thread,
+  membership, or cursor cascade.
 - `2026-07-17-agent-guidance-propagation-plan.md` — land the agent-guidance
   delta wave (source `b248e1c`): [DOM-14] fold-unit trigger promotion, six
   coalescing-skill method refinements, the new interface-review skill,

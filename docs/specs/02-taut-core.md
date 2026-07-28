@@ -25,6 +25,7 @@ In scope:
 - the message envelope contract
 - the read model: cursors, unread state, chat-history peek discipline, and
   notification-inbox claim discipline
+- exact-message inspection and author-owned physical deletion
 - the CLI surface, the `TautClient` Python API, and the `TautWatcher`
 - the trust model and its limits
 
@@ -48,7 +49,8 @@ obligations defined in [TAUT-12]:
 Out of scope as non-goals (not deferred ambiguity):
 
 - authentication or message integrity guarantees (see [TAUT-9])
-- message deletion, editing, retention, or archival verbs
+- message editing, retention, archival, bulk deletion, tombstones, undo, or
+  administrative/moderator deletion
 - taut-owned networking; remote reach only ever comes from the broker
   backend, never from taut growing a protocol
 - code-signing identity as identity-claim evidence (recorded as a possible
@@ -66,11 +68,12 @@ Out of scope as non-goals (not deferred ambiguity):
 - A thread is a queue. A **channel** is a top-level thread (`general`). A
   **sub-thread** hangs off one message in a channel and is itself a queue
   (`general.1837025672140161024`, named by the origin message id).
-- Chat messages are never consumed. Channel, sub-thread, and direct-message
+- Chat reads never consume messages. Channel, sub-thread, and direct-message
   readers peek; the queue is the conversation history. "Read" on a chat
-  surface means "move my bookmark", never "remove". Notification queues are the
-  exception: they are per-member inbox pointers and are claimed when read
-  ([IAN-7.4]).
+  surface means "move my bookmark", never "remove". The explicit
+  author-owned `message delete` operation is the only core chat-history
+  removal path ([TAUT-7.6]). Notification queues are a separate exception:
+  they are per-member inbox pointers and are claimed when read ([IAN-7.4]).
 - Who you are is a stable opaque member id plus current evidence. Process
   fingerprints, human session evidence, and continuity tokens produce identity
   claim hashes that map to a `member_id`; names are mutable current-value data
@@ -338,6 +341,11 @@ an accident. Two consequences are binding:
 - Taut must tolerate foreign writes: bodies that are not taut envelopes
   render as raw text ([TAUT-6.3]), and queues with no `taut_threads` row
   are invisible to `taut list` but must not break any command.
+- Exact-message operations use only SimpleBroker's public pending peek and
+  queue-scoped delete APIs. Message timestamps are globally unique within one
+  resolved broker, but deletion still requires Taut to locate the registered
+  chat queue before calling `Queue.delete(message_id=...)`. Taut does not
+  query private broker tables or maintain a message-id index or cache.
 
 ### [TAUT-3.5] One timestamp domain
 
@@ -397,6 +405,10 @@ inserted id as well, but Redis-backed Taut state remains unsupported under
 - The `taut_threads` registry is the authority for what threads exist and
   how they relate. Queue rows are storage; an empty queue with a registry
   row is still a thread.
+- Physical deletion does not remove or rewrite registry rows. A sub-thread
+  remains registered and addressable if its origin message is deleted, and a
+  direct-message thread remains registered if its first or only row is
+  deleted ([TAUT-7.6], [IAN-6.3], [IAN-6.4]).
 
 ### [TAUT-4.3] Membership
 
@@ -473,7 +485,8 @@ System events are ordinary messages with `kind: "notice"` and
 human-readable `text` (`"van created #general"`, `"claude joined"`,
 `"claude left"`). Notices come from the member that caused them — there is
 no system member. Renderers display them dimmed/inline; `--json` consumers
-filter on `kind`.
+filter on `kind`. Notices are inspectable through [TAUT-7.6] `message show`
+but are never eligible for `message delete`.
 
 ### [TAUT-6.3] Foreign bodies
 
@@ -481,7 +494,9 @@ A body that does not parse as a Taut envelope (raw `broker write`, other
 tools) renders with sender `?` and the raw body as text. In `--json` output it
 is an ordinary [TAUT-8.2] message object with `"from_id": null`, `"from": "?"`,
 and `"kind": "foreign"`. `foreign` is an output-only kind: taut never writes it
-to a queue. Foreign bodies must never crash or stall any taut surface.
+to a queue. Foreign bodies must never crash or stall any taut surface. They
+are inspectable through [TAUT-7.6] `message show` but are never eligible for
+`message delete`.
 
 ### [TAUT-6.4] Limits
 
@@ -595,13 +610,14 @@ readable and are not filtered.
 
 ## 7. Read Model [TAUT-7]
 
-### [TAUT-7.1] Chat-history peek invariant
+### [TAUT-7.1] Chat-history peek and deletion invariant
 
-No chat-history surface consumes, claims, moves, or deletes broker messages.
-Channel, sub-thread, and direct-message retrieval uses peek-family APIs.
-History is append-only. A nonzero claimed count in a chat queue means a foreign
-tool consumed messages; Taut tolerates that state, but those messages are gone
-from history.
+Ordinary chat-history surfaces do not consume, claim, move, or delete broker
+messages. Channel, sub-thread, and direct-message retrieval uses peek-family
+APIs. The explicit author-owned operation in [TAUT-7.6] may physically delete
+one exact ordinary message. No other core surface removes chat history. A
+nonzero claimed count in a chat queue means a foreign tool consumed messages;
+Taut tolerates that state, but those messages are absent from pending history.
 
 Notification queues are the explicit exception. They are inbox pointers and use
 claim/read broker APIs as defined in [IAN-7.4].
@@ -611,10 +627,19 @@ claim/read broker APIs as defined in [IAN-7.4].
 `taut_membership.last_seen_ts` is the per-member, per-thread read cursor —
 strictly a high-water mark of *seen* message timestamps:
 
-- `read` and `watch` advance it as they display messages.
+- `read`, `watch`, and successful `message show` advance it as they display
+  messages.
 - `log`, `list`, and `who` never move it (`log` is history inspection, not
   catching up).
 - Cursor writes are monotonic: `last_seen_ts` only increases.
+
+`message show` advances the located existing membership to the exact returned
+message timestamp before returning it. Because the cursor is a high-water
+mark, showing a newer message also marks every earlier and intervening row in
+that thread seen even though the call returns only one row. Showing a message
+at or below the stored cursor returns it without regressing or otherwise
+changing the cursor. Callers that need cursor-neutral known-thread inspection
+use `log`.
 
 Public unread reads are bounded per call. `TautClient.read()` and
 `TautClient.read_unread()` accept a keyword-only `limit` with an inclusive
@@ -646,6 +671,12 @@ Renderers may additionally *count* unread messages with bounded peeks for
 human display; the count is presentation, not contract (the `--json`
 `unread` field stays boolean, [TAUT-8.2]).
 
+Physical deletion does not move or rewind any cursor. A cursor may equal a
+deleted timestamp, and later reads skip that numeric gap. Unread state and
+`last_ts` derive from surviving pending rows, so they may change after
+deletion; a concurrent list may report one stale result and converges on its
+next call.
+
 ### [TAUT-7.4] Senders and their own messages
 
 Sender catch-up is decided after the sender's message commits. Given the cursor
@@ -672,7 +703,8 @@ was asked; implicit join by replying starts at now like any join.
 The bounded probe and advance run **after the message insert succeeds**, never
 before. Cursor movement is not part of the pre-write sidecar state in the
 [TAUT-10] ordering. A crash after the message commit but before cursor advance
-can only re-show durable messages; it cannot skip one.
+can only re-show surviving messages; it does not skip a message that still
+exists. An author-deleted row is absent rather than skipped ([TAUT-7.6]).
 
 ### [TAUT-7.5] `--since`
 
@@ -680,6 +712,82 @@ can only re-show durable messages; it cannot skip one.
 `ts > TS`, accepting every timestamp format SimpleBroker's parser accepts
 (ISO 8601, unix s/ms/ns, native 19-digit ids). Taut does not reimplement
 timestamp parsing ([TAUT-3.5]).
+
+### [TAUT-7.6] Exact-message show and delete
+
+Both exact-message operations accept one `msg_id: str` that must be a full
+19-digit native message id. They do not accept [TAUT-8.1]'s reply suffix form.
+A non-string, including `bool` or `int`, raises
+`TypeError("msg_id must be a string")`. A string that either does not match
+`MESSAGE_ID_RE` or fails
+`TimestampGenerator.validate(msg_id, exact=True)` signed-64-bit range
+validation raises
+`ValueError("msg_id must be a full 19-digit message id")`. This validation is
+the first domain operation: failure performs no member resolution, thread
+enumeration, broker peek, cursor write, or delete.
+
+A private exact locator receives an explicit iterable of registered chat
+threads and calls public
+`Queue.peek_one(exact_timestamp=..., with_timestamps=True)` once per candidate
+until the globally unique timestamp is found. It uses the default pending-only
+peek, skips notification, system, dangling, and unregistered queues, and adds
+no index or cache. A row claimed before lookup is not found. Both verbs run the
+incomplete-channel-rename preflight before enumeration and retain its existing
+resume guidance.
+
+`TautClient.show_message(msg_id: str) -> Message` resolves an existing acting
+member without creating one. Ordinary existing-member resolution may refresh
+activity and identity-claim evidence. Its candidates are only the member's
+current registered channel, sub-thread, and direct-message memberships.
+It does not peek a nonmember thread and authorize afterward, rejoin a departed
+channel, implicitly join a sub-thread, inspect an unrelated direct message, or
+create membership. It decodes `message`, `notice`, and tolerant `foreign` rows
+through the ordinary message path. A miss raises
+`NotFoundError("message not found: MSG_ID")`.
+
+After decode, show monotonically advances that existing membership's cursor as
+specified by [TAUT-7.2], then returns the `Message`. Cursor advancement occurs
+before the success record. A sidecar failure therefore fails the call and
+emits no success. A concurrent leave after candidate snapshot may remove the
+membership, make the cursor update affect zero rows, and still permit the
+already-fetched message to return. A concurrent delete after the broker peek
+may likewise permit show to return the fetched record and advance to its now
+missing id. Broker peek and sidecar update are not one transaction; both races
+are accepted. Show neither claims nor reserves the row. Its scan is O(current
+memberships).
+
+`TautClient.delete_message(msg_id: str) -> MessageDeletion` also resolves an
+existing member without creating one, with the ordinary existing-member
+activity and claim-evidence effects. Its candidates are all registered
+channel, sub-thread, and direct-message rows, not only current memberships, so
+an author may delete their own message after leaving. This can be a blind,
+irreversible operation, especially for a departed direct-message participant
+who cannot use `log` and cannot use `show` without current membership.
+
+Only a decoded row with `kind == "message"` and
+`from_id == acting_member.member_id` is eligible. A structural notice, foreign
+body, other author's row, unrelated direct message, absent row, or broker
+`False` result raises the same
+`NotFoundError("message not found or not deletable: MSG_ID")`. No decoded
+body, author, participant, thread, or existence detail from an ineligible row
+may reach output, error text, warning, log, or adapter guidance.
+
+After policy checks, deletion calls exactly
+`queue.delete(message_id=message.ts)`. It must never pass `None`, which would
+purge the whole queue. A pending row that becomes claimed after lookup remains
+eligible for SimpleBroker's exact claimed-row deletion; a concurrent winner or
+repeat receives the uniform not-found result. Success returns the immutable
+`MessageDeletion(thread: str, ts: int, deleted: bool = True)` receipt without
+source text or author identity.
+
+Delete changes no registry, membership, member, cursor, notification, watcher,
+reply-subthread, or extension audit row. An origin-message deletion may leave
+a permanent registered child thread; existing members can continue with
+`say CHILD`, while a new `reply PARENT DELETED_ID` fails. Deleting a first or
+only direct-message row leaves its deterministic registry and both memberships
+intact; later direct messaging reuses it. Notification pointers may become
+stale under [IAN-7]. Delete is not recall: a reader or watcher that fetched the
+row before commit may display it once. Its scan is O(registered chat threads).
 
 ## 8. Surfaces [TAUT-8]
 
@@ -708,6 +816,8 @@ later token is command-local. `--version` is a root action before the verb.
 | `set name NAME` | Change the acting member's current display name and route key. Does not rewrite old messages. | 0; 1 error/name collision; 2 unrecognized |
 | `say TARGET [TEXT\|-]` | Post a message (stdin with `-` or when piped and TEXT omitted). Blank text is filtered before routing under [TAUT-6.5]. `TARGET` may be a channel, sub-thread, or `@name` direct-message target ([IAN-5]). Channel and sub-thread targets require membership. Prints message id with `-t` only when a message is written. | 0 wrote; 1 error; 2 blank filtered / not a member / no such member |
 | `reply THREAD MSG_ID [TEXT\|-]` | Post into the sub-thread of MSG_ID, creating it on first reply. Blank text is filtered before parent resolution under [TAUT-6.5]. Requires membership in THREAD. A full 19-digit id resolves exactly. A suffix >= 4 digits resolves via a bounded public-API scan of the most recent 1,000 message ids of THREAD; ambiguous -> error listing candidates. | 0 wrote; 1 error (including ambiguous suffix); 2 blank filtered / no such message / not a member |
+| `message show MSG_ID` | Show one exact full-id message from the acting member's current chat memberships, then advance that thread's high-water cursor through it. No implicit join. Use `log` for cursor-neutral known-thread inspection. | 0 showed; 1 malformed/out-of-range id or error; 2 unrecognized member / inaccessible or absent message |
+| `message delete MSG_ID` | Physically delete one exact author-owned ordinary message, including after leaving its thread. Irreversible, potentially blind, and no cascade. | 0 deleted; 1 malformed/out-of-range id or error; 2 unrecognized member / absent or not deletable |
 | `read [THREAD]` | Show unread (all joined threads when bare, grouped), advance cursor through displayed messages. Reads are paged: one invocation displays and marks seen up to 1,000 unread messages per thread; callers drain larger backlogs by rerunning until exit 2. Requires a resolved member; explicit THREAD requires membership (sub-threads implicit-join per [TAUT-4.3]). | 0 showed messages; 1 error; 2 nothing unread / not a member (hint on stderr) |
 | `inbox` | Claim and show pending notifications for the acting member. Notifications are consumed; source chat history is not changed. | 0 showed notifications; 1 error; 2 nothing pending |
 | `log THREAD [--since TS] [--limit N]` | Show history. No cursor movement. `--limit N` selects the most recent N messages after `--since`, rendered in chronological order. | 0; 1; 2 empty |
@@ -741,10 +851,11 @@ policy preflight retains priority: if the policy is unavailable, the command
 exits 1 with its existing fixed diagnostic before blank filtering runs.
 
 Help text is part of the agent-usable surface: every option and positional names
-its purpose, message-id suffix and timestamp forms are discoverable from the
-owning subcommand, and root help names exit-code classes. With no subcommand,
-help goes to stderr and exits 1. `--token` is continuity selection, never
-authentication.
+its purpose, message-id suffix, exact-id, and timestamp forms are discoverable
+from the owning subcommand, and root help names exit-code classes. The
+`message` noun requires `show` or `delete`; a missing nested subcommand follows
+the same stderr usage and exit-1 rule as a missing top-level subcommand.
+`--token` is continuity selection, never authentication.
 
 Root help is registry-backed. It must remain usable when an unrelated installed
 command is broken or incompatible. A selected unavailable command exits 1 with
@@ -760,7 +871,7 @@ exit classes apply equally to built-in and extension command adapters.
   question).
 - `--json` emits one JSON object per line (ndjson), and **every verb has
   a defined JSON shape** — an agent must never have to guess:
-  - message objects (`read`, `log`, `watch`): `thread`, `ts`, `from_id`,
+  - message objects (`message show`, `read`, `log`, `watch`): `thread`, `ts`, `from_id`,
     `from`, `kind`, `text`;
   - writing verbs (`say`, `reply`) echo the message object they wrote, with the
     same fields as read messages. A blank attempt filtered under [TAUT-6.5]
@@ -771,6 +882,9 @@ exit classes apply equally to built-in and extension command adapters.
   - notification objects (`inbox`, `watch`): `type`, `to_id`, `actor_id`,
     `actor_name`, `thread`, `message_ts`, plus `matched` for mention
     notifications;
+  - successful `message delete`: exactly `thread`, `ts`, `deleted`, where
+    `deleted` is `true`; the receipt never echoes source text or author
+    identity;
   - `join` and `leave` echo their notice's message object;
   - list objects (`list`): `thread`, `kind`, `parent`, `unread` (bool),
     `last_ts`. Direct-message list objects also include `members`, an array of
@@ -809,9 +923,9 @@ argument-parsing layer over it — every CLI behavior above must be
 reachable through one public client method with the same semantics (the
 SimpleBroker/Weft layering rule: CLI and library share one operational
 model). Public exports from `taut`: `TautClient`, `TautWatcher`, `Message`,
-`Thread`, `Member`, the exception hierarchy rooted at `TautError` including
-`BlankMessageError`, `escape_terminal_text`, and `__version__`. The package
-ships typed (`py.typed`).
+`MessageDeletion`, `Thread`, `Member`, the exception hierarchy rooted at
+`TautError` including `BlankMessageError`, `escape_terminal_text`, and
+`__version__`. The package ships typed (`py.typed`).
 
 The unread signatures are
 `TautClient.read(thread: str | None = None, *, limit: int = 1000) ->
@@ -820,6 +934,13 @@ list[Message]` and
 list[Message]`. `read()` delegates to `read_unread()` and exposes no second
 pagination or validation path. The CLI continues to call the core default;
 adapters may choose a smaller surface default and pass it explicitly.
+
+The exact-message signatures are
+`TautClient.show_message(msg_id: str) -> Message` and
+`TautClient.delete_message(msg_id: str) -> MessageDeletion`. Their validation,
+visibility, cursor, ownership, no-cascade, error, race, and receipt contracts
+are [TAUT-7.6]. `MessageDeletion` is a frozen, slotted public value object with
+exact fields `thread: str`, `ts: int`, and `deleted: bool = True`.
 
 `BlankMessageError` is a public subclass of `EmptyResultError`. It is the
 Python API result for a filtered [TAUT-6.5] `say` or `reply`, allowing both
@@ -922,8 +1043,9 @@ Contract:
 - Cursors start at the member's stored `last_seen_ts` and persist back
   after each successfully handled message by default. Monotonic batched
   flushes (every N messages, on idle, on stop) are permitted: under
-  [TAUT-7.2] monotonicity a crash can only re-show messages, never skip
-  them.
+  [TAUT-7.2] monotonicity a crash can only re-show surviving messages; it
+  never skips a message that still exists. An author-deleted row is absent
+  rather than skipped ([TAUT-7.6]).
 - Cursor advancement happens **inside taut's per-queue handler wrapper,
   after the user handler returns** — not after the base watcher's
   dispatch reports. (SimpleBroker's dispatch path routes handler
@@ -1066,6 +1188,11 @@ reserved first-party verbs retain their CLI table order; other installed names
 sort canonically. Installed command code is trusted in-process Python and is
 not a sandbox or authentication boundary.
 
+`message` is one reserved core built-in whose selected adapter owns the
+required `show` and `delete` nested subparsers. An installed command whose
+normalized name is `message` cannot override, hide, or make this built-in
+unavailable.
+
 Distribution-name comparisons use Python packaging normalization: lowercase
 the name and collapse each run of hyphen, underscore, or dot to one hyphen.
 Thus `taut-summon`, `taut_summon`, and `TAUT.SUMMON` are the same owner for
@@ -1160,6 +1287,10 @@ plainly rather than imply otherwise:
   continuity tokens, names, existing aliases, and `rejoin` make the common case
   frictionless and make attribution inspectable (`whoami --explain`, claims on
   record), not impossible to spoof.
+- Author-only message deletion compares the stored stable `from_id` with the
+  selected acting member id. It prevents ordinary accidents; it is not an
+  authorization boundary because storage access and `--as` can select or
+  rewrite either side.
 - The boundary is the file system. Sharing with another uid means loosening
   file permissions yourself; taut will neither manage nor monitor that.
   When a server-backed broker arrives ([TAUT-12.1]), the boundary becomes
@@ -1232,7 +1363,8 @@ implied by docs or output.
   source message remains successful; the warning and retry behavior follow
   [IAN-7.3].
 - Notification claimed but renderer fails: notification may be lost; source
-  chat history remains the durable record ([IAN-7.4]).
+  chat history is not changed by that claim but may already be author-deleted
+  ([IAN-7.4]).
 - Partial channel rename: must be recoverable or loudly reportable under
   [IAN-8.3].
 - Registry/queue divergence (queue deleted via broker CLI, registry row
@@ -1250,6 +1382,27 @@ implied by docs or output.
   membership, decode, or cursor mutation. Wrong runtime type raises
   `TypeError` with `limit must be an integer`; an integer outside 1 through
   1,000 raises `ValueError` with `limit must be between 1 and 1000`.
+- Invalid exact-message id: reject wrong runtime types, wrong shape, and
+  19-digit values outside SimpleBroker's signed-64-bit native timestamp range
+  before identity/activity, enumeration, peek, cursor, or deletion work
+  ([TAUT-7.6]).
+- Exact-message miss: show raises `message not found: MSG_ID`; delete uses
+  `message not found or not deletable: MSG_ID` for every absent or ineligible
+  case, including another pair's direct message. The CLI maps both
+  `NotFoundError` cases to exit 2.
+- Show cursor-write failure: return no success record; the broker row remains
+  and the cursor is unchanged. A concurrent leave may instead remove the
+  membership between snapshot and update, allowing the fetched record to
+  return with no cursor row left to update.
+- Delete race or lost response: exactly one winner receives a receipt.
+  Concurrent and repeated losers get the uniform not-found result. With no
+  tombstone, a retry after response loss cannot distinguish a prior success
+  from prior absence.
+- Deleted origin message: the child registry and history survive as an
+  orphaned but addressable sub-thread. Deleted sole direct-message row:
+  registry and memberships survive and later contact reuses them. Deleted
+  notification source: the pointer survives under [IAN-7]. Already-fetched
+  chat delivery may display once; delete is not recall.
 
 ## 11. Verification Expectations [TAUT-11]
 
@@ -1266,6 +1419,20 @@ posture:
   with no broker peek/cursor write/implicit membership, and the per-joined-
   thread rather than aggregate meaning of a no-thread limit. The broker and
   sidecar state remain real in every case.
+- Shared real SQLite and PostgreSQL exact-message contracts prove full
+  ID shape and range validation before side effects; candidate-scoped
+  pending-only lookup; current-membership-only show; notice/foreign decoding;
+  high-water cursor below/equal/ahead behavior; author-only deletion after
+  leave; uniform unrelated-DM refusal; claimed-row behavior; repeat and
+  concurrent deletion; and no queue purge, cache, or private broker access.
+  Deterministic barriers, not sleeps, prove peek/delete, show/leave, and
+  locate/claim/delete races.
+- Exact-message lifecycle proofs delete rows below, at, and above the cursor
+  and the oldest, newest, and sole row. They prove cursor gaps stay safe,
+  unread and `last_ts` derive from surviving rows, a sole-row DM keeps registry
+  and memberships without a second `dm_started`, an origin deletion preserves
+  its child, and stale mention/reply/DM notification pointers remain
+  consumable without a dead reply action.
 - Identity tests spawn real child processes where process evidence matters and
   assert claim creation, claim matching, rejoin, token acts-as from an unrelated
   process tree, stable `member_id`, and mutable names. Unit tests may cover
@@ -1293,7 +1460,10 @@ posture:
   a warning ([TAUT-8.4]).
 - CLI tests drive the real console entry point (subprocess or
   `run_cli`-style harness as in SimpleBroker) and assert exit codes 0/1/2
-  and `--json` field names per [TAUT-8.2].
+  and `--json` field names per [TAUT-8.2]. They also prove the `message`
+  nested help/required arguments, globals before and after the noun,
+  full-id validation, human/JSON/quiet show and deletion output, and built-in
+  ownership over a normalized installed-command collision.
 - Predicate tests cover empty text, ASCII and non-ASCII whitespace, common
   `Cf` zero-width/format characters, mixtures, and visible text containing
   such characters without claiming exhaustive Unicode visibility. A named
@@ -1728,6 +1898,9 @@ verification.
 
 ## Related Plans
 
+- `docs/plans/2026-07-27-message-show-delete-plan.md` — exact-message show,
+  high-water cursor semantics, author-only physical deletion, no-cascade
+  lifecycle, and coordinated CLI/Python/MCP proof.
 - `docs/plans/2026-07-15-taut-mcp-release-integration-plan.md` — fourth MCP
   release target, exact-SHA release gates, root-owned immutable bundle, and
   same-run MCP coverage aggregation.

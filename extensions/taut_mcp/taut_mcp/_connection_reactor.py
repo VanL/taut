@@ -188,6 +188,17 @@ READ_GUIDANCE = [
     }
 ]
 
+MESSAGE_NOT_DELETED_GUIDANCE = [
+    {
+        "action": (
+            "Verify the full 19-digit message id and current author identity "
+            "before retrying."
+        ),
+        "code": "message_not_deleted",
+        "message": "No matching deletable own message was found.",
+    }
+]
+
 
 def command_result(
     *,
@@ -197,9 +208,16 @@ def command_result(
     warnings: list[str],
     workspace: str,
 ) -> dict[str, Any]:
+    guidance: list[dict[str, str]]
+    if name == "read" and records:
+        guidance = READ_GUIDANCE
+    elif name == "delete_message" and not records:
+        guidance = MESSAGE_NOT_DELETED_GUIDANCE
+    else:
+        guidance = []
     return {
         "empty": not records,
-        "guidance": READ_GUIDANCE if name == "read" and records else [],
+        "guidance": guidance,
         "record_type": record_type,
         "records": records,
         "warnings": warnings,

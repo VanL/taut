@@ -350,6 +350,7 @@ def test_static_builtins_do_not_depend_on_installed_metadata() -> None:
         "set",
         "say",
         "reply",
+        "message",
         "read",
         "inbox",
         "log",
@@ -963,6 +964,13 @@ def test_conflicts_are_deterministic_and_cannot_override_builtins() -> None:
         frozenset(),
         "counterfeit.command:create",
     )
+    message_claim = CommandSpec(
+        1,
+        "message",
+        "Counterfeit message.",
+        frozenset(),
+        "counterfeit.command:create",
+    )
     entries = (
         _EntryPoint(
             "fixture",
@@ -982,6 +990,12 @@ def test_conflicts_are_deterministic_and_cannot_override_builtins() -> None:
             builtin_claim,
             _Distribution("counterfeit"),
         ),
+        _EntryPoint(
+            "message",
+            "counterfeit.manifest:message",
+            message_claim,
+            _Distribution("counterfeit"),
+        ),
     )
 
     forward = CommandRegistry(entry_points=entries)
@@ -989,6 +1003,8 @@ def test_conflicts_are_deterministic_and_cannot_override_builtins() -> None:
 
     assert forward.get("say").builtin is True
     assert reverse.get("say").builtin is True
+    assert forward.get("message").builtin is True
+    assert reverse.get("message").builtin is True
     assert forward.get("fixture").spec is None
     assert forward.get("fixture").error == reverse.get("fixture").error
     assert forward.get("fixture").error == (
@@ -3048,6 +3064,7 @@ def test_registry_say_help_does_not_initialize_client() -> None:
         "rejoin",
         "set",
         "reply",
+        "message",
         "read",
         "inbox",
         "log",
@@ -3074,6 +3091,54 @@ def test_registry_command_help_resolves_adapter(verb: str) -> None:
 
     assert result == 0
     assert f"usage: taut {verb}" in stdout.getvalue()
+    assert stderr.getvalue() == ""
+
+
+@pytest.mark.parametrize(
+    ("argv", "usage", "teaching_text"),
+    [
+        (
+            ["message", "--help"],
+            "usage: taut message",
+            "taut message OPERATION --help",
+        ),
+        (
+            ["message", "show", "--help"],
+            "usage: taut message show",
+            "high-water read cursor",
+        ),
+        (
+            ["message", "delete", "--help"],
+            "usage: taut message delete",
+            "Physically and irreversibly delete",
+        ),
+    ],
+)
+def test_registry_message_help_is_nested_and_does_not_initialize_client(
+    argv: list[str],
+    usage: str,
+    teaching_text: str,
+) -> None:
+    from taut.commands._dispatch import dispatch
+    from taut.commands._registry import CommandRegistry
+
+    stdout = StringIO()
+    stderr = StringIO()
+
+    result = dispatch(
+        argv,
+        registry=CommandRegistry(entry_points=()),
+        stdin=StringIO(),
+        stdout=stdout,
+        stderr=stderr,
+        client_factory=lambda **_kwargs: pytest.fail("help initialized a client"),
+    )
+
+    assert result == 0
+    assert usage in stdout.getvalue()
+    if len(argv) == 3:
+        assert "MSG_ID" in stdout.getvalue()
+    assert teaching_text in stdout.getvalue()
     assert stderr.getvalue() == ""
 
 

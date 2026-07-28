@@ -20,7 +20,7 @@ import taut.cli as cli
 from taut import addressing
 from taut._constants import META_QUEUE_NAME
 from taut._exceptions import TautError
-from taut.client import InitResult, Message, _validate_sqlite_path
+from taut.client import InitResult, Message, TautClient, _validate_sqlite_path
 from taut.commands._rendering import emit_init as _emit_init
 from taut.commands._rendering import format_message_time as _format_message_time
 from taut.commands._rendering import format_unread_count as _format_unread_count
@@ -128,6 +128,412 @@ def test_cli_json_join_say_log(tmp_path: Path) -> None:
         "van created #general",
         "hello",
     ]
+
+
+def test_cli_message_show_returns_exact_message_json(tmp_path: Path) -> None:
+    assert run_cli("init", "--json", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", "--json", cwd=tmp_path)[0] == 0
+    sent = run_cli(
+        "--as",
+        "van",
+        "say",
+        "general",
+        "inspect me",
+        "--json",
+        cwd=tmp_path,
+    )
+    assert sent[0] == 0, sent[2]
+    expected = json.loads(sent[1])
+
+    rc, out, err = run_cli(
+        "--as",
+        "van",
+        "message",
+        "show",
+        str(expected["ts"]),
+        "--json",
+        cwd=tmp_path,
+    )
+
+    assert rc == 0, err
+    assert json.loads(out) == expected
+    assert err == ""
+
+
+def test_cli_message_show_reuses_human_message_rendering(tmp_path: Path) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    target = _say_ts(tmp_path, "van", "general", "inspect me")
+
+    rc, out, err = run_cli(
+        "--as",
+        "van",
+        "message",
+        "show",
+        str(target),
+        cwd=tmp_path,
+    )
+
+    assert rc == 0, err
+    assert "general" in out
+    assert "inspect me" in out
+    assert err == ""
+
+
+def test_cli_message_delete_returns_exact_receipt_json(tmp_path: Path) -> None:
+    assert run_cli("init", "--json", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", "--json", cwd=tmp_path)[0] == 0
+    sent = run_cli(
+        "--as",
+        "van",
+        "say",
+        "general",
+        "remove me",
+        "--json",
+        cwd=tmp_path,
+    )
+    assert sent[0] == 0, sent[2]
+    message = json.loads(sent[1])
+
+    rc, out, err = run_cli(
+        "--as",
+        "van",
+        "message",
+        "delete",
+        str(message["ts"]),
+        "--json",
+        cwd=tmp_path,
+    )
+
+    assert rc == 0, err
+    assert json.loads(out) == {
+        "thread": "general",
+        "ts": message["ts"],
+        "deleted": True,
+    }
+    assert err == ""
+    assert (
+        run_cli(
+            "--as",
+            "van",
+            "message",
+            "show",
+            str(message["ts"]),
+            "--json",
+            cwd=tmp_path,
+        )[0]
+        == 2
+    )
+
+
+def test_cli_message_delete_human_receipt_and_quiet_output(tmp_path: Path) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    first = json.loads(
+        run_cli(
+            "--as",
+            "van",
+            "say",
+            "general",
+            "first",
+            "--json",
+            cwd=tmp_path,
+        )[1]
+    )
+    second = json.loads(
+        run_cli(
+            "--as",
+            "van",
+            "say",
+            "general",
+            "second",
+            "--json",
+            cwd=tmp_path,
+        )[1]
+    )
+
+    rc, out, err = run_cli(
+        "--as",
+        "van",
+        "message",
+        "delete",
+        str(first["ts"]),
+        cwd=tmp_path,
+    )
+
+    assert rc == 0
+    assert out == f"deleted message {first['ts']} from general"
+    assert err == ""
+
+    rc, out, err = run_cli(
+        "--as",
+        "van",
+        "message",
+        "delete",
+        str(second["ts"]),
+        "--quiet",
+        cwd=tmp_path,
+    )
+
+    assert rc == 0
+    assert out == ""
+    assert err == ""
+
+
+def test_cli_message_show_quiet_suppresses_output(tmp_path: Path) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    sent = json.loads(
+        run_cli(
+            "--as",
+            "van",
+            "say",
+            "general",
+            "quiet show",
+            "--json",
+            cwd=tmp_path,
+        )[1]
+    )
+
+    rc, out, err = run_cli(
+        "--as",
+        "van",
+        "message",
+        "show",
+        str(sent["ts"]),
+        "--quiet",
+        cwd=tmp_path,
+    )
+
+    assert rc == 0
+    assert out == ""
+    assert err == ""
+
+
+def test_cli_message_rejects_malformed_id_with_exit_1(tmp_path: Path) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+
+    for operation in ("show", "delete"):
+        rc, out, err = run_cli(
+            "--as",
+            "van",
+            "message",
+            operation,
+            "1234",
+            cwd=tmp_path,
+        )
+
+        assert rc == 1
+        assert out == ""
+        assert err == "msg_id must be a full 19-digit message id"
+
+
+def test_cli_message_valid_miss_and_ineligible_delete_exit_2(tmp_path: Path) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "alice", "join", "general", cwd=tmp_path)[0] == 0
+    sent = json.loads(
+        run_cli(
+            "--as",
+            "alice",
+            "say",
+            "general",
+            "alice owns this",
+            "--json",
+            cwd=tmp_path,
+        )[1]
+    )
+    assert run_cli("--as", "bob", "join", "general", cwd=tmp_path)[0] == 0
+
+    rc, out, err = run_cli(
+        "--as",
+        "bob",
+        "message",
+        "delete",
+        str(sent["ts"]),
+        cwd=tmp_path,
+    )
+
+    assert rc == 2
+    assert out == ""
+    assert err == f"message not found or not deletable: {sent['ts']}"
+
+    assert (
+        run_cli(
+            "--as",
+            "alice",
+            "message",
+            "delete",
+            str(sent["ts"]),
+            cwd=tmp_path,
+        )[0]
+        == 0
+    )
+    for operation in ("show", "delete"):
+        rc, out, err = run_cli(
+            "--as",
+            "alice",
+            "message",
+            operation,
+            str(sent["ts"]),
+            cwd=tmp_path,
+        )
+
+        assert rc == 2
+        assert out == ""
+        assert "message not found" in err
+
+
+def test_cli_message_delete_unrelated_dm_is_content_free_and_indistinguishable(
+    tmp_path: Path,
+) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    for name in ("alice", "bob", "outsider"):
+        assert run_cli("--as", name, "join", "general", cwd=tmp_path)[0] == 0
+    secret = "private body must not leak"
+    sent = json.loads(
+        run_cli(
+            "--as",
+            "alice",
+            "say",
+            "@bob",
+            secret,
+            "--json",
+            cwd=tmp_path,
+        )[1]
+    )
+    target = str(sent["ts"])
+
+    ineligible = run_cli(
+        "--as",
+        "outsider",
+        "message",
+        "delete",
+        target,
+        cwd=tmp_path,
+    )
+    assert (
+        run_cli(
+            "--as",
+            "alice",
+            "message",
+            "delete",
+            target,
+            cwd=tmp_path,
+        )[0]
+        == 0
+    )
+    missing = run_cli(
+        "--as",
+        "outsider",
+        "message",
+        "delete",
+        target,
+        cwd=tmp_path,
+    )
+
+    assert ineligible == missing
+    assert ineligible == (
+        2,
+        "",
+        f"message not found or not deletable: {target}",
+    )
+    combined = ineligible[1] + ineligible[2]
+    for sensitive in (secret, sent["thread"], "alice", "bob"):
+        assert sensitive not in combined
+
+
+@pytest.mark.parametrize("placement", ["before", "after-noun", "after-id"])
+def test_cli_message_accepts_root_globals_at_supported_placements(
+    tmp_path: Path,
+    placement: str,
+) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    sent = json.loads(
+        run_cli(
+            "--as",
+            "van",
+            "say",
+            "general",
+            "placed globals",
+            "--json",
+            cwd=tmp_path,
+        )[1]
+    )
+    msg_id = str(sent["ts"])
+    if placement == "before":
+        argv = ("--as", "van", "--json", "message", "show", msg_id)
+    elif placement == "after-noun":
+        argv = ("message", "--as", "van", "--json", "show", msg_id)
+    else:
+        argv = ("message", "show", msg_id, "--as", "van", "--json")
+
+    rc, out, err = run_cli(*argv, cwd=tmp_path)
+
+    assert rc == 0, err
+    assert json.loads(out) == sent
+    assert err == ""
+
+
+def test_cli_message_root_and_nested_usage(tmp_path: Path) -> None:
+    rc, out, err = run_cli("--help", cwd=tmp_path)
+    assert rc == 0
+    assert "message" in out
+    assert "Inspect or delete one message by exact id." in out
+    assert err == ""
+
+    rc, out, err = run_cli("message", cwd=tmp_path)
+    assert rc == 1
+    assert out == ""
+    assert "usage: taut message" in err
+    assert "required: OPERATION" in err
+
+
+@pytest.mark.parametrize("operation", ["show", "delete"])
+def test_cli_message_operation_requires_message_id(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    rc, out, err = run_cli("message", operation, cwd=tmp_path)
+
+    assert rc == 1
+    assert out == ""
+    assert f"usage: taut message {operation}" in err
+    assert "MSG_ID" in err
+
+
+def test_cli_message_operations_ignore_stdin(tmp_path: Path) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    shown_target = _say_ts(tmp_path, "van", "general", "show with stdin")
+    deleted_target = _say_ts(tmp_path, "van", "general", "delete with stdin")
+
+    shown = run_cli(
+        "--as",
+        "van",
+        "message",
+        "show",
+        str(shown_target),
+        "--json",
+        cwd=tmp_path,
+        stdin="must be ignored",
+    )
+    deleted = run_cli(
+        "--as",
+        "van",
+        "message",
+        "delete",
+        str(deleted_target),
+        "--json",
+        cwd=tmp_path,
+        stdin="must also be ignored",
+    )
+
+    assert shown[0] == 0
+    assert json.loads(shown[1])["ts"] == shown_target
+    assert deleted[0] == 0
+    assert json.loads(deleted[1])["ts"] == deleted_target
 
 
 def test_cli_as_creation_is_command_gated(tmp_path: Path) -> None:
@@ -1305,6 +1711,51 @@ def test_cli_human_mention_omits_reply_action_after_recipient_leaves(
     assert "taut log general" in out
     assert "taut reply" not in out
     assert run_cli("--as", "bob", "log", "general", cwd=tmp_path)[0] == 0
+
+
+def test_cli_human_mention_omits_reply_action_after_source_deleted(
+    tmp_path: Path,
+) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "bob", "join", "general", cwd=tmp_path)[0] == 0
+    source_ts = _say_ts(tmp_path, "van", "general", "hello @bob")
+    observer = TautClient(db_path=tmp_path / ".taut.db", as_name="bob")
+    bob_id = observer.whoami().member_id
+    cursor_before = observer._state.get_membership(
+        thread="general",
+        member_id=bob_id,
+    )
+    assert cursor_before is not None
+    observer.close()
+    assert (
+        run_cli(
+            "--as",
+            "van",
+            "message",
+            "delete",
+            str(source_ts),
+            cwd=tmp_path,
+        )[0]
+        == 0
+    )
+
+    rc, out, err = run_cli("--as", "bob", "inbox", cwd=tmp_path)
+
+    assert rc == 0, err
+    assert "taut log general" in out
+    assert "taut reply" not in out
+    observer = TautClient(db_path=tmp_path / ".taut.db", as_name="bob")
+    try:
+        assert (
+            observer._state.get_membership(
+                thread="general",
+                member_id=bob_id,
+            )
+            == cursor_before
+        )
+    finally:
+        observer.close()
 
 
 def test_cli_human_dm_mention_offers_log_but_not_invalid_reply(

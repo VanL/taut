@@ -153,6 +153,60 @@ def test_postgres_read_limit_pages_without_cursor_gaps(
 
 @pytest.mark.pg_only
 @pytest.mark.timeout(30)
+def test_postgres_exact_message_tools_use_public_core_contract(
+    taut_pg_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(taut_pg_project)
+    TautClient.init()
+    selected = TautClient(as_name="selected")
+    selected.join("general")
+    member = selected.last_created_member
+    assert member is not None
+    assert member.token is not None
+    other = TautClient(as_name="other")
+    other.join("general")
+    shown_target = other.say("general", "pg exact show")
+    deletion_target = selected.say("general", "pg exact delete")
+    selected.close()
+    other.close()
+
+    async def scenario() -> None:
+        reactor = ConnectionReactor(asyncio.get_running_loop())
+        try:
+            attached = await reactor.attach_workspace(
+                str(taut_pg_project),
+                member.token or "",
+            )
+            canonical = str(attached["workspace"])
+            shown = await reactor.execute_tool(
+                canonical,
+                "show_message",
+                {"msg_id": str(shown_target.ts)},
+            )
+            assert shown["record_type"] == "message"
+            assert shown["records"][0]["text"] == "pg exact show"
+            deleted = await reactor.execute_tool(
+                canonical,
+                "delete_message",
+                {"msg_id": str(deletion_target.ts)},
+            )
+            assert deleted["record_type"] == "deletion"
+            assert deleted["records"] == [
+                {
+                    "deleted": True,
+                    "thread": "general",
+                    "ts": deletion_target.ts,
+                }
+            ]
+        finally:
+            await reactor.aclose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.pg_only
+@pytest.mark.timeout(30)
 def test_postgres_native_notification_wake_precedes_long_backstop(
     taut_pg_project: Path,
     monkeypatch: pytest.MonkeyPatch,

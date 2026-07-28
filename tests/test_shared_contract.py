@@ -30,7 +30,7 @@ from taut._exceptions import (
     TautError,
     TokenError,
 )
-from taut.client import Message, Notification, TautClient
+from taut.client import Message, MessageDeletion, Notification, TautClient
 from tests.conftest import build_cli_env, run_cli
 
 pytestmark = pytest.mark.shared
@@ -101,6 +101,24 @@ def test_project_client_join_say_read_contract(taut_project: Path) -> None:
     assert result.db
     assert message.thread == "general"
     assert [item.text for item in bob.read("general")][-1:] == ["shared hello"]
+
+
+def test_project_exact_show_and_delete_contract(taut_project: Path) -> None:
+    TautClient.init()
+    author = TautClient(as_name="author")
+    reader = TautClient(as_name="reader")
+    author.join("general")
+    reader.join("general")
+    message = author.say("general", "shared exact message")
+
+    assert reader.show_message(str(message.ts)) == message
+    assert author.delete_message(str(message.ts)) == MessageDeletion(
+        thread="general",
+        ts=message.ts,
+        deleted=True,
+    )
+    with pytest.raises(NotFoundError, match=rf"^message not found: {message.ts}$"):
+        reader.show_message(str(message.ts))
 
 
 def test_project_resolved_target_config_handoff_contract(
