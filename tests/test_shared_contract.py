@@ -3,13 +3,16 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import cast
 
 import pytest
 from simplebroker import Queue, open_broker, resolve_broker_target
-from simplebroker.ext import IntegrityError
+from simplebroker.ext import IntegrityError, SidecarSession
 from taut_summon._state import (
     LEDGER_QUEUE_NAME,
     SUMMON_SCHEMA_VERSION_KEY,
@@ -20,6 +23,7 @@ from taut_summon._state import (
 )
 
 import taut.identity as identity
+import taut.state._sql as sql_state
 from taut import addressing
 from taut._constants import META_QUEUE_NAME, load_config
 from taut._exceptions import (
@@ -31,12 +35,15 @@ from taut._exceptions import (
     TokenError,
 )
 from taut.client import (
+    Channel,
     Message,
     MessageDeletion,
     MessageReaction,
     Notification,
     TautClient,
+    Thread,
 )
+from taut.state import SqlDialect, dialect_for_taut_target
 from tests.conftest import build_cli_env, run_cli
 
 pytestmark = pytest.mark.shared
@@ -925,6 +932,266 @@ def test_project_channel_rename_moves_subthreads_contract(
         van.log("general")
 
 
+def test_project_channel_topic_state_and_rename_contract(
+    taut_project: Path,
+) -> None:
+    TautClient.init()
+    owner = TautClient(as_name="owner")
+    owner.join("general")
+    member = owner.whoami()
+    before_messages = owner.log("general")
+    before_membership = owner._state.get_membership(
+        thread="general",
+        member_id=member.member_id,
+    )
+    with owner._meta_queue.sidecar(transaction=True) as session:
+        session.run(
+            "UPDATE taut_threads SET meta = ? WHERE name = ?",
+            (
+                json.dumps(
+                    {
+                        "closed": {"future": "preserve"},
+                        "custom": {"value": 1},
+                    }
+                ),
+                "general",
+            ),
+        )
+
+    updated = owner.set_channel_topic("general", "shared backend topic")
+    updated_member = owner._state.get_member(member.member_id)
+    updated_row = owner._state.get_thread("general")
+    assert updated_member is not None
+    assert updated_row is not None
+    assert updated_member["last_active_ts"] == updated.topic_updated_ts
+    assert updated_row["meta"] == {
+        "closed": {"future": "preserve"},
+        "custom": {"value": 1},
+        "topic": {
+            "text": "shared backend topic",
+            "updated_ts": updated.topic_updated_ts,
+            "updated_by_id": member.member_id,
+        },
+    }
+    assert owner.set_channel_topic("general", "shared backend topic") == updated
+    assert owner._state.get_member(member.member_id) == updated_member
+    assert owner._state.get_thread("general") == updated_row
+    assert (
+        owner._state.get_membership(
+            thread="general",
+            member_id=member.member_id,
+        )
+        == before_membership
+    )
+    assert owner.log("general") == before_messages
+
+    renamed = owner.rename_channel("general", "ops")
+    assert renamed.topic == "shared backend topic"
+    assert owner.get_channel("ops") == updated.__class__(
+        name="ops",
+        topic=updated.topic,
+        topic_updated_ts=updated.topic_updated_ts,
+        topic_updated_by_id=updated.topic_updated_by_id,
+        topic_updated_by_name=updated.topic_updated_by_name,
+    )
+    renamed_row = owner._state.get_thread("ops")
+    assert renamed_row is not None
+    assert renamed_row["meta"] == updated_row["meta"]
+
+    cleared = owner.set_channel_topic("ops", None)
+    assert cleared.topic is None
+    assert cleared.topic_updated_ts is None
+    cleared_row = owner._state.get_thread("ops")
+    assert cleared_row is not None
+    assert cleared_row["meta"] == {
+        "closed": {"future": "preserve"},
+        "custom": {"value": 1},
+    }
+
+
+def test_project_concurrent_channel_topics_are_internally_consistent(
+    taut_project: Path,
+) -> None:
+    TautClient.init()
+    alice = TautClient(as_name="alice")
+    bob = TautClient(as_name="bob")
+    alice.join("general")
+    bob.join("general")
+    alice_id = alice.whoami().member_id
+    bob_id = bob.whoami().member_id
+    with alice._meta_queue.sidecar(transaction=True) as session:
+        session.run(
+            "UPDATE taut_threads SET meta = ? WHERE name = ?",
+            (json.dumps({"closed": "reserved", "custom": 1}), "general"),
+        )
+    start = threading.Barrier(2)
+
+    def update(as_name: str, topic: str) -> object:
+        writer = TautClient(as_name=as_name)
+        try:
+            start.wait(timeout=10)
+            return writer.set_channel_topic("general", topic)
+        finally:
+            writer.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        alice_future = pool.submit(update, "alice", "alice topic")
+        bob_future = pool.submit(update, "bob", "bob topic")
+        written = [alice_future.result(timeout=20), bob_future.result(timeout=20)]
+
+    current = alice.get_channel("general")
+    assert current in written
+    expected_author = {
+        "alice topic": alice_id,
+        "bob topic": bob_id,
+    }
+    assert current.topic is not None
+    assert current.topic_updated_by_id == expected_author[current.topic]
+    row = alice._state.get_thread("general")
+    assert row is not None
+    assert row["meta"]["closed"] == "reserved"
+    assert row["meta"]["custom"] == 1
+    assert row["meta"]["topic"] == {
+        "text": current.topic,
+        "updated_ts": current.topic_updated_ts,
+        "updated_by_id": current.topic_updated_by_id,
+    }
+
+
+def test_project_channel_topic_racing_cooperative_meta_writer_preserves_both(
+    taut_project: Path,
+) -> None:
+    TautClient.init()
+    owner = TautClient(as_name="owner")
+    owner.join("general")
+    start = threading.Barrier(2)
+
+    def write_topic() -> None:
+        writer = TautClient(as_name="owner")
+        try:
+            start.wait(timeout=10)
+            writer.set_channel_topic("general", "topic write")
+        finally:
+            writer.close()
+
+    def write_unknown_meta() -> None:
+        queue = Queue(META_QUEUE_NAME, db_path=owner.target, config=owner.config)
+        try:
+            start.wait(timeout=10)
+            with queue.sidecar(transaction=True) as session:
+                sql_state._acquire_advisory_lock(
+                    session,
+                    dialect_for_taut_target(owner.target),
+                    "taut:channel:general",
+                )
+                rows = list(
+                    session.run(
+                        "SELECT meta FROM taut_threads WHERE name = ?",
+                        ("general",),
+                        fetch=True,
+                    )
+                )
+                assert len(rows) == 1
+                meta = json.loads(rows[0][0])
+                meta["custom"] = {"cooperative": True}
+                session.run(
+                    "UPDATE taut_threads SET meta = ? WHERE name = ?",
+                    (json.dumps(meta), "general"),
+                )
+        finally:
+            queue.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        topic_future = pool.submit(write_topic)
+        metadata_future = pool.submit(write_unknown_meta)
+        topic_future.result(timeout=20)
+        metadata_future.result(timeout=20)
+
+    row = owner._state.get_thread("general")
+    assert row is not None
+    assert row["meta"]["custom"] == {"cooperative": True}
+    assert row["meta"]["topic"]["text"] == "topic write"
+
+
+@pytest.mark.parametrize("first", ["topic", "rename"])
+def test_project_channel_topic_and_rename_marker_share_serialization(
+    taut_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    first: str,
+) -> None:
+    TautClient.init()
+    owner = TautClient(as_name="owner")
+    owner.join("general")
+    held = threading.Event()
+    release = threading.Event()
+    second_started = threading.Event()
+    original_lock = sql_state._acquire_advisory_lock
+    first_thread = f"{first}-writer"
+
+    def pause_first_holder(
+        session: SidecarSession,
+        dialect: SqlDialect,
+        key: str,
+    ) -> None:
+        original_lock(session, dialect, key)
+        if key == "taut:channel:general" and threading.current_thread().name.startswith(
+            first_thread
+        ):
+            held.set()
+            assert release.wait(timeout=10)
+
+    monkeypatch.setattr(sql_state, "_acquire_advisory_lock", pause_first_holder)
+
+    def set_topic() -> Channel:
+        writer = TautClient(as_name="owner")
+        try:
+            return writer.set_channel_topic("general", "raced topic")
+        finally:
+            writer.close()
+
+    def rename() -> Thread:
+        writer = TautClient(as_name="owner")
+        try:
+            return writer.rename_channel("general", "ops")
+        finally:
+            writer.close()
+
+    first_call = set_topic if first == "topic" else rename
+    second_operation = rename if first == "topic" else set_topic
+
+    def second_call() -> Channel | Thread:
+        second_started.set()
+        return second_operation()
+
+    with (
+        ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix=first_thread,
+        ) as first_pool,
+        ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="second-writer",
+        ) as second_pool,
+    ):
+        first_future = first_pool.submit(first_call)
+        assert held.wait(timeout=10)
+        second_future = second_pool.submit(second_call)
+        assert second_started.wait(timeout=10)
+        release.set()
+        first_result = first_future.result(timeout=20)
+        if first == "topic":
+            second_result = second_future.result(timeout=20)
+            assert cast(Channel, first_result).topic == "raced topic"
+            assert cast(Thread, second_result).topic == "raced topic"
+        else:
+            assert cast(Thread, first_result).topic is None
+            with pytest.raises((TautError, NotFoundError)):
+                second_future.result(timeout=20)
+
+    current = owner.get_channel("ops")
+    assert current.topic == ("raced topic" if first == "topic" else None)
+
+
 def test_project_channel_rename_resume_contract(taut_project: Path) -> None:
     TautClient.init()
     van = TautClient(as_name="van")
@@ -952,7 +1219,10 @@ def test_project_channel_rename_resume_contract(taut_project: Path) -> None:
     with open_broker(van.target, config=van.config) as broker:
         broker.rename_queue("general", "ops", retarget_aliases=False)
 
-    with pytest.raises(TautError, match="run 'taut rename general ops' to finish it"):
+    with pytest.raises(
+        TautError,
+        match="run 'taut channel rename general ops' to finish it",
+    ):
         van.say("general", "blocked")
 
     renamed = van.rename_channel("general", "ops")

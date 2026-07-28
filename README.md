@@ -193,7 +193,7 @@ The full contract is `docs/specs/04-summon.md`; design rationale lives in
 `taut-mcp` is a separate, connection-scoped stdio adapter for MCP clients. One
 process serves one MCP connection and can attach up to eight existing Taut
 workspaces, each with its own continuity token, client, and owner thread. It
-exposes 18 explicit workspace-scoped tools plus the repeatable
+exposes 20 explicit workspace-scoped tools plus the repeatable
 `taut://notifications/current` resource. The resource reports notification
 pointers only; reading it does not claim them or advance chat cursors.
 
@@ -220,7 +220,9 @@ channel capability. It sends a fixed wake cue with no Taut content; standard
 resource subscriptions and manual reads remain the portable interface. The
 existing MCP `read` and `log` tools accept the same DM selectors as the CLI,
 and `list` with `dms=true` returns the attached member's durable DM directory.
-The manifest remains 18 tools. The
+Channel operations use `channel_show`, `channel_topic`, and `channel_rename`;
+message operations use `message_show`, `message_delete`, and `message_react`.
+The manifest contains exactly 20 tools. The
 full contract is `docs/specs/05-taut-mcp.md`; design rationale lives in
 `docs/implementation/07-taut-mcp-architecture.md`.
 
@@ -233,6 +235,7 @@ $ taut init
 
 # Channels are created by joining them
 $ taut join general
+$ taut channel topic general "General project coordination"
 $ taut say general "anyone awake?"
 
 # …an agent in another terminal joins and answers…
@@ -383,12 +386,15 @@ pass `TAUT_AS` or `TAUT_TOKEN` through.
 | `taut message show MSG_ID` | Show one visible message without claiming it; advances that thread's seen cursor through the message |
 | `taut message delete MSG_ID` | Delete one of your own ordinary messages; no related state is cascaded |
 | `taut message react MSG_ID REACTION` | Advance seen state and best-effort broadcast a consumable reaction pointer to the message's current non-actor audience |
+| `taut channel show CHANNEL` | Show the current topic and update attribution without resolving an actor or changing shared state |
+| `taut channel topic CHANNEL TEXT` | Set one exact, nonblank, single-line channel topic of at most 500 Unicode code points |
+| `taut channel topic CHANNEL --clear` | Clear the channel topic without posting a message or notification |
+| `taut channel rename OLD NEW` | Rename a channel and its sub-threads |
 | `taut read [THREAD_OR_DM]` | Show unread and advance your bookmark; a DM accepts `@name-or-alias` or its stable handle; bare = all your threads |
 | `taut inbox` | Claim and show notification pointers for mentions and new DMs |
 | `taut log THREAD_OR_DM [--since TS] [--limit N]` | Show channel, sub-thread, or accessible DM history; never moves your bookmark or activity for a DM |
 | `taut list [--all \| --dms]` | Your threads with unread state; `--all` = every thread; `--dms` = every accessible DM, including read and empty conversations |
 | `taut watch [THREAD_OR_DM ...]` | Follow selected channels/sub-threads or existing DMs; default = everything you're in plus your notification inbox |
-| `taut rename OLD NEW` | Rename a channel and its sub-threads |
 | `taut who [THREAD]` | Members and presence |
 | `taut whoami [--explain]` | Who taut thinks you are, and why |
 | `taut rejoin [NAME] [--token TOKEN]` | Associate the current process claim with an existing member |
@@ -485,11 +491,13 @@ cursor-tracked, membership-aware, with its fan-in waiter installed through
 SimpleBroker's watcher lifecycle hooks):
 
 ```python
-from taut import Message, MessageDeletion, MessageReaction, TautClient
+from taut import Channel, Message, MessageDeletion, MessageReaction, TautClient
 
 client = TautClient()  # finds .taut.db like git finds .git
 # (or TautClient(db_path="…"))
 client.join("general")
+channel: Channel = client.set_channel_topic("general", "General project coordination")
+print(channel.topic, channel.topic_updated_by_name)
 message = client.say("general", "build finished: 312 passed")
 print(message.ts)
 shown = client.show_message(str(message.ts))  # peek; advances seen through it
@@ -697,6 +705,7 @@ and both are kept in CI-grade sync with the code. Start with
 git clone git@github.com:VanL/taut.git && cd taut
 uv sync --all-extras
 uv run --extra dev pytest
+uv run bin/check-cli-claims
 uv run --extra dev pytest extensions/taut_summon/tests
 uv run --project extensions/taut_mcp --extra dev pytest extensions/taut_mcp/tests
 uv run ./bin/pytest-pg --fast

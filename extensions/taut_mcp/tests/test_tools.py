@@ -15,7 +15,7 @@ from simplebroker import BrokerTarget
 
 import taut.identity as identity
 import taut_mcp._workspace_reactor as workspace_reactor
-from taut import MessageDeletion, Notification, TautClient
+from taut import MessageDeletion, Notification, TautClient, TautError
 from taut_mcp._commands import RECORD_TYPE_BY_TOOL, execute_command, record_object
 from taut_mcp._connection_reactor import (
     ConnectionReactor,
@@ -151,21 +151,21 @@ def _assert_result(
             {},
         ),
         (
-            "show_message",
+            "message_show",
             {"msg_id": "1234567890123456789"},
             "show_message",
             ("1234567890123456789",),
             {},
         ),
         (
-            "delete_message",
+            "message_delete",
             {"msg_id": "1234567890123456789"},
             "delete_message",
             ("1234567890123456789",),
             {},
         ),
         (
-            "react_to_message",
+            "message_react",
             {"msg_id": "1234567890123456789", "reaction": "ack"},
             "react_to_message",
             ("1234567890123456789", "ack"),
@@ -194,7 +194,7 @@ def _assert_result(
             {"all_threads": True},
         ),
         (
-            "rename",
+            "channel_rename",
             {"old_name": "general", "new_name": "main"},
             "rename_channel",
             ("general", "main"),
@@ -384,7 +384,7 @@ def test_message_reaction_and_notification_encodings_are_closed() -> None:
 
 def test_empty_reaction_result_has_content_free_guidance() -> None:
     payload = command_result(
-        name="react_to_message",
+        name="message_react",
         record_type="reaction",
         records=[],
         warnings=[],
@@ -454,7 +454,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
 
             reacted = await reactor.execute_tool(
                 canonical,
-                "react_to_message",
+                "message_react",
                 {"msg_id": str(parent_ts), "reaction": "ack"},
             )
             _assert_result(reacted, record_type="reaction", workspace=canonical)
@@ -482,7 +482,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
 
             missing_reaction = await reactor.execute_tool(
                 canonical,
-                "react_to_message",
+                "message_react",
                 {
                     "msg_id": "1234567890123456789",
                     "reaction": "ack",
@@ -516,7 +516,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
             deletion_ts = deletion_target["records"][0]["ts"]
             deleted = await reactor.execute_tool(
                 canonical,
-                "delete_message",
+                "message_delete",
                 {"msg_id": str(deletion_ts)},
             )
             _assert_result(deleted, record_type="deletion", workspace=canonical)
@@ -530,7 +530,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
 
             missing_show = await reactor.execute_tool(
                 canonical,
-                "show_message",
+                "message_show",
                 {"msg_id": "1234567890123456789"},
             )
             _assert_result(
@@ -542,7 +542,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
 
             repeated_delete = await reactor.execute_tool(
                 canonical,
-                "delete_message",
+                "message_delete",
                 {"msg_id": str(deletion_ts)},
             )
             _assert_result(
@@ -554,7 +554,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
             assert repeated_delete["records"] == []
             not_author = await reactor.execute_tool(
                 canonical,
-                "delete_message",
+                "message_delete",
                 {"msg_id": str(other_owned.ts)},
             )
             assert not_author == repeated_delete
@@ -577,7 +577,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
 
             shown = await reactor.execute_tool(
                 canonical,
-                "show_message",
+                "message_show",
                 {"msg_id": str(parent_ts)},
             )
             _assert_result(shown, record_type="message", workspace=canonical)
@@ -600,6 +600,74 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
             _assert_result(history, record_type="message", workspace=canonical)
             assert len(history["records"]) == 1
 
+            with _tool_error("topic must not be blank"):
+                await reactor.execute_tool(
+                    canonical,
+                    "channel_topic",
+                    {"channel": "general", "topic": ""},
+                )
+
+            initial_channel = await reactor.execute_tool(
+                canonical,
+                "channel_show",
+                {"channel": "general"},
+            )
+            _assert_result(
+                initial_channel,
+                record_type="channel",
+                workspace=canonical,
+            )
+            assert initial_channel["records"] == [
+                {
+                    "channel": "general",
+                    "topic": None,
+                    "topic_updated_by_id": None,
+                    "topic_updated_by_name": None,
+                    "topic_updated_ts": None,
+                }
+            ]
+
+            history_before_topic = tuple(other.log("general", limit=1000))
+            notifications_before_topic = tuple(other.peek_inbox())
+            topic = await reactor.execute_tool(
+                canonical,
+                "channel_topic",
+                {"channel": "general", "topic": "Current work"},
+            )
+            _assert_result(topic, record_type="channel", workspace=canonical)
+            assert topic["records"][0]["channel"] == "general"
+            assert topic["records"][0]["topic"] == "Current work"
+            assert topic["records"][0]["topic_updated_by_name"] == "renamed"
+            assert isinstance(topic["records"][0]["topic_updated_ts"], int)
+            assert tuple(other.log("general", limit=1000)) == history_before_topic
+            assert tuple(other.peek_inbox()) == notifications_before_topic
+
+            same_topic = await reactor.execute_tool(
+                canonical,
+                "channel_topic",
+                {"channel": "general", "topic": "Current work"},
+            )
+            assert same_topic == topic
+
+            shown_channel = await reactor.execute_tool(
+                canonical,
+                "channel_show",
+                {"channel": "general"},
+            )
+            assert shown_channel == topic
+
+            missing_channel = await reactor.execute_tool(
+                canonical,
+                "channel_show",
+                {"channel": "missing"},
+            )
+            _assert_result(
+                missing_channel,
+                record_type="channel",
+                workspace=canonical,
+            )
+            assert missing_channel["records"] == []
+
             listed = await reactor.execute_tool(
                 canonical,
                 "list",
@@ -610,14 +678,41 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
                 "general",
                 f"general.{parent_ts}",
             }
+            general = next(
+                record for record in listed["records"] if record["thread"] == "general"
+            )
+            assert general["topic"] == "Current work"
+            child = next(
+                record
+                for record in listed["records"]
+                if record["thread"] == f"general.{parent_ts}"
+            )
+            assert "topic" not in child
 
             renamed = await reactor.execute_tool(
                 canonical,
-                "rename",
+                "channel_rename",
                 {"old_name": "general", "new_name": "main"},
             )
             _assert_result(renamed, record_type="thread", workspace=canonical)
             assert renamed["records"][0]["thread"] == "main"
+            assert renamed["records"][0]["topic"] == "Current work"
+
+            cleared = await reactor.execute_tool(
+                canonical,
+                "channel_topic",
+                {"channel": "main", "topic": None},
+            )
+            _assert_result(cleared, record_type="channel", workspace=canonical)
+            assert cleared["records"] == [
+                {
+                    "channel": "main",
+                    "topic": None,
+                    "topic_updated_by_id": None,
+                    "topic_updated_by_name": None,
+                    "topic_updated_ts": None,
+                }
+            ]
 
             members = await reactor.execute_tool(
                 canonical,
@@ -664,6 +759,263 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
 
 @pytest.mark.sqlite_only
 @pytest.mark.timeout(15)
+def test_wrong_kind_channel_is_an_empty_channel_result(tmp_path: Path) -> None:
+    """[MCP-6] A registered non-channel row returns the ordinary empty shape."""
+
+    workspace, token = _workspace_with_two_members(tmp_path)
+    client = TautClient(db_path=workspace / ".taut.db", as_name="selected")
+    with client._meta_queue.sidecar(transaction=True) as session:
+        session.run(
+            "UPDATE taut_threads SET kind = ? WHERE name = ?",
+            ("subthread", "general"),
+        )
+    client.close()
+
+    async def scenario() -> None:
+        reactor = ConnectionReactor(asyncio.get_running_loop())
+        try:
+            attached = await reactor.attach_workspace(str(workspace), token)
+            canonical = str(attached["workspace"])
+            cases: tuple[tuple[str, dict[str, object]], ...] = (
+                ("channel_show", {"channel": "general"}),
+                (
+                    "channel_topic",
+                    {"channel": "general", "topic": "replacement"},
+                ),
+            )
+            for name, arguments in cases:
+                result = await reactor.execute_tool(canonical, name, arguments)
+                _assert_result(
+                    result,
+                    record_type="channel",
+                    workspace=canonical,
+                )
+                assert result["records"] == []
+        finally:
+            await reactor.aclose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(15)
+def test_channel_show_does_not_refresh_notification_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[MCP-5] Metadata-only show performs no post-command inbox peek."""
+
+    workspace, token = _workspace_with_two_members(tmp_path)
+
+    def unexpected_peek(self: TautClient, *, limit: int = 1000) -> Any:
+        del self, limit
+        raise AssertionError("channel_show inspected the notification queue")
+
+    async def scenario() -> None:
+        reactor = ConnectionReactor(asyncio.get_running_loop())
+        try:
+            attached = await reactor.attach_workspace(str(workspace), token)
+            canonical = str(attached["workspace"])
+            monkeypatch.setattr(
+                workspace_reactor.TautClient,
+                "peek_inbox",
+                unexpected_peek,
+            )
+            result = await reactor.execute_tool(
+                canonical,
+                "channel_show",
+                {"channel": "general"},
+            )
+            _assert_result(result, record_type="channel", workspace=canonical)
+            assert result["records"][0]["channel"] == "general"
+            assert reactor.list_workspaces()["records"][0]["status"] == "ready"
+        finally:
+            await reactor.aclose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "method_name", "arguments"),
+    [
+        ("channel_show", "get_channel", {"channel": "general"}),
+        (
+            "channel_topic",
+            "set_channel_topic",
+            {"channel": "general", "topic": "fault"},
+        ),
+    ],
+)
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(15)
+def test_unexpected_channel_tool_fault_is_terminal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tool_name: str,
+    method_name: str,
+    arguments: dict[str, object],
+) -> None:
+    """[MCP-11] Non-Taut channel failures use the terminal reactor path."""
+
+    workspace, token = _workspace_with_two_members(tmp_path)
+
+    def unexpected_fault(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise RuntimeError("private backend detail")
+
+    async def scenario() -> None:
+        reactor = ConnectionReactor(asyncio.get_running_loop())
+        try:
+            attached = await reactor.attach_workspace(str(workspace), token)
+            canonical = str(attached["workspace"])
+            monkeypatch.setattr(
+                workspace_reactor.TautClient,
+                method_name,
+                unexpected_fault,
+            )
+            with _tool_error("workspace reactor failed; detach and reattach"):
+                await reactor.execute_tool(canonical, tool_name, arguments)
+            assert reactor.list_workspaces()["records"][0]["status"] == "reactor_failed"
+        finally:
+            await reactor.aclose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(15)
+def test_channel_topic_identity_loss_uses_fixed_terminal_status(
+    tmp_path: Path,
+) -> None:
+    """[MCP-11] Lost attachment identity is not a topic-domain error."""
+
+    workspace, token = _workspace_with_two_members(tmp_path)
+
+    async def scenario() -> None:
+        reactor = ConnectionReactor(asyncio.get_running_loop())
+        try:
+            attached = await reactor.attach_workspace(str(workspace), token)
+            canonical = str(attached["workspace"])
+            admin = TautClient(
+                db_path=workspace / ".taut.db",
+                as_name="selected",
+            )
+            with admin._meta_queue.sidecar(transaction=True) as session:
+                session.run(
+                    "UPDATE taut_members SET token = NULL WHERE display_name = ?",
+                    ("selected",),
+                )
+            admin.close()
+            with _tool_error("workspace identity lost; detach and reattach"):
+                await reactor.execute_tool(
+                    canonical,
+                    "channel_topic",
+                    {"channel": "general", "topic": "lost"},
+                )
+            assert reactor.list_workspaces()["records"][0]["status"] == "identity_lost"
+        finally:
+            await reactor.aclose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(15)
+def test_channel_topic_recoverable_storage_error_keeps_workspace_ready(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[MCP-11] Ordinary backend TautError is not a terminal reactor fault."""
+
+    workspace, token = _workspace_with_two_members(tmp_path)
+
+    def recoverable_failure(
+        self: TautClient,
+        channel: str,
+        topic: str | None,
+    ) -> object:
+        del self, channel, topic
+        raise TautError("recoverable channel storage failure")
+
+    async def scenario() -> None:
+        reactor = ConnectionReactor(asyncio.get_running_loop())
+        try:
+            attached = await reactor.attach_workspace(str(workspace), token)
+            canonical = str(attached["workspace"])
+            monkeypatch.setattr(
+                workspace_reactor.TautClient,
+                "set_channel_topic",
+                recoverable_failure,
+            )
+            with _tool_error("recoverable channel storage failure"):
+                await reactor.execute_tool(
+                    canonical,
+                    "channel_topic",
+                    {"channel": "general", "topic": "new"},
+                )
+            assert reactor.list_workspaces()["records"][0]["status"] == "ready"
+        finally:
+            await reactor.aclose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(15)
+def test_corrupt_topic_is_recoverable_tool_error_not_reactor_failure(
+    tmp_path: Path,
+) -> None:
+    """[MCP-6] Stored contract corruption is an ordinary Taut tool error."""
+
+    workspace, token = _workspace_with_two_members(tmp_path)
+    client = TautClient(db_path=workspace / ".taut.db", as_name="selected")
+    with client._meta_queue.sidecar(transaction=True) as session:
+        session.run(
+            "UPDATE taut_threads SET meta = ? WHERE name = ?",
+            (
+                json.dumps(
+                    {
+                        "topic": {
+                            "text": "broken",
+                            "updated_ts": 10,
+                            "updated_by_id": "m_author",
+                            "extra": True,
+                        }
+                    }
+                ),
+                "general",
+            ),
+        )
+    client.close()
+
+    async def scenario() -> None:
+        reactor = ConnectionReactor(asyncio.get_running_loop())
+        try:
+            attached = await reactor.attach_workspace(str(workspace), token)
+            canonical = str(attached["workspace"])
+            cases: tuple[tuple[str, dict[str, object]], ...] = (
+                ("channel_show", {"channel": "general"}),
+                (
+                    "channel_topic",
+                    {"channel": "general", "topic": "replacement"},
+                ),
+            )
+            for name, arguments in cases:
+                with _tool_error(
+                    "taut_threads.meta.topic: expected exactly text, "
+                    "updated_ts, and updated_by_id"
+                ):
+                    await reactor.execute_tool(canonical, name, arguments)
+            listed = reactor.list_workspaces()
+            assert listed["records"][0]["status"] == "ready"
+        finally:
+            await reactor.aclose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(15)
 def test_show_message_advances_exact_thread_high_water_without_show_guidance(
     tmp_path: Path,
 ) -> None:
@@ -692,7 +1044,7 @@ def test_show_message_advances_exact_thread_high_water_without_show_guidance(
             )
             shown = await reactor.execute_tool(
                 canonical,
-                "show_message",
+                "message_show",
                 {"msg_id": str(target.ts)},
             )
             _assert_result(shown, record_type="message", workspace=canonical)
@@ -743,7 +1095,7 @@ def test_delete_message_unrelated_dm_is_content_free_and_indistinguishable(
             )
             ineligible = await reactor.execute_tool(
                 canonical,
-                "delete_message",
+                "message_delete",
                 {"msg_id": str(direct.ts)},
             )
             author = TautClient(db_path=db, as_name="other")
@@ -753,7 +1105,7 @@ def test_delete_message_unrelated_dm_is_content_free_and_indistinguishable(
                 author.close()
             missing = await reactor.execute_tool(
                 canonical,
-                "delete_message",
+                "message_delete",
                 {"msg_id": str(direct.ts)},
             )
 
@@ -787,9 +1139,9 @@ def test_message_tools_reject_in_pattern_signed_int64_overflow(
                 (await reactor.attach_workspace(str(workspace), token))["workspace"]
             )
             for tool_name in (
-                "show_message",
-                "delete_message",
-                "react_to_message",
+                "message_show",
+                "message_delete",
+                "message_react",
             ):
                 with _tool_error("msg_id must be a full 19-digit message id"):
                     await reactor.execute_tool(
@@ -799,7 +1151,7 @@ def test_message_tools_reject_in_pattern_signed_int64_overflow(
                             "msg_id": "9223372036854775808",
                             **(
                                 {"reaction": "ack"}
-                                if tool_name == "react_to_message"
+                                if tool_name == "message_react"
                                 else {}
                             ),
                         },
@@ -871,12 +1223,12 @@ def test_attached_workspaces_freeze_independent_reaction_vocabularies(
             )
             ack_result = await reactor.execute_tool(
                 ack_canonical,
-                "react_to_message",
+                "message_react",
                 {"msg_id": str(ack_source.ts), "reaction": "ack"},
             )
             done_result = await reactor.execute_tool(
                 done_canonical,
-                "react_to_message",
+                "message_react",
                 {"msg_id": str(done_source.ts), "reaction": "done"},
             )
             assert ack_result["records"][0]["reaction"] == "ack"
@@ -885,20 +1237,20 @@ def test_attached_workspaces_freeze_independent_reaction_vocabularies(
             with _tool_error("reaction must be one of: ack"):
                 await reactor.execute_tool(
                     ack_canonical,
-                    "react_to_message",
+                    "message_react",
                     {"msg_id": str(ack_source.ts), "reaction": "done"},
                 )
             with _tool_error("reaction must be one of: done"):
                 await reactor.execute_tool(
                     done_canonical,
-                    "react_to_message",
+                    "message_react",
                     {"msg_id": str(done_source.ts), "reaction": "ack"},
                 )
 
             configure(ack_workspace, "done")
             frozen = await reactor.execute_tool(
                 ack_canonical,
-                "react_to_message",
+                "message_react",
                 {"msg_id": str(ack_source.ts), "reaction": "ack"},
             )
             assert frozen["records"][0]["reaction"] == "ack"
@@ -910,7 +1262,7 @@ def test_attached_workspaces_freeze_independent_reaction_vocabularies(
             )
             refreshed = await reactor.execute_tool(
                 str(reattached["workspace"]),
-                "react_to_message",
+                "message_react",
                 {"msg_id": str(ack_source.ts), "reaction": "done"},
             )
             assert refreshed["records"][0]["reaction"] == "done"
@@ -970,9 +1322,9 @@ def test_same_workspace_rejects_overlap_while_another_workspace_progresses(
             with _tool_error("workspace busy; retry after backoff"):
                 await reactor.execute_tool(slow, "who", {"thread": None})
             for tool_name in (
-                "show_message",
-                "delete_message",
-                "react_to_message",
+                "message_show",
+                "message_delete",
+                "message_react",
             ):
                 with _tool_error("workspace busy; retry after backoff"):
                     await reactor.execute_tool(
@@ -982,7 +1334,7 @@ def test_same_workspace_rejects_overlap_while_another_workspace_progresses(
                             "msg_id": "1234567890123456789",
                             **(
                                 {"reaction": "ack"}
-                                if tool_name == "react_to_message"
+                                if tool_name == "message_react"
                                 else {}
                             ),
                         },
@@ -1713,14 +2065,16 @@ def test_every_tool_declares_a_closed_common_output_schema() -> None:
         "set_name": "member",
         "say": "message",
         "reply": "message",
-        "show_message": "message",
-        "delete_message": "deletion",
-        "react_to_message": "reaction",
+        "message_show": "message",
+        "message_delete": "deletion",
+        "message_react": "reaction",
         "read": "message",
         "inbox": "notification",
         "log": "message",
         "list": "thread",
-        "rename": "thread",
+        "channel_show": "channel",
+        "channel_topic": "channel",
+        "channel_rename": "thread",
         "who": "member",
         "whoami": "member",
     }
@@ -1734,10 +2088,17 @@ def test_every_tool_declares_a_closed_common_output_schema() -> None:
             == expected_record_types[tool.name]
         )
         assert schema["properties"]["record_type"]["type"] == "string"
-        assert schema["properties"]["records"]["items"]["additionalProperties"] is False
+        record_schema = schema["properties"]["records"]["items"]
+        if "oneOf" in record_schema:
+            assert all(
+                branch["additionalProperties"] is False
+                for branch in record_schema["oneOf"]
+            )
+        else:
+            assert record_schema["additionalProperties"] is False
 
     deletion_schema = next(
-        tool.outputSchema for tool in TOOLS if tool.name == "delete_message"
+        tool.outputSchema for tool in TOOLS if tool.name == "message_delete"
     )
     assert deletion_schema is not None
     assert deletion_schema["properties"]["records"]["items"] == {
@@ -1760,7 +2121,7 @@ def test_every_tool_declares_a_closed_common_output_schema() -> None:
         "type": "object",
     }
     reaction_schema = next(
-        tool.outputSchema for tool in TOOLS if tool.name == "react_to_message"
+        tool.outputSchema for tool in TOOLS if tool.name == "message_react"
     )
     assert reaction_schema is not None
     assert reaction_schema["properties"]["records"]["items"] == {
@@ -1815,7 +2176,7 @@ def test_every_tool_declares_a_closed_common_output_schema() -> None:
     ],
 )
 @pytest.mark.parametrize(
-    "tool_name", ["show_message", "delete_message", "react_to_message"]
+    "tool_name", ["message_show", "message_delete", "message_react"]
 )
 def test_exact_message_tool_schemas_reject_non_exact_string_ids(
     tool_name: str,
@@ -1828,13 +2189,13 @@ def test_exact_message_tool_schemas_reject_non_exact_string_ids(
             instance={
                 "workspace": "/workspace",
                 "msg_id": invalid,
-                **({"reaction": "ack"} if tool_name == "react_to_message" else {}),
+                **({"reaction": "ack"} if tool_name == "message_react" else {}),
             },
             schema=tool.inputSchema,
         )
 
 
-@pytest.mark.parametrize("tool_name", ["show_message", "delete_message"])
+@pytest.mark.parametrize("tool_name", ["message_show", "message_delete"])
 def test_exact_message_tool_manifest_contract(tool_name: str) -> None:
     tool = next(tool for tool in TOOLS if tool.name == tool_name)
 
@@ -1873,7 +2234,7 @@ def test_exact_message_tool_manifest_contract(tool_name: str) -> None:
 def test_react_to_message_schema_rejects_malformed_reaction_slugs(
     invalid: object,
 ) -> None:
-    tool = next(tool for tool in TOOLS if tool.name == "react_to_message")
+    tool = next(tool for tool in TOOLS if tool.name == "message_react")
 
     with pytest.raises(ValidationError):
         validate(
@@ -1887,7 +2248,7 @@ def test_react_to_message_schema_rejects_malformed_reaction_slugs(
 
 
 def test_react_to_message_manifest_contract_has_no_static_enum() -> None:
-    tool = next(tool for tool in TOOLS if tool.name == "react_to_message")
+    tool = next(tool for tool in TOOLS if tool.name == "message_react")
 
     assert tool.description == (
         "Send one configured reaction to the current audience of an exact "
@@ -1901,7 +2262,7 @@ def test_react_to_message_manifest_contract_has_no_static_enum() -> None:
     assert tool.inputSchema["properties"]["reaction"] == {
         "description": (
             "Configured lowercase ASCII reaction slug matching "
-            "^[a-z0-9][a-z0-9_-]{0,31}$. Used only by react_to_message; the "
+            "^[a-z0-9][a-z0-9_-]{0,31}$. Used only by message_react; the "
             "schema is not an enum because the attached workspace config "
             "remains authoritative."
         ),
@@ -1942,7 +2303,7 @@ def test_exact_tool_manifest_snapshot() -> None:
         separators=(",", ":"),
     ).encode()
     assert hashlib.sha256(encoded).hexdigest() == (
-        "b97ef61a1d4613b7369672bfcb175d2cf2a3edfaf95293b1614b60f03262e465"
+        "0e1b8a149d32dcb11da0c6f1b9b61ef83be4e96bb8db2cb62945344ad93332c2"
     )
 
     def assert_property_descriptions(schema: dict[str, object]) -> None:

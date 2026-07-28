@@ -347,6 +347,7 @@ def test_corrupt_dm_state_fails_closed_before_queue_or_watch_runtime(
             )
             session.run("DELETE FROM taut_members WHERE member_id = ?", (bob_id,))
     else:
+        meta: dict[str, object]
         if corruption == "missing-members-meta":
             meta = {}
             kind = "dm"

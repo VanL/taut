@@ -128,7 +128,7 @@ class _RuntimeImportVisitor(ast.NodeVisitor):
                 "inbox",
                 "log",
                 "list",
-                "rename",
+                "channel",
             )
         ),
         (

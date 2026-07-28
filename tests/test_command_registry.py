@@ -351,12 +351,12 @@ def test_static_builtins_do_not_depend_on_installed_metadata() -> None:
         "say",
         "reply",
         "message",
+        "channel",
         "read",
         "inbox",
         "log",
         "list",
         "watch",
-        "rename",
         "who",
         "whoami",
         "rejoin",
@@ -1011,6 +1011,52 @@ def test_conflicts_are_deterministic_and_cannot_override_builtins() -> None:
         "command 'fixture' is unavailable because multiple distributions claim it: "
         "alpha-owner 1.0.0 (alpha.manifest:fixture), "
         "zeta-owner 1.0.0 (zeta.manifest:fixture)"
+    )
+
+
+def test_released_rename_name_uses_ordinary_extension_selection() -> None:
+    from taut.commands import CommandSpec
+    from taut.commands._registry import CommandRegistry
+
+    rename = CommandSpec(
+        1,
+        "rename",
+        "Extension-owned rename.",
+        frozenset(),
+        "fixture.command:create",
+    )
+    channel_claim = CommandSpec(
+        1,
+        "channel",
+        "Counterfeit channel.",
+        frozenset(),
+        "counterfeit.command:create",
+    )
+
+    registry = CommandRegistry(
+        entry_points=(
+            _EntryPoint(
+                "rename",
+                "fixture.manifest:rename",
+                rename,
+                _Distribution("fixture-owner"),
+            ),
+            _EntryPoint(
+                "channel",
+                "counterfeit.manifest:channel",
+                channel_claim,
+                _Distribution("counterfeit"),
+            ),
+        )
+    )
+
+    selected = registry.get("rename")
+    assert selected.spec == rename
+    assert selected.builtin is False
+    assert registry.get("channel").builtin is True
+    assert any(
+        "cannot override the core built-in" in diagnostic and "channel" in diagnostic
+        for diagnostic in registry.diagnostics()
     )
 
 
@@ -3065,11 +3111,11 @@ def test_registry_say_help_does_not_initialize_client() -> None:
         "set",
         "reply",
         "message",
+        "channel",
         "read",
         "inbox",
         "log",
         "list",
-        "rename",
         "watch",
     ],
 )
@@ -3146,6 +3192,58 @@ def test_registry_message_help_is_nested_and_does_not_initialize_client(
     if argv[1:2] == ["react"]:
         assert "REACTION" in stdout.getvalue()
     assert teaching_text in stdout.getvalue()
+    assert stderr.getvalue() == ""
+
+
+@pytest.mark.parametrize(
+    ("argv", "usage", "teaching_text"),
+    [
+        (
+            ["channel", "--help"],
+            "usage: taut channel",
+            "taut channel OPERATION --help",
+        ),
+        (
+            ["channel", "show", "--help"],
+            "usage: taut channel show",
+            "shared registry state",
+        ),
+        (
+            ["channel", "topic", "--help"],
+            "usage: taut channel topic",
+            "500 Unicode code points",
+        ),
+        (
+            ["channel", "rename", "--help"],
+            "usage: taut channel rename",
+            "incomplete rename",
+        ),
+    ],
+)
+def test_registry_channel_help_is_nested_and_does_not_initialize_client(
+    argv: list[str],
+    usage: str,
+    teaching_text: str,
+) -> None:
+    from taut.commands._dispatch import dispatch
+    from taut.commands._registry import CommandRegistry
+
+    stdout = StringIO()
+    stderr = StringIO()
+
+    result = dispatch(
+        argv,
+        registry=CommandRegistry(entry_points=()),
+        stdin=StringIO(),
+        stdout=stdout,
+        stderr=stderr,
+        client_factory=lambda **_kwargs: pytest.fail("help initialized a client"),
+    )
+
+    assert result == 0
+    rendered = stdout.getvalue()
+    assert usage in rendered
+    assert teaching_text in " ".join(rendered.split())
     assert stderr.getvalue() == ""
 
 
@@ -3826,7 +3924,7 @@ def test_registry_rename_moves_subthreads_and_honors_render_modes(
         setup.reply("general", str(root_message.ts), "child")
     finally:
         setup.close()
-    root = ["--db", str(db_path), "rename"]
+    root = ["--db", str(db_path), "channel", "rename"]
 
     result, out, err = _dispatch_static([*root, "general", "ops", "--json"])
     assert result == 0, err
@@ -3876,9 +3974,11 @@ def test_registry_rename_resumes_matching_interrupted_operation(
     result, out, err = _dispatch_static([*root, "log", "general"])
     assert result == 1
     assert out == ""
-    assert "run 'taut rename general ops' to finish it" in err
+    assert "run 'taut channel rename general ops' to finish it" in err
 
-    result, out, err = _dispatch_static([*root, "rename", "general", "ops", "--json"])
+    result, out, err = _dispatch_static(
+        [*root, "channel", "rename", "general", "ops", "--json"]
+    )
     assert result == 0, err
     assert json.loads(out)["thread"] == "ops"
 

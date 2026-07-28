@@ -528,19 +528,28 @@ stable MCP identifiers; the second column names the owning CLI behavior.
 | `list_workspaces` | MCP connection lifecycle | read-only |
 | `join` | `taut join` without `--new` | mutating |
 | `leave` | `taut leave` | mutating |
+| `channel_show` | `taut channel show` | read-only shared channel metadata |
+| `channel_topic` | `taut channel topic` | shared channel-metadata replacement or clear |
 | `set_name` | `taut set name` | mutating |
 | `say` | `taut say` | mutating |
 | `reply` | `taut reply` | mutating |
-| `show_message` | `taut message show` | cursor-mutating exact inspection |
-| `delete_message` | `taut message delete` | author-owned physical deletion |
-| `react_to_message` | `taut message react` | cursor-mutating, notification-producing |
+| `message_show` | `taut message show` | cursor-mutating exact inspection |
+| `message_delete` | `taut message delete` | author-owned physical deletion |
+| `message_react` | `taut message react` | cursor-mutating, notification-producing |
 | `read` | `taut read` | cursor-mutating through the core read contract |
 | `inbox` | `taut inbox` | notification-consuming |
 | `log` | `taut log` | read-only |
 | `list` | `taut list` | read-oriented but updates existing member activity under the core identity contract |
-| `rename` | `taut rename` | mutating |
+| `channel_rename` | `taut channel rename` | mutating |
 | `who` | `taut who` | read-oriented but updates existing member activity under the core identity contract |
 | `whoami` | `taut whoami` without process-explanation output | read-oriented but updates existing member activity under the core identity contract |
+
+MCP identifiers for nested CLI operations use noun-first underscore form.
+`channel_show`, `channel_topic`, `channel_rename`, `message_show`,
+`message_delete`, and `message_react` replace the former verb-first or generic
+identifiers one-for-one. The old identifiers are not aliases and do not appear
+in discovery. This normalization does not change the fixed 20-tool count,
+input/output schemas, annotations, dispatch targets, or domain behavior.
 
 Tool descriptions and MCP annotations are normative agent-facing contract,
 not documentation added after implementation. Descriptions lead with state
@@ -560,17 +569,19 @@ hint.
 | `list_workspaces` | List the canonical workspaces and statuses currently attached to this MCP session. Reads only connection-local cached state. | true | false | true | false |
 | `join` | Join or create a Taut channel. Writes membership state and a channel notice. | false | false | false | true |
 | `leave` | Leave a Taut channel or sub-thread. Removes membership and writes a notice. | false | true | false | true |
+| `channel_show` | Return current metadata for one registered top-level Taut channel. Reads only shared registry state and does not resolve identity, touch activity, inspect a broker queue, or move a cursor. | true | false | true | true |
+| `channel_topic` | Set or clear one registered top-level Taut channel's topic. Requires the attached member's current channel membership; a changed value replaces shared topic state and updates member activity, while an identical value is a no-op. | false | true | false | true |
 | `set_name` | Change the attached member's Taut display name. Replaces identity-routing state for that member. | false | true | false | true |
 | `say` | Post a new Taut message to a channel, sub-thread, or direct-message target. | false | false | false | true |
 | `reply` | Post a new reply under a top-level channel message. May create the reply sub-thread and membership. | false | false | false | true |
-| `show_message` | Return one exact full-id message from this member's current chat memberships, then advance that thread's high-water cursor through the returned id. This may mark unseen intervening history seen. It never joins a thread; use `log` for cursor-neutral known-channel or sub-thread inspection. | false | true | false | true |
-| `delete_message` | Physically and irreversibly delete one exact ordinary message authored by this member, including after leaving its thread. It does not cascade to notifications, sub-threads, memberships, cursors, or thread registry state and is not recall. | false | true | false | true |
-| `react_to_message` | Send one configured reaction to the current audience of an exact ordinary message, excluding this member. Validates against the workspace's attachment-time reaction vocabulary, advances this member's high-water cursor through the target, then attempts one atomic best-effort notification broadcast to every requested inbox. Repeating may deliver duplicates. | false | true | false | true |
+| `message_show` | Return one exact full-id message from this member's current chat memberships, then advance that thread's high-water cursor through the returned id. This may mark unseen intervening history seen. It never joins a thread; use `log` for cursor-neutral known-channel or sub-thread inspection. | false | true | false | true |
+| `message_delete` | Physically and irreversibly delete one exact ordinary message authored by this member, including after leaving its thread. It does not cascade to notifications, sub-threads, memberships, cursors, or thread registry state and is not recall. | false | true | false | true |
+| `message_react` | Send one configured reaction to the current audience of an exact ordinary message, excluding this member. Validates against the workspace's attachment-time reaction vocabulary, advances this member's high-water cursor through the target, then attempts one atomic best-effort notification broadcast to every requested inbox. Repeating may deliver duplicates. | false | true | false | true |
 | `read` | Return oldest unread messages and advance each selected cursor through its returned page. `thread` may select a channel, subthread, `@name-or-alias` DM, or stable `dm.d_*` conversation. Omit it for all joined chat threads. | false | true | false | true |
 | `inbox` | Claim and return notification pointers from this member's inbox. This consumes the pointers; source chat history is not changed by inbox but may already be author-deleted. | false | true | false | true |
 | `log` | Inspect cursor-neutral history for a channel, subthread, or existing actor-accessible DM selected by `@name-or-alias` or stable `dm.d_*` handle. | true | false | true | true |
 | `list` | List ordinary joined/unread threads, every registered thread, or every valid actor-accessible DM. `all` and `dms` are mutually exclusive. Resolving the existing member for actor-scoped list modes may update activity. | false | false | false | true |
-| `rename` | Rename a Taut channel and its sub-threads. Replaces existing thread addresses. | false | true | false | true |
+| `channel_rename` | Rename a Taut channel and its sub-threads. Replaces existing thread addresses. | false | true | false | true |
 | `who` | List Taut members or members of one thread. Resolving the existing member updates the caller's activity timestamp; it does not change the member anchor, token fingerprint, or computed presence. | false | false | false | true |
 | `whoami` | Return the member bound to this workspace attachment. Resolving the existing member updates its activity timestamp; it does not change the member anchor, token fingerprint, or computed presence. | false | false | false | true |
 
@@ -603,9 +614,12 @@ repeats a read. `list` with `dms=true` recovers the attached member's durable DM
 directory and stable handles. `log` reconstructs channel, subthread, or
 actor-accessible DM history without another cursor or activity move. It cannot
 prove which returned page reached the host before cancellation or transport
-loss. `show_message` remains useful only when an exact id is already known and
+loss. `message_show` remains useful only when an exact id is already known and
 retains its cursor effect. These are inspection and recovery aids, not a
 delivery guarantee.
+A started `channel_topic` whose response is canceled or lost likewise has an
+uncertain outcome. The caller uses `channel_show` before considering a
+retry; the MCP layer adds no automatic retry or optimistic concurrency token.
 The per-workspace parent
 admission slot prevents two concurrent MCP commands for one attachment;
 external Taut clients may still race, and the MCP layer neither merges nor
@@ -613,9 +627,9 @@ retries their operations beyond the core monotonic-cursor contract.
 `read` advances membership cursors only through returned records and never
 deletes message history. Its `destructiveHint=true` describes that
 non-additive cursor-state change, not deletion of message bodies.
-`show_message` has the same non-additive high-water effect for one exact
-current-membership record. `react_to_message` has that cursor effect plus
-best-effort notification writes. `delete_message` is the only tool here that
+`message_show` has the same non-additive high-water effect for one exact
+current-membership record. `message_react` has that cursor effect plus
+best-effort notification writes. `message_delete` is the only tool here that
 physically removes a chat row.
 
 Every input property has a nonempty normative `description`. Shared schema
@@ -628,7 +642,8 @@ include these descriptions, not only types and required-property lists.
 | `attach_workspace.workspace` | Absolute local directory containing an existing Taut project. Attachment resolves it once and returns the canonical workspace identifier for later calls. | No relative path or file URI. |
 | ordinary `workspace` | Exact canonical workspace identifier returned by `attach_workspace` or `list_workspaces`. | Do not re-resolve, shorten, or substitute an alias path. |
 | `token` | Sensitive existing Taut continuity token for this workspace. It selects one member and is never returned. | Valid only on `attach_workspace`; do not invent or repeat it in chat. |
-| channel `thread` | Taut channel matching `^[a-z0-9][a-z0-9_-]{0,63}$`; `dm`, `notify`, `sys`, and `taut` are reserved. | `join`, `reply`, `rename.old_name`, and `rename.new_name` require a top-level channel. |
+| channel `thread` | Taut channel matching `^[a-z0-9][a-z0-9_-]{0,63}$`; `dm`, `notify`, `sys`, and `taut` are reserved. | `join`, `reply`, `channel_rename.old_name`, and `channel_rename.new_name` require a top-level channel. |
+| `channel` | Taut channel matching `^[a-z0-9][a-z0-9_-]{0,63}$`; `dm`, `notify`, `sys`, and `taut` are reserved. | Used by `channel_show` and `channel_topic`; no subthread or DM form. |
 | chat `thread` | Taut channel or one-level subthread. A subthread is `<channel>.<19-digit-parent-message-id>`. | `leave` and `who` accept only this narrow form. |
 | chat-or-DM `thread` | Taut channel, one-level subthread, `@name-or-alias`, or stable `dm.d_<26-lowercase-base32-chars>` selector. | `log` accepts all forms and applies actor access checks to DMs. |
 | `read.thread` | Optional chat-or-DM selector. Null or omitted reads every joined chat thread. | Explicit DM selection requires an existing accessible conversation and advances only its returned page. |
@@ -636,9 +651,10 @@ include these descriptions, not only types and required-property lists.
 | `name` | Case-preserving Taut member name matching `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`; routing uniqueness is case-insensitive. | Used only by `set_name`. |
 | `target` | Message destination: a channel such as `general`, a sub-thread such as `general.<19-digit-parent-message-id>`, or a direct message such as `@claude`. | Used only by `say`; no stdin sentinel. |
 | `text` | Nonblank message text written as participant content under Taut's core size and validation rules. | Used by `say` and `reply`. |
+| `topic` | Current channel topic as a string of at most 500 Unicode code points with no CR or LF, or null to clear it. Core rejects blank/Cf-only strings. | Required by `channel_topic`; the string branch uses `maxLength: 500` and `not: { "pattern": "[\\r\\n]" }`. |
 | `reply.msg_id` | Parent message id: the full 19-digit id, or a unique suffix of at least 4 digits among the most recent 1,000 ids in the channel. | Used only by `reply`; ambiguity is an error. |
-| exact-message `msg_id` | Exact native Taut message id as a 19-digit decimal string. Preserve it as text; suffixes, whitespace, signs, and numeric JSON values are invalid. | Used by `show_message`, `delete_message`, and `react_to_message`; all three schemas set `pattern: ^[0-9]{19}$`, and core additionally rejects values outside the public signed-64-bit native timestamp range before identity or lookup. |
-| `reaction` | Configured lowercase ASCII reaction slug matching `^[a-z0-9][a-z0-9_-]{0,31}$`. | Used only by `react_to_message`; the schema is not an enum because the attached workspace config remains authoritative. |
+| exact-message `msg_id` | Exact native Taut message id as a 19-digit decimal string. Preserve it as text; suffixes, whitespace, signs, and numeric JSON values are invalid. | Used by `message_show`, `message_delete`, and `message_react`; all three schemas set `pattern: ^[0-9]{19}$`, and core additionally rejects values outside the public signed-64-bit native timestamp range before identity or lookup. |
+| `reaction` | Configured lowercase ASCII reaction slug matching `^[a-z0-9][a-z0-9_-]{0,31}$`. | Used only by `message_react`; the schema is not an enum because the attached workspace config remains authoritative. |
 | `limit` | Maximum records requested from one queue, from 1 through 1,000 inclusive. | `read` defaults to 100 per selected thread; `inbox` defaults to 1,000; `log` defaults to 100 most-recent matches. |
 | `since` | Exclusive history lower bound: ISO 8601, Unix seconds/milliseconds/nanoseconds, or a native 19-digit message id. | Null means no lower bound; used only by `log`. |
 | `all` | When true, list every registered Taut thread. | Defaults to false; mutually exclusive with `dms`. |
@@ -651,21 +667,23 @@ include these descriptions, not only types and required-property lists.
 | `list_workspaces` | no properties | none | returns all published entries in [MCP-7]'s lexicographic Unicode-code-point order of canonical workspace path |
 | `join` | `workspace: string`, `thread: string`, `persona: string or null` | `workspace`, `thread` | calls `join(..., new=False)`; no identity selector |
 | `leave` | `workspace: string`, `thread: string` | both | ordinary channel/sub-thread membership semantics |
+| `channel_show` | `workspace: string`, `channel: string` | both | calls `TautClient.get_channel(channel)` without actor resolution, activity, queue, or cursor effects |
+| `channel_topic` | `workspace: string`, `channel: string`, `topic: string or null` | all | calls `TautClient.set_channel_topic(channel, topic)` directly; null clears and current membership is required |
 | `set_name` | `workspace: string`, `name: string` | both | no token or member id argument |
 | `say` | `workspace: string`, `target: string`, `text: string` | all | no stdin sentinel; core blank/size rules apply |
 | `reply` | `workspace: string`, `thread: string`, `msg_id: string`, `text: string` | all | core exact/suffix id rules apply |
-| `show_message` | `workspace: string`, `msg_id: string` | both | exact 19-digit pattern; calls `TautClient.show_message(msg_id)`; searches only current registered chat memberships and may advance the located high-water cursor |
-| `delete_message` | `workspace: string`, `msg_id: string` | both | exact 19-digit pattern; calls `TautClient.delete_message(msg_id)`; may delete the acting author's own ordinary row after leave and returns no source content |
-| `react_to_message` | `workspace: string`, `msg_id: string`, `reaction: string` | all | exact 19-digit id and stable slug patterns; calls `TautClient.react_to_message(msg_id, reaction)` directly; runtime validates the attachment-time configured list |
+| `message_show` | `workspace: string`, `msg_id: string` | both | exact 19-digit pattern; calls `TautClient.show_message(msg_id)`; searches only current registered chat memberships and may advance the located high-water cursor |
+| `message_delete` | `workspace: string`, `msg_id: string` | both | exact 19-digit pattern; calls `TautClient.delete_message(msg_id)`; may delete the acting author's own ordinary row after leave and returns no source content |
+| `message_react` | `workspace: string`, `msg_id: string`, `reaction: string` | all | exact 19-digit id and stable slug patterns; calls `TautClient.react_to_message(msg_id, reaction)` directly; runtime validates the attachment-time configured list |
 | `read` | `workspace: string`, `thread: string or null`, `limit: integer` | `workspace` | default limit 100; range 1..1,000; explicit DM selectors follow [TAUT-7.8]; null/omitted keeps bare joined-thread behavior; each selected queue has its own limit and cursor advance |
 | `inbox` | `workspace: string`, `limit: integer` | `workspace` | default 1,000; range 1..1,000 |
 | `log` | `workspace: string`, `thread: string`, `since: string, integer, or null`, `limit: integer` | `workspace`, `thread` | default limit 100; range 1..1,000; DM log is actor-scoped, cursor-neutral, and activity-neutral |
 | `list` | `workspace: string`, `all: boolean`, `dms: boolean` | `workspace` | both default false; `all && dms` is rejected before child dispatch; `dms=true` calls `TautClient.list_direct_messages()` |
-| `rename` | `workspace: string`, `old_name: string`, `new_name: string` | all | channel rename only |
+| `channel_rename` | `workspace: string`, `old_name: string`, `new_name: string` | all | channel rename only |
 | `who` | `workspace: string`, `thread: string or null` | `workspace` | retains core activity-write and computed-presence semantics |
 | `whoami` | `workspace: string` | `workspace` | fixed `explain=False` |
 
-The fixed manifest remains exactly 18 tools. `read.thread` and `log.thread`
+The fixed manifest remains exactly 20 tools. `read.thread` and `log.thread`
 schemas accept the existing channel/subthread grammar, the [IAN-4] `@` route
 grammar, and exact stable-DM grammar `^dm\.d_[a-z2-7]{26}$`. A malformed
 selector is rejected by schema before child dispatch. A well-formed absent or
@@ -734,7 +752,7 @@ not a rollback
 boundary, so a mutation may commit even when its response cannot be
 delivered. Every admitted CLI-shaped command follows this fixed master-thread
 completion order: await the child event; if its generation is still current,
-install the outcome's status and post-command snapshot and recompute the
+install the outcome's status and notification snapshot and recompute the
 aggregate; free the parent admission slot; then either hand the outcome to a
 live transport or discard it after cancellation/disconnect. The workspace remains
 busy through snapshot installation even after its requester cancels. An
@@ -742,7 +760,11 @@ admitted command consumes its [MCP-10] bucket token with no refund after
 cancellation. A caller must inspect the selected workspace's current Taut
 state before retrying an interrupted consuming or mutating call. SDK
 cancellation behavior, including that standard error response, must be proven
-at the stdio protocol boundary.
+at the stdio protocol boundary. `channel_show` carries the child's already
+cached notification snapshot instead of calling `peek_inbox()` after the
+metadata read; every other CLI-shaped command carries a new post-command
+snapshot. This narrow exception preserves `channel_show`'s actor-free,
+sidecar-only contract without changing aggregate ordering.
 
 A current-generation command outcome normally settles its parent admission
 slot. If the child instead reports terminal `identity_lost` or
@@ -773,12 +795,22 @@ workspace lifecycle schema:
 | Tools | `record_type` | Record shape |
 |-------|---------------|--------------|
 | `attach_workspace`, `detach_workspace`, `list_workspaces` | `workspace` | `workspace`, `member_id`, `name`, `backend`, `status` |
-| `join`, `leave`, `say`, `reply`, `show_message`, `read`, `log` | `message` | `thread`, `ts`, `from_id`, `from`, `kind`, `text` |
-| `delete_message` | `deletion` | `thread`, `ts`, `deleted` |
-| `react_to_message` | `reaction` | `thread`, `message_ts`, `reaction`, `audience_count` |
+| `join`, `leave`, `say`, `reply`, `message_show`, `read`, `log` | `message` | `thread`, `ts`, `from_id`, `from`, `kind`, `text` |
+| `message_delete` | `deletion` | `thread`, `ts`, `deleted` |
+| `message_react` | `reaction` | `thread`, `message_ts`, `reaction`, `audience_count` |
 | `inbox` | `notification` | `type`, `to_id`, `actor_id`, `actor_name`, `thread`, `message_ts`, optional `matched`, optional `reaction` |
 | `set_name`, `who`, `whoami` | `member` | `member_id`, `name`, `aliases`, `kind`, `presence`, `last_active_ts`, `persona` |
-| `list`, `rename` | `thread` | `thread`, `kind`, `parent`, `unread`, `last_ts`, plus `members` for direct messages |
+| `channel_show`, `channel_topic` | `channel` | `channel`, `topic`, `topic_updated_ts`, `topic_updated_by_id`, `topic_updated_by_name` |
+| `list`, `channel_rename` | `thread` | Closed kind-discriminated shape: channels add required `topic`; DMs add required `members`; subthreads add neither |
+
+The `channel` record is closed. All five fields are required.
+`topic_updated_ts`, `topic_updated_by_id`, and `topic_updated_by_name` are
+nullable; all four topic fields are null when no topic exists. The existing
+`thread` record is a closed discriminated `oneOf`: the `kind: "channel"`
+branch requires `topic` and forbids `members`; the `kind: "dm"` branch
+requires `members` and forbids `topic`; and the `kind: "subthread"` branch
+forbids both. Schema snapshots prove both `list` and `channel_rename` channel
+records.
 
 `guidance` is an ordered array of objects with exactly `code`, `message`, and
 `action` string fields. Every successful nonempty `read` returns exactly this
@@ -786,16 +818,16 @@ one entry:
 
 `{ "action": "Use log for non-consuming channel, sub-thread, or accessible direct-message rereads. After an uncertain read, inspect list before retrying.", "code": "read_cursor_advanced", "message": "Read cursors advanced through the returned records; no message history was deleted." }`
 
-An empty `delete_message` result returns exactly this one content-free entry:
+An empty `message_delete` result returns exactly this one content-free entry:
 
 `{ "action": "Verify the full 19-digit message id and current author identity before retrying.", "code": "message_not_deleted", "message": "No matching deletable own message was found." }`
 
-An empty `react_to_message` result returns exactly this one content-free entry:
+An empty `message_react` result returns exactly this one content-free entry:
 
 `{ "action": "Verify the full 19-digit message id, current membership, and that another current thread member exists before retrying.", "code": "message_reaction_not_sent", "message": "No reactable message with a current recipient was found." }`
 
 Every other successful result, including empty `read` and empty
-`show_message`, returns `"guidance": []` in version 1. Guidance is ordinary
+`message_show`, returns `"guidance": []` in version 1. Guidance is ordinary
 result data, not a warning, authorization signal, or claim that response
 delivery proves whether the operation committed.
 
@@ -810,7 +842,8 @@ Workspace status is one of `ready`, `detaching`, `identity_lost`,
 only; output never includes a token, token fingerprint, DSN, backend target,
 config contents, or aliases for the workspace path. Write and thread
 membership tools return their primary record: for example `join` and `leave`
-return the notice message, and `rename` returns the renamed thread. Workspace
+return the notice message, and `channel_rename` returns the renamed thread.
+Workspace
 identity already exists, so no tool emits a member-creation token prelude. A
 single logical result is still a one-record array. Warnings are exact warning
 strings produced by the client operation. In addition, `list_workspaces`
@@ -860,9 +893,20 @@ are mapped to the fixed content-free classes below and never include an
 exception's path, target, DSN, token, or member text. Unknown tools, malformed MCP
 calls, and framing failures remain JSON-RPC/protocol errors. Version 1 does
 not claim a stable cross-version numeric MCP or tool-error taxonomy.
-Well-formed inaccessible or absent `show_message` targets return an empty
+For channel metadata tools, schema-invalid calls fail before child dispatch.
+An in-schema blank topic, absent membership, corrupt topic metadata, or a
+recoverable backend/storage `TautError` returns `isError: true` with one text
+content block and no structured content. An absent or wrong-kind channel
+returns exactly
+`{ "empty": true, "guidance": [], "record_type": "channel", "records": [],
+"warnings": [], "workspace": "<canonical>" }`.
+Attachment identity loss retains the fixed `workspace identity lost; detach
+and reattach` result and status transition. An unexpected non-Taut exception
+retains the terminal reactor-fault path and fixed `workspace reactor failed;
+detach and reattach` result.
+Well-formed inaccessible or absent `message_show` targets return an empty
 `message` result. Missing, ineligible, concurrently deleted, and repeated
-`delete_message` targets return byte-equivalent empty `deletion` results with
+`message_delete` targets return byte-equivalent empty `deletion` results with
 the content-free guidance above; they reveal no body, author, participant,
 thread, or existence distinction. Shape-invalid exact ids are rejected by the
 tool schema. An in-shape but out-of-range id reaches core validation and
@@ -1116,10 +1160,13 @@ anchor or fingerprint. The repeated backstop therefore cannot keep an
 attached identity's activity timestamp artificially current. If this peek
 reports the promoted core API's missing-member identity
 error, the child emits the same atomic `identity_lost` status and empty
-snapshot used for command-discovered loss. After every completed MCP command,
-whether successful or erroneous,
-it sends one completion event containing both the command outcome and the
-post-command snapshot. The connection reactor installs that snapshot and
+snapshot used for command-discovered loss. After every completed MCP command
+other than `channel_show`, whether successful or erroneous, the child obtains
+a new notification snapshot. `channel_show` instead reuses the already cached
+snapshot and performs no `peek_inbox()`, identity resolution, or notification-
+queue inspection as part of that command. In both cases the child sends one
+completion event containing the command outcome and its selected snapshot. The
+connection reactor installs that snapshot and
 recomputes the aggregate before freeing the parent admission slot, then either hands a
 live response to the transport or discards the outcome after cancellation or
 disconnect. A command that discovers identity loss uses that same atomic
@@ -1192,18 +1239,21 @@ requirements:
     channel, subthread, or DM history. After an uncertain `read`, inspect
     `list` and the selected conversation with `log` before retrying. A later
     log can recover history but cannot prove which read page reached the host.
-11. Use `show_message` only when the exact 19-digit id is known and moving
+    Ordinary channel list records include their current topic for compact
+    orientation; use `channel_show` when current channel metadata is needed
+    directly. Do not timer-poll `channel_show` or `channel_topic`.
+11. Use `message_show` only when the exact 19-digit id is known and moving
     seen state is intended. It searches only current memberships and advances
     that thread's high-water cursor through the returned id, which may mark
     unseen intervening history seen. Use `log` for cursor-neutral known-channel
     or sub-thread inspection. Preserve returned 19-digit integer `ts` values as
     decimal text before reuse in JavaScript.
-12. Treat `delete_message` as blind-capable, physical, and irreversible. It
+12. Treat `message_delete` as blind-capable, physical, and irreversible. It
     deletes only the attached member's own ordinary message but may do so after
     leave; it does not retract already-fetched output or cascade to
     notifications, child threads, memberships, or cursors. After an uncertain
     outcome, do not infer prior success from an empty retry.
-13. `react_to_message` advances the actor's high-water cursor and attempts one
+13. `message_react` advances the actor's high-water cursor and attempts one
     atomic best-effort broadcast to every requested notification queue,
     establishing an inbox with no retained row. Preserve `message_ts` as
     decimal text. A broadcast warning means the all-or-none commit outcome may
@@ -1280,7 +1330,7 @@ and never splice it into server instructions, channel cues, logs, error
 templates, or protocol control fields. Hosts and agents retain their normal
 permission and prompt-injection defenses.
 
-`delete_message` may locate an exact target by scanning all registered chat
+`message_delete` may locate an exact target by scanning all registered chat
 threads, including a DM between other members, before applying author policy.
 That internal decode grants no visibility: every ineligible target uses the
 same content-free empty result and guidance as an absent target. Author
@@ -1289,7 +1339,7 @@ matching is an accident-prevention rule under [TAUT-9], not authentication.
 The master serial point and no-wait parent admission slots in [MCP-5] permit
 at most one command per workspace while allowing different workspaces to
 progress concurrently. One
-fixed in-memory token bucket covers all 18 tools and direct aggregate-resource
+fixed in-memory token bucket covers all 20 tools and direct aggregate-resource
 reads across the connection: capacity 40, refill 20 operations per second.
 The master owns a continuous monotonic-time bucket initialized to 40.0. On
 each schema-valid tool or direct-resource-read attempt at time `now`, it sets
@@ -1379,14 +1429,14 @@ notification match. A started `read` may likewise advance one or several chat
 cursors before its response is discarded. Later `list` (including `dms=true`)
 and cursor-neutral `log` recover current unread state and history for channels,
 subthreads, and accessible DMs, but cannot prove which returned page reached
-the host; blind retry remains unsafe. A started `show_message` may return a
+the host; blind retry remains unsafe. A started `message_show` may return a
 fetched row and advance its
 cursor even if another client concurrently deletes the row, or may return
 after a concurrent leave makes the cursor update affect no row. A started
-`delete_message` may physically remove its exact row before its response is
+`message_delete` may physically remove its exact row before its response is
 discarded. Retrying it can return the same empty result as prior absence, so
 version 1 cannot prove whether the lost invocation committed; no tombstone or
-recall protocol exists. A started `react_to_message` may advance the actor
+recall protocol exists. A started `message_react` may advance the actor
 cursor and may commit reaction rows to every requested inbox before its
 response is discarded. The broker commits the complete requested set or none.
 The `audience_count` receipt, warning, or later empty observation cannot prove
@@ -1439,20 +1489,38 @@ Required proof includes:
 - installed-wheel startup and initialize/list-tools/list-resources exchange
   through a real stdio subprocess with zero attached workspaces and byte-clean
   stdout
-- one firing contract test for each of the 18 tools in [MCP-5], including
+- one firing contract test for each of the 20 tools in [MCP-5], including
   state and empty/error semantics rather than registration alone
+- exact discovery proves the noun-first nested-operation identifiers and the
+  absence of `show_channel`, `set_channel_topic`, `rename`, `show_message`,
+  `delete_message`, and `react_to_message`
 - exact tool-description, annotation, input-schema, and successful-output-
   schema snapshots for every [MCP-5] tool, including every property
   description, the common `guidance` field and guidance-entry schema,
   rejection of additional properties, and canonical
   text/structured parity; state probes confirm that `log` and
-  `list_workspaces` are observational, `show_message` and `read` advance chat
-  cursors, `react_to_message` advances its cursor and reports the intended
-  audience without claiming delivery, `delete_message` removes only its
+  `list_workspaces` are observational, `message_show` and `read` advance chat
+  cursors, `message_react` advances its cursor and reports the intended
+  audience without claiming delivery, `message_delete` removes only its
   eligible exact row, `inbox`
   claims pointers, and `list`/`who`/`whoami` retain their declared activity
   effects; attach validation reads an existing member without identity,
   claim, activity, anchor, or fingerprint mutation
+- exact `channel_show` and `channel_topic` schema, description,
+  annotation, dispatch, and result proofs. Schema probes include missing
+  fields, additional properties, null clear, blank/Cf-only core rejection,
+  500/501 code points, CR and LF in the middle and at the end, and closed
+  channel records. Outcome probes distinguish absent/wrong-kind successful
+  empty channel results from membership, corruption, recoverable storage,
+  identity-loss, and terminal reactor `isError` paths.
+- real attached-workspace SQLite and PostgreSQL topic flows prove set, show,
+  list, rename, clear, same-value no-op, activity effects, no message,
+  notification, or cursor effects, exact audit fields, and cancellation
+  recovery through `channel_show`. A reactor-level probe proves
+  `channel_show` returns with the cached notification snapshot and performs no
+  post-command inbox peek. Thread output-schema snapshots prove the
+  closed channel/DM/subthread discriminated union through both `list` and
+  `channel_rename`.
 - real SQLite and PostgreSQL state probes for `list`, `who`, and `whoami`:
   start from a stable existing-member anchor, token fingerprint, computed
   presence, and activity timestamp; call each tool through its ordinary
@@ -1467,7 +1535,7 @@ Required proof includes:
 - parity probes showing each MCP tool calls the named public Python behavior
   with the required workspace and returns its declared record type without
   parsing CLI text
-- `show_message` and `delete_message` schemas require a decimal-string
+- `message_show` and `message_delete` schemas require a decimal-string
   `msg_id` matching exactly 19 digits; suffixes, signs, whitespace, 18/20
   digits, integers, booleans, and null fail before child dispatch, while a
   19-digit signed-64-bit overflow reaches core range validation and performs
@@ -1475,7 +1543,7 @@ Required proof includes:
   prove the existing closed message schema and the closed `deletion` schema
   with integer `ts` and `deleted: true`, both record-type maps and command
   union agree, and instructions preserve ids as decimal text for JavaScript.
-- `react_to_message` schema rejects malformed ids and slugs before child
+- `message_react` schema rejects malformed ids and slugs before child
   dispatch without freezing workspace-defined values into an enum. Attached
   SQLite and PostgreSQL probes cover exact channel, child, and
   registry-checked direct-message audiences; actor exclusion; never-used and
@@ -1496,8 +1564,8 @@ Required proof includes:
   exact claimed-row deletion after locate; unchanged cursors, memberships,
   registry, notifications, child threads, and DM lifecycle; and no whole-queue
   `None` call.
-- Empty `delete_message` returns exactly one content-free
-  `message_not_deleted` guidance entry; empty `show_message` and every
+- Empty `message_delete` returns exactly one content-free
+  `message_not_deleted` guidance entry; empty `message_show` and every
   unaffected successful tool retain their declared guidance. Cancellation and
   transport-loss tests prove started show/delete may commit their core effects
   without a delivered response and that no retry guarantee or recall is
@@ -1524,13 +1592,13 @@ Required proof includes:
 - `list(dms=true)` includes unread, caught-up, and empty valid DMs in core
   order, emits the existing thread schema, rejects `all=true` before child
   dispatch, and creates no state
-- the manifest remains 18 tools, `log` stays read-only annotated, and schema,
+- the manifest remains 20 tools, `log` stays read-only annotated, and schema,
   dispatch, instructions, cancellation recovery, SQLite, and PostgreSQL proofs
   move together
 - every successful nonempty `read` returns exactly one
   `read_cursor_advanced` guidance entry with [MCP-6]'s exact message and
-  action; empty `delete_message` returns exactly the content-free
-  `message_not_deleted` entry; empty `read`, empty `show_message`, and every
+  action; empty `message_delete` returns exactly the content-free
+  `message_not_deleted` entry; empty `read`, empty `message_show`, and every
   other successful tool return `guidance: []`; canonical text and structured
   content agree. Real-state
   inspection proves the returned read advances only the selected cursors and
@@ -1539,8 +1607,8 @@ Required proof includes:
 - exact initialization-instruction snapshots include [MCP-9]'s attachment,
   token, notification-only resource, session callback, explicit-read, and
   recovery rules, including the rule against timer/callback polling of
-  activity-writing `list`/`who`/`whoami`; tests assert server text and
-  behavior, never model compliance
+  activity-writing `list`/`who`/`whoami` or channel metadata tools; tests
+  assert server text and behavior, never model compliance
 - every fixed [MCP-6]/[MCP-10] error snapshot contains its specified recovery
   action, including canonical-selector recovery, bounded backoff, cap
   cleanup, invalid attachment input, and timeout recovery; no fixed message
@@ -1798,6 +1866,9 @@ compatibility workflow.
 
 ## Related Plans
 
+- `docs/plans/2026-07-28-channel-topics-plan.md` — fixed channel metadata
+  read/mutation tools, closed channel and thread records, uncertain-outcome
+  recovery, and coordinated SQLite/PostgreSQL proof.
 - `docs/plans/2026-07-28-direct-message-navigation-plan.md` — actor-aware
   durable DM selection and discovery through the fixed read, log, and list
   tools, with aligned recovery guidance and backend proof.

@@ -320,8 +320,8 @@ Taut conversation arguments use these shapes:
 Not every command accepts every class. `say` accepts channels, subthreads, and
 `@name-or-alias`; it does not accept a stable `dm.d_*` handle. `read`, `log`,
 and `watch` accept their existing channel/subthread forms plus both DM selector
-forms. `join`, `leave`, `reply`, `rename`, and `who THREAD` retain their
-existing narrower contracts.
+forms. `join`, `leave`, `reply`, `channel rename`, and `who THREAD` retain
+their existing narrower contracts.
 
 Documentation should prefer bare channel names in shell commands because an
 unquoted leading `#` can be interpreted as a shell comment. Human rendering may
@@ -659,6 +659,23 @@ The rename must update:
 It must not rewrite existing chat message bodies. Existing message `from` values
 and text remain unchanged.
 
+Rename changes channel and subthread addresses without rebuilding their
+registry metadata. Every `taut_threads.meta` key, including [TAUT-4.4] channel
+topic metadata, survives unchanged. Rename validates the source channel's topic
+object before marker creation or broker mutation and refuses corrupt metadata.
+Topic mutation and rename-marker creation acquire the same per-channel
+transaction serialization key. A concurrent topic transaction either commits
+against the old row before marker creation and follows that row, or observes
+the marker and refuses the old-name write; rename never drops a committed
+topic.
+
+The public CLI route is `taut channel rename OLD NEW`. Its parser, dispatch,
+output, exit classes, and recovery semantics are the existing rename behavior
+rehomed under the reserved `channel` noun. Incomplete-rename diagnostics name
+that exact command. The Python `TautClient.rename_channel()` method and MCP
+`channel_rename` tool retain their domain semantics; the MCP identifier is
+normalized from `rename` without an alias.
+
 ### [IAN-8.2] Rename dependency on SimpleBroker
 
 Taut must use a public SimpleBroker queue-rename API for broker queue renames.
@@ -688,7 +705,8 @@ Because broker queue renames and sidecar updates may not share one transaction,
 the implementation plan must define recovery for partial rename. At minimum,
 the operation needs a sidecar marker that records old name, new name, affected
 queue names, current phase, and completion state so a later command can finish
-or report the interrupted rename.
+or report the interrupted rename. The recovery command is
+`taut channel rename OLD NEW`.
 
 ## 9. Failure Modes and Edge Cases [IAN-9]
 
@@ -727,6 +745,9 @@ or report the interrupted rename.
   receive a stale pointer.
 - Repeated reaction or retry after an uncertain result: duplicate independent
   notification rows are valid.
+- Corrupt channel-topic metadata: rename fails before creating its marker or
+  mutating broker queues; it does not guess, repair, or overwrite the topic
+  object.
 - Reply origin deleted: the registered child thread and its history survive;
   direct child addressing works and new root-based reply creation fails.
 - Sole direct-message row deleted: the deterministic registry and both
@@ -745,7 +766,12 @@ or report the interrupted rename.
 - Channel with dot: rejected. Dots are structural.
 - Channel named `dm`, `notify`, `sys`, or `taut`: rejected.
 - Partial channel rename: must be recoverable or loudly reportable; silent
-  split-brain is not acceptable.
+  split-brain is not acceptable. Diagnostics name
+  `taut channel rename OLD NEW`.
+- Topic mutation racing channel rename: the shared old-name serialization
+  boundary chooses one safe order. Metadata committed before the marker follows
+  the row; mutation after the marker is refused. No committed topic or unknown
+  metadata key may be dropped.
 
 ## 10. Verification Expectations [IAN-10]
 
@@ -821,9 +847,21 @@ Required proofs:
   `message show` actions return empty without renderer preflight
 - channel rename, when enabled by a public SimpleBroker rename API, renames the
   channel and every registered sub-thread and updates sidecar references
+- the CLI rename parser, dispatch, output, exits, and interrupted-rename
+  recovery operate through `taut channel rename OLD NEW`; core registers no
+  top-level rename alias
+- shared real SQLite and PostgreSQL rename/topic races use deterministic
+  barriers to prove the topic-before-marker and marker-before-topic outcomes,
+  complete audit objects, and preservation of reserved `closed` plus unrelated
+  channel metadata
+- rename rejection on a corrupt source topic object occurs before marker
+  creation or broker queue mutation
 
 ## Related Plans
 
+- `docs/plans/2026-07-28-channel-topics-plan.md` — per-channel topic and
+  rename-marker serialization, metadata preservation, and cross-backend race
+  proof.
 - `docs/plans/2026-07-28-direct-message-navigation-plan.md` — actor-scoped
   current-route and stable-handle DM navigation, durable DM directory, and
   fail-closed registry/membership validation.

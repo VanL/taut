@@ -511,9 +511,9 @@ def test_hidden_candidate_uses_the_normative_routing_matrix(
             ):
                 await reactor.execute_tool(str(workspace), "whoami", {})
             for tool_name in (
-                "show_message",
-                "delete_message",
-                "react_to_message",
+                "message_show",
+                "message_delete",
+                "message_react",
             ):
                 with _tool_error(
                     "workspace not attached; use list_workspaces and the exact canonical identifier"
@@ -525,7 +525,7 @@ def test_hidden_candidate_uses_the_normative_routing_matrix(
                             "msg_id": "1234567890123456789",
                             **(
                                 {"reaction": "ack"}
-                                if tool_name == "react_to_message"
+                                if tool_name == "message_react"
                                 else {}
                             ),
                         },

@@ -8,8 +8,9 @@ message read/write path, watcher, and CLI/API split. The TUI, summon extension,
 MCP extension, and non-SQL state mappings remain out of scope.
 
 Implementation status: the current code implements the member-id,
-mutable-name, direct-message, notification, and channel-rename model specified
-in `docs/specs/03-identity-addressing-notifications.md`.
+mutable-name, direct-message, notification, channel-topic, and channel-rename
+models specified in `docs/specs/02-taut-core.md` and
+`docs/specs/03-identity-addressing-notifications.md`.
 
 ## Governing Spec References
 
@@ -273,6 +274,37 @@ thread names. The client keeps a stable per-instance label mapping that human
 renderers use for `DM with <current-name>` headings without changing message
 or JSON values.
 
+Channel topics live in the existing top-level channel registry row because
+they describe the channel, not any one message or queue. The `meta` object is a
+small namespace: `topic` is an exact audit object and `closed` is only a
+reserved sibling in this version. Topic writes replace or remove only the
+`topic` member, preserving `closed` and unknown keys. A malformed topic object
+fails closed. Readers never infer or repair a partial shape.
+
+`get_channel()` is deliberately cheaper and more observational than
+`list_threads()`: it reads one sidecar row and the current topic author's
+display name without resolving an actor, opening a broker queue, touching
+activity, or moving a cursor. `set_channel_topic()` validates text before
+identity work, then requires an existing actor and current channel membership.
+An actual change stores text, timestamp, and stable author id together and
+updates activity. An identical set or already-absent clear preserves the
+existing audit object and activity.
+
+Metadata merge and authority checks happen inside one state transaction.
+SQLite's write transaction serializes the mutation. PostgreSQL also takes the
+advisory lock for `taut:channel:<channel-name>`. Rename-marker creation joins
+that same namespace, which closes the only race that could otherwise let an
+old-name topic update miss a concurrent rename. The topic follows the registry
+row when the topic transaction wins; the mutation sees the marker and refuses
+the old name when rename wins. No topic operation posts a chat notice or a
+notification. History remains reserved for conversation events, while the
+topic audit fields carry current-state attribution.
+
+The reserved `closed` key and the `channel` CLI noun leave room for a later
+lifecycle feature, but they do not implement one. This version assigns no
+shape or default to `closed`, does not write or interpret it, and does not
+filter or reject channel operations based on it.
+
 Every live chat write uses SimpleBroker's atomic `Queue.write(body)` and takes
 the committed message id from that same call ([TAUT-3.4]). Allocating an id with
 `Queue.generate_timestamp()` and inserting it later with
@@ -341,7 +373,7 @@ The rename marker is also the recovery contract ([IAN-8.3]). It is written
 before the first broker rename, carries the authoritative affected-queue
 list, and is cleared only by the sidecar apply step, so an interruption
 anywhere in the window leaves a marker naming exactly what was in flight.
-Recovery deliberately rides the same `taut rename OLD NEW` invocation
+Recovery deliberately rides the same `taut channel rename OLD NEW` invocation
 instead of a repair verb: the marker already names the one legal operation,
 every other command refuses with that exact command line, and [TAUT-10]
 reserves general registry/queue divergence for a future `doctor` verb —
@@ -672,19 +704,20 @@ requirement or auditing implementation coverage.
 | [TAUT-3.2], project resolution, resolved target/config handoff, and Windows SQLite path preflight | `taut/_constants.py::load_config`, `taut/client/_base.py::_ClientBase.__init__`, `_resolve_target`, `taut/client/__init__.py::TautClient.init` | resolved-handoff, argument-pair, missing-target cases in `tests/test_client.py`; `tests/test_shared_contract.py::test_project_resolved_target_config_handoff_contract` on SQLite and PostgreSQL; `tests/test_project_config.py`; `tests/test_cli.py::test_init_uses_project_config_postgres_backend`, `test_windows_sqlite_target_validation_rejects_every_control`, `test_posix_sqlite_target_validation_preserves_control_bearing_paths`, and `test_cli_windows_control_bearing_database_target_fails_fast` |
 | [TAUT-3.3], [TAUT-3.4], sidecar schema and version gate | `taut/state/_sql.py::SqlSidecarTautState.ensure_schema`, `taut/state/__init__.py::TautState` | `tests/test_state_contract.py`, `tests/test_shared_contract.py`, `extensions/taut_pg/tests/test_pg_sidecar.py::test_postgres_concurrent_empty_schema_initializers_converge` |
 | [TAUT-4], channels, membership, replies, reads, logs, and listing | `taut/client/_threads.py::ThreadsMixin.join`, `leave`, `list_threads`; `taut/client/_messaging.py::MessagingMixin.say`, `reply`, `read_unread`, `log`; `taut/client/_identity.py::IdentityMixin.who` | `tests/test_client.py`, `tests/test_cli.py`, `tests/test_shared_contract.py` |
+| [TAUT-4.4], channel-topic validation, observational reads, membership-scoped mutation, metadata merge, and rename serialization | `taut/state/_channel_topics.py`; `taut/state/_sql.py::set_channel_topic`, `start_channel_rename`; `taut/client/_threads.py::ThreadsMixin.get_channel`, `set_channel_topic`, `_channel_from_row` | Channel-topic and corruption cases in `tests/test_state_contract.py`, `tests/test_client.py`, and `tests/test_shared_contract.py` on SQLite and PostgreSQL; channel CLI cases in `tests/test_cli.py` |
 | [TAUT-5], [IAN-3], [IAN-4], identity claims, deterministic selector capture, recognition, automatic display names, rejoin, and name changes | `taut/identity.py`, `taut/state/_sql.py::route_keys_in_use`, `taut/client/_identity.py::IdentityMixin._resolve_member`, `_create_member`, `rejoin`, `set_name` | `tests/test_identity.py`; `tests/test_client.py::test_existing_explicit_selector_skips_capture_and_preserves_process_identity`, `test_valid_token_selector_skips_capture_and_preserves_token_activity`, selector creation/guest/rejoin/explain cases, and `test_automatic_*`; `tests/test_identity_performance.py` (manual evidence, not a timing contract); `tests/test_shared_contract.py::test_project_automatic_name_skips_alias_owned_route_contract`; `tests/test_cli.py::test_rejoin_*` |
 | [TAUT-6], message envelopes and sender snapshots | `taut/envelope.py`, `taut/client/_codec.py::message_from_body`, `message_from_decoded`, `taut/client/_messaging.py::MessagingMixin._write_message` | `tests/test_envelope.py`, `tests/test_client.py::test_set_name_changes_current_name_without_changing_member_id` |
 | [TAUT-6.5], blank user messages and exact accepted text | `taut/_message_text.py::is_blank_message_text`, `taut/_exceptions.py::BlankMessageError`, `taut/client/_messaging.py::MessagingMixin.say`, `reply`, and `taut/commands/_dispatch.py::_render_execution_error` | `tests/test_message_text.py`; blank, precedence, historical-read, and exact-text cases in `tests/test_client.py`, `tests/test_cli.py`, and `tests/test_shared_contract.py`; paired import proof in `tests/test_core_summon_wheel_matrix.py` |
 | [TAUT-6.4], [TAUT-8.3], [TAUT-8.6], [TAUT-9], terminal text safety and exact-data boundaries | `taut/terminal.py::escape_terminal_text`, `taut/defaults.toml`, `taut/commands/_rendering.py::write_human_line`, dispatcher/parser diagnostics, and the Summon command/log adapters | `tests/test_terminal_text.py`, terminal-control cases in `tests/test_cli.py` and `tests/test_command_registry.py`, `tests/test_architecture_boundaries.py::test_first_party_terminal_sink_inventory_is_explicit`, and the touched Summon CLI/driver/PTY tests |
 | [TAUT-7], read cursors, exact show/delete/react, bounded per-call unread pages, and chat-history peek discipline | `taut/client/_messaging.py::MessagingMixin.read`, `read_unread`, `show_message`, `delete_message`, `react_to_message`, `_implicit_subthread_membership`; `taut/client/_threads.py::_thread_from_row`, `_unread_count`; `taut/state/_sql.py` membership and cursor helpers | `tests/test_client.py` exact-id, ownership, reaction audience/failure, visibility, cursor, race, limit, decode-failure, caught-up-list, saturation, and list-race cases; `tests/test_client_stateful.py`; `tests/test_state_contract.py`; `tests/test_shared_contract.py::test_project_read_limit_paginates_without_skipping`, `test_project_exact_show_and_delete_contract`, and `test_project_message_reaction_contract` on SQLite and PostgreSQL |
-| [TAUT-8.1], [TAUT-8.2], CLI behavior, rendering, JSON, help, and exit codes | `taut/cli.py`, `taut/commands/_dispatch.py`, and per-verb command adapters | `tests/test_cli.py` parser-inventory, help-phrase, explicit-argv, subprocess, rendering, blank-input, and exit-class tests; `tests/test_public_api.py` |
+| [TAUT-8.1], [TAUT-8.2], CLI behavior, rendering, JSON, help, and exit codes | `taut/cli.py`, `taut/commands/_dispatch.py`, `taut/commands/channel.py`, and the other per-verb command adapters | `tests/test_cli.py` parser-inventory, channel-topic/rename, help-phrase, explicit-argv, subprocess, rendering, blank-input, and exit-class tests; `tests/test_public_api.py` |
 | [TAUT-8.6], command manifests, installed discovery, dispatch, parser/context policy, and lazy loading | `taut/commands/` | `tests/test_command_registry.py`, `tests/test_lazy_imports.py`, `tests/test_architecture_boundaries.py`, installed-wheel cases in `tests/test_core_summon_wheel_matrix.py` |
-| [TAUT-8.3], Python API objects, `MessageDeletion`, `MessageReaction`, notification peek, and verb semantics | `taut/client/__init__.py::TautClient`, `taut/client/_models.py`, `taut/client/_notifications.py::NotificationsMixin.peek_inbox`, the other client mixins, and lazy root exports | `tests/test_public_api.py`, `tests/test_client.py` exact-message, reaction, notification-peek, and other client contracts, shared exact-message/reaction/notification contracts in `tests/test_shared_contract.py` on SQLite and PostgreSQL, `tests/test_terminal_text.py`, `tests/test_lazy_imports.py` |
+| [TAUT-8.3], Python API objects, `Channel`, `MessageDeletion`, `MessageReaction`, notification peek, and verb semantics | `taut/client/__init__.py::TautClient`, `taut/client/_models.py`, `taut/client/_notifications.py::NotificationsMixin.peek_inbox`, the other client mixins, and lazy root exports | `tests/test_public_api.py`, `tests/test_client.py` channel, exact-message, reaction, notification-peek, and other client contracts, shared channel/exact-message/reaction/notification contracts in `tests/test_shared_contract.py` on SQLite and PostgreSQL, `tests/test_terminal_text.py`, `tests/test_lazy_imports.py` |
 | [TAUT-8.4], [TAUT-8.5], watcher behavior and shared reactor lifecycle | `taut/watcher.py::BaseReactor`, `taut/watcher.py::TautWatcher`, `taut/_watch_runtime.py`, `taut/client/_watching.py`, `taut/client/__init__.py::TautClient.watch`, `taut/commands/watch.py` | `tests/test_watcher.py` ownership, stop, wake, cursor replay, construction cleanup, explicit-target resolution, terminal-stop, poison, ordering, and same-instance tests; `tests/test_cli.py::test_cli_watch_json_flushes_records_while_live`, `test_cli_watch_closed_pipe_exits_0_without_advancing_cursor`, `test_cli_watch_policy_failure_stops_without_advancing_cursor`; `tests/test_architecture_boundaries.py::test_first_party_reactors_inherit_guarded_lifecycle_templates`; `tests/test_shared_contract.py::test_project_watcher_receives_cli_write`; `extensions/taut_pg/tests/test_reactor.py` native-waiter rebind and forced polling-fallback tests |
 | [IAN-4], alias/name route namespace | `taut/state/_sql.py` member and alias helpers, `taut/_constants.py::route_key`, `validate_member_name` | `tests/test_state_contract.py`, `tests/test_client.py::test_set_name_changes_current_name_without_changing_member_id`, PostgreSQL create/rename-versus-alias races in `extensions/taut_pg/tests/test_pg_sidecar.py` |
 | [IAN-5], [IAN-6], addressing and special queue names | `taut/addressing.py`, `taut/client/_messaging.py::MessagingMixin.say`, `_say_dm`; `taut/client/_threads.py::_thread_from_row` | `tests/test_addressing.py`, `tests/test_client.py::test_direct_message_queue_is_stable_across_name_change`, `test_channel_names_reject_dots_and_reserved_words` |
 | [IAN-7], notification and reaction payloads, observational peek, claiming, and stale pointers after message deletion | `taut/client/_messaging.py::_write_mention_notifications`, `react_to_message`, `delete_message`; `taut/client/_codec.py::notification_from_body`; `taut/client/_notifications.py::_write_notification`, `peek_inbox`, `inbox`; `taut/commands/_rendering.py`; `taut/watcher.py` notification path | notification/reaction peek, consuming-inbox, audience, broadcast-failure, and deletion-without-cascade cases in `tests/test_client.py`; notification rendering in `tests/test_cli.py`; shared notification/reaction contracts in `tests/test_shared_contract.py`; `tests/test_watcher.py` |
-| [IAN-8], channel rename and partial-rename reporting | `taut/client/_threads.py::ThreadsMixin.rename_channel`, `taut/client/_base.py::_ClientBase._ensure_no_incomplete_channel_rename`; `taut/state/_sql.py` rename helpers | `tests/test_client.py::test_rename_channel_moves_messages_and_subthreads`, `test_incomplete_channel_rename_blocks_chat_history_operations`, `tests/test_state_contract.py`, shared rename tests |
+| [IAN-8], channel rename, topic preservation/serialization, and partial-rename reporting | `taut/client/_threads.py::ThreadsMixin.rename_channel`, `taut/client/_base.py::_ClientBase._ensure_no_incomplete_channel_rename`; `taut/state/_sql.py` topic and rename helpers | `tests/test_client.py::test_rename_channel_moves_messages_and_subthreads`, channel topic/corruption cases, `test_incomplete_channel_rename_blocks_chat_history_operations`, `tests/test_state_contract.py`, shared rename/topic tests |
 | [TAUT-12.1], Postgres extension boundary | `extensions/taut_pg/`, `taut/_scripts.py`, `bin/pytest-pg` | `extensions/taut_pg/tests/`, `tests/test_shared_contract.py` under `bin/pytest-pg` |
 
 ## Change Guidance

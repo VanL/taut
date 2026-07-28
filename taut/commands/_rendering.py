@@ -19,6 +19,7 @@ _POLICY_ERROR_MESSAGE = "terminal output policy is unavailable"
 
 if TYPE_CHECKING:
     from taut.client import (
+        Channel,
         InitResult,
         Member,
         Message,
@@ -273,6 +274,8 @@ def emit_threads(
                 stdout,
                 f"{label}  {format_unread_count(thread.unread_count)} unread",
             )
+            if thread.kind == "channel" and thread.topic is not None:
+                write_human_line(stdout, f"  topic: {thread.topic}")
 
 
 def emit_notifications(
@@ -394,6 +397,34 @@ def emit_renamed_thread(
         write_human_line(stdout, f"renamed {old_name} to {thread.name}")
 
 
+def emit_channel(
+    channel: Channel,
+    *,
+    json_output: bool,
+    quiet: bool,
+    stdout: TextIO,
+) -> None:
+    """Render one current top-level channel metadata record."""
+
+    if quiet:
+        return
+    if json_output:
+        write_json(stdout, channel_object(channel))
+        return
+    write_human_line(stdout, channel.name)
+    if channel.topic is None:
+        write_human_line(stdout, "  topic: (none)")
+        return
+    write_human_line(stdout, f"  topic: {channel.topic}")
+    author = channel.topic_updated_by_name or channel.topic_updated_by_id
+    assert author is not None
+    assert channel.topic_updated_ts is not None
+    write_human_line(
+        stdout,
+        f"  updated: {channel.topic_updated_ts} by {author}",
+    )
+
+
 def message_object(message: Message) -> dict[str, Any]:
     return {
         "thread": message.thread,
@@ -402,6 +433,16 @@ def message_object(message: Message) -> dict[str, Any]:
         "from": message.from_name,
         "kind": message.kind,
         "text": message.text,
+    }
+
+
+def channel_object(channel: Channel) -> dict[str, Any]:
+    return {
+        "channel": channel.name,
+        "topic": channel.topic,
+        "topic_updated_ts": channel.topic_updated_ts,
+        "topic_updated_by_id": channel.topic_updated_by_id,
+        "topic_updated_by_name": channel.topic_updated_by_name,
     }
 
 
@@ -449,6 +490,8 @@ def thread_object(thread: Thread) -> dict[str, Any]:
     }
     if thread.kind == "dm":
         obj["members"] = list(thread.members)
+    elif thread.kind == "channel":
+        obj["topic"] = thread.topic
     return obj
 
 

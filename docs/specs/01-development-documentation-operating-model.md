@@ -241,6 +241,35 @@ For risky changes, completion should also say whether the rollout or rollback
 assumptions still hold and whether post-deploy observation is pending or
 complete.
 
+### [DOM-10.1] Executable CLI claims
+
+Maintained documentation claims about executable Taut command paths must be
+checked against the deterministic core command registry. The repository owns
+one CLI-claim grammar and source list in its pytest gate; a standalone bin
+entry point imports that contract rather than duplicating it.
+
+Recognized claims are shell-like `taut ...` invocations in Markdown inline
+code or fenced code. Validation covers the top-level verb and any required
+nested operation exposed by a core adapter. It uses
+`CommandRegistry(entry_points=())` plus side-effect-free parser configuration,
+and performs no ambient entry-point discovery, client construction, project
+resolution, database access, or command execution. Full positional and shell
+grammar remain outside this claim gate.
+
+The exact source set is `README.md`, `AGENTS.md`, `CLAUDE.md`,
+`docs/README.md`, `docs/coalescing.md`, `docs/plans/README.md`,
+`extensions/*/README.md`, `docs/agent-context/*.md`,
+`docs/agent-context/runbooks/*.md`, `skills/**/*.md`,
+`docs/implementation/*.md`, and `docs/specs/*.md`. `CHANGELOG.md`,
+`docs/lessons.md`, and individual dated plan bodies are explicitly historical
+and excluded.
+
+A deliberately future, invalid-example, or external-extension command path
+requires a source-scoped exact exemption with a non-empty reason. An exemption
+that now resolves is itself a failure. Failures identify source, line, command
+path, and reason. The standalone checker exits 0 for success, 1 for claim
+failures, and 2 for invocation or environment failure.
+
 ## 11. Independent Review Workflow [DOM-11]
 
 Non-trivial plans and completed work should receive an independent review.
@@ -533,3 +562,6 @@ touch the operating model.
   normal release machinery.
 - `docs/plans/2026-07-28-coalescing-wave-plan.md`: added bounded maintenance
   before distillation and retirement, plus the structured plan-status gate.
+- `docs/plans/2026-07-28-channel-topics-plan.md`: adds the deterministic
+  executable CLI-claim gate alongside the channel command rehome that exposed
+  the prior prose-only gap.

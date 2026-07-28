@@ -8,6 +8,12 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
+from taut.state._channel_topics import (
+    ChannelTopicRecord,
+    decode_channel_topic,
+    require_topic_compatible_kind,
+    validate_channel_topic_text,
+)
 from taut.state._dialect import (
     PORTABLE_SQL_DIALECT,
     POSTGRES_SQL_DIALECT,
@@ -124,6 +130,15 @@ class TautState(Protocol):
 
     def list_threads(self, *, include_internal: bool = False) -> list[ThreadRow]: ...
 
+    def set_channel_topic(
+        self,
+        *,
+        name: str,
+        member_id: str,
+        topic: str | None,
+        updated_ts: int,
+    ) -> tuple[ThreadRow, bool]: ...
+
     def add_membership(
         self,
         *,
@@ -168,6 +183,7 @@ class TautState(Protocol):
 
 __all__ = [
     "ChannelRenameRow",
+    "ChannelTopicRecord",
     "IdentityClaimRow",
     "MemberRow",
     "MembershipRow",
@@ -181,4 +197,7 @@ __all__ = [
     "ThreadKind",
     "ThreadRow",
     "dialect_for_taut_target",
+    "decode_channel_topic",
+    "require_topic_compatible_kind",
+    "validate_channel_topic_text",
 ]

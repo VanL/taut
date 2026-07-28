@@ -12,13 +12,57 @@ from taut._exceptions import (
     TautError,
     ThreadNameError,
 )
-from taut.state import ChannelRenameRow, MembershipRow, ThreadRow
+from taut.state import (
+    ChannelRenameRow,
+    MembershipRow,
+    ThreadRow,
+    decode_channel_topic,
+    require_topic_compatible_kind,
+    validate_channel_topic_text,
+)
 
 from ._base import _ClientBase, _incomplete_channel_rename_message
-from ._models import Message, Thread
+from ._models import Channel, Message, Thread
 
 
 class ThreadsMixin(_ClientBase):
+    def get_channel(self, channel: str) -> Channel:
+        """Return current metadata for one registered top-level channel."""
+
+        channel = addressing.validate_chat_thread_name(
+            channel,
+            allow_subthread=False,
+        )
+        self._ensure_no_incomplete_channel_rename()
+        row = self._state.get_thread(channel)
+        if row is None or row["kind"] != "channel":
+            raise NotFoundError(f"channel not found: {channel}")
+        return self._channel_from_row(row)
+
+    def set_channel_topic(self, channel: str, topic: str | None) -> Channel:
+        """Set or explicitly clear one channel's current topic."""
+
+        topic = validate_channel_topic_text(topic)
+        channel = addressing.validate_chat_thread_name(
+            channel,
+            allow_subthread=False,
+        )
+        self._ensure_no_incomplete_channel_rename()
+        resolved = self._resolve_member(
+            create=False,
+            _touch_activity=False,
+            _heal_claim=False,
+        )
+        member = self._require_member(resolved)
+        updated_ts = self._meta_queue.generate_timestamp()
+        row, _changed = self._state.set_channel_topic(
+            name=channel,
+            member_id=member["member_id"],
+            topic=topic,
+            updated_ts=updated_ts,
+        )
+        return self._channel_from_row(row)
+
     def joined_thread_names(self) -> tuple[str, ...]:
         """Return this member's joined chat-thread names without side effects.
 
@@ -180,6 +224,7 @@ class ThreadsMixin(_ClientBase):
         old = self._state.get_thread(old_name)
         if old is None or old["kind"] != "channel":
             raise NotFoundError(f"channel not found: {old_name}")
+        decode_channel_topic(old["meta"])
         if self._state.get_thread(new_name) is not None:
             raise ValueError(f"target channel already exists: {new_name}")
         rows = [
@@ -246,6 +291,9 @@ class ThreadsMixin(_ClientBase):
           before mutating anything ([IAN-8.3] "loudly reportable").
         """
 
+        source = self._state.get_thread(marker["old_name"])
+        if source is not None:
+            decode_channel_topic(source["meta"])
         affected = marker["affected"]
         with open_broker(self.target, config=self.config) as broker:
             pending: list[dict[str, str]] = []
@@ -278,6 +326,10 @@ class ThreadsMixin(_ClientBase):
         row: ThreadRow,
         membership: MembershipRow | None,
     ) -> Thread:
+        require_topic_compatible_kind(kind=row["kind"], meta=row["meta"])
+        topic_record = (
+            decode_channel_topic(row["meta"]) if row["kind"] == "channel" else None
+        )
         queue = self.queue(row["name"])
         latest_pending_ts = self._last_message_ts(queue)
         unread_count = self._unread_count(
@@ -316,6 +368,27 @@ class ThreadsMixin(_ClientBase):
             unread_count=unread_count,
             members=members,
             display_name=display_name,
+            topic=None if topic_record is None else topic_record["text"],
+        )
+
+    def _channel_from_row(self, row: ThreadRow) -> Channel:
+        require_topic_compatible_kind(kind=row["kind"], meta=row["meta"])
+        topic = decode_channel_topic(row["meta"])
+        if topic is None:
+            return Channel(
+                name=row["name"],
+                topic=None,
+                topic_updated_ts=None,
+                topic_updated_by_id=None,
+                topic_updated_by_name=None,
+            )
+        author = self._state.get_member(topic["updated_by_id"])
+        return Channel(
+            name=row["name"],
+            topic=topic["text"],
+            topic_updated_ts=topic["updated_ts"],
+            topic_updated_by_id=topic["updated_by_id"],
+            topic_updated_by_name=(None if author is None else author["display_name"]),
         )
 
     def _last_message_ts(self, queue: Queue) -> int | None:

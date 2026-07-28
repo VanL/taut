@@ -485,19 +485,20 @@ def run_workspace_reactor(
                 except Exception:
                     emit(WorkspaceCrashed(generation))
                     return
-                try:
-                    pending = tuple(client.peek_inbox(limit=101))
-                except (IdentityError, TokenError):
-                    degraded = True
-                    emit(WorkspaceIdentityLost(generation))
-                    continue
-                except Exception:
-                    emit(WorkspaceCrashed(generation))
-                    return
-                previous_snapshot = pending[:100]
-                previous_truncated = len(pending) > 100
-                native_snapshot_pending = False
-                next_backstop_at = time.monotonic() + NOTIFICATION_BACKSTOP_SECONDS
+                if command.name != "channel_show":
+                    try:
+                        pending = tuple(client.peek_inbox(limit=101))
+                    except (IdentityError, TokenError):
+                        degraded = True
+                        emit(WorkspaceIdentityLost(generation))
+                        continue
+                    except Exception:
+                        emit(WorkspaceCrashed(generation))
+                        return
+                    previous_snapshot = pending[:100]
+                    previous_truncated = len(pending) > 100
+                    native_snapshot_pending = False
+                    next_backstop_at = time.monotonic() + NOTIFICATION_BACKSTOP_SECONDS
                 emit(
                     WorkspaceCommandOutcome(
                         generation,

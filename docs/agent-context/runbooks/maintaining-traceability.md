@@ -8,8 +8,8 @@ code moved but the plan, spec, or implementation notes did not.
 - **Owner:** the engineer delivering the material change.
 - **Boundary:** spec, plan, implementation-note, code, and test links affected
   by that change; historical plans remain records rather than live contracts.
-- **Verification:** rerun the repository reference gates and inspect the
-  minimum traceability chain named below.
+- **Verification:** rerun the repository reference and CLI-claim gates and
+  inspect the minimum traceability chain named below.
 - **Required action:** update each live owner in the same change or record the
   missing link as an explicit blocker.
 
@@ -40,6 +40,10 @@ Before editing:
   in the same change
 - if new important modules or directories were introduced, update the relevant
   repository or code map
+- if an executable CLI path was added, moved, or removed, update every
+  maintained command example and run `uv run bin/check-cli-claims`; future,
+  invalid-example, and external-extension paths need a source-scoped exact
+  exemption with a non-empty reason in `tests/test_cli_claims.py`
 - if the work depends on repeated task-shaped guidance, decide whether a skill
   should be added or updated
 
@@ -71,6 +75,8 @@ Before calling the work done, check:
 - verification evidence exists and is named explicitly
 - any central skill or runbook used during the work was evaluated for possible
   improvement
+- `uv run bin/check-cli-claims` passes when CLI paths or maintained command
+  examples changed
 - any residual risk or skipped verification is called out
 - for spec-changing work: promotion baseline identifier recorded; promotion
   strategy executed; classification graduation (if any) completed with

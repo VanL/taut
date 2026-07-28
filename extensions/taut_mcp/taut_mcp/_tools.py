@@ -57,7 +57,7 @@ EXACT_MESSAGE_ID_DESCRIPTION = (
 )
 REACTION_DESCRIPTION = (
     "Configured lowercase ASCII reaction slug matching "
-    "^[a-z0-9][a-z0-9_-]{0,31}$. Used only by react_to_message; the schema is "
+    "^[a-z0-9][a-z0-9_-]{0,31}$. Used only by message_react; the schema is "
     "not an enum because the attached workspace config remains authoritative."
 )
 
@@ -70,14 +70,16 @@ RECORD_TYPE_BY_TOOL = {
     "set_name": "member",
     "say": "message",
     "reply": "message",
-    "show_message": "message",
-    "delete_message": "deletion",
-    "react_to_message": "reaction",
+    "message_show": "message",
+    "message_delete": "deletion",
+    "message_react": "reaction",
     "read": "message",
     "inbox": "notification",
     "log": "message",
     "list": "thread",
-    "rename": "thread",
+    "channel_show": "channel",
+    "channel_topic": "channel",
+    "channel_rename": "thread",
     "who": "member",
     "whoami": "member",
 }
@@ -268,32 +270,96 @@ _RECORD_SCHEMAS: dict[str, dict[str, Any]] = {
         ],
         "type": "object",
     },
-    "thread": {
+    "channel": {
         "additionalProperties": False,
         "properties": {
-            "kind": {"description": "Taut thread kind.", "type": "string"},
-            "last_ts": {
-                "description": "Latest message timestamp/id when one exists.",
-                **_nullable("integer"),
+            "channel": {
+                "description": "Registered top-level Taut channel name.",
+                "type": "string",
             },
-            "members": {
-                "description": "Member names when returned by the selected operation.",
-                "items": {"type": "string"},
-                "type": "array",
-            },
-            "parent": {
-                "description": "Parent message id for a sub-thread, otherwise null.",
+            "topic": {
+                "description": "Current exact channel topic, or null.",
                 **_nullable("string"),
             },
-            "thread": {"description": "Taut thread name.", "type": "string"},
-            "unread": {
-                "description": "Whether this member has unread messages in the thread.",
-                "type": "boolean",
+            "topic_updated_ts": {
+                "description": "Topic update timestamp/id, or null.",
+                **_nullable("integer"),
+            },
+            "topic_updated_by_id": {
+                "description": "Immutable topic author member id, or null.",
+                **_nullable("string"),
+            },
+            "topic_updated_by_name": {
+                "description": "Current topic author display name, or null.",
+                **_nullable("string"),
             },
         },
-        "required": ["kind", "last_ts", "parent", "thread", "unread"],
+        "required": [
+            "channel",
+            "topic",
+            "topic_updated_ts",
+            "topic_updated_by_id",
+            "topic_updated_by_name",
+        ],
         "type": "object",
     },
+}
+
+
+def _thread_branch(
+    kind: str,
+    *,
+    topic: bool = False,
+    members: bool = False,
+) -> dict[str, Any]:
+    properties: dict[str, Any] = {
+        "kind": {
+            "const": kind,
+            "description": "Taut thread kind.",
+            "type": "string",
+        },
+        "last_ts": {
+            "description": "Latest message timestamp/id when one exists.",
+            **_nullable("integer"),
+        },
+        "parent": {
+            "description": "Parent message id for a sub-thread, otherwise null.",
+            **_nullable("string"),
+        },
+        "thread": {"description": "Taut thread name.", "type": "string"},
+        "unread": {
+            "description": "Whether this member has unread messages in the thread.",
+            "type": "boolean",
+        },
+    }
+    required = ["kind", "last_ts", "parent", "thread", "unread"]
+    if topic:
+        properties["topic"] = {
+            "description": "Current exact channel topic, or null.",
+            **_nullable("string"),
+        }
+        required.append("topic")
+    if members:
+        properties["members"] = {
+            "description": "Immutable DM participant member ids.",
+            "items": {"type": "string"},
+            "type": "array",
+        }
+        required.append("members")
+    return {
+        "additionalProperties": False,
+        "properties": properties,
+        "required": required,
+        "type": "object",
+    }
+
+
+_RECORD_SCHEMAS["thread"] = {
+    "oneOf": [
+        _thread_branch("channel", topic=True),
+        _thread_branch("dm", members=True),
+        _thread_branch("subthread"),
+    ]
 }
 
 
@@ -580,7 +646,7 @@ TOOL_DEFINITIONS = (
         ),
     ),
     ToolDefinition(
-        "show_message",
+        "message_show",
         "Return one exact full-id message from this member's current chat memberships, then advance that thread's high-water cursor through the returned id. This may mark unseen intervening history seen. It never joins a thread; use `log` for cursor-neutral known-channel or sub-thread inspection.",
         {
             "workspace": _WORKSPACE,
@@ -595,7 +661,7 @@ TOOL_DEFINITIONS = (
         ),
     ),
     ToolDefinition(
-        "delete_message",
+        "message_delete",
         "Physically and irreversibly delete one exact ordinary message authored by this member, including after leaving its thread. It does not cascade to notifications, sub-threads, memberships, cursors, or thread registry state and is not recall.",
         {
             "workspace": _WORKSPACE,
@@ -610,7 +676,7 @@ TOOL_DEFINITIONS = (
         ),
     ),
     ToolDefinition(
-        "react_to_message",
+        "message_react",
         "Send one configured reaction to the current audience of an exact ordinary message, excluding this member. Validates against the workspace's attachment-time reaction vocabulary, advances this member's high-water cursor through the target, then attempts one atomic best-effort notification broadcast to every requested inbox. Repeating may deliver duplicates.",
         {
             "workspace": _WORKSPACE,
@@ -722,7 +788,51 @@ TOOL_DEFINITIONS = (
         },
     ),
     ToolDefinition(
-        "rename",
+        "channel_show",
+        "Return current metadata for one registered top-level Taut channel. Reads only shared registry state and does not resolve identity, touch activity, inspect a broker queue, or move a cursor.",
+        {
+            "workspace": _WORKSPACE,
+            "channel": _CHANNEL,
+        },
+        ("workspace", "channel"),
+        _annotations(
+            read_only=True,
+            destructive=False,
+            idempotent=True,
+            open_world=True,
+        ),
+    ),
+    ToolDefinition(
+        "channel_topic",
+        "Set or clear one registered top-level Taut channel's topic. Requires the attached member's current channel membership; a changed value replaces shared topic state and updates member activity, while an identical value is a no-op.",
+        {
+            "workspace": _WORKSPACE,
+            "channel": _CHANNEL,
+            "topic": {
+                "anyOf": [
+                    {
+                        "maxLength": 500,
+                        "not": {"pattern": r"[\r\n]"},
+                        "type": "string",
+                    },
+                    {"type": "null"},
+                ],
+                "description": (
+                    "Exact one-line topic of at most 500 Unicode code points, "
+                    "or null to clear it. Core rejects blank text."
+                ),
+            },
+        },
+        ("workspace", "channel", "topic"),
+        _annotations(
+            read_only=False,
+            destructive=True,
+            idempotent=False,
+            open_world=True,
+        ),
+    ),
+    ToolDefinition(
+        "channel_rename",
         "Rename a Taut channel and its sub-threads. Replaces existing thread addresses.",
         {
             "workspace": _WORKSPACE,

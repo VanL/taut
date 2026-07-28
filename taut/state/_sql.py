@@ -20,7 +20,13 @@ from simplebroker import Queue
 from simplebroker.ext import IntegrityError, SidecarSession
 
 from taut._constants import SCHEMA_VERSION, route_key
-from taut._exceptions import SchemaVersionError
+from taut._exceptions import (
+    MembershipError,
+    NotFoundError,
+    SchemaVersionError,
+    TautError,
+)
+from taut.state._channel_topics import decode_channel_topic
 from taut.state._dialect import SqlDialect
 from taut.state._types import (
     ChannelRenameRow,
@@ -305,6 +311,23 @@ class SqlSidecarTautState:
     def list_threads(self, *, include_internal: bool = False) -> list[ThreadRow]:
         return list_threads(self.queue, include_internal=include_internal)
 
+    def set_channel_topic(
+        self,
+        *,
+        name: str,
+        member_id: str,
+        topic: str | None,
+        updated_ts: int,
+    ) -> tuple[ThreadRow, bool]:
+        return set_channel_topic(
+            self.queue,
+            dialect=self.dialect,
+            name=name,
+            member_id=member_id,
+            topic=topic,
+            updated_ts=updated_ts,
+        )
+
     def add_membership(
         self,
         *,
@@ -348,6 +371,7 @@ class SqlSidecarTautState:
     ) -> ChannelRenameRow:
         return start_channel_rename(
             self.queue,
+            dialect=self.dialect,
             old_name=old_name,
             new_name=new_name,
             affected=affected,
@@ -854,6 +878,90 @@ def list_threads(queue: Queue, *, include_internal: bool = False) -> list[Thread
     return [_require_thread_row(row) for row in rows]
 
 
+def set_channel_topic(
+    queue: Queue,
+    *,
+    dialect: SqlDialect,
+    name: str,
+    member_id: str,
+    topic: str | None,
+    updated_ts: int,
+) -> tuple[ThreadRow, bool]:
+    """Atomically merge one topic and its actor activity ([TAUT-4.4])."""
+
+    with queue.sidecar(transaction=True) as session:
+        _acquire_advisory_lock(session, dialect, f"taut:channel:{name}")
+        rename_row = _one(
+            session,
+            """
+            SELECT old_name, new_name, state, affected_json, started_ts, updated_ts
+            FROM taut_channel_renames
+            WHERE state != 'complete'
+            ORDER BY started_ts
+            LIMIT 1
+            """,
+        )
+        if rename_row is not None:
+            marker = _require_channel_rename_row(rename_row)
+            raise TautError(
+                "incomplete channel rename exists: "
+                f"{marker['old_name']} -> {marker['new_name']}; "
+                "run 'taut channel rename "
+                f"{marker['old_name']} {marker['new_name']}' to finish it"
+            )
+        row = _one(
+            session,
+            """
+            SELECT name, kind, parent, origin_ts, created_by, meta, created_ts
+            FROM taut_threads
+            WHERE name = ?
+            """,
+            (name,),
+        )
+        thread = _thread_row(row)
+        if thread is None or thread["kind"] != "channel":
+            raise NotFoundError(f"channel not found: {name}")
+        current = decode_channel_topic(thread["meta"])
+        membership = _one(
+            session,
+            """
+            SELECT 1
+            FROM taut_membership
+            WHERE thread = ? AND member_id = ?
+            """,
+            (name, member_id),
+        )
+        if membership is None:
+            raise MembershipError(f"not a member of {name}")
+        current_text = None if current is None else current["text"]
+        if current_text == topic:
+            return thread, False
+        merged_meta = dict(thread["meta"])
+        if topic is None:
+            merged_meta.pop("topic", None)
+        else:
+            merged_meta["topic"] = {
+                "text": topic,
+                "updated_ts": updated_ts,
+                "updated_by_id": member_id,
+            }
+        session.run(
+            "UPDATE taut_threads SET meta = ? WHERE name = ?",
+            (_json_dumps(merged_meta), name),
+        )
+        session.run(
+            """
+            UPDATE taut_members
+            SET last_active_ts = CASE
+                WHEN last_active_ts < ? THEN ? ELSE last_active_ts END
+            WHERE member_id = ?
+            """,
+            (updated_ts, updated_ts, member_id),
+        )
+        thread["meta"] = merged_meta
+        return thread, True
+
+
 def add_membership(
     queue: Queue,
     *,
@@ -948,12 +1056,26 @@ def advance_cursor(
 def start_channel_rename(
     queue: Queue,
     *,
+    dialect: SqlDialect,
     old_name: str,
     new_name: str,
     affected: list[dict[str, str]],
     started_ts: int,
 ) -> ChannelRenameRow:
     with queue.sidecar(transaction=True) as session:
+        _acquire_advisory_lock(session, dialect, f"taut:channel:{old_name}")
+        source_row = _one(
+            session,
+            """
+            SELECT name, kind, parent, origin_ts, created_by, meta, created_ts
+            FROM taut_threads
+            WHERE name = ?
+            """,
+            (old_name,),
+        )
+        source = _thread_row(source_row)
+        if source is not None and source["kind"] == "channel":
+            decode_channel_topic(source["meta"])
         session.run(
             """
             INSERT INTO taut_channel_renames (

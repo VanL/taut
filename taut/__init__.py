@@ -27,6 +27,7 @@ from taut._exceptions import (
 
 if TYPE_CHECKING:
     from taut.client import (
+        Channel,
         Member,
         Message,
         MessageDeletion,
@@ -39,6 +40,7 @@ if TYPE_CHECKING:
     from taut.watcher import TautWatcher
 
 _LAZY_EXPORTS = {
+    "Channel": ("taut.client", "Channel"),
     "Member": ("taut.client", "Member"),
     "Message": ("taut.client", "Message"),
     "MessageDeletion": ("taut.client", "MessageDeletion"),
@@ -54,6 +56,7 @@ __all__ = [
     "AmbiguousMessageError",
     "BackendNotSupportedError",
     "BlankMessageError",
+    "Channel",
     "EmptyResultError",
     "IdentityError",
     "Member",

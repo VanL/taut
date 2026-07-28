@@ -223,9 +223,9 @@ def command_result(
     guidance: list[dict[str, str]]
     if name == "read" and records:
         guidance = READ_GUIDANCE
-    elif name == "delete_message" and not records:
+    elif name == "message_delete" and not records:
         guidance = MESSAGE_NOT_DELETED_GUIDANCE
-    elif name == "react_to_message" and not records:
+    elif name == "message_react" and not records:
         guidance = MESSAGE_REACTION_NOT_SENT_GUIDANCE
     else:
         guidance = []

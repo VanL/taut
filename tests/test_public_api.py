@@ -17,6 +17,7 @@ EXPECTED_PUBLIC_EXPORTS = [
     "AmbiguousMessageError",
     "BackendNotSupportedError",
     "BlankMessageError",
+    "Channel",
     "EmptyResultError",
     "IdentityError",
     "Member",
@@ -42,6 +43,7 @@ EXPECTED_PUBLIC_EXPORTS = [
 def _typed_public_surface(
     client: taut.TautClient,
     watcher: taut.TautWatcher,
+    channel: taut.Channel,
     member: taut.Member,
     message: taut.Message,
     deletion: taut.MessageDeletion,
@@ -51,6 +53,7 @@ def _typed_public_surface(
 ) -> tuple[
     taut.TautClient,
     taut.TautWatcher,
+    taut.Channel,
     taut.Member,
     taut.Message,
     taut.MessageDeletion,
@@ -58,7 +61,17 @@ def _typed_public_surface(
     taut.Notification,
     taut.Thread,
 ]:
-    return client, watcher, member, message, deletion, reaction, notification, thread
+    return (
+        client,
+        watcher,
+        channel,
+        member,
+        message,
+        deletion,
+        reaction,
+        notification,
+        thread,
+    )
 
 
 def test_exception_leaves_are_public_exports() -> None:
@@ -76,6 +89,8 @@ def test_exception_leaves_are_public_exports() -> None:
     assert "MessageDeletion" in taut.__all__
     assert taut.MessageReaction.__name__ == "MessageReaction"
     assert "MessageReaction" in taut.__all__
+    assert taut.Channel.__name__ == "Channel"
+    assert "Channel" in taut.__all__
 
 
 def test_lazy_public_exports_cache_and_unknown_names_fail_normally() -> None:
@@ -125,6 +140,7 @@ def test_client_environment_identity_inheritance_is_keyword_only_and_defaulted()
 
 def test_lazy_exports_are_the_owning_module_objects() -> None:
     from taut.client import (
+        Channel,
         Member,
         Message,
         MessageDeletion,
@@ -137,6 +153,7 @@ def test_lazy_exports_are_the_owning_module_objects() -> None:
     from taut.watcher import TautWatcher
 
     assert taut.Member is Member
+    assert taut.Channel is Channel
     assert taut.Message is Message
     assert taut.MessageDeletion is MessageDeletion
     assert taut.MessageReaction is MessageReaction

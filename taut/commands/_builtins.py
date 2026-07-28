@@ -35,12 +35,12 @@ BUILTIN_SPECS = (
     _spec("say", "Post to a channel, sub-thread, or direct-message target."),
     _spec("reply", "Reply in the sub-thread rooted at a message."),
     _spec("message", "Inspect, delete, or react to one message by exact id."),
+    _spec("channel", "Inspect or change one registered top-level channel."),
     _spec("read", "Show unread messages and advance chat cursors."),
     _spec("inbox", "Claim and show pending notification pointers."),
     _spec("log", "Show thread history without moving a cursor."),
     _spec("list", "List joined threads and unread state."),
     _spec("watch", "Live-follow chat and notification activity."),
-    _spec("rename", "Rename a channel and its registered sub-threads."),
     _spec("who", "Show members and presence evidence."),
     _spec("whoami", "Show the identity Taut resolved for this caller."),
     _spec(

@@ -183,7 +183,9 @@ def test_probe_corrupt_channel_rename_json_fails_without_completing_marker(
     finally:
         queue.close()
 
-    rc, out, err = run_cli("rename", "general", "ops", "--json", cwd=tmp_path)
+    rc, out, err = run_cli(
+        "channel", "rename", "general", "ops", "--json", cwd=tmp_path
+    )
 
     _assert_clean_failure(rc, out, err, expected_rc=1)
     assert "taut_channel_renames.affected_json: invalid JSON" in err
@@ -200,6 +202,25 @@ def test_probe_corrupt_channel_rename_json_fails_without_completing_marker(
         assert rows == [("started",)]
     finally:
         queue.close()
+
+
+def test_probe_corrupt_channel_topic_fails_without_traceback(tmp_path: Path) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    queue = Queue(META_QUEUE_NAME, db_path=str(tmp_path / ".taut.db"))
+    try:
+        with queue.sidecar(transaction=True) as session:
+            session.run(
+                "UPDATE taut_threads SET meta = ? WHERE name = ?",
+                (json.dumps({"topic": {"text": "partial"}}), "general"),
+            )
+    finally:
+        queue.close()
+
+    rc, out, err = run_cli("channel", "show", "general", "--json", cwd=tmp_path)
+
+    _assert_clean_failure(rc, out, err, expected_rc=1)
+    assert "taut_threads.meta.topic: expected exactly" in err
 
 
 @pytest.mark.skipif(

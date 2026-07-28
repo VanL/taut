@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+"""Validate maintained Markdown command paths against Taut's core registry.
+
+The claim grammar, source set, exemptions, and validator live in
+``tests/test_cli_claims.py``. This entry point imports that one contract rather
+than maintaining a second scanner.
+
+Exit 0 when every claim resolves, 1 for stale/malformed claims, and 2 for an
+invocation or environment failure. Read-only by construction.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _load_gate() -> Any:
+    """Import the single CLI-claim contract with an actionable diagnostic."""
+
+    sys.path.insert(0, str(REPO_ROOT))
+    try:
+        from tests import test_cli_claims
+    except Exception as exc:  # pragma: no cover - environment failure
+        print(
+            "check-cli-claims: cannot import tests/test_cli_claims.py "
+            f"({exc}). Run under the project environment, for example "
+            "`uv run bin/check-cli-claims`."
+        )
+        raise SystemExit(2) from exc
+    return test_cli_claims
+
+
+def run(root: Path) -> int:
+    """Run the shared validator against one repository root."""
+
+    if not root.is_dir():
+        print(f"check-cli-claims: root does not exist or is not a directory: {root}")
+        return 2
+    gate = _load_gate()
+    sources = gate._markdown_sources(root)
+    exemptions = {
+        key: reason
+        for key, reason in gate.EXEMPTIONS.items()
+        if (root / key[0]).is_file()
+    }
+    failures, claim_count = gate._validate_sources(
+        root,
+        sources=sources,
+        exemptions=exemptions,
+    )
+    print(f"check-cli-claims: {len(sources)} source(s), {claim_count} command claim(s)")
+    if failures:
+        print(f"  {len(failures)} invalid command claim(s) or exemption(s):")
+        for failure in failures:
+            print(f"    {failure}")
+        print(
+            "  Fix the current documentation or add a source-scoped exact "
+            "exemption with a non-empty reason in tests/test_cli_claims.py."
+        )
+        return 1
+    print(f"  OK ({root})")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Parse the standalone checker invocation."""
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--root", type=Path, default=REPO_ROOT)
+    args = parser.parse_args(argv)
+    return run(args.root.resolve())
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except SystemExit:
+        raise
+    except Exception as exc:  # pragma: no cover - defensive environment boundary
+        print(f"check-cli-claims: internal error: {exc}")
+        sys.exit(2)

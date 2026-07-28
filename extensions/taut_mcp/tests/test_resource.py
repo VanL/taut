@@ -77,7 +77,7 @@ def test_reaction_appears_in_recipient_resource_and_inbox_consumes_it(
             )
             result = await actor_reactor.execute_tool(
                 str(actor_attached["workspace"]),
-                "react_to_message",
+                "message_react",
                 {"msg_id": str(source.ts), "reaction": "ack"},
             )
             assert result["records"] == [

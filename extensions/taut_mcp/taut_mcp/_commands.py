@@ -1,4 +1,4 @@
-"""Explicit public-API dispatch for the fifteen CLI-shaped MCP tools."""
+"""Explicit public-API dispatch for the seventeen CLI-shaped MCP tools."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import TypeAlias
 
 from taut import (
+    Channel,
     Member,
     Message,
     MessageDeletion,
@@ -20,7 +21,13 @@ from taut import (
 CommandScalar: TypeAlias = str | int | bool | None
 CommandArguments: TypeAlias = tuple[tuple[str, CommandScalar], ...]
 CommandRecord: TypeAlias = (
-    Message | MessageDeletion | MessageReaction | Notification | Member | Thread
+    Channel
+    | Message
+    | MessageDeletion
+    | MessageReaction
+    | Notification
+    | Member
+    | Thread
 )
 
 RECORD_TYPE_BY_TOOL = {
@@ -29,14 +36,16 @@ RECORD_TYPE_BY_TOOL = {
     "set_name": "member",
     "say": "message",
     "reply": "message",
-    "show_message": "message",
-    "delete_message": "deletion",
-    "react_to_message": "reaction",
+    "message_show": "message",
+    "message_delete": "deletion",
+    "message_react": "reaction",
     "read": "message",
     "inbox": "notification",
     "log": "message",
     "list": "thread",
-    "rename": "thread",
+    "channel_show": "channel",
+    "channel_topic": "channel",
+    "channel_rename": "thread",
     "who": "member",
     "whoami": "member",
 }
@@ -103,11 +112,11 @@ def execute_command(
                 _required_string(arguments, "text"),
             ),
         )
-    elif name == "show_message":
+    elif name == "message_show":
         records = (client.show_message(_required_string(arguments, "msg_id")),)
-    elif name == "delete_message":
+    elif name == "message_delete":
         records = (client.delete_message(_required_string(arguments, "msg_id")),)
-    elif name == "react_to_message":
+    elif name == "message_react":
         records = (
             client.react_to_message(
                 _required_string(arguments, "msg_id"),
@@ -161,7 +170,22 @@ def execute_command(
             records = tuple(client.list_direct_messages())
         else:
             records = tuple(client.list_threads(all_threads=all_threads))
-    elif name == "rename":
+    elif name == "channel_show":
+        try:
+            records = (client.get_channel(_required_string(arguments, "channel")),)
+        except NotFoundError:
+            records = ()
+    elif name == "channel_topic":
+        try:
+            records = (
+                client.set_channel_topic(
+                    _required_string(arguments, "channel"),
+                    _optional_string(arguments, "topic"),
+                ),
+            )
+        except NotFoundError:
+            records = ()
+    elif name == "channel_rename":
         records = (
             client.rename_channel(
                 _required_string(arguments, "old_name"),
@@ -226,6 +250,14 @@ def record_object(record: CommandRecord) -> dict[str, object]:
             "persona": record.persona,
             "presence": record.presence,
         }
+    if isinstance(record, Channel):
+        return {
+            "channel": record.name,
+            "topic": record.topic,
+            "topic_updated_ts": record.topic_updated_ts,
+            "topic_updated_by_id": record.topic_updated_by_id,
+            "topic_updated_by_name": record.topic_updated_by_name,
+        }
     thread: dict[str, object] = {
         "kind": record.kind,
         "last_ts": record.last_ts,
@@ -235,4 +267,6 @@ def record_object(record: CommandRecord) -> dict[str, object]:
     }
     if record.kind == "dm":
         thread["members"] = list(record.members)
+    elif record.kind == "channel":
+        thread["topic"] = record.topic
     return thread

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -224,27 +226,112 @@ def test_postgres_exact_message_tools_use_public_core_contract(
     other.join("general")
     shown_target = other.say("general", "pg exact show")
     deletion_target = selected.say("general", "pg exact delete")
+    selected_id = member.member_id
     selected.close()
     other.close()
+    committed_topic = threading.Event()
+    release_topic = threading.Event()
+    real_execute = workspace_reactor.execute_command
+
+    def commit_then_delay_topic(
+        client: TautClient,
+        name: str,
+        arguments: Any,
+    ) -> Any:
+        result = real_execute(client, name, arguments)
+        if (
+            name == "channel_topic"
+            and dict(arguments).get("topic") == "pg canceled topic"
+        ):
+            committed_topic.set()
+            if not release_topic.wait(timeout=5):
+                raise AssertionError("test did not release committed PG topic")
+        return result
+
+    monkeypatch.setattr(
+        workspace_reactor,
+        "execute_command",
+        commit_then_delay_topic,
+    )
 
     async def scenario() -> None:
         reactor = ConnectionReactor(asyncio.get_running_loop())
+        observer = TautClient(as_name="other")
         try:
             attached = await reactor.attach_workspace(
                 str(taut_pg_project),
                 member.token or "",
             )
             canonical = str(attached["workspace"])
+            before_history = tuple(observer.log("general", limit=1000))
+            before_notifications = tuple(observer.peek_inbox())
+            before_membership = observer._state.get_membership(
+                thread="general",
+                member_id=selected_id,
+            )
+            before_member = observer._state.get_member(selected_id)
+            assert before_member is not None
+            shown_channel = await reactor.execute_tool(
+                canonical,
+                "channel_show",
+                {"channel": "general"},
+            )
+            assert shown_channel["record_type"] == "channel"
+            assert shown_channel["records"][0]["topic"] is None
+            assert observer._state.get_member(selected_id) == before_member
+            topic = await reactor.execute_tool(
+                canonical,
+                "channel_topic",
+                {"channel": "general", "topic": "pg topic"},
+            )
+            assert topic["record_type"] == "channel"
+            assert topic["records"][0]["topic"] == "pg topic"
+            changed_member = observer._state.get_member(selected_id)
+            assert changed_member is not None
+            assert changed_member["last_active_ts"] > before_member["last_active_ts"]
+            assert (
+                changed_member["last_active_ts"]
+                == topic["records"][0]["topic_updated_ts"]
+            )
+            same_topic = await reactor.execute_tool(
+                canonical,
+                "channel_topic",
+                {"channel": "general", "topic": "pg topic"},
+            )
+            assert same_topic == topic
+            assert observer._state.get_member(selected_id) == changed_member
+            assert (
+                observer._state.get_membership(
+                    thread="general",
+                    member_id=selected_id,
+                )
+                == before_membership
+            )
+            assert tuple(observer.log("general", limit=1000)) == before_history
+            assert tuple(observer.peek_inbox()) == before_notifications
+            listed = await reactor.execute_tool(
+                canonical,
+                "list",
+                {"all": True},
+            )
+            assert (
+                next(
+                    record
+                    for record in listed["records"]
+                    if record["thread"] == "general"
+                )["topic"]
+                == "pg topic"
+            )
             shown = await reactor.execute_tool(
                 canonical,
-                "show_message",
+                "message_show",
                 {"msg_id": str(shown_target.ts)},
             )
             assert shown["record_type"] == "message"
             assert shown["records"][0]["text"] == "pg exact show"
             reacted = await reactor.execute_tool(
                 canonical,
-                "react_to_message",
+                "message_react",
                 {"msg_id": str(shown_target.ts), "reaction": "ack"},
             )
             assert reacted["record_type"] == "reaction"
@@ -258,7 +345,7 @@ def test_postgres_exact_message_tools_use_public_core_contract(
             ]
             deleted = await reactor.execute_tool(
                 canonical,
-                "delete_message",
+                "message_delete",
                 {"msg_id": str(deletion_target.ts)},
             )
             assert deleted["record_type"] == "deletion"
@@ -269,7 +356,46 @@ def test_postgres_exact_message_tools_use_public_core_contract(
                     "ts": deletion_target.ts,
                 }
             ]
+            renamed = await reactor.execute_tool(
+                canonical,
+                "channel_rename",
+                {"old_name": "general", "new_name": "main"},
+            )
+            assert renamed["records"][0]["thread"] == "main"
+            assert renamed["records"][0]["topic"] == "pg topic"
+            cleared = await reactor.execute_tool(
+                canonical,
+                "channel_topic",
+                {"channel": "main", "topic": None},
+            )
+            assert cleared["records"][0]["topic"] is None
+
+            canceled = asyncio.create_task(
+                reactor.execute_tool(
+                    canonical,
+                    "channel_topic",
+                    {"channel": "main", "topic": "pg canceled topic"},
+                )
+            )
+            assert await asyncio.to_thread(committed_topic.wait, 5)
+            canceled.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await canceled
+            release_topic.set()
+            deadline = asyncio.get_running_loop().time() + 5
+            while reactor._entries[canonical].active_command_id is not None:
+                if asyncio.get_running_loop().time() >= deadline:
+                    raise AssertionError("PG topic completion did not settle")
+                await asyncio.sleep(0.01)
+            recovered = await reactor.execute_tool(
+                canonical,
+                "channel_show",
+                {"channel": "main"},
+            )
+            assert recovered["records"][0]["topic"] == "pg canceled topic"
         finally:
+            release_topic.set()
+            observer.close()
             await reactor.aclose()
 
     asyncio.run(scenario())

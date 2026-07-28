@@ -24,7 +24,7 @@ EXTENSION_ROOT = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = EXTENSION_ROOT.parents[1]
 NOTIFICATIONS_URL = AnyUrl("taut://notifications/current")
 EXPECTED_INSTRUCTIONS_SHA256 = (
-    "616a7c3389f0f8f0820e14876e197b2e87162fbe5af88cd086624a58150c5c7c"
+    "80dcac67ac3d25c51ea10d75c26aaedfd34ee1cf9dfd1dc0ab87aa823390a035"
 )
 
 EXPECTED_TOOLS = [
@@ -36,14 +36,16 @@ EXPECTED_TOOLS = [
     "set_name",
     "say",
     "reply",
-    "show_message",
-    "delete_message",
-    "react_to_message",
+    "message_show",
+    "message_delete",
+    "message_react",
     "read",
     "inbox",
     "log",
     "list",
-    "rename",
+    "channel_show",
+    "channel_topic",
+    "channel_rename",
     "who",
     "whoami",
 ]
@@ -93,14 +95,17 @@ async def _inspect_empty_server(
         "Do not timer-poll list, who, or whoami",
         "read with one explicit selector",
         "Use list with dms=true",
+        "topic-bearing list records",
+        "channel_show when current channel metadata is needed",
         "A later log can recover history",
-        "Use show_message only when the exact 19-digit id is known",
+        "Use message_show only when the exact 19-digit id is known",
         "high-water cursor",
         "Preserve returned 19-digit integer ts values as decimal text",
-        "Treat delete_message as blind-capable, physical, and irreversible",
-        "react_to_message advances the actor's high-water cursor",
+        "Treat message_delete as blind-capable, physical, and irreversible",
+        "message_react advances the actor's high-water cursor",
         "all-or-none commit outcome may be uncertain",
         "repeated reactions may duplicate",
+        "After a canceled or otherwise uncertain channel_topic call",
         "After a canceled or timed-out attach",
     ):
         assert required_rule in initialized.instructions
@@ -816,9 +821,9 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                         "Input validation error:"
                     )
                 for tool_name in (
-                    "show_message",
-                    "delete_message",
-                    "react_to_message",
+                    "message_show",
+                    "message_delete",
+                    "message_react",
                 ):
                     for invalid_id in (
                         "123456789012345678",
@@ -834,7 +839,7 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                                 "msg_id": invalid_id,
                                 **(
                                     {"reaction": "ack"}
-                                    if tool_name == "react_to_message"
+                                    if tool_name == "message_react"
                                     else {}
                                 ),
                             },
@@ -858,7 +863,7 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                     None,
                 ):
                     invalid_react = await session.call_tool(
-                        "react_to_message",
+                        "message_react",
                         {
                             "workspace": canonical,
                             "msg_id": "1234567890123456789",
@@ -868,6 +873,24 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                     assert invalid_react.isError is True
                     assert isinstance(invalid_react.content[0], types.TextContent)
                     assert invalid_react.content[0].text.startswith(
+                        "Input validation error:"
+                    )
+                for invalid_topic in ("x" * 501, "a\nb", "a\rb"):
+                    invalid_channel_topic = await session.call_tool(
+                        "channel_topic",
+                        {
+                            "workspace": canonical,
+                            "channel": "general",
+                            "topic": invalid_topic,
+                        },
+                    )
+                    assert invalid_channel_topic.isError is True
+                    assert invalid_channel_topic.structuredContent is None
+                    assert isinstance(
+                        invalid_channel_topic.content[0],
+                        types.TextContent,
+                    )
+                    assert invalid_channel_topic.content[0].text.startswith(
                         "Input validation error:"
                     )
                 joined = await call("join", {"thread": "work", "persona": None})
@@ -880,7 +903,7 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                     {"target": "general", "text": "stdio top"},
                 )
                 reacted = await call(
-                    "react_to_message",
+                    "message_react",
                     {
                         "msg_id": str(said["records"][0]["ts"]),  # type: ignore[index]
                         "reaction": "ack",
@@ -907,10 +930,9 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                 )
                 assert dm_history["records"] == direct["records"]
                 dm_directory = await call("list", {"dms": True})
-                assert [
-                    record["thread"]
-                    for record in dm_directory["records"]  # type: ignore[index]
-                ] == [dm_thread]
+                dm_records = dm_directory["records"]
+                assert isinstance(dm_records, list)
+                assert [record["thread"] for record in dm_records] == [dm_thread]
                 parent_ts = said["records"][0]["ts"]  # type: ignore[index]
                 await call(
                     "reply",
@@ -926,7 +948,7 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                 )
                 deletion_ts = deletion_target["records"][0]["ts"]  # type: ignore[index]
                 deleted = await call(
-                    "delete_message",
+                    "message_delete",
                     {"msg_id": str(deletion_ts)},
                 )
                 assert deleted["record_type"] == "deletion"
@@ -938,7 +960,7 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                     }
                 ]
                 repeated_delete = await call(
-                    "delete_message",
+                    "message_delete",
                     {"msg_id": str(deletion_ts)},
                 )
                 assert repeated_delete["records"] == []
@@ -962,7 +984,7 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                 )
                 assert dm_unread["records"][0]["text"] == "stdio dm unread"  # type: ignore[index]
                 shown = await call(
-                    "show_message",
+                    "message_show",
                     {"msg_id": str(parent_ts)},
                 )
                 assert shown["records"][0] == said["records"][0]  # type: ignore[index]
@@ -975,13 +997,60 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                     "log",
                     {"thread": "general", "since": None, "limit": 1},
                 )
+                shown_channel = await call(
+                    "channel_show",
+                    {"channel": "general"},
+                )
+                assert shown_channel["records"][0]["topic"] is None  # type: ignore[index]
+                topic = await call(
+                    "channel_topic",
+                    {"channel": "general", "topic": "stdio topic"},
+                )
+                assert topic["records"][0]["topic"] == "stdio topic"  # type: ignore[index]
+                missing_topic = await call(
+                    "channel_topic",
+                    {"channel": "missing", "topic": "not written"},
+                )
+                assert missing_topic["empty"] is True
+                assert missing_topic["records"] == []
+                blank_topic = await session.call_tool(
+                    "channel_topic",
+                    {
+                        "workspace": canonical,
+                        "channel": "general",
+                        "topic": "\u200b",
+                    },
+                )
+                assert blank_topic.isError is True
+                assert blank_topic.structuredContent is None
+                other.join("private")
+                nonmember_topic = await session.call_tool(
+                    "channel_topic",
+                    {
+                        "workspace": canonical,
+                        "channel": "private",
+                        "topic": "not allowed",
+                    },
+                )
+                assert nonmember_topic.isError is True
+                assert nonmember_topic.structuredContent is None
                 threads = await call("list", {"all": True})
-                assert threads["records"]
+                thread_records = threads["records"]
+                assert isinstance(thread_records, list)
+                assert (
+                    next(
+                        record
+                        for record in thread_records
+                        if record["thread"] == "general"
+                    )["topic"]
+                    == "stdio topic"
+                )
                 renamed = await call(
-                    "rename",
+                    "channel_rename",
                     {"old_name": "general", "new_name": "main"},
                 )
                 assert renamed["records"][0]["thread"] == "main"  # type: ignore[index]
+                assert renamed["records"][0]["topic"] == "stdio topic"  # type: ignore[index]
                 members = await call("who", {"thread": "main"})
                 assert len(members["records"]) == 2  # type: ignore[arg-type]
                 identity = await call("whoami", {})
@@ -1002,8 +1071,15 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                 assert isinstance(invalid.content[0], types.TextContent)
                 assert invalid.content[0].text == "dm is reserved"
 
-                with pytest.raises(McpError):
-                    await session.call_tool("not_a_tool", {})
+                for unknown_tool in (
+                    "not_a_tool",
+                    "rename",
+                    "show_message",
+                    "delete_message",
+                    "react_to_message",
+                ):
+                    with pytest.raises(McpError):
+                        await session.call_tool(unknown_tool, {})
 
         assert schemas["whoami"] is not None
 
@@ -1085,7 +1161,8 @@ def test_stdio_started_command_cancellation_reports_standard_error_and_commits(
     assert member is not None
     assert member.token is not None
     selected.close()
-    marker = tmp_path / "command-started"
+    markers = tmp_path / "markers"
+    markers.mkdir()
     server_code = """
 import pathlib
 import sys
@@ -1095,8 +1172,8 @@ from taut_mcp import _workspace_reactor
 real_execute = _workspace_reactor.execute_command
 
 def delayed_execute(client, name, arguments):
-    if name == "say":
-        pathlib.Path(sys.argv[1]).touch()
+    if name in {"say", "channel_topic"}:
+        pathlib.Path(sys.argv[1], name).touch()
         time.sleep(0.3)
     return real_execute(client, name, arguments)
 
@@ -1108,7 +1185,7 @@ main([])
     async def scenario() -> None:
         parameters = StdioServerParameters(
             command=sys.executable,
-            args=["-c", server_code, str(marker)],
+            args=["-c", server_code, str(markers)],
             cwd=EXTENSION_ROOT,
             env=os.environ.copy(),
         )
@@ -1121,36 +1198,46 @@ main([])
                 )
                 assert attached.structuredContent is not None
                 canonical = str(attached.structuredContent["workspace"])
-                request_id = session._request_id
-                call = asyncio.create_task(
-                    session.call_tool(
-                        "say",
-                        {
-                            "workspace": canonical,
-                            "target": "general",
-                            "text": "committed despite canceled response",
-                        },
+
+                async def cancel_started(
+                    name: str,
+                    arguments: dict[str, object],
+                ) -> None:
+                    request_id = session._request_id
+                    call = asyncio.create_task(
+                        session.call_tool(
+                            name,
+                            {"workspace": canonical, **arguments},
+                        )
                     )
-                )
-                deadline = asyncio.get_running_loop().time() + 5
-                while not marker.exists():
-                    if asyncio.get_running_loop().time() >= deadline:
-                        raise AssertionError("child command did not start")
-                    await asyncio.sleep(0.01)
-                await session.send_notification(
-                    types.ClientNotification(
-                        types.CancelledNotification(
-                            params=types.CancelledNotificationParams(
-                                requestId=request_id,
-                                reason="test started cancellation",
+                    marker = markers / name
+                    deadline = asyncio.get_running_loop().time() + 5
+                    while not marker.exists():
+                        if asyncio.get_running_loop().time() >= deadline:
+                            raise AssertionError("child command did not start")
+                        await asyncio.sleep(0.01)
+                    await session.send_notification(
+                        types.ClientNotification(
+                            types.CancelledNotification(
+                                params=types.CancelledNotificationParams(
+                                    requestId=request_id,
+                                    reason="test started cancellation",
+                                )
                             )
                         )
                     )
+                    with pytest.raises(McpError) as raised:
+                        await call
+                    assert raised.value.error.code == 0
+                    assert raised.value.error.message == "Request cancelled"
+
+                await cancel_started(
+                    "say",
+                    {
+                        "target": "general",
+                        "text": "committed despite canceled response",
+                    },
                 )
-                with pytest.raises(McpError) as raised:
-                    await call
-                assert raised.value.error.code == 0
-                assert raised.value.error.message == "Request cancelled"
 
                 await asyncio.sleep(0.5)
                 history = await session.call_tool(
@@ -1173,6 +1260,22 @@ main([])
                     {"workspace": canonical},
                 )
                 assert live.isError is False
+
+                await cancel_started(
+                    "channel_topic",
+                    {"channel": "general", "topic": "committed topic"},
+                )
+                await asyncio.sleep(0.5)
+                shown_channel = await session.call_tool(
+                    "channel_show",
+                    {"workspace": canonical, "channel": "general"},
+                )
+                assert shown_channel.isError is False
+                assert shown_channel.structuredContent is not None
+                assert (
+                    shown_channel.structuredContent["records"][0]["topic"]
+                    == "committed topic"
+                )
 
     asyncio.run(scenario())
 
@@ -1402,7 +1505,7 @@ main([])
                 first_charged = await session.call_tool("list_workspaces", {})
                 assert first_charged.isError is False
                 missing_workspace = await session.call_tool(
-                    "show_message",
+                    "message_show",
                     {
                         "workspace": "/not-attached",
                         "msg_id": "1234567890123456789",
@@ -1415,7 +1518,7 @@ main([])
                     "canonical identifier"
                 )
                 limited_tool = await session.call_tool(
-                    "delete_message",
+                    "message_delete",
                     {
                         "workspace": "/not-attached",
                         "msg_id": "1234567890123456789",
@@ -1479,6 +1582,38 @@ def test_installed_wheel_initializes_through_console_script(tmp_path: Path) -> N
         capture_output=True,
         text=True,
     )
+    installed_probe = subprocess.run(
+        [
+            str(python),
+            "-c",
+            (
+                "from taut import Channel, TautClient; "
+                "TautClient.init(); "
+                "client = TautClient(as_name='owner'); "
+                "client.join('general'); "
+                "updated = client.set_channel_topic('general', 'wheel topic'); "
+                "assert isinstance(updated, Channel); "
+                "assert client.get_channel('general') == updated; "
+                "client.close()"
+            ),
+        ],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert installed_probe.returncode == 0, installed_probe.stderr
+    core_console = venv / ("Scripts/taut.exe" if os.name == "nt" else "bin/taut")
+    nested_help = subprocess.run(
+        [str(core_console), "channel", "--help"],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert nested_help.returncode == 0
+    for operation in ("show", "topic", "rename"):
+        assert f"    {operation}" in nested_help.stdout
     console = venv / ("Scripts/taut-mcp.exe" if os.name == "nt" else "bin/taut-mcp")
     assert console.is_file()
     isolated_env = os.environ.copy()

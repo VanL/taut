@@ -12,6 +12,7 @@ Quick pointers to the key guidance documents in this repository.
 | `bin/release.py` | Four-package GitHub-only release helper for manifest-owned metadata/lock reconciliation, one universal default precheck sequence with an explicit human override, exact-path local preparation commits, non-mutating `--checks-only`, final remote-state fences, namespaced tags, and coordinated `all --version` batches |
 | `bin/check-plan-status-index` | Structured plan status index gate: completeness, closed status/exemplar vocabulary, and table well-formedness |
 | `bin/check-doc-paths` | Pytest-free path-claim gate over the maintained guidance surfaces plus `docs/coalescing.md` and `docs/plans/README.md`; reuses the claim grammar in `tests/test_docs_references.py` |
+| `bin/check-cli-claims` | Pytest-free command-path gate over maintained Markdown; reuses the registry-derived grammar, exact source set, and exemptions in `tests/test_cli_claims.py` |
 | `bin/coalesce-check` | Coalescing evidence trail: resolves every SHA claim and retrieval cue in `docs/coalescing.md` locally, in named siblings, and against `origin/main` (reporting local-only pins), and derives the lessons-tier counts |
 | `bin/pytest-pg` | Docker-backed Postgres test runner for shared root tests and `taut-pg` tests |
 | `bin/check-required-coverage-paths.py` | Post-combine coverage-data checker for required child-process, critical Summon, and MCP rate-admission execution paths |
@@ -117,6 +118,7 @@ Quick pointers to the key guidance documents in this repository.
 | `taut/commands/` | Versioned command manifests/protocol, deterministic installed-command registry, root dispatcher, shared renderers, lazy per-verb adapters, and the temporary reserved Summon compatibility bridge |
 | `tests/` | Contract tests using real SQLite files, shared backend markers, and subprocess CLI |
 | `tests/test_docs_references.py` | Maintained-source path and local/external citation-family gate |
+| `tests/test_cli_claims.py` | Maintained-source inline/fenced Taut command-path grammar, deterministic registry validation, and exact exemption gate |
 | `tests/test_project_metadata_consistency.py` | Relational gate comparing constants, first-party floors, README pins, wheel names, and retained-lock versions to their owning package manifests |
 | `extensions/taut_pg/` | Separate `taut-pg` project with extension metadata, README, and PG-only tests |
 | `extensions/taut_summon/` | Separate `taut-summon` project: lazy public facade, typed controller/models and host-interaction seam, thin CLI renderer, driver, adapters, ledger, control plane, persona, and real-process conformance suite |

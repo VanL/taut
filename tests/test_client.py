@@ -27,7 +27,7 @@ from taut._exceptions import (
     ThreadNameError,
     TokenError,
 )
-from taut.client import Message, MessageDeletion, MessageReaction, TautClient
+from taut.client import Channel, Message, MessageDeletion, MessageReaction, TautClient
 from taut.commands._rendering import format_unread_count
 from taut.envelope import encode_envelope
 from taut.state import (
@@ -3472,6 +3472,266 @@ def test_rename_channel_moves_messages_and_subthreads(tmp_path: Path) -> None:
         van.log("general")
 
 
+def test_channel_topic_round_trip_populates_public_channel_and_thread_values(
+    tmp_path: Path,
+) -> None:
+    van = client(tmp_path, "van")
+    van.join("general")
+    member = van.whoami()
+
+    empty = van.get_channel("general")
+    updated = van.set_channel_topic(
+        "general",
+        " Current implementation and review coordination ",
+    )
+
+    assert empty == Channel(
+        name="general",
+        topic=None,
+        topic_updated_ts=None,
+        topic_updated_by_id=None,
+        topic_updated_by_name=None,
+    )
+    assert updated.name == "general"
+    assert updated.topic == " Current implementation and review coordination "
+    assert updated.topic_updated_ts is not None
+    assert updated.topic_updated_by_id == member.member_id
+    assert updated.topic_updated_by_name == "van"
+    assert van.get_channel("general") == updated
+    listed = van.list_threads(all_threads=True)
+    assert [(thread.name, thread.topic) for thread in listed] == [
+        ("general", updated.topic)
+    ]
+
+    from taut import Channel as LazyChannel
+
+    assert LazyChannel is Channel
+
+
+def test_channel_topic_merge_preserves_reserved_and_unknown_meta_and_noops(
+    tmp_path: Path,
+) -> None:
+    van = client(tmp_path, "van")
+    van.join("general")
+    created = van.last_created_member
+    assert created is not None
+    member_id = created.member_id
+    with van._meta_queue.sidecar(transaction=True) as session:
+        session.run(
+            "UPDATE taut_threads SET meta = ? WHERE name = ?",
+            (
+                json.dumps(
+                    {
+                        "closed": {"future": True},
+                        "owner": "coordination",
+                    }
+                ),
+                "general",
+            ),
+        )
+
+    first = van.set_channel_topic("general", "coordination")
+    first_member = van._state.get_member(member_id)
+    first_row = van._state.get_thread("general")
+    assert first_member is not None
+    assert first_row is not None
+    assert first_row["meta"] == {
+        "closed": {"future": True},
+        "owner": "coordination",
+        "topic": {
+            "text": "coordination",
+            "updated_ts": first.topic_updated_ts,
+            "updated_by_id": member_id,
+        },
+    }
+
+    assert van.set_channel_topic("general", "coordination") == first
+    assert van._state.get_member(member_id) == first_member
+    assert van._state.get_thread("general") == first_row
+
+    cleared = van.set_channel_topic("general", None)
+    cleared_row = van._state.get_thread("general")
+    assert cleared.topic is None
+    assert cleared_row is not None
+    assert cleared_row["meta"] == {
+        "closed": {"future": True},
+        "owner": "coordination",
+    }
+    cleared_member = van._state.get_member(member_id)
+
+    assert van.set_channel_topic("general", None) == cleared
+    assert van._state.get_member(member_id) == cleared_member
+    assert van._state.get_thread("general") == cleared_row
+
+
+@pytest.mark.parametrize(
+    ("topic", "error", "message"),
+    [
+        (False, TypeError, "topic must be a string or None"),
+        ("", ValueError, "topic must not be blank"),
+        ("\u00a0\u200b", ValueError, "topic must not be blank"),
+        ("line\rbreak", ValueError, "topic must be one line"),
+        ("line\nbreak", ValueError, "topic must be one line"),
+        ("x" * 501, ValueError, "topic must be at most 500 Unicode code points"),
+    ],
+)
+def test_channel_topic_validation_precedes_identity_and_channel_state(
+    tmp_path: Path,
+    topic: object,
+    error: type[Exception],
+    message: str,
+) -> None:
+    actor = client(tmp_path, "uncreated")
+    before_threads = actor._state.list_threads(include_internal=True)
+    before_members = actor._state.list_members()
+
+    with pytest.raises(error, match=rf"^{message}$"):
+        actor.set_channel_topic("invalid.name", topic)  # type: ignore[arg-type]
+
+    assert actor._state.list_threads(include_internal=True) == before_threads
+    assert actor._state.list_members() == before_members
+
+
+def test_channel_topic_accepts_exact_500_code_point_boundary(tmp_path: Path) -> None:
+    van = client(tmp_path, "van")
+    van.join("general")
+    topic = "🧭" * 500
+
+    assert van.set_channel_topic("general", topic).topic == topic
+
+
+def test_get_channel_is_actor_free_and_state_observational(tmp_path: Path) -> None:
+    owner = client(tmp_path, "owner")
+    owner.join("general")
+    owner.set_channel_topic("general", "read only")
+    viewer = existing_client(tmp_path, "missing")
+    before_members = viewer._state.list_members()
+    before_thread = viewer._state.get_thread("general")
+    before_memberships = {
+        member["member_id"]: viewer._state.list_memberships(member["member_id"])
+        for member in before_members
+    }
+    before_high_water = viewer._meta_queue.refresh_last_ts()
+
+    shown = viewer.get_channel("general")
+
+    assert shown.topic == "read only"
+    assert viewer._state.list_members() == before_members
+    assert viewer._state.get_thread("general") == before_thread
+    assert {
+        member["member_id"]: viewer._state.list_memberships(member["member_id"])
+        for member in before_members
+    } == before_memberships
+    assert viewer._meta_queue.refresh_last_ts() == before_high_water
+
+
+def test_set_channel_topic_requires_existing_actor_membership_without_side_effects(
+    tmp_path: Path,
+) -> None:
+    owner = client(tmp_path, "owner")
+    owner.join("general")
+    outsider = existing_client(tmp_path, "outsider")
+    outsider.join("elsewhere")
+    outsider_row = outsider._state.get_member_by_route_key("outsider")
+    assert outsider_row is not None
+    before_outsider = dict(outsider_row)
+    before_general = outsider._state.get_thread("general")
+
+    with pytest.raises(MembershipError, match="not a member of general"):
+        outsider.set_channel_topic("general", "not allowed")
+
+    assert outsider._state.get_member(outsider_row["member_id"]) == before_outsider
+    assert outsider._state.get_thread("general") == before_general
+
+    missing = existing_client(tmp_path, "missing")
+    before_members = missing._state.list_members()
+    with pytest.raises(NotFoundError, match="member not found: missing"):
+        missing.set_channel_topic("general", "not allowed")
+    assert missing._state.list_members() == before_members
+
+
+def test_channel_topic_rejects_wrong_kind_and_topic_on_non_channel(
+    tmp_path: Path,
+) -> None:
+    van = client(tmp_path, "van")
+    van.join("general")
+    member = van._state.get_member_by_route_key("van")
+    assert member is not None
+    before_member = dict(member)
+    with van._meta_queue.sidecar(transaction=True) as session:
+        session.run(
+            "UPDATE taut_threads SET kind = 'subthread' WHERE name = ?",
+            ("general",),
+        )
+
+    with pytest.raises(NotFoundError, match="channel not found: general"):
+        van.get_channel("general")
+    with pytest.raises(NotFoundError, match="channel not found: general"):
+        van.set_channel_topic("general", "not allowed")
+    assert van._state.get_member(member["member_id"]) == before_member
+
+    corrupt_meta = {
+        "topic": {
+            "text": "wrong kind",
+            "updated_ts": van._meta_queue.generate_timestamp(),
+            "updated_by_id": member["member_id"],
+        }
+    }
+    with van._meta_queue.sidecar(transaction=True) as session:
+        session.run(
+            "UPDATE taut_threads SET meta = ? WHERE name = ?",
+            (json.dumps(corrupt_meta), "general"),
+        )
+    with pytest.raises(
+        TautError,
+        match="topic metadata belongs only to channels",
+    ):
+        van.list_threads(all_threads=True)
+
+
+def test_corrupt_channel_topic_blocks_show_list_mutation_and_rename_preflight(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    van = client(tmp_path, "van")
+    van.join("general")
+    van.say("general", "history remains")
+    corrupt_meta = {
+        "closed": {"future": True},
+        "topic": {
+            "text": "broken",
+            "updated_ts": 1_800_000_000_000_000_001,
+            "updated_by_id": "m_aaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "extra": True,
+        },
+    }
+    with van._meta_queue.sidecar(transaction=True) as session:
+        session.run(
+            "UPDATE taut_threads SET meta = ? WHERE name = ?",
+            (json.dumps(corrupt_meta), "general"),
+        )
+
+    for operation in (
+        lambda: van.get_channel("general"),
+        lambda: van.list_threads(all_threads=True),
+        lambda: van.set_channel_topic("general", "replacement"),
+    ):
+        with pytest.raises(TautError, match=r"taut_threads\.meta\.topic"):
+            operation()
+
+    def broker_access_is_too_late(*_: object, **__: object) -> object:
+        raise AssertionError("rename touched the broker before topic validation")
+
+    monkeypatch.setattr("taut.client._threads.open_broker", broker_access_is_too_late)
+    with pytest.raises(TautError, match=r"taut_threads\.meta\.topic"):
+        van.rename_channel("general", "ops")
+
+    assert van._state.incomplete_channel_renames() == []
+    row = van._state.get_thread("general")
+    assert row is not None
+    assert row["meta"] == corrupt_meta
+
+
 def test_rename_channel_rejects_existing_target_without_mutation(
     tmp_path: Path,
 ) -> None:
@@ -3558,7 +3818,7 @@ def test_rename_resume_completes_interrupted_rename(tmp_path: Path) -> None:
     with open_broker(str(tmp_path / ".taut.db")) as broker:
         broker.rename_queue("general", "ops", retarget_aliases=False)
 
-    blocked = "run 'taut rename general ops' to finish it"
+    blocked = "run 'taut channel rename general ops' to finish it"
     with pytest.raises(TautError, match=blocked):
         van.say("general", "blocked")
     with pytest.raises(TautError, match=blocked):
@@ -3596,7 +3856,7 @@ def test_rename_resume_requires_matching_names(tmp_path: Path) -> None:
         TautError,
         match=(
             "incomplete channel rename exists: alpha -> beta; "
-            "run 'taut rename alpha beta' to finish it"
+            "run 'taut channel rename alpha beta' to finish it"
         ),
     ):
         van.rename_channel("alpha", "gamma")
@@ -3626,7 +3886,7 @@ def test_rename_resume_aborts_when_foreign_queue_occupies_target(
         van.rename_channel("general", "ops")
 
     # Nothing merged or overwritten; the marker still blocks other commands.
-    with pytest.raises(TautError, match="run 'taut rename general ops'"):
+    with pytest.raises(TautError, match="run 'taut channel rename general ops'"):
         van.say("general", "still blocked")
 
 

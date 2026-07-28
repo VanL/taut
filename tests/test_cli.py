@@ -2241,12 +2241,287 @@ def test_cli_rename_channel_json(tmp_path: Path) -> None:
     assert run_cli("init", cwd=tmp_path)[0] == 0
     assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
 
-    rc, out, err = run_cli("rename", "general", "ops", "--json", cwd=tmp_path)
+    rc, out, err = run_cli(
+        "channel", "rename", "general", "ops", "--json", cwd=tmp_path
+    )
 
     assert rc == 0, err
     obj = json.loads(out)
     assert obj["thread"] == "ops"
     assert obj["kind"] == "channel"
+    assert obj["topic"] is None
+
+
+def test_cli_channel_topic_show_list_and_clear_round_trip(tmp_path: Path) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+
+    rc, out, err = run_cli(
+        "--as",
+        "van",
+        "channel",
+        "topic",
+        "general",
+        "Current implementation and review coordination",
+        "--json",
+        cwd=tmp_path,
+    )
+
+    assert rc == 0, err
+    topic = json.loads(out)
+    assert set(topic) == {
+        "channel",
+        "topic",
+        "topic_updated_ts",
+        "topic_updated_by_id",
+        "topic_updated_by_name",
+    }
+    assert topic["channel"] == "general"
+    assert topic["topic"] == "Current implementation and review coordination"
+    assert isinstance(topic["topic_updated_ts"], int)
+    assert isinstance(topic["topic_updated_by_id"], str)
+    assert topic["topic_updated_by_name"] == "van"
+
+    rc, out, err = run_cli("channel", "show", "general", "--json", cwd=tmp_path)
+    assert rc == 0, err
+    assert json.loads(out) == topic
+
+    rc, out, err = run_cli("channel", "show", "general", "--quiet", cwd=tmp_path)
+    assert rc == 0, err
+    assert out == err == ""
+
+    rc, out, err = run_cli("--as", "van", "list", "--all", "--json", cwd=tmp_path)
+    assert rc == 0, err
+    assert json.loads(out)["topic"] == topic["topic"]
+
+    rc, out, err = run_cli("--as", "van", "list", "--all", cwd=tmp_path)
+    assert rc == 0, err
+    assert "\n  topic: Current implementation and review coordination" in f"\n{out}"
+
+    rc, out, err = run_cli(
+        "--as",
+        "van",
+        "channel",
+        "topic",
+        "general",
+        "--clear",
+        "--quiet",
+        cwd=tmp_path,
+    )
+    assert rc == 0, err
+    assert out == err == ""
+
+    rc, out, err = run_cli("channel", "show", "general", "--json", cwd=tmp_path)
+    assert rc == 0, err
+    assert json.loads(out) == {
+        "channel": "general",
+        "topic": None,
+        "topic_updated_ts": None,
+        "topic_updated_by_id": None,
+        "topic_updated_by_name": None,
+    }
+
+
+def test_cli_channel_topic_literal_option_text_and_boundaries(tmp_path: Path) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+
+    rc, out, err = run_cli(
+        "--json",
+        "--as",
+        "van",
+        "channel",
+        "topic",
+        "general",
+        "--",
+        "--clear",
+        cwd=tmp_path,
+    )
+    assert rc == 0, err
+    assert json.loads(out)["topic"] == "--clear"
+
+    accepted = "x" * 500
+    rc, out, err = run_cli(
+        "channel",
+        "topic",
+        "general",
+        accepted,
+        "--as",
+        "van",
+        "--json",
+        cwd=tmp_path,
+    )
+    assert rc == 0, err
+    assert json.loads(out)["topic"] == accepted
+
+    rc, out, err = run_cli(
+        "--json",
+        "--as",
+        "van",
+        "channel",
+        "topic",
+        "general",
+        "-",
+        cwd=tmp_path,
+        stdin="ignored pipe body",
+    )
+    assert rc == 0, err
+    assert json.loads(out)["topic"] == "-"
+
+    for rejected in ("", " \u200b ", "line\nbreak", "line\rbreak", "x" * 501):
+        rc, out, err = run_cli(
+            "--as",
+            "van",
+            "channel",
+            "topic",
+            "general",
+            rejected,
+            cwd=tmp_path,
+        )
+        assert rc == 1
+        assert out == ""
+        assert err
+        assert "Traceback" not in err
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("channel",),
+        ("channel", "show"),
+        ("channel", "topic", "general"),
+        ("channel", "topic", "general", "text", "--clear"),
+        ("channel", "topic", "general", "text", "extra"),
+        ("channel", "topic", "general", "--unknown"),
+        ("channel", "rename", "general"),
+        ("channel", "rename", "general", "ops", "extra"),
+    ],
+)
+def test_cli_channel_usage_fails_before_client_construction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    argv: tuple[str, ...],
+) -> None:
+    monkeypatch.setattr(
+        TautClient,
+        "__init__",
+        lambda *_args, **_kwargs: pytest.fail("usage error initialized a client"),
+    )
+
+    rc, out, err = run_cli(*argv, cwd=tmp_path)
+
+    assert rc == 1
+    assert out == ""
+    assert "usage: taut channel" in err
+    assert "Traceback" not in err
+
+
+def test_cli_channel_show_missing_and_topic_nonmember_exit_2(tmp_path: Path) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "bob", "join", "other", cwd=tmp_path)[0] == 0
+
+    rc, out, err = run_cli("channel", "show", "missing", cwd=tmp_path)
+    assert rc == 2
+    assert out == ""
+    assert "channel not found" in err
+
+    rc, out, err = run_cli(
+        "--as", "bob", "channel", "topic", "general", "blocked", cwd=tmp_path
+    )
+    assert rc == 2
+    assert out == ""
+    assert "not a member" in err
+
+
+@pytest.mark.parametrize(
+    ("command", "target"),
+    [
+        (("channel", "topic", "missing", "blocked"), "missing"),
+        (("channel", "show", "wrong-kind"), "wrong-kind"),
+        (("channel", "topic", "wrong-kind", "blocked"), "wrong-kind"),
+    ],
+)
+def test_cli_channel_absent_and_wrong_kind_are_unchanged_exit_2(
+    tmp_path: Path,
+    command: tuple[str, ...],
+    target: str,
+) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    member_id = json.loads(run_cli("--as", "van", "whoami", "--json", cwd=tmp_path)[1])[
+        "member_id"
+    ]
+
+    queue = Queue(META_QUEUE_NAME, db_path=str(tmp_path / ".taut.db"))
+    try:
+        state = SqlSidecarTautState(queue, SQLITE_SQL_DIALECT)
+        state.upsert_thread(
+            name="wrong-kind",
+            kind="dm",
+            parent=None,
+            origin_ts=None,
+            created_by=member_id,
+            meta={"sentinel": True},
+            created_ts=queue.generate_timestamp(),
+        )
+        row_before = state.get_thread("wrong-kind")
+        member_before = state.get_member(member_id)
+    finally:
+        queue.close()
+
+    rc, out, err = run_cli("--as", "van", *command, cwd=tmp_path)
+
+    assert rc == 2
+    assert out == ""
+    assert "channel not found" in err
+    assert "Traceback" not in err
+
+    queue = Queue(META_QUEUE_NAME, db_path=str(tmp_path / ".taut.db"))
+    try:
+        state = SqlSidecarTautState(queue, SQLITE_SQL_DIALECT)
+        if target == "missing":
+            assert state.get_thread(target) is None
+        else:
+            assert state.get_thread(target) == row_before
+        assert state.get_thread("wrong-kind") == row_before
+        assert state.get_member(member_id) == member_before
+    finally:
+        queue.close()
+
+
+def test_cli_channel_human_rendering_escapes_topic_text(tmp_path: Path) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    topic = "focus\t\x1b]0;title\x07\x9b"
+    assert (
+        run_cli(
+            "--json",
+            "--as",
+            "van",
+            "channel",
+            "topic",
+            "general",
+            topic,
+            cwd=tmp_path,
+        )[0]
+        == 0
+    )
+
+    rc, out, err = run_cli("channel", "show", "general", cwd=tmp_path)
+
+    assert rc == 0, err
+    _assert_only_structural_newlines(out)
+    assert r"focus\t\x1b]0;title\a\x9b" in out
+
+
+def test_cli_top_level_rename_is_an_unknown_unreserved_command(tmp_path: Path) -> None:
+    rc, out, err = run_cli("rename", "general", "ops", cwd=tmp_path)
+
+    assert rc == 1
+    assert out == ""
+    assert "unknown command: rename" in err
+    assert "retired" not in err
 
 
 def test_cli_rename_finishes_interrupted_rename(tmp_path: Path) -> None:
@@ -2270,9 +2545,11 @@ def test_cli_rename_finishes_interrupted_rename(tmp_path: Path) -> None:
 
     rc, _out, err = run_cli("--as", "van", "say", "general", "blocked", cwd=tmp_path)
     assert rc == 1
-    assert "run 'taut rename general ops' to finish it" in err
+    assert "run 'taut channel rename general ops' to finish it" in err
 
-    rc, out, err = run_cli("rename", "general", "ops", "--json", cwd=tmp_path)
+    rc, out, err = run_cli(
+        "channel", "rename", "general", "ops", "--json", cwd=tmp_path
+    )
     assert rc == 0, err
     assert json.loads(out)["thread"] == "ops"
 

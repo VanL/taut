@@ -84,7 +84,7 @@ def _incomplete_channel_rename_message(rename: ChannelRenameRow) -> str:
     new_name = rename["new_name"]
     return (
         f"incomplete channel rename exists: {old_name} -> {new_name}; "
-        f"run 'taut rename {old_name} {new_name}' to finish it"
+        f"run 'taut channel rename {old_name} {new_name}' to finish it"
     )
 
 

@@ -12,6 +12,7 @@ from simplebroker.ext import IntegrityError
 import taut.identity as identity
 import taut.state._sql as sql_state
 from taut._constants import META_QUEUE_NAME
+from taut._exceptions import TautError
 from taut.client import TautClient
 from taut.state import (
     PORTABLE_SQL_DIALECT,
@@ -200,6 +201,139 @@ def test_thread_meta_corruption_fails_with_storage_context(
             state.get_thread("general")
     finally:
         queue.close()
+
+
+@pytest.mark.parametrize(
+    "stored_topic",
+    [
+        None,
+        "plain text",
+        {},
+        {"text": "valid", "updated_ts": 10},
+        {
+            "text": "valid",
+            "updated_ts": 10,
+            "updated_by_id": "m_aaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "extra": True,
+        },
+        {
+            "text": 1,
+            "updated_ts": 1_800_000_000_000_000_001,
+            "updated_by_id": "m_aaaaaaaaaaaaaaaaaaaaaaaaaa",
+        },
+        {
+            "text": "valid",
+            "updated_ts": True,
+            "updated_by_id": "m_aaaaaaaaaaaaaaaaaaaaaaaaaa",
+        },
+        {
+            "text": "valid",
+            "updated_ts": "1800000000000000001",
+            "updated_by_id": "m_aaaaaaaaaaaaaaaaaaaaaaaaaa",
+        },
+        {
+            "text": "valid",
+            "updated_ts": 10,
+            "updated_by_id": "m_aaaaaaaaaaaaaaaaaaaaaaaaaa",
+        },
+        {
+            "text": "valid",
+            "updated_ts": 9_223_372_036_854_775_808,
+            "updated_by_id": "m_aaaaaaaaaaaaaaaaaaaaaaaaaa",
+        },
+        {
+            "text": "valid",
+            "updated_ts": 1_800_000_000_000_000_001,
+            "updated_by_id": 1,
+        },
+        {
+            "text": "valid",
+            "updated_ts": 1_800_000_000_000_000_001,
+            "updated_by_id": "m_invalid!",
+        },
+        {
+            "text": "\u00a0\u200b",
+            "updated_ts": 1_800_000_000_000_000_001,
+            "updated_by_id": "m_aaaaaaaaaaaaaaaaaaaaaaaaaa",
+        },
+        {
+            "text": "line\nbreak",
+            "updated_ts": 1_800_000_000_000_000_001,
+            "updated_by_id": "m_aaaaaaaaaaaaaaaaaaaaaaaaaa",
+        },
+        {
+            "text": "x" * 501,
+            "updated_ts": 1_800_000_000_000_000_001,
+            "updated_by_id": "m_aaaaaaaaaaaaaaaaaaaaaaaaaa",
+        },
+    ],
+)
+def test_channel_topic_mutation_rejects_malformed_stored_object_without_writes(
+    taut_project: Path,
+    stored_topic: object,
+) -> None:
+    TautClient.init()
+    client = TautClient(as_name="owner")
+    client.join("general")
+    member = client._state.get_member_by_route_key("owner")
+    assert member is not None
+    queue = Queue(META_QUEUE_NAME, db_path=client.target, config=client.config)
+    state = SqlSidecarTautState(queue, dialect_for_taut_target(client.target))
+    stored_meta = {"closed": {"future": True}, "topic": stored_topic}
+    try:
+        with queue.sidecar(transaction=True) as session:
+            session.run(
+                "UPDATE taut_threads SET meta = ? WHERE name = ?",
+                (json.dumps(stored_meta), "general"),
+            )
+        before_member = state.get_member(member["member_id"])
+
+        with pytest.raises(TautError, match=r"taut_threads\.meta\.topic"):
+            state.set_channel_topic(
+                name="general",
+                member_id=member["member_id"],
+                topic="replacement",
+                updated_ts=20,
+            )
+
+        assert state.get_member(member["member_id"]) == before_member
+        assert state.get_thread("general")["meta"] == stored_meta  # type: ignore[index]
+    finally:
+        queue.close()
+
+
+def test_channel_rename_marker_rejects_corrupt_topic_without_marker(
+    taut_project: Path,
+) -> None:
+    TautClient.init()
+    client = TautClient(as_name="owner")
+    client.join("general")
+    corrupt_meta = {
+        "topic": {
+            "text": "broken",
+            "updated_ts": client._meta_queue.generate_timestamp(),
+            "updated_by_id": "m_aaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "extra": True,
+        }
+    }
+    with client._meta_queue.sidecar(transaction=True) as session:
+        session.run(
+            "UPDATE taut_threads SET meta = ? WHERE name = ?",
+            (json.dumps(corrupt_meta), "general"),
+        )
+
+    with pytest.raises(TautError, match=r"taut_threads\.meta\.topic"):
+        client._state.start_channel_rename(
+            old_name="general",
+            new_name="ops",
+            affected=[{"old": "general", "new": "ops"}],
+            started_ts=client._meta_queue.generate_timestamp(),
+        )
+
+    assert client._state.incomplete_channel_renames() == []
+    row = client._state.get_thread("general")
+    assert row is not None
+    assert row["meta"] == corrupt_meta
 
 
 def test_nullable_owned_metadata_decodes_sql_null_as_empty_object(

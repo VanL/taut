@@ -21,6 +21,7 @@ In scope:
 
 - the default `.taut.db` storage model and project resolution rules
 - thread and channel semantics over SimpleBroker queues
+- optional current topic metadata for top-level channels
 - the core sidecar state model
 - the message envelope contract
 - the read model: cursors, unread state, chat-history peek discipline, and
@@ -51,6 +52,9 @@ Out of scope as non-goals (not deferred ambiguity):
 - authentication or message integrity guarantees (see [TAUT-9])
 - message editing, retention, archival, bulk deletion, tombstones, undo, or
   administrative/moderator deletion
+- channel open/closed lifecycle or archive visibility. `taut channel close`
+  and `taut channel reopen` are possible future commands, not commitments in
+  this specification
 - taut-owned networking; remote reach only ever comes from the broker
   backend, never from taut growing a protocol
 - code-signing identity as identity-claim evidence (recorded as a possible
@@ -281,8 +285,9 @@ CREATE TABLE IF NOT EXISTS taut_threads (
     meta       TEXT,
     created_ts BIGINT NOT NULL
 );  -- parent/origin_ts are set for sub-threads.
-    -- dm/notification/system metadata is stored in meta as JSON and must
-    -- duplicate only routing data that is needed to render or recover.
+    -- channel metadata (including reserved topic/closed siblings) and
+    -- dm/notification/system routing metadata is stored in meta as JSON.
+    -- Unknown top-level keys must be preserved.
 
 CREATE TABLE IF NOT EXISTS taut_membership (
     thread       TEXT NOT NULL,
@@ -448,6 +453,72 @@ inserted id as well, but Redis-backed Taut state remains unsupported under
   implicitly — provided the caller is a member of the parent channel
   (Slack's "you're in the thread now"). Channels are never joined implicitly;
   `read` on a channel you have not joined is a miss ([TAUT-8.1]).
+
+### [TAUT-4.4] Channel topics
+
+A registered top-level channel has zero or one current topic. Direct messages,
+subthreads, notification queues, and system queues cannot have topics. The
+authoritative state is the top-level channel's existing `taut_threads.meta`
+object:
+
+- the top-level sibling keys `topic` and `closed` are reserved for channel
+  metadata;
+- no topic means `topic` is absent;
+- a present `topic` is an object with exactly `text`, `updated_ts`, and
+  `updated_by_id`. `text` is a string, `updated_ts` is a non-boolean integer
+  in Taut's timestamp domain, and `updated_by_id` is an [IAN-3.1] member id;
+- `closed` is reserved but has no value shape or behavior in version 0.8.0.
+  Taut does not write or interpret it and preserves it if encountered; and
+- a non-object, partial, extra-key, or wrong-typed `topic` value is corrupt
+  channel-topic metadata. Topic-aware list, show, rename, and mutation paths
+  fail cleanly rather than guessing, repairing, or overwriting it. Rename
+  validates the topic object before marker creation or broker queue mutation.
+
+Topic mutation replaces only the `topic` object and preserves `closed` plus
+every unknown top-level metadata key. Clearing removes only `topic`. It adds no
+table, column, broker alias, queue row, chat notice, notification, cursor
+change, or schema-version bump.
+
+A string topic must be nonblank under [TAUT-6.5], contain neither carriage
+return nor line feed, and contain at most 500 Unicode code points under Python
+`len()`. Accepted text is stored exactly; Taut does not trim, normalize, fold,
+or otherwise rewrite it. `None` is the public clear value. Invalid type, blank
+text, CR/LF, and 501-or-more-code-point text fail before identity, activity,
+membership, timestamp, or metadata work.
+
+`get_channel(channel)` is observational: it validates a top-level name,
+requires a registered `kind == "channel"` row, and reads only sidecar state.
+It does not resolve identity, touch activity, inspect a broker queue, create
+membership, or move a cursor.
+
+`set_channel_topic(channel, topic)` resolves one existing acting member without
+creating or healing identity. The member must currently belong to the channel.
+Topic mutation and channel rename-marker creation share the per-channel
+serialization namespace `taut:channel:<channel-name>`: SQLite uses its write
+transaction and PostgreSQL acquires a transaction advisory lock. Under that
+boundary, mutation rechecks incomplete rename state, channel kind, membership,
+and current metadata before replacing or removing `topic`. A changed value
+stores one internally consistent text/timestamp/member-id object and updates
+member activity in the same sidecar transaction. A same-value set or
+already-absent clear is a successful no-op that preserves audit fields and
+activity. Concurrent different values are last-committed-write-wins;
+cooperative changes to `closed` or unrelated metadata keys are preserved.
+
+A preliminary equal-value read may avoid timestamp allocation. A race may
+allocate a broker timestamp that the authoritative transaction does not use
+because another writer committed the requested value first; no unused
+timestamp is stored.
+
+Rename-marker creation acquires the same old-name serialization key. A topic
+mutation that wins commits before the marker and follows the registry row to
+its new name. A marker that wins makes a later old-name mutation fail without
+writing. Rename never clears or rebuilds topic metadata.
+
+Possible future commands include `taut channel close CHANNEL` and
+`taut channel reopen CHANNEL`. They are not required behavior: this section
+defines no lifecycle state, visibility filter, write gate, archive rule,
+retention rule, or `closed` value shape/default. Version 0.8.0 only reserves
+the sibling key name and preserves it.
 
 ## 5. Identity and Recognition [TAUT-5]
 
@@ -912,6 +983,8 @@ later token is command-local. `--version` is a root action before the verb.
 | `init` | Create the resolved SQLite `.taut.db` or initialize the configured backend target plus sidecar schema in the current directory. Idempotent with notice if present. | 0 created/exists, 1 error |
 | `join THREAD [--as NAME_OR_ALIAS] [--persona TEXT] [--new]` | Register identity if needed (`--new` forces a fresh member), create a channel if needed, add membership (cursor at now, [TAUT-7.4]), write notice. `--persona` sets/updates the member's persona. | 0; 1 error |
 | `leave THREAD` | Remove membership, write notice. | 0; 1 error; 2 not a member |
+| `channel show CHANNEL` | Return current metadata for one registered top-level channel. Resolves no actor and changes no activity, membership, queue, message, notification, or cursor state. | 0 showed; 1 invalid name, corrupt metadata, or error; 2 no such top-level channel |
+| `channel topic CHANNEL TEXT` / `channel topic CHANNEL --clear` | Set one exact one-line topic or explicitly clear it. Requires an existing acting member and current channel membership. A same-value set and absent clear are successful no-ops. No stdin form. | 0 changed or no-op; 1 usage, invalid topic, corruption, or error; 2 no such channel / unrecognized member / not a member |
 | `set name NAME` | Change the acting member's current display name and route key. Does not rewrite old messages. | 0; 1 error/name collision; 2 unrecognized |
 | `say TARGET [TEXT\|-]` | Post a message (stdin with `-` or when piped and TEXT omitted). Blank text is filtered before routing under [TAUT-6.5]. `TARGET` may be a channel, sub-thread, or `@name` direct-message target ([IAN-5]). Channel and sub-thread targets require membership. Prints message id with `-t` only when a message is written. | 0 wrote; 1 error; 2 blank filtered / not a member / no such member |
 | `reply THREAD MSG_ID [TEXT\|-]` | Post into the sub-thread of MSG_ID, creating it on first reply. Blank text is filtered before parent resolution under [TAUT-6.5]. Requires membership in THREAD. A full 19-digit id resolves exactly. A suffix >= 4 digits resolves via a bounded public-API scan of the most recent 1,000 message ids of THREAD; ambiguous -> error listing candidates. | 0 wrote; 1 error (including ambiguous suffix); 2 blank filtered / no such message / not a member |
@@ -923,7 +996,7 @@ later token is command-local. `--version` is a root action before the verb.
 | `log THREAD_OR_DM [--since TS] [--limit N]` | Show cursor-neutral history. A DM may be `@name-or-alias` or a stable `dm.d_*` handle and requires actor access under [IAN-5.3]. `--limit N` selects the most recent N messages after `--since`, rendered chronologically. | 0; 1 error; 2 empty / unrecognized member / inaccessible conversation |
 | `list [--all | --dms]` | Bare: joined threads with unread state. `--all`: every registered thread. `--dms`: every valid actor-accessible DM, including read and empty conversations, in [TAUT-7.8] order. The two flags are mutually exclusive. | 0; 2 when the selected actor-scoped view is empty |
 | `watch [THREAD_OR_DM ...]` | Live-follow selected existing memberships plus the acting member's notification inbox. DM filters may be `@name-or-alias` or stable handles; they resolve once and deduplicate before watcher construction. Bare watch retains dynamic all-membership behavior. | 0 on clean stop; 1 error; 2 unrecognized member / explicit thread or DM miss |
-| `rename OLD NEW` | Rename a channel and every registered one-level sub-thread under it. Uses SimpleBroker's public queue rename API and sidecar rename markers. Does not rewrite message bodies. | 0; 1 error/collision/invalid name; 2 no such channel |
+| `channel rename OLD NEW` | Rename a channel and every registered one-level sub-thread under it. Uses SimpleBroker's public queue rename API and sidecar rename markers. Does not rewrite message bodies. | 0; 1 error/collision/invalid name; 2 no such channel |
 | `who [THREAD]` | Members and presence (thread members, or all members when bare). | 0; 1 error; 2 no such thread |
 | `whoami [--explain]` | Resolved identity; with `--explain`, the evidence and rule. | 0 resolved; 1 error (incl. invalid token); 2 unrecognized |
 | `rejoin [NAME_OR_ALIAS] [--token TOKEN]` | Associate the current process claim with the selected member ([IAN-3.4]). Target: name or alias if given, else `--token` (subcommand or global), else global `--as`; name/alias combined with any `--token` is an error. | 0; 1 error/collision/ambiguous selectors; 2 no such member/token |
@@ -953,8 +1026,12 @@ exits 1 with its existing fixed diagnostic before blank filtering runs.
 Help text is part of the agent-usable surface: every option and positional names
 its purpose, message-id suffix, exact-id, and timestamp forms are discoverable
 from the owning subcommand, and root help names exit-code classes. The
-`message` noun requires `show` or `delete`; a missing nested subcommand follows
-the same stderr usage and exit-1 rule as a missing top-level subcommand.
+`message` noun requires `show`, `delete`, or `react`; the `channel` noun
+requires `show`, `topic`, or `rename`. A missing nested subcommand follows the
+same stderr usage and exit-1 rule as a missing top-level subcommand.
+Channel help teaches the one-line 500-code-point topic bound, explicit
+`--clear`, membership requirement, observational `show` behavior, rename
+syntax and recovery role, and 0/1/2 exit classes.
 `--token` is continuity selection, never authentication.
 
 Root help is registry-backed. It must remain usable when an unrelated installed
@@ -992,13 +1069,21 @@ exit classes apply equally to built-in and extension command adapters.
     claim. It never lists recipient ids. Human
     output is `reacted REACTION to message MSG_ID in THREAD (N current
     recipients)`;
+  - `channel show` and `channel topic`: exactly `channel`, `topic`,
+    `topic_updated_ts`, `topic_updated_by_id`, and
+    `topic_updated_by_name`. The last four fields are null when no topic
+    exists. The author name is the stable author's current display name when
+    available, otherwise null;
   - `join` and `leave` echo their notice's message object;
-  - list objects (`list`): `thread`, `kind`, `parent`, `unread` (bool),
-    `last_ts`. Direct-message list objects also include `members`, an array of
-    participant member ids. `last_ts` is the newest pending broker timestamp for
-    the registered thread, obtained through SimpleBroker's public indexed
-    lookup; claimed rows from foreign consumers do not count, matching
-    [TAUT-7.1].
+  - thread objects (`list`, `channel rename`, and MCP `channel_rename`):
+    `thread`,
+    `kind`, `parent`, `unread` (bool), `last_ts`. Every top-level channel
+    object also includes required `topic` as a string or null. Direct-message
+    objects instead include `members`, an array of participant member ids.
+    Non-channel objects omit `topic`; non-DM objects omit `members`. `last_ts`
+    is the newest pending broker timestamp for the registered thread, obtained
+    through SimpleBroker's public indexed lookup; claimed rows from foreign
+    consumers do not count, matching [TAUT-7.1].
     `list --dms` uses this existing shape; every object has `kind: "dm"` and
     exactly two member ids.
   - member objects (`who`, `whoami`, `rejoin`, `set name`): `member_id`,
@@ -1024,6 +1109,11 @@ exit classes apply equally to built-in and extension command adapters.
   define a JSON error envelope.
 - Human-readable rendering (colors, alignment, time formatting) is
   explicitly not a stable contract.
+- Human list output adds one escaped indented topic line only for a channel
+  with a topic. Human `channel show` prints the channel and either its topic
+  plus update attribution or `(none)`. Human `channel show`/`channel topic`
+  output escapes topic and current author text. Quiet mode emits no success
+  record.
 - Human message headings for a valid direct message are
   `DM with <other current display name>`. Message JSON remains canonical and
   uses the stable queue name in `thread`.
@@ -1035,9 +1125,19 @@ argument-parsing layer over it — every CLI behavior above must be
 reachable through one public client method with the same semantics (the
 SimpleBroker/Weft layering rule: CLI and library share one operational
 model). Public exports from `taut`: `TautClient`, `TautWatcher`, `Message`,
-`MessageDeletion`, `MessageReaction`, `Thread`, `Member`, the exception hierarchy rooted at
-`TautError` including `BlankMessageError`, `escape_terminal_text`, and
-`__version__`. The package ships typed (`py.typed`).
+`MessageDeletion`, `MessageReaction`, `Channel`, `Thread`, `Member`, the
+exception hierarchy rooted at `TautError` including `BlankMessageError`,
+`escape_terminal_text`, and `__version__`. The package ships typed
+(`py.typed`).
+
+`Channel` is a frozen, slotted public value with exact fields
+`name: str`, `topic: str | None`, `topic_updated_ts: int | None`,
+`topic_updated_by_id: str | None`, and
+`topic_updated_by_name: str | None`. It is exported from `taut.client` and
+lazily from `taut`. `TautClient.get_channel(channel: str) -> Channel` and
+`TautClient.set_channel_topic(channel: str, topic: str | None) -> Channel`
+implement [TAUT-4.4]. `Thread` appends `topic: str | None = None`; top-level
+channel projections populate it.
 
 The unread signatures are
 `TautClient.read(thread: str | None = None, *, limit: int = 1000) ->
@@ -1323,9 +1423,16 @@ sort canonically. Installed command code is trusted in-process Python and is
 not a sandbox or authentication boundary.
 
 `message` is one reserved core built-in whose selected adapter owns the
-required `show` and `delete` nested subparsers. An installed command whose
-normalized name is `message` cannot override, hide, or make this built-in
-unavailable.
+required `show`, `delete`, and `react` nested subparsers. `channel` is another:
+its adapter owns required `show`, `topic`, and `rename` nested subparsers.
+`topic` requires exactly one of positional `TEXT` or `--clear` and has no
+stdin form. `rename` requires exactly `OLD NEW` and delegates to the existing
+public channel-rename behavior. A literal `--` keeps later option-shaped text
+positional. Installed commands cannot override, hide, or extend either
+built-in's nested namespace. The existing rename adapter behavior is rehomed
+intact; the former top-level registration ceases without an alias or
+retired-name mechanism. The top-level name `rename` then follows the ordinary
+installed-command rules; core gives it no special reservation.
 
 Distribution-name comparisons use Python packaging normalization: lowercase
 the name and collapse each run of hyphen, underscore, or dot to one hyphen.
@@ -1501,6 +1608,21 @@ implied by docs or output.
   ([IAN-7.4]).
 - Partial channel rename: must be recoverable or loudly reportable under
   [IAN-8.3].
+- A channel `topic` value that is not an exact object with `text`,
+  `updated_ts`, and `updated_by_id`, or whose fields have invalid types, is
+  corruption: topic-aware list, show, rename, and mutation fail without
+  partial output, traceback, silent repair, or overwrite. Rename fails before
+  marker creation or broker queue mutation. A `closed` sibling or unknown
+  top-level key is not topic corruption and survives topic set and clear.
+- Channel topic input of the wrong runtime type, blank text, CR/LF, or more
+  than 500 code points fails before identity, activity, membership, timestamp,
+  or metadata work. An absent/wrong-kind channel is a miss; mutation by an
+  unresolved or nonmember actor uses the existing empty/membership class.
+- Concurrent channel topic writes serialize per [TAUT-4.4]. The last committed
+  different value wins without mixing audit fields or losing cooperative
+  unknown-key changes. Rename-marker creation uses the same old-name boundary,
+  so a topic either commits before the marker and follows the row or is refused
+  after the marker.
 - Registry/queue divergence (queue deleted via broker CLI, registry row
   remains): thread lists and joins still work; reads show empty history.
   Taut never repairs silently; a future `doctor` verb may report.
@@ -1601,6 +1723,15 @@ posture:
   outcome-ambiguous exceptions; duplicates; and stale pointers. Tests must
   include intended recipients with no broker queue row and must not replace
   the broker, sidecar, locator, or queue paths with mocks.
+- Shared real SQLite and PostgreSQL channel-topic contracts prove set, clear,
+  same-value and absent-clear no-ops, every validation boundary, complete and
+  corrupt topic objects, reserved `closed` and unknown-key preservation, exact
+  audit fields, membership and activity rules, actor-free/broker-free show,
+  top-level-only projection, and no message, notification, or cursor effects.
+  Deterministic barriers prove two different topic writers, one topic writer
+  racing a cooperative unknown-key writer in the same serialization namespace,
+  and topic mutation racing rename-marker creation. Sleeps and mocked
+  SQL/broker paths are not acceptable substitutes.
 - A selector-safety probe must fail if reaction fanout invokes `broadcast`
   without keyword-only `queue_names` and `create_missing=True`, or supplies
   `pattern`. Selector-free broadcast would target every existing queue;
@@ -1629,6 +1760,22 @@ posture:
   nested help/required arguments, globals before and after the noun,
   full-id validation, human/JSON/quiet show and deletion output, and built-in
   ownership over a normalized installed-command collision.
+- CLI tests also prove the reserved `channel` noun and all three nested
+  operations:
+  missing operation/channel/text, text plus `--clear`, extra/unknown arguments,
+  global-option placement, literal `--`, blank/Cf-only text, CR, LF, 500/501
+  code points, absent/wrong-kind channel, nonmember actor, corrupt metadata,
+  human/JSON/quiet rendering, terminal escaping, exact exit 0/1/2 classes, and
+  no traceback or partial output. They prove `channel show` renders `(none)`
+  when no topic exists and that nested help teaches the topic bound, clear
+  form, membership rule, observational show, and exit classes.
+- CLI and command-registry tests prove the existing rename parser, dispatch,
+  output, exit classes, and recovery behavior moved intact to
+  `channel rename`; the core-only root help and selection expose no top-level
+  `rename` command or compatibility alias, and an installed top-level
+  `rename` manifest receives the ordinary extension treatment.
+- Rename tests prove a corrupt source topic object is rejected before rename
+  marker creation or broker queue mutation.
 - Predicate tests cover empty text, ASCII and non-ASCII whitespace, common
   `Cf` zero-width/format characters, mixtures, and visible text containing
   such characters without claiming exhaustive Unicode visibility. A named
@@ -2066,6 +2213,9 @@ verification.
 
 ## Related Plans
 
+- `docs/plans/2026-07-28-channel-topics-plan.md` — top-level channel topics,
+  atomic metadata merge, reserved `channel` CLI namespace, and coordinated
+  Python/MCP contracts; close/reopen remains possible future work.
 - `docs/plans/2026-07-28-direct-message-navigation-plan.md` — actor-aware
   durable DM addressing, directory discovery, explicit watch canonicalization,
   notification recovery actions, and coordinated Python/CLI/MCP proof.

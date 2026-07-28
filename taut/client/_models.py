@@ -33,6 +33,18 @@ class Thread:
     unread_count: int = 0
     members: tuple[str, ...] = ()
     display_name: str | None = None
+    topic: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Channel:
+    """Current metadata for one registered top-level channel."""
+
+    name: str
+    topic: str | None
+    topic_updated_ts: int | None
+    topic_updated_by_id: str | None
+    topic_updated_by_name: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +107,7 @@ class InitResult:
 # Keep public value-object introspection aligned with the facade import path.
 Member.__module__ = "taut.client"
 Thread.__module__ = "taut.client"
+Channel.__module__ = "taut.client"
 Message.__module__ = "taut.client"
 MessageDeletion.__module__ = "taut.client"
 MessageReaction.__module__ = "taut.client"

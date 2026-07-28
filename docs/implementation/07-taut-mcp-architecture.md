@@ -21,7 +21,7 @@ run [29455389050](https://github.com/VanL/taut/actions/runs/29455389050), MCP
 release gate
 [29455393317](https://github.com/VanL/taut/actions/runs/29455393317), and the
 [`taut_mcp/v0.7.0` GitHub Release](https://github.com/VanL/taut/releases/tag/taut_mcp/v0.7.0)
-as evidence. The portable surface is 18 explicit tools plus
+as evidence. The portable surface is 20 explicit tools plus
 `taut://notifications/current`; the optional Claude channel is only a
 best-effort wake hint.
 
@@ -33,8 +33,9 @@ best-effort wake hint.
   subscription behavior, [MCP-9] agent instructions and host adapters,
   [MCP-10] trust/rate limits, [MCP-11] failures, and [MCP-12] proof
 - `docs/specs/02-taut-core.md` [TAUT-3.2] project configuration,
-  [TAUT-8.2] public records, [TAUT-8.3] Python client and observational inbox
-  peek, [TAUT-9] trust boundary, and [TAUT-11] backend conformance
+  [TAUT-4.4] channel topics, [TAUT-8.2] public records, [TAUT-8.3] Python
+  client and observational inbox peek, [TAUT-9] trust boundary, and [TAUT-11]
+  backend conformance
 - `docs/specs/03-identity-addressing-notifications.md` [IAN-3] identity,
   [IAN-6.5] notification queues, and [IAN-7.4] consuming versus observational
   notification reads
@@ -88,7 +89,7 @@ than silently selecting or healing another member.
 
 `_tools.py` declares a fixed manifest. It does not reflect the CLI command
 registry, so future core or extension commands cannot become remote tools by
-accident. `_commands.py` dispatches the 15 CLI-shaped tools directly to public
+accident. `_commands.py` dispatches the 17 CLI-shaped tools directly to public
 `TautClient` methods and serializes public value objects; it never launches the
 CLI or parses renderer output.
 
@@ -101,14 +102,14 @@ inaccessible DM selectors become the same content-free typed empty result.
 `log` retains its read-only/idempotent annotations because core resolves its
 DM actor without activity or cursor writes.
 
-`show_message` and `delete_message` accept only a full exact message id.
-`show_message` returns the ordinary message record after a non-claiming peek
-and advances the acting member's seen cursor through that id. `delete_message`
+`message_show` and `message_delete` accept only a full exact message id.
+`message_show` returns the ordinary message record after a non-claiming peek
+and advances the acting member's seen cursor through that id. `message_delete`
 returns a distinct deletion record, is restricted to the acting author's
 ordinary messages, and does not cascade into cursors, notifications, DM
 registry rows, memberships, or sub-threads.
 
-`react_to_message` is the fifteenth CLI-shaped tool. It calls the public
+`message_react` calls the public
 client method directly with an exact id and schema-validated slug. Success is
 a distinct intended-audience receipt; empty audience and ineligible targets
 remain typed empty results. A best-effort broadcast exception remains success
@@ -116,23 +117,45 @@ with the ordinary warnings array. The child keeps its attachment-time reaction
 vocabulary, so config changes require reattachment instead of cross-thread
 config mutation.
 
+Channel metadata adds two tools without creating a second state path.
+`channel_show` calls the actor-free public `get_channel()` method and returns
+the exact channel record. The child carries its existing cached notification
+snapshot in that completion instead of calling `peek_inbox()` after
+`channel_show`; this keeps the tool sidecar-only while preserving the master's
+normal snapshot-installation order. `channel_topic` calls
+`set_channel_topic()` with a
+string or JSON `null`; core remains the owner of Unicode blank validation,
+membership, no-op detection, activity, and transactional merge. The MCP
+schema rejects overlong and multiline strings before dispatch. Topic changes
+produce no message or notification. `channel_rename` is the existing rename
+tool under the noun-first name and keeps its prior dispatch and result
+contract.
+
+The fixed manifest applies the same noun-first naming to message tools:
+`message_show`, `message_delete`, and `message_react`. Former identifiers are
+not aliases. Together with `channel_show`, `channel_topic`, and
+`channel_rename`, the manifest contains exactly 20 tools.
+
 Each ready workspace has one no-wait command slot. A second call returns busy
 instead of growing an unbounded per-workspace queue. Calls to other workspaces
-continue independently. A child completion contains the command result and
-post-command notification snapshot in one event. The master installs the
-snapshot, recomputes resource text, frees the slot, then returns or discards
-the result.
+continue independently. A child completion contains the command result and a
+notification snapshot in one event. That is a new post-command snapshot for
+every CLI-shaped operation except actor-free `channel_show`, which carries the
+existing cached snapshot. The master installs the snapshot, recomputes
+resource text, frees the slot, then returns or discards the result.
 
 Cancellation is queue-ordered. If the child sees a cancel envelope before the
 empty-queue start boundary, it does not run the operation. Once the operation
 starts, synchronous Taut work is not rolled back; its state and snapshot are
 installed while the transport receives the SDK's standard cancellation error.
 This is why successful nonempty `read` results carry structured cursor
-guidance, the `show_message` description and initialization instructions state
+guidance, the `message_show` description and initialization instructions state
 its cursor effect, and the server never retries a consuming operation
 automatically. After an uncertain DM read, `list(dms=true)` can recover the
 durable stable handle and `log` can inspect history without another cursor or
-activity move. Neither operation proves which read page reached the host.
+activity move. After an uncertain topic mutation, `channel_show` reports the
+current canonical topic before the caller decides whether to retry. None of
+these observations proves which response reached the host.
 
 ### The notification resource is a cached level; hints are edges
 
@@ -237,7 +260,7 @@ coverage, and cross-workflow coverage artifact coupling.
 | `extensions/taut_mcp/taut_mcp/server.py` | MCP handlers, instructions, capabilities, stdio lifecycle, standard resource subscription wiring |
 | `extensions/taut_mcp/taut_mcp/_connection_reactor.py` | master registry, lifecycle arbitration, admission, results, aggregate text, edge trackers, teardown |
 | `extensions/taut_mcp/taut_mcp/_workspace_reactor.py` | child resolution, client ownership, command loop, observational notification service, native waiter |
-| `extensions/taut_mcp/taut_mcp/_tools.py` | exact 18-tool schemas, descriptions, annotations, output schemas |
+| `extensions/taut_mcp/taut_mcp/_tools.py` | exact 20-tool schemas, descriptions, annotations, output schemas |
 | `extensions/taut_mcp/taut_mcp/_commands.py` | explicit public-client command dispatch and record conversion |
 | `extensions/taut_mcp/taut_mcp/_claude_channel.py` | isolated fixed-payload experimental notification model and send call |
 | `extensions/taut_mcp/tests/` | real SQLite/stdio lifecycle, tool, resource, subscription, cancellation, and adversarial proof; optional live PostgreSQL conformance |
@@ -269,6 +292,7 @@ and plan evidence whenever ownership or rationale changes.
 
 ## Related Plan
 
+- `docs/plans/2026-07-28-channel-topics-plan.md`
 - `docs/plans/2026-07-28-direct-message-navigation-plan.md`
 - `docs/plans/2026-07-15-taut-0.7.1-portability-and-coverage-plan.md`
 - `docs/plans/2026-07-15-taut-mcp-release-integration-plan.md`

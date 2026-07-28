@@ -37,6 +37,7 @@ from ._base import (
 from ._identity import IdentityMixin
 from ._messaging import MessagingMixin
 from ._models import (
+    Channel,
     InitResult,
     Member,
     Message,
@@ -71,6 +72,7 @@ def _validate_sqlite_path(
 
 
 __all__ = [
+    "Channel",
     "InitResult",
     "Member",
     "Message",

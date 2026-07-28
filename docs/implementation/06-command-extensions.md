@@ -35,10 +35,19 @@ drift. One interface with two discovery sources is the smaller design.
 A core-owned entry may expose a nested local grammar. The built-in `message`
 entry owns `show`, `delete`, and `react` beneath one noun
 (`taut message show MSG_ID`, `taut message delete MSG_ID`, and
-`taut message react MSG_ID REACTION`). The registry still sees one top-level
-command; the selected adapter owns the subcommand parser and dispatch. This
-does not create a cross-package nested namespace or dynamically reflect
-project reaction values into static help.
+`taut message react MSG_ID REACTION`). The built-in `channel` entry likewise
+owns `show`, `topic`, and `rename`. Keeping rename under the channel noun makes
+the object being changed explicit and leaves one stable home for later channel
+metadata operations. This is a mechanical route move: the public Python method
+remains `rename_channel()`, while core no longer registers top-level `rename`.
+Because the package was private before this move, the freed name receives
+ordinary installed-command handling rather than an alias, deprecation shim, or
+retired-name guard.
+
+The registry still sees one top-level command for each noun; the selected
+adapter owns the subcommand parser and dispatch. This does not create a
+cross-package nested namespace or dynamically reflect project reaction values
+into static help.
 
 "Local" does not mean "found by scanning this checkout." Registration follows
 the active Python environment:
@@ -331,6 +340,7 @@ specification. Adding them here would be speculative coupling.
 | Installed discovery, conflicts, reserved slots | `taut/commands/_registry.py` |
 | Root/global splitting, lazy factory load, cleanup | `taut/commands/_dispatch.py` |
 | Built-in command adapters and renderers | `taut/commands/` |
+| Maintained documentation command claims | `tests/test_cli_claims.py` and `bin/check-cli-claims` |
 | Temporary Summon 0.5.4 bridge | `taut/commands/_summon_compat.py` |
 | Native Summon manifests/adapters | `extensions/taut_summon/taut_summon/command_manifest.py` and `commands/` |
 | Reusable Summon operations | `extensions/taut_summon/taut_summon/controller.py`, `models.py`, and `interaction.py` |
@@ -346,6 +356,17 @@ direction. `tests/test_core_summon_wheel_matrix.py` builds and installs real
 wheels, verifies exact entry-point ownership, and exercises paired Summon
 lifecycle. `tests/fixtures/taut_command_plugin` is the minimal third-party
 packaging example.
+
+Maintained documentation has a separate command-path gate. Its one grammar,
+source inventory, exemptions, and validator live in
+`tests/test_cli_claims.py`; `bin/check-cli-claims` imports that contract. The
+gate extracts shell-like `taut` claims from Markdown, then checks the selected
+core adapter's parser shape against `CommandRegistry(entry_points=())`. It
+does not discover ambient plugins, construct a client, resolve a project, or
+run a command. This keeps command prose coupled to the same static registry
+that owns root selection without turning the gate into an integration test.
+Exact, source-scoped exemptions are reserved for documented future, invalid,
+or external examples and become failures once the path is current.
 
 Root tests that consume `installed_command_fixture` are derived into the
 `installed_wheel` marker during collection, before marker deselection, and are
@@ -379,6 +400,7 @@ The principal firing tests are:
 | Reserved-owner normalization | `tests/test_command_registry.py::test_unique_normalized_official_claim_owns_reserved_slot` |
 | Broken-provider root help | `tests/test_command_registry.py::test_root_help_lists_unavailable_commands_and_emits_each_diagnostic_once` |
 | Static built-in fast path versus installed discovery | `tests/test_lazy_imports.py::test_installed_core_selection_skips_unrelated_manifest_but_help_and_reserved_do_not` |
+| Current maintained CLI claims and stale exemptions | `tests/test_cli_claims.py` and `uv run bin/check-cli-claims` |
 | Real wheel install and next-process uninstall visibility | `tests/test_command_registry.py::test_installed_console_discovers_then_loses_uninstalled_command` |
 | Exact fresh Summon/core wheel entries and paired lifecycle | `tests/test_core_summon_wheel_matrix.py` metadata and installed-artifact cases |
 | Import and initialization floors | `tests/test_lazy_imports.py` and `tests/test_architecture_boundaries.py` |
@@ -418,12 +440,13 @@ For a new installed extension command:
 
 Version 1 is intentionally small: top-level registry entries only, no aliases,
 priority, hot reload, nested cross-package namespace, or dependency graph.
-A selected adapter may own nested local grammar, as the core `message` command
-does. Add a shared nested namespace only for a concrete product need with its
-own compatibility plan.
+A selected adapter may own nested local grammar, as the core `message` and
+`channel` commands do. Add a shared nested namespace only for a concrete
+product need with its own compatibility plan.
 
 ## Related Plan
 
+- `docs/plans/2026-07-28-channel-topics-plan.md`
 - `docs/plans/2026-07-28-direct-message-navigation-plan.md`
 - `docs/plans/2026-07-14-terminal-output-safety-plan.md`
   — shared packaged/project policy, renderer integration, extension guidance,
