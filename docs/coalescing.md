@@ -11,13 +11,15 @@ watermarks, and the gates that make those surfaces accurate and
 derivable. Product behavior and unrelated cleanup remain outside the
 sweep. Specs and implementation docs are living documents and are never
 coalesced. Verification: the run log below, this repository's
-documentation gates (`tests/test_docs_references.py`), and every
-executable coalescing metadata gate. Required action: the session-start
-check is **read-only** — derive the counts, compare against the deferral
-state, and report a new trip to the user in one sentence. Inside an
-authorized sweep, repair reversible, evidence-backed in-boundary defects
-before folding. Destructive steps additionally require landing
-authorization.
+documentation gates (`tests/test_docs_references.py` and
+`bin/check-doc-paths`), and every executable coalescing metadata gate
+(`bin/check-plan-status-index` for the plan tier, `bin/coalesce-check`
+for SHA claims, retrieval cues, and the lessons-tier counts). Required
+action: the session-start check is **read-only** — derive the counts,
+compare against the deferral state, and report a new trip to the user in
+one sentence. Inside an authorized sweep, repair reversible,
+evidence-backed in-boundary defects before folding. Destructive steps
+additionally require landing authorization.
 
 Counts are always derived from watermarks and the current tree — never
 stored, never trusted from memory.

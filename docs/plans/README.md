@@ -96,6 +96,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 | `2026-07-15-per-call-read-limit-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |
 | `2026-07-15-taut-0.7.1-portability-and-coverage-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |
 | `2026-07-15-taut-mcp-release-integration-plan.md` | completed | no | Completed; landed evidence includes `dd699e4`. |
+| `2026-07-28-agent-guidance-delta-wave-plan.md` | completed | no | Class 3+P propagation of the agent-guidance wave at `51626db`; transplants applied and local gates green, independent review and landing authorization outstanding. |
 | `2026-07-17-agent-guidance-propagation-plan.md` | completed | no | Completed; landed evidence includes `9221cbd`. |
 | `2026-07-27-message-show-delete-plan.md` | completed | no | Completed; landed evidence includes `8509dc4`. |
 | `2026-07-28-coalescing-wave-plan.md` | completed | no | Bounded-maintenance process, checked plan index, and coalescing derivation landed after independent review. |

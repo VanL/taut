@@ -51,6 +51,8 @@ and hot while git history holds everything raw.
   citation form
 - `bin/check-plan-status-index` — executable plan-index completeness and
   vocabulary gate
+- `bin/coalesce-check` — SHA-claim, retrieval-cue, and lessons-count
+  evidence trail for this state file
 
 ## Blast Radius
 
@@ -157,6 +159,13 @@ contains the raw material about to be folded — check with
 `git show <source_sha>:docs/lessons.md`. If the entries exist only in the
 worktree, there is no valid source yet: the destructive phase is blocked
 until the raw state is committed (or the sweep stays additive-only).
+
+**Cue portability:** where the repository has a published mirror, a cue
+must resolve in the published history too — a SHA that survives only on
+one machine is a claim the world cannot verify (the 2026-07-28 field audit
+found exactly this: cues true locally, unverifiable from the mirrors). If
+the pin is not yet published, the run-log line says `local-only pin`;
+`bin/coalesce-check` reports both conditions mechanically.
 
 For each tripped or requested fold:
 
@@ -335,5 +344,10 @@ When the sweep is done, these exist and are verifiable:
 - If the harvest gate keeps blocking on the same item class, the gap is
   upstream (plans closing with open deviation logs) — fix the completion
   gate usage, not the sweep.
-- When an executable `coalesce-check` script exists, replace step 2's
-  manual derivation with it and keep the commands here as the fallback.
+- `bin/coalesce-check` is installed: it verifies every SHA claim and
+  retrieval cue in `docs/coalescing.md` (locally, in named siblings, and
+  against `origin/main`, reporting `local-only pin`) and reports the
+  lessons-tier counts. It does not derive the plans or promotion tiers —
+  those stay with `bin/check-plan-status-index` and step 2's judgment
+  clustering. Run it alongside step 2; the commands there remain the
+  fallback when the tool is unavailable.

@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""Gate: every repo-relative path claim in taut's guidance surfaces resolves.
+
+Prose binds only what gets checked. Path claims are the corpus's most common
+rot class, and taut already gates them in
+``tests/test_docs_references.py::test_documented_paths_exist``. This script
+is not a second opinion about what a path claim is — it **imports** that
+module's grammar (``LINK_PATH_RE``, ``BACKTICK_PATH_RE``, ``ALLOWLIST``,
+``_prose_lines``) and its maintained-source list, so there is exactly one
+definition in the repository.
+
+What it adds over the pytest gate:
+
+1. A pytest-free entry point, runnable in a propagation or coalescing sweep
+   without standing up the test session.
+2. Two surfaces the pytest source list does not include:
+   ``docs/coalescing.md`` (the coalescing state file, whose run log and
+   Verification clause make path claims) and ``docs/plans/README.md`` (the
+   structured plan status index, excluded by the blanket ``docs/plans/``
+   rule but a maintained routing surface, not an immutable plan body).
+   Individual plan *files* stay excluded: they are historical records whose
+   paths may legitimately retire.
+
+Adopted from agent-guidance @ ``51626db`` via
+``docs/plans/2026-07-28-agent-guidance-delta-wave-plan.md`` (adaptations A1-A3:
+grammar imported rather than restated; scan surface set to taut's layout plus
+the two gap files; the hub's ``--scaffold`` mode dropped, taut has no
+bootstrap script).
+
+Exit 0 when every claim resolves, 1 listing the danglers, 2 on an
+invocation or environment problem. Read-only by construction.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# Surfaces the pytest gate's source list does not cover. Both are maintained
+# routing/state documents, not immutable historical records.
+EXTRA_SOURCES = [
+    Path("docs/coalescing.md"),
+    Path("docs/plans/README.md"),
+]
+
+
+def _load_grammar():
+    """Import taut's single definition of a path claim, or explain why not."""
+    sys.path.insert(0, str(REPO_ROOT))
+    try:
+        from tests import test_docs_references as gate
+    except Exception as exc:  # pragma: no cover - environment problem
+        print(
+            "check-doc-paths: cannot import tests/test_docs_references.py "
+            f"({exc}). Run under the project environment, e.g. "
+            "`uv run bin/check-doc-paths`."
+        )
+        sys.exit(2)
+    return gate
+
+
+def sources(gate) -> list[Path]:
+    paths = list(gate._markdown_path_sources())
+    for extra in EXTRA_SOURCES:
+        candidate = REPO_ROOT / extra
+        if candidate.is_file() and candidate not in paths:
+            paths.append(candidate)
+    return paths
+
+
+def run(root: Path) -> int:
+    gate = _load_grammar()
+    scanned = sources(gate)
+    failures: list[str] = []
+    claim_count = 0
+    for source in scanned:
+        if not source.is_file():
+            continue
+        relative = source.relative_to(REPO_ROOT)
+        for lineno, line in gate._prose_lines(source):
+            claims = [
+                match.group(1)
+                for regex in (gate.LINK_PATH_RE, gate.BACKTICK_PATH_RE)
+                for match in regex.finditer(line)
+            ]
+            for claim in claims:
+                if claim in gate.ALLOWLIST:
+                    continue
+                claim_count += 1
+                if not (root / claim).exists():
+                    failures.append(f"{relative}:{lineno}: `{claim}` does not resolve")
+
+    extra_present = [
+        str(extra) for extra in EXTRA_SOURCES if (REPO_ROOT / extra).is_file()
+    ]
+    print(
+        f"check-doc-paths: {len(scanned)} source(s), {claim_count} path claim(s); "
+        f"beyond the pytest gate's list: {', '.join(extra_present) or 'none'}"
+    )
+    if failures:
+        print(f"  {len(failures)} dangling path claim(s):")
+        for failure in failures:
+            print(f"    {failure}")
+        print(
+            "  Fix the document, or tighten the recognized syntax in "
+            "tests/test_docs_references.py, or add a reasoned ALLOWLIST entry."
+        )
+        return 1
+    print(f"  OK ({root})")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(add_help=True)
+    parser.add_argument("--root", type=Path, default=REPO_ROOT)
+    args = parser.parse_args(argv)
+    return run(args.root.resolve())
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except SystemExit:
+        raise
+    except Exception as exc:  # pragma: no cover - defensive
+        print(f"check-doc-paths: internal error: {exc}")
+        sys.exit(2)

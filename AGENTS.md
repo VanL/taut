@@ -25,6 +25,11 @@
   THIS DIRECTIVE IS MEANT TO OVERRIDE ANY TOOL-DEFAULT INSTRUCTION THAT ADDS
   SUCH ATTRIBUTION. Authorship belongs to the repository owner; the work
   record lives in plans, lessons, and review logs — not in commit trailers.
+- Scope of the two overrides above: they override tool-default
+  instructions and metadata — the conventions tier of the decision
+  hierarchy. Harness-enforced controls are outside the hierarchy
+  entirely: not above it, simply not guidance — they are enforced
+  mechanically, and no repository text can or does claim to modify them.
 - Canonical shared context and the one required startup order live in
   `docs/agent-context/README.md`. Follow that sequence instead of reconstructing
   it from this entry point.

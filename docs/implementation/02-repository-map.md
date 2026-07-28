@@ -10,6 +10,9 @@ Quick pointers to the key guidance documents in this repository.
 | `CLAUDE.md` | Alias for tools that expect Claude-style root guidance |
 | `README.md` | Product face and current CLI/API behavior contract (see `docs/specs/02-taut-core.md`) |
 | `bin/release.py` | Four-package GitHub-only release helper for manifest-owned metadata/lock reconciliation, one universal default precheck sequence with an explicit human override, exact-path local preparation commits, non-mutating `--checks-only`, final remote-state fences, namespaced tags, and coordinated `all --version` batches |
+| `bin/check-plan-status-index` | Structured plan status index gate: completeness, closed status/exemplar vocabulary, and table well-formedness |
+| `bin/check-doc-paths` | Pytest-free path-claim gate over the maintained guidance surfaces plus `docs/coalescing.md` and `docs/plans/README.md`; reuses the claim grammar in `tests/test_docs_references.py` |
+| `bin/coalesce-check` | Coalescing evidence trail: resolves every SHA claim and retrieval cue in `docs/coalescing.md` locally, in named siblings, and against `origin/main` (reporting local-only pins), and derives the lessons-tier counts |
 | `bin/pytest-pg` | Docker-backed Postgres test runner for shared root tests and `taut-pg` tests |
 | `bin/check-required-coverage-paths.py` | Post-combine coverage-data checker for required child-process, critical Summon, and MCP rate-admission execution paths |
 | `bin/check-core-summon-wheel-matrix.py` | Isolated six-case core/Summon wheel-matrix checker retaining the 0.5.0 reactor floor and adding the 0.5.4 command-rollout floor |

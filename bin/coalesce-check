@@ -1,0 +1,173 @@
+#!/usr/bin/env python3
+"""Evidence trail for the coalescing layer's session-start check.
+
+The run log's ``source_sha`` cues are the layer's retrieval contract, and
+until this gate they were unchecked prose — the 2026-07-28 field audit found
+cues that resolve locally but not in published history. This tool:
+
+  1. verifies every ``<sha>`` cited in ``docs/coalescing.md`` resolves
+     (``git cat-file -e``), here or in a named sibling repository;
+  2. verifies every ``git show <sha>:<path>`` cue's path exists at that SHA;
+  3. checks each locally-resolving SHA against the published remote,
+     reporting ``local-only pin`` where it is not an ancestor of
+     ``origin/main`` — a cue that survives only on one machine is a claim
+     the world cannot verify;
+  4. derives the lessons-tier counts with taut's **declared** derivation so
+     a session-start check can quote real numbers rather than remembered
+     ones.
+
+Adopted from agent-guidance @ ``51626db`` via
+``docs/plans/2026-07-28-agent-guidance-delta-wave-plan.md`` (adaptations
+A4-A6: sibling list re-pointed at agent-guidance and away from self; the
+lessons regex takes the trailing colon of taut's declared derivation
+command; the count is additionally reported past the lessons watermark,
+because taut's threshold is denominated that way).
+
+This tool covers the lessons tier and the cue contract only. The plans tier
+stays with ``bin/check-plan-status-index``; promotion stays with the
+judgment clustering in ``skills/coalescing/SKILL.md``.
+
+Read-only by construction. Exit 1 only on an unresolvable cue (a broken
+retrieval contract); ``local-only pin`` and count reports are informational
+— publication discipline is the owner's call. Exit 2 on an invocation or
+environment problem.
+"""
+
+from __future__ import annotations
+
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+STATE = REPO_ROOT / "docs" / "coalescing.md"
+LESSONS = REPO_ROOT / "docs" / "lessons.md"
+
+SHA_RE = re.compile(r"`([0-9a-f]{7,40})`")
+CUE_RE = re.compile(r"git show ([0-9a-f]{7,40}):([A-Za-z0-9_./-]+)")
+
+# taut's declared lessons derivation (skills/coalescing/SKILL.md step 2):
+#   grep -E '^- 20[0-9]{2}-[0-9]{2}-[0-9]{2}:' docs/lessons.md
+# The trailing colon is part of the contract; keep it.
+LESSON_RE = re.compile(r"^- (20[0-9]{2}-[0-9]{2}-[0-9]{2}):", re.M)
+WATERMARK_RE = re.compile(r"^\|\s*Lessons\s*\|\s*(20[0-9]{2}-[0-9]{2}-[0-9]{2})\s*\|", re.M)
+
+# Sibling repositories whose history can satisfy a cue. taut's run log pins
+# agent-guidance SHAs, which resolve nowhere else; "taut" is self.
+SIBLINGS = ["agent-guidance", "mm", "weft", "backstitch", "engram", "simplebroker"]
+SIBLING_ROOT = REPO_ROOT.parent
+
+
+def git(*args: str, repo: Path | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", "-C", str(repo or REPO_ROOT), *args],
+        capture_output=True,
+        text=True,
+    )
+
+
+def resolve_anywhere(sha: str) -> str | None:
+    """A SHA claim is satisfied when it resolves in an identifiable repo:
+    this one first, then each sibling. The state file's rows cite evidence
+    across several repositories in one cell, so per-occurrence attribution is
+    unreliable; resolve-anywhere matches the actual cue contract (retrievable
+    somewhere identified)."""
+    if git("cat-file", "-e", f"{sha}^{{commit}}").returncode == 0:
+        return "local"
+    for name in SIBLINGS:
+        candidate = SIBLING_ROOT / name
+        if (candidate / ".git").exists():
+            if git("cat-file", "-e", f"{sha}^{{commit}}", repo=candidate).returncode == 0:
+                return name
+    return None
+
+
+def lessons_counts() -> tuple[int, int | None, str | None]:
+    """Return (total dated entries, entries past the lessons watermark, watermark)."""
+    if not LESSONS.is_file():
+        return 0, None, None
+    dates = LESSON_RE.findall(LESSONS.read_text())
+    watermark = None
+    if STATE.is_file():
+        match = WATERMARK_RE.search(STATE.read_text())
+        if match:
+            watermark = match.group(1)
+    past = None if watermark is None else sum(1 for d in dates if d > watermark)
+    return len(dates), past, watermark
+
+
+def main() -> int:
+    if not STATE.is_file():
+        print("coalesce-check: no docs/coalescing.md — nothing to check")
+        return 0
+    text = STATE.read_text()
+
+    seen: list[str] = []
+    for match in SHA_RE.finditer(text):
+        if match.group(1) not in seen:
+            seen.append(match.group(1))
+    cues = sorted(set(CUE_RE.findall(text)))
+
+    remote_ok = (
+        git("rev-parse", "--verify", "origin/HEAD").returncode == 0
+        or git("rev-parse", "--verify", "origin/main").returncode == 0
+    )
+
+    broken: list[str] = []
+    local_only: list[str] = []
+    sibling_hits: list[str] = []
+
+    for sha in seen:
+        where = resolve_anywhere(sha)
+        if where is None:
+            broken.append(f"`{sha}` does not resolve locally or in any sibling")
+        elif where != "local":
+            sibling_hits.append(f"{sha}@{where}")
+        elif remote_ok:
+            if git("merge-base", "--is-ancestor", sha, "origin/main").returncode != 0:
+                local_only.append(sha)
+
+    for sha, path in cues:
+        if git("cat-file", "-e", f"{sha}:{path}").returncode != 0:
+            broken.append(f"cue `git show {sha}:{path}` does not resolve")
+
+    total, past, watermark = lessons_counts()
+
+    print(
+        f"coalesce-check: {len(seen)} SHA claim(s) "
+        f"({len(sibling_hits)} verified in siblings), {len(cues)} retrieval cue(s)"
+    )
+    if sibling_hits:
+        print("  sibling-resolved: " + ", ".join(sibling_hits))
+    if watermark is None:
+        print(f"  lessons dated entries: {total} (no lessons watermark found)")
+    else:
+        print(
+            f"  lessons dated entries: {total} total, {past} past the "
+            f"{watermark} watermark"
+        )
+    if local_only:
+        print(
+            f"  local-only pin ({len(local_only)}): "
+            + ", ".join(local_only)
+            + "  [not in origin/main — published history cannot verify these]"
+        )
+    if broken:
+        print(f"  BROKEN ({len(broken)}):")
+        for item in broken:
+            print(f"    {item}")
+        return 1
+    print(
+        "  all cues resolve"
+        + ("" if remote_ok else "  [no origin remote — publication check skipped]")
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception as exc:  # pragma: no cover - defensive
+        print(f"coalesce-check: internal error: {exc}")
+        sys.exit(2)
