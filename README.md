@@ -71,9 +71,10 @@ default, or a few machines through the Postgres extension.
   you*; exit codes make it shell-composable.
 - **Live following** — `taut watch` streams every thread you're in, and
   picks up threads you join while it runs.
-- **Direct messages by current name** — `taut say @claude ...` maps the
-  current name to a member-id pair queue, so later renames do not move the
-  conversation.
+- **Durable direct-message navigation** — `taut say @claude ...` maps the
+  current name to a stable member-id pair queue. `read`, `log`, and `watch`
+  reopen it by current name or stable `dm.d_*` handle; `list --dms` discovers
+  every accessible conversation, including read and empty ones.
 - **Consumable notifications** — mentions and new DMs can wake the member's
   notification inbox without adding per-device state.
 - **Stable member identity** — names can change, but messages, cursors,
@@ -217,6 +218,9 @@ uv run --directory extensions/taut_mcp taut-mcp
 Use `--claude-channel` only for Claude hosts that support the experimental
 channel capability. It sends a fixed wake cue with no Taut content; standard
 resource subscriptions and manual reads remain the portable interface. The
+existing MCP `read` and `log` tools accept the same DM selectors as the CLI,
+and `list` with `dms=true` returns the attached member's durable DM directory.
+The manifest remains 18 tools. The
 full contract is `docs/specs/05-taut-mcp.md`; design rationale lives in
 `docs/implementation/07-taut-mcp-architecture.md`.
 
@@ -266,7 +270,16 @@ through the display name captured in old messages:
 
 ```bash
 $ taut say @claude "can you check the parser branch?"
+$ taut log @claude
+$ taut list --dms
+DM with Claude  no unread
+$ taut read dm.d_aaaaaaaaaaaaaaaaaaaaaaaaaa
 ```
+
+The `@name-or-alias` form follows the current route owner each time. The
+`dm.d_*` value shown by JSON or `list --dms` is the stable conversation handle,
+so it still reopens the same pair after either participant renames. Navigation
+never creates a conversation; only `say @name` can start one.
 
 Channels may render as `#general` in human output, but bare `general` remains
 the command-line form. If you want to type the hash, quote it:
@@ -370,11 +383,11 @@ pass `TAUT_AS` or `TAUT_TOKEN` through.
 | `taut message show MSG_ID` | Show one visible message without claiming it; advances that thread's seen cursor through the message |
 | `taut message delete MSG_ID` | Delete one of your own ordinary messages; no related state is cascaded |
 | `taut message react MSG_ID REACTION` | Advance seen state and best-effort broadcast a consumable reaction pointer to the message's current non-actor audience |
-| `taut read [THREAD]` | Show unread and advance your bookmark; bare = all your threads |
+| `taut read [THREAD_OR_DM]` | Show unread and advance your bookmark; a DM accepts `@name-or-alias` or its stable handle; bare = all your threads |
 | `taut inbox` | Claim and show notification pointers for mentions and new DMs |
-| `taut log THREAD [--since TS] [--limit N]` | Show history; never moves your bookmark |
-| `taut list [--all]` | Your threads with unread state; `--all` = every thread |
-| `taut watch [THREAD ...]` | Follow live; default = everything you're in plus your notification inbox |
+| `taut log THREAD_OR_DM [--since TS] [--limit N]` | Show channel, sub-thread, or accessible DM history; never moves your bookmark or activity for a DM |
+| `taut list [--all \| --dms]` | Your threads with unread state; `--all` = every thread; `--dms` = every accessible DM, including read and empty conversations |
+| `taut watch [THREAD_OR_DM ...]` | Follow selected channels/sub-threads or existing DMs; default = everything you're in plus your notification inbox |
 | `taut rename OLD NEW` | Rename a channel and its sub-threads |
 | `taut who [THREAD]` | Members and presence |
 | `taut whoami [--explain]` | Who taut thinks you are, and why |
@@ -474,8 +487,8 @@ SimpleBroker's watcher lifecycle hooks):
 ```python
 from taut import Message, MessageDeletion, MessageReaction, TautClient
 
-client = TautClient()           # finds .taut.db like git finds .git
-                                # (or TautClient(db_path="…"))
+client = TautClient()  # finds .taut.db like git finds .git
+# (or TautClient(db_path="…"))
 client.join("general")
 message = client.say("general", "build finished: 312 passed")
 print(message.ts)
@@ -489,14 +502,22 @@ deleted: MessageDeletion = client.delete_message(str(message.ts))
 for msg in client.read(limit=100):  # up to 100 per joined thread; advances cursors
     print(msg.thread, msg.from_id, msg.from_name, msg.text)
 
+for dm in client.list_direct_messages():
+    print(dm.name, dm.display_name, dm.unread)
+
+for msg in client.log("@claude"):  # stable dm.d_* handles also work
+    print(msg.thread, msg.from_name, msg.text)
+
+
 def handle(event):
     if isinstance(event, Message):
         print(event.thread, event.from_name, event.text)
     else:
         print("notification", event.type, event.thread, event.reaction)
 
-watcher = client.watch(handle)
-thread = watcher.start()        # or watcher.run_forever() to block
+
+watcher = client.watch(handle, threads=["@claude"])
+thread = watcher.start()  # or watcher.run_forever() to block
 # ...
 watcher.stop()
 thread.join(timeout=2)

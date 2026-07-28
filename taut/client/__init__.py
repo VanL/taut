@@ -21,11 +21,12 @@ from simplebroker import (
     target_for_directory,
 )
 
+from taut import addressing
 from taut._constants import (
     META_QUEUE_NAME,
     load_config,
 )
-from taut._exceptions import TautError
+from taut._exceptions import MembershipError, TautError
 from taut.state import SqlSidecarTautState, dialect_for_taut_target
 
 from ._base import (
@@ -156,16 +157,73 @@ class TautClient(
         from taut.client._watching import _watch_runtime_for_client
         from taut.watcher import TautWatcher
 
+        self.last_thread_display_names.clear()
         self._ensure_no_incomplete_channel_rename()
-        resolved = self._resolve_member(create=False)
+        parsed_threads = (
+            [(selector, addressing.parse_dm_selector(selector)) for selector in threads]
+            if threads is not None
+            else None
+        )
+        has_dm_selector = bool(
+            parsed_threads
+            and any(
+                dm_selector is not None for _selector, dm_selector in parsed_threads
+            )
+        )
+        resolved = self._resolve_member(
+            create=False,
+            _heal_claim=not has_dm_selector,
+        )
         member = self._require_member(resolved)
-        runtime = _watch_runtime_for_client(self, persistent=persistent)
+        for membership in self._state.list_memberships(member["member_id"]):
+            row = self._state.get_thread(membership["thread"])
+            if row is None or row["kind"] != "dm":
+                continue
+            context = self._direct_message_context(row["name"], member)
+            if context is not None:
+                self._remember_direct_message_display_name(context)
+        canonical_threads: list[str] | None = None
+        if parsed_threads is not None:
+            canonical_threads = []
+            seen: set[str] = set()
+            missing: set[str] = set()
+            for selector, dm_selector in parsed_threads:
+                if dm_selector is not None:
+                    canonical = self._resolve_direct_message(
+                        selector,
+                        member,
+                    ).thread["name"]
+                else:
+                    canonical = addressing.validate_chat_thread_name(
+                        selector,
+                        allow_subthread=True,
+                    )
+                    if (
+                        self._state.get_membership(
+                            thread=canonical,
+                            member_id=member["member_id"],
+                        )
+                        is None
+                    ):
+                        missing.add(canonical)
+                if canonical not in seen:
+                    canonical_threads.append(canonical)
+                    seen.add(canonical)
+            if missing:
+                raise MembershipError(
+                    "not a member of watched thread(s): " + ", ".join(sorted(missing))
+                )
+        runtime = _watch_runtime_for_client(
+            self,
+            persistent=persistent,
+            member_id=member["member_id"],
+        )
         try:
             return TautWatcher(
                 runtime,
                 member["member_id"],
                 handler,
-                threads=threads,
+                threads=canonical_threads,
                 persistent=persistent,
             )
         except BaseException:

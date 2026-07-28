@@ -860,6 +860,34 @@ registry intersection. It equals the number of exact requested notification
 queue names, not a delivery or consumption receipt. The receipt contains no
 recipient identifiers.
 
+### [TAUT-7.8] Direct-message navigation and directory
+
+`read`, `log`, and explicit `watch` accept [IAN-5.3]'s `@name-or-alias` and
+stable `dm.d_*` selectors. Taut canonicalizes each selector through one shared
+actor-aware client path before queue access. An `@route` resolves once per
+invocation. Explicit watch filters are canonicalized and deduplicated before
+`TautWatcher` construction; input order does not define scheduling order. The
+watcher sees only canonical membership names and never re-resolves routes.
+
+Selection requires an existing valid actor-accessible DM and performs no
+creation or repair. `read` advances only the selected existing membership
+cursor through returned rows. `log` moves no cursor and uses read-only actor
+resolution, so DM log also leaves member activity unchanged. An existing empty
+DM is a valid directory/watch target; `read` and `log` still return their
+ordinary empty result until rows exist. Bare read/watch behavior is unchanged.
+
+`TautClient.list_direct_messages() -> list[Thread]` returns every valid
+registered DM reachable through the acting member's current memberships,
+including caught-up and empty conversations. It applies [IAN-5.3]'s full
+validation, returns the existing `Thread` shape, sorts nonempty conversations
+by descending `last_ts`, puts `last_ts is None` last, and breaks ties by
+canonical thread name. No valid result raises the ordinary empty result. The
+query derives its result from existing registry and membership state and adds
+no durable index.
+
+Human DM headings use [IAN-6.4]'s current-name label. Machine message records
+retain the canonical stable queue in `thread`.
+
 ## 8. Surfaces [TAUT-8]
 
 ### [TAUT-8.1] CLI verbs
@@ -890,11 +918,11 @@ later token is command-local. `--version` is a root action before the verb.
 | `message show MSG_ID` | Show one exact full-id message from the acting member's current chat memberships, then advance that thread's high-water cursor through it. No implicit join. Use `log` for cursor-neutral known-thread inspection. | 0 showed; 1 malformed/out-of-range id or error; 2 unrecognized member / inaccessible or absent message |
 | `message delete MSG_ID` | Physically delete one exact author-owned ordinary message, including after leaving its thread. Irreversible, potentially blind, and no cascade. | 0 deleted; 1 malformed/out-of-range id or error; 2 unrecognized member / absent or not deletable |
 | `message react MSG_ID REACTION` | Send one configured reaction to current members of the exact source thread except the actor. Advances the actor's high-water cursor and attempts one atomic best-effort exact-name broadcast to every requested notification queue. A broadcast failure warns; repeating may duplicate. | 0 valid operation, including a broadcast warning; 1 malformed/config/cursor error; 2 unrecognized member / inaccessible, ineligible, or recipient-empty target |
-| `read [THREAD]` | Show unread (all joined threads when bare, grouped), advance cursor through displayed messages. Reads are paged: one invocation displays and marks seen up to 1,000 unread messages per thread; callers drain larger backlogs by rerunning until exit 2. Requires a resolved member; explicit THREAD requires membership (sub-threads implicit-join per [TAUT-4.3]). | 0 showed messages; 1 error; 2 nothing unread / not a member (hint on stderr) |
+| `read [THREAD_OR_DM]` | Show unread (all joined threads when bare, grouped), advance each selected cursor through displayed messages. An explicit DM may be `@name-or-alias` or a stable `dm.d_*` handle and must already be accessible under [IAN-5.3]. Reads are paged at up to 1,000 unread messages per thread; rerun until exit 2 to drain. Subthreads retain implicit-join behavior. | 0 showed messages; 1 error; 2 nothing unread / unrecognized member / not a member or accessible conversation |
 | `inbox` | Claim and show pending notifications for the acting member. Notifications are consumed; source chat history is not changed. | 0 showed notifications; 1 error; 2 nothing pending |
-| `log THREAD [--since TS] [--limit N]` | Show history. No cursor movement. `--limit N` selects the most recent N messages after `--since`, rendered in chronological order. | 0; 1; 2 empty |
-| `list [--all]` | Bare: joined threads with unread state. `--all`: every registered thread. | 0; 2 when bare list has no unread |
-| `watch [THREAD ...]` | Live-follow (default: all joined chat threads plus the acting member's notification inbox), advancing chat cursors per message and claiming notifications as they display. Adds/drops threads as membership changes while running; a running watch that loses its last chat membership keeps running idle and picks up the next join or notification. | 0 on clean stop; 1 error; 2 unrecognized member / explicit thread miss |
+| `log THREAD_OR_DM [--since TS] [--limit N]` | Show cursor-neutral history. A DM may be `@name-or-alias` or a stable `dm.d_*` handle and requires actor access under [IAN-5.3]. `--limit N` selects the most recent N messages after `--since`, rendered chronologically. | 0; 1 error; 2 empty / unrecognized member / inaccessible conversation |
+| `list [--all | --dms]` | Bare: joined threads with unread state. `--all`: every registered thread. `--dms`: every valid actor-accessible DM, including read and empty conversations, in [TAUT-7.8] order. The two flags are mutually exclusive. | 0; 2 when the selected actor-scoped view is empty |
+| `watch [THREAD_OR_DM ...]` | Live-follow selected existing memberships plus the acting member's notification inbox. DM filters may be `@name-or-alias` or stable handles; they resolve once and deduplicate before watcher construction. Bare watch retains dynamic all-membership behavior. | 0 on clean stop; 1 error; 2 unrecognized member / explicit thread or DM miss |
 | `rename OLD NEW` | Rename a channel and every registered one-level sub-thread under it. Uses SimpleBroker's public queue rename API and sidecar rename markers. Does not rewrite message bodies. | 0; 1 error/collision/invalid name; 2 no such channel |
 | `who [THREAD]` | Members and presence (thread members, or all members when bare). | 0; 1 error; 2 no such thread |
 | `whoami [--explain]` | Resolved identity; with `--explain`, the evidence and rule. | 0 resolved; 1 error (incl. invalid token); 2 unrecognized |
@@ -971,6 +999,8 @@ exit classes apply equally to built-in and extension command adapters.
     the registered thread, obtained through SimpleBroker's public indexed
     lookup; claimed rows from foreign consumers do not count, matching
     [TAUT-7.1].
+    `list --dms` uses this existing shape; every object has `kind: "dm"` and
+    exactly two member ids.
   - member objects (`who`, `whoami`, `rejoin`, `set name`): `member_id`,
     `name`, `aliases`, `kind`, `presence`, `last_active_ts`, `persona`
     (string or null); `whoami
@@ -994,6 +1024,9 @@ exit classes apply equally to built-in and extension command adapters.
   define a JSON error envelope.
 - Human-readable rendering (colors, alignment, time formatting) is
   explicitly not a stable contract.
+- Human message headings for a valid direct message are
+  `DM with <other current display name>`. Message JSON remains canonical and
+  uses the stable queue name in `thread`.
 
 ### [TAUT-8.3] Python API
 
@@ -1013,6 +1046,15 @@ list[Message]` and
 list[Message]`. `read()` delegates to `read_unread()` and exposes no second
 pagination or validation path. The CLI continues to call the core default;
 adapters may choose a smaller surface default and pass it explicitly.
+
+The DM-directory signature is
+`TautClient.list_direct_messages() -> list[Thread]`. Existing
+`TautClient.read()`/`read_unread()` and `TautClient.log()` string parameters
+accept [TAUT-7.8]'s DM selectors where the CLI does. `TautClient.watch(...,
+threads=list[str] | None)` canonicalizes explicit DM selectors before creating
+`TautWatcher`. These methods share one private actor-aware selector boundary;
+adapters and the future TUI must not derive DM queue names or inspect private
+state.
 
 The exact-message signatures are
 `TautClient.show_message(msg_id: str) -> Message` and
@@ -1100,6 +1142,12 @@ selection and body decoding so protocol extensions do not reproduce internal
 queue rules.
 
 ### [TAUT-8.4] Watcher
+
+Explicit watcher filters are canonical registered membership names by the time
+they reach `TautWatcher`. Public client construction resolves [TAUT-7.8]'s DM
+selectors once and deduplicates aliases of the same canonical queue. Input
+order does not define watcher scheduling order. Membership refresh remains
+dynamic, but route ownership is not re-evaluated during the run.
 
 A message-specific handler failure leaves the cursor in place and uses the
 three-consecutive-failure poison rule. A terminal delivery failure, including a
@@ -1464,6 +1512,12 @@ implied by docs or output.
   verbatim, exit 1.
 - Blank `say` or `reply`: raise `BlankMessageError` before route/state work;
   the CLI exits 2 silently and no message-domain side effect occurs.
+- Every syntactically valid but absent, malformed-in-storage, or
+  actor-inaccessible direct-message selector returns the same content-free
+  not-found result. The CLI maps it to exit 2. Malformed selector syntax is a
+  validation error and exits 1.
+- `list --all --dms` is a usage error rejected by the adapter before client
+  resolution or state access and exits 1.
 - Invalid unread limit: reject before any chat-history read, implicit
   membership, decode, or cursor mutation. Wrong runtime type raises
   `TypeError` with `limit must be an integer`; an integer outside 1 through
@@ -1531,6 +1585,12 @@ posture:
   client or CLI paths.
 - Addressing and notification tests follow [IAN-10]. They must use real
   broker-backed queues and sidecar state, not mocked schema or queue helpers.
+- Direct-message navigation tests use real state and real SQLite and
+  PostgreSQL broker paths. They prove route and stable-handle parity, rename
+  continuity, directory inclusion and ordering, uniform inaccessible results,
+  log activity and cursor neutrality, read cursor effects, explicit-watch
+  canonicalization and deduplication, and rejection before queue or watcher
+  construction. Broker, state, queue, and watcher internals are not mocked.
 - Shared real SQLite and PostgreSQL reaction contracts prove validation-first
   behavior; current channel, exact-child, and confidentiality-checked
   direct-message audiences; actor exclusion; cursor effects; one public
@@ -1746,6 +1806,9 @@ The TUI consumes `TautClient` and `TautWatcher` for chat. For Summon it consumes
 the public [SUM-13] controller and supplies a host-interaction adapter for
 terminal suspension/restoration. It must not import private modules, inspect
 extension tables, synthesize control JSON, or duplicate driver/PTY lifecycle.
+Its conversation picker must use `TautClient.list_direct_messages()` for
+durable direct-message discovery. It must not infer private queue naming,
+reconstruct actor access from registry tables, or depend on presence state.
 Its own spec must choose screen behavior, framework/dependencies, managed
 child-process ownership, terminal handoff, and what happens to TUI-launched
 drivers when the TUI exits. None of those choices are implied by the command
@@ -2003,6 +2066,9 @@ verification.
 
 ## Related Plans
 
+- `docs/plans/2026-07-28-direct-message-navigation-plan.md` — actor-aware
+  durable DM addressing, directory discovery, explicit watch canonicalization,
+  notification recovery actions, and coordinated Python/CLI/MCP proof.
 - `docs/plans/2026-07-28-message-react-plan.md` — configured exact-message
   reactions, full-audience exact-name broadcast, non-delivery receipts, cursor
   effects, and coordinated Python/CLI/MCP proof.

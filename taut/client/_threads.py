@@ -139,6 +139,35 @@ class ThreadsMixin(_ClientBase):
             raise EmptyResultError("no unread threads")
         return result
 
+    def list_direct_messages(self) -> list[Thread]:
+        """Return every valid direct message accessible to the acting member."""
+
+        self.last_thread_display_names.clear()
+        self._ensure_no_incomplete_channel_rename()
+        resolved = self._resolve_member(create=False, _heal_claim=False)
+        member = self._require_member(resolved)
+        memberships = self._state.list_memberships(member["member_id"])
+        result: list[Thread] = []
+        for membership in memberships:
+            row = self._state.get_thread(membership["thread"])
+            if row is None or row["kind"] != "dm":
+                continue
+            context = self._direct_message_context(row["name"], member)
+            if context is None:
+                continue
+            self._remember_direct_message_display_name(context)
+            result.append(self._thread_from_row(row, membership))
+        if not result:
+            raise EmptyResultError("no direct messages")
+        return sorted(
+            result,
+            key=lambda thread: (
+                thread.last_ts is None,
+                -(thread.last_ts or 0),
+                thread.name,
+            ),
+        )
+
     def rename_channel(self, old_name: str, new_name: str) -> Thread:
         old_name = addressing.validate_chat_thread_name(old_name, allow_subthread=False)
         new_name = addressing.validate_chat_thread_name(new_name, allow_subthread=False)

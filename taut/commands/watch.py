@@ -19,15 +19,19 @@ if TYPE_CHECKING:
 class WatchCommand:
     def configure_parser(self, parser: CommandArgumentParser) -> None:
         parser.description = (
-            "Follow selected joined chat threads plus the acting member's "
-            "notification inbox. Omit THREAD to follow all current and later "
-            "memberships."
+            "Follow selected joined conversations plus the acting member's "
+            "notification inbox. THREAD_OR_DM accepts a channel, subthread, "
+            "@name-or-alias, or stable dm.d_ handle. Omit it to follow all "
+            "current and later memberships."
         )
         parser.add_argument(
             "threads",
-            metavar="THREAD",
+            metavar="THREAD_OR_DM",
             nargs="*",
-            help="Joined thread filters; omit to follow every membership.",
+            help=(
+                "Joined channel/subthread or existing @name-or-alias/stable "
+                "dm.d_ DM filters; omit to follow every membership."
+            ),
         )
 
     def run(self, context: CommandContext, args: argparse.Namespace) -> int:

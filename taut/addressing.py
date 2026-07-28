@@ -25,6 +25,7 @@ from taut._exceptions import ThreadNameError
 TargetKind = Literal["channel", "subthread", "dm"]
 
 MENTION_RE = re.compile(r"(?<![A-Za-z0-9_-])@([A-Za-z0-9][A-Za-z0-9_-]{0,63})")
+DM_SELECTOR_RE = re.compile(r"dm\.d_[a-z2-7]{26}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +85,25 @@ def validate_chat_thread_name(value: str, *, allow_subthread: bool) -> str:
     if target.thread is None:
         raise ThreadNameError(f"invalid thread name: {value}")
     return target.thread
+
+
+def parse_dm_selector(value: str) -> TargetAddress | None:
+    """Parse an operation-scoped direct-message selector.
+
+    Channels and subthreads return ``None`` so callers can retain their
+    narrower validation path. Values in either DM namespace must be valid;
+    malformed forms never fall through as ordinary thread names.
+    """
+
+    if not isinstance(value, str):
+        raise TypeError("direct-message selector must be a string")
+    if value.startswith("@"):
+        return parse_target(value)
+    if not value.startswith("dm."):
+        return None
+    if DM_SELECTOR_RE.fullmatch(value) is None:
+        raise ThreadNameError(f"invalid direct-message selector: {value}")
+    return TargetAddress(kind="dm", thread=value)
 
 
 def classify_registered_queue(name: str) -> str:

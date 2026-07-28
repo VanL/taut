@@ -11,18 +11,24 @@ from taut.commands._rendering import emit_messages
 class ReadCommand:
     def configure_parser(self, parser: CommandArgumentParser) -> None:
         parser.description = (
-            "Read up to 1,000 unread messages per selected thread. Omit THREAD to "
-            "read all joined threads; rerun until exit 2 to drain larger backlogs."
+            "Read up to 1,000 unread messages per selected conversation. "
+            "THREAD_OR_DM accepts a channel, subthread, @name-or-alias, or "
+            "stable dm.d_ handle. Omit it to read all joined threads; rerun "
+            "until exit 2 to drain larger backlogs."
         )
         parser.add_argument(
             "thread",
-            metavar="THREAD",
+            metavar="THREAD_OR_DM",
             nargs="?",
-            help="One joined thread; omit to read every joined thread.",
+            help=(
+                "One joined channel/subthread, @name-or-alias DM, or stable "
+                "dm.d_ DM; omit to read every joined thread."
+            ),
         )
 
     def run(self, context: CommandContext, args: argparse.Namespace) -> int:
-        messages = context.client().read_unread(args.thread)
+        client = context.client()
+        messages = client.read_unread(args.thread)
         emit_messages(
             messages,
             json_output=context.json,
@@ -30,6 +36,7 @@ class ReadCommand:
             quiet=context.quiet,
             stdout=context.stdout,
             stderr=context.stderr,
+            thread_labels=getattr(client, "last_thread_display_names", None),
         )
         return 0
 

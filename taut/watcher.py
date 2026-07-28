@@ -1303,7 +1303,11 @@ class TautWatcher(BaseReactor):
                 DeprecationWarning,
                 stacklevel=2,
             )
-            runtime = _watch_runtime_for_client(runtime, persistent=persistent)
+            runtime = _watch_runtime_for_client(
+                runtime,
+                persistent=persistent,
+                member_id=member_id,
+            )
         self._runtime = runtime
         self.member_id = member_id
         self._user_handler = handler

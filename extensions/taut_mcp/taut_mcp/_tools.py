@@ -9,6 +9,11 @@ from mcp import types
 
 CHANNEL_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,63}$"
 CHAT_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,63}(?:\.[0-9]{19})?$"
+CHAT_OR_DM_PATTERN = (
+    r"^(?:[a-z0-9][a-z0-9_-]{0,63}(?:\.[0-9]{19})?"
+    r"|@[A-Za-z0-9][A-Za-z0-9_-]{0,63}"
+    r"|dm\.d_[a-z2-7]{26})$"
+)
 MEMBER_NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
 REACTION_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,31}$"
 
@@ -31,17 +36,17 @@ CHANNEL_DESCRIPTION = (
     "taut are reserved."
 )
 CHAT_DESCRIPTION = (
-    "Taut channel or one-level sub-thread. A sub-thread is "
-    "<channel>.<19-digit-parent-message-id>. An opaque dm.* queue and an @name "
-    "target are not explicit thread values."
+    "Taut channel or one-level subthread. A subthread is "
+    "<channel>.<19-digit-parent-message-id>."
+)
+CHAT_OR_DM_DESCRIPTION = (
+    "Taut channel, one-level subthread, @name-or-alias, or stable "
+    "dm.d_<26-lowercase-base32-chars> selector."
 )
 READ_THREAD_DESCRIPTION = (
-    "Optional Taut channel or one-level sub-thread. Null or omitted reads every "
-    "joined thread, including direct messages, and is the only public direct-"
-    "message read path. For a bare read, the result contains at most limit × N "
-    "records, where N is the number of joined non-notification chat threads "
-    "selected by the call; every thread returning rows advances its own cursor. "
-    "Explicit dm.* and @name values are rejected."
+    "Optional chat-or-DM selector. Null or omitted reads every joined chat "
+    "thread. Explicit DM selection requires an existing accessible conversation "
+    "and advances only its returned page."
 )
 LIMIT_DESCRIPTION = (
     "Maximum records requested from one queue, from 1 through 1,000 inclusive."
@@ -363,6 +368,7 @@ class ToolDefinition:
     properties: dict[str, dict[str, Any]]
     required: tuple[str, ...]
     annotations: types.ToolAnnotations
+    schema_constraints: dict[str, Any] | None = None
 
     def to_mcp(self) -> types.Tool:
         schema: dict[str, Any] = {
@@ -373,6 +379,8 @@ class ToolDefinition:
         }
         if self.required:
             schema["required"] = list(self.required)
+        if self.schema_constraints is not None:
+            schema.update(self.schema_constraints)
         return types.Tool(
             name=self.name,
             description=self.description,
@@ -421,6 +429,7 @@ def _annotations(
 _WORKSPACE = _string(WORKSPACE_DESCRIPTION)
 _CHANNEL = _string(CHANNEL_DESCRIPTION, pattern=CHANNEL_PATTERN)
 _CHAT = _string(CHAT_DESCRIPTION, pattern=CHAT_PATTERN)
+_CHAT_OR_DM = _string(CHAT_OR_DM_DESCRIPTION, pattern=CHAT_OR_DM_PATTERN)
 _EXACT_MESSAGE_ID = _string(
     EXACT_MESSAGE_ID_DESCRIPTION,
     pattern=r"^[0-9]{19}$",
@@ -621,12 +630,12 @@ TOOL_DEFINITIONS = (
     ),
     ToolDefinition(
         "read",
-        "Return oldest unread messages and advance each selected read cursor through its own returned page. No message history is deleted. Use `log` to inspect channel or sub-thread history without moving a cursor. Omit `thread` only for all joined threads, including direct messages; this may return up to `limit × N` rows, where `N` is the number of selected joined non-notification chat threads. Prefer an explicit channel or sub-thread when direct messages are not needed.",
+        "Return oldest unread messages and advance each selected cursor through its returned page. `thread` may select a channel, subthread, `@name-or-alias` DM, or stable `dm.d_*` conversation. Omit it for all joined chat threads.",
         {
             "workspace": _WORKSPACE,
             "thread": _nullable_string(
                 READ_THREAD_DESCRIPTION,
-                pattern=CHAT_PATTERN,
+                pattern=CHAT_OR_DM_PATTERN,
             ),
             "limit": _LIMIT_100,
         },
@@ -652,10 +661,10 @@ TOOL_DEFINITIONS = (
     ),
     ToolDefinition(
         "log",
-        "Inspect bounded channel or sub-thread history without moving read cursors or claiming notifications. Direct-message queues are not valid log targets.",
+        "Inspect cursor-neutral history for a channel, subthread, or existing actor-accessible DM selected by `@name-or-alias` or stable `dm.d_*` handle.",
         {
             "workspace": _WORKSPACE,
-            "thread": _CHAT,
+            "thread": _CHAT_OR_DM,
             "since": {
                 "anyOf": [
                     {"type": "string"},
@@ -681,12 +690,17 @@ TOOL_DEFINITIONS = (
     ),
     ToolDefinition(
         "list",
-        "List joined or visible threads and unread counts. Resolving the existing member updates this member's activity timestamp; it does not change the member anchor, token fingerprint, or computed presence. Direct-message bodies are unavailable through `log` or an explicit `read.thread`; omit `thread` from `read` to retrieve unread direct messages.",
+        "List ordinary joined/unread threads, every registered thread, or every valid actor-accessible DM. `all` and `dms` are mutually exclusive. Resolving the existing member for actor-scoped list modes may update activity.",
         {
             "workspace": _WORKSPACE,
             "all": {
                 "default": False,
-                "description": "When true, list every registered visible Taut thread; when false, use ordinary joined/unread list behavior. Defaults to false.",
+                "description": "When true, list every registered Taut thread. Defaults to false; mutually exclusive with dms.",
+                "type": "boolean",
+            },
+            "dms": {
+                "default": False,
+                "description": "When true, list every valid actor-accessible DM, including read and empty conversations. Defaults to false; mutually exclusive with all.",
                 "type": "boolean",
             },
         },
@@ -697,6 +711,15 @@ TOOL_DEFINITIONS = (
             idempotent=False,
             open_world=True,
         ),
+        {
+            "not": {
+                "properties": {
+                    "all": {"const": True},
+                    "dms": {"const": True},
+                },
+                "required": ["all", "dms"],
+            }
+        },
     ),
     ToolDefinition(
         "rename",

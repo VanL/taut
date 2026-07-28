@@ -566,10 +566,10 @@ hint.
 | `show_message` | Return one exact full-id message from this member's current chat memberships, then advance that thread's high-water cursor through the returned id. This may mark unseen intervening history seen. It never joins a thread; use `log` for cursor-neutral known-channel or sub-thread inspection. | false | true | false | true |
 | `delete_message` | Physically and irreversibly delete one exact ordinary message authored by this member, including after leaving its thread. It does not cascade to notifications, sub-threads, memberships, cursors, or thread registry state and is not recall. | false | true | false | true |
 | `react_to_message` | Send one configured reaction to the current audience of an exact ordinary message, excluding this member. Validates against the workspace's attachment-time reaction vocabulary, advances this member's high-water cursor through the target, then attempts one atomic best-effort notification broadcast to every requested inbox. Repeating may deliver duplicates. | false | true | false | true |
-| `read` | Return oldest unread messages and advance each selected read cursor through its own returned page. No message history is deleted. Use `log` to inspect channel or sub-thread history without moving a cursor. Omit `thread` only for all joined threads, including direct messages; this may return up to `limit × N` rows, where `N` is the number of selected joined non-notification chat threads. Prefer an explicit channel or sub-thread when direct messages are not needed. | false | true | false | true |
+| `read` | Return oldest unread messages and advance each selected cursor through its returned page. `thread` may select a channel, subthread, `@name-or-alias` DM, or stable `dm.d_*` conversation. Omit it for all joined chat threads. | false | true | false | true |
 | `inbox` | Claim and return notification pointers from this member's inbox. This consumes the pointers; source chat history is not changed by inbox but may already be author-deleted. | false | true | false | true |
-| `log` | Inspect bounded channel or sub-thread history without moving read cursors or claiming notifications. Direct-message queues are not valid log targets. | true | false | true | true |
-| `list` | List joined or visible threads and unread counts. Resolving the existing member updates this member's activity timestamp; it does not change the member anchor, token fingerprint, or computed presence. Direct-message bodies are unavailable through `log` or an explicit `read.thread`; omit `thread` from `read` to retrieve unread direct messages. | false | false | false | true |
+| `log` | Inspect cursor-neutral history for a channel, subthread, or existing actor-accessible DM selected by `@name-or-alias` or stable `dm.d_*` handle. | true | false | true | true |
+| `list` | List ordinary joined/unread threads, every registered thread, or every valid actor-accessible DM. `all` and `dms` are mutually exclusive. Resolving the existing member for actor-scoped list modes may update activity. | false | false | false | true |
 | `rename` | Rename a Taut channel and its sub-threads. Replaces existing thread addresses. | false | true | false | true |
 | `who` | List Taut members or members of one thread. Resolving the existing member updates the caller's activity timestamp; it does not change the member anchor, token fingerprint, or computed presence. | false | false | false | true |
 | `whoami` | Return the member bound to this workspace attachment. Resolving the existing member updates its activity timestamp; it does not change the member anchor, token fingerprint, or computed presence. | false | false | false | true |
@@ -599,14 +599,13 @@ deciding whether a retry is safe. Successful write results retain the core
 record's message id/timestamp or state timestamp as confirmation evidence;
 version 1 adds no optimistic-concurrency version or ETag.
 After an uncertain `read`, the caller first uses `list`; it never blindly
-repeats a bare read. `log` can reconstruct channel and sub-thread history
-without another cursor move. Direct messages have no public history/log
-operation. `show_message` can retrieve a known exact DM id only while the
-acting member still has that DM membership, and it advances the high-water
-cursor; it cannot reconstruct an unknown id from a lost bare-read response.
-If a DM still shows unread and must be consumed, a later bare read is the only
-public discovery path and may also advance other joined threads that remain
-unread. This is a deliberate CLI-parity limitation, not a recovery guarantee.
+repeats a read. `list` with `dms=true` recovers the attached member's durable DM
+directory and stable handles. `log` reconstructs channel, subthread, or
+actor-accessible DM history without another cursor or activity move. It cannot
+prove which returned page reached the host before cancellation or transport
+loss. `show_message` remains useful only when an exact id is already known and
+retains its cursor effect. These are inspection and recovery aids, not a
+delivery guarantee.
 The per-workspace parent
 admission slot prevents two concurrent MCP commands for one attachment;
 external Taut clients may still race, and the MCP layer neither merges nor
@@ -630,8 +629,9 @@ include these descriptions, not only types and required-property lists.
 | ordinary `workspace` | Exact canonical workspace identifier returned by `attach_workspace` or `list_workspaces`. | Do not re-resolve, shorten, or substitute an alias path. |
 | `token` | Sensitive existing Taut continuity token for this workspace. It selects one member and is never returned. | Valid only on `attach_workspace`; do not invent or repeat it in chat. |
 | channel `thread` | Taut channel matching `^[a-z0-9][a-z0-9_-]{0,63}$`; `dm`, `notify`, `sys`, and `taut` are reserved. | `join`, `reply`, `rename.old_name`, and `rename.new_name` require a top-level channel. |
-| chat `thread` | Taut channel or one-level sub-thread. A sub-thread is `<channel>.<19-digit-parent-message-id>`. | `leave`, `log`, and `who` accept this form; an opaque `dm.*` queue and an `@name` target are not explicit thread values. |
-| `read.thread` | Optional Taut channel or one-level sub-thread. Null or omitted reads every joined thread, including direct messages, and is the only public direct-message read path. | For a bare read, the result contains at most `limit × N` records, where `N` is the number of joined non-notification chat threads selected by the call; every thread returning rows advances its own cursor. Explicit `dm.*` and `@name` values are rejected. |
+| chat `thread` | Taut channel or one-level subthread. A subthread is `<channel>.<19-digit-parent-message-id>`. | `leave` and `who` accept only this narrow form. |
+| chat-or-DM `thread` | Taut channel, one-level subthread, `@name-or-alias`, or stable `dm.d_<26-lowercase-base32-chars>` selector. | `log` accepts all forms and applies actor access checks to DMs. |
+| `read.thread` | Optional chat-or-DM selector. Null or omitted reads every joined chat thread. | Explicit DM selection requires an existing accessible conversation and advances only its returned page. |
 | `persona` | Optional persona text stored for the attached member while joining. | Null leaves the current persona unchanged. |
 | `name` | Case-preserving Taut member name matching `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`; routing uniqueness is case-insensitive. | Used only by `set_name`. |
 | `target` | Message destination: a channel such as `general`, a sub-thread such as `general.<19-digit-parent-message-id>`, or a direct message such as `@claude`. | Used only by `say`; no stdin sentinel. |
@@ -641,7 +641,8 @@ include these descriptions, not only types and required-property lists.
 | `reaction` | Configured lowercase ASCII reaction slug matching `^[a-z0-9][a-z0-9_-]{0,31}$`. | Used only by `react_to_message`; the schema is not an enum because the attached workspace config remains authoritative. |
 | `limit` | Maximum records requested from one queue, from 1 through 1,000 inclusive. | `read` defaults to 100 per selected thread; `inbox` defaults to 1,000; `log` defaults to 100 most-recent matches. |
 | `since` | Exclusive history lower bound: ISO 8601, Unix seconds/milliseconds/nanoseconds, or a native 19-digit message id. | Null means no lower bound; used only by `log`. |
-| `all` | When true, list every registered visible Taut thread; when false, use ordinary joined/unread list behavior. | Defaults to false. |
+| `all` | When true, list every registered Taut thread. | Defaults to false; mutually exclusive with `dms`. |
+| `dms` | When true, list every valid actor-accessible DM, including read and empty conversations. | Defaults to false; mutually exclusive with `all`. |
 
 | Tool | Input properties | Required | MCP-specific rule |
 |------|------------------|----------|-------------------|
@@ -656,13 +657,22 @@ include these descriptions, not only types and required-property lists.
 | `show_message` | `workspace: string`, `msg_id: string` | both | exact 19-digit pattern; calls `TautClient.show_message(msg_id)`; searches only current registered chat memberships and may advance the located high-water cursor |
 | `delete_message` | `workspace: string`, `msg_id: string` | both | exact 19-digit pattern; calls `TautClient.delete_message(msg_id)`; may delete the acting author's own ordinary row after leave and returns no source content |
 | `react_to_message` | `workspace: string`, `msg_id: string`, `reaction: string` | all | exact 19-digit id and stable slug patterns; calls `TautClient.react_to_message(msg_id, reaction)` directly; runtime validates the attachment-time configured list |
-| `read` | `workspace: string`, `thread: string or null`, `limit: integer` | `workspace` | default limit 100; range 1..1,000; calls `TautClient.read(thread, limit=limit)` so each cursor advances only through returned rows; post-read slicing is forbidden; null/omitted thread preserves bare CLI behavior and is the only public direct-message read path; a bare result contains at most `limit × N` records for `N` joined non-notification chat threads selected by the call |
+| `read` | `workspace: string`, `thread: string or null`, `limit: integer` | `workspace` | default limit 100; range 1..1,000; explicit DM selectors follow [TAUT-7.8]; null/omitted keeps bare joined-thread behavior; each selected queue has its own limit and cursor advance |
 | `inbox` | `workspace: string`, `limit: integer` | `workspace` | default 1,000; range 1..1,000 |
-| `log` | `workspace: string`, `thread: string`, `since: string, integer, or null`, `limit: integer` | `workspace`, `thread` | default limit 100; range 1..1,000; this is an explicit bounded MCP divergence from unbounded CLI log |
-| `list` | `workspace: string`, `all: boolean` | `workspace` | default `all=false` |
+| `log` | `workspace: string`, `thread: string`, `since: string, integer, or null`, `limit: integer` | `workspace`, `thread` | default limit 100; range 1..1,000; DM log is actor-scoped, cursor-neutral, and activity-neutral |
+| `list` | `workspace: string`, `all: boolean`, `dms: boolean` | `workspace` | both default false; `all && dms` is rejected before child dispatch; `dms=true` calls `TautClient.list_direct_messages()` |
 | `rename` | `workspace: string`, `old_name: string`, `new_name: string` | all | channel rename only |
 | `who` | `workspace: string`, `thread: string or null` | `workspace` | retains core activity-write and computed-presence semantics |
 | `whoami` | `workspace: string` | `workspace` | fixed `explain=False` |
+
+The fixed manifest remains exactly 18 tools. `read.thread` and `log.thread`
+schemas accept the existing channel/subthread grammar, the [IAN-4] `@` route
+grammar, and exact stable-DM grammar `^dm\.d_[a-z2-7]{26}$`. A malformed
+selector is rejected by schema before child dispatch. A well-formed absent or
+inaccessible DM maps to the same content-free typed empty result as every other
+well-formed DM miss, without route, participant, or existence detail. `log`
+retains `readOnlyHint=true` and `idempotentHint=true`; its DM identity selection
+uses core's read-only resolver.
 
 MCP handlers are async, while Taut operations are synchronous. The connection
 reactor on the master thread routes each CLI-shaped request as a command input
@@ -774,7 +784,7 @@ workspace lifecycle schema:
 `action` string fields. Every successful nonempty `read` returns exactly this
 one entry:
 
-`{ "action": "Use log for non-consuming channel or sub-thread rereads. Direct messages have no public log operation.", "code": "read_cursor_advanced", "message": "Read cursors advanced through the returned records; no message history was deleted." }`
+`{ "action": "Use log for non-consuming channel, sub-thread, or accessible direct-message rereads. After an uncertain read, inspect list before retrying.", "code": "read_cursor_advanced", "message": "Read cursors advanced through the returned records; no message history was deleted." }`
 
 An empty `delete_message` result returns exactly this one content-free entry:
 
@@ -1176,12 +1186,12 @@ requirements:
 9. Treat the resource as a repeatable view. For one-time handling, call the
    consuming `inbox` tool with the listed workspace and handle only records
    returned by that call.
-10. Prefer `read` with an explicit channel or sub-thread. Omit `thread` only
-   for direct messages or a full joined-thread sweep; expect up to `limit`
-   rows per joined thread and cursor movement on every thread that returns
-   rows. Use `log` for non-consuming channel or sub-thread history; it cannot
-   inspect direct messages. After an uncertain `read`, use `list` before any
-   retry and do not blindly repeat a bare read.
+10. Prefer `read` with one explicit selector when only one conversation is
+    intended. Use `list` with `dms=true` to discover the attached member's
+    durable DM conversations and stable handles. Use `log` for cursor-neutral
+    channel, subthread, or DM history. After an uncertain `read`, inspect
+    `list` and the selected conversation with `log` before retrying. A later
+    log can recover history but cannot prove which read page reached the host.
 11. Use `show_message` only when the exact 19-digit id is known and moving
     seen state is intended. It searches only current memberships and advances
     that thread's high-water cursor through the returned id, which may mark
@@ -1366,11 +1376,11 @@ remain in history, but the claimed routing hints are not replayed
 automatically. Recovery uses `list` for that workspace, then bounded
 per-thread `read` or `log` as appropriate; it may not reconstruct every
 notification match. A started `read` may likewise advance one or several chat
-cursors before its response is discarded. `list` plus `log` can recover
-channel/sub-thread bodies without another cursor move; a DM body whose cursor
-already advanced is recoverable only when its exact id is already known and
-the membership still exists, by accepting `show_message`'s further high-water
-effect. A started `show_message` may return a fetched row and advance its
+cursors before its response is discarded. Later `list` (including `dms=true`)
+and cursor-neutral `log` recover current unread state and history for channels,
+subthreads, and accessible DMs, but cannot prove which returned page reached
+the host; blind retry remains unsafe. A started `show_message` may return a
+fetched row and advance its
 cursor even if another client concurrently deletes the row, or may return
 after a concurrent leave makes the cursor update affect no row. A started
 `delete_message` may physically remove its exact row before its response is
@@ -1500,12 +1510,23 @@ Required proof includes:
   Omitted and null `thread` both pass `None`, return unread rows from two
   joined channels and one direct-message queue, and apply the limit to each
   queue independently; a limit-1 bare read may therefore return three rows
-  and advances each cursor only through its one returned row. Explicit
-  `dm.*` and `@name` thread inputs are rejected, while `say @name` remains
-  valid. Inspection and a forwarding spy prove the handler passes the chosen
-  thread and limit to `TautClient.read()` and never fetches a larger page then
-  slices the result. The real broker/client/state pagination proof runs on
-  SQLite and PostgreSQL.
+  and advances each cursor only through its one returned row. Explicit valid
+  `@name-or-alias` and stable `dm.d_*` selectors are accepted for existing
+  actor-accessible DMs, while malformed selectors are rejected before child
+  dispatch and `say @name` remains valid. Inspection and a forwarding spy
+  prove the handler passes the chosen thread and limit to `TautClient.read()`
+  and never fetches a larger page then slices the result. The real
+  broker/client/state pagination and DM-selection proof runs on SQLite and
+  PostgreSQL.
+- explicit `read` and `log` accept both DM selector forms and reject malformed,
+  absent, corrupt, and nonparticipant handles without queue access or content
+  leakage; route rename/reuse and stable-handle behavior match core
+- `list(dms=true)` includes unread, caught-up, and empty valid DMs in core
+  order, emits the existing thread schema, rejects `all=true` before child
+  dispatch, and creates no state
+- the manifest remains 18 tools, `log` stays read-only annotated, and schema,
+  dispatch, instructions, cancellation recovery, SQLite, and PostgreSQL proofs
+  move together
 - every successful nonempty `read` returns exactly one
   `read_cursor_advanced` guidance entry with [MCP-6]'s exact message and
   action; empty `delete_message` returns exactly the content-free
@@ -1737,9 +1758,10 @@ Required proof includes:
   preserves source chat history, and documents the incomplete bounded-read
   recovery path
 - cancellation after started explicit and bare `read` calls discards the
-  response but may advance the selected cursor or several joined cursors;
-  `list`/`log` recovery for channel and sub-thread bodies; no claimed recovery
-  for a DM body whose cursor advanced; and no blind bare-read retry
+  response but may advance one or several selected cursors; later `list`
+  (including `dms=true`) and cursor-neutral `log` recover current unread state
+  and history for channels, subthreads, and accessible DMs, but cannot prove
+  which returned page reached the host; blind retry remains unsafe
 - adversarial malformed frames, invalid tool input, oversized bounded input,
   hostile path/notification text, concurrent attach/detach/external
   consumption, and transport contamination probes
@@ -1776,6 +1798,9 @@ compatibility workflow.
 
 ## Related Plans
 
+- `docs/plans/2026-07-28-direct-message-navigation-plan.md` — actor-aware
+  durable DM selection and discovery through the fixed read, log, and list
+  tools, with aligned recovery guidance and backend proof.
 - `docs/plans/2026-07-28-message-react-plan.md` — fixed reaction tool,
   attachment-time vocabulary, full-audience non-delivery receipts, and
   resource behavior.

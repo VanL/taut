@@ -1305,6 +1305,50 @@ def test_reaction_notification_has_pointer_human_and_json_rendering() -> None:
     }
 
 
+def test_dm_notification_actions_use_stable_pointer_without_client_lookup() -> None:
+    from taut.client import Notification
+    from taut.commands._rendering import emit_notifications
+
+    stable = "dm.d_" + "a" * 26
+
+    class NoLookupClient:
+        def __getattr__(self, name: str) -> object:
+            raise AssertionError(f"DM action inspected client state through {name}")
+
+    notifications = [
+        Notification(
+            type="mention",
+            to_id="m_" + "b" * 26,
+            actor_id="m_" + "c" * 26,
+            actor_name="alice",
+            thread=stable,
+            message_ts=1_800_000_000_000_000_001,
+            matched="@bob",
+        ),
+        Notification(
+            type="dm_started",
+            to_id="m_" + "b" * 26,
+            actor_id="m_" + "c" * 26,
+            actor_name="alice",
+            thread=stable,
+            message_ts=1_800_000_000_000_000_001,
+        ),
+    ]
+    output = StringIO()
+
+    emit_notifications(
+        notifications,
+        client=cast(TautClient, NoLookupClient()),
+        json_output=False,
+        quiet=False,
+        stdout=output,
+        stderr=StringIO(),
+    )
+
+    assert f"inspect: taut log {stable}" in output.getvalue()
+    assert f"read: taut read {stable}" in output.getvalue()
+
+
 def test_message_reaction_receipt_renders_warning_and_quiet_suppresses_both() -> None:
     from types import SimpleNamespace
 
@@ -1988,9 +2032,90 @@ def test_cli_human_dm_mention_offers_log_but_not_invalid_reply(
     rc, out, err = run_cli("--as", "bob", "inbox", cwd=tmp_path)
 
     assert rc == 0, err
-    assert "inspect: taut read" in out
+    assert f"inspect: taut log {dm_thread}" in out
+    assert f"read: taut read {dm_thread}" in out
     assert f"taut reply {dm_thread}" not in out
-    assert run_cli("--as", "bob", "read", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "bob", "log", dm_thread, cwd=tmp_path)[0] == 0
+
+
+def test_cli_dm_read_log_and_directory_use_stable_machine_threads(
+    tmp_path: Path,
+) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "alice", "join", "general", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "bob", "join", "general", cwd=tmp_path)[0] == 0
+    sent_result = run_cli(
+        "--as",
+        "alice",
+        "say",
+        "@bob",
+        "direct hello",
+        "--json",
+        cwd=tmp_path,
+    )
+    stable = json.loads(sent_result[1])["thread"]
+
+    rc, out, err = run_cli("--as", "bob", "log", "@alice", cwd=tmp_path)
+    assert rc == 0, err
+    assert "DM with alice" in out
+    assert "direct hello" in out
+    assert stable not in out.splitlines()[0]
+
+    rc, out, err = run_cli(
+        "--as",
+        "bob",
+        "read",
+        stable,
+        "--json",
+        cwd=tmp_path,
+    )
+    assert rc == 0, err
+    read_record = json.loads(out)
+    assert read_record["thread"] == stable
+    assert read_record["text"] == "direct hello"
+
+    rc, out, err = run_cli(
+        "--as",
+        "bob",
+        "list",
+        "--dms",
+        "--json",
+        cwd=tmp_path,
+    )
+    assert rc == 0, err
+    listed = json.loads(out)
+    assert listed["thread"] == stable
+    assert listed["kind"] == "dm"
+    assert listed["unread"] is False
+    assert len(listed["members"]) == 2
+
+
+def test_cli_list_dms_empty_and_mutual_exclusion_exit_classes(
+    tmp_path: Path,
+) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "alice", "join", "general", cwd=tmp_path)[0] == 0
+
+    rc, out, err = run_cli("--as", "alice", "list", "--dms", cwd=tmp_path)
+    assert rc == 2
+    assert out == ""
+    assert "no direct messages" in err
+
+    rc, out, err = run_cli("list", "--all", "--dms", cwd=tmp_path)
+    assert rc == 1
+    assert out == ""
+    assert "not allowed with argument" in err
+
+
+def test_cli_dm_selector_help_is_discoverable(tmp_path: Path) -> None:
+    for command in ("read", "log", "watch"):
+        rc, out, err = run_cli(command, "--help", cwd=tmp_path)
+        assert rc == 0, err
+        assert "@name-or-alias" in out
+        assert "dm.d_" in out
+    rc, out, err = run_cli("list", "--help", cwd=tmp_path)
+    assert rc == 0, err
+    assert "--dms" in out
 
 
 def test_cli_human_subthread_mention_offers_log_but_not_invalid_reply(

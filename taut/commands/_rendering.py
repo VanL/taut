@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Mapping
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, TextIO
 
-from taut import escape_terminal_text
+from taut import addressing, escape_terminal_text
 from taut._exceptions import EmptyResultError, NotFoundError
 
 _POLICY_ERROR_MESSAGE = "terminal output policy is unavailable"
@@ -142,6 +143,7 @@ def emit_messages(
     quiet: bool,
     stdout: TextIO,
     stderr: TextIO,
+    thread_labels: Mapping[str, str] | None = None,
 ) -> None:
     """Render message records in the established human or NDJSON shape."""
 
@@ -154,7 +156,8 @@ def emit_messages(
             write_json(stdout, message_object(message))
         return
     for thread, grouped in _group_messages_by_thread(messages).items():
-        write_human_line(stdout, thread_heading(thread, stream=stdout))
+        label = thread_labels.get(thread, thread) if thread_labels else thread
+        write_human_line(stdout, thread_heading(label, stream=stdout))
         sender_width = max(
             [6]
             + [
@@ -319,7 +322,7 @@ def emit_notifications(
                 stdout,
                 f"{format_message_time(notification.message_ts)} "
                 f"{notification.actor_name} started a direct message in "
-                f"{notification.thread}; read: taut read",
+                f"{notification.thread}; read: taut read {notification.thread}",
             )
         elif notification.type == "reaction":
             assert notification.message_ts is not None
@@ -369,6 +372,7 @@ def emit_watch_item(
             quiet=quiet,
             stdout=stdout,
             stderr=stderr,
+            thread_labels=getattr(client, "last_thread_display_names", None),
         )
 
 
@@ -537,17 +541,6 @@ def _mention_inspect_action(
     thread = notification.thread
     if thread is None:
         return "taut read"
-    if client is not None:
-        thread_row = next(
-            (
-                candidate
-                for candidate in client.list_threads(all_threads=True)
-                if candidate.name == thread
-            ),
-            None,
-        )
-        if thread_row is not None and thread_row.kind == "dm":
-            return "taut read"
     return f"taut log {thread}"
 
 
@@ -560,6 +553,8 @@ def _mention_reply_id(
     thread = notification.thread
     message_ts = notification.message_ts
     if client is None or thread is None or message_ts is None:
+        return None
+    if addressing.DM_SELECTOR_RE.fullmatch(thread) is not None:
         return None
     if thread not in client.joined_thread_names():
         return None

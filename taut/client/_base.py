@@ -15,19 +15,28 @@ from typing import Any, NoReturn
 from simplebroker import BrokerTarget, Queue, resolve_broker_target
 
 import taut.identity as identity
+from taut import addressing
 from taut._constants import (
+    MEMBER_ID_RE,
     META_QUEUE_NAME,
     NO_DATABASE_MESSAGE,
     PROJECT_CONFIG_NAME,
     load_config,
 )
-from taut._exceptions import IdentityError, NotInitializedError, TautError
+from taut._exceptions import (
+    IdentityError,
+    NotFoundError,
+    NotInitializedError,
+    TautError,
+)
 from taut._reactions import load_reaction_values
 from taut.state import (
     ChannelRenameRow,
     MemberRow,
+    MembershipRow,
     SqlSidecarTautState,
     TautState,
+    ThreadRow,
     dialect_for_taut_target,
 )
 
@@ -89,6 +98,62 @@ class _ResolvedMember:
     rule: str = "guest"
 
 
+@dataclass(frozen=True, slots=True)
+class _DirectMessageContext:
+    thread: ThreadRow
+    actor: MemberRow
+    other: MemberRow
+    actor_membership: MembershipRow
+    other_membership: MembershipRow
+
+
+def _direct_message_context_for_state(
+    state: TautState,
+    thread: str,
+    actor: MemberRow,
+) -> _DirectMessageContext | None:
+    """Validate one canonical DM against actor-visible durable state."""
+
+    row = state.get_thread(thread)
+    if row is None or row["kind"] != "dm":
+        return None
+    members = row["meta"].get("members")
+    if (
+        not isinstance(members, list)
+        or len(members) != 2
+        or not all(
+            isinstance(member_id, str) and MEMBER_ID_RE.fullmatch(member_id) is not None
+            for member_id in members
+        )
+        or len(set(members)) != 2
+        or actor["member_id"] not in members
+    ):
+        return None
+    if row["name"] != addressing.dm_queue_name(members[0], members[1]):
+        return None
+    other_id = members[1] if members[0] == actor["member_id"] else members[0]
+    other = state.get_member(other_id)
+    if other is None:
+        return None
+    actor_membership = state.get_membership(
+        thread=row["name"],
+        member_id=actor["member_id"],
+    )
+    other_membership = state.get_membership(
+        thread=row["name"],
+        member_id=other_id,
+    )
+    if actor_membership is None or other_membership is None:
+        return None
+    return _DirectMessageContext(
+        thread=row,
+        actor=actor,
+        other=other,
+        actor_membership=actor_membership,
+        other_membership=other_membership,
+    )
+
+
 class _ClientBase(ABC):
     """Shared state and cross-mixin type contract for TautClient."""
 
@@ -100,6 +165,7 @@ class _ClientBase(ABC):
     last_created_member: Member | None
     last_candidates: list[tuple[str, list[str]]]
     last_notification_warnings: list[str]
+    last_thread_display_names: dict[str, str]
     _meta_queue: Queue
     _persistent: bool
     _queue_cache: dict[str, Queue]
@@ -144,6 +210,7 @@ class _ClientBase(ABC):
         self.last_created_member = None
         self.last_candidates = []
         self.last_notification_warnings = []
+        self.last_thread_display_names = {}
         self._meta_queue = self.queue(META_QUEUE_NAME)
         self._state = SqlSidecarTautState(
             self._meta_queue,
@@ -238,6 +305,54 @@ class _ClientBase(ABC):
             return
         raise TautError(_incomplete_channel_rename_message(renames[0]))
 
+    def _resolve_direct_message(
+        self,
+        selector: str,
+        actor: MemberRow,
+    ) -> _DirectMessageContext:
+        address = addressing.parse_dm_selector(selector)
+        if address is None:
+            raise ValueError("selector is not a direct-message selector")
+        thread = address.thread
+        if address.route_key is not None:
+            target = self._state.get_member_by_route_key(address.route_key)
+            if (
+                target is None
+                or MEMBER_ID_RE.fullmatch(actor["member_id"]) is None
+                or MEMBER_ID_RE.fullmatch(target["member_id"]) is None
+                or target["member_id"] == actor["member_id"]
+            ):
+                self._raise_direct_message_not_found()
+            thread = addressing.dm_queue_name(
+                actor["member_id"],
+                target["member_id"],
+            )
+        assert thread is not None
+        context = self._direct_message_context(thread, actor)
+        if context is None:
+            self._raise_direct_message_not_found()
+        self._remember_direct_message_display_name(context)
+        return context
+
+    def _direct_message_context(
+        self,
+        thread: str,
+        actor: MemberRow,
+    ) -> _DirectMessageContext | None:
+        return _direct_message_context_for_state(self._state, thread, actor)
+
+    @staticmethod
+    def _raise_direct_message_not_found() -> NoReturn:
+        raise NotFoundError("direct message not found or inaccessible")
+
+    def _remember_direct_message_display_name(
+        self,
+        context: _DirectMessageContext,
+    ) -> None:
+        self.last_thread_display_names[context.thread["name"]] = (
+            f"DM with {context.other['display_name']}"
+        )
+
     @abstractmethod
     def _resolve_member(
         self,
@@ -247,6 +362,7 @@ class _ClientBase(ABC):
         persona: str | None = None,
         allow_guest: bool = False,
         _touch_activity: bool = True,
+        _heal_claim: bool = True,
         _require_capture: bool = False,
     ) -> _ResolvedMember: ...
 

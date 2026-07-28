@@ -153,6 +153,62 @@ def test_postgres_read_limit_pages_without_cursor_gaps(
 
 @pytest.mark.pg_only
 @pytest.mark.timeout(30)
+def test_postgres_explicit_dm_navigation_and_directory(
+    taut_pg_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[MCP-5]/[MCP-12] PostgreSQL matches the public DM navigation contract."""
+
+    monkeypatch.chdir(taut_pg_project)
+    TautClient.init()
+    selected = TautClient(as_name="selected")
+    selected.join("general")
+    member = selected.last_created_member
+    assert member is not None and member.token is not None
+    other = TautClient(as_name="other")
+    other.join("general")
+    sent = other.say("@selected", "pg private history")
+    selected.close()
+    other.close()
+
+    async def scenario() -> None:
+        reactor = ConnectionReactor(asyncio.get_running_loop())
+        try:
+            attached = await reactor.attach_workspace(
+                str(taut_pg_project),
+                member.token or "",
+            )
+            canonical = str(attached["workspace"])
+            history = await reactor.execute_tool(
+                canonical,
+                "log",
+                {"thread": "@other", "since": None, "limit": 100},
+            )
+            assert history["records"][0]["thread"] == sent.thread
+            assert history["records"][0]["text"] == "pg private history"
+            unread = await reactor.execute_tool(
+                canonical,
+                "read",
+                {"thread": sent.thread, "limit": 100},
+            )
+            assert unread["records"][0]["thread"] == sent.thread
+            directory = await reactor.execute_tool(
+                canonical,
+                "list",
+                {"dms": True},
+            )
+            assert [record["thread"] for record in directory["records"]] == [
+                sent.thread
+            ]
+            assert directory["records"][0]["unread"] is False
+        finally:
+            await reactor.aclose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.pg_only
+@pytest.mark.timeout(30)
 def test_postgres_exact_message_tools_use_public_core_contract(
     taut_pg_project: Path,
     monkeypatch: pytest.MonkeyPatch,

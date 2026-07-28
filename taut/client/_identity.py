@@ -134,12 +134,15 @@ class IdentityMixin(_ClientBase):
         persona: str | None = None,
         allow_guest: bool = False,
         _touch_activity: bool = True,
+        _heal_claim: bool = True,
         _require_capture: bool = False,
     ) -> _ResolvedMember:
         if not _touch_activity and (create or persona is not None):
             raise ValueError(
                 "read-only identity resolution cannot create or set persona"
             )
+        if not _heal_claim and create:
+            raise ValueError("non-healing identity resolution cannot create")
         self.last_created_member = None
         self.last_candidates = []
         capture: identity.IdentityCapture | None = None
@@ -206,8 +209,9 @@ class IdentityMixin(_ClientBase):
                 capture, claim = ensure_evidence()
             if _touch_activity:
                 active = next_active_ts()
-                token_claim = identity.claim_for_token(self.token)
-                self._record_claim(row, token_claim, active)
+                if _heal_claim:
+                    token_claim = identity.claim_for_token(self.token)
+                    self._record_claim(row, token_claim, active)
                 self._state.update_member_activity(row["member_id"], active)
             return _ResolvedMember(row, capture, rule="continuity token")
 
@@ -239,6 +243,20 @@ class IdentityMixin(_ClientBase):
                         return _ResolvedMember(owner, capture, rule="identity claim")
                     return _ResolvedMember(row, capture, rule="anchor match")
                 active = next_active_ts()
+                if not _heal_claim:
+                    owner = self._state.get_member_by_claim_hash(claim.claim_hash)
+                    if owner is not None:
+                        self._state.update_member_activity(
+                            owner["member_id"],
+                            active,
+                        )
+                        return _ResolvedMember(
+                            owner,
+                            capture,
+                            rule="identity claim",
+                        )
+                    self._state.update_member_activity(row["member_id"], active)
+                    return _ResolvedMember(row, capture, rule="anchor match")
                 try:
                     # Heal: record the current claim so subsequent commands
                     # resolve at step 3.
@@ -275,11 +293,30 @@ class IdentityMixin(_ClientBase):
                 uid=capture.uid,
             )
             if row is not None:
+                owner = self._state.get_member_by_claim_hash(claim.claim_hash)
+                if owner is not None:
+                    if _touch_activity:
+                        active = next_active_ts()
+                        self._state.update_member_activity(owner["member_id"], active)
+                        if persona is not None:
+                            owner = (
+                                self._state.update_member_persona(
+                                    owner["member_id"],
+                                    persona,
+                                )
+                                or owner
+                            )
+                    return _ResolvedMember(
+                        owner,
+                        capture,
+                        rule="identity claim",
+                    )
                 if not _touch_activity:
                     return _ResolvedMember(row, capture, rule="human uid fallback")
                 active = next_active_ts()
                 self._state.update_member_activity(row["member_id"], active)
-                self._record_claim(row, claim, active)
+                if _heal_claim:
+                    self._record_claim(row, claim, active)
                 return _ResolvedMember(row, capture, rule="human uid fallback")
 
         if not create:

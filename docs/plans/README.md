@@ -100,6 +100,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 | `2026-07-17-agent-guidance-propagation-plan.md` | completed | no | Completed; landed evidence includes `9221cbd`. |
 | `2026-07-27-message-show-delete-plan.md` | completed | no | Completed; landed evidence includes `8509dc4`. |
 | `2026-07-28-coalescing-wave-plan.md` | completed | no | Bounded-maintenance process, checked plan index, and coalescing derivation landed after independent review. |
+| `2026-07-28-direct-message-navigation-plan.md` | completed | no | Class 5 DM navigation implementation; all behavior slices, backend gates, and independent reviews complete. |
 | `2026-07-28-message-react-plan.md` | completed | no | Completed; landed evidence includes `788cdd3`. |
 
 ## Retired Plans

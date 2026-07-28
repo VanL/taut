@@ -22,7 +22,7 @@ from taut._exceptions import (
 )
 from taut._message_text import is_blank_message_text
 from taut.envelope import encode_envelope
-from taut.state import MemberRow, MembershipRow
+from taut.state import MemberRow, MembershipRow, ThreadRow
 
 from ._base import _ClientBase, _json_dumps
 from ._codec import message_from_body
@@ -291,17 +291,34 @@ class MessagingMixin(_ClientBase):
             raise TypeError("limit must be an integer")
         if not 1 <= limit <= 1000:
             raise ValueError("limit must be between 1 and 1000")
+        self.last_thread_display_names.clear()
+        dm_selector = (
+            addressing.parse_dm_selector(thread) if thread is not None else None
+        )
         self._ensure_no_incomplete_channel_rename()
-        resolved = self._resolve_member(create=False)
+        resolved = self._resolve_member(
+            create=False,
+            _heal_claim=dm_selector is None,
+        )
         member = self._require_member(resolved)
         memberships: list[MembershipRow]
         if thread is not None:
-            thread = addressing.validate_chat_thread_name(thread, allow_subthread=True)
-            membership = self._state.get_membership(
-                thread=thread, member_id=member["member_id"]
-            )
-            if membership is None:
-                membership = self._implicit_subthread_membership(thread, member)
+            membership: MembershipRow
+            if dm_selector is not None:
+                context = self._resolve_direct_message(thread, member)
+                thread = context.thread["name"]
+                membership = context.actor_membership
+            else:
+                thread = addressing.validate_chat_thread_name(
+                    thread, allow_subthread=True
+                )
+                existing_membership = self._state.get_membership(
+                    thread=thread, member_id=member["member_id"]
+                )
+                if existing_membership is None:
+                    membership = self._implicit_subthread_membership(thread, member)
+                else:
+                    membership = existing_membership
             memberships = [membership]
         else:
             memberships = self._state.list_memberships(member["member_id"])
@@ -310,6 +327,10 @@ class MessagingMixin(_ClientBase):
             row = self._state.get_thread(membership["thread"])
             if row is None or row["kind"] == "notification":
                 continue
+            if row["kind"] == "dm":
+                dm_context = self._direct_message_context(row["name"], member)
+                if dm_context is not None:
+                    self._remember_direct_message_display_name(dm_context)
             queue = self.queue(membership["thread"])
             raw_messages = cast(
                 list[tuple[str, int]],
@@ -341,11 +362,22 @@ class MessagingMixin(_ClientBase):
         since: str | int | None = None,
         limit: int | None = None,
     ) -> list[Message]:
-        thread = addressing.validate_chat_thread_name(thread, allow_subthread=True)
+        self.last_thread_display_names.clear()
+        dm_selector = addressing.parse_dm_selector(thread)
         self._ensure_no_incomplete_channel_rename()
-        row = self._state.get_thread(thread)
-        if row is None:
-            raise NotFoundError(f"thread not found: {thread}")
+        row: ThreadRow
+        if dm_selector is not None:
+            resolved = self._resolve_member(create=False, _touch_activity=False)
+            member = self._require_member(resolved)
+            context = self._resolve_direct_message(thread, member)
+            thread = context.thread["name"]
+            row = context.thread
+        else:
+            thread = addressing.validate_chat_thread_name(thread, allow_subthread=True)
+            existing_row = self._state.get_thread(thread)
+            if existing_row is None:
+                raise NotFoundError(f"thread not found: {thread}")
+            row = existing_row
         if row["kind"] == "notification":
             raise ThreadNameError("notification queues are read with inbox")
         if limit is not None and limit <= 0:

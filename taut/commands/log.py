@@ -11,11 +11,17 @@ from taut.commands._rendering import emit_messages
 class LogCommand:
     def configure_parser(self, parser: CommandArgumentParser) -> None:
         parser.description = (
-            "Show chronological history for THREAD. Filtering never changes unread "
-            "state."
+            "Show chronological history for THREAD_OR_DM. Direct messages may "
+            "use @name-or-alias or a stable dm.d_ handle. Filtering never "
+            "changes unread state."
         )
         parser.add_argument(
-            "thread", metavar="THREAD", help="Thread whose history to show."
+            "thread",
+            metavar="THREAD_OR_DM",
+            help=(
+                "Channel, subthread, @name-or-alias DM, or stable dm.d_ DM "
+                "whose history to show."
+            ),
         )
         parser.add_argument(
             "--since",
@@ -33,7 +39,8 @@ class LogCommand:
         )
 
     def run(self, context: CommandContext, args: argparse.Namespace) -> int:
-        messages = context.client().log(
+        client = context.client()
+        messages = client.log(
             args.thread,
             since=args.since,
             limit=args.limit,
@@ -45,6 +52,7 @@ class LogCommand:
             quiet=context.quiet,
             stdout=context.stdout,
             stderr=context.stderr,
+            thread_labels=getattr(client, "last_thread_display_names", None),
         )
         return 0
 

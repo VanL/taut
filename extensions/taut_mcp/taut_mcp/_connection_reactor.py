@@ -177,8 +177,9 @@ def workspace_result(
 READ_GUIDANCE = [
     {
         "action": (
-            "Use log for non-consuming channel or sub-thread rereads. Direct "
-            "messages have no public log operation."
+            "Use log for non-consuming channel, sub-thread, or accessible "
+            "direct-message rereads. After an uncertain read, inspect list "
+            "before retrying."
         ),
         "code": "read_cursor_advanced",
         "message": (

@@ -92,6 +92,15 @@ accident. `_commands.py` dispatches the 15 CLI-shaped tools directly to public
 `TautClient` methods and serializes public value objects; it never launches the
 CLI or parses renderer output.
 
+DM navigation broadens those existing tools without adding a nineteenth tool.
+`read.thread` and `log.thread` accept channel/subthread selectors plus current
+`@name-or-alias` and stable `dm.d_*` forms. `list(dms=true)` calls the public
+`list_direct_messages()` method; its schema and command validation reject
+`all=true && dms=true` before client dispatch. Well-formed absent or
+inaccessible DM selectors become the same content-free typed empty result.
+`log` retains its read-only/idempotent annotations because core resolves its
+DM actor without activity or cursor writes.
+
 `show_message` and `delete_message` accept only a full exact message id.
 `show_message` returns the ordinary message record after a non-claiming peek
 and advances the acting member's seen cursor through that id. `delete_message`
@@ -120,8 +129,10 @@ starts, synchronous Taut work is not rolled back; its state and snapshot are
 installed while the transport receives the SDK's standard cancellation error.
 This is why successful nonempty `read` results carry structured cursor
 guidance, the `show_message` description and initialization instructions state
-its cursor effect, the instructions teach recovery for both `read` and `inbox`, and
-the server never retries either operation automatically.
+its cursor effect, and the server never retries a consuming operation
+automatically. After an uncertain DM read, `list(dms=true)` can recover the
+durable stable handle and `log` can inspect history without another cursor or
+activity move. Neither operation proves which read page reached the host.
 
 ### The notification resource is a cached level; hints are edges
 
@@ -258,6 +269,7 @@ and plan evidence whenever ownership or rationale changes.
 
 ## Related Plan
 
+- `docs/plans/2026-07-28-direct-message-navigation-plan.md`
 - `docs/plans/2026-07-15-taut-0.7.1-portability-and-coverage-plan.md`
 - `docs/plans/2026-07-15-taut-mcp-release-integration-plan.md`
 - `docs/plans/2026-07-14-taut-mcp-extension-plan.md`

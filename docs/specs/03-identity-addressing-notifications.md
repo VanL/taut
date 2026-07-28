@@ -307,14 +307,21 @@ stable identity across name changes.
 
 ### [IAN-5.1] Command address classes
 
-Taut command arguments that accept a conversation target recognize:
+Taut conversation arguments use these shapes:
 
 | Input shape | Meaning |
 |---|---|
 | `general` | channel `general` |
 | `#general` | channel `general`, accepted for familiarity but usually needs shell quoting |
 | `general.<message_id>` | sub-thread under channel `general` |
-| `@claude` | direct message with the member currently named `claude`, or aliased `claude` if an alias exists |
+| `@claude` | direct message with the member currently named `claude`, or aliased `claude` if a Taut member alias exists |
+| `dm.d_<26-lowercase-base32-chars>` | one existing stable direct-message conversation, subject to actor access checks in [IAN-5.3] |
+
+Not every command accepts every class. `say` accepts channels, subthreads, and
+`@name-or-alias`; it does not accept a stable `dm.d_*` handle. `read`, `log`,
+and `watch` accept their existing channel/subthread forms plus both DM selector
+forms. `join`, `leave`, `reply`, `rename`, and `who THREAD` retain their
+existing narrower contracts.
 
 Documentation should prefer bare channel names in shell commands because an
 unquoted leading `#` can be interpreted as a shell comment. Human rendering may
@@ -341,6 +348,30 @@ Rules:
   activity to non-participants. Exact-message delete may scan registered DMs
   to find the acting author's own row, but an ineligible lookup must expose no
   body, participant, thread, or existence detail ([TAUT-7.6]).
+
+### [IAN-5.3] Direct-message conversation selection
+
+A DM route selector is `@` plus a valid current member name or Taut member
+alias. It resolves once at invocation time relative to the acting member, then
+derives [IAN-6.4]'s deterministic queue from the two stable member ids. A
+running watch stays on that canonical queue after either member renames.
+Later invocations follow the then-current route owner. Old names do not remain
+routes unless retained through the Taut member-alias model in [IAN-4].
+
+A stable DM selector matches exactly `^dm\.d_[a-z2-7]{26}$`. The selector is
+authority only when the registered row is a DM with exactly two distinct valid
+member ids, its name equals [IAN-6.4]'s derivation for that pair, the actor is
+one participant, both member rows exist, and both participant memberships
+exist. Missing, malformed, mismatched, self, nonparticipant, or inaccessible
+selection returns one content-free not-found/empty result without exposing
+another participant, registry metadata, queue contents, member-route
+existence, or whether another pair owns the supplied handle. Malformed selector
+syntax remains a validation error.
+
+Navigation never creates or heals a member, identity claim, route, queue,
+thread, membership, notification, or DM. A valid current route with no
+existing DM is not found. SimpleBroker queue aliases do not participate in DM
+selection because their namespace is global rather than actor-relative.
 
 ## 6. Queue Namespace [IAN-6]
 
@@ -423,25 +454,33 @@ registered DM remains a valid conversation and appears under list-all with no
 surviving `last_ts`. Later contact reuses the same queue and does not emit a
 second `dm_started` notification.
 
-Human renderers should label a direct-message queue by the other participant's
-current display name when there are exactly two participants. JSON surfaces must
-keep the internal `dm.<dm_id>` queue name in `thread` and expose participant
-member ids through the list/thread metadata contract in [TAUT-8.2].
+Actor-scoped human renderers label a valid direct-message conversation
+`DM with <other current display name>`. Human `read`, `log`, and `watch`
+message headings, bare joined `list`, and `list --dms` use that label. JSON,
+Python, and MCP message surfaces keep the internal `dm.<dm_id>` queue name in
+`thread`; list/thread metadata also exposes participant member ids under
+[TAUT-8.2].
 
-Human `list` renders a valid direct message as `DM with <current names>` while
-JSON retains the stable internal `thread` and `members` fields. Missing or
-malformed participant metadata renders `DM <internal-thread> (participants
-unavailable)` and emits no invented identity or extra stderr warning. Human
-notification actions are type-specific. A channel or subthread mention renders
-`taut log <source-thread>`; a direct-message mention renders bare `taut read`
-because opaque internal DM queue names are not valid `log` arguments. A mention
-also includes the shortest unique source-message suffix usable with `taut
-reply` only when the source is a top-level channel and the recipient is a
-member (full id on ambiguity). A reply pointer renders `taut log
-<child-thread>`; `dm_started` renders the bare
-`taut read` command, which resolves the recipient's current DM at execution
-time, and no invented reply id. `log` is the membership-independent inspection
-action. All render local `HH:MM`. JSON timestamps and names do not change.
+The pre-existing global `list --all` diagnostic view retains its current
+membership-independent rendering: a valid DM may show all current participant
+names, and missing or malformed participant metadata renders
+`DM <internal-thread> (participants unavailable)`. It invents no identity or
+extra warning. Actor-scoped `list --dms` excludes malformed or inaccessible
+rows.
+
+Human notification actions are type-specific. A channel or subthread mention
+renders `taut log <source-thread>`; a direct-message mention renders
+`taut log <stable-dm-thread>`. A mention includes the shortest unique
+source-message suffix usable with `taut reply` only when the source is a
+top-level channel and the recipient is a member (full id on ambiguity). A
+reply pointer renders `taut log <child-thread>`; `dm_started` renders
+`taut read <stable-dm-thread>`, and no invented reply id. Choosing and
+constructing a DM action uses the pointer's stable source thread and performs
+no identity, list, registry, or source-queue lookup. Existing channel mention
+reply-suffix eligibility and uniqueness probes are unchanged. `log` remains
+membership-independent for channels/subthreads but is participant-scoped for
+DMs under [IAN-5.3]. All render local `HH:MM`. JSON timestamps and names do not
+change.
 
 Self-DM is rejected unless a later spec explicitly gives it a use.
 
@@ -693,6 +732,16 @@ or report the interrupted rename.
 - Sole direct-message row deleted: the deterministic registry and both
   memberships survive; later contact reuses them without another
   `dm_started`.
+- `@name-or-alias` DM navigation resolves relative to the actor and creates no
+  conversation; valid stable handles survive rename, while later route reuse
+  follows the new owner.
+- Stable handles are rejected before queue access for nonparticipants,
+  malformed registry metadata, pair/name mismatch, missing members, or missing
+  participant memberships, with absent and inaccessible adapter output
+  indistinguishable.
+- Actor-scoped DM directory results include read and empty valid DMs, exclude
+  malformed/inaccessible rows, and sort by newest surviving row with empty
+  conversations last.
 - Channel with dot: rejected. Dots are structural.
 - Channel named `dm`, `notify`, `sys`, or `taut`: rejected.
 - Partial channel rename: must be recoverable or loudly reportable; silent
@@ -775,6 +824,9 @@ Required proofs:
 
 ## Related Plans
 
+- `docs/plans/2026-07-28-direct-message-navigation-plan.md` — actor-scoped
+  current-route and stable-handle DM navigation, durable DM directory, and
+  fail-closed registry/membership validation.
 - `docs/plans/2026-07-28-message-react-plan.md` — reaction notification
   payloads, full-audience exact fanout, non-delivery receipts, and stale
   pointer behavior.

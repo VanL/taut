@@ -94,6 +94,46 @@ def test_member_scoped_queue_names_reject_invalid_member_ids() -> None:
         addressing.notification_queue_name("bob")
 
 
+def test_parse_dm_selector_accepts_routes_and_exact_stable_handles() -> None:
+    routed = addressing.parse_dm_selector("@Claude")
+    assert routed is not None
+    assert routed.kind == "dm"
+    assert routed.route_key == "claude"
+    assert routed.thread is None
+
+    stable_name = "dm.d_" + "a" * 26
+    stable = addressing.parse_dm_selector(stable_name)
+    assert stable is not None
+    assert stable.kind == "dm"
+    assert stable.thread == stable_name
+    assert stable.route_key is None
+
+    assert addressing.parse_dm_selector("general") is None
+    assert addressing.parse_dm_selector("general.1234567890123456789") is None
+
+
+@pytest.mark.parametrize(
+    "selector",
+    [
+        "dm.d_short",
+        "dm.d_" + "A" * 26,
+        "dm.d_" + "0" * 26,
+        "dm.other",
+        "@",
+        "@bad.name",
+    ],
+)
+def test_parse_dm_selector_rejects_malformed_dm_shapes(selector: str) -> None:
+    with pytest.raises(ThreadNameError):
+        addressing.parse_dm_selector(selector)
+
+
+@pytest.mark.parametrize("selector", [None, 1, True, b"@bob"])
+def test_parse_dm_selector_rejects_non_string_values(selector: object) -> None:
+    with pytest.raises(TypeError, match="direct-message selector must be a string"):
+        addressing.parse_dm_selector(selector)  # type: ignore[arg-type]
+
+
 def test_notification_queue_name() -> None:
     member_id = "m_" + "a" * 26
 

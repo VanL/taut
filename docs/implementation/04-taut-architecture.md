@@ -254,6 +254,25 @@ timestamp; a decoder failure leaves the page cursor unchanged. `read` is a
 thin delegating alias, and the CLI omits the keyword to preserve its
 1,000-per-thread default.
 
+Direct-message navigation has one actor-aware boundary in the client. The
+operation-specific address parser recognizes current `@name-or-alias` routes
+and exact stable `dm.d_*` handles without broadening channel-only commands.
+The shared resolver validates the registered DM kind, exact two-member
+metadata, deterministic pair/name relation, actor participation, both member
+rows, and both memberships before any queue access. It fails closed with one
+content-free miss for absent, corrupt, or cross-pair state. Navigation never
+calls the first-contact send path and never creates or heals identity,
+registry, membership, notification, or queue state.
+
+`read` uses that canonical queue and advances only its existing cursor.
+`log` uses non-healing, activity-neutral actor resolution and moves no cursor.
+`list_direct_messages()` derives an actor-scoped directory from existing DM
+memberships and the same validation boundary, including caught-up and empty
+conversations. It adds no index. Machine records retain canonical stable
+thread names. The client keeps a stable per-instance label mapping that human
+renderers use for `DM with <current-name>` headings without changing message
+or JSON values.
+
 Every live chat write uses SimpleBroker's atomic `Queue.write(body)` and takes
 the committed message id from that same call ([TAUT-3.4]). Allocating an id with
 `Queue.generate_timestamp()` and inserting it later with
@@ -473,6 +492,11 @@ runtime is acquired, `TautClient.watch()` closes it before preserving the
 construction error. The copied `MultiQueueWatcher` resolves its cwd fallback
 only for `db=None`; the normal client path passes an already resolved target, so
 an unrelated cwd config cannot override or break explicit construction.
+Explicit DM filters resolve once on the client owner thread, canonicalize to
+stable queue names, and deduplicate before runtime construction. The runtime
+and watcher never re-resolve a mutable member route. Dynamic membership
+refresh still validates selected DM metadata before decoding and updates the
+shared human label mapping in place.
 Direct `TautWatcher(client, ...)` construction is preserved only as a deprecated
 constructor compatibility path and is converted immediately to the same runtime.
 
@@ -540,13 +564,15 @@ relay, including an agent echoing controls after prompt injection. It does not
 authenticate senders or make Taut a security boundary. Summon's explicit PTY
 lease remains byte-transparent and bypasses the text renderer by design.
 
-Human notification actions are derived at render time from current thread and
-membership state. Channel and subthread mentions use the membership-independent
-`log` path; DM mentions use bare `read` because internal `dm.*` names are not
-public log operands. Only a joined top-level channel gets a reply action, using
-the shortest unique suffix in the same 1,000-message window as `reply` and the
-full id when no shorter suffix is safe. JSON notification fields remain the
-durable machine contract.
+Human notification actions are derived at render time. Channel and subthread
+mentions use the membership-independent `log` path and retain their membership
+and reply-suffix probes. DM mentions use the pointer's stable source thread in
+`taut log`, and `dm_started` uses it in `taut read`. Classifying and building
+those DM actions performs no identity, registry, list, or source-queue lookup.
+Only a joined top-level channel gets a reply action, using the shortest unique
+suffix in the same 1,000-message window as `reply` and the full id when no
+shorter suffix is safe. JSON notification fields remain the durable machine
+contract.
 
 Notification observation has two deliberately different public operations.
 `NotificationsMixin.inbox()` resolves through the ordinary activity-touching
@@ -688,6 +714,7 @@ watch, `taut/client/_notifications.py::NotificationsMixin.inbox` claims notifica
 
 ## Related Plans
 
+- `docs/plans/2026-07-28-direct-message-navigation-plan.md`
 - `docs/plans/2026-07-14-blank-message-no-op-plan.md`
 - `docs/plans/2026-07-14-smaller-quality-followups-plan.md`
 - `docs/plans/2026-07-14-universal-release-gates-plan.md`

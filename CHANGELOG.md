@@ -2,6 +2,12 @@
 
 ## 0.8.0 - 2026-07-28
 
+- Added first-class navigation for existing direct-message conversations by
+  current `@name-or-alias` or stable `dm.d_*` handle across Python, CLI,
+  watcher, and MCP surfaces. Added the actor-scoped `list_direct_messages()`,
+  `taut list --dms`, stable notification actions, and cursor-neutral DM
+  history without changing the deterministic queue naming scheme or MCP's
+  18-tool manifest.
 - Added configured message reactions across the Python client, nested CLI,
   notification inbox/watcher paths, and MCP extension. Reactions advance the
   actor's seen cursor, then use SimpleBroker's atomic exact-name broadcast as

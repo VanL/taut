@@ -10,9 +10,11 @@ from taut import (
     Message,
     MessageDeletion,
     MessageReaction,
+    NotFoundError,
     Notification,
     TautClient,
     Thread,
+    addressing,
 )
 
 CommandScalar: TypeAlias = str | int | bool | None
@@ -113,12 +115,18 @@ def execute_command(
             ),
         )
     elif name == "read":
-        records = tuple(
-            client.read(
-                _optional_string(arguments, "thread"),
-                limit=_integer(arguments, "limit", 100),
+        thread = _optional_string(arguments, "thread")
+        try:
+            records = tuple(
+                client.read(
+                    thread,
+                    limit=_integer(arguments, "limit", 100),
+                )
             )
-        )
+        except NotFoundError:
+            if thread is None or addressing.parse_dm_selector(thread) is None:
+                raise
+            records = ()
     elif name == "inbox":
         records = tuple(client.inbox(limit=_integer(arguments, "limit", 1000)))
     elif name == "log":
@@ -127,18 +135,32 @@ def execute_command(
             isinstance(since, bool) or not isinstance(since, (str, int))
         ):
             raise TypeError("since must be a string, integer, or null")
-        records = tuple(
-            client.log(
-                _required_string(arguments, "thread"),
-                since=since,
-                limit=_integer(arguments, "limit", 100),
+        thread = _required_string(arguments, "thread")
+        try:
+            records = tuple(
+                client.log(
+                    thread,
+                    since=since,
+                    limit=_integer(arguments, "limit", 100),
+                )
             )
-        )
+        except NotFoundError:
+            if addressing.parse_dm_selector(thread) is None:
+                raise
+            records = ()
     elif name == "list":
         all_threads = arguments.get("all", False)
         if not isinstance(all_threads, bool):
             raise TypeError("all must be a boolean")
-        records = tuple(client.list_threads(all_threads=all_threads))
+        direct_messages = arguments.get("dms", False)
+        if not isinstance(direct_messages, bool):
+            raise TypeError("dms must be a boolean")
+        if all_threads and direct_messages:
+            raise ValueError("all and dms are mutually exclusive")
+        if direct_messages:
+            records = tuple(client.list_direct_messages())
+        else:
+            records = tuple(client.list_threads(all_threads=all_threads))
     elif name == "rename":
         records = (
             client.rename_channel(

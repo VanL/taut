@@ -757,6 +757,51 @@ def test_project_dm_queue_stable_across_name_change_contract(
     assert set(listed.members) == {van.whoami().member_id, bob.whoami().member_id}
 
 
+def test_project_dm_navigation_and_directory_contract(taut_project: Path) -> None:
+    """[TAUT-7.8] DM selectors and directory work on every real backend."""
+
+    TautClient.init()
+    alice = TautClient(as_name="alice")
+    bob = TautClient(as_name="bob")
+    carol = TautClient(as_name="carol")
+    for member in (alice, bob, carol):
+        member.join("general")
+    alice_id = alice.whoami().member_id
+    bob_id = bob.whoami().member_id
+    sent = bob.say("@alice", "shared DM")
+    stable = addressing.dm_queue_name(alice_id, bob_id)
+    membership_before = alice._state.get_membership(
+        thread=stable,
+        member_id=alice_id,
+    )
+    actor_before = alice._state.get_member(alice_id)
+
+    assert sent.thread == stable
+    assert [item.text for item in alice.log("@bob")] == ["shared DM"]
+    assert [item.text for item in alice.log(stable)] == ["shared DM"]
+    assert (
+        alice._state.get_membership(
+            thread=stable,
+            member_id=alice_id,
+        )
+        == membership_before
+    )
+    assert alice._state.get_member(alice_id) == actor_before
+    assert [item.text for item in alice.read("@bob")] == ["shared DM"]
+    assert alice.list_direct_messages()[0].name == stable
+    assert alice.list_direct_messages()[0].unread is False
+
+    empty = carol.say("@alice", "delete me")
+    carol.delete_message(str(empty.ts))
+    listed = alice.list_direct_messages()
+    assert {item.name for item in listed} == {stable, empty.thread}
+    assert next(item for item in listed if item.name == empty.thread).last_ts is None
+
+    bob.set_name("robert")
+    assert [item.text for item in alice.log("@robert")] == ["shared DM"]
+    assert [item.text for item in alice.log(stable)] == ["shared DM"]
+
+
 def test_project_notifications_claim_without_touching_history_contract(
     taut_project: Path,
 ) -> None:

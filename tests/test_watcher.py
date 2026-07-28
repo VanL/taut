@@ -1419,11 +1419,11 @@ def test_client_watch_can_use_nonpersistent_queue_handles(tmp_path: Path) -> Non
         watcher.stop()
 
 
-def test_client_watch_closes_owned_runtime_when_construction_fails(
+def test_client_watch_rejects_missing_filters_before_runtime_construction(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """[TAUT-8.4] A rejected explicit filter must not leak its runtime."""
+    """[TAUT-8.4] Explicit-filter preflight occurs before runtime construction."""
 
     from taut.client import _watching
 
@@ -1438,8 +1438,13 @@ def test_client_watch_closes_owned_runtime_when_construction_fails(
         source: TautClient,
         *,
         persistent: bool = True,
+        member_id: str | None = None,
     ) -> Any:
-        runtime = real_factory(source, persistent=persistent)
+        runtime = real_factory(
+            source,
+            persistent=persistent,
+            member_id=member_id,
+        )
         real_close = runtime.close
 
         def track_real_close() -> None:
@@ -1455,10 +1460,8 @@ def test_client_watch_closes_owned_runtime_when_construction_fails(
     with pytest.raises(MembershipError, match="ghost"):
         client.watch(lambda _item: None, threads=["foo", "ghost"])
 
-    assert len(created) == 1
-    runtime = created[0]
-    assert close_calls == [runtime]
-    assert runtime._closed is True
+    assert created == []
+    assert close_calls == []
 
 
 def test_multi_queue_watcher_explicit_db_skips_broken_cwd_config(

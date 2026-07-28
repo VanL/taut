@@ -28,8 +28,9 @@ from taut_mcp._tools import TOOLS
 READ_GUIDANCE = [
     {
         "action": (
-            "Use log for non-consuming channel or sub-thread rereads. Direct "
-            "messages have no public log operation."
+            "Use log for non-consuming channel, sub-thread, or accessible "
+            "direct-message rereads. After an uncertain read, inspect list "
+            "before retrying."
         ),
         "code": "read_cursor_advanced",
         "message": (
@@ -232,6 +233,103 @@ def test_each_ordinary_tool_is_a_thin_public_client_proxy(
     assert result.record_type == RECORD_TYPE_BY_TOOL[tool]
     assert result.records == (record,)
     assert calls == [(method, positional, keywords)]
+
+
+def test_list_dms_is_a_thin_public_client_proxy() -> None:
+    record = object()
+    calls: list[str] = []
+
+    class PublicClientSpy:
+        def list_direct_messages(self) -> list[object]:
+            calls.append("list_direct_messages")
+            return [record]
+
+    result = execute_command(
+        cast(TautClient, PublicClientSpy()),
+        "list",
+        (("all", False), ("dms", True)),
+    )
+
+    assert result.record_type == "thread"
+    assert result.records == (record,)
+    assert calls == ["list_direct_messages"]
+
+
+def test_list_rejects_all_and_dms_before_public_client_dispatch() -> None:
+    class PublicClientSpy:
+        def __getattr__(self, name: str) -> object:
+            raise AssertionError(f"unexpected client dispatch: {name}")
+
+    with pytest.raises(ValueError, match="all and dms are mutually exclusive"):
+        execute_command(
+            cast(TautClient, PublicClientSpy()),
+            "list",
+            (("all", True), ("dms", True)),
+        )
+
+
+@pytest.mark.parametrize("tool_name", ["read", "log"])
+@pytest.mark.parametrize(
+    "selector",
+    [
+        "@Claude",
+        "dm.d_" + "a" * 26,
+        "general",
+        "general.1234567890123456789",
+    ],
+)
+def test_read_and_log_schemas_accept_chat_or_dm_selectors(
+    tool_name: str,
+    selector: str,
+) -> None:
+    tool = next(tool for tool in TOOLS if tool.name == tool_name)
+
+    validate(
+        instance={"workspace": "/workspace", "thread": selector},
+        schema=tool.inputSchema,
+    )
+
+
+@pytest.mark.parametrize("tool_name", ["read", "log"])
+@pytest.mark.parametrize(
+    "selector",
+    [
+        "@",
+        "@bad.name",
+        "dm.d_short",
+        "dm.d_" + "A" * 26,
+        "dm.d_" + "0" * 26,
+    ],
+)
+def test_read_and_log_schemas_reject_malformed_dm_selectors(
+    tool_name: str,
+    selector: str,
+) -> None:
+    tool = next(tool for tool in TOOLS if tool.name == tool_name)
+
+    with pytest.raises(ValidationError):
+        validate(
+            instance={"workspace": "/workspace", "thread": selector},
+            schema=tool.inputSchema,
+        )
+
+
+def test_list_schema_rejects_all_and_dms_together() -> None:
+    tool = next(tool for tool in TOOLS if tool.name == "list")
+
+    with pytest.raises(ValidationError):
+        validate(
+            instance={"workspace": "/workspace", "all": True, "dms": True},
+            schema=tool.inputSchema,
+        )
+
+    for arguments in (
+        {"workspace": "/workspace"},
+        {"workspace": "/workspace", "all": True},
+        {"workspace": "/workspace", "dms": True},
+        {"workspace": "/workspace", "all": False, "dms": False},
+    ):
+        validate(instance=arguments, schema=tool.inputSchema)
 
 
 def test_message_deletion_record_encoding_is_closed_and_content_free() -> None:
@@ -1044,6 +1142,120 @@ def test_cancel_after_child_start_discards_result_but_keeps_committed_state(
 
 @pytest.mark.sqlite_only
 @pytest.mark.timeout(15)
+@pytest.mark.parametrize("selector_mode", ["explicit", "bare"])
+def test_canceled_started_dm_read_recovers_directory_and_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    selector_mode: str,
+) -> None:
+    """[MCP-5]/[MCP-11] Recovery exposes state/history, not delivery proof."""
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    db = workspace / ".taut.db"
+    TautClient.init(db_path=db)
+    selected = TautClient(db_path=db, as_name="selected")
+    selected.join("general")
+    member = selected.last_created_member
+    assert member is not None and member.token is not None
+    selected_id = member.member_id
+    other = TautClient(db_path=db, as_name="other")
+    other.join("general")
+    sent = other.say("@selected", "uncertain DM page")
+    selected.close()
+    other.close()
+
+    committed = threading.Event()
+    release = threading.Event()
+    real_execute = workspace_reactor.execute_command
+
+    def commit_then_delay_result(
+        client: TautClient,
+        name: str,
+        arguments: Any,
+    ) -> Any:
+        result = real_execute(client, name, arguments)
+        if name == "read":
+            committed.set()
+            if not release.wait(timeout=5):
+                raise AssertionError("test did not release committed DM read")
+        return result
+
+    monkeypatch.setattr(
+        workspace_reactor,
+        "execute_command",
+        commit_then_delay_result,
+    )
+
+    async def scenario() -> None:
+        reactor = ConnectionReactor(asyncio.get_running_loop())
+        observer = TautClient(db_path=db)
+        try:
+            canonical = str(
+                (
+                    await reactor.attach_workspace(
+                        str(workspace),
+                        member.token or "",
+                    )
+                )["workspace"]
+            )
+            canceled = asyncio.create_task(
+                reactor.execute_tool(
+                    canonical,
+                    "read",
+                    {
+                        "thread": sent.thread if selector_mode == "explicit" else None,
+                        "limit": 100,
+                    },
+                )
+            )
+            assert await asyncio.to_thread(committed.wait, 5)
+            canceled.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await canceled
+
+            release.set()
+            await _wait_until(
+                lambda: reactor._entries[canonical].active_command_id is None
+            )
+            directory = await reactor.execute_tool(
+                canonical,
+                "list",
+                {"dms": True},
+            )
+            assert directory["records"][0]["thread"] == sent.thread
+            assert directory["records"][0]["unread"] is False
+
+            membership_before = observer._state.get_membership(
+                thread=sent.thread,
+                member_id=selected_id,
+            )
+            actor_before = observer._state.get_member(selected_id)
+            history = await reactor.execute_tool(
+                canonical,
+                "log",
+                {"thread": sent.thread, "since": None, "limit": 100},
+            )
+            assert history["records"][0]["text"] == "uncertain DM page"
+            assert history["guidance"] == []
+            assert (
+                observer._state.get_membership(
+                    thread=sent.thread,
+                    member_id=selected_id,
+                )
+                == membership_before
+            )
+            assert observer._state.get_member(selected_id) == actor_before
+        finally:
+            release.set()
+            observer.close()
+            await reactor.aclose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(15)
 @pytest.mark.parametrize(
     ("terminal", "expected_status", "expected_error"),
     [
@@ -1193,6 +1405,159 @@ def test_bare_read_forwards_per_thread_limit_and_includes_direct_messages(
                 "general one",
                 "general two",
             }
+        finally:
+            await reactor.aclose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(15)
+def test_explicit_dm_read_log_and_directory_use_public_core_contract(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    db = workspace / ".taut.db"
+    TautClient.init(db_path=db)
+    selected = TautClient(db_path=db, as_name="selected")
+    selected.join("general")
+    member = selected.last_created_member
+    assert member is not None and member.token is not None
+    selected_id = member.member_id
+    other = TautClient(db_path=db, as_name="other")
+    other.join("general")
+    sent = other.say("@selected", "private history")
+    selected.close()
+    other.close()
+
+    async def scenario() -> None:
+        reactor = ConnectionReactor(asyncio.get_running_loop())
+        observer = TautClient(db_path=db)
+        try:
+            canonical = str(
+                (
+                    await reactor.attach_workspace(
+                        str(workspace),
+                        member.token or "",
+                    )
+                )["workspace"]
+            )
+            before_log = observer._state.get_member(selected_id)
+            assert before_log is not None
+
+            history = await reactor.execute_tool(
+                canonical,
+                "log",
+                {"thread": "@other", "since": None, "limit": 100},
+            )
+            _assert_result(history, record_type="message", workspace=canonical)
+            assert history["records"][0]["thread"] == sent.thread
+            assert history["records"][0]["text"] == "private history"
+            assert observer._state.get_member(selected_id) == before_log
+
+            unread = await reactor.execute_tool(
+                canonical,
+                "read",
+                {"thread": sent.thread, "limit": 100},
+            )
+            _assert_result(
+                unread,
+                record_type="message",
+                workspace=canonical,
+                guidance=READ_GUIDANCE,
+            )
+            assert unread["records"][0]["thread"] == sent.thread
+
+            directory = await reactor.execute_tool(
+                canonical,
+                "list",
+                {"dms": True},
+            )
+            _assert_result(directory, record_type="thread", workspace=canonical)
+            assert directory["records"] == [
+                {
+                    "kind": "dm",
+                    "last_ts": sent.ts,
+                    "members": list(
+                        next(
+                            item
+                            for item in observer.list_threads(all_threads=True)
+                            if item.name == sent.thread
+                        ).members
+                    ),
+                    "parent": None,
+                    "thread": sent.thread,
+                    "unread": False,
+                }
+            ]
+        finally:
+            observer.close()
+            await reactor.aclose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(15)
+def test_well_formed_absent_and_inaccessible_dms_are_content_free_empty_results(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    db = workspace / ".taut.db"
+    TautClient.init(db_path=db)
+    selected = TautClient(db_path=db, as_name="selected")
+    selected.join("general")
+    member = selected.last_created_member
+    assert member is not None and member.token is not None
+    other = TautClient(db_path=db, as_name="other")
+    other.join("general")
+    outsider = TautClient(db_path=db, as_name="outsider")
+    outsider.join("general")
+    inaccessible = other.say("@outsider", "not selected").thread
+    selected.close()
+    other.close()
+    outsider.close()
+
+    async def scenario() -> None:
+        reactor = ConnectionReactor(asyncio.get_running_loop())
+        try:
+            canonical = str(
+                (
+                    await reactor.attach_workspace(
+                        str(workspace),
+                        member.token or "",
+                    )
+                )["workspace"]
+            )
+            for tool in ("read", "log"):
+                encoded_results: list[str] = []
+                for selector in ("@missing", inaccessible):
+                    result = await reactor.execute_tool(
+                        canonical,
+                        tool,
+                        {
+                            "thread": selector,
+                            "limit": 100,
+                            **({"since": None} if tool == "log" else {}),
+                        },
+                    )
+                    _assert_result(
+                        result,
+                        record_type="message",
+                        workspace=canonical,
+                    )
+                    assert result["records"] == []
+                    encoded_results.append(
+                        json.dumps(
+                            result,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        )
+                    )
+                assert encoded_results[0] == encoded_results[1]
         finally:
             await reactor.aclose()
 
@@ -1577,7 +1942,7 @@ def test_exact_tool_manifest_snapshot() -> None:
         separators=(",", ":"),
     ).encode()
     assert hashlib.sha256(encoded).hexdigest() == (
-        "f03f04d256e5b0c30ce7a0e6f51265c4d3319816eacdfa37c3e439f8b71a254b"
+        "b97ef61a1d4613b7369672bfcb175d2cf2a3edfaf95293b1614b60f03262e465"
     )
 
     def assert_property_descriptions(schema: dict[str, object]) -> None:

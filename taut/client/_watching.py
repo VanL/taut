@@ -11,7 +11,7 @@ from taut._constants import META_QUEUE_NAME
 from taut._watch_runtime import TautWatchRuntime, WatchedThread
 from taut.state import SqlSidecarTautState, dialect_for_taut_target
 
-from ._base import _ClientBase
+from ._base import _ClientBase, _direct_message_context_for_state
 from ._codec import message_from_body, notification_from_body
 from ._models import Message, Notification
 
@@ -25,6 +25,8 @@ class _OwnedWatchRuntime:
         config: Mapping[str, Any],
         *,
         persistent: bool,
+        member_id: str | None = None,
+        thread_display_names: dict[str, str] | None = None,
     ) -> None:
         self.target = target
         self.config = dict(config)
@@ -44,6 +46,8 @@ class _OwnedWatchRuntime:
             raise
         self._queue = queue
         self._closed = False
+        self._member_id = member_id
+        self._thread_display_names = thread_display_names
 
     def list_watched_threads(self, member_id: str) -> list[WatchedThread]:
         return [
@@ -52,6 +56,22 @@ class _OwnedWatchRuntime:
         ]
 
     def decode_message(self, thread: str, body: str, ts: int) -> Message:
+        if (
+            self._member_id is not None
+            and self._thread_display_names is not None
+            and thread.startswith("dm.")
+        ):
+            actor = self._state.get_member(self._member_id)
+            if actor is not None:
+                context = _direct_message_context_for_state(
+                    self._state,
+                    thread,
+                    actor,
+                )
+                if context is not None:
+                    self._thread_display_names[thread] = (
+                        f"DM with {context.other['display_name']}"
+                    )
         return message_from_body(thread, body, ts)
 
     def decode_notification(self, body: str, ts: int) -> Notification:
@@ -75,9 +95,12 @@ def _watch_runtime_for_client(
     client: _ClientBase,
     *,
     persistent: bool = True,
+    member_id: str | None = None,
 ) -> TautWatchRuntime:
     return _OwnedWatchRuntime(
         client.target,
         client.config,
         persistent=persistent,
+        member_id=member_id,
+        thread_display_names=client.last_thread_display_names,
     )

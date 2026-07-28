@@ -305,6 +305,12 @@ be a composition root that depends directly on `TautClient`, `TautWatcher`,
 and public extension controllers. It need not render argparse forms or reduce
 all capabilities to generic command manifests.
 
+For direct messages, the TUI obtains the actor-scoped directory from
+`TautClient.list_direct_messages()` and opens history or live views through
+the selector-aware `read`, `log`, and `watch` methods. It must not derive
+`dm.d_*` queue names, resolve member routes, or inspect private registry and
+membership state.
+
 For Summon, the TUI supplies a `SummonInteraction` that can report terminal
 availability and grant a scoped input/output fd lease. Summon still owns PTY
 bytes, the attach transition, driver state, and cleanup. The TUI must not read
@@ -418,6 +424,7 @@ own compatibility plan.
 
 ## Related Plan
 
+- `docs/plans/2026-07-28-direct-message-navigation-plan.md`
 - `docs/plans/2026-07-14-terminal-output-safety-plan.md`
   — shared packaged/project policy, renderer integration, extension guidance,
   and raw PTY exemption.

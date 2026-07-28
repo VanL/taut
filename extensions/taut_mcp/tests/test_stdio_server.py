@@ -24,7 +24,7 @@ EXTENSION_ROOT = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = EXTENSION_ROOT.parents[1]
 NOTIFICATIONS_URL = AnyUrl("taut://notifications/current")
 EXPECTED_INSTRUCTIONS_SHA256 = (
-    "8c0b3045c8dbe86e59357f73d18342fbdb157a7fcafed13fd2d6d9521a26a770"
+    "616a7c3389f0f8f0820e14876e197b2e87162fbe5af88cd086624a58150c5c7c"
 )
 
 EXPECTED_TOOLS = [
@@ -91,8 +91,9 @@ async def _inspect_empty_server(
         "session-only mechanism",
         "Never edit project files",
         "Do not timer-poll list, who, or whoami",
-        "read with an explicit channel or sub-thread",
-        "After an uncertain read, inspect list before retrying",
+        "read with one explicit selector",
+        "Use list with dms=true",
+        "A later log can recover history",
         "Use show_message only when the exact 19-digit id is known",
         "high-water cursor",
         "Preserve returned 19-digit integer ts values as decimal text",
@@ -795,7 +796,12 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                     assert invalid_read.content[0].text.startswith(
                         "Input validation error:"
                     )
-                for invalid_thread in ("dm.opaque", "@other"):
+                for invalid_thread in (
+                    "dm.opaque",
+                    "dm.d_" + "a" * 25,
+                    "@",
+                    "@two.parts",
+                ):
                     invalid_read = await session.call_tool(
                         "read",
                         {
@@ -894,6 +900,17 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                     {"target": "@other", "text": "stdio direct"},
                 )
                 assert direct["records"][0]["thread"].startswith("dm.")  # type: ignore[index]
+                dm_thread = direct["records"][0]["thread"]  # type: ignore[index]
+                dm_history = await call(
+                    "log",
+                    {"thread": "@other", "since": None, "limit": 100},
+                )
+                assert dm_history["records"] == direct["records"]
+                dm_directory = await call("list", {"dms": True})
+                assert [
+                    record["thread"]
+                    for record in dm_directory["records"]  # type: ignore[index]
+                ] == [dm_thread]
                 parent_ts = said["records"][0]["ts"]  # type: ignore[index]
                 await call(
                     "reply",
@@ -938,6 +955,12 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                 other.say("general", "unread after reaction")
                 unread = await call("read", {"thread": "general", "limit": 1})
                 assert unread["guidance"][0]["code"] == "read_cursor_advanced"  # type: ignore[index]
+                other.say("@renamed", "stdio dm unread")
+                dm_unread = await call(
+                    "read",
+                    {"thread": dm_thread, "limit": 1},
+                )
+                assert dm_unread["records"][0]["text"] == "stdio dm unread"  # type: ignore[index]
                 shown = await call(
                     "show_message",
                     {"msg_id": str(parent_ts)},
