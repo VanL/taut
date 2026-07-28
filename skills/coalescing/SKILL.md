@@ -8,11 +8,12 @@ units of work. (Adopted from agent-guidance @ 2f7eff6 via
 
 ## Purpose
 
-Run the compounding layer's maintenance pass: distill cold lesson entries
-into golden rules and runbook amendments, harvest and retire completed
-plans, promote recurring workflows to skills, and propose cross-repo
-fold-ups upward when a rule generalizes beyond this repository. Keeps the always-read documentation tier
-small and hot while git history holds everything raw.
+Run the compounding layer's maintenance pass: repair defects in the memory
+surfaces, distill cold lesson entries into golden rules and runbook
+amendments, harvest and retire completed plans, promote recurring workflows to
+skills, and propose cross-repo fold-ups upward when a rule generalizes beyond
+this repository. Keeps the always-read documentation tier small, accurate,
+and hot while git history holds everything raw.
 
 ## When To Use
 
@@ -48,6 +49,8 @@ small and hot while git history holds everything raw.
   harvest gate
 - `docs/agent-context/runbooks/maintaining-traceability.md` — retired-plan
   citation form
+- `bin/check-plan-status-index` — executable plan-index completeness and
+  vocabulary gate
 
 ## Blast Radius
 
@@ -56,6 +59,8 @@ small and hot while git history holds everything raw.
 - `docs/plans/*.md` (files deleted on retirement) and every spec
   `## Related Plans` section that backlinks a retired plan
 - `docs/plans/README.md` (status index, retired ledger)
+- `bin/check-plan-status-index` and `tests/test_plan_status_index.py`
+  (structured status-index contract)
 - `skills/` (new or updated skills on promotion)
 - The repository traceability gate: rerun backstitch (or the repo's
   equivalent) after any retirement — deleted paths must not leave dead
@@ -63,7 +68,46 @@ small and hot while git history holds everything raw.
 
 ## Workflow
 
-### 1. Derive the trigger counts (never trust a stored number)
+### 1. Inspect and repair the coalescing surfaces
+
+An authorized sweep is maintenance as well as compaction. Before trusting a
+trigger count, inspect the affected ledger, index, watermark, cue, ownership
+record, and executable gate.
+
+Repair the defect in the same wave when all three are true:
+
+1. it is inside the coalescing boundary (memory accuracy, derivability,
+   retrieval, traceability, promotion ownership, or the coalescing gates);
+2. the repair is reversible;
+3. current-tree or source-SHA evidence determines the correction.
+
+Merely logging a repairable in-boundary defect is not a completed sweep.
+Coalescing is not generic cleanup: product behavior, unrelated documentation,
+and speculative redesign stay out of scope.
+
+Defer instead when the repair is ambiguous, destructive, or needs new
+authority. Record the evidence gap, owner, and reconsideration condition.
+Deletion, watermark advancement, plan soft-retirement, and archival
+transitions retain their landing-authorization requirements.
+
+For the plan tier:
+
+```bash
+bin/check-plan-status-index
+```
+
+- Exit 0: derive the count from the structured table.
+- Exit 1: repair missing, duplicate, nonexistent-path, unknown-status,
+  unknown-exemplar, or malformed-table defects before counting.
+- Exit 2: treat the invocation/environment problem as a blocker; do not
+  rewrite status data to make the command pass.
+- Use `status-review` when evidence cannot distinguish active from completed.
+  It is a conservative quarantine and never counts as completed.
+
+Record every maintenance repair in the run log. A deferred defect is recorded
+as a blocker, not presented as maintenance accomplished.
+
+### 2. Derive the trigger counts (never trust a stored number)
 
 Read the watermarks in `docs/coalescing.md`, then compute. The state
 file owns the repo-local ledger format: when it declares a derivation
@@ -89,25 +133,24 @@ a date cursor falsely claims older unfolded material behind it was folded.
 
   Count the lines with dates after the watermark date.
 
-- Completed-unretired plans — derivation chain, in order:
-  1. rows in the `docs/plans/README.md` status index with status
-     `completed` or `superseded`, no `exemplar` marker, and no matching
-     line in the Retired Plans ledger;
-  2. if no status index exists, `Status:` headers inside the plan files;
-  3. if neither exists, the tier is **not derivable** — record
-     "plans tier blocked: no status source" in the run log and move on.
-     Never guess plan status from file age or filename.
+- Completed-unretired plans — after `bin/check-plan-status-index` passes,
+  count structured rows with status `completed` or `superseded`, exemplar
+  `no`, and no matching Retired Plans ledger line. The closed statuses are
+  `draft`, `active`, `status-review`, `completed`, `superseded`, and
+  `retired-pending`; exemplar is exactly `yes` or `no`. Never fall back to
+  free-form plan headers, file age, or filenames. A checker failure blocks the
+  count until repaired or explicitly deferred.
 
 - Skill candidates — recurring workflow themes across lesson entries and
   review dispositions. This count is an **attention signal, not a
-  mechanical gate**: theme identity is a judgment call (see step 4 for
+  mechanical gate**: theme identity is a judgment call (see step 5 for
   what counts as one theme). Use grep to gather candidates, judgment to
   cluster them.
 
 Compare each count to the declared threshold. If none is tripped and you
 were not explicitly asked to sweep, stop — record nothing.
 
-### 2. Lessons tier: distill, then retire
+### 3. Lessons tier: distill, then retire
 
 At sweep start, pin the source: `source_sha` is a commit that verifiably
 contains the raw material about to be folded — check with
@@ -170,7 +213,7 @@ For each tripped or requested fold:
    no rule potential may be folded to a one-line summary rather than a
    rule.
 
-### 3. Plans tier: harvest gate, then soft-retire
+### 4. Plans tier: harvest gate, then soft-retire
 
 For each completed or superseded plan:
 
@@ -197,7 +240,7 @@ For each completed or superseded plan:
 5. A plan that fails the gate stays in the tree at its current status;
    note the blocking item in the run log if the threshold keeps nagging.
 
-### 4. Promotion tier: runbooks and skills
+### 5. Promotion tier: runbooks and skills
 
 - A workflow theme with repeated citations across plans or sessions becomes
   a skill (`skills/<name>/SKILL.md`, template section order) per
@@ -219,7 +262,7 @@ For each completed or superseded plan:
 - Presence in the always-read context is NOT promotion evidence; only
   explicit citation in work products counts.
 
-### 5. Cross-repo fold-up (role-symmetric)
+### 6. Cross-repo fold-up (role-symmetric)
 
 Any repository's sweep may find a rule that generalizes: **propose it
 upward** to the guidance repo's ledger/principles with SHA-pinned
@@ -231,17 +274,24 @@ independent — two descendants of one inherited/bootstrapped rule are one
 lineage, not two data points. Sibling repos re-sync from the guidance
 repo's committed SHA — never from a working tree.
 
-### 6. Close the run
+### 7. Close the run
 
 1. Append one run-log line per tier touched to `docs/coalescing.md`:
    date, source SHA, and the claim ("folded 6 lesson entries → Golden Rule
    14; soft-retired 2 plans; deferred plans tier — deviation log open on
-   X"). The fold commit may be added as metadata once it exists.
+   X"). Record maintenance repairs in the same line. If a detected defect was
+   not repaired, name the ambiguity, destructive edge, or missing authority
+   plus its owner and reconsideration condition. The fold commit may be added
+   as metadata once it exists.
 2. If nothing was foldable, record the deferral with real state:
    `checked_through` (date + SHA), the derived counts, the reason ("all
    entries within age floor"), and a reconsideration condition ("recount
-   when 5 more entries land" / "when plan X closes"). This is what stops
-   an unchanged count from re-nagging every session.
+   when 5 more entries land" / "when plan X closes"). If the derivation
+   source has uncommitted changes, replace vague labels such as "plus current
+   wave" with a content hash for each source whose change can fire
+   reconsideration. A later agent must be able to prove whether that
+   condition fired without trusting the prior session's memory. This is what
+   stops an unchanged count from re-nagging every session.
 3. Advance watermarks only in the destructive phase (landing-authorized).
    An additive-only session leaves watermarks untouched and says so in
    its run-log line.
@@ -267,6 +317,10 @@ When the sweep is done, these exist and are verifiable:
 - every fold cue resolves: `git show <source_sha>:<path>` contains the
   folded material — verified, not assumed
 - traceability gate rerun from current state, result recorded
+- every affected coalescing metadata gate rerun from current state, including
+  `bin/check-plan-status-index` when the plan tier was inspected
+- each repairable in-boundary defect fixed, or an explicit evidence/authority
+  blocker recorded with owner and reconsideration condition
 - no raw material deleted without its distillation already in the tree
   (two-phase order visible in the diff or commit sequence)
 
@@ -281,5 +335,5 @@ When the sweep is done, these exist and are verifiable:
 - If the harvest gate keeps blocking on the same item class, the gap is
   upstream (plans closing with open deviation logs) — fix the completion
   gate usage, not the sweep.
-- When an executable `coalesce-check` script exists, replace step 1's
+- When an executable `coalesce-check` script exists, replace step 2's
   manual derivation with it and keep the commands here as the fallback.

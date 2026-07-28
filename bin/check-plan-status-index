@@ -1,0 +1,188 @@
+#!/usr/bin/env python3
+"""Validate the structured [DOM-14] plan status index.
+
+Exit codes: 0 clean, 1 contract violation, 2 invocation/internal error.
+The checker never prints a traceback.
+"""
+
+from __future__ import annotations
+
+import argparse
+import re
+import sys
+import tempfile
+from collections import Counter
+from pathlib import Path
+
+DEFAULT_INDEX = Path("docs/plans/README.md")
+DEFAULT_PLANS_DIR = Path("docs/plans")
+ALLOWED_STATUSES = frozenset(
+    {
+        "draft",
+        "active",
+        "status-review",
+        "completed",
+        "superseded",
+        "retired-pending",
+    }
+)
+ALLOWED_EXEMPLAR_VALUES = frozenset({"yes", "no"})
+PLAN_CELL_RE = re.compile(r"^`([A-Za-z0-9._-]+\.md)`$")
+EXPECTED_HEADER = ("Plan", "Status", "Exemplar", "Note")
+SEPARATOR_CELL_RE = re.compile(r"^:?-{3,}:?$")
+
+
+def _cells(line: str) -> list[str]:
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def parse_rows(text: str) -> tuple[list[tuple[str, str, str]], bool]:
+    """Return plan/status/exemplar rows and whether the table is well formed."""
+    lines = text.splitlines()
+    try:
+        section_start = lines.index("## Plan Status Index")
+    except ValueError:
+        return [], False
+
+    header_index = None
+    for index in range(section_start + 1, len(lines)):
+        line = lines[index]
+        if line.startswith("## "):
+            break
+        if line.startswith("|"):
+            header_index = index
+            break
+    if header_index is None or tuple(_cells(lines[header_index])) != EXPECTED_HEADER:
+        return [], False
+    if header_index + 1 >= len(lines):
+        return [], False
+    separator = _cells(lines[header_index + 1])
+    if len(separator) != 4 or any(
+        SEPARATOR_CELL_RE.fullmatch(cell) is None for cell in separator
+    ):
+        return [], False
+
+    rows: list[tuple[str, str, str]] = []
+    for line in lines[header_index + 2 :]:
+        if line.startswith("## "):
+            break
+        if not line.strip():
+            continue
+        if not line.startswith("|"):
+            return [], False
+        cells = _cells(line)
+        if len(cells) != 4:
+            return [], False
+        match = PLAN_CELL_RE.fullmatch(cells[0])
+        if match is None:
+            return [], False
+        rows.append((match.group(1), cells[1], cells[2]))
+    return rows, True
+
+
+def check(index_text: str, plans_dir: Path, index_path: Path) -> list[str]:
+    rows, well_formed = parse_rows(index_text)
+    if not well_formed:
+        return ["malformed or missing plan status table"]
+
+    problems: list[str] = []
+    names = [plan for plan, _status, _exemplar in rows]
+    counts = Counter(names)
+    for name in sorted(name for name, count in counts.items() if count > 1):
+        problems.append(f"duplicate index row: {name}")
+
+    for name, status, exemplar in rows:
+        if status not in ALLOWED_STATUSES:
+            problems.append(f"unknown status {status!r}: {name}")
+        if exemplar not in ALLOWED_EXEMPLAR_VALUES:
+            problems.append(f"unknown exemplar value {exemplar!r}: {name}")
+
+    plan_files = {
+        path.name
+        for path in plans_dir.glob("*.md")
+        if path.resolve() != index_path.resolve()
+    }
+    indexed = set(names)
+    for name in sorted(plan_files - indexed):
+        problems.append(f"missing index row: {name}")
+    for name in sorted(indexed - plan_files):
+        problems.append(f"index row has no plan file: {name}")
+    return problems
+
+
+def run(index: Path, plans_dir: Path) -> int:
+    try:
+        text = index.read_text(encoding="utf-8")
+    except OSError as exc:
+        print(f"check-plan-status-index: cannot read index {index}: {exc.strerror}")
+        return 2
+    if not plans_dir.is_dir():
+        print(f"check-plan-status-index: plans directory is missing: {plans_dir}")
+        return 2
+    problems = check(text, plans_dir, index)
+    if problems:
+        for problem in problems:
+            print(f"check-plan-status-index: {problem}")
+        return 1
+    print(f"check-plan-status-index: {index} plan status index OK")
+    return 0
+
+
+def self_test() -> int:
+    failures: list[str] = []
+    with tempfile.TemporaryDirectory() as raw:
+        plans_dir = Path(raw)
+        index = plans_dir / "README.md"
+        plan = plans_dir / "one-plan.md"
+        plan.write_text("# One\n", encoding="utf-8")
+
+        def render(status: str = "active", exemplar: str = "no") -> str:
+            return (
+                "# Plans\n\n## Plan Status Index\n\n"
+                "| Plan | Status | Exemplar | Note |\n"
+                "|------|--------|----------|------|\n"
+                f"| `one-plan.md` | {status} | {exemplar} | fixture |\n\n"
+                "## Retired Plans\n"
+            )
+
+        for status in sorted(ALLOWED_STATUSES):
+            if check(render(status=status), plans_dir, index):
+                failures.append(f"allowed status rejected: {status}")
+        for exemplar in sorted(ALLOWED_EXEMPLAR_VALUES):
+            if check(render(exemplar=exemplar), plans_dir, index):
+                failures.append(f"allowed exemplar value rejected: {exemplar}")
+        if not check(render(status="unknown"), plans_dir, index):
+            failures.append("unknown status was not rejected")
+        if not check(render(exemplar="maybe"), plans_dir, index):
+            failures.append("unknown exemplar value was not rejected")
+        if not check("# no table\n", plans_dir, index):
+            failures.append("malformed table was not rejected")
+        plan.unlink()
+        if not check(render(), plans_dir, index):
+            failures.append("nonexistent plan row was not rejected")
+
+    if failures:
+        for failure in failures:
+            print(f"check-plan-status-index self-test FAIL: {failure}")
+        return 1
+    print("check-plan-status-index self-test: all contract probes pass")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(add_help=True)
+    parser.add_argument("--index", type=Path, default=DEFAULT_INDEX)
+    parser.add_argument("--plans-dir", type=Path, default=DEFAULT_PLANS_DIR)
+    parser.add_argument("--self-test", action="store_true")
+    args = parser.parse_args(argv)
+    if args.self_test:
+        return self_test()
+    return run(args.index, args.plans_dir)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception as exc:
+        print(f"check-plan-status-index: internal error: {exc}")
+        sys.exit(2)

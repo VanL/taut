@@ -588,8 +588,24 @@ When the touched spec already contains nearby implementation notes such as
 ## Plan Lifecycle and Retirement
 
 Plans move through: `draft` → `active` → `completed` or `superseded` →
-`retired`. Status lives in the plan index (`docs/plans/README.md`), not in
-ceremony inside the plan file.
+`retired-pending` → retired ledger. Status lives in the structured plan index
+(`docs/plans/README.md`), not in ceremony inside the plan file.
+
+The closed index statuses are `draft`, `active`, `status-review`, `completed`,
+`superseded`, and `retired-pending`. The separate exemplar field is exactly
+`yes` or `no`. `status-review` is a conservative maintenance quarantine when
+current evidence cannot determine the lifecycle state; it is never a
+completion claim or retirement candidate. Every plan file appears exactly once
+in the index. Verify the contract with:
+
+```bash
+bin/check-plan-status-index
+```
+
+Missing, duplicate, nonexistent-path, unknown-status, unknown-exemplar, and
+malformed-table defects are coalescing maintenance: repair them in the same
+authorized sweep when current evidence determines the answer. Do not infer
+completion from age, filename, or free-form prose.
 
 - **Active plans have a mutability boundary**: task instructions and
   checklists stay current and mutable — stale instructions are worse than
@@ -627,10 +643,11 @@ ceremony inside the plan file.
   after a second agent or the user verifies the harvest gate. Never
   soft-retire and delete in the same change, and never create a
   retired/archived plans directory — git is the archive.
-- **Exemplar plans are exempt.** The status index may mark a plan
-  `exemplar` (bootstrap or operating-model foundation plans that serve as
-  onboarding examples). Exemplars are not retirement candidates until the
-  index note says their exemplar role has been superseded.
+- **Exemplar plans are exempt.** The status index marks the separate Exemplar
+  field `yes` for bootstrap or operating-model foundation plans that serve as
+  onboarding examples. Exemplars are not retirement candidates until the
+  index note says their exemplar role has been superseded and the field
+  changes to `no`.
 - Record the source SHA as a mainline commit that actually contains the
   plan's final state; with squash merges, the squashed mainline commit is
   the one to cite.

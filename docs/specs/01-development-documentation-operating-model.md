@@ -324,6 +324,32 @@ Requirements:
   maintenance task (user request, or agreed completion-boundary work).
   Silently ignoring a trip is the only invalid response; reporting costs
   one sentence
+- an authorized coalescing sweep is both memory compaction and bounded
+  maintenance. Before distillation or retirement, inspect the coalescing
+  surfaces for defects that make memory inaccurate, non-derivable,
+  unreachable, or unverifiable. Repair an observed defect in the same wave
+  when the repair is inside the declared coalescing boundary, reversible, and
+  supported by current-tree or source-SHA evidence. Merely logging such a
+  repairable defect is not a valid completed sweep
+- bounded maintenance is not general cleanup. It covers the lesson ledger,
+  plan status index and retirement ledger, fold cues and watermarks,
+  traceability needed to retrieve folded material, promotion ownership, and
+  the coalescing gates themselves. Product behavior, unrelated documentation,
+  and speculative redesign remain outside the sweep
+- ambiguous repairs, destructive actions, and changes that require new
+  authority are deferred explicitly with the evidence gap, owner, and
+  reconsideration condition. Existing landing authorization remains mandatory
+  for deletion, watermark advancement, plan soft-retirement, and other
+  destructive or archival transitions
+- enumerable coalescing metadata uses an executable gate. In this repository,
+  every plan file appears exactly once in a structured status index with an
+  allowed lifecycle status and explicit exemplar marker. The closed status
+  vocabulary is `draft`, `active`, `status-review`, `completed`, `superseded`,
+  and `retired-pending`; `status-review` is a conservative maintenance
+  quarantine, not a completion state. The exemplar field is exactly `yes` or
+  `no`. Missing rows, duplicate rows, nonexistent-path rows, unknown statuses,
+  unknown exemplar values, and malformed status tables fail the gate. A sweep
+  repairs gate failures before trusting the affected trigger count
 - coalescing is additive-first across commit boundaries: distillation
   drafts and retirement candidates may exist uncommitted; deleting raw
   material, advancing watermarks, and retiring plans require a
@@ -348,17 +374,24 @@ Requirements:
   physical deletion happens in a dedicated follow-up change after the
   gate is independently verified; plans marked `exemplar` in the status
   index are exempt until their exemplar role is superseded
-- run-log entries are claims: each fold line must be spot-checkable
-  against the diff of the fold commit
+- run-log entries are claims: each fold line must be spot-checkable against the
+  diff of the fold commit. Each run-log entry records both folds and maintenance
+  repairs. If a detected defect is deferred, the log names why it was unsafe or
+  unauthorized to repair rather than presenting diagnosis alone as maintenance
 
 Owner: whoever the sweep check nags — any agent that observes a tripped
-threshold at session start. Boundary: applies to lessons, plans, runbook
-and skill promotion, and (for the guidance repo) cross-repo fold-up; specs
-and implementation docs are living documents maintained per [DOM-6] and
-[DOM-7], not coalesced. Verification: the run log plus the repository's
-traceability gate. Required action: when a threshold is tripped, report
-the trip state; respond with a sweep or a checked-deferred line per the
-trigger rules above.
+threshold at session start. Boundary: lessons, plans, runbook and skill
+promotion, retrieval cues and watermarks, the gates that make those
+coalescing surfaces accurate and derivable, and (for the guidance repo)
+cross-repo fold-up; product behavior and unrelated cleanup remain outside the
+sweep, while specs and implementation docs are living documents maintained
+per [DOM-6] and [DOM-7], not coalesced. Verification: the run log, the
+repository traceability gate, and every executable coalescing metadata gate
+(in this repository, `bin/check-plan-status-index`). Required action: report a
+session-start trip; inside an authorized sweep, repair reversible,
+evidence-backed in-boundary defects before folding, and explicitly defer only
+ambiguous, destructive, or unauthorized repairs with their owner and
+reconsideration condition.
 
 ## 15. Task Classification [DOM-15]
 
@@ -498,3 +531,5 @@ touch the operating model.
 - `docs/plans/2026-07-14-routine-release-classification-plan.md`: added the
   narrow Class 2 exception for explicitly requested execution of unchanged
   normal release machinery.
+- `docs/plans/2026-07-28-coalescing-wave-plan.md`: added bounded maintenance
+  before distillation and retirement, plus the structured plan-status gate.
