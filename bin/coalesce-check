@@ -55,7 +55,7 @@ WATERMARK_RE = re.compile(r"^\|\s*Lessons\s*\|\s*(20[0-9]{2}-[0-9]{2}-[0-9]{2})\
 
 # Sibling repositories whose history can satisfy a cue. taut's run log pins
 # agent-guidance SHAs, which resolve nowhere else; "taut" is self.
-SIBLINGS = ["agent-guidance", "mm", "weft", "backstitch", "engram", "simplebroker"]
+SIBLINGS = ["agent-theory", "mm", "weft", "backstitch", "engram", "simplebroker"]
 SIBLING_ROOT = REPO_ROOT.parent
 
 
