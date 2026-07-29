@@ -1,4 +1,4 @@
-"""Master-thread reactor over child workspace reactors for [MCP-8]."""
+"""Process reactor over child workspace reactors for [MCP-8]."""
 
 from __future__ import annotations
 
@@ -9,9 +9,9 @@ import json
 import os
 import queue
 import threading
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from taut import Notification
 
@@ -41,9 +41,6 @@ from ._workspace_reactor import (
 )
 
 WORKSPACE_BUSY = "workspace busy; retry after backoff"
-WORKSPACE_NOT_ATTACHED = (
-    "workspace not attached; use list_workspaces and the exact canonical identifier"
-)
 WORKSPACE_IDENTITY_LOST = "workspace identity lost; detach and reattach"
 WORKSPACE_REACTOR_FAILED = "workspace reactor failed; detach and reattach"
 WORKSPACE_LIMIT = (
@@ -130,13 +127,13 @@ class _Entry:
     detach_deadline: asyncio.TimerHandle | None = None
     active_command_id: int | None = None
     command_future: asyncio.Future[_CommandCompletion] | None = None
+    attach_timed_out: bool = False
 
 
 @dataclass(frozen=True, slots=True)
 class _CommandCompletion:
     payload: dict[str, Any] | None = None
     error: str | None = None
-    canceled: bool = False
 
 
 def canonical_json(value: object) -> str:
@@ -146,6 +143,14 @@ def canonical_json(value: object) -> str:
         sort_keys=True,
         separators=(",", ":"),
     )
+
+
+def _is_strict_utf8(value: str) -> bool:
+    try:
+        value.encode("utf-8", errors="strict")
+    except UnicodeEncodeError:
+        return False
+    return True
 
 
 def _workspace_record(entry: _Entry, *, status: str | None = None) -> dict[str, Any]:
@@ -255,8 +260,8 @@ def _notification_record(notification: Notification) -> dict[str, Any]:
     return record
 
 
-class ConnectionReactor:
-    """Connection-local master reactor; all methods run on its asyncio loop."""
+class ProcessReactor:
+    """Process-local master reactor; all methods run on its asyncio loop."""
 
     def __init__(
         self,
@@ -266,7 +271,7 @@ class ConnectionReactor:
         diagnostic: Callable[[str], None] | None = None,
     ) -> None:
         if loop is not asyncio.get_running_loop():
-            raise RuntimeError("connection reactor requires the running MCP loop")
+            raise RuntimeError("process reactor requires the running MCP loop")
         self._loop = loop
         self._bucket_clock = loop.time if bucket_clock is None else bucket_clock
         self._diagnostic = (
@@ -282,6 +287,8 @@ class ConnectionReactor:
         self._closing = False
         self._subscribed = False
         self._resource_sender: Callable[[], Awaitable[None]] | None = None
+        self._modern_resource_sender: Callable[[], Awaitable[None]] | None = None
+        self._resource_tasks: set[asyncio.Future[None]] = set()
         self._claude_sender: Callable[[], Awaitable[None]] | None = None
         self._claude_warning: Callable[[str], None] | None = None
         self._claude_tasks: set[asyncio.Future[None]] = set()
@@ -322,7 +329,7 @@ class ConnectionReactor:
             # live connection the maintenance callback is the backstop.
             pass
 
-    def _new_owner(self, generation: int, locator: str, token: str) -> _Owner:
+    def _new_owner(self, generation: int) -> _Owner:
         inbound: queue.Queue[WorkspaceControl] = queue.Queue(maxsize=0)
         wake = threading.Event()
         thread = threading.Thread(
@@ -331,9 +338,19 @@ class ConnectionReactor:
             name=f"taut-mcp-workspace-{generation}",
             daemon=False,
         )
-        owner = _Owner(inbound, wake, thread)
-        owner.send(Bootstrap(generation, locator, token))
-        return owner
+        return _Owner(inbound, wake, thread)
+
+    @staticmethod
+    def _clear_unstarted_owner(owner: _Owner) -> None:
+        """Clear sensitive bootstrap controls after setup/start rollback."""
+
+        while True:
+            try:
+                control = owner.inbound.get_nowait()
+            except queue.Empty:
+                return
+            if isinstance(control, Bootstrap):
+                control.token = ""
 
     @staticmethod
     def _fingerprint(token: str) -> bytes:
@@ -358,72 +375,108 @@ class ConnectionReactor:
         return None
 
     def _entry_error(self, entry: _Entry) -> str:
+        if entry.attach_timed_out:
+            return WORKSPACE_ATTACH_TIMEOUT
         if entry.status == "identity_lost":
             return WORKSPACE_IDENTITY_LOST
         if entry.status == "reactor_failed":
             return WORKSPACE_REACTOR_FAILED
         return WORKSPACE_BUSY
 
-    async def attach_workspace(self, workspace: str, token: str) -> dict[str, Any]:
-        if self._closing:
-            raise WorkspaceToolError(ATTACHMENT_FAILED)
-        try:
-            workspace.encode("utf-8", errors="strict")
-        except UnicodeEncodeError as exc:
-            raise WorkspaceToolError(WORKSPACE_PATH_UTF8) from exc
-        try:
-            token.encode("utf-8", errors="strict")
-        except UnicodeEncodeError as exc:
-            raise WorkspaceToolError(WORKSPACE_TOKEN_UTF8) from exc
-        if not os.path.isabs(workspace):
-            raise WorkspaceToolError(WORKSPACE_ABSOLUTE)
-        fingerprint = self._fingerprint(token)
+    def attach_workspace(
+        self,
+        workspace: str,
+        token: str,
+    ) -> Coroutine[Any, Any, dict[str, Any]]:
+        """Eagerly ensure one workspace and return its published record."""
 
-        entry = self._entries.get(workspace)
-        if entry is not None:
-            if entry.status != "ready":
-                raise WorkspaceToolError(self._entry_error(entry))
-            if entry.fingerprint is None:
-                raise AssertionError("ready workspace requires a token fingerprint")
-            if hmac.compare_digest(entry.fingerprint, fingerprint):
-                return workspace_result(
-                    [_workspace_record(entry)],
-                    workspace=entry.canonical_workspace,
+        return self.ensure_workspace(workspace, token)
+
+    async def ensure_workspace(self, workspace: str, token: str) -> dict[str, Any]:
+        """Resolve, validate, and retain one workspace owner if it is missing."""
+
+        fingerprint = b""
+        try:
+            if self._closing:
+                raise WorkspaceToolError(ATTACHMENT_FAILED)
+            self._reap_dead_owners()
+            if not _is_strict_utf8(workspace):
+                raise WorkspaceToolError(WORKSPACE_PATH_UTF8)
+            if not _is_strict_utf8(token):
+                raise WorkspaceToolError(WORKSPACE_TOKEN_UTF8)
+            if not os.path.isabs(workspace):
+                raise WorkspaceToolError(WORKSPACE_ABSOLUTE)
+            fingerprint = self._fingerprint(token)
+
+            entry = self._entries.get(workspace)
+            if entry is not None:
+                if entry.status != "ready":
+                    raise WorkspaceToolError(self._entry_error(entry))
+                if entry.fingerprint is None:
+                    raise AssertionError("ready workspace requires a token fingerprint")
+                if hmac.compare_digest(entry.fingerprint, fingerprint):
+                    return workspace_result(
+                        [_workspace_record(entry)],
+                        workspace=entry.canonical_workspace,
+                    )
+                raise WorkspaceToolError(WORKSPACE_CONFLICT)
+            if self._find_candidate_by_path(workspace) is not None:
+                raise WorkspaceToolError(WORKSPACE_BUSY)
+            if len(self._entries) + len(self._candidates) >= MAX_WORKSPACES:
+                raise WorkspaceToolError(WORKSPACE_LIMIT)
+
+            generation = self._next_generation
+            self._next_generation += 1
+            future: asyncio.Future[dict[str, Any]] = self._loop.create_future()
+            owner: _Owner | None = None
+            bootstrap: Bootstrap | None = None
+            candidate: _Candidate | None = None
+            try:
+                owner = self._new_owner(generation)
+                bootstrap = Bootstrap(generation, workspace, token)
+                candidate = _Candidate(
+                    generation,
+                    workspace,
+                    fingerprint,
+                    owner,
+                    future,
                 )
-            raise WorkspaceToolError(WORKSPACE_CONFLICT)
-        if self._find_candidate_by_path(workspace) is not None:
-            raise WorkspaceToolError(WORKSPACE_BUSY)
-        if len(self._entries) + len(self._candidates) >= MAX_WORKSPACES:
-            raise WorkspaceToolError(WORKSPACE_LIMIT)
-
-        generation = self._next_generation
-        self._next_generation += 1
-        future: asyncio.Future[dict[str, Any]] = self._loop.create_future()
-        owner = self._new_owner(generation, workspace, token)
-        candidate = _Candidate(
-            generation,
-            workspace,
-            fingerprint,
-            owner,
-            future,
-        )
-        self._candidates[generation] = candidate
-        try:
-            owner.thread.start()
-        except Exception as exc:
-            candidate.fingerprint = None
-            self._candidates.pop(generation, None)
-            raise WorkspaceToolError(ATTACHMENT_FAILED) from exc
-        token = ""
-        candidate.deadline = self._loop.call_later(
-            PHASE_TIMEOUT_SECONDS,
-            self._candidate_timeout,
-            generation,
-            "resolution",
-        )
-        # Once Thread.start succeeds, cancellation drops only this transport
-        # waiter. The child lifecycle and master-owned future keep running.
-        return await asyncio.shield(future)
+                fingerprint = b""
+                self._candidates[generation] = candidate
+                owner.send(bootstrap)
+                owner.thread.start()
+            except Exception:
+                token = ""
+                fingerprint = b""
+                if bootstrap is not None:
+                    bootstrap.token = ""
+                if owner is not None:
+                    self._clear_unstarted_owner(owner)
+                if candidate is not None:
+                    candidate.fingerprint = None
+                    self._candidates.pop(generation, None)
+                future.cancel()
+                bootstrap = None
+                candidate = None
+                owner = None
+                raise WorkspaceToolError(ATTACHMENT_FAILED) from None
+            token = ""
+            fingerprint = b""
+            bootstrap = None
+            if candidate is None:
+                raise AssertionError("started owner requires a hidden candidate")
+            candidate.deadline = self._loop.call_later(
+                PHASE_TIMEOUT_SECONDS,
+                self._candidate_timeout,
+                generation,
+                "resolution",
+            )
+            # Once Thread.start succeeds, cancellation drops only this transport
+            # waiter. The child lifecycle and master-owned future keep running.
+            return await asyncio.shield(future)
+        finally:
+            token = ""
+            fingerprint = b""
 
     async def detach_workspace(self, workspace: str) -> dict[str, Any]:
         self._reap_dead_owners()
@@ -465,6 +518,7 @@ class ConnectionReactor:
     async def execute_tool(
         self,
         workspace: str,
+        token: str,
         name: str,
         arguments: dict[str, object],
     ) -> dict[str, Any]:
@@ -472,22 +526,40 @@ class ConnectionReactor:
 
         if name not in RECORD_TYPE_BY_TOOL:
             raise AssertionError(f"unregistered ordinary tool: {name}")
-        self._reap_dead_owners()
-        entry = self._entries.get(workspace)
+        ensure = self.ensure_workspace(workspace, token)
+        token = ""
+        ensured = await ensure
+        canonical_workspace = ensured.get("workspace")
+        if not isinstance(canonical_workspace, str):
+            raise AssertionError("successful ensure requires canonical workspace")
+        return await self._execute_ready_tool(
+            canonical_workspace,
+            name,
+            arguments,
+        )
+
+    async def _execute_ready_tool(
+        self,
+        canonical_workspace: str,
+        name: str,
+        arguments: dict[str, object],
+    ) -> dict[str, Any]:
+        """Admit one command against an already ensured canonical workspace."""
+
+        # No suspension occurs before this admission/send sequence. It is the
+        # master-loop linearization point for cancellation versus command
+        # creation after ensure.
+        entry = self._entries.get(canonical_workspace)
         if entry is None:
-            raise WorkspaceToolError(WORKSPACE_NOT_ATTACHED)
+            raise AssertionError("successful ensure requires a published entry")
         if entry.status != "ready":
             raise WorkspaceToolError(self._entry_error(entry))
         if entry.active_command_id is not None:
             raise WorkspaceToolError(WORKSPACE_BUSY)
 
-        frozen: list[tuple[str, CommandScalar]] = []
-        for key, value in arguments.items():
-            if not isinstance(key, str) or not (
-                value is None or isinstance(value, (str, int, bool))
-            ):
-                raise WorkspaceToolError("invalid tool arguments")
-            frozen.append((key, value))
+        frozen = tuple(
+            (key, cast(CommandScalar, value)) for key, value in arguments.items()
+        )
 
         command_id = self._next_command_id
         self._next_command_id += 1
@@ -499,13 +571,13 @@ class ConnectionReactor:
                 entry.generation,
                 command_id,
                 name,
-                tuple(frozen),
+                frozen,
             )
         )
         try:
             completion = await asyncio.shield(future)
         except asyncio.CancelledError:
-            current = self._entries.get(workspace)
+            current = self._entries.get(canonical_workspace)
             if (
                 current is entry
                 and entry.active_command_id == command_id
@@ -515,8 +587,6 @@ class ConnectionReactor:
             raise
         if completion.error is not None:
             raise WorkspaceToolError(completion.error)
-        if completion.canceled:
-            raise asyncio.CancelledError
         if completion.payload is None:
             raise AssertionError("successful command requires a payload")
         return completion.payload
@@ -551,6 +621,16 @@ class ConnectionReactor:
         self._subscribed = False
         self._resource_sender = None
 
+    def configure_modern_resource_sender(
+        self,
+        sender: Callable[[], Awaitable[None]],
+    ) -> None:
+        """Install the process-wide modern subscription-bus publisher."""
+
+        if self._closing or self._modern_resource_sender is not None:
+            return
+        self._modern_resource_sender = sender
+
     def configure_claude_channel(
         self,
         sender: Callable[[], Awaitable[None]],
@@ -570,7 +650,19 @@ class ConnectionReactor:
             return
         self.last_signalled_text = self.current_text
         future = asyncio.ensure_future(self._resource_sender(), loop=self._loop)
-        future.add_done_callback(self._ignore_sender_result)
+        self._resource_tasks.add(future)
+        future.add_done_callback(self._finish_resource_attempt)
+
+    def _signal_modern_change(self) -> None:
+        if self._closing or self._modern_resource_sender is None:
+            return
+        try:
+            awaitable = self._modern_resource_sender()
+        except Exception:
+            return
+        future = asyncio.ensure_future(awaitable, loop=self._loop)
+        self._resource_tasks.add(future)
+        future.add_done_callback(self._finish_resource_attempt)
 
     def _signal_claude_change(self) -> None:
         if (
@@ -600,8 +692,8 @@ class ConnectionReactor:
             if not self._closing and self._claude_warning is not None:
                 self._claude_warning(CLAUDE_CHANNEL_FAILURE)
 
-    @staticmethod
-    def _ignore_sender_result(future: asyncio.Future[None]) -> None:
+    def _finish_resource_attempt(self, future: asyncio.Future[None]) -> None:
+        self._resource_tasks.discard(future)
         try:
             future.result()
         except (asyncio.CancelledError, Exception):
@@ -630,6 +722,7 @@ class ConnectionReactor:
             return
         self.current_text = updated
         self._signal_resource_change()
+        self._signal_modern_change()
         self._signal_claude_change()
 
     def _candidate_timeout(self, generation: int, expected_phase: str) -> None:
@@ -671,6 +764,7 @@ class ConnectionReactor:
                 None,
                 candidate.owner,
                 status="reactor_failed",
+                attach_timed_out=True,
             )
             self._entries[entry.canonical_workspace] = entry
             self._candidates.pop(generation, None)
@@ -893,7 +987,7 @@ class ConnectionReactor:
         if future is None or future.done():
             return
         if event.canceled:
-            future.set_result(_CommandCompletion(canceled=True))
+            future.cancel()
             return
         payload = command_result(
             name=event.name,
@@ -995,6 +1089,9 @@ class ConnectionReactor:
             return
         self._closing = True
         self._maintenance.cancel()
+        resource_tasks = list(self._resource_tasks)
+        for task in resource_tasks:
+            task.cancel()
         claude_tasks = list(self._claude_tasks)
         for task in claude_tasks:
             task.cancel()
@@ -1037,8 +1134,9 @@ class ConnectionReactor:
                     os._exit(1)
             await asyncio.sleep(0.01)
         self._drain_events()
-        if claude_tasks:
-            await asyncio.gather(*claude_tasks, return_exceptions=True)
+        pending_tasks = resource_tasks + claude_tasks
+        if pending_tasks:
+            await asyncio.gather(*pending_tasks, return_exceptions=True)
         self._candidates.clear()
         self._entries.clear()
         self.current_text = '{"workspaces":[]}'

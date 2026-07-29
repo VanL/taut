@@ -21,7 +21,7 @@ Scanning rules:
 - Maintained markdown sources include root/extension READMEs, root agent
   aliases, current agent context and runbooks, skills, specs, and
   implementation docs. Python citation sources include Taut, tests, and
-  extensions.
+  extension source trees; generated ``.venv`` dependency trees are excluded.
 - ``docs/plans/`` files are never scanned as sources (immutable historical
   records), but a plan path referenced *from* a scanned source must exist.
 - Fenced code blocks (``` ... ```) are skipped entirely in markdown
@@ -114,7 +114,11 @@ def _python_sources() -> list[Path]:
     )
     # This file contains deliberate invalid-citation fixtures that test the
     # scanner. They are executable examples, not repository contract claims.
-    return [source for source in sources if source != Path(__file__)]
+    return [
+        source
+        for source in sources
+        if source != Path(__file__) and ".venv" not in source.parts
+    ]
 
 
 def _prose_lines(path: Path) -> Iterator[tuple[int, str]]:

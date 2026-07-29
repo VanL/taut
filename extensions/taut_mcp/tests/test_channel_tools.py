@@ -51,10 +51,10 @@ def test_channel_tool_annotations(
 ) -> None:
     annotations = _tool(tool_name).annotations
     assert annotations is not None
-    assert annotations.readOnlyHint is read_only
-    assert annotations.destructiveHint is destructive
-    assert annotations.idempotentHint is idempotent
-    assert annotations.openWorldHint is open_world
+    assert annotations.read_only_hint is read_only
+    assert annotations.destructive_hint is destructive
+    assert annotations.idempotent_hint is idempotent
+    assert annotations.open_world_hint is open_world
 
 
 @pytest.mark.parametrize(
@@ -62,11 +62,12 @@ def test_channel_tool_annotations(
     ["x" * 501, "a\nb", "a\rb", "trailing\n", "trailing\r"],
 )
 def test_channel_topic_schema_routes_only_in_shape_topics(topic: str) -> None:
-    schema = _tool("channel_topic").inputSchema
+    schema = _tool("channel_topic").input_schema
     with pytest.raises(ValidationError):
         validate(
             instance={
                 "workspace": "/workspace",
+                "token": "secret",
                 "channel": "general",
                 "topic": topic,
             },
@@ -77,11 +78,12 @@ def test_channel_topic_schema_routes_only_in_shape_topics(topic: str) -> None:
 @pytest.mark.parametrize(
     "instance",
     [
-        {"channel": "general", "topic": "topic"},
-        {"workspace": "/workspace", "topic": "topic"},
-        {"workspace": "/workspace", "channel": "general"},
+        {"token": "secret", "channel": "general", "topic": "topic"},
+        {"workspace": "/workspace", "token": "secret", "topic": "topic"},
+        {"workspace": "/workspace", "token": "secret", "channel": "general"},
         {
             "workspace": "/workspace",
+            "token": "secret",
             "channel": "general",
             "topic": "topic",
             "extra": True,
@@ -92,22 +94,27 @@ def test_channel_topic_schema_rejects_missing_and_additional_fields(
     instance: dict[str, object],
 ) -> None:
     with pytest.raises(ValidationError):
-        validate(instance=instance, schema=_tool("channel_topic").inputSchema)
+        validate(instance=instance, schema=_tool("channel_topic").input_schema)
 
 
 @pytest.mark.parametrize(
     "instance",
     [
-        {"channel": "general"},
-        {"workspace": "/workspace"},
-        {"workspace": "/workspace", "channel": "general", "extra": True},
+        {"token": "secret", "channel": "general"},
+        {"workspace": "/workspace", "token": "secret"},
+        {
+            "workspace": "/workspace",
+            "token": "secret",
+            "channel": "general",
+            "extra": True,
+        },
     ],
 )
 def test_channel_show_schema_rejects_missing_and_additional_fields(
     instance: dict[str, object],
 ) -> None:
     with pytest.raises(ValidationError):
-        validate(instance=instance, schema=_tool("channel_show").inputSchema)
+        validate(instance=instance, schema=_tool("channel_show").input_schema)
 
 
 @pytest.mark.parametrize("topic", [None, "", "\u200b", "topic", " spaced ", "x" * 500])
@@ -117,10 +124,11 @@ def test_channel_topic_schema_accepts_clear_and_exact_one_line_text(
     validate(
         instance={
             "workspace": "/workspace",
+            "token": "secret",
             "channel": "general",
             "topic": topic,
         },
-        schema=_tool("channel_topic").inputSchema,
+        schema=_tool("channel_topic").input_schema,
     )
 
 
@@ -172,7 +180,7 @@ def test_missing_channel_is_an_empty_channel_result(tool_name: str) -> None:
 
 
 def test_thread_output_schema_is_closed_and_kind_discriminated() -> None:
-    schema = _tool("list").outputSchema
+    schema = _tool("list").output_schema
     assert schema is not None
 
     base = {

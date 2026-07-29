@@ -55,7 +55,8 @@ def test_package_versions_and_derived_metadata_match_their_owners() -> None:
     assert _version_tuple(simplebroker_pg_floor) >= (3, 2, 1)
     assert _dependency_floor(summon, "taut") == root_version
     assert _dependency_floor(mcp, "taut") == root_version
-    assert "mcp>=1.28.1,<2" in mcp["dependencies"]  # type: ignore[operator]
+    assert "mcp>=2.0.0,<3" in mcp["dependencies"]  # type: ignore[operator]
+    assert "jsonschema>=4.20,<5" in mcp["dependencies"]  # type: ignore[operator]
 
     optional = root["optional-dependencies"]
     assert isinstance(optional, dict)
@@ -107,14 +108,18 @@ def test_package_versions_and_derived_metadata_match_their_owners() -> None:
     assert locked_by_name["taut"].get("version") == root_version
     assert locked_by_name["taut-pg"].get("version") == pg_version
     assert locked_by_name["taut-mcp"].get("version") == mcp_version
-    assert locked_by_name["mcp"].get("version") == "1.28.1"
+    assert locked_by_name["mcp"].get("version") == "2.0.0"
     mcp_metadata = locked_by_name["taut-mcp"].get("metadata")
     assert isinstance(mcp_metadata, dict)
     requirements = mcp_metadata.get("requires-dist")
     assert isinstance(requirements, list)
     assert {
         "name": "mcp",
-        "specifier": ">=1.28.1,<2",
+        "specifier": ">=2.0.0,<3",
+    } in requirements
+    assert {
+        "name": "jsonschema",
+        "specifier": ">=4.20,<5",
     } in requirements
 
 

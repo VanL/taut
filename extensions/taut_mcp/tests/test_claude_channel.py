@@ -5,13 +5,12 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import anyio
 import pytest
 from mcp import types
 from mcp.client.stdio import StdioServerParameters, stdio_client
-from mcp.server.models import InitializationOptions
 from mcp.server.session import ServerSession
 from mcp.shared.message import SessionMessage
 
@@ -20,7 +19,7 @@ from taut_mcp._claude_channel import (
     CLAUDE_CHANNEL_CUE,
     send_claude_channel,
 )
-from taut_mcp._connection_reactor import ConnectionReactor
+from taut_mcp._process_reactor import ProcessReactor
 from taut_mcp.server import create_server
 
 EXTENSION_ROOT = Path(__file__).resolve().parents[1]
@@ -64,40 +63,25 @@ def test_claude_channel_wire_notification_contains_only_the_fixed_cue() -> None:
     """[MCP-9] No database-derived data enters the custom wake notification."""
 
     async def scenario() -> None:
-        incoming_send, incoming_receive = anyio.create_memory_object_stream[
-            SessionMessage | Exception
-        ](1)
-        outgoing_send, outgoing_receive = anyio.create_memory_object_stream[
-            SessionMessage
-        ](1)
-        options = InitializationOptions(
-            server_name="test",
-            server_version="0",
-            capabilities=types.ServerCapabilities(),
-        )
-        session = ServerSession(
-            incoming_receive,
-            outgoing_send,
-            options,
-            stateless=True,
-        )
-        try:
-            await send_claude_channel(session)
-            sent = await outgoing_receive.receive()
-            assert sent.message.model_dump(
-                mode="json",
-                by_alias=True,
-                exclude_none=True,
-            ) == {
-                "jsonrpc": "2.0",
-                "method": "notifications/claude/channel",
-                "params": {"content": CLAUDE_CHANNEL_CUE},
-            }
-        finally:
-            await incoming_send.aclose()
-            await incoming_receive.aclose()
-            await outgoing_send.aclose()
-            await outgoing_receive.aclose()
+        sent: list[types.ServerNotification] = []
+
+        class SessionSpy:
+            async def send_notification(
+                self,
+                notification: types.ServerNotification,
+            ) -> None:
+                sent.append(notification)
+
+        await send_claude_channel(cast(ServerSession, SessionSpy()))
+        assert len(sent) == 1
+        assert sent[0].model_dump(
+            mode="json",
+            by_alias=True,
+            exclude_none=True,
+        ) == {
+            "method": "notifications/claude/channel",
+            "params": {"content": CLAUDE_CHANNEL_CUE},
+        }
 
     asyncio.run(scenario())
 
@@ -115,7 +99,7 @@ def test_opt_in_stdio_server_advertises_and_emits_claude_channel(
         stream: Any,
         message: types.JSONRPCRequest | types.JSONRPCNotification,
     ) -> None:
-        await stream.send(SessionMessage(types.JSONRPCMessage(message)))
+        await stream.send(SessionMessage(message))
 
     async def scenario() -> None:
         parameters = StdioServerParameters(
@@ -140,7 +124,7 @@ def test_opt_in_stdio_server_advertises_and_emits_claude_channel(
             )
             initialized = await read_stream.receive()
             assert isinstance(initialized, SessionMessage)
-            initial_message = initialized.message.root
+            initial_message = initialized.message
             assert isinstance(initial_message, types.JSONRPCResponse)
             assert initial_message.id == 1
             assert initial_message.result["capabilities"]["experimental"] == {
@@ -174,7 +158,7 @@ def test_opt_in_stdio_server_advertises_and_emits_claude_channel(
                 while attach_response is None or channel_notice is None:
                     received = await read_stream.receive()
                     assert isinstance(received, SessionMessage)
-                    message = received.message.root
+                    message = received.message
                     if isinstance(message, types.JSONRPCResponse) and message.id == 2:
                         attach_response = message
                     elif (
@@ -204,7 +188,7 @@ def test_claude_attempt_tracker_is_independent_and_fail_open(
         warnings: list[str] = []
         attempts: list[str] = []
         standard_updates: list[str] = []
-        reactor = ConnectionReactor(asyncio.get_running_loop())
+        reactor = ProcessReactor(asyncio.get_running_loop())
 
         async def failed_send() -> None:
             attempts.append(reactor.current_text)

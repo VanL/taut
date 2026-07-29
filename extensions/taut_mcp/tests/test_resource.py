@@ -11,7 +11,7 @@ import pytest
 import taut.identity as identity
 import taut_mcp._workspace_reactor as workspace_reactor
 from taut import TautClient, addressing
-from taut_mcp._connection_reactor import ConnectionReactor
+from taut_mcp._process_reactor import ProcessReactor
 
 
 def _workspace(
@@ -64,8 +64,8 @@ def test_reaction_appears_in_recipient_resource_and_inbox_consumes_it(
     source = actor.say("general", "react to this")
 
     async def scenario() -> None:
-        recipient_reactor = ConnectionReactor(asyncio.get_running_loop())
-        actor_reactor = ConnectionReactor(asyncio.get_running_loop())
+        recipient_reactor = ProcessReactor(asyncio.get_running_loop())
+        actor_reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             recipient_attached = await recipient_reactor.attach_workspace(
                 str(workspace),
@@ -75,7 +75,7 @@ def test_reaction_appears_in_recipient_resource_and_inbox_consumes_it(
                 str(workspace),
                 actor_member.token or "",
             )
-            result = await actor_reactor.execute_tool(
+            result = await actor_reactor._execute_ready_tool(
                 str(actor_attached["workspace"]),
                 "message_react",
                 {"msg_id": str(source.ts), "reaction": "ack"},
@@ -112,7 +112,7 @@ def test_reaction_appears_in_recipient_resource_and_inbox_consumes_it(
                 ),
                 timeout=1.5,
             )
-            claimed = await recipient_reactor.execute_tool(
+            claimed = await recipient_reactor._execute_ready_tool(
                 str(recipient_attached["workspace"]),
                 "inbox",
                 {"limit": 1},
@@ -146,6 +146,56 @@ def test_reaction_appears_in_recipient_resource_and_inbox_consumes_it(
 
 
 @pytest.mark.sqlite_only
+@pytest.mark.timeout(15)
+def test_legacy_failure_cannot_suppress_modern_resource_delivery(
+    tmp_path: Path,
+) -> None:
+    """[MCP-8] One semantic change independently fans out to both adapters."""
+
+    workspace, token, other = _workspace(
+        tmp_path,
+        "workspace",
+        selected_name="selected",
+        other_name="other",
+    )
+
+    async def scenario() -> None:
+        reactor = ProcessReactor(asyncio.get_running_loop())
+        legacy_attempts: list[str] = []
+        modern_updates: list[str] = []
+
+        async def failing_legacy() -> None:
+            legacy_attempts.append(reactor.current_text)
+            raise RuntimeError("synthetic legacy sink failure")
+
+        async def modern_update() -> None:
+            modern_updates.append(reactor.current_text)
+
+        reactor.subscribe(failing_legacy)
+        reactor.configure_modern_resource_sender(modern_update)
+        try:
+            await reactor.attach_workspace(str(workspace), token)
+            await _wait_until(
+                lambda: len(legacy_attempts) == 1 and len(modern_updates) == 1
+            )
+            assert legacy_attempts == modern_updates
+
+            other.say("general", "changed @selected")
+            await _wait_until(
+                lambda: len(legacy_attempts) == 2 and len(modern_updates) == 2,
+                timeout=1.5,
+            )
+            assert legacy_attempts == modern_updates
+        finally:
+            await reactor.aclose()
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        other.close()
+
+
+@pytest.mark.sqlite_only
 @pytest.mark.timeout(60)
 def test_resource_sorts_workspaces_and_bounds_each_notification_snapshot(
     tmp_path: Path,
@@ -169,7 +219,7 @@ def test_resource_sorts_workspaces_and_bounds_each_notification_snapshot(
     earlier_other.say("general", "one @earlier_selected")
 
     async def scenario() -> None:
-        reactor = ConnectionReactor(asyncio.get_running_loop())
+        reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             later_result = await reactor.attach_workspace(str(later), later_token)
             earlier_result = await reactor.attach_workspace(str(earlier), earlier_token)
@@ -189,7 +239,7 @@ def test_resource_sorts_workspaces_and_bounds_each_notification_snapshot(
             assert len(earlier_entry["notifications"]) == 1
             assert earlier_entry["truncated"] is False
 
-            claimed = await reactor.execute_tool(
+            claimed = await reactor._execute_ready_tool(
                 str(later_result["workspace"]),
                 "inbox",
                 {"limit": 1},
@@ -242,7 +292,7 @@ def test_backstop_detects_external_consumption_without_touching_identity(
         )
 
     async def scenario() -> None:
-        reactor = ConnectionReactor(asyncio.get_running_loop())
+        reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             attached = await reactor.attach_workspace(str(workspace), token)
             canonical = str(attached["workspace"])
@@ -340,7 +390,7 @@ def test_native_activity_wake_is_immediate_but_bursts_are_paced(
     )
 
     async def scenario() -> None:
-        reactor = ConnectionReactor(asyncio.get_running_loop())
+        reactor = ProcessReactor(asyncio.get_running_loop())
         updates: list[float] = []
 
         async def updated() -> None:
@@ -355,7 +405,7 @@ def test_native_activity_wake_is_immediate_but_bursts_are_paced(
 
             # A completed command starts a fresh observational-backstop interval.
             # Keep that independent poll from racing this native-wake pacing proof.
-            await reactor.execute_tool(
+            await reactor._execute_ready_tool(
                 str(attached["workspace"]),
                 "whoami",
                 {},
@@ -434,7 +484,7 @@ def test_native_wait_failure_falls_back_to_observational_backstop(
     )
 
     async def scenario() -> None:
-        reactor = ConnectionReactor(asyncio.get_running_loop())
+        reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             attached = await reactor.attach_workspace(str(workspace), token)
             other.say("general", "fallback @selected")

@@ -12,7 +12,7 @@ import pytest
 import taut.identity as identity
 import taut_mcp._workspace_reactor as workspace_reactor
 from taut import TautClient
-from taut_mcp._connection_reactor import ConnectionReactor
+from taut_mcp._process_reactor import ProcessReactor
 
 
 def _sqlite_member(
@@ -60,7 +60,7 @@ def test_postgres_activity_tools_preserve_identity_and_presence(
     selected.close()
 
     async def scenario() -> None:
-        reactor = ConnectionReactor(asyncio.get_running_loop())
+        reactor = ProcessReactor(asyncio.get_running_loop())
         observer = TautClient()
 
         def snapshot() -> tuple[int, tuple[object, ...]]:
@@ -90,7 +90,7 @@ def test_postgres_activity_tools_preserve_identity_and_presence(
             ]
             for tool, arguments in calls:
                 before_activity, before_identity = snapshot()
-                await reactor.execute_tool(canonical, tool, arguments)
+                await reactor._execute_ready_tool(canonical, tool, arguments)
                 after_activity, after_identity = snapshot()
                 assert after_activity > before_activity
                 assert after_identity == before_identity
@@ -128,7 +128,7 @@ def test_postgres_read_limit_pages_without_cursor_gaps(
     other.close()
 
     async def scenario() -> None:
-        reactor = ConnectionReactor(asyncio.get_running_loop())
+        reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             attached = await reactor.attach_workspace(
                 str(taut_pg_project),
@@ -136,7 +136,7 @@ def test_postgres_read_limit_pages_without_cursor_gaps(
             )
             canonical = str(attached["workspace"])
             pages = [
-                await reactor.execute_tool(
+                await reactor._execute_ready_tool(
                     canonical,
                     "read",
                     {"thread": "general", "limit": limit},
@@ -174,27 +174,27 @@ def test_postgres_explicit_dm_navigation_and_directory(
     other.close()
 
     async def scenario() -> None:
-        reactor = ConnectionReactor(asyncio.get_running_loop())
+        reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             attached = await reactor.attach_workspace(
                 str(taut_pg_project),
                 member.token or "",
             )
             canonical = str(attached["workspace"])
-            history = await reactor.execute_tool(
+            history = await reactor._execute_ready_tool(
                 canonical,
                 "log",
                 {"thread": "@other", "since": None, "limit": 100},
             )
             assert history["records"][0]["thread"] == sent.thread
             assert history["records"][0]["text"] == "pg private history"
-            unread = await reactor.execute_tool(
+            unread = await reactor._execute_ready_tool(
                 canonical,
                 "read",
                 {"thread": sent.thread, "limit": 100},
             )
             assert unread["records"][0]["thread"] == sent.thread
-            directory = await reactor.execute_tool(
+            directory = await reactor._execute_ready_tool(
                 canonical,
                 "list",
                 {"dms": True},
@@ -255,7 +255,7 @@ def test_postgres_exact_message_tools_use_public_core_contract(
     )
 
     async def scenario() -> None:
-        reactor = ConnectionReactor(asyncio.get_running_loop())
+        reactor = ProcessReactor(asyncio.get_running_loop())
         observer = TautClient(as_name="other")
         try:
             attached = await reactor.attach_workspace(
@@ -271,7 +271,7 @@ def test_postgres_exact_message_tools_use_public_core_contract(
             )
             before_member = observer._state.get_member(selected_id)
             assert before_member is not None
-            shown_channel = await reactor.execute_tool(
+            shown_channel = await reactor._execute_ready_tool(
                 canonical,
                 "channel_show",
                 {"channel": "general"},
@@ -279,7 +279,7 @@ def test_postgres_exact_message_tools_use_public_core_contract(
             assert shown_channel["record_type"] == "channel"
             assert shown_channel["records"][0]["topic"] is None
             assert observer._state.get_member(selected_id) == before_member
-            topic = await reactor.execute_tool(
+            topic = await reactor._execute_ready_tool(
                 canonical,
                 "channel_topic",
                 {"channel": "general", "topic": "pg topic"},
@@ -293,7 +293,7 @@ def test_postgres_exact_message_tools_use_public_core_contract(
                 changed_member["last_active_ts"]
                 == topic["records"][0]["topic_updated_ts"]
             )
-            same_topic = await reactor.execute_tool(
+            same_topic = await reactor._execute_ready_tool(
                 canonical,
                 "channel_topic",
                 {"channel": "general", "topic": "pg topic"},
@@ -309,7 +309,7 @@ def test_postgres_exact_message_tools_use_public_core_contract(
             )
             assert tuple(observer.log("general", limit=1000)) == before_history
             assert tuple(observer.peek_inbox()) == before_notifications
-            listed = await reactor.execute_tool(
+            listed = await reactor._execute_ready_tool(
                 canonical,
                 "list",
                 {"all": True},
@@ -322,14 +322,14 @@ def test_postgres_exact_message_tools_use_public_core_contract(
                 )["topic"]
                 == "pg topic"
             )
-            shown = await reactor.execute_tool(
+            shown = await reactor._execute_ready_tool(
                 canonical,
                 "message_show",
                 {"msg_id": str(shown_target.ts)},
             )
             assert shown["record_type"] == "message"
             assert shown["records"][0]["text"] == "pg exact show"
-            reacted = await reactor.execute_tool(
+            reacted = await reactor._execute_ready_tool(
                 canonical,
                 "message_react",
                 {"msg_id": str(shown_target.ts), "reaction": "ack"},
@@ -343,7 +343,7 @@ def test_postgres_exact_message_tools_use_public_core_contract(
                     "thread": "general",
                 }
             ]
-            deleted = await reactor.execute_tool(
+            deleted = await reactor._execute_ready_tool(
                 canonical,
                 "message_delete",
                 {"msg_id": str(deletion_target.ts)},
@@ -356,14 +356,14 @@ def test_postgres_exact_message_tools_use_public_core_contract(
                     "ts": deletion_target.ts,
                 }
             ]
-            renamed = await reactor.execute_tool(
+            renamed = await reactor._execute_ready_tool(
                 canonical,
                 "channel_rename",
                 {"old_name": "general", "new_name": "main"},
             )
             assert renamed["records"][0]["thread"] == "main"
             assert renamed["records"][0]["topic"] == "pg topic"
-            cleared = await reactor.execute_tool(
+            cleared = await reactor._execute_ready_tool(
                 canonical,
                 "channel_topic",
                 {"channel": "main", "topic": None},
@@ -371,7 +371,7 @@ def test_postgres_exact_message_tools_use_public_core_contract(
             assert cleared["records"][0]["topic"] is None
 
             canceled = asyncio.create_task(
-                reactor.execute_tool(
+                reactor._execute_ready_tool(
                     canonical,
                     "channel_topic",
                     {"channel": "main", "topic": "pg canceled topic"},
@@ -387,7 +387,7 @@ def test_postgres_exact_message_tools_use_public_core_contract(
                 if asyncio.get_running_loop().time() >= deadline:
                     raise AssertionError("PG topic completion did not settle")
                 await asyncio.sleep(0.01)
-            recovered = await reactor.execute_tool(
+            recovered = await reactor._execute_ready_tool(
                 canonical,
                 "channel_show",
                 {"channel": "main"},
@@ -421,7 +421,7 @@ def test_postgres_native_notification_wake_precedes_long_backstop(
     other.join("general")
 
     async def scenario() -> None:
-        reactor = ConnectionReactor(asyncio.get_running_loop())
+        reactor = ProcessReactor(asyncio.get_running_loop())
         updates: asyncio.Queue[float] = asyncio.Queue()
 
         async def updated() -> None:
@@ -441,7 +441,7 @@ def test_postgres_native_notification_wake_precedes_long_backstop(
             assert observed - started < 2
             notifications = reactor.current_text
             assert '"matched":"@selected"' in notifications
-            claimed = await reactor.execute_tool(
+            claimed = await reactor._execute_ready_tool(
                 canonical,
                 "inbox",
                 {"limit": 1},
@@ -484,7 +484,7 @@ def test_one_reactor_owns_unconfigured_sqlite_configured_sqlite_and_postgres(
     )
 
     async def scenario() -> None:
-        reactor = ConnectionReactor(asyncio.get_running_loop())
+        reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             attached = await asyncio.gather(
                 reactor.attach_workspace(str(plain_workspace), plain_token),
@@ -498,7 +498,7 @@ def test_one_reactor_owns_unconfigured_sqlite_configured_sqlite_and_postgres(
             ]
             identities = await asyncio.gather(
                 *[
-                    reactor.execute_tool(str(item["workspace"]), "whoami", {})
+                    reactor._execute_ready_tool(str(item["workspace"]), "whoami", {})
                     for item in attached
                 ]
             )

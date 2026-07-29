@@ -68,7 +68,7 @@ _REACTION_CONFIGURATION_ERRORS = frozenset(
 )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class Bootstrap:
     generation: int
     locator: str
@@ -205,7 +205,11 @@ def _resolve_workspace(
     config = load_config({"BROKER_DEFAULT_DB_NAME": DEFAULT_DB_NAME})
     try:
         target = resolve_broker_target(locator, config=config)
-    except (RuntimeError, tomllib.TOMLDecodeError) as exc:
+    except tomllib.TOMLDecodeError as exc:
+        raise RuntimeError(CONFIGURATION_UNAVAILABLE) from exc
+    except ValueError as exc:
+        raise NotInitializedError(PROJECT_NOT_FOUND) from exc
+    except RuntimeError as exc:
         raise RuntimeError(CONFIGURATION_UNAVAILABLE) from exc
     if target is None:
         raise NotInitializedError(PROJECT_NOT_FOUND)
@@ -318,6 +322,7 @@ def run_workspace_reactor(
                     continue
                 generation = bootstrap.generation
                 token = bootstrap.token
+                bootstrap.token = ""
                 try:
                     target, config, canonical, directory_identity = _resolve_workspace(
                         bootstrap.locator
@@ -390,6 +395,7 @@ def run_workspace_reactor(
                         # backend cannot create its hint source.
                         activity_waiter = None
                     pending = tuple(client.peek_inbox(limit=101))
+                    token = ""
                 except (IdentityError, TokenError):
                     emit(WorkspaceFailed(generation, "validation", IDENTITY_INVALID))
                     return
@@ -409,7 +415,6 @@ def run_workspace_reactor(
                 previous_truncated = len(pending) > 100
                 next_backstop_at = time.monotonic() + NOTIFICATION_BACKSTOP_SECONDS
                 ready = True
-                token = ""
                 emit(
                     WorkspaceReady(
                         generation,

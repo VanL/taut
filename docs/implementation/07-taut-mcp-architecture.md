@@ -2,254 +2,235 @@
 
 ## Purpose and Scope
 
-This document explains why the optional `taut-mcp` extension is a
-connection-scoped reactor over workspace reactors. It covers workspace
-attachment, owner-thread boundaries, ordinary tool dispatch, the aggregate
-notification resource, standard resource hints, and the experimental Claude
-channel adapter.
+This document explains the current `taut-mcp` implementation: one
+process-scoped reactor over persistent workspace reactors, exposed through one
+MCP SDK v2 server that accepts both legacy `2025-11-25` clients and modern
+sessionless `2026-07-28` clients.
 
 The behavior contract lives in `docs/specs/05-taut-mcp.md` [MCP-1]–[MCP-12].
-The execution history and review record live in
-`docs/plans/2026-07-14-taut-mcp-extension-plan.md`. This note owns current
+The original implementation history lives in
+`docs/plans/2026-07-14-taut-mcp-extension-plan.md`; the dual-era migration and
+review record live in
+`docs/plans/2026-07-28-taut-mcp-dual-era-sessionless-plan.md`. This note owns
 implementation rationale and edit points, not protocol requirements.
 
-Implementation status: `extensions/taut_mcp/` contains the
-version-coordinated package and real stdio server. It was first published as
+The current portable surface is 20 explicit tools plus
+`taut://notifications/current`. The optional Claude channel is a
+legacy-host-only best-effort wake hint. The package was first published as
 0.7.0 from commit `8dfed910d0429226f2faaab776166ad5fd261189`, with root Test
 run [29455388946](https://github.com/VanL/taut/actions/runs/29455388946), MCP
 run [29455389050](https://github.com/VanL/taut/actions/runs/29455389050), MCP
 release gate
 [29455393317](https://github.com/VanL/taut/actions/runs/29455393317), and the
 [`taut_mcp/v0.7.0` GitHub Release](https://github.com/VanL/taut/releases/tag/taut_mcp/v0.7.0)
-as evidence. The portable surface is 20 explicit tools plus
-`taut://notifications/current`; the optional Claude channel is only a
-best-effort wake hint.
+as historical release evidence.
 
 ## Governing Spec References
 
-- `docs/specs/05-taut-mcp.md` [MCP-2] process and connection model,
-  [MCP-3] lifecycle, [MCP-4] workspace attachment, [MCP-5] tools,
-  [MCP-6] results, [MCP-7] resource representation, [MCP-8] reactor and
-  subscription behavior, [MCP-9] agent instructions and host adapters,
-  [MCP-10] trust/rate limits, [MCP-11] failures, and [MCP-12] proof
-- `docs/specs/02-taut-core.md` [TAUT-3.2] project configuration,
-  [TAUT-4.4] channel topics, [TAUT-8.2] public records, [TAUT-8.3] Python
-  client and observational inbox peek, [TAUT-9] trust boundary, and [TAUT-11]
-  backend conformance
+- `docs/specs/05-taut-mcp.md` [MCP-2] process model, [MCP-3] lifecycle and
+  protocol eras, [MCP-4] shared ensure and identity, [MCP-5] tools and
+  cancellation, [MCP-6] results and errors, [MCP-7] resource representation,
+  [MCP-8] reactor and subscription behavior, [MCP-9] agent instructions and
+  host adapters, [MCP-10] trust and rate limits, [MCP-11] failures, and
+  [MCP-12] proof
+- `docs/specs/02-taut-core.md` [TAUT-3.2] project configuration, [TAUT-4.4]
+  channel topics, [TAUT-8.2] public records, [TAUT-8.3] Python client and
+  observational inbox peek, [TAUT-9] trust boundary, and [TAUT-11] backend
+  conformance
 - `docs/specs/03-identity-addressing-notifications.md` [IAN-3] identity,
   [IAN-6.5] notification queues, and [IAN-7.4] consuming versus observational
   notification reads
 
 ## Design Rationale
 
-### One connection reactor, one owner reactor per workspace
+### One SDK server, two wire eras
 
-MCP stdio already supplies the process lifetime and request loop. Taut state
-lives in each selected database, so `taut-mcp` adds no daemon and no durable
-session registry. One process serves one MCP connection. Its asyncio thread
-owns protocol framing, attachment status, rate admission, resource text, and
-response futures.
+The MCP SDK v2 `Server` owns stdio framing, legacy initialization, modern
+discovery, protocol negotiation, result envelopes, cache metadata, and
+request cancellation. `server.py` installs one async handler set and one
+era-neutral lifespan. That lifespan constructs the `ProcessReactor` from the
+running asyncio loop before a workspace child can start.
 
-Each attached workspace has a dedicated persistent child thread. That thread
-alone resolves the selected project, constructs the configured `TautClient`,
-uses its queues, runs synchronous Taut operations, observes notifications, and
-closes all owned handles. This is what lets a blocked backend call stall one
-workspace without blocking MCP framing or another workspace.
+Modern discovery advertises only `2026-07-28`. Legacy compatibility is
+provided through the SDK's legacy initialization path, not by adding a legacy
+version to modern discovery. Both paths use the same manifest, input
+validator, dispatcher, result serializer, fixed tool errors, instructions,
+and Taut operations. The only era checks in application code select
+protocol-owned resource-not-found codes and the legacy-only Claude adapter.
 
-The shape follows `BaseReactor`'s ownership rule without inheriting
-`TautWatcher`'s consuming chat policy. Payloads cross threads only through
-unbounded `queue.Queue` instances. Payload-free `threading.Event` and
-`call_soon_threadsafe` wakes prompt the appropriate owner to drain its queue.
-The master never calls a child client or queue directly and never joins a
-child from a request path.
+SDK cache hints keep fixed discovery and list results reusable while making
+the changing notification resource private and immediately stale. The SDK
+adds modern `resultType`, server information, TTL, and cache-scope fields and
+keeps those fields out of legacy envelopes.
 
-### Hidden attachment seats are lifecycle ownership
+### The process reactor is a reactor over workspace reactors
 
-An attachment starts with an absolute locator and sensitive continuity token,
-but canonical project identity is backend-dependent and must be resolved in a
-child. The master therefore reserves a hidden cap seat, fingerprints the token
-for same-connection comparison, and starts a provisional child. The child
-returns canonical path, stable directory identity, and backend before the
-master grants client construction.
+MCP stdio supplies the process lifetime. Taut state remains in each selected
+database, so `taut-mcp` adds no daemon and no durable MCP session registry.
+The asyncio master thread owns the bounded resident registry, hidden
+candidate seats, parent command slots, rate state, response futures,
+aggregate resource text, legacy edge tracking, modern bus publication, and
+teardown.
 
-This two-phase handshake prevents database work on the MCP thread and prevents
-two aliases of one project from publishing two clients. A hidden seat remains
-cap-counted until its owner thread exits, including failed or timed-out
-cleanup. That can temporarily make fewer than eight entries visible while all
-eight seats are occupied. Releasing the seat earlier would permit a second
-client while the first still owns backend state.
+Each resident workspace has one dedicated child thread. That thread alone
+resolves the selected project, constructs and uses one persistent configured
+`TautClient`, owns its broker queues and activity waiter, runs synchronous
+Taut operations, observes notifications, and closes its handles. A blocked
+backend operation can therefore stall only its workspace.
 
-Published entries retain canonical path and directory identity. Later tool
-calls use the exact returned canonical string; they do not rediscover a path.
-Detach moves the entry to non-routable `detaching` before it wakes the child.
-Identity loss and reactor failure remain visible until explicit detach rather
-than silently selecting or healing another member.
+Cross-thread payloads use unbounded `queue.Queue` instances. Payload-free
+`threading.Event` and `call_soon_threadsafe` wakes tell the receiving owner to
+drain its queue. The master never calls a child client or broker queue and
+never blocks its event loop on `Thread.join()`.
 
-### Ordinary tools are explicit child inputs
+### Workspace plus token is the reconstructable handle
 
-`_tools.py` declares a fixed manifest. It does not reflect the CLI command
-registry, so future core or extension commands cannot become remote tools by
-accident. `_commands.py` dispatches the 17 CLI-shaped tools directly to public
-`TautClient` methods and serializes public value objects; it never launches the
-CLI or parses renderer output.
+Every identity-using tool carries an absolute workspace locator and an
+existing continuity token. The token selects an existing Taut member. It is
+continuity, not authentication, authorization, or a capability.
 
-DM navigation broadens those existing tools without adding a nineteenth tool.
-`read.thread` and `log.thread` accept channel/subthread selectors plus current
-`@name-or-alias` and stable `dm.d_*` forms. `list(dms=true)` calls the public
-`list_direct_messages()` method; its schema and command validation reject
-`all=true && dms=true` before client dispatch. Well-formed absent or
-inaccessible DM selectors become the same content-free typed empty result.
-`log` retains its read-only/idempotent annotations because core resolves its
-DM actor without activity or cursor writes.
+`attach_workspace` and every CLI-shaped tool enter the same
+`ProcessReactor.ensure_workspace()` state machine. Explicit attach is the
+eager path: it pays setup cost and begins observation before a domain
+operation. A first CLI-shaped call performs the same setup lazily. Either path
+publishes and retains the same child owner until detach, terminal failure, or
+process exit.
 
-`message_show` and `message_delete` accept only a full exact message id.
-`message_show` returns the ordinary message record after a non-claiming peek
-and advances the acting member's seen cursor through that id. `message_delete`
-returns a distinct deletion record, is restricted to the acting author's
-ordinary messages, and does not cascade into cursors, notifications, DM
-registry rows, memberships, or sub-threads.
+An exact canonical ready key with the same token fingerprint is the no-I/O
+fast path. Another absolute locator enters child-owned resolution and stable
+directory-identity arbitration, so aliases converge without publishing a
+second client. Hidden seats stay cap-counted until their owner exits; releasing
+one earlier could let a second client overlap unresolved backend ownership.
 
-`message_react` calls the public
-client method directly with an exact id and schema-validated slug. Success is
-a distinct intended-audience receipt; empty audience and ineligible targets
-remain typed empty results. A best-effort broadcast exception remains success
-with the ordinary warnings array. The child keeps its attachment-time reaction
-vocabulary, so config changes require reattachment instead of cross-thread
-config mutation.
+Detach is intentionally narrower. It accepts the exact published canonical
+identifier and performs no project or identity reconstruction. An exact
+active hidden locator reports busy; every other miss is an idempotent no-op.
+Identity-lost, reactor-failed, and validation-timeout records remain visible
+until that explicit cleanup.
 
-Channel metadata adds two tools without creating a second state path.
-`channel_show` calls the actor-free public `get_channel()` method and returns
-the exact channel record. The child carries its existing cached notification
-snapshot in that completion instead of calling `peek_inbox()` after
-`channel_show`; this keeps the tool sidecar-only while preserving the master's
-normal snapshot-installation order. `channel_topic` calls
-`set_channel_topic()` with a
-string or JSON `null`; core remains the owner of Unicode blank validation,
-membership, no-op detection, activity, and transactional merge. The MCP
-schema rejects overlong and multiline strings before dispatch. Topic changes
-produce no message or notification. `channel_rename` is the existing rename
-tool under the noun-first name and keeps its prior dispatch and result
-contract.
+### Token lifetime and the domain boundary
 
-The fixed manifest applies the same noun-first naming to message tools:
-`message_show`, `message_delete`, and `message_react`. Former identifiers are
-not aliases. Together with `channel_show`, `channel_topic`, and
-`channel_rename`, the manifest contains exactly 20 tools.
+The process computes an exact-byte SHA-256 fingerprint for resident-binding
+comparison, then drops its raw request reference after child dispatch. The
+child clears the mutable bootstrap token and its local validation copy. Its
+one canonical `TautClient` keeps the constructor token required by core
+continuity operations until the owner closes.
 
-Each ready workspace has one no-wait command slot. A second call returns busy
-instead of growing an unbounded per-workspace queue. Calls to other workspaces
-continue independently. A child completion contains the command result and a
-notification snapshot in one event. That is a new post-command snapshot for
-every CLI-shaped operation except actor-free `channel_show`, which carries the
-existing cached snapshot. The master installs the snapshot, recomputes
-resource text, frees the slot, then returns or discards the result.
+The token and workspace locator end at the ensure boundary. `server.py`
+removes both before constructing `RunWorkspaceCommand`; `_commands.py`
+receives only the arguments of the named Taut operation. There is no second
+token-bearing client, identity cache, or transient command path.
 
-Cancellation is queue-ordered. If the child sees a cancel envelope before the
-empty-queue start boundary, it does not run the operation. Once the operation
-starts, synchronous Taut work is not rolled back; its state and snapshot are
-installed while the transport receives the SDK's standard cancellation error.
-This is why successful nonempty `read` results carry structured cursor
-guidance, the `message_show` description and initialization instructions state
-its cursor effect, and the server never retries a consuming operation
-automatically. After an uncertain DM read, `list(dms=true)` can recover the
-durable stable handle and `log` can inspect history without another cursor or
-activity move. After an uncertain topic mutation, `channel_show` reports the
-current canonical topic before the caller decides whether to retry. None of
-these observations proves which response reached the host.
+### One manifest, validator, and thin dispatcher
 
-### The notification resource is a cached level; hints are edges
+`_tools.py` owns the fixed 20-tool manifest and compiles one Draft 2020-12
+validator from each advertised input schema. The shared handler normalizes
+only omitted SDK arguments from `None` to `{}`, validates before charging the
+rate bucket, and returns one fixed content-free result for known-tool schema
+failure. Unknown tools remain protocol errors.
 
-Every ready child keeps an oldest-first, read-only `peek_inbox(limit=101)`
-snapshot and publishes at most 100 records plus a truncation bit. The master
-sorts workspace entries by canonical path and stores one canonical JSON text.
-A resource read returns that text and does no database work. Non-ready entries
-remain present with empty notifications so identity or reactor failure is
-visible without leaking backend diagnostics.
+`_commands.py` is the explicit allowlisted dispatcher for the 17 CLI-shaped
+tools. It calls public `TautClient` methods and serializes public value
+objects. It never launches the CLI, parses terminal output, reflects the
+command registry, or receives MCP identity fields. A startup assertion keeps
+the manifest's domain partition equal to this dispatcher.
 
-After binding the existing member, the child registers SimpleBroker's public
-multi-queue activity waiter on that member's notification queue before taking
-its baseline peek. PostgreSQL can wake through LISTEN/NOTIFY; SQLite returns no
-native waiter. Either way, a 0.5-second observational backstop detects missed
-wakes and foreign consumption. Native-only bursts are paced to one snapshot
-event per 0.5 seconds. The waiter is a hint only: notification content always
-comes from `peek_inbox`, so it is never claimed by observation.
+Each ready workspace has one no-wait parent command slot. A second command for
+that workspace returns busy instead of growing a queue; another workspace can
+still proceed. Child completion carries the domain outcome and selected
+notification snapshot in one event. The process installs the snapshot,
+recomputes the resource, frees the slot, then returns or discards the outcome.
 
-Standard `notifications/resources/updated` messages compare exact aggregate
-text. Subscription state has its own last-signalled text. The opt-in Claude
-adapter has a separate last-attempted text and emits only a fixed cue. It
-records the attempt before sending, so a dropped or failed custom event does
-not spin on unchanged content. Neither hint is authoritative; clients recover
-by rereading the resource.
+### Cancellation is an ordering boundary, not transaction evidence
 
-### Backend neutrality and trust boundaries
+The process-owned ensure lifecycle is shielded from request-task
+cancellation. A canceled waiter may therefore leave a ready reusable child.
+After ensure, command admission and queue enqueue form one non-awaiting master
+transition. Cancellation that wins before that transition creates no command;
+enqueue that wins first uses the child queue boundary.
+
+For an admitted command, cancellation is another queued control payload. If
+the child observes it before the queue-empty start boundary, no `TautClient`
+operation runs. Once synchronous work starts, it is not rolled back. Its
+status and snapshot still reach the process and its slot still clears. The SDK
+sends no JSON-RPC response for a canceled stdio request in either era, so
+clients must inspect Taut state before deciding whether a consuming or
+mutating operation is safe to retry.
+
+### The notification resource is a cached level; delivery paths are edges
+
+Each ready child keeps an oldest-first observational
+`peek_inbox(limit=101)` snapshot and publishes at most 100 records plus a
+truncation bit. The process sorts resident entries by canonical path and
+stores one canonical JSON string. Reading the resource returns that string
+without database work, identity activity, cursor movement, or notification
+consumption.
+
+Native database activity wakes and the 0.5-second observational backstop both
+lead the child to recompute. Wakes are hints only; content always comes from
+`peek_inbox`. Non-ready entries stay visible with empty notifications and no
+backend diagnostic.
+
+One aggregate comparison independently offers a semantic change to:
+
+- the legacy `resources/subscribe` sender, tracked by
+  `last_signalled_text`;
+- the modern SDK v2 `InMemorySubscriptionBus`, whose `ListenHandler` owns
+  listener filters, acknowledgments, subscription ids, fanout, cancellation,
+  and graceful closure; and
+- when enabled for a legacy client, the Claude channel adapter, tracked by
+  `last_claude_attempted_text`.
+
+These states are deliberately separate. Failure or duplication in one edge
+path cannot suppress another. The resource read is the level-triggered
+recovery path for all of them.
+
+### Backend neutrality, rate control, and trust
 
 The child resolves ordinary Taut configuration, then passes the paired public
-`broker_target` and copied `broker_config` into `TautClient`. SQLite and
-PostgreSQL therefore create different client objects through the same MCP
-path; the server has no backend branch after resolution.
+broker target and copied configuration to `TautClient`. SQLite and PostgreSQL
+therefore use the same MCP path. The server has no backend-specific branch
+after resolution.
 
-Attachment tokens are secret-equivalent identity selectors, not remote auth.
-The raw token transfers to the child queue and the master clears its local
-reference immediately after the child thread starts. The child clears its
-copy after validation, and the token is never returned. The master keeps only a SHA-256 fingerprint while an entry is
-ready. Canonical paths are intentionally returned identifiers, but paths,
-tokens, DSNs, participant names, and message text never enter fixed errors,
-stderr templates, instructions, or channel cues.
+One process-wide monotonic token bucket covers schema-valid tool calls and
+successful reads of the fixed resource. It limits accidental loops; it is not
+access control. Schema rejection and protocol-owned work are free, admitted
+calls are never refunded, and abusive resource polling can throttle a later
+tool.
 
-One connection-wide monotonic token bucket covers schema-valid tool calls and
-direct resource reads. It limits accidental polling loops but is not an access
-control boundary. Schema rejection and server-owned hints are free; admitted
-calls are never refunded.
-
-An unexpected child fault is isolated to its workspace and emits one fixed,
-content-free stderr diagnostic. Unexpected server or protocol-construction
-failure crosses the CLI boundary as one fixed fatal diagnostic and exit 1;
-the underlying exception is never rendered. Malformed requests that the SDK
-can reject without ending the stdio session remain recoverable protocol input.
+Workspace paths and tokens are intentionally supplied inputs, but they never
+enter fixed diagnostics. Tokens, fingerprints, DSNs, participant names, and
+message text are absent from stderr and protocol control text. Canonical
+workspace paths are returned identifiers and remain untrusted data.
 
 ### Release bytes and backend evidence have different owners
 
 `taut-mcp` participates in the repository's GitHub-only release system as the
 `mcp` target and uses `taut_mcp/vX.Y.Z` tags. The canonical root Test workflow
-is the sole release-byte owner. It builds the exact core and MCP wheels,
-installs them together in a fresh environment, runs the MCP console version
-smoke, and wraps the MCP wheel/sdist pair in an immutable commit-bound bundle.
-The MCP tag gate waits for exact-SHA root, PostgreSQL, and MCP workflow
-evidence, then gives that root-produced bundle to the generic no-rebuild
-release workflow.
-
-The dedicated MCP workflow owns compatibility and live-backend behavior, not
-publication bytes. Its Ubuntu matrix runs the complete suite with a real
-PostgreSQL service across the supported Python span. One small companion matrix
-runs the same non-PG suite on macOS and Windows at a representative Python
-version, proving filesystem identity, stdio, and SQLite behavior without
-claiming PostgreSQL conformance. Its quality job runs package-local Ruff, mypy,
-and an ordinary build. The root Test workflow also has one separate non-PG MCP
-coverage producer. It installs editable local MCP and PG packages because the
-test `conftest.py` imports `taut_pg` at collection time, but it starts no
-database and excludes `pg_only`. The same-run aggregator requires the named
-shard and the unique connection-rate debit line. Direct root and Summon unit
-coverage run serially so xdist scheduling cannot omit a worker's measurements;
-ordinary compatibility matrices and the intentional Summon process topology
-remain parallel. This split avoids false PostgreSQL claims, incomplete direct
-coverage, and cross-workflow coverage artifact coupling.
+builds the release bytes and same-run coverage shard. The dedicated MCP
+workflow owns the supported Python matrix, live PostgreSQL conformance, the
+representative macOS/Windows non-PG lanes, and package-local quality gates.
+The release gate observes exact-SHA evidence and hands the immutable
+root-produced bundle to the generic no-rebuild release workflow.
 
 ## Boundaries and Invariants
 
-- The MCP/asyncio thread owns registry status, cap seats, admission slots,
-  response futures, rate state, and aggregate text. It performs no project or
-  database resolution.
-- A workspace child owns exactly one persistent configured `TautClient`, its
-  queue handles, activity waiter, and synchronous operations.
-- Cross-thread payloads use queues. Events are wakeups, not shared mutable
+- The asyncio master owns process state and performs no project, config,
+  filesystem-identity, database, or broker-queue operation.
+- A workspace child owns exactly one persistent configured `TautClient` and
+  every backend handle derived from it.
+- All cross-thread payloads use queues; wakes never carry shared mutable
   command state.
-- Workspace identity is explicit and object-local. MCP clients pass
-  `inherit_environment_identity=False`; ambient `TAUT_AS`, `TAUT_TOKEN`, and
-  `TAUT_DB` cannot replace an attachment's selected identity or project.
-- The resource is notification-only. Do not add unread-thread inventory or
-  consuming watch behavior without a new product contract.
-- Standard resource updates and Claude channel events are redundant hints.
-  No correctness path may depend on their delivery.
+- Identity-using tool calls always carry workspace plus token. Detach alone
+  is workspace-only because it removes process-local state.
+- Eager attach and lazy first use share one ensure lifecycle and one retained
+  owner. Do not add a transient client path or an attach-required fallback.
+- Application behavior does not branch by protocol era. Era checks stay at
+  the SDK-owned error, envelope, and host-adapter boundary.
+- The aggregate resource is notification-only. Do not add unread-thread
+  inventory or consuming watch behavior without a new product contract.
+- Legacy updates, modern listen events, and Claude channel cues are redundant
+  hints. Correctness depends only on Taut state and resource reread.
 - A live stuck child is never force-detached in-process. Restart is safer than
   allowing a second client to overlap unknown backend ownership.
 
@@ -257,41 +238,45 @@ coverage, and cross-workflow coverage artifact coupling.
 
 | Path | Ownership |
 |------|-----------|
-| `extensions/taut_mcp/taut_mcp/server.py` | MCP handlers, instructions, capabilities, stdio lifecycle, standard resource subscription wiring |
-| `extensions/taut_mcp/taut_mcp/_connection_reactor.py` | master registry, lifecycle arbitration, admission, results, aggregate text, edge trackers, teardown |
-| `extensions/taut_mcp/taut_mcp/_workspace_reactor.py` | child resolution, client ownership, command loop, observational notification service, native waiter |
-| `extensions/taut_mcp/taut_mcp/_tools.py` | exact 20-tool schemas, descriptions, annotations, output schemas |
+| `extensions/taut_mcp/taut_mcp/server.py` | SDK v2 dual-era handlers, lifespan, instructions, cache hints, protocol adapters, and result serialization |
+| `extensions/taut_mcp/taut_mcp/_process_reactor.py` | resident registry, shared ensure, alias arbitration, admission, rate state, aggregate text, edge fanout, and teardown |
+| `extensions/taut_mcp/taut_mcp/_workspace_reactor.py` | child resolution, client ownership, command loop, token-copy cleanup, and observational notification service |
+| `extensions/taut_mcp/taut_mcp/_tools.py` | exact manifest, input validators, descriptions, annotations, and output schemas |
 | `extensions/taut_mcp/taut_mcp/_commands.py` | explicit public-client command dispatch and record conversion |
-| `extensions/taut_mcp/taut_mcp/_claude_channel.py` | isolated fixed-payload experimental notification model and send call |
-| `extensions/taut_mcp/tests/` | real SQLite/stdio lifecycle, tool, resource, subscription, cancellation, and adversarial proof; optional live PostgreSQL conformance |
-| `.github/workflows/test.yml` | sole MCP release-byte owner, exact core/MCP wheel smoke, and same-run non-PG MCP coverage producer/aggregator |
-| `.github/workflows/test-mcp-extension.yml` | required Ubuntu SQLite/PostgreSQL matrix, representative macOS/Windows non-PG compatibility matrix, package-local quality gates, and ordinary disposable build; no release bytes |
-| `.github/workflows/release-gate-mcp.yml` | `taut_mcp/v*` exact-SHA observer and handoff of the immutable root-produced MCP bundle |
+| `extensions/taut_mcp/taut_mcp/_claude_channel.py` | isolated legacy-host fixed-payload experimental notification |
+| `extensions/taut_mcp/tests/test_dual_era_contract.py` | focused manifest, application-validator, and per-tool lazy-first-use contract |
+| `extensions/taut_mcp/tests/test_process_reactor.py` | shared ensure, alias, lifecycle, cancellation, and process-reactor invariants |
+| `extensions/taut_mcp/tests/test_stdio_server.py` | legacy and modern discovery, schema, cache, subscription, rate, cancellation, and installed-wheel stdio behavior |
+| `extensions/taut_mcp/tests/` | real SQLite behavior and optional live PostgreSQL conformance |
+| `.github/workflows/test.yml` | sole MCP release-byte owner and same-run non-PG MCP coverage producer/aggregator |
+| `.github/workflows/test-mcp-extension.yml` | Ubuntu SQLite/PostgreSQL matrix, macOS/Windows non-PG lanes, and package-local quality gates |
+| `.github/workflows/release-gate-mcp.yml` | `taut_mcp/v*` exact-SHA observer and immutable-bundle handoff |
 
-Verify a change at the owner boundary. Use real Taut clients, broker queues,
-child threads, and stdio for behavior. Fake only an MCP notification sink or
-the backend activity-waiter edge when isolating delivery policy. PostgreSQL
-activity, pagination, native-wake, and mixed-backend changes require
+Verify changes at the owner boundary. Use real Taut clients, broker queues,
+child threads, and stdio for behavior. Fake only a notification sink or clock
+when isolating delivery or rate policy. PostgreSQL behavior requires
 `SIMPLEBROKER_PG_TEST_DSN`; a skipped live lane is a reported residual, not
-passing backend evidence.
+backend-conformance evidence.
 
 ## Change Guidance
 
 Read [MCP-4], [MCP-5], [MCP-8], and [MCP-11] before changing reactor state.
-Most apparent simplifications move work to the wrong owner or create a race:
-normalizing a workspace on later calls breaks identifier stability; sharing a
-client crosses queue ownership; force-removing a live failed child permits
-overlap; using `TautWatcher` consumes pointers; and merging the two edge
-trackers makes one optional hint suppress the other.
+Most apparent shortcuts create a second path or move work to the wrong owner:
+resolving on the master blocks all workspaces; forwarding identity fields into
+domain envelopes expands secret lifetime; sharing a client crosses queue
+ownership; force-removing a live failed child permits overlap; and using
+`TautWatcher` consumes the pointers this adapter must only observe.
 
 If tool fields change, update the spec first and refresh the exact manifest
-snapshot. If the aggregate changes, prove read-only state and hostile-content
-encoding. If lifecycle changes, fire both event/deadline orders and teardown.
-Update this note, the implementation index, repository map, README, changelog,
-and plan evidence whenever ownership or rationale changes.
+and both-era snapshots. If aggregate delivery changes, prove legacy and modern
+trackers cannot suppress each other and prove reread recovery. If lifecycle
+changes, fire both event/deadline and cancellation/admission orders, then
+exercise clean and forced teardown. Update this note, repository maps, README,
+changelog, and plan evidence whenever ownership or rationale changes.
 
-## Related Plan
+## Related Plans
 
+- `docs/plans/2026-07-28-taut-mcp-dual-era-sessionless-plan.md`
 - `docs/plans/2026-07-28-channel-topics-plan.md`
 - `docs/plans/2026-07-28-direct-message-navigation-plan.md`
 - `docs/plans/2026-07-15-taut-0.7.1-portability-and-coverage-plan.md`

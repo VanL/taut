@@ -64,7 +64,7 @@ def test_required_coverage_paths_accepts_all_markers(tmp_path: Path) -> None:
 
 def test_required_coverage_paths_includes_unique_mcp_rate_debit() -> None:
     module = _load_module()
-    path = "extensions/taut_mcp/taut_mcp/_connection_reactor.py"
+    path = "extensions/taut_mcp/taut_mcp/_process_reactor.py"
 
     assert module.REQUIRED_MARKERS[Path(path)] == "self._bucket_tokens -= 1.0"
     source = (PROJECT_ROOT / path).read_text(encoding="utf-8")
@@ -77,7 +77,7 @@ def test_required_coverage_paths_rejects_missing_mcp_rate_debit(
     module = _load_module()
     data_file = tmp_path / ".coverage"
     lines = _marker_lines(module)
-    relative = Path("extensions/taut_mcp/taut_mcp/_connection_reactor.py")
+    relative = Path("extensions/taut_mcp/taut_mcp/_process_reactor.py")
     omitted = str((PROJECT_ROOT / relative).resolve())
     data = CoverageData(basename=str(data_file))
     data.add_lines({path: value for path, value in lines.items() if path != omitted})

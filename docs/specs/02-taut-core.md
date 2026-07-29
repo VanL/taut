@@ -2102,7 +2102,7 @@ Helper obligations:
   source. The existing coverage report job depends on that producer, downloads
   and combines its shard with root and Summon shards, and requires execution of
   the unique non-PG rate-admission line `self._bucket_tokens -= 1.0` in
-  `extensions/taut_mcp/taut_mcp/_connection_reactor.py` before generating the
+  `extensions/taut_mcp/taut_mcp/_process_reactor.py` before generating the
   report. The MCP compatibility workflow remains the sole live-PostgreSQL MCP
   conformance owner and does not become a second coverage owner.
   Every root OS/Python cell still runs the source contract. The installed-wheel

@@ -5,50 +5,39 @@ import errno
 import hashlib
 import json
 import os
+import queue
 import subprocess
 import sys
+import threading
 import time
 import tomllib
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from jsonschema import validate
 from mcp import ClientSession, types
+from mcp.client import Client
 from mcp.client.stdio import StdioServerParameters, stdio_client
-from mcp.shared.exceptions import McpError
-from pydantic import AnyUrl
+from mcp.server.subscriptions import ResourceUpdated
+from mcp.shared.exceptions import MCPError
+from mcp_types import (
+    CLIENT_CAPABILITIES_META_KEY,
+    CLIENT_INFO_META_KEY,
+    PROTOCOL_VERSION_META_KEY,
+)
 
 from taut import TautClient, addressing
+from taut_mcp._tools import TOOLS
 
 EXTENSION_ROOT = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = EXTENSION_ROOT.parents[1]
-NOTIFICATIONS_URL = AnyUrl("taut://notifications/current")
+NOTIFICATIONS_URL = "taut://notifications/current"
 EXPECTED_INSTRUCTIONS_SHA256 = (
-    "80dcac67ac3d25c51ea10d75c26aaedfd34ee1cf9dfd1dc0ab87aa823390a035"
+    "19a55f4735080ca38b33225f78f7fcf52dde10d5d1a3bcdf5f3371b694f76a5c"
 )
-
-EXPECTED_TOOLS = [
-    "attach_workspace",
-    "detach_workspace",
-    "list_workspaces",
-    "join",
-    "leave",
-    "set_name",
-    "say",
-    "reply",
-    "message_show",
-    "message_delete",
-    "message_react",
-    "read",
-    "inbox",
-    "log",
-    "list",
-    "channel_show",
-    "channel_topic",
-    "channel_rename",
-    "who",
-    "whoami",
-]
+with (EXTENSION_ROOT / "pyproject.toml").open("rb") as _project_stream:
+    EXPECTED_VERSION = str(tomllib.load(_project_stream)["project"]["version"])
 
 
 async def _inspect_empty_server(
@@ -71,52 +60,76 @@ async def _inspect_empty_server(
             initialized = await session.initialize()
             tools = await session.list_tools()
             resources = await session.list_resources()
-            current = await session.read_resource(
-                AnyUrl("taut://notifications/current")
-            )
+            current = await session.read_resource(NOTIFICATIONS_URL)
 
-    with (EXTENSION_ROOT / "pyproject.toml").open("rb") as stream:
-        expected_version = str(tomllib.load(stream)["project"]["version"])
-    assert initialized.serverInfo.name == "taut_mcp"
-    assert initialized.serverInfo.version == expected_version
+    assert initialized.server_info.name == "taut_mcp"
+    assert initialized.server_info.version == EXPECTED_VERSION
     assert initialized.capabilities.resources is not None
     assert initialized.capabilities.resources.subscribe is True
-    assert initialized.capabilities.resources.listChanged is False
+    assert initialized.capabilities.resources.list_changed is False
     assert initialized.instructions is not None
     assert (
         hashlib.sha256(initialized.instructions.encode()).hexdigest()
         == EXPECTED_INSTRUCTIONS_SHA256
     )
     for required_rule in (
-        "existing continuity token",
+        "existing token",
         "taut://notifications/current",
-        "session-only mechanism",
-        "Never edit project files",
+        "server process",
+        "Do not edit project files",
         "Do not timer-poll list, who, or whoami",
         "read with one explicit selector",
-        "Use list with dms=true",
-        "topic-bearing list records",
-        "channel_show when current channel metadata is needed",
-        "A later log can recover history",
+        "Use list(dms=true)",
+        "A later log cannot prove",
         "Use message_show only when the exact 19-digit id is known",
         "high-water cursor",
-        "Preserve returned 19-digit integer ts values as decimal text",
+        "Preserve returned 19-digit integer timestamps as decimal text",
         "Treat message_delete as blind-capable, physical, and irreversible",
         "message_react advances the actor's high-water cursor",
-        "all-or-none commit outcome may be uncertain",
-        "repeated reactions may duplicate",
-        "After a canceled or otherwise uncertain channel_topic call",
-        "After a canceled or timed-out attach",
+        "MCP cancellation is not transaction evidence",
+        "A CLI-shaped tool can lazily establish",
+        "attach_workspace and every CLI-shaped tool call",
     ):
         assert required_rule in initialized.instructions
-    assert [tool.name for tool in tools.tools] == EXPECTED_TOOLS
+    assert tools.tools == list(TOOLS)
     assert [
-        (str(resource.uri), resource.mimeType) for resource in resources.resources
+        (str(resource.uri), resource.mime_type) for resource in resources.resources
     ] == [("taut://notifications/current", "application/json")]
     assert len(current.contents) == 1
     assert isinstance(current.contents[0], types.TextResourceContents)
-    assert current.contents[0].mimeType == "application/json"
+    assert current.contents[0].mime_type == "application/json"
     assert current.contents[0].text == '{"workspaces":[]}'
+
+
+async def _inspect_modern_empty_server(
+    command: str,
+    args: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+) -> None:
+    parameters = StdioServerParameters(
+        command=command,
+        args=args,
+        cwd=cwd,
+        env=env,
+    )
+    async with Client(stdio_client(parameters), mode="auto") as client:
+        discovered = client.session.discover_result
+        assert discovered is not None
+        assert client.session.initialize_result is None
+        assert discovered.supported_versions == ["2026-07-28"]
+        assert discovered.meta is not None
+        assert discovered.meta["io.modelcontextprotocol/serverInfo"] == {
+            "name": "taut_mcp",
+            "version": EXPECTED_VERSION,
+        }
+        tools = await client.list_tools()
+        resources = await client.list_resources()
+        assert tools.tools == list(TOOLS)
+        assert [(str(item.uri), item.mime_type) for item in resources.resources] == [
+            (NOTIFICATIONS_URL, "application/json")
+        ]
 
 
 @pytest.mark.timeout(10)
@@ -129,6 +142,175 @@ def test_empty_stdio_server_initializes_with_fixed_manifest() -> None:
             env=os.environ.copy(),
         )
     )
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(15)
+def test_modern_discovery_lazy_identity_and_subscription_share_one_server(
+    tmp_path: Path,
+) -> None:
+    """[MCP-3]/[MCP-4]/[MCP-8] Modern stdio needs no initialize handshake."""
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    database = workspace / ".taut.db"
+    TautClient.init(db_path=database)
+    selected = TautClient(db_path=database, as_name="selected")
+    selected.join("general")
+    member = selected.last_created_member
+    assert member is not None and member.token is not None
+    selected.close()
+
+    async def scenario() -> None:
+        parameters = StdioServerParameters(
+            command=sys.executable,
+            args=["-m", "taut_mcp"],
+            cwd=EXTENSION_ROOT,
+            env=os.environ.copy(),
+        )
+        async with Client(stdio_client(parameters), mode="auto") as client:
+
+            def assert_complete(result: object) -> None:
+                typed = cast(Any, result)
+                assert typed.result_type == "complete"
+                assert typed.meta is not None
+                assert typed.meta["io.modelcontextprotocol/serverInfo"] == {
+                    "name": "taut_mcp",
+                    "version": EXPECTED_VERSION,
+                }
+
+            discovered = client.session.discover_result
+            assert discovered is not None
+            assert client.session.initialize_result is None
+            assert_complete(discovered)
+            assert discovered.supported_versions == ["2026-07-28"]
+            assert discovered.ttl_ms == 3_600_000
+            assert discovered.cache_scope == "public"
+            assert discovered.capabilities.tools is not None
+            assert discovered.capabilities.tools.list_changed is False
+            assert discovered.capabilities.resources is not None
+            assert discovered.capabilities.resources.subscribe is True
+            assert discovered.capabilities.resources.list_changed is False
+            assert discovered.meta is not None
+            assert discovered.meta["io.modelcontextprotocol/serverInfo"] == {
+                "name": "taut_mcp",
+                "version": EXPECTED_VERSION,
+            }
+
+            tools = await client.list_tools()
+            resources = await client.list_resources()
+            assert_complete(tools)
+            assert_complete(resources)
+            assert tools.tools == list(TOOLS)
+            assert tools.ttl_ms == 300_000
+            assert tools.cache_scope == "public"
+            assert resources.ttl_ms == 300_000
+            assert resources.cache_scope == "public"
+
+            async with (
+                client.listen(resource_subscriptions=[NOTIFICATIONS_URL]) as first,
+                client.listen(resource_subscriptions=[NOTIFICATIONS_URL]) as second,
+                client.listen(
+                    resource_subscriptions=["taut://notifications/unmatched"]
+                ) as unmatched,
+            ):
+                result = await client.call_tool(
+                    "whoami",
+                    {
+                        "workspace": str(workspace),
+                        "token": member.token,
+                    },
+                )
+                assert_complete(result)
+                assert result.is_error is False
+                assert result.structured_content is not None
+                canonical = str(result.structured_content["workspace"])
+                first_event, second_event = await asyncio.gather(
+                    anext(first),
+                    anext(second),
+                )
+                assert isinstance(first_event, ResourceUpdated)
+                assert isinstance(second_event, ResourceUpdated)
+                assert first_event.uri == NOTIFICATIONS_URL
+                assert second_event.uri == NOTIFICATIONS_URL
+                assert first.subscription_id != second.subscription_id
+                with pytest.raises(TimeoutError):
+                    await asyncio.wait_for(anext(unmatched), timeout=0.1)
+
+            detached = await client.call_tool(
+                "detach_workspace",
+                {"workspace": canonical},
+            )
+            assert_complete(detached)
+            assert detached.is_error is False
+            async with client.listen(
+                resource_subscriptions=[NOTIFICATIONS_URL]
+            ) as resumed:
+                reattached = await client.call_tool(
+                    "attach_workspace",
+                    {
+                        "workspace": str(workspace),
+                        "token": member.token,
+                    },
+                )
+                assert_complete(reattached)
+                resumed_event = await anext(resumed)
+                assert isinstance(resumed_event, ResourceUpdated)
+                assert resumed_event.uri == NOTIFICATIONS_URL
+
+            with pytest.raises(MCPError) as missing:
+                await client.read_resource("taut://notifications/missing")
+            assert missing.value.error.code == -32602
+
+            current = await client.read_resource(NOTIFICATIONS_URL)
+            assert_complete(current)
+            assert current.ttl_ms == 0
+            assert current.cache_scope == "private"
+            assert isinstance(current.contents[0], types.TextResourceContents)
+            assert canonical in current.contents[0].text
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("mode", ["legacy", "auto"])
+@pytest.mark.timeout(10)
+def test_both_eras_share_omitted_empty_and_invalid_argument_contract(
+    mode: str,
+) -> None:
+    """[MCP-5]/[MCP-6] SDK adapters share one application validator."""
+
+    async def scenario() -> None:
+        parameters = StdioServerParameters(
+            command=sys.executable,
+            args=["-m", "taut_mcp"],
+            cwd=EXTENSION_ROOT,
+            env=os.environ.copy(),
+        )
+        async with Client(stdio_client(parameters), mode=mode) as client:
+            omitted = await client.call_tool("list_workspaces")
+            explicit_empty = await client.call_tool("list_workspaces", {})
+            assert omitted.is_error is False
+            assert explicit_empty.is_error is False
+            assert omitted.structured_content == explicit_empty.structured_content
+
+            for invalid in (
+                None,
+                {},
+                {"workspace": "/tmp/example"},
+                {
+                    "workspace": "/tmp/example",
+                    "token": "existing-token",
+                    "unexpected": True,
+                },
+            ):
+                rejected = await client.call_tool("whoami", invalid)
+                assert rejected.is_error is True
+                assert isinstance(rejected.content[0], types.TextContent)
+                assert rejected.content[0].text == (
+                    "invalid tool arguments; inspect the tool schema and retry"
+                )
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.timeout(10)
@@ -163,9 +345,7 @@ def test_malformed_frame_stays_protocol_clean_and_does_not_traceback() -> None:
         timeout=5,
     )
     assert completed.returncode == 0
-    output_lines = completed.stdout.splitlines()
-    assert output_lines
-    assert all(isinstance(json.loads(line), dict) for line in output_lines)
+    assert completed.stdout == ""
     assert "Traceback" not in completed.stderr
     assert "sensitive" not in completed.stderr
 
@@ -329,11 +509,11 @@ async def _exercise_workspace_lifecycle(
                 "attach_workspace",
                 {"workspace": str(workspace), "token": token},
             )
-            assert attached.structuredContent is not None
+            assert attached.structured_content is not None
             canonical = os.path.realpath(workspace)
             record = {
                 "backend": "sqlite",
-                "member_id": attached.structuredContent["records"][0]["member_id"],
+                "member_id": attached.structured_content["records"][0]["member_id"],
                 "name": "selected",
                 "status": "ready",
                 "workspace": canonical,
@@ -346,8 +526,8 @@ async def _exercise_workspace_lifecycle(
                 "warnings": [],
                 "workspace": canonical,
             }
-            assert attached.isError is False
-            assert attached.structuredContent == expected_attached
+            assert attached.is_error is False
+            assert attached.structured_content == expected_attached
             assert isinstance(attached.content[0], types.TextContent)
             assert attached.content[0].text == json.dumps(
                 expected_attached,
@@ -357,7 +537,7 @@ async def _exercise_workspace_lifecycle(
             )
 
             listed = await session.call_tool("list_workspaces", {})
-            assert listed.structuredContent == {
+            assert listed.structured_content == {
                 **expected_attached,
                 "workspace": None,
             }
@@ -383,12 +563,12 @@ async def _exercise_workspace_lifecycle(
             detached = await session.call_tool(
                 "detach_workspace", {"workspace": canonical}
             )
-            assert detached.structuredContent == {
+            assert detached.structured_content == {
                 **expected_attached,
                 "records": [{**record, "status": "detached"}],
             }
             listed_after = await session.call_tool("list_workspaces", {})
-            assert listed_after.structuredContent == {
+            assert listed_after.structured_content == {
                 "empty": True,
                 "guidance": [],
                 "record_type": "workspace",
@@ -399,7 +579,7 @@ async def _exercise_workspace_lifecycle(
             missing_detach = await session.call_tool(
                 "detach_workspace", {"workspace": canonical}
             )
-            assert missing_detach.structuredContent == {
+            assert missing_detach.structured_content == {
                 "empty": True,
                 "guidance": [],
                 "record_type": "workspace",
@@ -505,23 +685,35 @@ def test_two_stdio_processes_keep_explicit_workspace_identities_isolated(
                                 },
                             ),
                         )
-                        assert first_attach.structuredContent is not None
-                        assert second_attach.structuredContent is not None
+                        assert first_attach.structured_content is not None
+                        assert second_attach.structured_content is not None
                         canonical = os.path.realpath(workspace)
                         first_identity, second_identity = await asyncio.gather(
-                            first_session.call_tool("whoami", {"workspace": canonical}),
+                            first_session.call_tool(
+                                "whoami",
+                                {
+                                    "workspace": canonical,
+                                    "token": first_member.token,
+                                },
+                            ),
                             second_session.call_tool(
-                                "whoami", {"workspace": canonical}
+                                "whoami",
+                                {
+                                    "workspace": canonical,
+                                    "token": second_member.token,
+                                },
                             ),
                         )
-                        assert first_identity.structuredContent is not None
-                        assert second_identity.structuredContent is not None
+                        assert first_identity.structured_content is not None
+                        assert second_identity.structured_content is not None
                         assert (
-                            first_identity.structuredContent["records"][0]["member_id"]
+                            first_identity.structured_content["records"][0]["member_id"]
                             == first_member.member_id
                         )
                         assert (
-                            second_identity.structuredContent["records"][0]["member_id"]
+                            second_identity.structured_content["records"][0][
+                                "member_id"
+                            ]
                             == second_member.member_id
                         )
 
@@ -585,7 +777,7 @@ def test_hostile_path_and_notification_content_remain_protocol_data(
                         "attach_workspace",
                         {"workspace": str(workspace), "token": member.token},
                     )
-                    assert attached.isError is False
+                    assert attached.is_error is False
                     current = await session.read_resource(NOTIFICATIONS_URL)
                     assert isinstance(current.contents[0], types.TextResourceContents)
                     parsed = json.loads(current.contents[0].text)
@@ -638,10 +830,8 @@ def test_stdio_resource_subscription_is_edge_only_and_recovers_latest_state(
         updates: asyncio.Queue[str] = asyncio.Queue()
 
         async def handle_message(message: object) -> None:
-            if not isinstance(message, types.ServerNotification):
-                return
-            if isinstance(message.root, types.ResourceUpdatedNotification):
-                updates.put_nowait(str(message.root.params.uri))
+            if isinstance(message, types.ResourceUpdatedNotification):
+                updates.put_nowait(str(message.params.uri))
 
         parameters = StdioServerParameters(
             command=sys.executable,
@@ -655,7 +845,7 @@ def test_stdio_resource_subscription_is_edge_only_and_recovers_latest_state(
                 write_stream,
                 message_handler=handle_message,
             ) as session:
-                with pytest.raises(McpError) as preinitialized:
+                with pytest.raises(MCPError) as preinitialized:
                     await session.subscribe_resource(NOTIFICATIONS_URL)
                 assert preinitialized.value.error.code == -32602
                 await session.initialize()
@@ -665,7 +855,7 @@ def test_stdio_resource_subscription_is_edge_only_and_recovers_latest_state(
                     "attach_workspace",
                     {"workspace": str(workspace), "token": member.token},
                 )
-                assert attached.isError is False
+                assert attached.is_error is False
                 assert await asyncio.wait_for(updates.get(), timeout=1) == str(
                     NOTIFICATIONS_URL
                 )
@@ -700,13 +890,13 @@ def test_stdio_resource_subscription_is_edge_only_and_recovers_latest_state(
                 await asyncio.sleep(0.1)
                 assert updates.empty()
 
-                missing = AnyUrl("taut://notifications/missing")
+                missing = "taut://notifications/missing"
                 for operation in (
                     session.read_resource,
                     session.subscribe_resource,
                     session.unsubscribe_resource,
                 ):
-                    with pytest.raises(McpError) as raised:
+                    with pytest.raises(MCPError) as raised:
                         await operation(missing)
                     assert raised.value.error.code == -32002
                     assert raised.value.error.message == "Resource not found"
@@ -749,7 +939,7 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
             async with ClientSession(read_stream, write_stream) as session:
                 await session.initialize()
                 listed_tools = await session.list_tools()
-                schemas = {tool.name: tool.outputSchema for tool in listed_tools.tools}
+                schemas = {tool.name: tool.output_schema for tool in listed_tools.tools}
                 attached = await session.call_tool(
                     "attach_workspace",
                     {"workspace": str(workspace), "token": member.token},
@@ -762,29 +952,33 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                 ) -> dict[str, object]:
                     result = await session.call_tool(
                         name,
-                        {"workspace": canonical, **arguments},
+                        {
+                            "workspace": canonical,
+                            "token": member.token,
+                            **arguments,
+                        },
                     )
-                    assert result.isError is False
-                    assert result.structuredContent is not None
+                    assert result.is_error is False
+                    assert result.structured_content is not None
                     schema = schemas[name]
                     assert schema is not None
-                    validate(instance=result.structuredContent, schema=schema)
+                    validate(instance=result.structured_content, schema=schema)
                     assert len(result.content) == 1
                     assert isinstance(result.content[0], types.TextContent)
                     assert result.content[0].text == json.dumps(
-                        result.structuredContent,
+                        result.structured_content,
                         ensure_ascii=False,
                         sort_keys=True,
                         separators=(",", ":"),
                     )
-                    return result.structuredContent
+                    return cast(dict[str, object], result.structured_content)
 
-                assert attached.isError is False
-                assert attached.structuredContent is not None
+                assert attached.is_error is False
+                assert attached.structured_content is not None
                 attach_schema = schemas["attach_workspace"]
                 assert attach_schema is not None
                 validate(
-                    instance=attached.structuredContent,
+                    instance=attached.structured_content,
                     schema=attach_schema,
                 )
                 for invalid_limit in (0, 1001):
@@ -792,14 +986,15 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                         "read",
                         {
                             "workspace": canonical,
+                            "token": member.token,
                             "thread": "general",
                             "limit": invalid_limit,
                         },
                     )
-                    assert invalid_read.isError is True
+                    assert invalid_read.is_error is True
                     assert isinstance(invalid_read.content[0], types.TextContent)
-                    assert invalid_read.content[0].text.startswith(
-                        "Input validation error:"
+                    assert invalid_read.content[0].text == (
+                        "invalid tool arguments; inspect the tool schema and retry"
                     )
                 for invalid_thread in (
                     "dm.opaque",
@@ -811,14 +1006,15 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                         "read",
                         {
                             "workspace": canonical,
+                            "token": member.token,
                             "thread": invalid_thread,
                             "limit": 1,
                         },
                     )
-                    assert invalid_read.isError is True
+                    assert invalid_read.is_error is True
                     assert isinstance(invalid_read.content[0], types.TextContent)
-                    assert invalid_read.content[0].text.startswith(
-                        "Input validation error:"
+                    assert invalid_read.content[0].text == (
+                        "invalid tool arguments; inspect the tool schema and retry"
                     )
                 for tool_name in (
                     "message_show",
@@ -836,6 +1032,7 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                             tool_name,
                             {
                                 "workspace": canonical,
+                                "token": member.token,
                                 "msg_id": invalid_id,
                                 **(
                                     {"reaction": "ack"}
@@ -844,13 +1041,13 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                                 ),
                             },
                         )
-                        assert invalid_exact.isError is True
+                        assert invalid_exact.is_error is True
                         assert isinstance(
                             invalid_exact.content[0],
                             types.TextContent,
                         )
-                        assert invalid_exact.content[0].text.startswith(
-                            "Input validation error:"
+                        assert invalid_exact.content[0].text == (
+                            "invalid tool arguments; inspect the tool schema and retry"
                         )
                 for invalid_reaction in (
                     "",
@@ -866,32 +1063,34 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                         "message_react",
                         {
                             "workspace": canonical,
+                            "token": member.token,
                             "msg_id": "1234567890123456789",
                             "reaction": invalid_reaction,
                         },
                     )
-                    assert invalid_react.isError is True
+                    assert invalid_react.is_error is True
                     assert isinstance(invalid_react.content[0], types.TextContent)
-                    assert invalid_react.content[0].text.startswith(
-                        "Input validation error:"
+                    assert invalid_react.content[0].text == (
+                        "invalid tool arguments; inspect the tool schema and retry"
                     )
                 for invalid_topic in ("x" * 501, "a\nb", "a\rb"):
                     invalid_channel_topic = await session.call_tool(
                         "channel_topic",
                         {
                             "workspace": canonical,
+                            "token": member.token,
                             "channel": "general",
                             "topic": invalid_topic,
                         },
                     )
-                    assert invalid_channel_topic.isError is True
-                    assert invalid_channel_topic.structuredContent is None
+                    assert invalid_channel_topic.is_error is True
+                    assert invalid_channel_topic.structured_content is None
                     assert isinstance(
                         invalid_channel_topic.content[0],
                         types.TextContent,
                     )
-                    assert invalid_channel_topic.content[0].text.startswith(
-                        "Input validation error:"
+                    assert invalid_channel_topic.content[0].text == (
+                        "invalid tool arguments; inspect the tool schema and retry"
                     )
                 joined = await call("join", {"thread": "work", "persona": None})
                 assert joined["records"][0]["kind"] == "notice"  # type: ignore[index]
@@ -1017,23 +1216,25 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                     "channel_topic",
                     {
                         "workspace": canonical,
+                        "token": member.token,
                         "channel": "general",
                         "topic": "\u200b",
                     },
                 )
-                assert blank_topic.isError is True
-                assert blank_topic.structuredContent is None
+                assert blank_topic.is_error is True
+                assert blank_topic.structured_content is None
                 other.join("private")
                 nonmember_topic = await session.call_tool(
                     "channel_topic",
                     {
                         "workspace": canonical,
+                        "token": member.token,
                         "channel": "private",
                         "topic": "not allowed",
                     },
                 )
-                assert nonmember_topic.isError is True
-                assert nonmember_topic.structuredContent is None
+                assert nonmember_topic.is_error is True
+                assert nonmember_topic.structured_content is None
                 threads = await call("list", {"all": True})
                 thread_records = threads["records"]
                 assert isinstance(thread_records, list)
@@ -1064,10 +1265,15 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                 assert missing["records"] == []
                 invalid = await session.call_tool(
                     "join",
-                    {"workspace": canonical, "thread": "dm", "persona": None},
+                    {
+                        "workspace": canonical,
+                        "token": member.token,
+                        "thread": "dm",
+                        "persona": None,
+                    },
                 )
-                assert invalid.isError is True
-                assert invalid.structuredContent is None
+                assert invalid.is_error is True
+                assert invalid.structured_content is None
                 assert isinstance(invalid.content[0], types.TextContent)
                 assert invalid.content[0].text == "dm is reserved"
 
@@ -1078,7 +1284,7 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                     "delete_message",
                     "react_to_message",
                 ):
-                    with pytest.raises(McpError):
+                    with pytest.raises(MCPError):
                         await session.call_tool(unknown_tool, {})
 
         assert schemas["whoami"] is not None
@@ -1089,64 +1295,173 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
         other.close()
 
 
+@pytest.mark.parametrize("mode", ["legacy", "modern"])
 @pytest.mark.timeout(10)
-def test_stdio_cancellation_uses_sdk_standard_error_and_keeps_server_live() -> None:
-    """[MCP-5]/[MCP-11] Pin SDK 1.28.1's cancellation wire response."""
+def test_stdio_cancellation_sends_no_result_and_keeps_server_live(
+    mode: str,
+) -> None:
+    """[MCP-5]/[MCP-11] Canceled request ids never appear on either wire."""
 
     server_code = """
 import asyncio
-from taut_mcp import _connection_reactor
+from taut_mcp import _process_reactor
 
 async def blocked_attach(self, workspace, token):
     await asyncio.Event().wait()
 
-_connection_reactor.ConnectionReactor.attach_workspace = blocked_attach
+_process_reactor.ProcessReactor.attach_workspace = blocked_attach
 from taut_mcp.cli import main
 main([])
 """
+    process = subprocess.Popen(
+        [sys.executable, "-c", server_code],
+        cwd=EXTENSION_ROOT,
+        env=os.environ.copy(),
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    stdin = process.stdin
+    stdout = process.stdout
+    stderr = process.stderr
+    assert stdin is not None
+    assert stdout is not None
+    assert stderr is not None
+    received: queue.Queue[Any] = queue.Queue()
+    eof = object()
 
-    async def scenario() -> None:
-        parameters = StdioServerParameters(
-            command=sys.executable,
-            args=["-c", server_code],
-            cwd=EXTENSION_ROOT,
-            env=os.environ.copy(),
+    def read_stdout() -> None:
+        for line in stdout:
+            received.put_nowait(json.loads(line))
+        received.put_nowait(eof)
+
+    reader = threading.Thread(target=read_stdout, daemon=True)
+    reader.start()
+    frames: list[dict[str, object]] = []
+
+    def send(frame: dict[str, object]) -> None:
+        stdin.write(json.dumps(frame, sort_keys=True, separators=(",", ":")) + "\n")
+        stdin.flush()
+
+    def receive_until_id(request_id: int) -> dict[str, object]:
+        deadline = time.monotonic() + 5
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AssertionError(f"timed out waiting for response {request_id}")
+            item = received.get(timeout=remaining)
+            if item is eof:
+                raise AssertionError(
+                    f"server stdout closed before response {request_id}"
+                )
+            assert isinstance(item, dict)
+            frames.append(item)
+            if item.get("id") == request_id:
+                return item
+
+    modern_meta = {
+        PROTOCOL_VERSION_META_KEY: "2026-07-28",
+        CLIENT_CAPABILITIES_META_KEY: {},
+        CLIENT_INFO_META_KEY: {
+            "name": "raw-cancel-probe",
+            "version": "1",
+        },
+    }
+    try:
+        if mode == "legacy":
+            send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-11-25",
+                        "capabilities": {},
+                        "clientInfo": {
+                            "name": "raw-cancel-probe",
+                            "version": "1",
+                        },
+                    },
+                }
+            )
+            initialized = receive_until_id(1)
+            assert initialized["result"]["protocolVersion"] == "2025-11-25"  # type: ignore[index]
+            send(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "notifications/initialized",
+                }
+            )
+
+        call_params: dict[str, object] = {
+            "name": "attach_workspace",
+            "arguments": {
+                "workspace": str(EXTENSION_ROOT),
+                "token": "sensitive",
+            },
+        }
+        live_params: dict[str, object] = {
+            "name": "list_workspaces",
+            "arguments": {},
+        }
+        if mode == "modern":
+            call_params["_meta"] = modern_meta
+            live_params["_meta"] = modern_meta
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": call_params,
+            }
         )
-        async with stdio_client(parameters) as (read_stream, write_stream):
-            async with ClientSession(read_stream, write_stream) as session:
-                await session.initialize()
-                request_id = session._request_id
-                call = asyncio.create_task(
-                    session.call_tool(
-                        "attach_workspace",
-                        {"workspace": str(EXTENSION_ROOT), "token": "sensitive"},
-                    )
-                )
-                await asyncio.sleep(0.05)
-                await session.send_notification(
-                    types.ClientNotification(
-                        types.CancelledNotification(
-                            params=types.CancelledNotificationParams(
-                                requestId=request_id,
-                                reason="test cancellation",
-                            )
-                        )
-                    )
-                )
+        send(
+            {
+                "jsonrpc": "2.0",
+                "method": "notifications/cancelled",
+                "params": {
+                    "requestId": 2,
+                    "reason": "test cancellation",
+                },
+            }
+        )
+        send(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": live_params,
+            }
+        )
+        live = receive_until_id(3)
+        assert live.get("result")
 
-                with pytest.raises(McpError) as raised:
-                    await call
-                assert raised.value.error.code == 0
-                assert raised.value.error.message == "Request cancelled"
-                listed = await session.call_tool("list_workspaces", {})
-                assert listed.isError is False
-
-    asyncio.run(scenario())
+        stdin.close()
+        assert process.wait(timeout=5) == 0
+        reader.join(timeout=5)
+        assert not reader.is_alive()
+        while True:
+            item = received.get_nowait()
+            if item is eof:
+                break
+            assert isinstance(item, dict)
+            frames.append(item)
+        response_ids = {frame["id"] for frame in frames if "id" in frame}
+        assert 3 in response_ids
+        assert 2 not in response_ids
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+        diagnostic = stderr.read()
+        assert "Traceback" not in diagnostic
 
 
 @pytest.mark.sqlite_only
 @pytest.mark.timeout(15)
-def test_stdio_started_command_cancellation_reports_standard_error_and_commits(
+def test_stdio_started_command_cancellation_sends_no_result_and_commits(
     tmp_path: Path,
 ) -> None:
     """[MCP-5]/[MCP-11] Wire cancellation does not roll back started work."""
@@ -1196,18 +1511,21 @@ main([])
                     "attach_workspace",
                     {"workspace": str(workspace), "token": member.token},
                 )
-                assert attached.structuredContent is not None
-                canonical = str(attached.structuredContent["workspace"])
+                assert attached.structured_content is not None
+                canonical = str(attached.structured_content["workspace"])
 
                 async def cancel_started(
                     name: str,
                     arguments: dict[str, object],
                 ) -> None:
-                    request_id = session._request_id
                     call = asyncio.create_task(
                         session.call_tool(
                             name,
-                            {"workspace": canonical, **arguments},
+                            {
+                                "workspace": canonical,
+                                "token": member.token,
+                                **arguments,
+                            },
                         )
                     )
                     marker = markers / name
@@ -1216,20 +1534,9 @@ main([])
                         if asyncio.get_running_loop().time() >= deadline:
                             raise AssertionError("child command did not start")
                         await asyncio.sleep(0.01)
-                    await session.send_notification(
-                        types.ClientNotification(
-                            types.CancelledNotification(
-                                params=types.CancelledNotificationParams(
-                                    requestId=request_id,
-                                    reason="test started cancellation",
-                                )
-                            )
-                        )
-                    )
-                    with pytest.raises(McpError) as raised:
+                    call.cancel()
+                    with pytest.raises(asyncio.CancelledError):
                         await call
-                    assert raised.value.error.code == 0
-                    assert raised.value.error.message == "Request cancelled"
 
                 await cancel_started(
                     "say",
@@ -1244,22 +1551,23 @@ main([])
                     "log",
                     {
                         "workspace": canonical,
+                        "token": member.token,
                         "thread": "general",
                         "since": None,
                         "limit": 100,
                     },
                 )
-                assert history.isError is False
-                assert history.structuredContent is not None
+                assert history.is_error is False
+                assert history.structured_content is not None
                 assert any(
                     record["text"] == "committed despite canceled response"
-                    for record in history.structuredContent["records"]
+                    for record in history.structured_content["records"]
                 )
                 live = await session.call_tool(
                     "whoami",
-                    {"workspace": canonical},
+                    {"workspace": canonical, "token": member.token},
                 )
-                assert live.isError is False
+                assert live.is_error is False
 
                 await cancel_started(
                     "channel_topic",
@@ -1268,12 +1576,16 @@ main([])
                 await asyncio.sleep(0.5)
                 shown_channel = await session.call_tool(
                     "channel_show",
-                    {"workspace": canonical, "channel": "general"},
+                    {
+                        "workspace": canonical,
+                        "token": member.token,
+                        "channel": "general",
+                    },
                 )
-                assert shown_channel.isError is False
-                assert shown_channel.structuredContent is not None
+                assert shown_channel.is_error is False
+                assert shown_channel.structured_content is not None
                 assert (
-                    shown_channel.structuredContent["records"][0]["topic"]
+                    shown_channel.structured_content["records"][0]["topic"]
                     == "committed topic"
                 )
 
@@ -1341,8 +1653,8 @@ main([])
                     "attach_workspace",
                     {"workspace": str(workspace), "token": member.token},
                 )
-                assert attached.structuredContent is not None
-                canonical = str(attached.structuredContent["workspace"])
+                assert attached.structured_content is not None
+                canonical = str(attached.structured_content["workspace"])
 
                 async def call_when_ready(
                     name: str,
@@ -1352,9 +1664,13 @@ main([])
                     while True:
                         result = await session.call_tool(
                             name,
-                            {"workspace": canonical, **arguments},
+                            {
+                                "workspace": canonical,
+                                "token": member.token,
+                                **arguments,
+                            },
                         )
-                        if not result.isError:
+                        if not result.is_error:
                             return result
                         assert isinstance(result.content[0], types.TextContent)
                         assert result.content[0].text == (
@@ -1369,29 +1685,24 @@ main([])
                     arguments: dict[str, object],
                     marker: str,
                 ) -> None:
-                    request_id = session._request_id
                     call = asyncio.create_task(
-                        session.call_tool(name, {"workspace": canonical, **arguments})
+                        session.call_tool(
+                            name,
+                            {
+                                "workspace": canonical,
+                                "token": member.token,
+                                **arguments,
+                            },
+                        )
                     )
                     deadline = asyncio.get_running_loop().time() + 5
                     while not (markers / marker).exists():
                         if asyncio.get_running_loop().time() >= deadline:
                             raise AssertionError(f"{marker} effect did not start")
                         await asyncio.sleep(0.01)
-                    await session.send_notification(
-                        types.ClientNotification(
-                            types.CancelledNotification(
-                                params=types.CancelledNotificationParams(
-                                    requestId=request_id,
-                                    reason="test committed cancellation",
-                                )
-                            )
-                        )
-                    )
-                    with pytest.raises(McpError) as raised:
+                    call.cancel()
+                    with pytest.raises(asyncio.CancelledError):
                         await call
-                    assert raised.value.error.code == 0
-                    assert raised.value.error.message == "Request cancelled"
 
                 await cancel_after_effect("inbox", {"limit": 1000}, "inbox")
                 history = await call_when_ready(
@@ -1405,10 +1716,10 @@ main([])
                 current = await session.read_resource(NOTIFICATIONS_URL)
                 assert isinstance(current.contents[0], types.TextResourceContents)
                 assert '"notifications":[]' in current.contents[0].text
-                assert history.structuredContent is not None
+                assert history.structured_content is not None
                 assert any(
                     record["text"] == "pointer body @selected"
-                    for record in history.structuredContent["records"]
+                    for record in history.structured_content["records"]
                 )
 
                 other.say("general", "explicit cursor body")
@@ -1421,24 +1732,25 @@ main([])
                     "read",
                     {"thread": "general", "limit": 100},
                 )
-                assert explicit_retry.structuredContent is not None
+                assert explicit_retry.structured_content is not None
                 assert all(
                     record["text"] != "explicit cursor body"
-                    for record in explicit_retry.structuredContent["records"]
+                    for record in explicit_retry.structured_content["records"]
                 )
                 history_after = await session.call_tool(
                     "log",
                     {
                         "workspace": canonical,
+                        "token": member.token,
                         "thread": "general",
                         "since": None,
                         "limit": 100,
                     },
                 )
-                assert history_after.structuredContent is not None
+                assert history_after.structured_content is not None
                 assert any(
                     record["text"] == "explicit cursor body"
-                    for record in history_after.structuredContent["records"]
+                    for record in history_after.structured_content["records"]
                 )
 
                 other.say("@selected", "direct cursor body")
@@ -1448,10 +1760,10 @@ main([])
                     "read-bare",
                 )
                 bare_retry = await call_when_ready("read", {"limit": 100})
-                assert bare_retry.structuredContent is not None
+                assert bare_retry.structured_content is not None
                 assert all(
                     record["text"] != "direct cursor body"
-                    for record in bare_retry.structuredContent["records"]
+                    for record in bare_retry.structured_content["records"]
                 )
 
     try:
@@ -1467,17 +1779,17 @@ def test_stdio_validation_precedes_charge_and_resource_uses_numeric_rate_error()
     """[MCP-10] Schema/allowlist checks are free; valid requests share one bucket."""
 
     server_code = """
-from taut_mcp import _connection_reactor
+from taut_mcp import _process_reactor
 
 def two_request_bucket(self):
     count = getattr(self, "_test_charge_count", 0) + 1
     self._test_charge_count = count
     if count > 2:
-        raise _connection_reactor.WorkspaceToolError(
-            _connection_reactor.RATE_LIMIT_EXCEEDED
+        raise _process_reactor.WorkspaceToolError(
+            _process_reactor.RATE_LIMIT_EXCEEDED
         )
 
-_connection_reactor.ConnectionReactor.charge_request = two_request_bucket
+_process_reactor.ProcessReactor.charge_request = two_request_bucket
 from taut_mcp.cli import main
 main([])
 """
@@ -1496,46 +1808,86 @@ main([])
                     "list_workspaces",
                     {"unexpected": True},
                 )
-                assert invalid.isError is True
+                assert invalid.is_error is True
                 assert isinstance(invalid.content[0], types.TextContent)
-                assert invalid.content[0].text.startswith("Input validation error:")
-                with pytest.raises(McpError):
+                assert invalid.content[0].text == (
+                    "invalid tool arguments; inspect the tool schema and retry"
+                )
+                with pytest.raises(MCPError):
                     await session.call_tool("not_a_tool", {})
 
                 first_charged = await session.call_tool("list_workspaces", {})
-                assert first_charged.isError is False
+                assert first_charged.is_error is False
                 missing_workspace = await session.call_tool(
                     "message_show",
                     {
                         "workspace": "/not-attached",
+                        "token": "existing-token",
                         "msg_id": "1234567890123456789",
                     },
                 )
-                assert missing_workspace.isError is True
+                assert missing_workspace.is_error is True
                 assert isinstance(missing_workspace.content[0], types.TextContent)
                 assert missing_workspace.content[0].text == (
-                    "workspace not attached; use list_workspaces and the exact "
-                    "canonical identifier"
+                    "workspace project not found; initialize Taut there or choose "
+                    "another directory"
                 )
                 limited_tool = await session.call_tool(
                     "message_delete",
                     {
                         "workspace": "/not-attached",
+                        "token": "existing-token",
                         "msg_id": "1234567890123456789",
                     },
                 )
-                assert limited_tool.isError is True
+                assert limited_tool.is_error is True
                 assert isinstance(limited_tool.content[0], types.TextContent)
                 assert limited_tool.content[0].text == (
                     "rate limit exceeded; retry after backoff"
                 )
 
-                with pytest.raises(McpError) as limited_resource:
+                with pytest.raises(MCPError) as limited_resource:
                     await session.read_resource(NOTIFICATIONS_URL)
-                assert limited_resource.value.error.code == -32050
+                assert limited_resource.value.error.code == -31999
                 assert limited_resource.value.error.message == (
                     "rate limit exceeded; retry after backoff"
                 )
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.timeout(10)
+def test_resource_polling_can_starve_tools_and_process_restart_resets_bucket() -> None:
+    """[MCP-10] One process bucket covers resources and resets with the process."""
+
+    server_code = """
+from taut_mcp import _process_reactor
+_process_reactor.BUCKET_REFILL_PER_SECOND = 0.0
+from taut_mcp.cli import main
+main([])
+"""
+    parameters = StdioServerParameters(
+        command=sys.executable,
+        args=["-c", server_code],
+        cwd=EXTENSION_ROOT,
+        env=os.environ.copy(),
+    )
+
+    async def scenario() -> None:
+        async with Client(stdio_client(parameters), mode="auto") as client:
+            for _ in range(40):
+                current = await client.read_resource(NOTIFICATIONS_URL)
+                assert isinstance(current.contents[0], types.TextResourceContents)
+            starved = await client.call_tool("list_workspaces")
+            assert starved.is_error is True
+            assert isinstance(starved.content[0], types.TextContent)
+            assert starved.content[0].text == (
+                "rate limit exceeded; retry after backoff"
+            )
+
+        async with Client(stdio_client(parameters), mode="auto") as restarted:
+            recovered = await restarted.call_tool("list_workspaces")
+            assert recovered.is_error is False
 
     asyncio.run(scenario())
 
@@ -1622,6 +1974,14 @@ def test_installed_wheel_initializes_through_console_script(tmp_path: Path) -> N
     isolated_env["PYTHONNOUSERSITE"] = "1"
     asyncio.run(
         _inspect_empty_server(
+            str(console),
+            [],
+            cwd=tmp_path,
+            env=isolated_env,
+        )
+    )
+    asyncio.run(
+        _inspect_modern_empty_server(
             str(console),
             [],
             cwd=tmp_path,

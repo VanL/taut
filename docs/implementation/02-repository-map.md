@@ -62,7 +62,7 @@ Quick pointers to the key guidance documents in this repository.
 | `docs/specs/02-taut-core.md` | Taut core spec: storage, threads, envelope, read model, surfaces, trust model |
 | `docs/specs/03-identity-addressing-notifications.md` | Identity, addressing, and notifications spec: member ids, names, DMs, queue namespace, rename |
 | `docs/specs/04-summon.md` | Summon extension spec: agent harness as member, injection ears, CLI mouth, adapters, session ledger, control plane |
-| `docs/specs/05-taut-mcp.md` | MCP extension spec: connection lifecycle, multi-workspace attachment, explicit tools, notification resource, subscriptions, and host hints |
+| `docs/specs/05-taut-mcp.md` | MCP extension spec: dual-era stdio lifecycle, process-local shared ensure, explicit identity-bearing tools, notification resource, legacy/modern subscriptions, and host hints |
 | `docs/plans/README.md` | Plan directory rules |
 | `docs/plans/2026-06-12-taut-foundation-plan.md` | Historical foundation implementation plan |
 | `docs/plans/2026-06-18-member-identity-addressing-plan.md` | Implemented plan for member ids, addressing, notifications, and channel rename |
@@ -89,6 +89,7 @@ Quick pointers to the key guidance documents in this repository.
 | `docs/plans/2026-07-27-message-show-delete-plan.md` | Reviewed implementation plan for exact message show/delete across the Python, CLI, and MCP surfaces |
 | `docs/plans/2026-07-28-message-react-plan.md` | Reviewed implementation plan for configured best-effort message reactions across Python, CLI, notification, and MCP surfaces |
 | `docs/plans/2026-07-28-direct-message-navigation-plan.md` | Completed implementation plan for actor-scoped DM route/stable-handle navigation, directory, rendering, watcher, and MCP behavior |
+| `docs/plans/2026-07-28-taut-mcp-dual-era-sessionless-plan.md` | Reviewed implementation plan for one SDK v2 server serving both MCP wire eras through explicit workspace-and-token continuity, shared ensure, and independent notification adapters |
 | `docs/plans/2026-07-28-summon-terminal-retirement-plan.md` | Reviewed implementation plan separating reusable adapter interruption from one-signal terminal retirement and making invalid raw coverage evidence fatal |
 | `docs/plans/2026-07-14-terminal-output-safety-plan.md` | Reviewed implementation plan for packaged and project-customizable terminal-text policy, public extension API, human renderer coverage, and raw PTY exemption |
 | `docs/plans/2026-07-14-blank-message-no-op-plan.md` | Reviewed implementation plan for the built-in Unicode blank-input guard, typed empty result, silent CLI exit 2, and Summon terminal-mode adaptation |
@@ -124,7 +125,7 @@ Quick pointers to the key guidance documents in this repository.
 | `tests/test_project_metadata_consistency.py` | Relational gate comparing constants, first-party floors, README pins, wheel names, and retained-lock versions to their owning package manifests |
 | `extensions/taut_pg/` | Separate `taut-pg` project with extension metadata, README, and PG-only tests |
 | `extensions/taut_summon/` | Separate `taut-summon` project: lazy public facade, typed controller/models and host-interaction seam, thin CLI renderer, driver, one-signal terminal-retirement adapters, ledger, control plane, persona, and real-process conformance suite |
-| `extensions/taut_mcp/` | Separate `taut-mcp` project: connection-scoped stdio server, master connection reactor, one owner-thread reactor per attached workspace, explicit tool schemas, notification resource, and optional Claude channel hint |
+| `extensions/taut_mcp/` | Separate `taut-mcp` project: dual-era stdio server, master process reactor, one owner-thread reactor per resident workspace, explicit workspace-plus-token schemas for identity-using tools, notification resource, legacy/modern subscription adapters, and optional legacy Claude channel hint |
 
 ## Skills
 

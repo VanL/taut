@@ -66,7 +66,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    """Parse launch-only flags and run the connection-scoped server."""
+    """Parse launch-only flags and run the process-scoped server."""
 
     parser = _parser()
     args = parser.parse_args(argv)

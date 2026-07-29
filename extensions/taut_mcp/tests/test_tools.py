@@ -17,8 +17,8 @@ import taut.identity as identity
 import taut_mcp._workspace_reactor as workspace_reactor
 from taut import MessageDeletion, Notification, TautClient, TautError
 from taut_mcp._commands import RECORD_TYPE_BY_TOOL, execute_command, record_object
-from taut_mcp._connection_reactor import (
-    ConnectionReactor,
+from taut_mcp._process_reactor import (
+    ProcessReactor,
     WorkspaceToolError,
     _notification_record,
     command_result,
@@ -116,10 +116,10 @@ def _assert_result(
     assert payload["guidance"] == ([] if guidance is None else guidance)
     assert payload["warnings"] == []
     schema = next(
-        tool.outputSchema
+        tool.output_schema
         for tool in TOOLS
-        if tool.outputSchema is not None
-        and tool.outputSchema["properties"]["record_type"].get("const") == record_type
+        if tool.output_schema is not None
+        and tool.output_schema["properties"]["record_type"].get("const") == record_type
     )
     validate(instance=payload, schema=schema)
 
@@ -285,8 +285,8 @@ def test_read_and_log_schemas_accept_chat_or_dm_selectors(
     tool = next(tool for tool in TOOLS if tool.name == tool_name)
 
     validate(
-        instance={"workspace": "/workspace", "thread": selector},
-        schema=tool.inputSchema,
+        instance={"workspace": "/workspace", "token": "secret", "thread": selector},
+        schema=tool.input_schema,
     )
 
 
@@ -309,8 +309,12 @@ def test_read_and_log_schemas_reject_malformed_dm_selectors(
 
     with pytest.raises(ValidationError):
         validate(
-            instance={"workspace": "/workspace", "thread": selector},
-            schema=tool.inputSchema,
+            instance={
+                "workspace": "/workspace",
+                "token": "secret",
+                "thread": selector,
+            },
+            schema=tool.input_schema,
         )
 
 
@@ -319,17 +323,27 @@ def test_list_schema_rejects_all_and_dms_together() -> None:
 
     with pytest.raises(ValidationError):
         validate(
-            instance={"workspace": "/workspace", "all": True, "dms": True},
-            schema=tool.inputSchema,
+            instance={
+                "workspace": "/workspace",
+                "token": "secret",
+                "all": True,
+                "dms": True,
+            },
+            schema=tool.input_schema,
         )
 
     for arguments in (
-        {"workspace": "/workspace"},
-        {"workspace": "/workspace", "all": True},
-        {"workspace": "/workspace", "dms": True},
-        {"workspace": "/workspace", "all": False, "dms": False},
+        {"workspace": "/workspace", "token": "secret"},
+        {"workspace": "/workspace", "token": "secret", "all": True},
+        {"workspace": "/workspace", "token": "secret", "dms": True},
+        {
+            "workspace": "/workspace",
+            "token": "secret",
+            "all": False,
+            "dms": False,
+        },
     ):
-        validate(instance=arguments, schema=tool.inputSchema)
+        validate(instance=arguments, schema=tool.input_schema)
 
 
 def test_message_deletion_record_encoding_is_closed_and_content_free() -> None:
@@ -413,12 +427,12 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
     other_owned = other.say("general", "not deletable by selected")
 
     async def scenario() -> None:
-        reactor = ConnectionReactor(asyncio.get_running_loop())
+        reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             attached = await reactor.attach_workspace(str(workspace), token)
             canonical = str(attached["workspace"])
 
-            joined = await reactor.execute_tool(
+            joined = await reactor._execute_ready_tool(
                 canonical,
                 "join",
                 {"thread": "work", "persona": "reviewer"},
@@ -427,7 +441,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
             assert joined["records"][0]["thread"] == "work"
             assert joined["records"][0]["kind"] == "notice"
 
-            left = await reactor.execute_tool(
+            left = await reactor._execute_ready_tool(
                 canonical,
                 "leave",
                 {"thread": "work"},
@@ -435,7 +449,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
             _assert_result(left, record_type="message", workspace=canonical)
             assert left["records"][0]["text"] == "selected left"
 
-            named = await reactor.execute_tool(
+            named = await reactor._execute_ready_tool(
                 canonical,
                 "set_name",
                 {"name": "renamed"},
@@ -444,7 +458,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
             assert named["records"][0]["name"] == "renamed"
             assert "token" not in named["records"][0]
 
-            said = await reactor.execute_tool(
+            said = await reactor._execute_ready_tool(
                 canonical,
                 "say",
                 {"target": "general", "text": "top level"},
@@ -452,7 +466,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
             _assert_result(said, record_type="message", workspace=canonical)
             parent_ts = said["records"][0]["ts"]
 
-            reacted = await reactor.execute_tool(
+            reacted = await reactor._execute_ready_tool(
                 canonical,
                 "message_react",
                 {"msg_id": str(parent_ts), "reaction": "ack"},
@@ -480,7 +494,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
                 "type": "reaction",
             }
 
-            missing_reaction = await reactor.execute_tool(
+            missing_reaction = await reactor._execute_ready_tool(
                 canonical,
                 "message_react",
                 {
@@ -496,7 +510,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
             )
             assert missing_reaction["records"] == []
 
-            replied = await reactor.execute_tool(
+            replied = await reactor._execute_ready_tool(
                 canonical,
                 "reply",
                 {
@@ -508,13 +522,13 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
             _assert_result(replied, record_type="message", workspace=canonical)
             assert replied["records"][0]["thread"] == f"general.{parent_ts}"
 
-            deletion_target = await reactor.execute_tool(
+            deletion_target = await reactor._execute_ready_tool(
                 canonical,
                 "say",
                 {"target": "general", "text": "delete through MCP"},
             )
             deletion_ts = deletion_target["records"][0]["ts"]
-            deleted = await reactor.execute_tool(
+            deleted = await reactor._execute_ready_tool(
                 canonical,
                 "message_delete",
                 {"msg_id": str(deletion_ts)},
@@ -528,7 +542,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
                 }
             ]
 
-            missing_show = await reactor.execute_tool(
+            missing_show = await reactor._execute_ready_tool(
                 canonical,
                 "message_show",
                 {"msg_id": "1234567890123456789"},
@@ -540,7 +554,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
             )
             assert missing_show["records"] == []
 
-            repeated_delete = await reactor.execute_tool(
+            repeated_delete = await reactor._execute_ready_tool(
                 canonical,
                 "message_delete",
                 {"msg_id": str(deletion_ts)},
@@ -552,7 +566,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
                 guidance=MESSAGE_NOT_DELETED_GUIDANCE,
             )
             assert repeated_delete["records"] == []
-            not_author = await reactor.execute_tool(
+            not_author = await reactor._execute_ready_tool(
                 canonical,
                 "message_delete",
                 {"msg_id": str(other_owned.ts)},
@@ -560,7 +574,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
             assert not_author == repeated_delete
 
             unread_after_reaction = other.say("general", "after reaction unread")
-            unread = await reactor.execute_tool(
+            unread = await reactor._execute_ready_tool(
                 canonical,
                 "read",
                 {"thread": "general", "limit": 1},
@@ -575,7 +589,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
             assert unread["records"][0]["ts"] == unread_after_reaction.ts
             assert unread["records"][0]["text"] == "after reaction unread"
 
-            shown = await reactor.execute_tool(
+            shown = await reactor._execute_ready_tool(
                 canonical,
                 "message_show",
                 {"msg_id": str(parent_ts)},
@@ -583,7 +597,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
             _assert_result(shown, record_type="message", workspace=canonical)
             assert shown["records"] == [said["records"][0]]
 
-            inbox = await reactor.execute_tool(
+            inbox = await reactor._execute_ready_tool(
                 canonical,
                 "inbox",
                 {"limit": 1000},
@@ -592,7 +606,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
             assert inbox["records"][0]["type"] == "mention"
             assert inbox["records"][0]["matched"] == "@selected"
 
-            history = await reactor.execute_tool(
+            history = await reactor._execute_ready_tool(
                 canonical,
                 "log",
                 {"thread": "general", "since": None, "limit": 1},
@@ -601,13 +615,13 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
             assert len(history["records"]) == 1
 
             with _tool_error("topic must not be blank"):
-                await reactor.execute_tool(
+                await reactor._execute_ready_tool(
                     canonical,
                     "channel_topic",
                     {"channel": "general", "topic": ""},
                 )
 
-            initial_channel = await reactor.execute_tool(
+            initial_channel = await reactor._execute_ready_tool(
                 canonical,
                 "channel_show",
                 {"channel": "general"},
@@ -629,7 +643,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
 
             history_before_topic = tuple(other.log("general", limit=1000))
             notifications_before_topic = tuple(other.peek_inbox())
-            topic = await reactor.execute_tool(
+            topic = await reactor._execute_ready_tool(
                 canonical,
                 "channel_topic",
                 {"channel": "general", "topic": "Current work"},
@@ -642,21 +656,21 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
             assert tuple(other.log("general", limit=1000)) == history_before_topic
             assert tuple(other.peek_inbox()) == notifications_before_topic
 
-            same_topic = await reactor.execute_tool(
+            same_topic = await reactor._execute_ready_tool(
                 canonical,
                 "channel_topic",
                 {"channel": "general", "topic": "Current work"},
             )
             assert same_topic == topic
 
-            shown_channel = await reactor.execute_tool(
+            shown_channel = await reactor._execute_ready_tool(
                 canonical,
                 "channel_show",
                 {"channel": "general"},
             )
             assert shown_channel == topic
 
-            missing_channel = await reactor.execute_tool(
+            missing_channel = await reactor._execute_ready_tool(
                 canonical,
                 "channel_show",
                 {"channel": "missing"},
@@ -668,7 +682,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
             )
             assert missing_channel["records"] == []
 
-            listed = await reactor.execute_tool(
+            listed = await reactor._execute_ready_tool(
                 canonical,
                 "list",
                 {"all": True},
@@ -689,7 +703,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
             )
             assert "topic" not in child
 
-            renamed = await reactor.execute_tool(
+            renamed = await reactor._execute_ready_tool(
                 canonical,
                 "channel_rename",
                 {"old_name": "general", "new_name": "main"},
@@ -698,7 +712,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
             assert renamed["records"][0]["thread"] == "main"
             assert renamed["records"][0]["topic"] == "Current work"
 
-            cleared = await reactor.execute_tool(
+            cleared = await reactor._execute_ready_tool(
                 canonical,
                 "channel_topic",
                 {"channel": "main", "topic": None},
@@ -714,7 +728,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
                 }
             ]
 
-            members = await reactor.execute_tool(
+            members = await reactor._execute_ready_tool(
                 canonical,
                 "who",
                 {"thread": "main"},
@@ -725,7 +739,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
                 "renamed",
             }
 
-            identity = await reactor.execute_tool(
+            identity = await reactor._execute_ready_tool(
                 canonical,
                 "whoami",
                 {},
@@ -734,7 +748,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
             assert identity["records"][0]["name"] == "renamed"
             assert "token" not in identity["records"][0]
 
-            empty = await reactor.execute_tool(
+            empty = await reactor._execute_ready_tool(
                 canonical,
                 "log",
                 {"thread": "missing", "since": None, "limit": 100},
@@ -743,7 +757,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
             assert empty["records"] == []
 
             with _tool_error("dm is reserved"):
-                await reactor.execute_tool(
+                await reactor._execute_ready_tool(
                     canonical,
                     "join",
                     {"thread": "dm", "persona": None},
@@ -772,7 +786,7 @@ def test_wrong_kind_channel_is_an_empty_channel_result(tmp_path: Path) -> None:
     client.close()
 
     async def scenario() -> None:
-        reactor = ConnectionReactor(asyncio.get_running_loop())
+        reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             attached = await reactor.attach_workspace(str(workspace), token)
             canonical = str(attached["workspace"])
@@ -784,7 +798,7 @@ def test_wrong_kind_channel_is_an_empty_channel_result(tmp_path: Path) -> None:
                 ),
             )
             for name, arguments in cases:
-                result = await reactor.execute_tool(canonical, name, arguments)
+                result = await reactor._execute_ready_tool(canonical, name, arguments)
                 _assert_result(
                     result,
                     record_type="channel",
@@ -812,7 +826,7 @@ def test_channel_show_does_not_refresh_notification_snapshot(
         raise AssertionError("channel_show inspected the notification queue")
 
     async def scenario() -> None:
-        reactor = ConnectionReactor(asyncio.get_running_loop())
+        reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             attached = await reactor.attach_workspace(str(workspace), token)
             canonical = str(attached["workspace"])
@@ -821,7 +835,7 @@ def test_channel_show_does_not_refresh_notification_snapshot(
                 "peek_inbox",
                 unexpected_peek,
             )
-            result = await reactor.execute_tool(
+            result = await reactor._execute_ready_tool(
                 canonical,
                 "channel_show",
                 {"channel": "general"},
@@ -864,7 +878,7 @@ def test_unexpected_channel_tool_fault_is_terminal(
         raise RuntimeError("private backend detail")
 
     async def scenario() -> None:
-        reactor = ConnectionReactor(asyncio.get_running_loop())
+        reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             attached = await reactor.attach_workspace(str(workspace), token)
             canonical = str(attached["workspace"])
@@ -874,7 +888,7 @@ def test_unexpected_channel_tool_fault_is_terminal(
                 unexpected_fault,
             )
             with _tool_error("workspace reactor failed; detach and reattach"):
-                await reactor.execute_tool(canonical, tool_name, arguments)
+                await reactor._execute_ready_tool(canonical, tool_name, arguments)
             assert reactor.list_workspaces()["records"][0]["status"] == "reactor_failed"
         finally:
             await reactor.aclose()
@@ -892,7 +906,7 @@ def test_channel_topic_identity_loss_uses_fixed_terminal_status(
     workspace, token = _workspace_with_two_members(tmp_path)
 
     async def scenario() -> None:
-        reactor = ConnectionReactor(asyncio.get_running_loop())
+        reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             attached = await reactor.attach_workspace(str(workspace), token)
             canonical = str(attached["workspace"])
@@ -907,7 +921,7 @@ def test_channel_topic_identity_loss_uses_fixed_terminal_status(
                 )
             admin.close()
             with _tool_error("workspace identity lost; detach and reattach"):
-                await reactor.execute_tool(
+                await reactor._execute_ready_tool(
                     canonical,
                     "channel_topic",
                     {"channel": "general", "topic": "lost"},
@@ -938,7 +952,7 @@ def test_channel_topic_recoverable_storage_error_keeps_workspace_ready(
         raise TautError("recoverable channel storage failure")
 
     async def scenario() -> None:
-        reactor = ConnectionReactor(asyncio.get_running_loop())
+        reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             attached = await reactor.attach_workspace(str(workspace), token)
             canonical = str(attached["workspace"])
@@ -948,7 +962,7 @@ def test_channel_topic_recoverable_storage_error_keeps_workspace_ready(
                 recoverable_failure,
             )
             with _tool_error("recoverable channel storage failure"):
-                await reactor.execute_tool(
+                await reactor._execute_ready_tool(
                     canonical,
                     "channel_topic",
                     {"channel": "general", "topic": "new"},
@@ -989,7 +1003,7 @@ def test_corrupt_topic_is_recoverable_tool_error_not_reactor_failure(
     client.close()
 
     async def scenario() -> None:
-        reactor = ConnectionReactor(asyncio.get_running_loop())
+        reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             attached = await reactor.attach_workspace(str(workspace), token)
             canonical = str(attached["workspace"])
@@ -1005,7 +1019,7 @@ def test_corrupt_topic_is_recoverable_tool_error_not_reactor_failure(
                     "taut_threads.meta.topic: expected exactly text, "
                     "updated_ts, and updated_by_id"
                 ):
-                    await reactor.execute_tool(canonical, name, arguments)
+                    await reactor._execute_ready_tool(canonical, name, arguments)
             listed = reactor.list_workspaces()
             assert listed["records"][0]["status"] == "ready"
         finally:
@@ -1036,13 +1050,13 @@ def test_show_message_advances_exact_thread_high_water_without_show_guidance(
         other.close()
 
     async def scenario() -> None:
-        reactor = ConnectionReactor(asyncio.get_running_loop())
+        reactor = ProcessReactor(asyncio.get_running_loop())
         observer = TautClient(db_path=db, token=token)
         try:
             canonical = str(
                 (await reactor.attach_workspace(str(workspace), token))["workspace"]
             )
-            shown = await reactor.execute_tool(
+            shown = await reactor._execute_ready_tool(
                 canonical,
                 "message_show",
                 {"msg_id": str(target.ts)},
@@ -1056,7 +1070,7 @@ def test_show_message_advances_exact_thread_high_water_without_show_guidance(
             )
             assert membership is not None
             assert membership["last_seen_ts"] == target.ts
-            unread = await reactor.execute_tool(
+            unread = await reactor._execute_ready_tool(
                 canonical,
                 "read",
                 {"thread": "general", "limit": 100},
@@ -1088,12 +1102,12 @@ def test_delete_message_unrelated_dm_is_content_free_and_indistinguishable(
         other.close()
 
     async def scenario() -> None:
-        reactor = ConnectionReactor(asyncio.get_running_loop())
+        reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             canonical = str(
                 (await reactor.attach_workspace(str(workspace), token))["workspace"]
             )
-            ineligible = await reactor.execute_tool(
+            ineligible = await reactor._execute_ready_tool(
                 canonical,
                 "message_delete",
                 {"msg_id": str(direct.ts)},
@@ -1103,7 +1117,7 @@ def test_delete_message_unrelated_dm_is_content_free_and_indistinguishable(
                 author.delete_message(str(direct.ts))
             finally:
                 author.close()
-            missing = await reactor.execute_tool(
+            missing = await reactor._execute_ready_tool(
                 canonical,
                 "message_delete",
                 {"msg_id": str(direct.ts)},
@@ -1133,7 +1147,7 @@ def test_message_tools_reject_in_pattern_signed_int64_overflow(
     workspace, token = _workspace_with_two_members(tmp_path)
 
     async def scenario() -> None:
-        reactor = ConnectionReactor(asyncio.get_running_loop())
+        reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             canonical = str(
                 (await reactor.attach_workspace(str(workspace), token))["workspace"]
@@ -1144,7 +1158,7 @@ def test_message_tools_reject_in_pattern_signed_int64_overflow(
                 "message_react",
             ):
                 with _tool_error("msg_id must be a full 19-digit message id"):
-                    await reactor.execute_tool(
+                    await reactor._execute_ready_tool(
                         canonical,
                         tool_name,
                         {
@@ -1209,7 +1223,7 @@ def test_attached_workspaces_freeze_independent_reaction_vocabularies(
     done_source_client.close()
 
     async def scenario() -> None:
-        reactor = ConnectionReactor(asyncio.get_running_loop())
+        reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             ack_canonical = str(
                 (await reactor.attach_workspace(str(ack_workspace), ack_token))[
@@ -1221,12 +1235,12 @@ def test_attached_workspaces_freeze_independent_reaction_vocabularies(
                     "workspace"
                 ]
             )
-            ack_result = await reactor.execute_tool(
+            ack_result = await reactor._execute_ready_tool(
                 ack_canonical,
                 "message_react",
                 {"msg_id": str(ack_source.ts), "reaction": "ack"},
             )
-            done_result = await reactor.execute_tool(
+            done_result = await reactor._execute_ready_tool(
                 done_canonical,
                 "message_react",
                 {"msg_id": str(done_source.ts), "reaction": "done"},
@@ -1235,20 +1249,20 @@ def test_attached_workspaces_freeze_independent_reaction_vocabularies(
             assert done_result["records"][0]["reaction"] == "done"
 
             with _tool_error("reaction must be one of: ack"):
-                await reactor.execute_tool(
+                await reactor._execute_ready_tool(
                     ack_canonical,
                     "message_react",
                     {"msg_id": str(ack_source.ts), "reaction": "done"},
                 )
             with _tool_error("reaction must be one of: done"):
-                await reactor.execute_tool(
+                await reactor._execute_ready_tool(
                     done_canonical,
                     "message_react",
                     {"msg_id": str(done_source.ts), "reaction": "ack"},
                 )
 
             configure(ack_workspace, "done")
-            frozen = await reactor.execute_tool(
+            frozen = await reactor._execute_ready_tool(
                 ack_canonical,
                 "message_react",
                 {"msg_id": str(ack_source.ts), "reaction": "ack"},
@@ -1260,7 +1274,7 @@ def test_attached_workspaces_freeze_independent_reaction_vocabularies(
                 str(ack_workspace),
                 ack_token,
             )
-            refreshed = await reactor.execute_tool(
+            refreshed = await reactor._execute_ready_tool(
                 str(reattached["workspace"]),
                 "message_react",
                 {"msg_id": str(ack_source.ts), "reaction": "done"},
@@ -1304,7 +1318,7 @@ def test_same_workspace_rejects_overlap_while_another_workspace_progresses(
     monkeypatch.setattr(workspace_reactor, "execute_command", delayed_execute)
 
     async def scenario() -> None:
-        reactor = ConnectionReactor(asyncio.get_running_loop())
+        reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             slow = str(
                 (await reactor.attach_workspace(str(slow_workspace), slow_token))[
@@ -1316,18 +1330,20 @@ def test_same_workspace_rejects_overlap_while_another_workspace_progresses(
                     "workspace"
                 ]
             )
-            blocked = asyncio.create_task(reactor.execute_tool(slow, "whoami", {}))
+            blocked = asyncio.create_task(
+                reactor._execute_ready_tool(slow, "whoami", {})
+            )
             assert await asyncio.to_thread(started.wait, 5)
 
             with _tool_error("workspace busy; retry after backoff"):
-                await reactor.execute_tool(slow, "who", {"thread": None})
+                await reactor._execute_ready_tool(slow, "who", {"thread": None})
             for tool_name in (
                 "message_show",
                 "message_delete",
                 "message_react",
             ):
                 with _tool_error("workspace busy; retry after backoff"):
-                    await reactor.execute_tool(
+                    await reactor._execute_ready_tool(
                         slow,
                         tool_name,
                         {
@@ -1343,7 +1359,7 @@ def test_same_workspace_rejects_overlap_while_another_workspace_progresses(
                 await reactor.detach_workspace(slow)
 
             independent = await asyncio.wait_for(
-                reactor.execute_tool(fast, "whoami", {}),
+                reactor._execute_ready_tool(fast, "whoami", {}),
                 timeout=2,
             )
             assert independent["records"][0]["name"] == "fast_member"
@@ -1386,14 +1402,14 @@ def test_cancel_before_child_start_is_a_no_op_and_releases_the_slot(
     monkeypatch.setattr(workspace_reactor.TautClient, "peek_inbox", delayed_peek)
 
     async def scenario() -> None:
-        reactor = ConnectionReactor(asyncio.get_running_loop())
+        reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             canonical = str(
                 (await reactor.attach_workspace(str(workspace), token))["workspace"]
             )
             assert await asyncio.to_thread(blocked_peek.wait, 5)
             canceled = asyncio.create_task(
-                reactor.execute_tool(
+                reactor._execute_ready_tool(
                     canonical,
                     "say",
                     {"target": "general", "text": "must not commit"},
@@ -1420,7 +1436,7 @@ def test_cancel_before_child_start_is_a_no_op_and_releases_the_slot(
                 )
             finally:
                 observer.close()
-            identity = await reactor.execute_tool(canonical, "whoami", {})
+            identity = await reactor._execute_ready_tool(canonical, "whoami", {})
             assert identity["records"][0]["name"] == "selected"
         finally:
             release_peek.set()
@@ -1452,13 +1468,13 @@ def test_cancel_after_child_start_discards_result_but_keeps_committed_state(
     monkeypatch.setattr(workspace_reactor, "execute_command", delayed_execute)
 
     async def scenario() -> None:
-        reactor = ConnectionReactor(asyncio.get_running_loop())
+        reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             canonical = str(
                 (await reactor.attach_workspace(str(workspace), token))["workspace"]
             )
             canceled = asyncio.create_task(
-                reactor.execute_tool(
+                reactor._execute_ready_tool(
                     canonical,
                     "say",
                     {"target": "general", "text": "commits after start"},
@@ -1483,7 +1499,7 @@ def test_cancel_after_child_start_discards_result_but_keeps_committed_state(
                 )
             finally:
                 observer.close()
-            identity = await reactor.execute_tool(canonical, "whoami", {})
+            identity = await reactor._execute_ready_tool(canonical, "whoami", {})
             assert identity["records"][0]["name"] == "selected"
         finally:
             release.set()
@@ -1540,7 +1556,7 @@ def test_canceled_started_dm_read_recovers_directory_and_history(
     )
 
     async def scenario() -> None:
-        reactor = ConnectionReactor(asyncio.get_running_loop())
+        reactor = ProcessReactor(asyncio.get_running_loop())
         observer = TautClient(db_path=db)
         try:
             canonical = str(
@@ -1552,7 +1568,7 @@ def test_canceled_started_dm_read_recovers_directory_and_history(
                 )["workspace"]
             )
             canceled = asyncio.create_task(
-                reactor.execute_tool(
+                reactor._execute_ready_tool(
                     canonical,
                     "read",
                     {
@@ -1570,7 +1586,7 @@ def test_canceled_started_dm_read_recovers_directory_and_history(
             await _wait_until(
                 lambda: reactor._entries[canonical].active_command_id is None
             )
-            directory = await reactor.execute_tool(
+            directory = await reactor._execute_ready_tool(
                 canonical,
                 "list",
                 {"dms": True},
@@ -1583,7 +1599,7 @@ def test_canceled_started_dm_read_recovers_directory_and_history(
                 member_id=selected_id,
             )
             actor_before = observer._state.get_member(selected_id)
-            history = await reactor.execute_tool(
+            history = await reactor._execute_ready_tool(
                 canonical,
                 "log",
                 {"thread": sent.thread, "since": None, "limit": 100},
@@ -1648,12 +1664,14 @@ def test_terminal_event_settles_an_occupied_command_slot(
     monkeypatch.setattr(workspace_reactor, "execute_command", terminal_execute)
 
     async def scenario() -> None:
-        reactor = ConnectionReactor(asyncio.get_running_loop())
+        reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             canonical = str(
                 (await reactor.attach_workspace(str(workspace), token))["workspace"]
             )
-            command = asyncio.create_task(reactor.execute_tool(canonical, "whoami", {}))
+            command = asyncio.create_task(
+                reactor._execute_ready_tool(canonical, "whoami", {})
+            )
             assert await asyncio.to_thread(started.wait, 5)
             if terminal == "identity":
                 admin = TautClient(
@@ -1711,7 +1729,7 @@ def test_bare_read_forwards_per_thread_limit_and_includes_direct_messages(
     other.close()
 
     async def scenario() -> None:
-        reactor = ConnectionReactor(asyncio.get_running_loop())
+        reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             canonical = str(
                 (
@@ -1721,7 +1739,7 @@ def test_bare_read_forwards_per_thread_limit_and_includes_direct_messages(
                     )
                 )["workspace"]
             )
-            first = await reactor.execute_tool(
+            first = await reactor._execute_ready_tool(
                 canonical,
                 "read",
                 {"limit": 1},
@@ -1738,7 +1756,7 @@ def test_bare_read_forwards_per_thread_limit_and_includes_direct_messages(
                 record["thread"] == private.thread for record in first["records"]
             )
 
-            second = await reactor.execute_tool(
+            second = await reactor._execute_ready_tool(
                 canonical,
                 "read",
                 {"thread": None, "limit": 1},
@@ -1748,7 +1766,7 @@ def test_bare_read_forwards_per_thread_limit_and_includes_direct_messages(
                 second["records"]
             )
 
-            history = await reactor.execute_tool(
+            history = await reactor._execute_ready_tool(
                 canonical,
                 "log",
                 {"thread": "general", "since": None, "limit": 100},
@@ -1784,7 +1802,7 @@ def test_explicit_dm_read_log_and_directory_use_public_core_contract(
     other.close()
 
     async def scenario() -> None:
-        reactor = ConnectionReactor(asyncio.get_running_loop())
+        reactor = ProcessReactor(asyncio.get_running_loop())
         observer = TautClient(db_path=db)
         try:
             canonical = str(
@@ -1798,7 +1816,7 @@ def test_explicit_dm_read_log_and_directory_use_public_core_contract(
             before_log = observer._state.get_member(selected_id)
             assert before_log is not None
 
-            history = await reactor.execute_tool(
+            history = await reactor._execute_ready_tool(
                 canonical,
                 "log",
                 {"thread": "@other", "since": None, "limit": 100},
@@ -1808,7 +1826,7 @@ def test_explicit_dm_read_log_and_directory_use_public_core_contract(
             assert history["records"][0]["text"] == "private history"
             assert observer._state.get_member(selected_id) == before_log
 
-            unread = await reactor.execute_tool(
+            unread = await reactor._execute_ready_tool(
                 canonical,
                 "read",
                 {"thread": sent.thread, "limit": 100},
@@ -1821,7 +1839,7 @@ def test_explicit_dm_read_log_and_directory_use_public_core_contract(
             )
             assert unread["records"][0]["thread"] == sent.thread
 
-            directory = await reactor.execute_tool(
+            directory = await reactor._execute_ready_tool(
                 canonical,
                 "list",
                 {"dms": True},
@@ -1873,7 +1891,7 @@ def test_well_formed_absent_and_inaccessible_dms_are_content_free_empty_results(
     outsider.close()
 
     async def scenario() -> None:
-        reactor = ConnectionReactor(asyncio.get_running_loop())
+        reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             canonical = str(
                 (
@@ -1886,7 +1904,7 @@ def test_well_formed_absent_and_inaccessible_dms_are_content_free_empty_results(
             for tool in ("read", "log"):
                 encoded_results: list[str] = []
                 for selector in ("@missing", inaccessible):
-                    result = await reactor.execute_tool(
+                    result = await reactor._execute_ready_tool(
                         canonical,
                         tool,
                         {
@@ -1942,7 +1960,7 @@ def test_explicit_read_limit_pages_without_post_read_slicing(tmp_path: Path) -> 
     other.close()
 
     async def scenario() -> None:
-        reactor = ConnectionReactor(asyncio.get_running_loop())
+        reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             canonical = str(
                 (
@@ -1952,17 +1970,17 @@ def test_explicit_read_limit_pages_without_post_read_slicing(tmp_path: Path) -> 
                     )
                 )["workspace"]
             )
-            first = await reactor.execute_tool(
+            first = await reactor._execute_ready_tool(
                 canonical,
                 "read",
                 {"thread": "general"},
             )
-            second = await reactor.execute_tool(
+            second = await reactor._execute_ready_tool(
                 canonical,
                 "read",
                 {"thread": "general", "limit": 100},
             )
-            third = await reactor.execute_tool(
+            third = await reactor._execute_ready_tool(
                 canonical,
                 "read",
                 {"thread": "general", "limit": 1000},
@@ -1978,14 +1996,14 @@ def test_explicit_read_limit_pages_without_post_read_slicing(tmp_path: Path) -> 
                 len(third["records"]),
             ] == [100, 100, 50]
             assert combined == expected
-            empty = await reactor.execute_tool(
+            empty = await reactor._execute_ready_tool(
                 canonical,
                 "read",
                 {"thread": "general", "limit": 100},
             )
             assert empty["empty"] is True
             assert empty["guidance"] == []
-            history = await reactor.execute_tool(
+            history = await reactor._execute_ready_tool(
                 canonical,
                 "log",
                 {"thread": "general", "since": None, "limit": 1000},
@@ -2017,7 +2035,7 @@ def test_activity_writing_tools_do_not_change_bound_identity_or_presence(
     workspace, token = _workspace_with_two_members(tmp_path)
 
     async def scenario() -> None:
-        reactor = ConnectionReactor(asyncio.get_running_loop())
+        reactor = ProcessReactor(asyncio.get_running_loop())
         observer = TautClient(db_path=workspace / ".taut.db")
 
         def snapshot() -> tuple[int, tuple[object, ...]]:
@@ -2041,7 +2059,7 @@ def test_activity_writing_tools_do_not_change_bound_identity_or_presence(
                 (await reactor.attach_workspace(str(workspace), token))["workspace"]
             )
             before_activity, before_identity = snapshot()
-            result = await reactor.execute_tool(canonical, tool, arguments)
+            result = await reactor._execute_ready_tool(canonical, tool, arguments)
             assert result["record_type"] in {"thread", "member"}
             after_activity, after_identity = snapshot()
             assert after_activity > before_activity
@@ -2080,7 +2098,7 @@ def test_every_tool_declares_a_closed_common_output_schema() -> None:
     }
     assert {tool.name for tool in TOOLS} == set(expected_record_types)
     for tool in TOOLS:
-        schema = tool.outputSchema
+        schema = tool.output_schema
         assert schema is not None
         assert schema["additionalProperties"] is False
         assert (
@@ -2098,7 +2116,7 @@ def test_every_tool_declares_a_closed_common_output_schema() -> None:
             assert record_schema["additionalProperties"] is False
 
     deletion_schema = next(
-        tool.outputSchema for tool in TOOLS if tool.name == "message_delete"
+        tool.output_schema for tool in TOOLS if tool.name == "message_delete"
     )
     assert deletion_schema is not None
     assert deletion_schema["properties"]["records"]["items"] == {
@@ -2121,7 +2139,7 @@ def test_every_tool_declares_a_closed_common_output_schema() -> None:
         "type": "object",
     }
     reaction_schema = next(
-        tool.outputSchema for tool in TOOLS if tool.name == "message_react"
+        tool.output_schema for tool in TOOLS if tool.name == "message_react"
     )
     assert reaction_schema is not None
     assert reaction_schema["properties"]["records"]["items"] == {
@@ -2152,7 +2170,7 @@ def test_every_tool_declares_a_closed_common_output_schema() -> None:
         "type": "object",
     }
     notification_schema = next(
-        tool.outputSchema for tool in TOOLS if tool.name == "inbox"
+        tool.output_schema for tool in TOOLS if tool.name == "inbox"
     )
     assert notification_schema is not None
     assert notification_schema["properties"]["records"]["items"]["properties"][
@@ -2188,10 +2206,11 @@ def test_exact_message_tool_schemas_reject_non_exact_string_ids(
         validate(
             instance={
                 "workspace": "/workspace",
+                "token": "secret",
                 "msg_id": invalid,
                 **({"reaction": "ack"} if tool_name == "message_react" else {}),
             },
-            schema=tool.inputSchema,
+            schema=tool.input_schema,
         )
 
 
@@ -2199,8 +2218,8 @@ def test_exact_message_tool_schemas_reject_non_exact_string_ids(
 def test_exact_message_tool_manifest_contract(tool_name: str) -> None:
     tool = next(tool for tool in TOOLS if tool.name == tool_name)
 
-    assert tool.inputSchema["required"] == ["workspace", "msg_id"]
-    assert tool.inputSchema["properties"]["msg_id"] == {
+    assert tool.input_schema["required"] == ["workspace", "token", "msg_id"]
+    assert tool.input_schema["properties"]["msg_id"] == {
         "description": (
             "Exact native Taut message id as a 19-digit decimal string. "
             "Preserve it as text; suffixes, whitespace, signs, and numeric JSON "
@@ -2210,7 +2229,11 @@ def test_exact_message_tool_manifest_contract(tool_name: str) -> None:
         "type": "string",
     }
     assert tool.annotations is not None
-    assert tool.annotations.model_dump(mode="json", exclude_none=True) == {
+    assert tool.annotations.model_dump(
+        mode="json",
+        exclude_none=True,
+        by_alias=True,
+    ) == {
         "destructiveHint": True,
         "idempotentHint": False,
         "openWorldHint": True,
@@ -2240,10 +2263,11 @@ def test_react_to_message_schema_rejects_malformed_reaction_slugs(
         validate(
             instance={
                 "workspace": "/workspace",
+                "token": "secret",
                 "msg_id": "1234567890123456789",
                 "reaction": invalid,
             },
-            schema=tool.inputSchema,
+            schema=tool.input_schema,
         )
 
 
@@ -2258,8 +2282,13 @@ def test_react_to_message_manifest_contract_has_no_static_enum() -> None:
         "atomic best-effort notification broadcast to every requested inbox. "
         "Repeating may deliver duplicates."
     )
-    assert tool.inputSchema["required"] == ["workspace", "msg_id", "reaction"]
-    assert tool.inputSchema["properties"]["reaction"] == {
+    assert tool.input_schema["required"] == [
+        "workspace",
+        "token",
+        "msg_id",
+        "reaction",
+    ]
+    assert tool.input_schema["properties"]["reaction"] == {
         "description": (
             "Configured lowercase ASCII reaction slug matching "
             "^[a-z0-9][a-z0-9_-]{0,31}$. Used only by message_react; the "
@@ -2269,9 +2298,13 @@ def test_react_to_message_manifest_contract_has_no_static_enum() -> None:
         "pattern": r"^[a-z0-9][a-z0-9_-]{0,31}$",
         "type": "string",
     }
-    assert "enum" not in tool.inputSchema["properties"]["reaction"]
+    assert "enum" not in tool.input_schema["properties"]["reaction"]
     assert tool.annotations is not None
-    assert tool.annotations.model_dump(mode="json", exclude_none=True) == {
+    assert tool.annotations.model_dump(
+        mode="json",
+        exclude_none=True,
+        by_alias=True,
+    ) == {
         "destructiveHint": True,
         "idempotentHint": False,
         "openWorldHint": True,
@@ -2285,14 +2318,18 @@ def test_exact_tool_manifest_snapshot() -> None:
     snapshot = [
         {
             "annotations": (
-                tool.annotations.model_dump(mode="json", exclude_none=True)
+                tool.annotations.model_dump(
+                    mode="json",
+                    exclude_none=True,
+                    by_alias=True,
+                )
                 if tool.annotations is not None
                 else None
             ),
             "description": tool.description,
-            "inputSchema": tool.inputSchema,
+            "inputSchema": tool.input_schema,
             "name": tool.name,
-            "outputSchema": tool.outputSchema,
+            "outputSchema": tool.output_schema,
         }
         for tool in TOOLS
     ]
@@ -2303,7 +2340,7 @@ def test_exact_tool_manifest_snapshot() -> None:
         separators=(",", ":"),
     ).encode()
     assert hashlib.sha256(encoded).hexdigest() == (
-        "0e1b8a149d32dcb11da0c6f1b9b61ef83be4e96bb8db2cb62945344ad93332c2"
+        "b543a5b6fc6d0ae8f61889ae8a1b4a1c0757ce3639f7eaae2f6dd8d6cbd52466"
     )
 
     def assert_property_descriptions(schema: dict[str, object]) -> None:
@@ -2319,26 +2356,23 @@ def test_exact_tool_manifest_snapshot() -> None:
 
     for tool in TOOLS:
         assert tool.description
-        assert_property_descriptions(tool.inputSchema)
-        assert tool.outputSchema is not None
-        assert_property_descriptions(tool.outputSchema)
+        assert_property_descriptions(tool.input_schema)
+        assert tool.output_schema is not None
+        assert_property_descriptions(tool.output_schema)
 
 
 def test_unknown_tool_is_not_an_ordinary_tool_result() -> None:
     """[MCP-6] Unknown names stay JSON-RPC errors, never `isError` content."""
 
     async def scenario() -> None:
-        from mcp import types
-        from mcp.shared.exceptions import McpError
+        from mcp.client import Client
+        from mcp.shared.exceptions import MCPError
 
         from taut_mcp.server import create_server
 
         server, _ = create_server()
-        handler = server.request_handlers[types.CallToolRequest]
-        request = types.CallToolRequest(
-            params=types.CallToolRequestParams(name="not_a_tool", arguments={})
-        )
-        with pytest.raises(McpError):
-            await handler(request)
+        async with Client(server, mode="2026-07-28") as client:
+            with pytest.raises(MCPError):
+                await client.call_tool("not_a_tool", {})
 
     asyncio.run(scenario())

@@ -2,12 +2,21 @@
 
 ## 0.8.0 - 2026-07-28
 
+- Migrated `taut-mcp` to one MCP SDK v2 server for legacy `2025-11-25` and
+  modern sessionless `2026-07-28` clients. All identity-using tools now carry
+  workspace plus continuity token and share one retained ensure lifecycle;
+  explicit attach remains an eager optimization. Added modern
+  `subscriptions/listen` delivery alongside independent legacy resource
+  subscriptions while keeping the Claude channel legacy-only.
+- Added top-level channel metadata show and topic set/clear behavior across
+  the Python client, CLI, and MCP extension. The two explicit MCP tools bring
+  its fixed manifest to 20 and preserve actor-free reads, membership-gated
+  mutation, and cursor-neutral uncertain-outcome inspection.
 - Added first-class navigation for existing direct-message conversations by
   current `@name-or-alias` or stable `dm.d_*` handle across Python, CLI,
   watcher, and MCP surfaces. Added the actor-scoped `list_direct_messages()`,
   `taut list --dms`, stable notification actions, and cursor-neutral DM
-  history without changing the deterministic queue naming scheme or MCP's
-  18-tool manifest.
+  history without changing the deterministic queue naming scheme.
 - Added configured message reactions across the Python client, nested CLI,
   notification inbox/watcher paths, and MCP extension. Reactions advance the
   actor's seen cursor, then use SimpleBroker's atomic exact-name broadcast as

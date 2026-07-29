@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from jsonschema import Draft202012Validator
 from mcp import types
 
 CHANNEL_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,63}$"
@@ -18,18 +19,24 @@ MEMBER_NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
 REACTION_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,31}$"
 
 ATTACH_WORKSPACE_DESCRIPTION = (
-    "Absolute local directory containing an existing Taut project. Attachment "
-    "resolves it once and returns the canonical workspace identifier for later "
-    "calls. No relative path or file URI."
+    "Absolute local directory containing an existing Taut project. The server "
+    "resolves it to a canonical workspace identifier; reuse the returned "
+    "canonical value to avoid repeated resolution. No relative path or file URI."
 )
 WORKSPACE_DESCRIPTION = (
-    "Exact canonical workspace identifier returned by attach_workspace or "
-    "list_workspaces. Do not re-resolve, shorten, or substitute an alias path."
+    "Absolute local directory containing an existing Taut project. The server "
+    "resolves it to a canonical workspace identifier; reuse the returned "
+    "canonical value to avoid repeated resolution. No relative path or file URI."
+)
+DETACH_WORKSPACE_DESCRIPTION = (
+    "Exact canonical workspace identifier returned by a successful ensure or "
+    "list_workspaces. Detach removes only this process's resident state; it "
+    "does not re-resolve aliases or use an identity token."
 )
 TOKEN_DESCRIPTION = (
     "Sensitive existing Taut continuity token for this workspace. It selects "
-    "one member and is never returned. Valid only on attach_workspace; do not "
-    "invent or repeat it in chat."
+    "one member and is never returned. Required on identity-using calls; do "
+    "not invent it or repeat it in chat."
 )
 CHANNEL_DESCRIPTION = (
     "Taut channel matching ^[a-z0-9][a-z0-9_-]{0,63}$; dm, notify, sys, and "
@@ -83,6 +90,11 @@ RECORD_TYPE_BY_TOOL = {
     "who": "member",
     "whoami": "member",
 }
+DOMAIN_TOOL_NAMES = frozenset(RECORD_TYPE_BY_TOOL) - {
+    "attach_workspace",
+    "detach_workspace",
+    "list_workspaces",
+}
 
 
 def _nullable(kind: str) -> dict[str, Any]:
@@ -106,7 +118,7 @@ _RECORD_SCHEMAS: dict[str, dict[str, Any]] = {
                 **_nullable("string"),
             },
             "status": {
-                "description": "Connection-local workspace lifecycle status.",
+                "description": "Process-local workspace lifecycle status.",
                 "enum": [
                     "ready",
                     "detaching",
@@ -411,7 +423,7 @@ def _result_schema(record_type: str) -> dict[str, Any]:
                 "type": "array",
             },
             "workspace": {
-                "description": "Canonical selected workspace, or null for connection-wide results.",
+                "description": "Canonical selected workspace, or null for process-wide results.",
                 **_nullable("string"),
             },
         },
@@ -437,21 +449,29 @@ class ToolDefinition:
     schema_constraints: dict[str, Any] | None = None
 
     def to_mcp(self) -> types.Tool:
+        properties: dict[str, dict[str, Any]] = {}
+        for name, property_schema in self.properties.items():
+            properties[name] = property_schema
+            if name == "workspace" and self.name in DOMAIN_TOOL_NAMES:
+                properties["token"] = _TOKEN
+        required = list(self.required)
+        if self.name in DOMAIN_TOOL_NAMES:
+            required.insert(required.index("workspace") + 1, "token")
         schema: dict[str, Any] = {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "additionalProperties": False,
-            "properties": self.properties,
+            "properties": properties,
             "type": "object",
         }
-        if self.required:
-            schema["required"] = list(self.required)
+        if required:
+            schema["required"] = required
         if self.schema_constraints is not None:
             schema.update(self.schema_constraints)
         return types.Tool(
             name=self.name,
             description=self.description,
-            inputSchema=schema,
-            outputSchema=_result_schema(RECORD_TYPE_BY_TOOL[self.name]),
+            input_schema=schema,
+            output_schema=_result_schema(RECORD_TYPE_BY_TOOL[self.name]),
             annotations=self.annotations,
         )
 
@@ -485,14 +505,15 @@ def _annotations(
     open_world: bool,
 ) -> types.ToolAnnotations:
     return types.ToolAnnotations(
-        readOnlyHint=read_only,
-        destructiveHint=destructive,
-        idempotentHint=idempotent,
-        openWorldHint=open_world,
+        read_only_hint=read_only,
+        destructive_hint=destructive,
+        idempotent_hint=idempotent,
+        open_world_hint=open_world,
     )
 
 
 _WORKSPACE = _string(WORKSPACE_DESCRIPTION)
+_TOKEN = _string(TOKEN_DESCRIPTION)
 _CHANNEL = _string(CHANNEL_DESCRIPTION, pattern=CHANNEL_PATTERN)
 _CHAT = _string(CHAT_DESCRIPTION, pattern=CHAT_PATTERN)
 _CHAT_OR_DM = _string(CHAT_OR_DM_DESCRIPTION, pattern=CHAT_OR_DM_PATTERN)
@@ -518,10 +539,10 @@ _LIMIT_1000 = {
 TOOL_DEFINITIONS = (
     ToolDefinition(
         "attach_workspace",
-        "Validate and attach one local Taut workspace with an existing continuity token. Reads project and member identity without touching member activity; creates connection-local state and no Taut project or member.",
+        "Eagerly validate and retain one local Taut workspace with an existing continuity token. Reads project and member identity without touching member activity; starts notification observation and creates no Taut project or member.",
         {
             "workspace": _string(ATTACH_WORKSPACE_DESCRIPTION),
-            "token": _string(TOKEN_DESCRIPTION),
+            "token": _TOKEN,
         },
         ("workspace", "token"),
         _annotations(
@@ -533,8 +554,8 @@ TOOL_DEFINITIONS = (
     ),
     ToolDefinition(
         "detach_workspace",
-        "Destroy this session's attachment and stop its notification observation. Deletes no Taut project, member, or message data.",
-        {"workspace": _WORKSPACE},
+        "Stop and remove this process's resident workspace owner. Deletes no Taut project, member, message, or identity data.",
+        {"workspace": _string(DETACH_WORKSPACE_DESCRIPTION)},
         ("workspace",),
         _annotations(
             read_only=False,
@@ -545,7 +566,7 @@ TOOL_DEFINITIONS = (
     ),
     ToolDefinition(
         "list_workspaces",
-        "List the canonical workspaces and statuses currently attached to this MCP session. Reads only connection-local cached state.",
+        "List canonical workspaces and statuses currently resident in this server process. Reads only process-local cached state.",
         {},
         (),
         _annotations(
@@ -877,3 +898,34 @@ TOOL_DEFINITIONS = (
 )
 
 TOOLS = tuple(definition.to_mcp() for definition in TOOL_DEFINITIONS)
+TOOLS_BY_NAME = {tool.name: tool for tool in TOOLS}
+
+
+class ToolValidationError(ValueError):
+    """A known tool call does not match its advertised input schema."""
+
+
+_TOOL_VALIDATORS: dict[str, Draft202012Validator] = {}
+for _tool in TOOLS:
+    Draft202012Validator.check_schema(_tool.input_schema)
+    _TOOL_VALIDATORS[_tool.name] = Draft202012Validator(_tool.input_schema)
+
+
+def validate_tool_call(
+    name: str,
+    arguments: dict[str, object] | None,
+) -> dict[str, object]:
+    """Validate one known tool call without coercion or diagnostic leakage."""
+
+    try:
+        validator = _TOOL_VALIDATORS[name]
+    except KeyError:
+        raise KeyError(name) from None
+    normalized: object = {} if arguments is None else arguments
+    if not isinstance(normalized, dict) or not all(
+        isinstance(key, str) for key in normalized
+    ):
+        raise ToolValidationError from None
+    if next(validator.iter_errors(normalized), None) is not None:
+        raise ToolValidationError from None
+    return normalized
