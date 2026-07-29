@@ -1,7 +1,7 @@
 """Provider adapter interface: the [SUM-7.1] contract and the registry.
 
-An adapter owns exactly four things — spawn, inject, events, interrupt —
-and translates its provider's native streaming envelope into the closed
+An adapter owns spawn, injection, events, reusable interruption, and terminal
+retirement, and translates its provider's native streaming envelope into the closed
 ``AdapterEvent`` union below. There is no summon-defined wire protocol:
 adapters translate, they do not define ([SUM-7.1]).
 
@@ -11,9 +11,9 @@ tests, exercised today through the ``scripted`` adapter):
 - ``inject()`` returns only after the event is written *and flushed* to
   the child's stdin, and surfaces failures synchronously ([SUM-5.4]'s
   at-least-once delivery to the harness process boundary depends on it).
-- ``interrupt()`` and ``close()`` are thread-safe and unblock any
-  in-flight ``inject()`` — [SUM-9]'s STOP path must always be able to
-  stop a stalled harness.
+- ``interrupt()``, ``request_close()``, and ``close()`` are thread-safe and
+  unblock any in-flight ``inject()``. Reusable interruption leaves a surviving
+  handle open; terminal retirement permanently rejects later injection.
 - ``events()`` must be drained continuously by its (single) consumer; an
   undrained stream is a child-stdout deadlock waiting to happen. The
   stream ends with exactly one ``ExitEvent``.
@@ -101,11 +101,15 @@ class AdapterHandle(Protocol):
         ...
 
     def interrupt(self) -> None:
-        """Harness-graceful stop; unblocks an in-flight ``inject()``."""
+        """Reusable graceful cancellation; a surviving handle remains open."""
+        ...
+
+    def request_close(self) -> None:
+        """Publish terminal retirement and send its one graceful signal."""
         ...
 
     def close(self) -> None:
-        """Stop (bounded escalation), reap the child, release the pipes."""
+        """Finalize retirement with bounded escalation, reap, and release."""
         ...
 
     def status_fields(self) -> dict[str, str]:

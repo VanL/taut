@@ -103,6 +103,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 | `2026-07-28-channel-topics-plan.md` | completed | no | Class 5 channel-topic, command-rehome, MCP-naming, and CLI-claim-gate implementation; all implementation, verification, and independent-review gates passed before the owner-authorized targeted landing. |
 | `2026-07-28-direct-message-navigation-plan.md` | completed | no | Class 5 DM navigation implementation; all behavior slices, backend gates, and independent reviews complete. |
 | `2026-07-28-message-react-plan.md` | completed | no | Completed; landed evidence includes `788cdd3`. |
+| `2026-07-28-summon-terminal-retirement-plan.md` | completed | no | Class 5+P Summon terminal-retirement and coverage-integrity implementation; all local verification and independent-review gates passed before the owner-authorized targeted landing. |
 
 ## Retired Plans
 

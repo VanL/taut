@@ -345,10 +345,10 @@ def test_rich_host_real_pty_lease_wires_once_then_wired_resume_skips_lease(
         assert first.lease_events == ["enter", "exit"]
 
         orientation_write_entered = threading.Event()
-        control_interrupt_completed = threading.Event()
+        control_close_request_completed = threading.Event()
         block_orientation_write = threading.Event()
         real_write = os.write
-        real_interrupt = PtyHandle.interrupt
+        real_request_close = PtyHandle.request_close
 
         def controlled_write(fd: int, data: bytes) -> int:
             if (
@@ -362,16 +362,16 @@ def test_rich_host_real_pty_lease_wires_once_then_wired_resume_skips_lease(
                     raise RuntimeError("test did not release the orientation write")
             return real_write(fd, data)
 
-        def observed_interrupt(handle: PtyHandle) -> None:
-            real_interrupt(handle)
+        def observed_request_close(handle: PtyHandle) -> None:
+            real_request_close(handle)
             if (
                 block_orientation_write.is_set()
                 and threading.current_thread().name == "taut-summon-control"
             ):
-                control_interrupt_completed.set()
+                control_close_request_completed.set()
 
         monkeypatch.setattr(os, "write", controlled_write)
-        monkeypatch.setattr(PtyHandle, "interrupt", observed_interrupt)
+        monkeypatch.setattr(PtyHandle, "request_close", observed_request_close)
 
         second = _GatedPtyHostInteraction(input_fd=user_slave, output_fd=user_slave)
         second_thread, second_failures = _start_foreground_run(
@@ -397,7 +397,7 @@ def test_rich_host_real_pty_lease_wires_once_then_wired_resume_skips_lease(
             name="second-stop-client",
         )
         stop_thread.start()
-        assert control_interrupt_completed.wait(timeout=10.0)
+        assert control_close_request_completed.wait(timeout=10.0)
         allow_orientation_write.set()
         stop_thread.join(timeout=10.0)
         assert not stop_thread.is_alive()

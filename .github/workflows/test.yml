@@ -639,7 +639,7 @@ jobs:
       - name: Combine coverage reports
         timeout-minutes: 5
         run: |
-          python -m coverage combine coverage-data
+          python bin/combine-coverage.py coverage-data --output .coverage
           python bin/check-required-coverage-paths.py
           python -m coverage report --include="*/taut_summon/_driver.py" --fail-under=1
           python -m coverage report --include="*/taut_summon/_control.py" --fail-under=1

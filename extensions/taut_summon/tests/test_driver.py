@@ -26,6 +26,7 @@ import subprocess
 import sys
 import threading
 import time
+import types
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -129,6 +130,50 @@ def _fake_tui_entries(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
+def _jsonl_entries(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def _start_scripted_signal_cleanup(
+    tmp_path: Path,
+    *,
+    tag: str,
+    cleanup_seconds: float = 0.2,
+) -> tuple[subprocess.Popen[str], Path]:
+    scenario_path = tmp_path / f"{tag}-scenario.json"
+    received_path = tmp_path / f"{tag}-received.jsonl"
+    scenario_path.write_text(
+        json.dumps({"sigint_cleanup_seconds": cleanup_seconds}),
+        encoding="utf-8",
+    )
+    env = _base_env()
+    env["TAUT_SUMMON_SCENARIO"] = str(scenario_path)
+    env["TAUT_SUMMON_RECEIVED_LOG"] = str(received_path)
+    provider = subprocess.Popen(
+        [sys.executable, "-m", "taut_summon.scripted_provider"],
+        cwd=tmp_path,
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    wait_until(
+        lambda: any(
+            entry.get("event") == "provider-ready"
+            for entry in _jsonl_entries(received_path)
+        ),
+        message="scripted provider readiness",
+    )
+    return provider, received_path
+
+
 def _read_pty_until(fd: int, needle: bytes, *, timeout: float = 5.0) -> bytes:
     deadline = time.monotonic() + timeout
     out = b""
@@ -176,6 +221,7 @@ class _CountingHandle:
     def __init__(self) -> None:
         self.close_calls = 0
         self.interrupt_calls = 0
+        self.request_close_calls = 0
         self.session_id: str | None = None
 
     def close(self) -> None:
@@ -183,6 +229,9 @@ class _CountingHandle:
 
     def interrupt(self) -> None:
         self.interrupt_calls += 1
+
+    def request_close(self) -> None:
+        self.request_close_calls += 1
 
 
 class _AttachCapableAdapter:
@@ -1034,8 +1083,7 @@ def test_harness_death_before_watcher_publication_stops_owner_before_run(
                     token="tok",
                     provider="scripted",
                     provider_session_id=None,
-                ),
-                cast(Any, _CountingHandle()),
+                )
             )
         except BaseException as exc:
             errors.append(exc)
@@ -1124,8 +1172,7 @@ def test_live_watcher_after_bounded_join_is_fatal(
                     token="tok",
                     provider="scripted",
                     provider_session_id=None,
-                ),
-                cast(Any, _CountingHandle()),
+                )
             )
         except BaseException as exc:
             errors.append(exc)
@@ -1196,13 +1243,13 @@ def test_watcher_failure_rebuilds_without_closing_provider(
             token="tok",
             provider="scripted",
             provider_session_id=None,
-        ),
-        cast(Any, handle),
+        )
     )
 
     assert len(watchers) == 2
-    assert handle.close_calls == 1
-    assert handle.interrupt_calls == 1
+    assert handle.close_calls == 0
+    assert handle.interrupt_calls == 0
+    assert handle.request_close_calls == 0
 
 
 def test_pump_constructs_mouth_client_on_pump_thread(
@@ -1620,7 +1667,8 @@ def test_control_loop_exception_is_driver_fatal(
     driver._control_thread.join(timeout=5.0)
 
     assert driver._control_error is failure
-    assert handle.interrupt_calls == 1
+    assert handle.request_close_calls == 1
+    assert handle.interrupt_calls == 0
     assert watcher.request_stop_calls == 1
     assert not driver._watcher_failed.is_set()
     assert driver._wake.is_set()
@@ -1654,7 +1702,8 @@ def test_unexpected_clean_control_loop_return_is_driver_fatal(
     assert driver._control_failed.wait(timeout=5.0)
     assert isinstance(driver._control_error, RuntimeError)
     assert "exited unexpectedly" in str(driver._control_error)
-    assert handle.interrupt_calls == 1
+    assert handle.request_close_calls == 1
+    assert handle.interrupt_calls == 0
     assert watcher.request_stop_calls == 1
     with pytest.raises(DriverError, match="exited unexpectedly"):
         driver._raise_if_control_failed()
@@ -1681,7 +1730,8 @@ def test_initial_control_open_failure_is_driver_fatal(
     driver._start_control_thread(_control_supervision_boot())
     assert driver._control_failed.wait(timeout=5.0)
     assert driver._control_error is failure
-    assert handle.interrupt_calls == 1
+    assert handle.request_close_calls == 1
+    assert handle.interrupt_calls == 0
     with pytest.raises(DriverError) as caught:
         driver._raise_if_control_failed()
     assert caught.value.__cause__ is failure
@@ -1706,6 +1756,7 @@ def test_expected_stop_allows_control_loop_to_return_cleanly(
 
     assert not driver._control_failed.is_set()
     assert driver._control_error is None
+    assert handle.request_close_calls == 0
     assert handle.interrupt_calls == 0
 
 
@@ -1824,6 +1875,157 @@ def test_format_mention_notification_golden() -> None:
 
 
 # --- bootstrap and lifecycle --------------------------------------------------
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="scripted-provider SIGINT recording is a POSIX child-boundary proof",
+)
+def test_scripted_provider_records_bounded_single_sigint_cleanup(
+    tmp_path: Path,
+) -> None:
+    provider, received_path = _start_scripted_signal_cleanup(
+        tmp_path,
+        tag="signal-cleanup-single",
+    )
+    try:
+        provider.send_signal(signal.SIGINT)
+        _stdout, stderr = provider.communicate(timeout=3.0)
+    finally:
+        if provider.poll() is None:
+            provider.kill()
+            provider.wait(timeout=3.0)
+
+    entries = _jsonl_entries(received_path)
+    assert provider.returncode == 0, stderr
+    assert [entry["count"] for entry in entries if entry.get("event") == "signal"] == [
+        1
+    ]
+    assert any(entry.get("event") == "first-signal-entered" for entry in entries)
+    assert any(
+        entry.get("event") == "cleanup-release" and entry.get("source") == "watchdog"
+        for entry in entries
+    )
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="scripted-provider SIGINT recording is a POSIX child-boundary proof",
+)
+def test_scripted_provider_records_reentrant_sigint_cleanup(
+    tmp_path: Path,
+) -> None:
+    provider, received_path = _start_scripted_signal_cleanup(
+        tmp_path,
+        tag="signal-cleanup-reentrant",
+        cleanup_seconds=1.0,
+    )
+    try:
+        provider.send_signal(signal.SIGINT)
+        wait_until(
+            lambda: any(
+                entry.get("event") == "first-signal-entered"
+                for entry in _jsonl_entries(received_path)
+            ),
+            message="scripted provider first signal",
+        )
+        provider.send_signal(signal.SIGINT)
+        _stdout, stderr = provider.communicate(timeout=3.0)
+    finally:
+        if provider.poll() is None:
+            provider.kill()
+            provider.wait(timeout=3.0)
+
+    entries = _jsonl_entries(received_path)
+    assert provider.returncode == 0, stderr
+    assert [entry["count"] for entry in entries if entry.get("event") == "signal"] == [
+        1,
+        2,
+    ]
+    assert any(
+        entry.get("event") == "cleanup-release" and entry.get("source") == "reentrant"
+        for entry in entries
+    )
+
+
+def test_request_stop_requests_terminal_close_before_wake() -> None:
+    driver = _new_driver(_run_request())
+    events: list[tuple[str, bool, bool]] = []
+
+    class ObservingHandle(_CountingHandle):
+        def request_close(self) -> None:
+            events.append(
+                ("request_close", driver._shutdown.is_set(), driver._wake.is_set())
+            )
+            super().request_close()
+
+    handle = ObservingHandle()
+    driver._handle = cast(Any, handle)
+
+    driver.request_stop()
+
+    assert events == [("request_close", True, False)]
+    assert handle.request_close_calls == 1
+    assert handle.interrupt_calls == 0
+    assert handle.close_calls == 0
+    assert driver._wake.is_set()
+
+
+def test_stop_before_handle_publication_requests_close_on_published_handle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver = _new_driver(_run_request())
+    handle = _CountingHandle()
+    adapter = types.SimpleNamespace(
+        name="scripted",
+        supports_attach=False,
+        supports_terminal_mode=False,
+        orientation_via_inject=False,
+        emits_session_events=False,
+    )
+    pump = threading.Thread(target=lambda: None)
+    pump.start()
+    pump.join(timeout=1.0)
+
+    def spawn_then_stop(*_args: Any, **_kwargs: Any) -> _CountingHandle:
+        driver.request_stop()
+        return handle
+
+    class FakeClient:
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(driver, "_require_adapter", lambda _provider: adapter)
+    monkeypatch.setattr(driver, "_spawn", spawn_then_stop)
+    monkeypatch.setattr(
+        driver, "_should_start_pump_before_bootstrap", lambda *_a, **_kw: True
+    )
+    monkeypatch.setattr(driver, "_start_pump", lambda *_a, **_kw: pump)
+    monkeypatch.setattr(driver, "_rejoin", lambda *_a, **_kw: None)
+    monkeypatch.setattr(driver, "_ensure_threads", lambda *_a, **_kw: None)
+    monkeypatch.setattr(driver, "_await_initial_session_event", lambda *_a: None)
+    monkeypatch.setattr(driver, "_raise_if_pump_failed", lambda *_a: None)
+    monkeypatch.setattr(driver, "_start_control_thread", lambda *_a: None)
+    monkeypatch.setattr(driver_module, "TautClient", FakeClient)
+
+    result = driver._supervise(
+        _BootstrapResult(
+            member_id="m_reviewer",
+            member_name="reviewer",
+            token="tok",
+            provider="scripted",
+            provider_session_id=None,
+        ),
+        "db",
+    )
+
+    assert result == 0
+    assert handle.request_close_calls == 1
+    assert handle.interrupt_calls == 0
+    assert handle.close_calls == 1
 
 
 def test_pi_bootstrap_capitalizes_implied_name_and_preserves_chosen_name(
@@ -4020,6 +4222,67 @@ def test_malformed_control_body_does_not_crash_loop(
     assert reply is not None
     assert reply.get("message") == "PONG"
     assert driver.stop() == 0
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="driver SIGINT signal counting is a POSIX child-boundary proof",
+)
+def test_driver_sigint_sends_one_graceful_signal_to_provider(
+    summon_db: Path,
+    driver_factory: Callable[..., DriverProcess],
+) -> None:
+    driver = driver_factory(
+        summon_db,
+        "scripted",
+        "general",
+        scenario={"sigint_cleanup_seconds": 1.0},
+        control_interval=0.1,
+        tag="terminal-retirement-driver-sigint",
+    )
+    driver.wait_for_start()
+
+    assert driver.stop() == 0
+    entries = driver.entries()
+    assert [entry["count"] for entry in entries if entry.get("event") == "signal"] == [
+        1
+    ]
+    assert any(entry.get("event") == "cleanup-release" for entry in entries)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="control STOP signal counting is a POSIX child-boundary proof",
+)
+def test_control_stop_sends_one_graceful_signal_to_provider(
+    summon_db: Path,
+    tmp_path: Path,
+    driver_factory: Callable[..., DriverProcess],
+) -> None:
+    driver = driver_factory(
+        summon_db,
+        "scripted",
+        "general",
+        scenario={"sigint_cleanup_seconds": 1.0},
+        control_interval=0.1,
+        tag="terminal-retirement-control-stop",
+    )
+    driver.wait_for_start()
+    member = _member_by_name(summon_db, "scripted")
+    assert member is not None
+
+    rc, _out, err = summon_cli("stop", "scripted", db=summon_db, cwd=tmp_path)
+
+    assert rc == 0, err
+    assert driver.wait() == 0
+    entries = driver.entries()
+    assert [entry["count"] for entry in entries if entry.get("event") == "signal"] == [
+        1
+    ]
+    assert any(entry.get("event") == "cleanup-release" for entry in entries)
+    row = _session_row(summon_db, member.member_id)
+    assert row is not None
+    assert row["driver_pid"] is None
 
 
 def test_stop_while_inject_blocked_completes(

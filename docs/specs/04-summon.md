@@ -370,9 +370,11 @@ class ProviderAdapter(Protocol):
     def spawn(self, *, session_id: str | None, system_prompt: str,
               env: Mapping[str, str]) -> AdapterHandle: ...
     # AdapterHandle:
-    def inject(self, text: str) -> None          # one user-role event
+    def inject(self, text: str) -> None          # one flushed user-role event
     def events(self) -> Iterator[AdapterEvent]   # typed output stream
-    def interrupt(self) -> None                  # harness-graceful stop
+    def interrupt(self) -> None                  # reusable nonterminal cancel
+    def request_close(self) -> None              # nonblocking terminal retirement
+    def close(self) -> None                      # bounded finalize/reap/release
     # .session_id property: provider session for resume
 ```
 
@@ -384,18 +386,20 @@ JSONL). Adapters translate; they do not define.
 
 Contract requirements on every adapter: `inject()` returns only after a
 flushed write and surfaces failures synchronously ([SUM-5.4]);
-`interrupt()` and handle close are thread-safe and unblock any in-flight
-`inject()` ([SUM-9] depends on this to stop a stalled harness);
-`events()` must be **drained continuously by the driver** — the driver
-owns a dedicated event-pump thread that consumes the stream for the life
-of the child (session-id updates to the ledger; `activity` → member
-activity via the public seam: a rate-limited token-selected resolution
-(`whoami()` on a token client updates `last_active_ts` as a side effect
-of [IAN-3.3] step 2 — at most once per activity window, never a private
-`_state` call); diagnostics to the log; `exit` → the [SUM-11] resume
-path). An undrained event stream is a child-stdout deadlock waiting to
-happen; the pump participates in shutdown ordering (stop injection →
-interrupt → pump drains to `exit` or bounded timeout → close).
+`interrupt()`, `request_close()`, and `close()` are thread-safe and unblock
+any in-flight `inject()` ([SUM-9] depends on this to stop a stalled harness);
+`events()` must be **drained continuously by the driver**. The driver owns a
+dedicated event-pump thread for the life of the child (session-id updates to
+the ledger; `activity` → member activity via the public seam: a rate-limited
+token-selected resolution (`whoami()` on a token client updates
+`last_active_ts` as a side effect of [IAN-3.3] step 2 — at most once per
+activity window, never a private `_state` call); diagnostics to the log;
+`exit` → the [SUM-11] resume path). Shutdown ordering is: stop injection →
+request terminal close → foreground close drives bounded
+wait/escalation/reap while the pump drains → checked pump join →
+ownership-checked release. An undrained stream is a child-stdout deadlock;
+waiting for pump exit before close is not valid because a provider may remain
+alive after its graceful interrupt.
 
 An adapter that has no structured wire envelope (the PTY adapter,
 [SUM-7.4]) emits only the `activity` and `exit` members of the event
@@ -409,14 +413,27 @@ remains anchored to the harness child process being alive ([SUM-4]),
 independent of output.
 
 `emits_session_events` declares whether startup may wait for a `SessionEvent`;
-adapters that declare false never pay that wait. `interrupt()` aborts any
-adapter write already in flight. If the harness remains live, later `inject()`
-calls remain valid; interruption is not a permanent poison latch. Close remains
-the operation that retires a handle. For stream and PTY handles, `interrupt()`
-may re-enter the main thread at any point in `close()` and must not wait on a
-non-reentrant lock owned by the interrupted frame. Exactly one closer performs
-escalation, reap, and stream release; concurrent closers observe the same
-terminal result.
+adapters that declare false never pay that wait. `interrupt()` is a reusable,
+nonterminal cancellation operation. It aborts adapter writes already in flight
+but leaves the handle open; if the provider survives, later `inject()` and
+later `interrupt()` calls remain valid.
+
+`request_close()` is the nonblocking terminal-retirement operation. Under the
+handle's reentrant lifecycle lock it atomically changes `open` to
+`close_requested`, permanently rejects or cancels injection, and owns the
+retirement's one graceful SIGINT or PTY Ctrl-C. It does not wait, escalate,
+reap, join, or release streams. After `close_requested` is visible,
+`interrupt()` and repeated `request_close()` calls are no-ops and cannot
+deliver another graceful signal.
+
+`close()` is the blocking finalizer. A direct close first performs the same
+terminal request when the handle is still open. Exactly one closer changes
+`close_requested` to `closing`, waits within the existing bounds, escalates
+when required, reaps the child, and releases streams or fds. It does not send
+another graceful signal after a terminal request. Concurrent closers wait for
+and observe the same terminal result. `interrupt()` and `request_close()` may
+re-enter from a Python signal handler at any point in close and must not wait
+on a non-reentrant lock owned by the interrupted frame.
 
 Adapter capabilities are part of the interface. `supports_terminal_mode`
 controls whether `--terminal` may mirror parsed assistant text to chat.
@@ -599,16 +616,16 @@ driver wake event and a bridge-local `done` event. Teardown order is
 `BrokenPipeError`/`OSError`. On shutdown wake, the driver does not start
 the pump or watcher and goes straight to ordered shutdown.
 
-**Master fd ownership.** `close()` always signals and reaps the child
-(`\x03` → SIGTERM → SIGKILL then wait), and closes the master iff no
-reader has started. If a reader has started, the reader closes the master
-on EOF/EIO. The reader sets `_reader_started` under the lifecycle lock as
-its first action and checks `_master_closed` before its first read. Any
-`OSError` on master read is end-of-stream, so a close-before-first-read
-`EBADF` produces the normal single `ExitEvent`. The driver calls
-`handle.close()` on any exception in the universal `spawn → pump-started`
-span and re-raises, covering detached and attached pre-reader failures
-without leaking a master fd or zombie.
+**Master fd ownership.** `request_close()` publishes retirement and attempts
+the one graceful Ctrl-C; `close()` then drives the existing bounded
+SIGTERM/SIGKILL escalation, reaps the child, and closes the master iff no
+reader has started. If a reader has started, the reader closes the master on
+EOF/EIO. The reader sets `_reader_started` under the lifecycle lock as its
+first action and checks `_master_closed` before its first read. Any `OSError`
+on master read is end-of-stream, so a close-before-first-read `EBADF` produces
+the normal single `ExitEvent`. Direct `handle.close()` first requests
+retirement, so exceptions in the universal `spawn → pump-started` span cannot
+leak a master fd or zombie.
 
 The PTY master is configured nonblocking once before concurrent publication,
 preserving unrelated flags. No writer calls `F_SETFL` afterward. Injection,
@@ -628,28 +645,29 @@ current chunk, but cancellation published before token retirement makes the
 call report interruption and no later chunk begins. Once the token is retired,
 the write is complete and later cancellation applies only to later calls.
 
-Interrupt is the sole out-of-band writer. It never acquires the normal-writer
-lock: under the reentrant lifecycle lock it first registers an operation token,
-advances the epoch, and attempts to duplicate the master fd, then attempts
-Ctrl-C outside the lock when duplication succeeded. The token exists even when
-duplication fails and remains active through any SIGTERM fallback, so close
-cannot reap the child between the failed duplication or Ctrl-C attempt and
-fallback signal. Calls entering afterward capture the new epoch and remain
-valid.
+Interrupt and terminal-close request are the two out-of-band writers. Neither
+acquires the normal-writer lock. `interrupt()` registers an operation token,
+advances the write epoch, duplicates the master fd, and attempts Ctrl-C
+outside the lifecycle lock. Failed duplication or Ctrl-C may use the existing
+SIGTERM fallback while the operation token remains live. The handle stays
+open, so calls entering afterward capture the new epoch and remain valid.
 
-Close publishes retirement and advances the epoch atomically with acquiring
-its own close-owned duplicated-fd token. Outside the lock, the winning closer
-writes graceful Ctrl-C through that duplicate, closes it, and retires its own
-token. If close cannot duplicate the master, retirement and the epoch advance
-still commit; close registers no lasting self-token, drains external tokens,
-and proceeds directly to escalation and reap rather than leaving the handle
-open or stuck in `closing`. Close waits for all other pre-retirement
-write/interrupt tokens to drain before escalation and reap; it never waits on
-its own token. The reader's existing canonical `select`/`read` and EOF-close
-ownership is unchanged. A reader-side canonical close and numeric-fd reuse
-cannot redirect leased write-side syscalls because their duplicates pin the
-original open file description. Query replies retain best-effort error
-reporting but use the same serializer, epoch checks, and operation leases.
+`request_close()` changes `open` to `close_requested`, publishes `_retired`,
+advances the epoch, and acquires its close-request duplicated-fd operation
+token as one lifecycle-lock transition. The winning request attempts the one
+graceful Ctrl-C outside the lock, closes the duplicate, and retires its token.
+Failed duplication still commits retirement and may use the existing signal
+fallback; no later close request or interrupt sends another graceful Ctrl-C.
+
+`close()` first ensures retirement was requested, then the winning closer
+changes `close_requested` to `closing`, drains every external operation,
+performs bounded escalation and reap, and publishes the terminal result. It
+never waits on its own close-request token and never repeats the graceful
+Ctrl-C. The reader's canonical select/read and EOF-close ownership remains
+unchanged. Concurrent close, reader-side close, and numeric-fd reuse cannot
+redirect leased write-side syscalls because their duplicates pin the original
+open file description. Query replies retain best-effort error reporting but
+use the same serializer, epoch checks, and operation leases.
 
 Close re-reads reader ownership after each reap outcome and makes the fd
 ownership decision atomically under the lifecycle lock. Spawn closes each fd
@@ -827,11 +845,14 @@ durable conversation; the harness session is an optimization of it.
   The reactor owns persistent queue handles and uses the copied
   `MultiQueueWatcher` scheduling path to claim-consume commands with
   `read_one` (they are commands, not history). `TautClient.watch(...)`
-  deliberately knows nothing about `sys.*`. Control must stay responsive while
-  injection is blocked on a stalled harness: STOP's shutdown path closes the
-  adapter handle, and `AdapterHandle.close()`/`interrupt()` are required to be
-  thread-safe and to **unblock any in-flight `inject()`** ([SUM-7.1] contract)
-  — a stuck harness can always be stopped.
+  deliberately knows nothing about `sys.*`. Control must stay responsive
+  while injection is blocked on a stalled harness. STOP's signal/control path
+  calls nonblocking `AdapterHandle.request_close()`, which publishes permanent
+  retirement and unblocks any in-flight `inject()` under [SUM-7.1]. The
+  foreground generation owner alone calls blocking `close()`, checked-joins
+  the event pump, and publishes teardown before release. A stuck harness can
+  therefore always be stopped without making a signal handler or control
+  thread own reap or join.
   The control reactor follows SimpleBroker 5.2.0's reference
   persistent-session and thread-local-core ownership model, with
   SimpleBroker 5.6.1 or newer required for the supported reactor lane. Version
@@ -881,16 +902,20 @@ supervisor seam, remains control-thread-owned, and preserves its in-memory
 cursor across successful handle replacement.
 
 Unexpected control-loop exit is a first-class driver failure. The control
-thread reports the failure to the foreground supervisor, which immediately
-interrupts the current adapter, stops the chat watcher, releases the driver
-claim, and exits nonzero. It must never leave a live harness without
-STOP/STATUS/PING, and it must not spend watcher-rebuild or harness-crash retry
-budgets. Expected STOP and driver shutdown remain clean exits and preserve the
-existing release-before-ack ordering.
-- `taut-summon stop NAME` writes STOP; the driver stops injection,
-  interrupts the harness via the adapter (its own graceful path — the
-  Ctrl-C analogy), waits bounded, posts nothing on the member's behalf,
-  updates the ledger, exits 0. SIGINT to the driver is the same path.
+thread reports the failure to the foreground supervisor, requests terminal
+close on the current adapter, stops the chat watcher, releases the driver claim
+after foreground teardown, and exits nonzero. It must never leave a live
+harness without STOP/STATUS/PING, and it must not spend watcher-rebuild or
+harness-crash retry budgets. Expected STOP and driver shutdown remain clean
+exits and preserve release-before-ACK ordering.
+- `taut-summon stop NAME` writes STOP. The driver first publishes shutdown,
+  requests terminal close on the currently published adapter, and wakes the
+  foreground. Watcher coordination only stops and joins the watcher; it does
+  not finalize the adapter. Foreground generation teardown calls `close()`,
+  checked-joins the pump, posts nothing on the member's behalf, updates the
+  ledger, and exits 0. SIGINT to the driver uses the same path. If shutdown or
+  fatal control failure was published while spawn was returning, handle
+  publication rechecks those events and requests close on that exact handle.
 - STATUS returns driver liveness, provider, session id, thread count,
   cursor lag summary. PING is STATUS minus detail. Primary fields come from
   driver-owned memory and adapter status; the session ledger remains the
@@ -1144,6 +1169,26 @@ existing release-before-ack ordering.
   ledger/configuration diagnostics, registry-wide session-event capability,
   the 5.3.0 floor, and ordered release invocation with fresh built artifacts.
 
+Terminal-retirement conformance observes the child boundary, not only handle
+method counts. Stream and PTY tests prove `request_close()` is nonblocking,
+publishes retirement before signaling, cancels active and queued writes,
+refuses later injection, is idempotent under repeated requests and
+signal-handler reentry, and composes with direct and concurrent `close()` while
+delivering one graceful SIGINT or Ctrl-C for that retirement. Separate tests
+preserve reusable `interrupt()` and inject-after-interrupt. Real
+scripted-provider process tests make the first SIGINT enter an observable,
+bounded cleanup gate and record every reentrant signal; correlated control
+STOP and direct driver SIGINT each record one graceful signal and exit cleanly.
+The assertion counts signals after cleanup rather than waiting for a target
+count.
+
+Canonical coverage aggregation validates every downloaded raw shard before
+combine. No shard may be missing, zero-byte, or unreadable through Coverage's
+public data API, and any `CoverageWarning` during combine is fatal. Aggregation
+does not delete or filter invalid evidence, require every valid shard to
+contain project lines, depend on Coverage's private schema, or replace the
+existing required-execution-path gate.
+
 Command/embedding verification additionally proves: both console surfaces use
 one controller; source and installed-wheel command discovery;
 previous-Summon compatibility; controller list/status/stop truth through real
@@ -1219,8 +1264,9 @@ public operation errors to exit 1.
 ## Implementation Mapping
 
 - `docs/implementation/05-taut-summon-architecture.md` explains controller,
-  driver, control, PTY, host-interaction ownership, and [SUM-7.4]'s
-  byte-transparent attach boundary.
+  driver, terminal-close request versus foreground finalization, PTY
+  fd-operation ownership, host interaction, [SUM-7.4]'s byte-transparent
+  attach boundary, and the raw-coverage integrity owner.
 - `docs/implementation/06-command-extensions.md` explains how installed Summon
   manifests replace the temporary core bridge and how rich hosts compose the
   public controller without parsing a CLI. It also maps [SUM-3]/[SUM-13]
@@ -1255,6 +1301,9 @@ public operation errors to exit 1.
   Summon's control topology remains fixed.
 - `docs/plans/2026-07-10-taut-summon-quality-remediation-plan.md` — approved
   state, lifecycle, control, artifact-release, and documentation remediation.
+- `docs/plans/2026-07-28-summon-terminal-retirement-plan.md` — separates
+  reusable adapter interruption from one-signal terminal retirement and makes
+  invalid raw coverage shards fatal.
 - `docs/plans/2026-07-09-taut-reactor-safety-plan.md` — planned control-reactor
   ownership, inter-turn recovery, activity wake, and fatal control-thread
   supervision hardening.

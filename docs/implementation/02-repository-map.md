@@ -15,12 +15,13 @@ Quick pointers to the key guidance documents in this repository.
 | `bin/check-cli-claims` | Pytest-free command-path gate over maintained Markdown; reuses the registry-derived grammar, exact source set, and exemptions in `tests/test_cli_claims.py` |
 | `bin/coalesce-check` | Coalescing evidence trail: resolves every SHA claim and retrieval cue in `docs/coalescing.md` locally, in named siblings, and against `origin/main` (reporting local-only pins), and derives the lessons-tier counts |
 | `bin/pytest-pg` | Docker-backed Postgres test runner for shared root tests and `taut-pg` tests |
+| `bin/combine-coverage.py` | Pre-combine raw-shard integrity owner: validates every downloaded file through Coverage's public data API, rejects absent, zero-byte, unreadable, or warning-producing evidence, and preserves all inputs while combining |
 | `bin/check-required-coverage-paths.py` | Post-combine coverage-data checker for required child-process, critical Summon, and MCP rate-admission execution paths |
 | `bin/check-core-summon-wheel-matrix.py` | Isolated six-case core/Summon wheel-matrix checker retaining the 0.5.0 reactor floor and adding the 0.5.4 command-rollout floor |
 | `bin/build-and-check-release-wheels.py` | Fresh-build owner, or paired explicit-current-wheel consumer in canonical CI, that retains the historical wheel builds before invoking the six-case matrix checker |
 | `bin/release-artifact.py` | Creates and verifies commit-bound release bundles containing one wheel, one sdist, and an inner SHA-256 manifest |
 | `bin/require-green-workflows.py` | Observes canonical exact-SHA workflow evidence and selects attempt-bound release artifacts by immutable id and archive digest |
-| `.github/workflows/test.yml` | Push/PR/reusable pytest, lint, type, deterministic serial direct root/Summon unit coverage plus same-run process/MCP aggregation, and sole canonical release-byte production for all four packages |
+| `.github/workflows/test.yml` | Push/PR/reusable pytest, lint, type, deterministic serial direct root/Summon unit coverage plus checked same-run process/MCP aggregation, and sole canonical release-byte production for all four packages |
 | `.github/workflows/test-pg-extension.yml` | Push/PR/reusable Docker Postgres gate for `taut-pg` |
 | `.github/workflows/test-mcp-extension.yml` | Push/PR/reusable Ubuntu SQLite/live-PostgreSQL MCP behavior, representative macOS/Windows non-PG compatibility, package-local quality, and disposable build gate; never a release-byte owner |
 | `.github/workflows/release-gate.yml` | `v*` tag observer that requires exact-SHA Test, PG Test, and MCP Test evidence before publishing the root-produced core artifact |
@@ -88,6 +89,7 @@ Quick pointers to the key guidance documents in this repository.
 | `docs/plans/2026-07-27-message-show-delete-plan.md` | Reviewed implementation plan for exact message show/delete across the Python, CLI, and MCP surfaces |
 | `docs/plans/2026-07-28-message-react-plan.md` | Reviewed implementation plan for configured best-effort message reactions across Python, CLI, notification, and MCP surfaces |
 | `docs/plans/2026-07-28-direct-message-navigation-plan.md` | Completed implementation plan for actor-scoped DM route/stable-handle navigation, directory, rendering, watcher, and MCP behavior |
+| `docs/plans/2026-07-28-summon-terminal-retirement-plan.md` | Reviewed implementation plan separating reusable adapter interruption from one-signal terminal retirement and making invalid raw coverage evidence fatal |
 | `docs/plans/2026-07-14-terminal-output-safety-plan.md` | Reviewed implementation plan for packaged and project-customizable terminal-text policy, public extension API, human renderer coverage, and raw PTY exemption |
 | `docs/plans/2026-07-14-blank-message-no-op-plan.md` | Reviewed implementation plan for the built-in Unicode blank-input guard, typed empty result, silent CLI exit 2, and Summon terminal-mode adaptation |
 | `docs/implementation/00-implementation-index.md` | Numbered entry point for implementation docs |
@@ -121,7 +123,7 @@ Quick pointers to the key guidance documents in this repository.
 | `tests/test_cli_claims.py` | Maintained-source inline/fenced Taut command-path grammar, deterministic registry validation, and exact exemption gate |
 | `tests/test_project_metadata_consistency.py` | Relational gate comparing constants, first-party floors, README pins, wheel names, and retained-lock versions to their owning package manifests |
 | `extensions/taut_pg/` | Separate `taut-pg` project with extension metadata, README, and PG-only tests |
-| `extensions/taut_summon/` | Separate `taut-summon` project: lazy public facade, typed controller/models and host-interaction seam, thin CLI renderer, driver, adapters, ledger, control plane, persona, and real-process conformance suite |
+| `extensions/taut_summon/` | Separate `taut-summon` project: lazy public facade, typed controller/models and host-interaction seam, thin CLI renderer, driver, one-signal terminal-retirement adapters, ledger, control plane, persona, and real-process conformance suite |
 | `extensions/taut_mcp/` | Separate `taut-mcp` project: connection-scoped stdio server, master connection reactor, one owner-thread reactor per attached workspace, explicit tool schemas, notification resource, and optional Claude channel hint |
 
 ## Skills

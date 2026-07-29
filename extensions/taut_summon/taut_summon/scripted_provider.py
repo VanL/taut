@@ -62,6 +62,13 @@ back to ``default_response`` (default: echo). Steps, one key each:
 - ``{"raw_line": LINE}`` — emit LINE verbatim (malformed/unknown-shape
   scenarios).
 
+The top-level ``sigint_cleanup_seconds`` option enables the [SUM-12]
+terminal-retirement probe. The provider records every SIGINT, keeps the first
+handler inside one bounded cleanup gate so a reentrant signal remains
+observable, then exits normally. A second signal releases the gate early; a
+watchdog releases it at the configured upper bound when no second signal
+arrives.
+
 The provider resumes the session id given via ``TAUT_SUMMON_SESSION``
 (set by the adapter from ``spawn(session_id=...)``) in preference to the
 scenario's ``session_id``.
@@ -85,14 +92,20 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
+import threading
 import time
 from typing import Any
 
 from taut import escape_terminal_text
 
 _POLICY_ERROR_MESSAGE = "terminal output policy is unavailable"
+
+
+class _SignalCleanupComplete(Exception):
+    """Unwind the provider's main loop after bounded SIGINT cleanup."""
 
 
 def _emit(payload: dict[str, Any]) -> None:
@@ -167,6 +180,44 @@ def _load_scenario() -> dict[str, Any]:
     if not isinstance(loaded, dict):
         raise ValueError("scenario file must hold a JSON object")
     return loaded
+
+
+def _install_sigint_cleanup(scenario: dict[str, Any]) -> None:
+    raw_seconds = scenario.get("sigint_cleanup_seconds")
+    if raw_seconds is None:
+        return
+    seconds = float(raw_seconds)
+    if seconds <= 0:
+        raise ValueError("sigint_cleanup_seconds must be greater than zero")
+
+    cleanup_release = threading.Event()
+    signal_count = 0
+    release_source = "watchdog"
+
+    def release_from_watchdog() -> None:
+        nonlocal release_source
+        release_source = "watchdog"
+        cleanup_release.set()
+
+    def handle_sigint(_signum: int, _frame: Any) -> None:
+        nonlocal release_source, signal_count
+        signal_count += 1
+        _record({"event": "signal", "signal": "SIGINT", "count": signal_count})
+        if signal_count > 1:
+            release_source = "reentrant"
+            cleanup_release.set()
+            return
+
+        _record({"event": "first-signal-entered"})
+        watchdog = threading.Timer(seconds, release_from_watchdog)
+        watchdog.daemon = True
+        watchdog.start()
+        cleanup_release.wait(timeout=seconds + 1.0)
+        watchdog.cancel()
+        _record({"event": "cleanup-release", "source": release_source})
+        raise _SignalCleanupComplete
+
+    signal.signal(signal.SIGINT, handle_sigint)
 
 
 def _extract_text(event: dict[str, Any]) -> str:
@@ -266,7 +317,8 @@ def _exec_taut(spec: Any) -> None:
 def main() -> int:
     try:
         scenario = _load_scenario()
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        _install_sigint_cleanup(scenario)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
         _write_stderr(f"scripted provider: bad scenario: {exc}")
         return 2
 
@@ -285,6 +337,7 @@ def main() -> int:
             "env_system_prompt": os.environ.get("TAUT_SUMMON_SYSTEM_PROMPT"),
         }
     )
+    _record({"event": "provider-ready"})
     if scenario.get("announce_session", True):
         _emit_init(state.session_id)
 
@@ -312,6 +365,8 @@ def main() -> int:
             steps = responses[index] if index < len(responses) else default_response
             index += 1
             _run_steps(list(steps), state, text)
+    except _SignalCleanupComplete:
+        return 0
     except KeyboardInterrupt:
         return 130
     except (ValueError, json.JSONDecodeError) as exc:

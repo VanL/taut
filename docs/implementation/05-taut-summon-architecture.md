@@ -191,11 +191,14 @@ live state machine, with named transition tests. Splitting the file by size
 would hide the side-effect fences between transitions and make stale-generation
 writes easier to introduce.
 
-Shutdown ordering (shared by SIGINT and control STOP): stop injection →
-adapter interrupt (unblocks any in-flight `inject()`) → pump drains to `exit`
-or a bounded timeout → ownership-checked ledger release → exit 0. The signal
-and control paths interrupt the current adapter handle immediately, before
-waiting for the main loop to reach a later shutdown checkpoint.
+Shutdown ordering (shared by SIGINT and control STOP): publish shutdown →
+request terminal close on the adapter → stop and checked-join the watcher →
+foreground `close()` while the event pump drains → checked pump join →
+ownership-checked ledger release → exit 0. Signal and control paths call only
+nonblocking `request_close()`; they never wait, join, reap, or release streams.
+Assignment plus a post-publication shutdown/control-failure recheck covers both
+spawn/stop orders without another driver lock. `_teardown_generation()` is the
+only blocking adapter finalizer.
 
 ### PTY adapter: capable terminal, not screen parser ([SUM-7.4])
 
@@ -235,14 +238,14 @@ preserved inside paste framing; otherwise LF collapses to spaces so one chat
 message is one submitted turn. Orientation is the first injected turn for PTY
 (`orientation_via_inject=True`), after the pump starts and settle observes the
 reader's `last_output_ts`, but before the watcher starts. If STOP or SIGINT
-races this pre-watch orientation step, the driver interrupts the handle and
-treats an interrupted `inject()` as a clean stop. The driver leaves the caught
+races this pre-watch orientation step, the driver requests terminal close and
+treats the retired `inject()` as a clean stop. The driver leaves the caught
 `AdapterError` scope before entering generation teardown. This is load-bearing:
 teardown uses `sys.exception()` to preserve a real primary failure, so calling
 it from the expected cancellation handler would relabel `PTY write interrupted`
 as a fatal shutdown error and make a confirmed ledger release return a false
 STOP failure. The rich-host regression pins the real write lease, control
-interrupt, and teardown order with events. Structured adapters keep the
+close request, and teardown order with events. Structured adapters keep the
 spawn-time system-prompt path.
 
 PTY construction validates argv, unsigned-short terminal dimensions, and
@@ -256,30 +259,35 @@ serializer and leaves the next epoch reusable. Write-side leases below pin fd
 identity while syscalls run outside the lifecycle lock; readiness-wait errors
 from concurrent close are normalized to the newer lifecycle state.
 
-The fd lifecycle is the load-bearing boundary. `PtyHandle.close()` always
-signals and reaps the child, but closes the master only if no reader has
-started. Once the pump owns the master, the reader closes it on EOF/EIO. The
-driver closes the handle and joins any already-started pump on exceptions
-through bootstrap and the pump hand-off, so a failed rejoin or thread join
-cannot leak a master fd or leave a zombie. Stream and PTY handles publish their
-closing state before signaling, so injections that begin after close starts
-fail synchronously; concurrent close callers observe the same terminal result.
+The fd lifecycle is the load-bearing boundary. `PtyHandle.request_close()`
+publishes terminal retirement and owns one graceful Ctrl-C without waiting.
+`PtyHandle.close()` ensures that request exists, drains operations, drives
+bounded SIGTERM/SIGKILL escalation, reaps the child, and closes the master only
+if no reader has started. Once the pump owns the master, the reader closes it
+on EOF/EIO. The driver closes the handle and joins any already-started pump on
+exceptions through bootstrap and the pump hand-off, so a failed rejoin or
+thread join cannot leak a master fd or leave a zombie. Stream and PTY handles
+publish `close_requested` before the graceful signal, so injections that begin
+after terminal retirement fail synchronously; concurrent close callers observe
+the same terminal result.
 
 Write-side fd lifetime is carried by lifecycle-registered operation tokens and
-duplicated master fds. Normal writers snapshot their epoch before serialization,
-lease a duplicate under the reentrant lifecycle lock, and perform nonblocking
-write/wait syscalls outside it. Interrupt registers before attempting its dup
-and holds that token through Ctrl-C plus fallback; close atomically leases its
-own graceful Ctrl-C fd while publishing retirement, releases its own token,
-drains external tokens, then escalates and reaps. This makes cancellation
-non-starving without letting canonical-fd close or numeric reuse redirect an
-in-flight syscall. Reader-side canonical ownership remains unchanged. Epoch and
-retirement state are rechecked after successful and failed syscalls so a
-published cancellation outranks concurrent reader close and a stale lower-level
-fd diagnostic. At completion, the writer rechecks its epoch and retires its
-operation token in one lifecycle-lock action. Cancellation published before
-that linearization point makes the call fail even when its final bytes were
-already transferred; cancellation after it applies only to later calls.
+duplicated master fds. Normal writers snapshot their epoch before
+serialization, lease a duplicate under the reentrant lifecycle lock, and
+perform nonblocking write/wait syscalls outside it. Reusable `interrupt()` and
+terminal `request_close()` each register before attempting their dup and hold
+that token through Ctrl-C plus fallback. The terminal request also publishes
+`_retired` and advances the epoch before fd I/O. `close()` sends no second
+Ctrl-C; it drains every request/write token, then escalates and reaps. This
+makes cancellation non-starving without letting canonical-fd close or numeric
+reuse redirect an in-flight syscall. Reader-side canonical ownership remains
+unchanged. Epoch and retirement state are rechecked after successful and failed
+syscalls so a published cancellation outranks concurrent reader close and a
+stale lower-level fd diagnostic. At completion, the writer rechecks its epoch
+and retires its operation token in one lifecycle-lock action. Cancellation
+published before that linearization point makes the call fail even when its
+final bytes were already transferred; cancellation after it applies only to
+later calls.
 
 ### Attach/detach and `wired` ([SUM-7.4], [SUM-8])
 
@@ -419,8 +427,9 @@ SimpleBroker queues directly. The only retry Taut owns here is semantic:
 idempotent STATUS/PING clients may resend the same correlated request after no
 reply on the same reply queue. Broker exceptions are not retried by substring.
 The control thread stays responsive while an `inject()` is blocked on a stalled
-harness because STOP's path closes the adapter handle, which the [SUM-7.1]
-contract requires to unblock the in-flight write.
+harness because STOP calls nonblocking `request_close()`. That operation
+publishes permanent retirement and cancels the in-flight write under [SUM-7.1];
+the foreground alone performs blocking finalization.
 
 `ControlLoop` is a thin supervisor around replaceable reactor generations.
 Dispatch, native wait, and rate-audit faults are recorded while their current
@@ -436,10 +445,11 @@ the inactive probe and next audit deadline.
 
 The driver wraps the control thread with a separate failure event and primary
 exception. Initial open failure, programming failure, exhausted replacement,
-or an unexpected clean return stops the watcher, interrupts the adapter, wakes
-the foreground supervisor, and exits nonzero after normal release cleanup.
-Expected STOP and driver shutdown remain clean exits. Control failure never
-spends the watcher-rebuild or provider-resume budgets.
+or an unexpected clean return stops the watcher, requests terminal close on
+the adapter, wakes the foreground supervisor, and exits nonzero after
+foreground teardown and normal release cleanup. Expected STOP and driver
+shutdown remain clean exits. Control failure never spends the watcher-rebuild
+or provider-resume budgets.
 
 Before publishing `shutdown_complete`, the foreground freezes one immutable
 STOP outcome with three distinct facts: teardown error, release exception, and
@@ -547,7 +557,8 @@ tables, and touches core through the public `TautClient`, `taut.identity`,
 supervise real child processes over real pipes; the shared stream-json plumbing lives
 in `extensions/taut_summon/taut_summon/_stream.py` so both shipped adapters
 share the [SUM-7.1] handle mechanics (flushed inject, thread-safe
-interrupt/close, single-consumer events) once.
+reusable interrupt, terminal close request/finalization, single-consumer
+events) once.
 
 The extension CLI keeps one documented argparse inventory for `run`, `stop`,
 and `status`. Root help owns exit classes; each subcommand owns its syntax and
@@ -613,19 +624,21 @@ require a separately drained subprocess pipe.
 | `extensions/taut_summon/taut_summon/controller.py` | CLI-independent provider/list/status/stop/foreground-run orchestration ([SUM-13]) |
 | `extensions/taut_summon/taut_summon/interaction.py` | Stdlib-only public terminal availability/lease protocol and shell adapter ([SUM-7.4]/[SUM-13]) |
 | `extensions/taut_summon/taut_summon/cli.py` | Lightweight `run`/`stop`/`status` argparse, human rendering, and exit-code mapping |
-| `extensions/taut_summon/taut_summon/_driver.py` | Bootstrap ([SUM-4]), ears watch handler, event pump, resume, shutdown; `format_injection` ([SUM-5.2]) |
+| `extensions/taut_summon/taut_summon/_driver.py` | Bootstrap ([SUM-4]), ears watch handler, event pump, resume, nonblocking terminal-close request, foreground finalization; `format_injection` ([SUM-5.2]) |
 | `extensions/taut_summon/taut_summon/_state.py` | The two-table ledger, claim/session helpers, single-driver guard evidence ([SUM-8]) |
 | `extensions/taut_summon/taut_summon/_control.py` | Fixed `_ControlReactor`, between-turn replacement supervisor, client, `sys.*` queue derivation, rate backstop ([SUM-9]/[SUM-10]/[SUM-11]) |
-| `extensions/taut_summon/taut_summon/_adapter.py` | `ProviderAdapter` protocol, `AdapterEvent` union, adapter registry ([SUM-7.1]) |
-| `extensions/taut_summon/taut_summon/_stream.py` | Shared stream-json child-process handle mechanics for both adapters |
-| `extensions/taut_summon/taut_summon/_pty.py` | Universal interactive PTY adapter, terminal-query responder, attach bridge, and PTY fd lifecycle |
+| `extensions/taut_summon/taut_summon/_adapter.py` | `AdapterHandle` lifecycle, `ProviderAdapter` protocol, `AdapterEvent` union, adapter registry ([SUM-7.1]) |
+| `extensions/taut_summon/taut_summon/_stream.py` | Shared stream-json child-process mechanics, reusable interruption, terminal-close request, and blocking finalization |
+| `extensions/taut_summon/taut_summon/_pty.py` | Universal interactive PTY adapter, terminal-query responder, attach bridge, and terminal-retirement fd-operation lifecycle |
 | `extensions/taut_summon/taut_summon/_scripted.py` | The `scripted` test adapter (real subprocess, fake model) — the anti-mocking seam |
-| `extensions/taut_summon/taut_summon/scripted_provider.py` | The scripted provider program spawned as the harness child |
+| `extensions/taut_summon/taut_summon/scripted_provider.py` | The scripted provider child, including bounded physical-SIGINT cleanup and signal-count evidence |
 | `extensions/taut_summon/taut_summon/_claude.py` | The `claude-stream` adapter: headless stream-json, resume, event translation |
 | `extensions/taut_summon/taut_summon/_persona.py` | The default persona template ([SUM-10]) and env assembly |
 | `extensions/taut_summon/tests/conftest.py` | The shared real-process driver harness (`DriverProcess`) and fixtures |
 | `extensions/taut_summon/tests/test_conformance.py` | The portable, parameterized [SUM-12] conformance suite |
 | `extensions/taut_summon/tests/test_live_local_llm.py` | The CI-safe local-LLM PTY smoke: loopback model endpoint, counting proxy, orientation, and `taut say` sentinel |
+| `bin/combine-coverage.py` | Canonical raw-shard validator and public Coverage combiner; required-path truth remains separate |
+| `tests/test_combine_coverage.py` | Firing proof for absent, zero-byte, unreadable, warning-producing, valid-empty, and populated coverage inputs |
 
 ## Spec-Code Trace
 
@@ -635,11 +648,11 @@ require a separately drained subprocess pipe.
 | [SUM-4], bootstrap, identity, presence | `extensions/taut_summon/taut_summon/_driver.py`, `extensions/taut_summon/taut_summon/_state.py` | `extensions/taut_summon/tests/test_driver.py` |
 | [SUM-5], ears injection contract | `extensions/taut_summon/taut_summon/_driver.py` | `extensions/taut_summon/tests/test_driver.py`, `extensions/taut_summon/tests/test_conformance.py` |
 | [SUM-6], mouth CLI contract | `extensions/taut_summon/taut_summon/_driver.py`, `extensions/taut_summon/taut_summon/_persona.py` | `extensions/taut_summon/tests/test_driver.py`, including real-process blank-then-visible and nonblank-post-failure cases; `extensions/taut_summon/tests/test_persona.py`; installed paired exception proof in `tests/test_core_summon_wheel_matrix.py` |
-| [SUM-7.1], [SUM-7.2], adapters | `extensions/taut_summon/taut_summon/_adapter.py`, `extensions/taut_summon/taut_summon/_stream.py`, `extensions/taut_summon/taut_summon/_pty.py`, `extensions/taut_summon/taut_summon/_scripted.py`, `extensions/taut_summon/taut_summon/_claude.py` | `extensions/taut_summon/tests/test_scripted_adapter.py`, `extensions/taut_summon/tests/test_claude_adapter.py`, `extensions/taut_summon/tests/test_pty_adapter.py` |
-| [SUM-7.4], PTY shell adapter | `extensions/taut_summon/taut_summon/_pty.py`, `extensions/taut_summon/taut_summon/_driver.py` | `extensions/taut_summon/tests/test_pty_adapter.py`, PTY cases in `extensions/taut_summon/tests/test_driver.py`, `extensions/taut_summon/tests/test_live_harness.py` |
+| [SUM-7.1], [SUM-7.2], adapters | `extensions/taut_summon/taut_summon/_adapter.py`, `extensions/taut_summon/taut_summon/_stream.py`, `extensions/taut_summon/taut_summon/_pty.py`, `extensions/taut_summon/taut_summon/_scripted.py`, `extensions/taut_summon/taut_summon/_claude.py` | `extensions/taut_summon/tests/test_scripted_adapter.py`, `extensions/taut_summon/tests/test_claude_adapter.py`, `extensions/taut_summon/tests/test_pty_adapter.py`, including reusable interrupt, one-signal terminal request, reentry, and direct/concurrent finalization |
+| [SUM-7.4], PTY shell adapter | `extensions/taut_summon/taut_summon/_pty.py`, `extensions/taut_summon/taut_summon/_driver.py` | `extensions/taut_summon/tests/test_pty_adapter.py`, PTY cases in `extensions/taut_summon/tests/test_driver.py`, `extensions/taut_summon/tests/test_interaction.py`, `extensions/taut_summon/tests/test_live_harness.py` |
 | [SUM-8], session ledger and guard | `extensions/taut_summon/taut_summon/_state.py` | `extensions/taut_summon/tests/test_state.py`, `extensions/taut_summon/tests/test_driver.py` |
-| [SUM-9], [SUM-10], [SUM-11], control lifecycle, backstop, recovery, and fatal supervision | `extensions/taut_summon/taut_summon/_control.py::_ControlReactor`, `extensions/taut_summon/taut_summon/_control.py::ControlLoop`, `extensions/taut_summon/taut_summon/_driver.py::SummonDriver._run_control_loop`, `_report_control_failure`, `_raise_if_control_failed` | `extensions/taut_summon/tests/test_control.py` fixed topology, ownership, native wake, inter-turn recovery, audit, partial-bundle, and close tests; `extensions/taut_summon/tests/test_driver.py::test_control_loop_exception_is_driver_fatal`, `test_unexpected_clean_control_loop_return_is_driver_fatal`, `test_initial_control_open_failure_is_driver_fatal`, and real-process fatal-control/STOP/PING cases |
-| [SUM-12], conformance | (all of the above) | `extensions/taut_summon/tests/test_conformance.py`, `extensions/taut_summon/tests/test_live_harness.py`, `extensions/taut_summon/tests/test_live_local_llm.py` |
+| [SUM-9], [SUM-10], [SUM-11], control lifecycle, backstop, recovery, and fatal supervision | `extensions/taut_summon/taut_summon/_control.py::_ControlReactor`, `extensions/taut_summon/taut_summon/_control.py::ControlLoop`, `extensions/taut_summon/taut_summon/_driver.py::SummonDriver._run_control_loop`, `_report_control_failure`, `_raise_if_control_failed` | `extensions/taut_summon/tests/test_control.py` fixed topology, ownership, native wake, inter-turn recovery, audit, partial-bundle, and close tests; `extensions/taut_summon/tests/test_driver.py` publication-race, request ordering, physical STOP signal-count, fatal-control, and PING cases |
+| [SUM-12], conformance | (all of the above), `bin/combine-coverage.py` | `extensions/taut_summon/tests/test_conformance.py`, `extensions/taut_summon/tests/test_driver.py` real child-boundary signal-count cases, `extensions/taut_summon/tests/test_live_harness.py`, `extensions/taut_summon/tests/test_live_local_llm.py`, `tests/test_combine_coverage.py`, `tests/test_github_workflows.py` |
 | [SUM-13], typed embedding and lazy host boundary | `extensions/taut_summon/taut_summon/__init__.py`, `extensions/taut_summon/taut_summon/models.py`, `extensions/taut_summon/taut_summon/controller.py`, `extensions/taut_summon/taut_summon/interaction.py`, `extensions/taut_summon/taut_summon/cli.py` | `extensions/taut_summon/tests/test_controller.py`, `extensions/taut_summon/tests/test_interaction.py`, controller-backed CLI and real-process driver cases |
 
 ## Change Guidance
@@ -680,6 +693,15 @@ precheck sequence; `--skip-checks` is the explicit human override. CI runs the
 deterministic selector in a fresh `taut-summon process` matrix job rather than
 after broad root and summon unit suites, and does not serialize isolated matrix
 hosts for SQLite safety.
+
+The coverage artifact boundary has two owners. `bin/combine-coverage.py`
+enumerates every downloaded regular file before reading any of them, rejects
+missing input, zero-byte or publicly unreadable data, and promoted
+`CoverageWarning`s, then combines valid shards without deleting them.
+`bin/check-required-coverage-paths.py` runs on the combined result and remains
+the separate owner of named execution-path evidence. Do not add private
+Coverage schema checks, file-name filtering, or per-shard line requirements to
+the integrity step.
 
 ## Related Plans
 

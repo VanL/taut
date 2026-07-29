@@ -273,7 +273,11 @@ def test_coverage_reuses_existing_ubuntu_lanes_and_aggregates_without_tests() ->
     )
     assert "pattern: coverage-data-*" in coverage_job
     assert "merge-multiple: true" in coverage_job
-    assert "python -m coverage combine coverage-data" in coverage_job
+    assert (
+        "python bin/combine-coverage.py coverage-data --output .coverage"
+        in coverage_job
+    )
+    assert "python -m coverage combine coverage-data" not in coverage_job
     assert "python bin/check-required-coverage-paths.py" in coverage_job
     assert "pytest" not in coverage_job
     assert "test_live_harness.py" not in workflow

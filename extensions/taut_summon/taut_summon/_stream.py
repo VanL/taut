@@ -9,9 +9,10 @@ claude-style stream-json over pipes; only the output translation differs.
   the process boundary depends on it). Injectors are serialized by a
   dedicated lock — deliberately not the lifecycle lock, so a blocked
   inject stays interruptible.
-- ``interrupt``/``close`` are thread-safe; they stop the child (SIGINT,
-  escalating to kill inside ``close``), which breaks the pipe and thereby
-  unblocks any in-flight ``inject``.
+- ``interrupt`` is reusable cancellation. ``request_close`` publishes
+  permanent retirement and sends its one graceful signal without waiting.
+  ``close`` owns bounded escalation, reap, and pipe release without repeating
+  the graceful signal.
 - ``events`` is single-consumer, translates each stdout line through the
   subclass's ``_parse_line``, and ends with exactly one ``ExitEvent``
   after the child is reaped. Unknown stream shapes are rejected loudly —
@@ -145,12 +146,20 @@ class StreamJsonHandle(ABC):
 
     def interrupt(self) -> None:
         with self._lifecycle_lock:
-            if self._close_state == "closed":
+            if self._close_state != "open":
                 return
+            self._send_interrupt()
+
+    def request_close(self) -> None:
+        with self._lifecycle_lock:
+            if self._close_state != "open":
+                return
+            self._close_state = "close_requested"
             self._send_interrupt()
 
     def close(self) -> None:
         primary_error = sys.exception()
+        self.request_close()
         owns_close = False
         with self._close_condition:
             if self._close_state == "closed":
@@ -159,13 +168,10 @@ class StreamJsonHandle(ABC):
                 self._close_condition.wait_for(lambda: self._close_state == "closed")
                 close_error = self._close_error
             else:
+                assert self._close_state == "close_requested"
                 self._close_state = "closing"
                 owns_close = True
                 close_error = None
-                # Keep the state transition and first graceful signal atomic
-                # with respect to concurrent close callers.  The RLock still
-                # permits same-thread signal-handler reentry through interrupt.
-                self._send_interrupt()
 
         if not owns_close:
             self._raise_close_error(close_error, primary_error)

@@ -23,10 +23,11 @@ manager ([SUM-2]). The driver owns exactly three runtime lanes:
   fresh-session cursor replay as the fallback, bounded backoff then a
   loud exit).
 
-Shutdown ordering ([SUM-9], shared by SIGINT): stop injection (stop the
-watcher) → adapter interrupt (unblocks any in-flight inject) → pump
-drains to exit or bounded timeout → ownership-checked driver release →
-exit 0.
+Shutdown ordering ([SUM-9], shared by SIGINT): publish shutdown → request
+terminal close on the adapter → stop and checked-join the watcher →
+foreground adapter finalization while the pump drains → checked pump join →
+ownership-checked driver release → exit 0. Signal and control paths never
+wait, join, or reap.
 
 Test/ops knob: ``TAUT_SUMMON_RESUME_BACKOFF`` (comma-separated seconds,
 e.g. ``"0.2,0.2"``) overrides the default resume backoff schedule; the
@@ -369,9 +370,9 @@ class SummonDriver:
         handle = self._handle
         if handle is not None:
             try:
-                handle.interrupt()
+                handle.request_close()
             except AdapterError:
-                logger.debug("adapter interrupt during stop failed", exc_info=True)
+                logger.debug("adapter close request during stop failed", exc_info=True)
         self._wake.set()
 
     def _persistent_client(self, **kwargs: Any) -> TautClient:
@@ -714,6 +715,14 @@ class SummonDriver:
             started_at = time.monotonic()
             handle = self._spawn(adapter, session_id, system_prompt, env)
             self._handle = handle
+            if self._shutdown.is_set() or self._control_failed.is_set():
+                try:
+                    handle.request_close()
+                except AdapterError:
+                    logger.debug(
+                        "adapter close request after publication failed",
+                        exc_info=True,
+                    )
             generation = self._activate_generation()
             self._halt_ack.clear()
             pump: threading.Thread | None = None
@@ -801,7 +810,7 @@ class SummonDriver:
                         generation, handle, pump, boot
                     )
             try:
-                self._watch_until_wake(boot, handle)
+                self._watch_until_wake(boot)
                 self._raise_if_pump_failed(generation)
             except Exception:
                 self._teardown_generation(generation, handle, pump)
@@ -1282,16 +1291,6 @@ class SummonDriver:
         pump: threading.Thread,
         boot: _BootstrapResult,
     ) -> int:
-        try:
-            handle.interrupt()
-        except BaseException:
-            self._teardown_generation(
-                generation,
-                handle,
-                pump,
-                timeout=_SHUTDOWN_PUMP_JOIN_TIMEOUT_SECONDS,
-            )
-            raise
         self._teardown_generation(
             generation,
             handle,
@@ -1467,7 +1466,6 @@ class SummonDriver:
     def _watch_until_wake(
         self,
         boot: _BootstrapResult,
-        handle: AdapterHandle,
     ) -> None:
         """Keep the chat watcher alive until shutdown or harness death.
 
@@ -1528,13 +1526,11 @@ class SummonDriver:
 
             self._await_wake()
 
-            # Shutdown ordering ([SUM-9]): stop injection, unblock any
-            # in-flight inject via interrupt, drain the pump, release.
+            # Watcher coordination owns only watcher stop and checked join.
+            # The signal/control path already requested terminal retirement;
+            # foreground generation teardown owns blocking adapter close.
             self._halt_ack.set()
             self._request_watcher_attempt_stop(attempt_stop)
-            if self._shutdown.is_set():
-                handle.interrupt()
-                handle.close()
             self._join_watcher_attempt(watcher_thread)
 
             self._raise_if_control_failed()
@@ -1706,10 +1702,11 @@ class SummonDriver:
         handle = self._handle
         if handle is not None:
             try:
-                handle.interrupt()
+                handle.request_close()
             except Exception:  # pragma: no cover - preserve the primary failure
                 logger.debug(
-                    "adapter interrupt after control failure failed", exc_info=True
+                    "adapter close request after control failure failed",
+                    exc_info=True,
                 )
         self._wake.set()
 

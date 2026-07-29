@@ -337,11 +337,37 @@ class PtyHandle:
             assert operation is not None
             self._release_operation(operation)
 
+    def request_close(self) -> None:
+        operation: object | None = None
+        interrupt_fd: int | None = None
+        with self._close_condition:
+            if self._close_state != "open":
+                return
+            self._close_state = "close_requested"
+            self._retired = True
+            self._write_epoch += 1
+            if not self._master_closed:
+                operation = self._register_operation_unlocked()
+                try:
+                    interrupt_fd = os.dup(self._master_fd)
+                except OSError:
+                    interrupt_fd = None
+
+        if operation is None:
+            return
+        try:
+            wrote_interrupt = self._write_interrupt_fd_best_effort(interrupt_fd)
+            if not wrote_interrupt:
+                self._signal_process_group(signal.SIGTERM)
+        finally:
+            if interrupt_fd is not None:
+                self._close_operation_fd(interrupt_fd)
+            self._release_operation(operation)
+
     def close(self) -> None:
         primary_error = sys.exception()
+        self.request_close()
         owns_close = False
-        close_operation: object | None = None
-        close_interrupt_fd: int | None = None
         with self._close_condition:
             if self._close_state == "closed":
                 close_error = self._close_error
@@ -349,16 +375,8 @@ class PtyHandle:
                 self._close_condition.wait_for(lambda: self._close_state == "closed")
                 close_error = self._close_error
             else:
+                assert self._close_state == "close_requested"
                 self._close_state = "closing"
-                if not self._master_closed:
-                    close_operation = self._register_operation_unlocked()
-                    try:
-                        close_interrupt_fd = os.dup(self._master_fd)
-                    except OSError:
-                        self._discard_operation_unlocked(close_operation)
-                        close_operation = None
-                self._retired = True
-                self._write_epoch += 1
                 owns_close = True
                 close_error = None
 
@@ -368,13 +386,6 @@ class PtyHandle:
 
         failure: AdapterError | None = None
         try:
-            self._write_interrupt_fd_best_effort(close_interrupt_fd)
-            if close_interrupt_fd is not None:
-                self._close_operation_fd(close_interrupt_fd)
-                close_interrupt_fd = None
-            if close_operation is not None:
-                self._release_operation(close_operation)
-                close_operation = None
             self._wait_for_active_operations()
             self._reap_child()
         except AdapterError as exc:
@@ -383,10 +394,6 @@ class PtyHandle:
             failure = AdapterError(f"PTY child cleanup failed: {exc}")
             failure.__cause__ = exc
         finally:
-            if close_interrupt_fd is not None:
-                self._close_operation_fd(close_interrupt_fd)
-            if close_operation is not None:
-                self._release_operation(close_operation)
             with self._close_condition:
                 try:
                     if (

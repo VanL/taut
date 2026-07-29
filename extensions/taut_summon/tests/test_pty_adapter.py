@@ -799,6 +799,139 @@ def test_concurrent_close_has_one_reap_and_fd_owner() -> None:
     assert handle._master_closed is True
 
 
+def test_request_close_sends_one_ctrl_c_before_final_reap() -> None:
+    master_socket, child_socket = socket.socketpair()
+    proc = _ScheduledPtyProcess()
+    handle = _boundary_pty_handle(proc, master_socket.detach())
+
+    handle.request_close()
+    handle.request_close()
+    handle.interrupt()
+
+    child_socket.settimeout(1.0)
+    assert child_socket.recv(4096) == b"\x03"
+    child_socket.settimeout(0.05)
+    with pytest.raises(TimeoutError):
+        child_socket.recv(1)
+    assert proc.wait_calls == 0
+    assert not proc.wait_entered.is_set()
+
+    closer = threading.Thread(target=handle.close)
+    closer.start()
+    assert proc.wait_entered.wait(timeout=1.0)
+    child_socket.settimeout(0.05)
+    with pytest.raises(TimeoutError):
+        child_socket.recv(1)
+    proc.release_wait.set()
+    closer.join(timeout=2.0)
+    child_socket.close()
+
+    assert not closer.is_alive()
+    assert proc.wait_calls == 1
+    assert handle._master_closed is True
+
+
+def test_request_close_cancels_active_and_queued_pty_writes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    master_socket, child_socket = socket.socketpair()
+    proc = _ScheduledPtyProcess()
+    handle = _boundary_pty_handle(proc, master_socket.detach())
+    writer_lock = _TrackingWriterLock(tracked_thread="queued-injector")
+    handle._normal_writer_lock = cast(Any, writer_lock)  # noqa: SLF001
+    real_write = os.write
+    active_write_started = threading.Event()
+    release_active_write = threading.Event()
+    queued_write_started = threading.Event()
+    first_active_write = True
+    failures: list[BaseException] = []
+
+    def controlled_write(fd: int, data: bytes) -> int:
+        nonlocal first_active_write
+        if data.startswith(b"old-active") and first_active_write:
+            first_active_write = False
+            written = real_write(fd, data[:1])
+            active_write_started.set()
+            assert release_active_write.wait(timeout=2.0)
+            return written
+        if data.startswith(b"old-queued"):
+            queued_write_started.set()
+        return real_write(fd, data)
+
+    monkeypatch.setattr(_pty_module.os, "write", controlled_write)
+
+    def inject(text: str) -> None:
+        try:
+            handle.inject(text)
+        except BaseException as exc:  # noqa: BLE001 - asserted below
+            failures.append(exc)
+
+    active = threading.Thread(
+        target=inject, args=("old-active",), name="active-injector"
+    )
+    queued = threading.Thread(
+        target=inject, args=("old-queued",), name="queued-injector"
+    )
+    active.start()
+    assert active_write_started.wait(timeout=1.0)
+    queued.start()
+    assert writer_lock.tracked_acquire.wait(timeout=1.0)
+
+    handle.request_close()
+    release_active_write.set()
+    active.join(timeout=2.0)
+    queued.join(timeout=2.0)
+
+    with pytest.raises(AdapterError, match="closed"):
+        handle.inject("after-terminal-request")
+    child_socket.settimeout(1.0)
+    assert child_socket.recv(4096) == b"o\x03"
+    proc.returncode = 0
+    handle.close()
+    child_socket.close()
+
+    assert not active.is_alive()
+    assert not queued.is_alive()
+    assert len(failures) == 2
+    assert all(isinstance(exc, AdapterError) for exc in failures)
+    assert {str(exc) for exc in failures} == {"PTY write interrupted"}
+    assert not queued_write_started.is_set()
+
+
+def test_request_close_dup_failure_commits_retirement_before_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    master_socket, child_socket = socket.socketpair()
+    master_fd = master_socket.detach()
+    proc = _ScheduledPtyProcess()
+    handle = _boundary_pty_handle(proc, master_fd)
+    fallback_signals: list[signal.Signals] = []
+
+    def failing_dup(fd: int) -> int:
+        assert fd == master_fd
+        raise OSError(errno.EMFILE, "sentinel close-request dup exhaustion")
+
+    monkeypatch.setattr(_pty_module.os, "dup", failing_dup)
+    monkeypatch.setattr(
+        handle,
+        "_signal_process_group",
+        lambda sig: fallback_signals.append(sig),
+    )
+
+    handle.request_close()
+
+    assert fallback_signals == [signal.SIGTERM]
+    assert proc.wait_calls == 0
+    with pytest.raises(AdapterError, match="closed"):
+        handle.inject("must stay retired")
+
+    proc.returncode = 0
+    handle.close()
+    child_socket.close()
+
+    assert handle._master_closed is True
+
+
 def test_inject_refuses_after_pty_close_publishes_closing() -> None:
     master_socket, child_socket = socket.socketpair()
     proc = _ScheduledPtyProcess()
@@ -1044,6 +1177,44 @@ def test_interrupt_is_safe_when_signal_reenters_fd_lease_registration(
     child_socket.close()
 
     assert received == b"\x03"
+
+
+def test_request_close_is_safe_when_signal_reenters_fd_lease_registration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    master_socket, child_socket = socket.socketpair()
+    master_fd = master_socket.detach()
+    proc = _ScheduledPtyProcess()
+    handle = _boundary_pty_handle(proc, master_fd)
+    real_dup = os.dup
+    raised = False
+
+    def controlled_dup(fd: int) -> int:
+        nonlocal raised
+        if fd == master_fd and not raised:
+            raised = True
+            signal.raise_signal(signal.SIGUSR1)
+        return real_dup(fd)
+
+    monkeypatch.setattr(_pty_module.os, "dup", controlled_dup)
+    prior_handler = signal.signal(
+        signal.SIGUSR1, lambda _signum, _frame: handle.request_close()
+    )
+    try:
+        handle.request_close()
+    finally:
+        signal.signal(signal.SIGUSR1, prior_handler)
+
+    child_socket.settimeout(1.0)
+    assert child_socket.recv(4096) == b"\x03"
+    child_socket.settimeout(0.05)
+    with pytest.raises(TimeoutError):
+        child_socket.recv(1)
+    proc.returncode = 0
+    handle.close()
+    child_socket.close()
+
+    assert raised
 
 
 @pytest.mark.parametrize("failure_point", ["write", "select", "zero"])

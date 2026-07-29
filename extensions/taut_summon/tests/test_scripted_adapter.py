@@ -278,6 +278,26 @@ def test_windows_interrupt_uses_process_terminate(
     assert proc.signal_calls == 1
 
 
+def test_windows_terminal_request_terminates_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proc = _ReentrantInterruptProcess()
+    handle = ScriptedHandle(cast(Any, proc), session_id=None)
+    monkeypatch.setattr(
+        _stream_module,
+        "sys",
+        types.SimpleNamespace(platform="win32", exception=sys.exception),
+    )
+
+    handle.request_close()
+    handle.request_close()
+    handle.interrupt()
+    handle.close()
+
+    assert proc.terminate_calls == 1
+    assert proc.signal_calls == 1
+
+
 def test_echo_round_trip_through_real_pipes(tmp_path: Path) -> None:
     scenario = {"default_response": [{"assistant_text": "echo: {text}"}]}
     with scripted_handle(tmp_path, scenario) as handle:
@@ -400,6 +420,66 @@ def test_interrupt_unblocks_blocked_inject(tmp_path: Path) -> None:
         assert isinstance(exit_event, ExitEvent)
 
 
+def test_request_close_unblocks_blocked_inject_and_rejects_later_inject(
+    tmp_path: Path,
+) -> None:
+    scenario = {"on_start": [{"stall": True}]}
+    with scripted_handle(tmp_path, scenario) as handle:
+        pump = EventPump(handle)
+        pump.next_of(SessionEvent)
+        failures: list[Exception] = []
+        blocked = threading.Event()
+
+        def blocked_inject() -> None:
+            blocked.set()
+            try:
+                handle.inject("x" * 8_000_000)
+            except Exception as exc:  # noqa: BLE001 - inspected below
+                failures.append(exc)
+
+        injector = threading.Thread(target=blocked_inject, daemon=True)
+        injector.start()
+        assert blocked.wait(timeout=5.0)
+        time.sleep(0.5)
+        assert injector.is_alive(), "inject did not block on the stalled harness"
+
+        handle.request_close()
+
+        injector.join(timeout=10.0)
+        assert not injector.is_alive(), "terminal close request left inject blocked"
+        assert len(failures) == 1
+        assert isinstance(failures[0], AdapterError)
+        with pytest.raises(AdapterError, match="close_requested"):
+            handle.inject("must stay retired")
+        assert isinstance(pump.next_of(ExitEvent), ExitEvent)
+
+
+def test_request_close_is_nonblocking_terminal_and_signals_once() -> None:
+    proc = _BlockingCloseProcess()
+    handle = ScriptedHandle(cast(Any, proc), session_id=None)
+
+    handle.request_close()
+    handle.request_close()
+    handle.interrupt()
+
+    assert proc.signal_calls == 1
+    assert proc.wait_calls == 0
+    assert not proc.wait_entered.is_set()
+    with pytest.raises(AdapterError, match="close_requested"):
+        handle.inject("must not be delivered")
+
+    closer = threading.Thread(target=handle.close)
+    closer.start()
+    assert proc.wait_entered.wait(timeout=1.0)
+    assert proc.signal_calls == 1
+    proc.release_wait.set()
+    closer.join(timeout=2.0)
+
+    assert not closer.is_alive()
+    assert proc.signal_calls == 1
+    assert proc.wait_calls == 1
+
+
 def test_inject_refuses_after_close_publishes_closing() -> None:
     proc = _BlockingCloseProcess()
     handle = ScriptedHandle(cast(Any, proc), session_id=None)
@@ -470,6 +550,16 @@ def test_interrupt_can_reenter_close_while_lifecycle_state_is_owned() -> None:
     assert failures == []
 
 
+def test_request_close_can_reenter_itself_while_lifecycle_state_is_owned() -> None:
+    proc = _ReentrantInterruptProcess()
+    handle = ScriptedHandle(cast(Any, proc), session_id=None)
+    proc.on_first_signal = handle.request_close
+
+    handle.close()
+
+    assert proc.signal_calls == 1
+
+
 def test_interrupt_can_reenter_close_during_process_wait() -> None:
     proc = _InterruptDuringWaitProcess()
     handle = ScriptedHandle(cast(Any, proc), session_id=None)
@@ -488,7 +578,7 @@ def test_interrupt_can_reenter_close_during_process_wait() -> None:
 
     assert not closer.is_alive(), "same-thread interrupt reentry deadlocked wait"
     assert failures == []
-    assert proc.signal_calls == 2
+    assert proc.signal_calls == 1
 
 
 @pytest.mark.skipif(
