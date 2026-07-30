@@ -1885,10 +1885,10 @@ def test_well_formed_absent_and_inaccessible_dms_are_content_free_empty_results(
     other.join("general")
     outsider = TautClient(db_path=db, as_name="outsider")
     outsider.join("general")
-    inaccessible = other.say("@outsider", "not selected").thread
     selected.close()
-    other.close()
     outsider.close()
+    inaccessible = other.say("@outsider", "not selected").thread
+    other.close()
 
     async def scenario() -> None:
         reactor = ProcessReactor(asyncio.get_running_loop())

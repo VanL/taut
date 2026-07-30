@@ -267,7 +267,8 @@ def test_modern_discovery_lazy_identity_and_subscription_share_one_server(
             assert current.ttl_ms == 0
             assert current.cache_scope == "private"
             assert isinstance(current.contents[0], types.TextResourceContents)
-            assert canonical in current.contents[0].text
+            current_payload = json.loads(current.contents[0].text)
+            assert current_payload["workspaces"][0]["workspace"] == canonical
 
     asyncio.run(scenario())
 
@@ -1789,9 +1790,9 @@ main([])
 
 
 @pytest.mark.timeout(10)
-def test_stdio_validation_precedes_charge_and_resource_uses_numeric_rate_error() -> (
-    None
-):
+def test_stdio_validation_precedes_charge_and_resource_uses_numeric_rate_error(
+    tmp_path: Path,
+) -> None:
     """[MCP-10] Schema/allowlist checks are free; valid requests share one bucket."""
 
     server_code = """
@@ -1809,6 +1810,7 @@ _process_reactor.ProcessReactor.charge_request = two_request_bucket
 from taut_mcp.cli import main
 main([])
 """
+    missing_workspace_path = str(tmp_path / "not-attached")
 
     async def scenario() -> None:
         parameters = StdioServerParameters(
@@ -1837,7 +1839,7 @@ main([])
                 missing_workspace = await session.call_tool(
                     "message_show",
                     {
-                        "workspace": "/not-attached",
+                        "workspace": missing_workspace_path,
                         "token": "existing-token",
                         "msg_id": "1234567890123456789",
                     },
@@ -1851,7 +1853,7 @@ main([])
                 limited_tool = await session.call_tool(
                     "message_delete",
                     {
-                        "workspace": "/not-attached",
+                        "workspace": missing_workspace_path,
                         "token": "existing-token",
                         "msg_id": "1234567890123456789",
                     },
