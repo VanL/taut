@@ -162,7 +162,7 @@ def test_rate_boundary_charges_every_valid_tool_and_no_server_owned_path(
 
     from mcp import types
     from mcp.client import Client
-    from mcp.shared.exceptions import MCPError
+    from mcp.shared.exceptions import MCPDeprecationWarning, MCPError
 
     from taut_mcp._process_reactor import RATE_LIMIT_EXCEEDED, WorkspaceToolError
     from taut_mcp.server import NOTIFICATIONS_URI, create_server
@@ -211,11 +211,21 @@ def test_rate_boundary_charges_every_valid_tool_and_no_server_owned_path(
         legacy_server, _ = create_server()
         before_legacy = len(charges)
         async with Client(legacy_server, mode="legacy") as legacy:
-            await legacy.send_ping()
+            # SDK v2 retains these methods only for explicit legacy-mode proof.
+            with pytest.warns(MCPDeprecationWarning, match="ping is removed"):
+                await legacy.send_ping()
             await legacy.list_tools()
             await legacy.list_resources()
-            await legacy.subscribe_resource(NOTIFICATIONS_URI)
-            await legacy.unsubscribe_resource(NOTIFICATIONS_URI)
+            with pytest.warns(
+                MCPDeprecationWarning,
+                match="resources/subscribe is removed",
+            ):
+                await legacy.subscribe_resource(NOTIFICATIONS_URI)
+            with pytest.warns(
+                MCPDeprecationWarning,
+                match="resources/unsubscribe is removed",
+            ):
+                await legacy.unsubscribe_resource(NOTIFICATIONS_URI)
         assert len(charges) == before_legacy
 
     asyncio.run(scenario())

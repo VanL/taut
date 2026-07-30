@@ -20,7 +20,7 @@ from mcp import ClientSession, types
 from mcp.client import Client
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.server.subscriptions import ResourceUpdated
-from mcp.shared.exceptions import MCPError
+from mcp.shared.exceptions import MCPDeprecationWarning, MCPError
 from mcp_types import (
     CLIENT_CAPABILITIES_META_KEY,
     CLIENT_INFO_META_KEY,
@@ -845,12 +845,28 @@ def test_stdio_resource_subscription_is_edge_only_and_recovers_latest_state(
                 write_stream,
                 message_handler=handle_message,
             ) as session:
+                # These wrappers assert the SDK v2 warning because this test
+                # deliberately proves the retained legacy subscription adapter.
+                async def legacy_subscribe(uri: str) -> types.EmptyResult:
+                    with pytest.warns(
+                        MCPDeprecationWarning,
+                        match="resources/subscribe is removed",
+                    ):
+                        return await session.subscribe_resource(uri)
+
+                async def legacy_unsubscribe(uri: str) -> types.EmptyResult:
+                    with pytest.warns(
+                        MCPDeprecationWarning,
+                        match="resources/unsubscribe is removed",
+                    ):
+                        return await session.unsubscribe_resource(uri)
+
                 with pytest.raises(MCPError) as preinitialized:
-                    await session.subscribe_resource(NOTIFICATIONS_URL)
+                    await legacy_subscribe(NOTIFICATIONS_URL)
                 assert preinitialized.value.error.code == -32602
                 await session.initialize()
-                await session.subscribe_resource(NOTIFICATIONS_URL)
-                await session.subscribe_resource(NOTIFICATIONS_URL)
+                await legacy_subscribe(NOTIFICATIONS_URL)
+                await legacy_subscribe(NOTIFICATIONS_URL)
                 attached = await session.call_tool(
                     "attach_workspace",
                     {"workspace": str(workspace), "token": member.token},
@@ -866,8 +882,8 @@ def test_stdio_resource_subscription_is_edge_only_and_recovers_latest_state(
                 assert await asyncio.wait_for(updates.get(), timeout=1.5) == str(
                     NOTIFICATIONS_URL
                 )
-                await session.unsubscribe_resource(NOTIFICATIONS_URL)
-                await session.unsubscribe_resource(NOTIFICATIONS_URL)
+                await legacy_unsubscribe(NOTIFICATIONS_URL)
+                await legacy_unsubscribe(NOTIFICATIONS_URL)
                 other.say("general", "second @selected")
                 await asyncio.sleep(0.7)
                 assert updates.empty()
@@ -883,7 +899,7 @@ def test_stdio_resource_subscription_is_edge_only_and_recovers_latest_state(
                     == 2
                 )
 
-                await session.subscribe_resource(NOTIFICATIONS_URL)
+                await legacy_subscribe(NOTIFICATIONS_URL)
                 assert await asyncio.wait_for(updates.get(), timeout=1) == str(
                     NOTIFICATIONS_URL
                 )
@@ -893,8 +909,8 @@ def test_stdio_resource_subscription_is_edge_only_and_recovers_latest_state(
                 missing = "taut://notifications/missing"
                 for operation in (
                     session.read_resource,
-                    session.subscribe_resource,
-                    session.unsubscribe_resource,
+                    legacy_subscribe,
+                    legacy_unsubscribe,
                 ):
                     with pytest.raises(MCPError) as raised:
                         await operation(missing)

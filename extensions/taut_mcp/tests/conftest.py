@@ -4,12 +4,23 @@ from __future__ import annotations
 
 import os
 import uuid
+import warnings
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 import taut_pg  # noqa: F401  # Register the Postgres backend plugin.
+from mcp.shared.exceptions import MCPDeprecationWarning
 from simplebroker.ext import get_backend_plugin
+
+
+@pytest.fixture(autouse=True)
+def fail_unexpected_mcp_deprecations() -> Iterator[None]:
+    """Require each intentional legacy-SDK deprecation to be asserted locally."""
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", MCPDeprecationWarning)
+        yield
 
 
 @pytest.fixture

@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import queue
+import shutil
 import subprocess
 import sys
 import threading
@@ -451,7 +452,13 @@ def test_unexpected_resolution_crash_clears_hidden_candidate_fingerprint(
 def test_workspace_cap_counts_eight_persistent_children(tmp_path: Path) -> None:
     """[MCP-4] One connection admits no more than eight owner threads."""
 
-    workspaces = [_create_workspace(tmp_path, f"member_{index}") for index in range(9)]
+    first_workspace, token, member_id = _create_workspace(tmp_path, "member_0")
+    workspaces = [(first_workspace, token, member_id)]
+    for index in range(1, 9):
+        workspace = tmp_path / f"member_{index}"
+        workspace.mkdir()
+        shutil.copy2(first_workspace / ".taut.db", workspace / ".taut.db")
+        workspaces.append((workspace, token, member_id))
 
     async def scenario() -> None:
         reactor = ProcessReactor(asyncio.get_running_loop())
