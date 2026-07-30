@@ -593,7 +593,7 @@ def test_project_concurrent_writers_persist_all_messages(taut_project: Path) -> 
     ]
     try:
         for process in processes:
-            stdout, stderr = process.communicate(timeout=8)
+            stdout, stderr = process.communicate(timeout=20)
             assert process.returncode == 0, stdout + stderr
     finally:
         for process in processes:

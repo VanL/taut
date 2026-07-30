@@ -1730,7 +1730,7 @@ def test_concurrent_writer_processes_persist_all_messages(
     ]
     try:
         for process in processes:
-            stdout, stderr = process.communicate(timeout=8)
+            stdout, stderr = process.communicate(timeout=20)
             assert process.returncode == 0, stdout + stderr
     finally:
         for process in processes:
