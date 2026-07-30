@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 import subprocess
 import sys
 import warnings
@@ -45,7 +46,7 @@ def test_combine_coverage_rejects_directory_without_shards(tmp_path: Path) -> No
     shard_dir = tmp_path / "shards"
     shard_dir.mkdir()
 
-    with pytest.raises(module.CoverageCombineError, match=str(shard_dir)):
+    with pytest.raises(module.CoverageCombineError, match=re.escape(str(shard_dir))):
         module.combine_coverage(shard_dir, tmp_path / ".coverage")
 
 
@@ -65,7 +66,7 @@ def test_combine_coverage_rejects_zero_byte_before_opening_any_shard(
 
     monkeypatch.setattr(module.CoverageData, "read", unexpected_read)
 
-    with pytest.raises(module.CoverageCombineError, match=str(zero_byte)):
+    with pytest.raises(module.CoverageCombineError, match=re.escape(str(zero_byte))):
         module.combine_coverage(shard_dir, tmp_path / ".coverage")
 
 
@@ -90,7 +91,7 @@ def test_combine_coverage_rejects_every_unreadable_nonzero_shard_before_combine(
 
     monkeypatch.setattr(module.Coverage, "combine", unexpected_combine)
 
-    with pytest.raises(module.CoverageCombineError, match=str(unreadable)):
+    with pytest.raises(module.CoverageCombineError, match=re.escape(str(unreadable))):
         module.combine_coverage(shard_dir, tmp_path / ".coverage")
 
 
