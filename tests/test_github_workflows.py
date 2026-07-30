@@ -13,6 +13,10 @@ from coverage import Coverage, CoverageData
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_DIR = PROJECT_ROOT / ".github" / "workflows"
+FIXED_AMX_OLLAMA_IMAGE = (
+    "ollama/ollama@"
+    "sha256:4dea9fb511947e24a84237bb636b0203abcb2ff0d3fbc7b4ff865deb91362131"
+)
 
 pytestmark = pytest.mark.sqlite_only
 
@@ -369,6 +373,15 @@ def test_local_llm_readiness_lists_then_completes_exactly_once() -> None:
     assert "break" in llm_job[model_list:completion]
     assert "timeout=60" in llm_job[completion:live_test]
     assert "waiting for chat completion" not in llm_job
+
+
+def test_local_llm_pins_fixed_amx_build_and_reports_cpu_identity() -> None:
+    workflow = _workflow("test.yml")
+    llm_job = _job_block(workflow, "summon-local-llm")
+
+    assert f"OLLAMA_IMAGE: {FIXED_AMX_OLLAMA_IMAGE}" in llm_job
+    diagnostics = llm_job.index("- name: Local LLM diagnostics")
+    assert "lscpu || true" in llm_job[diagnostics:]
 
 
 def test_canonical_packaging_builds_and_smokes_each_release_artifact_once() -> None:

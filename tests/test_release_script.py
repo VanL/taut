@@ -11,6 +11,10 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RELEASE_SCRIPT = PROJECT_ROOT / "bin" / "release.py"
+FIXED_AMX_OLLAMA_IMAGE = (
+    "ollama/ollama@"
+    "sha256:4dea9fb511947e24a84237bb636b0203abcb2ff0d3fbc7b4ff865deb91362131"
+)
 
 pytestmark = pytest.mark.sqlite_only
 
@@ -1596,6 +1600,12 @@ def test_summon_precheck_env_splits_live_and_local_llm_lanes() -> None:
     assert local_llm_env["TAUT_SUMMON_LOCAL_LLM_ENDPOINT"] == "http://127.0.0.1:9999/v1"
     assert local_llm_env["TAUT_SUMMON_LOCAL_LLM_MODEL"] == "local-test:latest"
     assert "TAUT_SUMMON_LIVE_HARNESS_STRICT" not in local_llm_env
+
+
+def test_local_llm_default_image_contains_fixed_amx_build() -> None:
+    release = _load_release_module()
+
+    assert release.LOCAL_LLM_DEFAULT_IMAGE == FIXED_AMX_OLLAMA_IMAGE
 
 
 def test_local_llm_model_probe_treats_startup_disconnect_as_not_ready(

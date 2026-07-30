@@ -261,9 +261,10 @@ LOCAL_LLM_DEFAULT_MODEL: Final[str] = "taut-summon-local-model:latest"
 LOCAL_LLM_DEFAULT_BASE_MODEL: Final[str] = "qwen2.5:0.5b"
 LOCAL_LLM_DEFAULT_CONTEXT_LENGTH: Final[str] = "2048"
 LOCAL_LLM_DEFAULT_NUM_PREDICT: Final[str] = "64"
+# Ollama 0.32.5 includes the GCC 13 AMX fix from ollama/ollama#17244.
 LOCAL_LLM_DEFAULT_IMAGE: Final[str] = (
     "ollama/ollama@"
-    "sha256:f1a705f2bd113fb8d15f85f7c217f0dc5f6bebda6b0cc42b82c3ad165ffcb9dc"
+    "sha256:4dea9fb511947e24a84237bb636b0203abcb2ff0d3fbc7b4ff865deb91362131"
 )
 LOCAL_LLM_HTTP_TIMEOUT_SECONDS: Final[float] = 10.0
 LOCAL_LLM_SERVER_WAIT_SECONDS: Final[float] = 180.0

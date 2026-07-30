@@ -285,7 +285,8 @@ jobs:
       OLLAMA_BASE_MODEL: qwen2.5:0.5b
       OLLAMA_CONTEXT_LENGTH: "2048"
       OLLAMA_NUM_PREDICT: "64"
-      OLLAMA_IMAGE: ollama/ollama@sha256:f1a705f2bd113fb8d15f85f7c217f0dc5f6bebda6b0cc42b82c3ad165ffcb9dc
+      # Ollama 0.32.5 includes the GCC 13 AMX fix from ollama/ollama#17244.
+      OLLAMA_IMAGE: ollama/ollama@sha256:4dea9fb511947e24a84237bb636b0203abcb2ff0d3fbc7b4ff865deb91362131
       TAUT_SUMMON_LOCAL_LLM_ENDPOINT: http://127.0.0.1:11434/v1
       TAUT_SUMMON_LOCAL_LLM_MODEL: taut-summon-local-model:latest
 
@@ -456,6 +457,7 @@ jobs:
         run: |
           free -m || true
           df -h || true
+          lscpu || true
           docker logs taut-summon-llm 2>&1 | grep -Ei 'server|listen|model|pull|load|memory|error|ready' || true
 
       - name: Stop Ollama
