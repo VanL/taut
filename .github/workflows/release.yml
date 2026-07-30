@@ -3,10 +3,6 @@ name: Release
 on:
   workflow_call:
     inputs:
-      package_name:
-        description: Package name used for workflow artifacts.
-        required: true
-        type: string
       package_dir:
         description: Package directory whose manifest verifies the artifact.
         required: true
@@ -55,15 +51,25 @@ on:
         description: Numeric head-repository id recorded on the artifact.
         required: true
         type: string
+      carried_artifact_name:
+        description: Same-run artifact name for the verified inner bundle.
+        required: true
+        type: string
+    outputs:
+      carried_artifact_id:
+        description: Immutable id of the carried verified inner bundle.
+        value: ${{ jobs.stage-release.outputs.carried_artifact_id }}
 
 jobs:
-  github-release:
-    name: Upload verified artifact to GitHub Release
+  stage-release:
+    name: Stage verified artifact as draft GitHub Release
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       actions: read
       contents: write
+    outputs:
+      carried_artifact_id: ${{ steps.carry.outputs.artifact-id }}
 
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -119,32 +125,44 @@ jobs:
             --tag-name "${{ inputs.tag_name }}" \
             --output-dir dist
 
-      - name: Verify release tag still points at tested commit
-        timeout-minutes: 5
+      - name: Plan exact draft staging
+        id: publication
+        timeout-minutes: 2
         env:
-          EXPECTED_SHA: ${{ inputs.expected_tag_commit }}
-          REPOSITORY: ${{ github.repository }}
-          TAG_NAME: ${{ inputs.tag_name }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
-          set -euo pipefail
-          remote_sha="$(git ls-remote --tags "https://github.com/${REPOSITORY}.git" "refs/tags/${TAG_NAME}" "refs/tags/${TAG_NAME}^{}" | awk 'NR==1 { sha=$1 } END { print $1 ? $1 : sha }')"
-          if [ -z "${remote_sha}" ]; then
-            echo "Tag ${TAG_NAME} no longer exists on origin"
-            exit 1
-          fi
-          if [ "${remote_sha}" != "${EXPECTED_SHA}" ]; then
-            echo "Tag ${TAG_NAME} moved while the publish workflow was running"
-            echo "expected: ${EXPECTED_SHA}"
-            echo "actual:   ${remote_sha}"
-            exit 1
-          fi
+          python .github/scripts/release_publication.py stage-draft \
+            --repo "${GITHUB_REPOSITORY}" \
+            --tag "${{ inputs.tag_name }}" \
+            --expected-sha "${{ inputs.expected_tag_commit }}" \
+            --manifest bundle/release-manifest.json \
+            --dist-dir dist
 
-      - name: Create GitHub Release and upload artifacts
+      - name: Stage complete draft GitHub Release
+        if: ${{ steps.publication.outputs.stage_required == 'true' }}
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         timeout-minutes: 5
         with:
+          draft: true
+          fail_on_unmatched_files: true
           generate_release_notes: true
           tag_name: ${{ inputs.tag_name }}
+          # The existing tag is the separately verified commit binding. Keeping
+          # the nominal release target on the default branch lets GITHUB_TOKEN
+          # publish the draft even if a later default-branch commit changes a
+          # workflow file; GitHub otherwise requires unavailable Workflows write.
+          target_commitish: ${{ github.event.repository.default_branch }}
           files: |
             dist/*.tar.gz
             dist/*.whl
+
+      - name: Carry the verified inner bundle into publication jobs
+        id: carry
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        timeout-minutes: 5
+        with:
+          name: ${{ inputs.carried_artifact_name }}
+          path: bundle/
+          if-no-files-found: error
+          include-hidden-files: true
+          compression-level: 0

@@ -12,12 +12,26 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = PROJECT_ROOT / "bin" / "release-artifact.py"
+PUBLICATION_SCRIPT = PROJECT_ROOT / ".github" / "scripts" / "release_publication.py"
 
 pytestmark = pytest.mark.sqlite_only
 
 
 def _load_module() -> ModuleType:
     spec = importlib.util.spec_from_file_location("release_artifact", SCRIPT)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_publication_module() -> ModuleType:
+    spec = importlib.util.spec_from_file_location(
+        "taut_release_publication_from_artifact_test",
+        PUBLICATION_SCRIPT,
+    )
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -93,6 +107,60 @@ def test_create_and_verify_bundle_with_normalized_package_name(tmp_path: Path) -
     assert {path.name for path in files} == {path.name for path in publish.iterdir()}
 
 
+def test_cli_bundle_output_is_accepted_by_publication_gate(tmp_path: Path) -> None:
+    artifact = _load_module()
+    publication = _load_publication_module()
+    package = _package(tmp_path, name="taut-chat")
+    dist = _distributions(tmp_path, name="taut-chat")
+    bundle = tmp_path / "bundle"
+    publish = tmp_path / "publish"
+    commit = "a" * 40
+
+    assert (
+        artifact.main(
+            [
+                "create",
+                "--package-dir",
+                str(package),
+                "--dist-dir",
+                str(dist),
+                "--output-dir",
+                str(bundle),
+                "--commit",
+                commit,
+            ]
+        )
+        == 0
+    )
+    assert (
+        artifact.main(
+            [
+                "verify",
+                "--package-dir",
+                str(package),
+                "--bundle-dir",
+                str(bundle),
+                "--commit",
+                commit,
+                "--tag-name",
+                "v1.2.3",
+                "--output-dir",
+                str(publish),
+            ]
+        )
+        == 0
+    )
+
+    expected = publication.read_publication(
+        bundle / "release-manifest.json",
+        publish,
+    )
+
+    assert expected.package == "taut-chat"
+    assert expected.version == "1.2.3"
+    assert set(expected.files) == {path.name for path in publish.iterdir()}
+
+
 def test_verify_bundle_accepts_only_mcp_tag_family(tmp_path: Path) -> None:
     module = _load_module()
     package = _package(tmp_path, name="taut-mcp")
@@ -118,6 +186,43 @@ def test_verify_bundle_accepts_only_mcp_tag_family(tmp_path: Path) -> None:
         "taut_mcp/1.2.3",
         "taut_mcp/v1.2.4",
         "taut_pg/v1.2.3",
+    ):
+        with pytest.raises(module.ReleaseArtifactError, match="release tag"):
+            module.verify_bundle(
+                package_dir=package,
+                bundle_dir=bundle,
+                expected_commit=commit,
+                expected_tag_name=invalid_tag,
+                output_dir=None,
+            )
+
+
+def test_verify_bundle_accepts_taut_chat_on_unchanged_core_tag_family(
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    package = _package(tmp_path, name="taut-chat")
+    dist = _distributions(tmp_path, name="taut-chat")
+    bundle = tmp_path / "bundle"
+    commit = "a" * 40
+    module.create_bundle(
+        package_dir=package,
+        dist_dir=dist,
+        output_dir=bundle,
+        commit=commit,
+    )
+
+    module.verify_bundle(
+        package_dir=package,
+        bundle_dir=bundle,
+        expected_commit=commit,
+        expected_tag_name="v1.2.3",
+        output_dir=None,
+    )
+    for invalid_tag in (
+        "taut_chat/v1.2.3",
+        "taut/v1.2.3",
+        "v1.2.4",
     ):
         with pytest.raises(module.ReleaseArtifactError, match="release tag"):
             module.verify_bundle(

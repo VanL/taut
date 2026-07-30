@@ -671,10 +671,7 @@ human display transform. Taut-owned command text, diagnostics, and
 non-interactive first-party extension logging use the transform. An explicit
 Summon terminal lease and its raw PTY byte bridge are exempt: attached
 terminal applications retain byte-transparent terminal semantics and may
-emit controls by design. The temporary previous-version Summon compatibility
-bridge can escape non-LF controls in redirected Python text, but it treats
-every LF already emitted by legacy code as a structural line terminator
-because the formatted stream no longer exposes content-field boundaries.
+emit controls by design.
 
 ### [TAUT-6.5] Blank user messages
 
@@ -1440,6 +1437,12 @@ Thus `taut-summon`, `taut_summon`, and `TAUT.SUMMON` are the same owner for
 reserved-slot selection. This is deterministic provenance policy, not package
 authentication.
 
+The core distribution's normalized installed owner is `taut-chat`; the import
+package and console command remain `taut`. Static built-in command diagnostics
+use `taut-chat` as their distribution provenance. The reserved first-party
+`summon` and `dismiss` owner remains the separately installed `taut-summon`
+distribution.
+
 Registry construction loads every discovered manifest so root help can show a
 complete, deterministic inventory and isolated availability diagnostics. It
 does not resolve any implementation target. `taut --version` constructs no
@@ -1857,8 +1860,9 @@ Implementation boundaries:
 - Concurrency proofs must hold their controlled transaction until the test
   coordinator releases it in cleanup. A self-expiring helper-thread lease must
   not manufacture a lock release under scheduler load.
-- Release remains GitHub-only and is governed by [TAUT-12.5]. Postgres
-  extension releases use `taut_pg/vX.Y.Z`.
+- Release publishes to PyPI and an immutable GitHub Release under
+  [TAUT-12.5]. Postgres extension releases keep the
+  `taut_pg/vX.Y.Z` tag family.
 
 Binding obligations:
 
@@ -1963,18 +1967,24 @@ registry.
 
 ### [TAUT-12.5] Release machinery
 
-Status: implemented as local helper plus GitHub Actions release gates.
+Status: implemented as a local helper plus exact-artifact GitHub Actions
+release gates publishing to PyPI and immutable GitHub Releases.
 
-The repository release boundary is **GitHub-only** until package-name clearance
-changes this spec. `bin/release.py` coordinates local version sync, release
-prechecks, release-file commits, tag planning, and tag pushes; it never uploads
-to PyPI. `--publish` is a compatibility no-op and must say that pushing the tag
-is the publication boundary.
+The product and Python import package are Taut. The public core distribution is
+`taut-chat` because the `taut` PyPI project name is unavailable. The `taut`
+console command, `taut` import package, and core `vX.Y.Z` tag family remain
+unchanged. `bin/release.py` coordinates version sync, release prechecks,
+release-file commits, remote-state inspection, tag planning, and tag pushes;
+it never uploads package bytes itself. `--publish` remains a compatibility
+no-op and says that a tag-push gate publishes the exact tested artifacts to
+PyPI and GitHub.
 
 Release targets:
 
-- `core` (aliases: `root`, `taut`) releases the root `taut` package with a
-  `vX.Y.Z` tag and `.github/workflows/release-gate.yml`.
+- `core` (aliases: `root`, `taut`) releases distribution `taut-chat` from the
+  repository root with a `vX.Y.Z` tag and
+  `.github/workflows/release-gate.yml`. It continues to install import package
+  and console command `taut`.
 - `pg` releases `taut-pg` from `extensions/taut_pg` with a
   `taut_pg/vX.Y.Z` tag and `.github/workflows/release-gate-pg.yml`.
 - `summon` releases `taut-summon` from `extensions/taut_summon` with a
@@ -1982,13 +1992,13 @@ Release targets:
   `.github/workflows/release-gate-summon.yml`.
 - `mcp` releases `taut-mcp` from `extensions/taut_mcp` with a
   `taut_mcp/vX.Y.Z` tag and `.github/workflows/release-gate-mcp.yml`.
-- `all` releases every requested package version that does not already have a
-  GitHub Release. With `--version X.Y.Z`, the helper prepares all four package
-  manifests at that coordinated version. Without `--version`, each package's
-  manifest remains the source for its current version. Package versions are
-  otherwise independent; consistency gates compare derived copies to the
-  manifest that owns them rather than requiring unrelated package versions to
-  match.
+- `all` releases every requested package version absent from both PyPI and
+  published GitHub Releases. With `--version X.Y.Z`, the helper prepares all
+  four package manifests at that coordinated version. Without `--version`,
+  each manifest remains the source for its current version. Package versions
+  are otherwise independent, but the first `taut-chat` publication is one
+  coordinated new version across core and all three extensions; existing
+  GitHub-only versions are not republished under changed metadata.
 
 Helper obligations:
 
@@ -1999,28 +2009,28 @@ Helper obligations:
   or detached `HEAD` before release metadata mutation for `all`, `core`, `pg`,
   `summon`, and `mcp`. Dry-run and checks-only remain usable from other branches
   because they do not publish.
-- Before release, reject dirty worktrees unless `--dry-run` is set, reject or
-  exclude already-published GitHub Releases according to the existing single
-  target and resumable batch rules, and plan local/remote tag actions without
-  force-pushing tags. Retagging deletes the freshly inspected remote tag under
-  an exact `--force-with-lease` expectation and then pushes the recreated tag.
-  Validate the human-authored changelog heading before generated metadata
-  changes.
+- Before release, reject dirty worktrees unless `--dry-run` is set. Query both
+  the published GitHub Release and exact PyPI package/version for every
+  selected target; a non-404 HTTP, authentication, network, or malformed
+  response failure is fatal. Either destination makes the version published
+  and forbids reuse or retag. While both are absent, retain the existing exact
+  leased `--retag` recovery for a failed unpublished gate. Validate the
+  human-authored changelog heading before generated metadata changes.
 - Prepare deterministic metadata before running release prechecks. Change only
   the selected package versions, but reconcile every manifest-owned derived
   copy on every normal release invocation: root `taut/_constants.py`, README
-  tag and wheel examples, all three extension `taut>=...` floors, the root dev
-  `taut-summon>=...` and `simplebroker-pg>=...` floors, every exact root README
-  SimpleBroker requirement occurrence, and the retained Summon and MCP locks.
-  Each package manifest owns its version; the root manifest owns the core
-  constant and SimpleBroker requirement; the root version owns every
-  first-party extension `taut>=...` floor; the Summon manifest owns the root dev
+  tag and wheel examples, all three extension `taut-chat>=...` floors and local
+  source keys, the root dev `taut-summon>=...` and
+  `simplebroker-pg>=...` floors, every exact root README SimpleBroker
+  occurrence, and the retained Summon and MCP locks. Each package manifest
+  owns its version; the root manifest owns the core constant and SimpleBroker
+  requirement; the root version owns every first-party extension
+  `taut-chat>=...` floor; the Summon manifest owns the root dev
   `taut-summon>=...` floor; the PG manifest owns the root dev
   `simplebroker-pg>=...` floor; and the MCP manifest owns its MCP SDK range and
-  its dev-only `taut-pg` compatibility floor. Refresh the Summon lock
-  selectively with `uv lock --upgrade-package simplebroker`; reconcile the MCP
-  lock with plain `uv lock` in its project; do not refresh or retain a PG
-  lockfile.
+  dev-only `taut-pg` floor. Refresh the Summon lock selectively with
+  `uv lock --upgrade-package simplebroker`, reconcile the MCP lock with plain
+  `uv lock` in its project, and do not create a root or PG lock.
 - Stage only the release-file allowlist and create the local
   release-preparation commit before prechecks. The prechecks verify that exact
   commit. `--checks-only` remains non-mutating and reports drift; `--dry-run`
@@ -2124,6 +2134,15 @@ Helper obligations:
   drift after the fence cannot redirect a remote action. Any detected drift or
   failed remote lease fails closed and requires a rerun.
 
+Before any real tag push, the helper requires GitHub immutable releases to be
+enabled and the `pypi` environment to exist with custom tag deployment
+policies admitting exactly `v*`, `taut_pg/v*`, `taut_summon/v*`, and
+`taut_mcp/v*`. A read-only settings-check mode reports each mismatch. PyPI
+pending Trusted Publishers are an operator-owned prerequisite that cannot be
+verified through the GitHub API: owner `VanL`, repository `taut`, environment
+`pypi`, and the exact corresponding top-level release-gate filename for each
+distribution.
+
 Workflow obligations:
 
 - Canonical `push` runs of `.github/workflows/test.yml`,
@@ -2138,8 +2157,10 @@ Workflow obligations:
   service plus its quality gates. Neither extension workflow produces release
   bytes. Pull-request and manual runs retain ordinary packaging smoke but do not
   produce release evidence. Each release bundle records the exact commit,
-  package name/version, file allowlist, and SHA-256 digests, and its name
-  identifies the workflow attempt that produced it.
+  public distribution name and version, file allowlist, and SHA-256 digests,
+  and its name identifies the workflow attempt that produced it. The core
+  bundle and artifact prefix use `taut-chat`; the extension prefixes remain
+  `taut-pg`, `taut-summon`, and `taut-mcp`.
 - Each tag gate waits for the required canonical workflow file or id to finish
   successfully for the exact commit peeled from the release tag, canonical
   branch, source/head
@@ -2162,31 +2183,58 @@ Workflow obligations:
   two-minute artifact-visibility window; absence of the current-attempt
   artifact after that window is fatal. Each gate pins its package bundle from
   the root Test workflow by immutable artifact id and GitHub archive digest.
-- `.github/workflows/release.yml` downloads the one expected, non-expired
-  package artifact for the eligible workflow attempt by immutable artifact id,
-  with repository, run id, and GitHub archive SHA-256 digest verified from REST
-  metadata. It then verifies the embedded commit/package/version/file hashes
-  against the checked-out peeled tag commit, verifies that the tag family and
-  version are exactly `vX.Y.Z` for `taut`, `taut_pg/vX.Y.Z` for `taut-pg`,
-  `taut_summon/vX.Y.Z` for `taut-summon`, or `taut_mcp/vX.Y.Z` for `taut-mcp`,
-  rechecks that the remote tag is current, and publishes those exact files. It
-  does not rebuild distributions and is the only artifact publisher. It must
-  not contain PyPI upload or Trusted Publishing steps.
+- The shared staging workflow downloads the one expected, non-expired package
+  artifact for the eligible workflow attempt by immutable artifact id, with
+  repository, run id, GitHub archive digest, embedded commit, public package
+  name/version, file hashes, tag family, and current remote tag all verified.
+  Tag-family verification is exactly `vX.Y.Z` for `taut-chat`,
+  `taut_pg/vX.Y.Z` for `taut-pg`, `taut_summon/vX.Y.Z` for `taut-summon`,
+  and `taut_mcp/vX.Y.Z` for `taut-mcp`. The workflow does not rebuild. It
+  stages the exact wheel and sdist as a draft GitHub Release and carries the
+  verified inner bundle forward as a same-run Actions artifact. The
+  already-existing, separately verified tag is the commit binding. The release
+  object's nominal `target_commitish` remains the default branch rather than
+  the tag SHA so GitHub's `GITHUB_TOKEN` can publish the draft after later
+  workflow-file changes on that branch; the token cannot be granted GitHub's
+  separate Workflows-write permission.
+- Each of the four top-level tag gates then runs its own `publish-to-pypi` job
+  with environment `pypi`, `actions: read`, `id-token: write`, no
+  `contents: write`, and a commit-pinned PyPI publish action. The job
+  re-verifies the carried bundle before upload. Existing PyPI files may be
+  reused only when every existing filename and SHA-256 digest matches a subset
+  of the expected wheel/sdist set; unexpected or changed files fail closed.
+  Only that preflight-proven partial state enables the publisher's
+  `skip-existing: true`; that option compares filenames, not digests, and is
+  not the safety check. The surrounding preflight subset-digest and bounded
+  post-upload full-set digest checks enforce the invariant.
+- Only after the PyPI check succeeds does a separate least-privilege finalizer
+  recheck the tag, draft, and exact asset set and publish the GitHub Release.
+  The finalizer boundedly retries only an expected asset whose uploaded state
+  or SHA-256 digest is not yet visible from GitHub. An invalid or mismatched
+  digest, an unexpected asset, or exhaustion of that bound fails closed. The
+  finalizer performs one exact PyPI recheck; the preceding top-level
+  publication job owns the bounded post-upload PyPI wait. The final response
+  must report an immutable release. A rerun accepts an
+  already-public release only when its tag commit, exact assets, immutable
+  state, and complete PyPI file set all match. Publication-state helpers never
+  accept a token argument; workflow tokens arrive only through environment
+  variables. No workflow rebuilds package distributions.
 
 Core and `taut-summon` reactor changes ship as a paired release. The release
-helper synchronizes the Summon `taut>=` floor to the exact new core version,
-refreshes every retained extension lock, and rejects any resolved
+helper synchronizes every extension's `taut-chat>=` floor to the exact new core
+version, refreshes every retained lock, and rejects any resolved
 `simplebroker<5.3.0` or `simplebroker-pg<3.2.0`. Release evidence includes an
-installed-artifact canary built from the paired wheels, not only source-tree
-tests. Core may publish first only as Summon's immediate dependency; neither
-package is announced until the paired canary passes.
+installed-artifact canary built from the current paired wheels. Core may
+publish first only as the extensions' immediate dependency; the coordinated
+release is not announced until all four PyPI and GitHub publications pass.
 
-New core wheel metadata must contain one unmarked
+New core wheel metadata has normalized project name `taut-chat` and contains
+one unmarked
 `simplebroker>=X.Y.Z` requirement with `X.Y.Z >= 5.3.0`; other operators,
 compound specifiers, markers, and weaker floors fail closed. New Summon
-metadata must retain one unmarked `taut>=<new-core-version>` requirement, so
-the supplied core wheel is admitted exactly rather than excluded by a
-superficially stronger floor.
+metadata contains exactly one unmarked
+`taut-chat>=<new-core-version>` requirement, so the supplied current core wheel
+is admitted exactly.
 
 Every non-dry-run `core`, `summon`, or matching `all` release builds both
 wheels from the same clean preparation commit into a fresh temporary artifact root and runs
@@ -2200,6 +2248,18 @@ installed-wheel proof described above. Pull-request and manual calls retain
 ordinary packaging smoke. Tag gates reuse the successful canonical Test run
 and its verified artifacts; they do not repeat paired or installed-wheel
 verification.
+
+The rename from distribution `taut` to `taut-chat` is an explicit
+compatibility boundary. Historical extension wheels whose metadata requires
+`taut` are not resolver-compatible with `taut-chat`; tests must not conceal
+that fact with `--no-deps` or by installing both distributions. The current
+matrix proves: current core alone; current core plus each current extension;
+current core and current Summon live control behavior; rejection of current
+Summon with an older `taut-chat` core when such a published baseline exists;
+exact current package names and dependency floors; and a diagnostic historical
+probe recording that old Summon requires the unrelated `taut` distribution.
+Users migrating from GitHub-installed `taut` must uninstall it before
+installing `taut-chat`.
 
 ## Implementation Mapping
 

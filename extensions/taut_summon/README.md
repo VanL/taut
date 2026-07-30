@@ -3,11 +3,12 @@
 Summon extension for Taut: host an existing agent harness (Claude Code and
 friends) as an ordinary member of a taut workspace.
 
-This package is intentionally separate from `taut`. The summon driver is the
-agent's terminal, not its runtime: it injects chat into the harness's own
-live session (its ears), and the agent speaks through the ordinary `taut`
-CLI selected by its continuity token (its mouth). The full contract lives in
-the core repository at `docs/specs/04-summon.md`.
+This package is intentionally separate from the core `taut-chat`
+distribution. The summon driver is the agent's terminal, not its runtime: it
+injects chat into the harness's own live session (its ears), and the agent
+speaks through the ordinary `taut` CLI selected by its continuity token (its
+mouth). The full contract lives in the core repository at
+`docs/specs/04-summon.md`.
 
 ## Status
 
@@ -29,20 +30,26 @@ Command registration and rich-host composition are documented in
 ## Requirements
 
 - Python 3.11+
-- Core `taut` and `taut-summon` installed in the same environment
+- Core distribution `taut-chat` and extension `taut-summon` installed in the
+  same environment
 - A SQL-sidecar backend (SQLite or Postgres) — summon state rides sidecar
   tables
 
 ## Installation
 
-Taut releases are GitHub-only until package-name clearance changes. Install
-the core package first, then inject the extension wheel into the same
-environment:
+The core distribution is `taut-chat`; it still installs the `taut` command and
+import package. The extension remains `taut-summon`. Once the first coordinated
+PyPI release is published:
 
 ```bash
-pipx install "git+https://github.com/VanL/taut.git@v0.8.0"
-pipx inject taut ./taut_summon-0.8.0-py3-none-any.whl
+pipx install taut-chat
+pipx inject --include-apps taut-chat taut-summon
 ```
+
+The tag gate reuses the exact wheel and sdist built by canonical Test. It
+stages them in a draft GitHub Release, publishes them through the
+`taut-summon` top-level PyPI Trusted Publisher, verifies filenames and SHA-256
+digests, and only then publishes the GitHub Release as immutable.
 
 ## Usage
 

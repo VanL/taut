@@ -19,13 +19,10 @@ SUMMON_LOCK = SUMMON_ROOT / "uv.lock"
 PG_ROOT = PROJECT_ROOT / "extensions" / "taut_pg"
 PG_PYPROJECT = PG_ROOT / "pyproject.toml"
 WHEEL_MATRIX_CHECKER = PROJECT_ROOT / "bin" / "check-core-summon-wheel-matrix.py"
-PREVIOUS_CORE_REF = "v0.5.0"
-PREVIOUS_SUMMON_REF = "taut_summon/v0.5.0"
-PREVIOUS_COMMAND_CORE_REF = "v0.5.4"
-PREVIOUS_COMMAND_SUMMON_REF = "taut_summon/v0.5.4"
+HISTORICAL_SUMMON_REF = "taut_summon/v0.5.4"
 MINIMUM_SIMPLEBROKER = (5, 3, 0)
 MINIMUM_SIMPLEBROKER_PG = (3, 2, 0)
-MINIMUM_TAUT = (0, 5, 1)
+MINIMUM_TAUT_CHAT = (0, 5, 1)
 
 
 class ReleaseWheelCheckError(RuntimeError):
@@ -112,7 +109,7 @@ def _check_pg_manifest(path: Path = PG_PYPROJECT) -> None:
         _fail("taut-pg manifest project.dependencies must be a string list")
 
     requirements = (
-        ("taut", MINIMUM_TAUT, "0.5.1"),
+        ("taut-chat", MINIMUM_TAUT_CHAT, "0.5.1"),
         ("simplebroker-pg", MINIMUM_SIMPLEBROKER_PG, "3.2.0"),
     )
     for project, minimum, rendered_minimum in requirements:
@@ -184,14 +181,8 @@ def _print_dry_run_plan(
                 str(core_wheel),
                 "--new-summon",
                 str(summon_wheel),
-                "--previous-core-ref",
-                PREVIOUS_CORE_REF,
-                "--previous-summon-ref",
-                PREVIOUS_SUMMON_REF,
-                "--previous-command-core-ref",
-                PREVIOUS_COMMAND_CORE_REF,
-                "--previous-command-summon-ref",
-                PREVIOUS_COMMAND_SUMMON_REF,
+                "--historical-summon-ref",
+                HISTORICAL_SUMMON_REF,
             ),
         )
     )
@@ -282,14 +273,8 @@ def build_and_check(
                 str(core_wheel),
                 "--new-summon",
                 str(summon_wheel),
-                "--previous-core-ref",
-                PREVIOUS_CORE_REF,
-                "--previous-summon-ref",
-                PREVIOUS_SUMMON_REF,
-                "--previous-command-core-ref",
-                PREVIOUS_COMMAND_CORE_REF,
-                "--previous-command-summon-ref",
-                PREVIOUS_COMMAND_SUMMON_REF,
+                "--historical-summon-ref",
+                HISTORICAL_SUMMON_REF,
             )
         )
 

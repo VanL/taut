@@ -3342,5 +3342,5 @@ def test_cli_summon_without_extension_exits_1_with_install_hint(
 
     assert completed.returncode == 1, completed.stderr
     assert "taut summon requires the taut-summon extension" in completed.stderr
-    assert "pipx inject taut taut-summon" in completed.stderr
+    assert "pipx inject taut-chat taut-summon" in completed.stderr
     assert completed.stdout == ""

@@ -82,13 +82,12 @@ package declares `jsonschema>=4.20,<5` directly. Validation completes before
 rate charging or any semantic work. Network `$ref` resolution is disabled
 and the fixed schemas contain no external references.
 
-Repository publication is GitHub-only. `taut-mcp` is the `mcp` release target
-in [TAUT-12.5], uses the `taut_mcp/vX.Y.Z` tag family, and is published only by
-`.github/workflows/release-gate-mcp.yml` from the immutable root-Test bundle for
-the exact green tag commit. The release workflow never rebuilds the package and
-never uploads it to PyPI. Configuring this release path does not itself publish
-a version; a GitHub Release exists only after a later explicit tag operation
-succeeds.
+Repository publication follows [TAUT-12.5]. `taut-mcp` is the `mcp` release
+target, keeps the `taut_mcp/vX.Y.Z` tag family, and is published to PyPI and an
+immutable GitHub Release from the same exact canonical root-Test bundle. Its
+top-level `.github/workflows/release-gate-mcp.yml` job owns the PyPI Trusted
+Publisher identity. Configuring this path does not itself publish a version;
+only an owner-authorized release tag does.
 
 The server starts with no resident workspace and can complete legacy
 initialization or modern discovery in that state. There is no process-wide
@@ -2059,9 +2058,10 @@ service and runs the complete extension suite without skipping `pg_only`, while
 its quality lane runs Ruff, formatting, strict mypy, and an ordinary build. A
 local no-DSN run may skip PostgreSQL tests for speed, but that run is not
 backend-conformance evidence. For publication, [TAUT-12.5]'s canonical root
-Test workflow separately builds and smokes the exact core/MCP wheels, creates
-the immutable MCP release bundle, and uploads it as the sole release-byte
-owner. The same root workflow owns one MCP `not pg_only` coverage producer in
+Test workflow builds and smokes the exact `taut-chat` core and `taut-mcp`
+wheels, creates the immutable MCP release bundle, and uploads it as the sole
+release-byte owner; the MCP tag gate publishes those bytes to PyPI and GitHub
+without rebuilding. The same root workflow owns one MCP `not pg_only` coverage producer in
 its root system environment and combines that named shard into the existing
 same-run report; root coverage source includes `taut_mcp`, and the required
 unique rate-admission marker makes a missing, empty, or path-misconfigured shard

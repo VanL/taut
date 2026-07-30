@@ -205,13 +205,20 @@ workspace paths are returned identifiers and remain untrusted data.
 
 ### Release bytes and backend evidence have different owners
 
-`taut-mcp` participates in the repository's GitHub-only release system as the
-`mcp` target and uses `taut_mcp/vX.Y.Z` tags. The canonical root Test workflow
-builds the release bytes and same-run coverage shard. The dedicated MCP
-workflow owns the supported Python matrix, live PostgreSQL conformance, the
-representative macOS/Windows non-PG lanes, and package-local quality gates.
-The release gate observes exact-SHA evidence and hands the immutable
-root-produced bundle to the generic no-rebuild release workflow.
+`taut-mcp` remains the `mcp` distribution and release target and keeps
+`taut_mcp/vX.Y.Z` tags. It depends on the core distribution `taut-chat` while
+importing package `taut`. The canonical root Test workflow builds the release
+bytes and same-run coverage shard. The dedicated MCP workflow owns the
+supported Python matrix, live PostgreSQL conformance, representative
+macOS/Windows non-PG lanes, and package-local quality gates.
+
+The tag gate observes exact-SHA evidence and hands the root-produced bundle to
+the shared no-rebuild staging workflow. That workflow creates a complete draft
+GitHub Release. The top-level MCP gate then re-verifies and publishes the same
+wheel and sdist through the `taut-mcp` PyPI Trusted Publisher, checks the
+published filenames and SHA-256 digests, and only then invokes the
+least-privilege finalizer that makes the GitHub Release public and immutable.
+Configuring this path is not evidence that a PyPI version has been published.
 
 ## Boundaries and Invariants
 
@@ -250,7 +257,7 @@ root-produced bundle to the generic no-rebuild release workflow.
 | `extensions/taut_mcp/tests/` | real SQLite behavior and optional live PostgreSQL conformance |
 | `.github/workflows/test.yml` | sole MCP release-byte owner and same-run non-PG MCP coverage producer/aggregator |
 | `.github/workflows/test-mcp-extension.yml` | Ubuntu SQLite/PostgreSQL matrix, macOS/Windows non-PG lanes, and package-local quality gates |
-| `.github/workflows/release-gate-mcp.yml` | `taut_mcp/v*` exact-SHA observer and immutable-bundle handoff |
+| `.github/workflows/release-gate-mcp.yml` | `taut_mcp/v*` exact-SHA observer, top-level `taut-mcp` Trusted Publisher, and immutable-release gate |
 
 Verify changes at the owner boundary. Use real Taut clients, broker queues,
 child threads, and stdio for behavior. Fake only a notification sink or clock
@@ -276,6 +283,7 @@ changelog, and plan evidence whenever ownership or rationale changes.
 
 ## Related Plans
 
+- `docs/plans/2026-07-29-taut-chat-pypi-publication-plan.md`
 - `docs/plans/2026-07-28-taut-mcp-dual-era-sessionless-plan.md`
 - `docs/plans/2026-07-28-channel-topics-plan.md`
 - `docs/plans/2026-07-28-direct-message-navigation-plan.md`

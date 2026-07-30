@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import http.client
 import importlib.util
+import json
 import subprocess
 import sys
+import urllib.error
+from email.message import Message
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +29,7 @@ def _load_release_module(script_path: Path = RELEASE_SCRIPT) -> Any:
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
+    module.__dict__["require_repository_settings"] = lambda: None
     return module
 
 
@@ -34,6 +38,7 @@ def _release_state(
     *,
     target: Any | None = None,
     github_release_exists: bool = False,
+    pypi_release_exists: bool = False,
     local_tag_commit: str | None = None,
     remote_tag_commit: str | None = None,
 ) -> Any:
@@ -44,6 +49,7 @@ def _release_state(
         version="0.1.1",
         tag_name=target.tag_for_version("0.1.1"),
         github_release_exists=github_release_exists,
+        pypi_release_exists=pypi_release_exists,
         local_tag_commit=local_tag_commit,
         remote_tag_commit=remote_tag_commit,
     )
@@ -69,7 +75,7 @@ def test_read_current_version_rejects_mismatch(
     constants_path = tmp_path / "taut" / "_constants.py"
     constants_path.parent.mkdir()
     pyproject_path.write_text(
-        '[project]\nname = "taut"\nversion = "0.1.1"\n',
+        '[project]\nname = "taut-chat"\nversion = "0.1.1"\n',
         encoding="utf-8",
     )
     constants_path.write_text('__version__: Final[str] = "0.1.2"\n', encoding="utf-8")
@@ -80,8 +86,6 @@ def test_read_current_version_rejects_mismatch(
         pyproject_path=pyproject_path,
         constants_path=constants_path,
         tag_namespace=None,
-        github_release=True,
-        pypi_publish=False,
     )
 
     with pytest.raises(SystemExit, match="Version mismatch"):
@@ -96,7 +100,7 @@ def test_read_manifest_version_allows_repairing_a_stale_derived_constant(
     constants_path = tmp_path / "taut" / "_constants.py"
     constants_path.parent.mkdir()
     pyproject_path.write_text(
-        '[project]\nname = "taut"\nversion = "0.6.1"\n',
+        '[project]\nname = "taut-chat"\nversion = "0.6.1"\n',
         encoding="utf-8",
     )
     constants_path.write_text('__version__: Final[str] = "0.6.0"\n', encoding="utf-8")
@@ -107,8 +111,6 @@ def test_read_manifest_version_allows_repairing_a_stale_derived_constant(
         pyproject_path=pyproject_path,
         constants_path=constants_path,
         tag_namespace=None,
-        github_release=True,
-        pypi_publish=False,
     )
 
     assert release.read_manifest_version(target) == "0.6.1"
@@ -122,7 +124,7 @@ def test_write_version_files_updates_pyproject_and_constants(
     constants_path = tmp_path / "taut" / "_constants.py"
     constants_path.parent.mkdir()
     pyproject_path.write_text(
-        '[project]\nname = "taut"\nversion = "0.1.1"\n',
+        '[project]\nname = "taut-chat"\nversion = "0.1.1"\n',
         encoding="utf-8",
     )
     constants_path.write_text('__version__: Final[str] = "0.1.1"\n', encoding="utf-8")
@@ -133,8 +135,6 @@ def test_write_version_files_updates_pyproject_and_constants(
         pyproject_path=pyproject_path,
         constants_path=constants_path,
         tag_namespace=None,
-        github_release=True,
-        pypi_publish=False,
     )
 
     release.write_version_files("0.1.2", target)
@@ -159,7 +159,7 @@ def test_write_version_files_updates_pg_dependency_floor(
                 'name = "taut-pg"',
                 'version = "0.1.1"',
                 "dependencies = [",
-                '    "taut>=0.1.1",',
+                '    "taut-chat>=0.1.1",',
                 '    "simplebroker-pg>=3.0.0",',
                 "]",
                 "",
@@ -174,8 +174,6 @@ def test_write_version_files_updates_pg_dependency_floor(
         pyproject_path=pyproject_path,
         constants_path=None,
         tag_namespace="taut_pg",
-        github_release=True,
-        pypi_publish=False,
     )
 
     def fake_read_manifest_version(target: object = release.ROOT_TARGET) -> str:
@@ -188,7 +186,7 @@ def test_write_version_files_updates_pg_dependency_floor(
 
     text = pyproject_path.read_text(encoding="utf-8")
     assert 'version = "0.2.1"' in text
-    assert '"taut>=0.2.0",' in text
+    assert '"taut-chat>=0.2.0",' in text
 
 
 def test_write_version_files_updates_summon_dependency_floor(
@@ -205,7 +203,7 @@ def test_write_version_files_updates_summon_dependency_floor(
                 'name = "taut-summon"',
                 'version = "0.1.1"',
                 "dependencies = [",
-                '    "taut>=0.1.1",',
+                '    "taut-chat>=0.1.1",',
                 "]",
                 "",
             ]
@@ -219,8 +217,6 @@ def test_write_version_files_updates_summon_dependency_floor(
         pyproject_path=pyproject_path,
         constants_path=None,
         tag_namespace="taut_summon",
-        github_release=True,
-        pypi_publish=False,
     )
 
     def fake_read_manifest_version(target: object = release.ROOT_TARGET) -> str:
@@ -233,7 +229,7 @@ def test_write_version_files_updates_summon_dependency_floor(
 
     text = pyproject_path.read_text(encoding="utf-8")
     assert 'version = "0.5.1"' in text
-    assert '"taut>=0.5.1",' in text
+    assert '"taut-chat>=0.5.1",' in text
 
 
 def test_sync_readme_version_examples_updates_only_selected_artifact(
@@ -322,7 +318,7 @@ def test_sync_readme_simplebroker_requirement_replaces_every_exact_copy(
         "\n".join(
             (
                 "[project]",
-                'name = "taut"',
+                'name = "taut-chat"',
                 'version = "0.6.1"',
                 "dependencies = [",
                 '    "simplebroker>=5.3.2",',
@@ -365,7 +361,7 @@ def test_prepare_release_metadata_repairs_all_derived_copies_idempotently(
         "\n".join(
             (
                 "[project]",
-                'name = "taut"',
+                'name = "taut-chat"',
                 'version = "0.6.1"',
                 "dependencies = [",
                 '    "simplebroker>=5.3.2",',
@@ -385,18 +381,18 @@ def test_prepare_release_metadata_repairs_all_derived_copies_idempotently(
     )
     (tmp_path / "extensions" / "taut_pg" / "pyproject.toml").write_text(
         '[project]\nname = "taut-pg"\nversion = "0.5.0"\n'
-        'dependencies = [\n    "taut>=0.5.0",\n'
+        'dependencies = [\n    "taut-chat>=0.5.0",\n'
         '    "simplebroker-pg>=3.2.1",\n]\n',
         encoding="utf-8",
     )
     (tmp_path / "extensions" / "taut_summon" / "pyproject.toml").write_text(
         '[project]\nname = "taut-summon"\nversion = "0.5.0"\n'
-        'dependencies = [\n    "taut>=0.5.0",\n]\n',
+        'dependencies = [\n    "taut-chat>=0.5.0",\n]\n',
         encoding="utf-8",
     )
     (tmp_path / "extensions" / "taut_mcp" / "pyproject.toml").write_text(
         '[project]\nname = "taut-mcp"\nversion = "0.5.0"\n'
-        'dependencies = [\n    "taut>=0.5.0",\n    "mcp>=1.28.1,<2",\n]\n'
+        'dependencies = [\n    "taut-chat>=0.5.0",\n    "mcp>=1.28.1,<2",\n]\n'
         '[project.optional-dependencies]\ndev = [\n    "taut-pg>=0.5.0",\n]\n',
         encoding="utf-8",
     )
@@ -457,11 +453,11 @@ def test_prepare_release_metadata_repairs_all_derived_copies_idempotently(
         in first[tmp_path / "extensions" / "taut_pg" / "pyproject.toml"]
     )
     assert (
-        '"taut>=0.6.1",'
+        '"taut-chat>=0.6.1",'
         in first[tmp_path / "extensions" / "taut_summon" / "pyproject.toml"]
     )
     assert (
-        '"taut>=0.6.1",'
+        '"taut-chat>=0.6.1",'
         in first[tmp_path / "extensions" / "taut_mcp" / "pyproject.toml"]
     )
     assert (
@@ -527,7 +523,7 @@ def test_public_release_flow_commits_preparation_then_reuses_it_after_failure(
     (tmp_path / "extensions" / "taut_summon").mkdir(parents=True)
     (tmp_path / "extensions" / "taut_mcp").mkdir(parents=True)
     (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "taut"\nversion = "0.6.1"\n'
+        '[project]\nname = "taut-chat"\nversion = "0.6.1"\n'
         'dependencies = [\n    "simplebroker>=5.3.2",\n]\n'
         "[project.optional-dependencies]\ndev = [\n"
         '    "simplebroker-pg>=3.2.0",\n'
@@ -539,18 +535,18 @@ def test_public_release_flow_commits_preparation_then_reuses_it_after_failure(
     )
     (tmp_path / "extensions" / "taut_pg" / "pyproject.toml").write_text(
         '[project]\nname = "taut-pg"\nversion = "0.6.1"\n'
-        'dependencies = [\n    "taut>=0.5.0",\n'
+        'dependencies = [\n    "taut-chat>=0.5.0",\n'
         '    "simplebroker-pg>=3.2.1",\n]\n',
         encoding="utf-8",
     )
     (tmp_path / "extensions" / "taut_summon" / "pyproject.toml").write_text(
         '[project]\nname = "taut-summon"\nversion = "0.6.1"\n'
-        'dependencies = [\n    "taut>=0.5.0",\n]\n',
+        'dependencies = [\n    "taut-chat>=0.5.0",\n]\n',
         encoding="utf-8",
     )
     (tmp_path / "extensions" / "taut_mcp" / "pyproject.toml").write_text(
         '[project]\nname = "taut-mcp"\nversion = "0.6.1"\n'
-        'dependencies = [\n    "taut>=0.5.0",\n    "mcp>=1.28.1,<2",\n]\n'
+        'dependencies = [\n    "taut-chat>=0.5.0",\n    "mcp>=1.28.1,<2",\n]\n'
         '[project.optional-dependencies]\ndev = [\n    "taut-pg>=0.5.0",\n]\n',
         encoding="utf-8",
     )
@@ -605,6 +601,7 @@ def test_public_release_flow_commits_preparation_then_reuses_it_after_failure(
             version=version,
             tag_name=target.tag_for_version(version),
             github_release_exists=False,
+            pypi_release_exists=False,
             local_tag_commit=None,
             remote_tag_commit=None,
         )
@@ -726,7 +723,7 @@ def test_sync_root_summon_dev_dependency_updates_root_floor(tmp_path: Path) -> N
         "\n".join(
             [
                 "[project]",
-                'name = "taut"',
+                'name = "taut-chat"',
                 'version = "0.4.0"',
                 "[project.optional-dependencies]",
                 "dev = [",
@@ -757,7 +754,7 @@ def test_sync_root_pg_dev_dependency_uses_pg_manifest_floor(tmp_path: Path) -> N
     pg_pyproject_path = tmp_path / "extensions" / "taut_pg" / "pyproject.toml"
     pg_pyproject_path.parent.mkdir(parents=True)
     root_pyproject_path.write_text(
-        '[project]\nname = "taut"\nversion = "0.6.1"\n'
+        '[project]\nname = "taut-chat"\nversion = "0.6.1"\n'
         "[project.optional-dependencies]\ndev = [\n"
         '    "simplebroker-pg>=3.2.0",\n]\n',
         encoding="utf-8",
@@ -787,12 +784,12 @@ def test_sync_summon_core_dependency_updates_exact_root_floor(
     summon_pyproject_path = tmp_path / "extensions" / "taut_summon" / "pyproject.toml"
     summon_pyproject_path.parent.mkdir(parents=True)
     root_pyproject_path.write_text(
-        '[project]\nname = "taut"\nversion = "0.6.0"\n',
+        '[project]\nname = "taut-chat"\nversion = "0.6.0"\n',
         encoding="utf-8",
     )
     summon_pyproject_path.write_text(
         '[project]\nname = "taut-summon"\nversion = "0.5.1"\n'
-        'dependencies = [\n    "taut>=0.5.1",\n]\n',
+        'dependencies = [\n    "taut-chat>=0.5.1",\n]\n',
         encoding="utf-8",
     )
 
@@ -802,7 +799,7 @@ def test_sync_summon_core_dependency_updates_exact_root_floor(
     )
 
     assert updated_version == "0.6.0"
-    assert '"taut>=0.6.0",' in summon_pyproject_path.read_text(encoding="utf-8")
+    assert '"taut-chat>=0.6.0",' in summon_pyproject_path.read_text(encoding="utf-8")
 
 
 def test_sync_mcp_pg_dev_dependency_uses_pg_manifest_version(tmp_path: Path) -> None:
@@ -898,10 +895,11 @@ def test_release_sync_updates_all_first_party_dependency_directions(
 def test_root_target_uses_v_prefixed_github_tag() -> None:
     release = _load_release_module()
 
+    assert release.ROOT_TARGET.package_name == "taut-chat"
     assert release.ROOT_TARGET.tag_for_version("0.1.1") == "v0.1.1"
     assert release.ROOT_TARGET.package_dir == Path(".")
-    assert release.ROOT_TARGET.github_release is True
-    assert release.ROOT_TARGET.pypi_publish is False
+    assert not hasattr(release.ROOT_TARGET, "github_release")
+    assert not hasattr(release.ROOT_TARGET, "pypi_publish")
 
 
 def test_pg_target_uses_namespaced_github_tag() -> None:
@@ -910,8 +908,6 @@ def test_pg_target_uses_namespaced_github_tag() -> None:
     assert release.PG_TARGET.package_name == "taut-pg"
     assert release.PG_TARGET.package_dir == Path("extensions/taut_pg")
     assert release.PG_TARGET.tag_for_version("0.1.1") == "taut_pg/v0.1.1"
-    assert release.PG_TARGET.github_release is True
-    assert release.PG_TARGET.pypi_publish is False
 
 
 def test_summon_target_uses_namespaced_github_tag() -> None:
@@ -920,8 +916,6 @@ def test_summon_target_uses_namespaced_github_tag() -> None:
     assert release.SUMMON_TARGET.package_name == "taut-summon"
     assert release.SUMMON_TARGET.package_dir == Path("extensions/taut_summon")
     assert release.SUMMON_TARGET.tag_for_version("0.1.1") == "taut_summon/v0.1.1"
-    assert release.SUMMON_TARGET.github_release is True
-    assert release.SUMMON_TARGET.pypi_publish is False
     assert (
         release.SUMMON_TARGET.release_workflow
         == ".github/workflows/release-gate-summon.yml"
@@ -937,8 +931,6 @@ def test_mcp_target_uses_namespaced_github_tag_and_joins_batch() -> None:
     assert (
         release.MCP_TARGET.release_workflow == ".github/workflows/release-gate-mcp.yml"
     )
-    assert release.MCP_TARGET.github_release is True
-    assert release.MCP_TARGET.pypi_publish is False
     assert release.CANONICAL_TARGETS["mcp"] == release.MCP_TARGET
     assert release.BATCH_RELEASE_TARGETS == (
         release.PG_TARGET,
@@ -1007,7 +999,7 @@ def test_target_version_files_helper_is_removed() -> None:
     assert not hasattr(release, "target_version_files")
 
 
-def test_inspect_release_state_is_github_only(
+def test_inspect_release_state_checks_github_and_pypi(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     release = _load_release_module()
@@ -1025,15 +1017,273 @@ def test_inspect_release_state_is_github_only(
         calls.append(f"remote:{tag_name}")
         return None
 
+    def fake_pypi_version_exists(package_name: str, version: str) -> bool:
+        calls.append(f"pypi:{package_name}:{version}")
+        return False
+
     monkeypatch.setattr(release, "github_release_exists", fake_github_release_exists)
+    monkeypatch.setattr(release, "pypi_version_exists", fake_pypi_version_exists)
     monkeypatch.setattr(release, "local_tag_commit", fake_local_tag_commit)
     monkeypatch.setattr(release, "remote_tag_commit", fake_remote_tag_commit)
 
     state = release.inspect_release_state(release.ROOT_TARGET, "0.1.1")
 
     assert state.github_release_exists is False
+    assert state.pypi_release_exists is False
     assert state.tag_name == "v0.1.1"
-    assert calls == ["github:v0.1.1", "local:v0.1.1", "remote:v0.1.1"]
+    assert calls == [
+        "github:v0.1.1",
+        "pypi:taut-chat:0.1.1",
+        "local:v0.1.1",
+        "remote:v0.1.1",
+    ]
+
+
+class _JsonResponse:
+    def __init__(self, payload: object) -> None:
+        self._raw = json.dumps(payload).encode()
+
+    def __enter__(self) -> _JsonResponse:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return self._raw
+
+
+def test_pypi_version_lookup_accepts_normalized_exact_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _load_release_module()
+    monkeypatch.setattr(
+        release.urllib.request,
+        "urlopen",
+        lambda request, timeout: _JsonResponse(
+            {"info": {"name": "Taut.Chat", "version": "0.1.1"}}
+        ),
+    )
+
+    assert release.pypi_version_exists("taut-chat", "0.1.1") is True
+
+
+def test_pypi_version_lookup_treats_only_404_as_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _load_release_module()
+
+    def raise_http(request: object, timeout: float) -> object:
+        raise urllib.error.HTTPError("url", 404, "missing", Message(), None)
+
+    monkeypatch.setattr(release.urllib.request, "urlopen", raise_http)
+
+    assert release.pypi_version_exists("taut-chat", "0.1.1") is False
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        [],
+        {},
+        {"info": {}},
+        {"info": {"name": "other", "version": "0.1.1"}},
+        {"info": {"name": "taut-chat", "version": "0.1.2"}},
+    ),
+)
+def test_pypi_version_lookup_rejects_malformed_or_wrong_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: object,
+) -> None:
+    release = _load_release_module()
+    monkeypatch.setattr(
+        release.urllib.request,
+        "urlopen",
+        lambda request, timeout: _JsonResponse(payload),
+    )
+
+    with pytest.raises(SystemExit, match="PyPI release lookup failed"):
+        release.pypi_version_exists("taut-chat", "0.1.1")
+
+
+def test_pypi_version_lookup_rejects_non_404_http_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _load_release_module()
+
+    def raise_http(request: object, timeout: float) -> object:
+        raise urllib.error.HTTPError("url", 403, "forbidden", Message(), None)
+
+    monkeypatch.setattr(release.urllib.request, "urlopen", raise_http)
+
+    with pytest.raises(SystemExit, match="HTTP 403"):
+        release.pypi_version_exists("taut-chat", "0.1.1")
+
+
+def _repository_settings_payloads() -> dict[str, object]:
+    base = "/repos/VanL/taut"
+    return {
+        f"{base}/immutable-releases": {"enabled": True},
+        f"{base}/environments/pypi": {
+            "deployment_branch_policy": {
+                "protected_branches": False,
+                "custom_branch_policies": True,
+            }
+        },
+        f"{base}/environments/pypi/deployment-branch-policies": {
+            "branch_policies": [
+                {"type": "tag", "name": "v*"},
+                {"type": "tag", "name": "taut_pg/v*"},
+                {"type": "tag", "name": "taut_summon/v*"},
+                {"type": "tag", "name": "taut_mcp/v*"},
+            ]
+        },
+    }
+
+
+def test_repository_settings_accept_exact_release_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _load_release_module()
+    payloads = _repository_settings_payloads()
+    monkeypatch.setattr(
+        release,
+        "_github_api_json",
+        lambda path, token: payloads[path],
+    )
+
+    assert release.repository_settings_issues("VanL/taut", "token") == ()
+
+
+@pytest.mark.parametrize(
+    ("path_suffix", "replacement", "message"),
+    (
+        ("/immutable-releases", {"enabled": False}, "immutable releases"),
+        (
+            "/environments/pypi",
+            {"deployment_branch_policy": None},
+            "pypi environment",
+        ),
+        (
+            "/environments/pypi/deployment-branch-policies",
+            {"branch_policies": [{"type": "tag", "name": "v*"}]},
+            "tag policies",
+        ),
+    ),
+)
+def test_repository_settings_reject_each_missing_control(
+    monkeypatch: pytest.MonkeyPatch,
+    path_suffix: str,
+    replacement: object,
+    message: str,
+) -> None:
+    release = _load_release_module()
+    payloads = _repository_settings_payloads()
+    payloads[f"/repos/VanL/taut{path_suffix}"] = replacement
+    monkeypatch.setattr(
+        release,
+        "_github_api_json",
+        lambda path, token: payloads[path],
+    )
+
+    issues = release.repository_settings_issues("VanL/taut", "token")
+
+    assert any(message in issue for issue in issues)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("malformed", "duplicate", "extra"),
+)
+def test_repository_settings_reject_non_exact_tag_policy_records(
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    release = _load_release_module()
+    payloads = _repository_settings_payloads()
+    path = "/repos/VanL/taut/environments/pypi/deployment-branch-policies"
+    policy_payload = payloads[path]
+    assert isinstance(policy_payload, dict)
+    policies = policy_payload["branch_policies"]
+    assert isinstance(policies, list)
+    if mutation == "malformed":
+        policies.append({"name": "ignored-without-type"})
+    elif mutation == "duplicate":
+        policies.append(dict(policies[0]))
+    else:
+        policies.append({"type": "tag", "name": "other/v*"})
+    monkeypatch.setattr(
+        release,
+        "_github_api_json",
+        lambda request_path, token: payloads[request_path],
+    )
+
+    issues = release.repository_settings_issues("VanL/taut", "token")
+
+    assert any("tag policies" in issue for issue in issues)
+
+
+def test_repository_settings_report_unverifiable_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _load_release_module()
+    monkeypatch.setattr(
+        release,
+        "_github_api_json",
+        lambda path, token: (_ for _ in ()).throw(RuntimeError("HTTP 403")),
+    )
+
+    issues = release.repository_settings_issues("VanL/taut", "token")
+
+    assert len(issues) == 3
+    assert all("could not be verified" in issue for issue in issues)
+
+
+def test_check_repository_settings_mode_runs_without_release_branch_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _load_release_module()
+    calls: list[str] = []
+    monkeypatch.setattr(
+        release,
+        "require_repository_settings",
+        lambda: calls.append("settings"),
+    )
+    monkeypatch.setattr(
+        release,
+        "require_publish_branch",
+        lambda: pytest.fail("read-only setting check must work on any branch"),
+    )
+
+    assert release.main(["--check-repository-settings"]) == 0
+    assert calls == ["settings"]
+
+
+def test_real_release_requires_repository_settings_before_local_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _load_release_module()
+    calls: list[str] = []
+    monkeypatch.setattr(
+        release,
+        "require_publish_branch",
+        lambda: calls.append("branch"),
+    )
+
+    def stop_at_settings() -> None:
+        calls.append("settings")
+        raise SystemExit("settings blocked")
+
+    monkeypatch.setattr(release, "require_repository_settings", stop_at_settings)
+    monkeypatch.setattr(
+        release,
+        "is_dirty_worktree",
+        lambda: pytest.fail("settings must precede local release inspection"),
+    )
+
+    with pytest.raises(SystemExit, match="settings blocked"):
+        release.main(["core"])
+    assert calls == ["branch", "settings"]
 
 
 def test_resolve_target_version_rejects_existing_github_release(
@@ -1053,7 +1303,30 @@ def test_resolve_target_version_rejects_existing_github_release(
     monkeypatch.setattr(release, "read_manifest_version", fake_read_manifest_version)
     monkeypatch.setattr(release, "inspect_release_state", fake_inspect_release_state)
 
-    with pytest.raises(SystemExit, match="already exists as a GitHub Release"):
+    with pytest.raises(SystemExit, match="already has a GitHub Release"):
+        release.resolve_target_version(None)
+
+
+def test_resolve_target_version_rejects_existing_pypi_publication(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _load_release_module()
+    monkeypatch.setattr(
+        release,
+        "read_manifest_version",
+        lambda target=release.ROOT_TARGET: "0.1.1",
+    )
+    monkeypatch.setattr(
+        release,
+        "inspect_release_state",
+        lambda target, version: _release_state(
+            release,
+            target=target,
+            pypi_release_exists=True,
+        ),
+    )
+
+    with pytest.raises(SystemExit, match="already has a PyPI publication"):
         release.resolve_target_version(None)
 
 
@@ -1096,6 +1369,36 @@ def test_plan_tag_action(
     )
 
     assert tag_action.action == action
+
+
+@pytest.mark.parametrize(
+    ("github_published", "pypi_published", "destination"),
+    (
+        (True, False, "GitHub Release"),
+        (False, True, "PyPI publication"),
+        (True, True, "GitHub Release and PyPI publication"),
+    ),
+)
+def test_plan_tag_action_never_retags_published_version(
+    github_published: bool,
+    pypi_published: bool,
+    destination: str,
+) -> None:
+    release = _load_release_module()
+    state = _release_state(
+        release,
+        github_release_exists=github_published,
+        pypi_release_exists=pypi_published,
+        remote_tag_commit="old",
+    )
+
+    with pytest.raises(SystemExit, match=destination):
+        release.plan_tag_action(
+            state,
+            version_changed=True,
+            head_commit="new",
+            retag=True,
+        )
 
 
 def test_plan_tag_action_rejects_remote_tag_at_different_commit() -> None:
@@ -1964,7 +2267,7 @@ def test_release_wheel_failure_leaves_preparation_commit_and_stops_remote_mutati
             "add",
             *release._release_file_args(release.ROOT_TARGET),  # noqa: SLF001
         ),
-        ("git", "commit", "-m", "Release taut 0.1.1"),
+        ("git", "commit", "-m", "Release taut-chat 0.1.1"),
         ("uv", "build"),
         (sys.executable, str(release.RELEASE_WHEEL_SET_CHECKER)),
     ]
@@ -2163,6 +2466,7 @@ def test_explicit_batch_version_prepares_all_manifests_but_skips_published_actio
             version=version,
             tag_name=target.tag_for_version(version),
             github_release_exists=target == release.PG_TARGET,
+            pypi_release_exists=False,
             local_tag_commit=None,
             remote_tag_commit=None,
         )
@@ -2197,7 +2501,7 @@ def test_explicit_batch_version_prepares_all_manifests_but_skips_published_actio
         targets: tuple[Any, ...], *, message: str
     ) -> tuple[bool, str]:
         preparation_targets.append(tuple(target.key for target in targets))
-        assert message == "Release taut-summon 0.6.0, taut-mcp 0.6.0, taut 0.6.0"
+        assert message == "Release taut-summon 0.6.0, taut-mcp 0.6.0, taut-chat 0.6.0"
         return True, "prepared"
 
     monkeypatch.setattr(
@@ -2292,6 +2596,7 @@ def test_all_published_explicit_batch_is_a_non_mutating_noop(
             version=version,
             tag_name=target.tag_for_version(version),
             github_release_exists=True,
+            pypi_release_exists=False,
             local_tag_commit="published",
             remote_tag_commit="published",
         ),
@@ -2382,12 +2687,13 @@ def test_release_fence_rejects_published_state_after_checks(
             version=version,
             tag_name=target.tag_for_version(version),
             github_release_exists=True,
+            pypi_release_exists=False,
             local_tag_commit="prepared",
             remote_tag_commit="prepared",
         ),
     )
 
-    with pytest.raises(SystemExit, match="became a GitHub Release"):
+    with pytest.raises(SystemExit, match="became published via GitHub Release"):
         release.require_fresh_release_fence(
             (candidate,),
             preparation_branch="main",
@@ -2475,6 +2781,7 @@ def test_discover_unpublished_releases_filters_published_targets(
             release,
             target=target,
             github_release_exists=target == release.PG_TARGET,
+            pypi_release_exists=target == release.MCP_TARGET,
         )
 
     monkeypatch.setattr(release, "read_manifest_version", fake_read_target_version)
@@ -2491,7 +2798,6 @@ def test_discover_unpublished_releases_filters_published_targets(
 
     assert [candidate.target for candidate in candidates] == [
         release.SUMMON_TARGET,
-        release.MCP_TARGET,
         release.ROOT_TARGET,
     ]
 
@@ -2549,7 +2855,7 @@ def test_pg_lockfile_is_not_retained_and_is_ignored() -> None:
     )
 
 
-def test_dry_run_publish_is_github_only_noop(
+def test_dry_run_publish_explains_tag_workflow_publication(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     release = _load_release_module()
@@ -2578,7 +2884,7 @@ def test_dry_run_publish_is_github_only_noop(
 
     output = capsys.readouterr().out
     assert "--publish is ignored" in output
-    assert "GitHub-only" in output
+    assert "PyPI and an immutable GitHub Release" in output
     assert "v0.1.1" in output
 
 

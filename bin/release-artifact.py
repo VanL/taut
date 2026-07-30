@@ -19,7 +19,7 @@ from typing import Any, NoReturn
 MANIFEST_NAME = "release-manifest.json"
 MANIFEST_FORMAT = 1
 RELEASE_TAG_PREFIXES = {
-    "taut": "",
+    "taut-chat": "",
     "taut-pg": "taut_pg/",
     "taut-summon": "taut_summon/",
     "taut-mcp": "taut_mcp/",

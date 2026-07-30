@@ -1127,7 +1127,7 @@ wheels = [
 ]
 
 [[package]]
-name = "taut"
+name = "taut-chat"
 version = "0.8.0"
 source = { editable = "../../" }
 dependencies = [
@@ -1161,7 +1161,7 @@ source = { editable = "." }
 dependencies = [
     { name = "jsonschema" },
     { name = "mcp" },
-    { name = "taut" },
+    { name = "taut-chat" },
 ]
 
 [package.optional-dependencies]
@@ -1186,7 +1186,7 @@ requires-dist = [
     { name = "pytest-timeout", marker = "extra == 'dev'", specifier = ">=2.4.0" },
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
-    { name = "taut", editable = "../../" },
+    { name = "taut-chat", editable = "../../" },
     { name = "taut-pg", marker = "extra == 'dev'", editable = "../taut_pg" },
     { name = "types-jsonschema", marker = "extra == 'dev'", specifier = ">=4.0" },
 ]
@@ -1198,7 +1198,7 @@ version = "0.8.0"
 source = { editable = "../taut_pg" }
 dependencies = [
     { name = "simplebroker-pg" },
-    { name = "taut" },
+    { name = "taut-chat" },
 ]
 
 [package.metadata]
@@ -1209,7 +1209,7 @@ requires-dist = [
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
     { name = "simplebroker-pg", specifier = ">=3.3.1" },
-    { name = "taut", editable = "../../" },
+    { name = "taut-chat", editable = "../../" },
 ]
 provides-extras = ["dev"]
 

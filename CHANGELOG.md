@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+- Changed the public core distribution name from `taut` to `taut-chat` while
+  preserving the Taut product name, `taut` import package, `taut` console
+  command, existing extension distribution names, and all four release-tag
+  families. Current `taut-pg`, `taut-summon`, and `taut-mcp` metadata now
+  depends on `taut-chat`.
+- Added exact-artifact PyPI Trusted Publishing to the four tag gates. A gate
+  stages the canonical Test workflow's wheel and sdist as a draft GitHub
+  Release, verifies matching or safely completable PyPI state by filename and
+  SHA-256 digest, publishes through the package's top-level workflow identity,
+  and makes the GitHub Release public and immutable only after PyPI is
+  complete.
+- Made the distribution rename an explicit migration boundary. Environments
+  must remove the old GitHub-installed `taut` distribution before installing
+  `taut-chat`; historical extension wheels requiring `taut` are not presented
+  as resolver-compatible.
+- Removed the obsolete core-to-legacy-Summon CLI delegation branch. When
+  current `taut-summon` entry points are absent, core now owns only the
+  installation hint.
+
 ## 0.8.0 - 2026-07-28
 
 - Migrated `taut-mcp` to one MCP SDK v2 server for legacy `2025-11-25` and

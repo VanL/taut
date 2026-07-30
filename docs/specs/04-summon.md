@@ -79,10 +79,12 @@ sealed instance.
 
 ## 3. Packaging [SUM-3]
 
-- Ships as the separate extension package **`taut-summon`**
-  (`extensions/taut_summon`), per [TAUT-12.3]. Runtime dependencies:
-  `taut` only — no new third-party packages. The provider harness is an
-  external executable, not a dependency.
+- Ships as the separate extension distribution **`taut-summon`**
+  (`extensions/taut_summon`), per [TAUT-12.3]. Its sole core runtime
+  dependency is distribution `taut-chat`; the imported package remains
+  `taut`. It adds no third-party runtime package beyond the existing provider
+  requirements. The provider harness is an external executable, not a
+  dependency.
 - Surface: the separately installed `taut-summon` distribution registers two
   first-party command slots through the core `taut.commands` entry-point
   interface ([TAUT-8.6]):
@@ -92,10 +94,9 @@ taut summon PROVIDER_OR_NAME [THREAD ...] [flags]   # default thread: general
 taut dismiss NAME
 ```
 
-  Core supplies only a temporary previous-release compatibility adapter and
-  the absent-package install hint; it contains no Summon domain logic. The
-  compatibility adapter is removed after the immediately previous supported
-  Summon release supplies entry points.
+  Core supplies only the absent-package install hint; it contains no Summon
+  domain logic and does not delegate to an older extension CLI. Current
+  Summon entry points own both reserved command slots.
 - The extension also installs `taut-summon run|stop|status`. Both console
   surfaces are adapters over the public [SUM-13] controller. They share
   request models, provider/name resolution, results, error semantics, and
@@ -103,11 +104,8 @@ taut dismiss NAME
   other's output.
 
   Both first-party console surfaces use `taut.escape_terminal_text` for
-  Taut-owned dynamic human text and diagnostics under [TAUT-6.4]. The temporary
-  previous-version compatibility adapter applies the policy to redirected
-  Python text on a line-buffered best-effort basis: incoming LF is a structural
-  terminator because legacy formatted output no longer exposes content-field
-  boundaries. JSON/domain values remain exact.
+  Taut-owned dynamic human text and diagnostics under [TAUT-6.4]. JSON/domain
+  values remain exact.
 
   `taut summon X ...` remains behaviorally equivalent to
   `taut-summon run X ...`, and `taut dismiss X` remains equivalent to
@@ -1140,15 +1138,16 @@ exits and preserve release-before-ACK ordering.
   wake, STOP-during-blocked-inject, fatal-exit, and cleanup cases run through a
   real SQLite broker and real driver/scripted-provider process; mocks may cover
   only adapter or clock boundaries, never broker/control dispatch.
-- Installed-artifact compatibility must prove four combinations: the new core
-  alone; the new core with the previously published Summon package importing
-  successfully and reporting whether that immutable artifact exposes a legacy
-  reactor surface; the new core and new Summon package completing live control
-  operations; and dependency resolution rejecting new Summon with an older
-  core. When the prior artifact exports a legacy reactor class, constructing it
-  must fail with the upgrade diagnostic before broker I/O. When it exports no
-  such class, as `taut_summon/v0.5.0` does, the installed-artifact evidence must
-  record that absence rather than fabricate a construction proof.
+- Installed-artifact compatibility after the `taut-chat` distribution
+  boundary proves current core alone, current core plus current Summon, live
+  current-pair control operations, exact metadata, and resolver rejection of a
+  current Summon wheel with an older incompatible `taut-chat` core when such a
+  published baseline exists. Immutable historical `taut-summon` wheels are
+  inspected to record their `Requires-Dist: taut` metadata, but are not
+  installed as compatible with `taut-chat`. Python packaging provides no alias
+  between those distribution names. Tests must not bypass this boundary with
+  `--no-deps` or by co-installing both distributions that own the same `taut/`
+  files.
 - Firing tests cover invalid partial record evidence, indeterminate takeover,
   both partial-null takeover orientations, claim write postconditions,
   mid-bootstrap fallback-claim collision, double SIGINT, PTY reply/inject and
@@ -1190,25 +1189,23 @@ contain project lines, depend on Coverage's private schema, or replace the
 existing required-execution-path gate.
 
 Command/embedding verification additionally proves: both console surfaces use
-one controller; source and installed-wheel command discovery;
-previous-Summon compatibility; controller list/status/stop truth through real
-SQLite and real control queues; shell interaction parity through a real PTY
-child; a deterministic host adapter that grants explicit terminal fds and
-observes the attach transition; no private state/control access by adapters;
-and lazy import floors showing core and standalone command help do not import
+one controller; source and installed-wheel command discovery; the absent
+Summon install hint; controller list/status/stop truth through real SQLite and
+real control queues; shell interaction parity through a real PTY child; a
+deterministic host adapter that grants explicit terminal fds and observes the
+attach transition; no private state/control access by adapters; and lazy
+import floors showing core and standalone command help do not import
 client/controller/driver/provider/PTY implementations until execution. Mocks
 may replace only metadata enumeration, clocks, or the external host adapter
 response in narrow unit tests. Broker, sidecar, CLI subprocess, control
 dispatch, driver process, and PTY remain real for contract proof.
 
-The installed-wheel checker reports six cases in total: the four reactor
-combinations above plus two command-rollout cases. The first additional case
-uses the new core alone and requires the exact `taut-summon` install hint
-without importing `taut_summon`. The second installs the new core with the
-immutable Summon 0.5.4 wheel and proves the temporary `summon`/`dismiss` bridge,
-including one non-help execution path. The 0.5.0 reactor floor and 0.5.4 command
-floor are separate historical contracts; neither may silently replace the
-other.
+The installed-wheel checker uses the new core alone and requires the exact
+`taut-summon` install hint without importing `taut_summon`. It installs the
+new core and current Summon to prove the native command path and live control
+behavior. It separately inspects the immutable Summon 0.5.4 wheel to record
+its `Requires-Dist: taut` metadata; it does not install that unrelated legacy
+distribution beside `taut-chat`.
 
 ## 13. Embedding and Rich Hosts [SUM-13]
 

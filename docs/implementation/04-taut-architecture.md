@@ -168,11 +168,21 @@ the exact core wheel in another before running `taut-mcp --version`. It then
 uses `bin/release-artifact.py` to create four attempt-qualified bundles. Each
 bundle contains one wheel, one sdist, and an inner manifest bound to package
 name/version, commit, exact file names, and SHA-256 digests. Verification also
-binds the release tag family and version to the package.
+binds the release tag family and version to the package. The core distribution,
+bundle, and artifact prefix are `taut-chat`; its import package and console
+command remain `taut`, and its `vX.Y.Z` tag family remains unchanged. Extension
+distribution and tag names also remain unchanged.
 `.github/workflows/test-pg-extension.yml` remains the real Docker Postgres
 evidence for the shared backend. `.github/workflows/test-mcp-extension.yml`
 runs the complete MCP suite with its own real PostgreSQL service plus MCP-owned
 quality checks. Neither extension workflow produces release bytes.
+
+Before any real tag push, `bin/release.py` checks that immutable GitHub
+Releases are enabled and that environment `pypi` admits exactly the four
+release-tag families. Its explicit read-only settings mode runs the same
+check without preparing a release. PyPI Trusted Publisher records are a
+separate operator-owned prerequisite because the GitHub API cannot verify
+them.
 
 The four tag gates call `bin/require-green-workflows.py`; they do not call the
 test workflows. Every tag requires root Test, PostgreSQL Test, and MCP Test
@@ -183,25 +193,55 @@ then pins the package bundle by immutable artifact id and GitHub archive
 digest. Its 95-minute observer bound covers the 45-minute Test critical path,
 queueing, and API visibility; the enclosing job has 110 minutes including
 setup. An older-attempt artifact is treated as not-yet-visible for at most two
-minutes, then fails closed. `.github/workflows/release.yml` refetches that metadata, downloads the
-exact id from the selected run, verifies the inner manifest against the
-checked-out tag, rechecks the remote tag immediately before publication, and
-uploads those exact bytes to the GitHub Release. It never builds a package.
-No workflow uploads to PyPI.
+minutes, then fails closed. The shared release workflow refetches that
+metadata, downloads the exact id from the selected run, verifies the inner
+manifest against the checked-out tag, rechecks the remote tag, and stages the
+wheel and sdist as a complete draft GitHub Release. It carries the same
+verified bundle forward rather than rebuilding. The remote tag, inner
+manifest, and checked-out SHA are the commit binding. The release object's
+nominal `target_commitish` stays on the default branch: GitHub otherwise
+requires Workflows-write permission to publish a draft whose target differs
+from current workflow files, and Actions' `GITHUB_TOKEN` cannot receive that
+permission.
+
+Each top-level tag gate owns its package's PyPI Trusted Publisher identity.
+That job re-verifies the carried bundle and gets OIDC access but no GitHub
+contents write access. Existing PyPI files are accepted only when their names
+and SHA-256 digests are a matching subset of the expected wheel/sdist pair;
+only that preflight permits completion with `skip-existing`, whose
+filename-only behavior is not itself the safety check. A bounded post-upload
+check requires the complete exact PyPI set. Only then does a separate
+least-privilege finalizer recheck the tag and exact draft assets and publish
+the GitHub Release as immutable. To tolerate eventual release-API visibility,
+the finalizer boundedly polls only when an expected asset's uploaded state or
+SHA-256 digest is not yet visible. Extra assets, invalid or mismatched digests,
+and bound exhaustion remain fatal. Each retry searches only until the
+maintainer-visible release listing finds the known release id, which preserves
+draft visibility without scanning later pages after the match. The preceding
+PyPI job owns its bounded post-upload wait, so the finalizer performs one exact
+PyPI recheck before the draft transition. The workflow is resumable after a
+matching partial upload or after PyPI success, but it never rebuilds or reuses
+a mismatched version.
 
 Core and Summon are one paired reactor release boundary. The single owner of
 that proof is `bin/build-and-check-release-wheels.py`: it builds fresh core
 and Summon wheels in isolated temporary directories by default, then passes
 those exact artifacts to `bin/check-core-summon-wheel-matrix.py`. Its explicit
 path mode lets canonical CI reuse the current wheels it just built while the
-checker still builds all four historical compatibility wheels. Core and Summon
-local release paths run the build-owning proof after the local preparation
-commit, prechecks, and ordinary builds, but before any branch push, tag
-mutation, tag push, or publication, including `--skip-checks`; a PG-only
-release does not run it. The same owner checks the retained Summon lock's
-resolved SimpleBroker version and compiles the PG manifest into its temporary
-artifact root to prove the resolved `simplebroker-pg` floor. The repository
-does not retain a PG lockfile.
+checker still builds the historical Summon wheel used as a metadata
+diagnostic. The current matrix proves the `taut-chat` core by itself, current
+extension pairing and live Summon control, exact current project names and
+floors, and resolver rejection of an older incompatible `taut-chat` core when
+such a published baseline exists. Historical extension wheels that require
+distribution `taut` are not installed as compatible: Python packaging has no
+alias from `taut` to `taut-chat`, and the two distributions must not coexist
+because both own the same `taut/` files. Core and Summon local release paths
+run the build-owning proof after the local preparation commit, prechecks, and
+ordinary builds, but before any branch push, tag mutation, tag push, or
+publication, including `--skip-checks`; a PG-only release does not run it. The
+same owner checks the retained Summon lock's resolved SimpleBroker version and
+compiles the PG manifest into its temporary artifact root to prove the resolved
+`simplebroker-pg` floor. The repository does not retain a PG lockfile.
 
 All production taut-owned relational state flows through `taut/state/`.
 `taut/state/__init__.py` exposes the internal `TautState` interface,
@@ -553,9 +593,12 @@ unchanged for all other adapters.
 
 `summon` and `dismiss` are reserved extension slots, not built-ins. A unique
 entry point from the normalized `taut-summon` distribution owns each slot.
-Core retains a narrow 0.5.4 compatibility/install-hint adapter for paired
-rollout only. Once the 0.6.0 extension is selected, its native command adapters
-run directly and the compatibility bridge is not involved.
+Core retains a narrow absent-extension compatibility/install-hint adapter.
+The distribution rename ends its historical 0.5.4 installed-artifact
+compatibility claim: an old wheel requiring distribution `taut` is not
+resolver-compatible with `taut-chat`. When the current extension is selected,
+its native command adapters run directly and the compatibility bridge is not
+involved.
 
 The complete static-versus-installed registration flow, extension packaging
 contract, registry cache timing, and rich-host boundary are documented in
@@ -683,14 +726,14 @@ queue high-water mark.
 | `taut/client/` | Public API facade, shared base, value models, verb mixins, shared codecs, and watcher runtime adapter |
 | `taut/watcher.py` | Shared `BaseReactor`, vendored multi-queue scheduling, chat cursor watching, notification inbox integration |
 | `taut/cli.py` | Argparse tree, rendering, exit-code mapping |
-| `bin/release.py` | GitHub-only release helper, target/tag planning, dependency sync, and local release gates |
+| `bin/release.py` | PyPI/GitHub publication-state-aware release helper, target/tag planning, dependency sync, settings preflight, and local release gates |
 | `bin/release-artifact.py` | Attempt-bound release bundle manifest creation and fail-closed package-byte verification |
 | `bin/require-green-workflows.py` | Exact-SHA canonical workflow observer and immutable artifact selector for tag gates |
 | `bin/pytest-pg` | Docker-backed Postgres test runner for shared and extension suites |
 | `extensions/taut_pg/` | Separate `taut-pg` package, docs, and PG-only tests |
 | `extensions/taut_summon/` | Separate `taut-summon` package, summon driver/adapters, docs, and real-process tests |
 | `extensions/taut_mcp/` | Separate `taut-mcp` package, stdio protocol adapter, package-local quality gates, and cross-backend conformance tests |
-| `.github/workflows/` | GitHub Actions test and GitHub-only release publication gates |
+| `.github/workflows/` | GitHub Actions tests plus exact-artifact PyPI and immutable GitHub Release gates |
 | `tests/` | Contract tests against real SQLite files, shared backend tests, and subprocess CLI |
 
 ## Spec-Code Trace
@@ -747,6 +790,7 @@ watch, `taut/client/_notifications.py::NotificationsMixin.inbox` claims notifica
 
 ## Related Plans
 
+- `docs/plans/2026-07-29-taut-chat-pypi-publication-plan.md`
 - `docs/plans/2026-07-28-direct-message-navigation-plan.md`
 - `docs/plans/2026-07-14-blank-message-no-op-plan.md`
 - `docs/plans/2026-07-14-smaller-quality-followups-plan.md`

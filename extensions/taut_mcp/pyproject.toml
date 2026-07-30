@@ -16,7 +16,7 @@ authors = [
 dependencies = [
     "jsonschema>=4.20,<5",
     "mcp>=2.0.0,<3",
-    "taut>=0.8.0",
+    "taut-chat>=0.8.0",
 ]
 
 [project.scripts]
@@ -35,7 +35,7 @@ dev = [
 ]
 
 [tool.uv.sources]
-taut = { path = "../..", editable = true }
+taut-chat = { path = "../..", editable = true }
 taut-pg = { path = "../taut_pg", editable = true }
 
 [tool.hatch.build]

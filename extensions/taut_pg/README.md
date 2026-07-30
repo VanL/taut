@@ -2,35 +2,38 @@
 
 Postgres support package for Taut.
 
-This package is intentionally separate from `taut`. It installs
-`simplebroker-pg` in the same environment as the Taut CLI so `.taut.toml` can
-select the public SimpleBroker Postgres backend.
+This package is intentionally separate from the core `taut-chat`
+distribution. It installs `simplebroker-pg` in the same environment as the
+`taut` CLI so `.taut.toml` can select the public SimpleBroker Postgres
+backend.
 
 ## Requirements
 
 - Python 3.11+
 - PostgreSQL
 - A dedicated schema for Taut and SimpleBroker tables
-- Core `taut` and `taut-pg` installed in the same environment
+- Core distribution `taut-chat` and extension `taut-pg` installed in the same
+  environment
 
 The Postgres database must already exist. `taut init` initializes the configured
 schema and tables inside that database; it does not create the database.
 
 ## Installation
 
-Taut releases are GitHub-only until package-name clearance changes. Install the
-core package first, then inject a compatible extension wheel from the extension
-GitHub Release into the same environment. `taut-pg` uses its own
-`taut_pg/vX.Y.Z` tag stream, so its version can differ from the core package
-version:
+The core distribution is `taut-chat`; it still installs the `taut` command and
+import package. `taut-pg` keeps its own distribution name and
+`taut_pg/vX.Y.Z` tag stream. Once the first coordinated PyPI release is
+published:
 
 ```bash
-pipx install "git+https://github.com/VanL/taut.git@v0.8.0"
-pipx inject taut ./taut_pg-0.8.0-py3-none-any.whl
+pipx install taut-chat
+pipx inject taut-chat taut-pg
 ```
 
-Do not use a PyPI install command for `taut-pg` until the project documents
-PyPI publication.
+The tag gate reuses the exact wheel and sdist built by canonical Test. It
+stages them in a draft GitHub Release, publishes them through the
+`taut-pg` top-level PyPI Trusted Publisher, verifies filenames and SHA-256
+digests, and only then publishes the GitHub Release as immutable.
 
 ## Configuration
 

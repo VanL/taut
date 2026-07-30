@@ -7,7 +7,7 @@ on:
 
 permissions:
   actions: read
-  contents: write
+  contents: read
 
 concurrency:
   group: release-gate-${{ github.ref }}
@@ -59,13 +59,12 @@ jobs:
             --workflow pg=.github/workflows/test-pg-extension.yml \
             --workflow mcp=.github/workflows/test-mcp-extension.yml \
             --artifact-workflow root \
-            --artifact-prefix release-taut
+            --artifact-prefix release-taut-chat
 
-  publish-release:
+  stage-release:
     needs: release-evidence
     uses: ./.github/workflows/release.yml
     with:
-      package_name: taut
       package_dir: .
       tag_name: ${{ github.ref_name }}
       release_ref: ${{ needs.release-evidence.outputs.tag_commit }}
@@ -73,11 +72,104 @@ jobs:
       evidence_run_id: ${{ needs.release-evidence.outputs.artifact_run_id }}
       evidence_run_attempt: ${{ needs.release-evidence.outputs.artifact_run_attempt }}
       evidence_branch: ${{ needs.release-evidence.outputs.artifact_head_branch }}
-      artifact_prefix: release-taut
+      artifact_prefix: release-taut-chat
       artifact_id: ${{ needs.release-evidence.outputs.artifact_id }}
       artifact_digest: ${{ needs.release-evidence.outputs.artifact_digest }}
       artifact_repository_id: ${{ needs.release-evidence.outputs.artifact_repository_id }}
       artifact_head_repository_id: ${{ needs.release-evidence.outputs.artifact_head_repository_id }}
+      carried_artifact_name: publication-taut-chat-attempt-${{ github.run_attempt }}
+    permissions:
+      actions: read
+      contents: write
+
+  publish-to-pypi:
+    name: Publish taut-chat to PyPI
+    needs: [release-evidence, stage-release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: pypi
+      url: https://pypi.org/p/taut-chat
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        timeout-minutes: 5
+        with:
+          ref: ${{ needs.release-evidence.outputs.tag_commit }}
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        timeout-minutes: 5
+        with:
+          python-version: "3.14"
+
+      - name: Download the carried verified bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        timeout-minutes: 5
+        with:
+          artifact-ids: ${{ needs.stage-release.outputs.carried_artifact_id }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.run_id }}
+          path: bundle/
+          merge-multiple: true
+
+      - name: Reverify inner provenance and distribution bytes
+        timeout-minutes: 2
+        run: |
+          python bin/release-artifact.py verify \
+            --package-dir . \
+            --bundle-dir bundle \
+            --commit "${{ needs.release-evidence.outputs.tag_commit }}" \
+            --tag-name "${{ github.ref_name }}" \
+            --output-dir dist
+
+      - name: Plan exact PyPI publication
+        id: publication
+        timeout-minutes: 2
+        run: |
+          python .github/scripts/release_publication.py plan-pypi \
+            --manifest bundle/release-manifest.json \
+            --dist-dir dist
+
+      - name: Recheck release tag before irreversible PyPI upload
+        if: ${{ steps.publication.outputs.publish == 'true' }}
+        timeout-minutes: 2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python .github/scripts/release_publication.py verify-tag \
+            --repo "${GITHUB_REPOSITORY}" \
+            --tag "${GITHUB_REF_NAME}" \
+            --expected-sha "${{ needs.release-evidence.outputs.tag_commit }}"
+
+      - name: Publish distribution to PyPI
+        if: ${{ steps.publication.outputs.publish == 'true' }}
+        uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # v1.14.1
+        with:
+          packages-dir: dist/
+          skip-existing: ${{ steps.publication.outputs.skip_existing }}
+
+      - name: Verify complete exact PyPI publication
+        timeout-minutes: 5
+        run: |
+          python .github/scripts/release_publication.py verify-pypi \
+            --manifest bundle/release-manifest.json \
+            --dist-dir dist
+
+  publish-github-release:
+    needs: [release-evidence, stage-release, publish-to-pypi]
+    uses: ./.github/workflows/release-finalize.yml
+    with:
+      package_dir: .
+      tag_name: ${{ github.ref_name }}
+      release_ref: ${{ needs.release-evidence.outputs.tag_commit }}
+      expected_tag_commit: ${{ needs.release-evidence.outputs.tag_commit }}
+      carried_artifact_id: ${{ needs.stage-release.outputs.carried_artifact_id }}
     permissions:
       actions: read
       contents: write

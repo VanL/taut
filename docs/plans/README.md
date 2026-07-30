@@ -105,6 +105,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 | `2026-07-28-message-react-plan.md` | completed | no | Completed; landed evidence includes `788cdd3`. |
 | `2026-07-28-summon-terminal-retirement-plan.md` | completed | no | Class 5+P Summon terminal-retirement and coverage-integrity implementation; all local verification and independent-review gates passed before the owner-authorized targeted landing. |
 | `2026-07-28-taut-mcp-dual-era-sessionless-plan.md` | active | no | Class 5 dual-era MCP implementation, local proof, and targeted commit are complete; hosted CI OS/Python evidence remains. |
+| `2026-07-29-taut-chat-pypi-publication-plan.md` | active | no | Class 5 core-distribution rename and exact-artifact PyPI Trusted Publishing plan; independent Opus review passed after factual corrections. |
 
 ## Retired Plans
 

@@ -350,7 +350,7 @@ wheels = [
 ]
 
 [[package]]
-name = "taut"
+name = "taut-chat"
 version = "0.8.0"
 source = { editable = "../../" }
 dependencies = [
@@ -382,7 +382,7 @@ name = "taut-summon"
 version = "0.8.0"
 source = { editable = "." }
 dependencies = [
-    { name = "taut" },
+    { name = "taut-chat" },
 ]
 
 [package.optional-dependencies]
@@ -401,7 +401,7 @@ requires-dist = [
     { name = "pytest-timeout", marker = "extra == 'dev'", specifier = ">=2.4.0" },
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
-    { name = "taut", editable = "../../" },
+    { name = "taut-chat", editable = "../../" },
 ]
 provides-extras = ["dev"]
 

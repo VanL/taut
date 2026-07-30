@@ -9,7 +9,7 @@ Quick pointers to the key guidance documents in this repository.
 | `AGENTS.md` | Canonical agent entry point |
 | `CLAUDE.md` | Alias for tools that expect Claude-style root guidance |
 | `README.md` | Product face and current CLI/API behavior contract (see `docs/specs/02-taut-core.md`) |
-| `bin/release.py` | Four-package GitHub-only release helper for manifest-owned metadata/lock reconciliation, one universal default precheck sequence with an explicit human override, exact-path local preparation commits, non-mutating `--checks-only`, final remote-state fences, namespaced tags, and coordinated `all --version` batches |
+| `bin/release.py` | Four-package release helper for manifest-owned metadata/lock reconciliation, one universal default precheck sequence with an explicit human override, exact-path local preparation commits, non-mutating checks, fail-closed PyPI/GitHub publication-state fences, repository-settings preflight, namespaced tags, and coordinated `all --version` batches |
 | `bin/check-plan-status-index` | Structured plan status index gate: completeness, closed status/exemplar vocabulary, and table well-formedness |
 | `bin/check-doc-paths` | Pytest-free path-claim gate over the maintained guidance surfaces plus `docs/coalescing.md` and `docs/plans/README.md`; reuses the claim grammar in `tests/test_docs_references.py` |
 | `bin/check-cli-claims` | Pytest-free command-path gate over maintained Markdown; reuses the registry-derived grammar, exact source set, and exemptions in `tests/test_cli_claims.py` |
@@ -17,18 +17,20 @@ Quick pointers to the key guidance documents in this repository.
 | `bin/pytest-pg` | Docker-backed Postgres test runner for shared root tests and `taut-pg` tests |
 | `bin/combine-coverage.py` | Pre-combine raw-shard integrity owner: validates every downloaded file through Coverage's public data API, rejects absent, zero-byte, unreadable, or warning-producing evidence, and preserves all inputs while combining |
 | `bin/check-required-coverage-paths.py` | Post-combine coverage-data checker for required child-process, critical Summon, and MCP rate-admission execution paths |
-| `bin/check-core-summon-wheel-matrix.py` | Isolated six-case core/Summon wheel-matrix checker retaining the 0.5.0 reactor floor and adding the 0.5.4 command-rollout floor |
-| `bin/build-and-check-release-wheels.py` | Fresh-build owner, or paired explicit-current-wheel consumer in canonical CI, that retains the historical wheel builds before invoking the six-case matrix checker |
+| `bin/check-core-summon-wheel-matrix.py` | Isolated installed-artifact checker for the `taut-chat` core/current-Summon pair, exact distribution metadata, live control behavior, incompatible current-core floors, and the historical `Requires-Dist: taut` rename boundary |
+| `bin/build-and-check-release-wheels.py` | Fresh-build owner, or paired explicit-current-wheel consumer in canonical CI, that builds the historical diagnostic artifact before invoking the installed-artifact matrix checker |
 | `bin/release-artifact.py` | Creates and verifies commit-bound release bundles containing one wheel, one sdist, and an inner SHA-256 manifest |
 | `bin/require-green-workflows.py` | Observes canonical exact-SHA workflow evidence and selects attempt-bound release artifacts by immutable id and archive digest |
+| `.github/scripts/release_publication.py` | Fail-closed draft, PyPI filename/digest, remote-tag, and immutable GitHub finalization state machine used by release workflows |
 | `.github/workflows/test.yml` | Push/PR/reusable pytest, lint, type, deterministic serial direct root/Summon unit coverage plus checked same-run process/MCP aggregation, and sole canonical release-byte production for all four packages |
 | `.github/workflows/test-pg-extension.yml` | Push/PR/reusable Docker Postgres gate for `taut-pg` |
 | `.github/workflows/test-mcp-extension.yml` | Push/PR/reusable Ubuntu SQLite/live-PostgreSQL MCP behavior, representative macOS/Windows non-PG compatibility, package-local quality, and disposable build gate; never a release-byte owner |
-| `.github/workflows/release-gate.yml` | `v*` tag observer that requires exact-SHA Test, PG Test, and MCP Test evidence before publishing the root-produced core artifact |
-| `.github/workflows/release-gate-pg.yml` | `taut_pg/v*` tag observer that requires exact-SHA Test, PG Test, and MCP Test evidence before publishing the root-produced `taut-pg` artifact |
-| `.github/workflows/release-gate-summon.yml` | `taut_summon/v*` tag observer that requires exact-SHA Test, PG Test, and MCP Test evidence before publishing the root-produced `taut-summon` artifact |
-| `.github/workflows/release-gate-mcp.yml` | `taut_mcp/v*` tag observer that requires exact-SHA Test, PG Test, and MCP Test evidence before publishing the root-produced `taut-mcp` artifact |
-| `.github/workflows/release.yml` | Reusable verifier/downloader/uploader for an immutable tested release artifact; it never builds packages and has no PyPI path |
+| `.github/workflows/release-gate.yml` | `v*` observer for `taut-chat`: exact-SHA Test/PG/MCP evidence, draft staging, top-level PyPI Trusted Publishing, digest verification, and immutable GitHub finalization |
+| `.github/workflows/release-gate-pg.yml` | `taut_pg/v*` observer for `taut-pg`: exact-SHA Test/PG/MCP evidence, draft staging, top-level PyPI Trusted Publishing, digest verification, and immutable GitHub finalization |
+| `.github/workflows/release-gate-summon.yml` | `taut_summon/v*` observer for `taut-summon`: exact-SHA Test/PG/MCP evidence, draft staging, top-level PyPI Trusted Publishing, digest verification, and immutable GitHub finalization |
+| `.github/workflows/release-gate-mcp.yml` | `taut_mcp/v*` observer for `taut-mcp`: exact-SHA Test/PG/MCP evidence, draft staging, top-level PyPI Trusted Publishing, digest verification, and immutable GitHub finalization |
+| `.github/workflows/release.yml` | Reusable no-rebuild exact-artifact draft staging and verified-bundle carry; the four top-level gates, not this reusable workflow, own PyPI OIDC publication |
+| `.github/workflows/release-finalize.yml` | Reusable least-privilege exact-artifact PyPI recheck and immutable GitHub Release finalizer |
 
 ## Shared Agent Context
 
@@ -91,6 +93,7 @@ Quick pointers to the key guidance documents in this repository.
 | `docs/plans/2026-07-28-direct-message-navigation-plan.md` | Completed implementation plan for actor-scoped DM route/stable-handle navigation, directory, rendering, watcher, and MCP behavior |
 | `docs/plans/2026-07-28-taut-mcp-dual-era-sessionless-plan.md` | Reviewed implementation plan for one SDK v2 server serving both MCP wire eras through explicit workspace-and-token continuity, shared ensure, and independent notification adapters |
 | `docs/plans/2026-07-28-summon-terminal-retirement-plan.md` | Reviewed implementation plan separating reusable adapter interruption from one-signal terminal retirement and making invalid raw coverage evidence fatal |
+| `docs/plans/2026-07-29-taut-chat-pypi-publication-plan.md` | Reviewed implementation plan for the `taut-chat` core distribution rename, exact-artifact Trusted Publishing, draft-first immutable GitHub finalization, and explicit migration boundary |
 | `docs/plans/2026-07-14-terminal-output-safety-plan.md` | Reviewed implementation plan for packaged and project-customizable terminal-text policy, public extension API, human renderer coverage, and raw PTY exemption |
 | `docs/plans/2026-07-14-blank-message-no-op-plan.md` | Reviewed implementation plan for the built-in Unicode blank-input guard, typed empty result, silent CLI exit 2, and Summon terminal-mode adaptation |
 | `docs/implementation/00-implementation-index.md` | Numbered entry point for implementation docs |

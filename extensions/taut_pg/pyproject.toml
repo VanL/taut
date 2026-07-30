@@ -14,7 +14,7 @@ authors = [
     {name = "Van Lindberg", email = "van.lindberg@gmail.com"},
 ]
 dependencies = [
-    "taut>=0.8.0",
+    "taut-chat>=0.8.0",
     "simplebroker-pg>=3.3.1",
 ]
 
@@ -28,7 +28,7 @@ dev = [
 ]
 
 [tool.uv.sources]
-taut = { path = "../..", editable = true }
+taut-chat = { path = "../..", editable = true }
 
 [tool.hatch.build]
 include = [

@@ -408,7 +408,7 @@ def test_canonical_packaging_builds_and_smokes_each_release_artifact_once() -> N
     assert packaging.count("python bin/release-artifact.py create") == 4
     assert packaging.count("${{ github.run_attempt }}") >= 4
     assert packaging.count(canonical) >= 4
-    for package in ("taut", "taut-summon", "taut-pg", "taut-mcp"):
+    for package in ("taut-chat", "taut-summon", "taut-pg", "taut-mcp"):
         assert f"release-{package}-attempt-${{{{ github.run_attempt }}}}" in packaging
 
 
@@ -442,7 +442,7 @@ def test_setup_uv_steps_have_tight_timeouts() -> None:
 def _assert_exact_sha_release_observer(name: str, *, artifact_prefix: str) -> str:
     workflow = _workflow(name)
     evidence = _job_block(workflow, "release-evidence")
-    publish = _job_block(workflow, "publish-release")
+    stage = _job_block(workflow, "stage-release")
 
     assert "uses: ./.github/workflows/test.yml" not in workflow
     assert "uses: ./.github/workflows/test-pg-extension.yml" not in workflow
@@ -460,7 +460,7 @@ def _assert_exact_sha_release_observer(name: str, *, artifact_prefix: str) -> st
     assert "--artifact-workflow root" in evidence
     assert f"--artifact-prefix {artifact_prefix}" in evidence
     assert "GITHUB_TOKEN: ${{ github.token }}" in evidence
-    assert "needs: release-evidence" in publish
+    assert "needs: release-evidence" in stage
     for output in (
         "artifact_id",
         "artifact_digest",
@@ -480,12 +480,11 @@ def _assert_exact_sha_release_observer(name: str, *, artifact_prefix: str) -> st
         "artifact_repository_id",
         "artifact_head_repository_id",
     ):
-        assert f"{release_input}: ${{{{ needs.release-evidence.outputs." in publish
-    assert f"artifact_prefix: {artifact_prefix}" in publish
-    assert "release_ref: ${{ needs.release-evidence.outputs.tag_commit }}" in publish
+        assert f"{release_input}: ${{{{ needs.release-evidence.outputs." in stage
+    assert f"artifact_prefix: {artifact_prefix}" in stage
+    assert "release_ref: ${{ needs.release-evidence.outputs.tag_commit }}" in stage
     assert (
-        "expected_tag_commit: ${{ needs.release-evidence.outputs.tag_commit }}"
-        in publish
+        "expected_tag_commit: ${{ needs.release-evidence.outputs.tag_commit }}" in stage
     )
     return workflow
 
@@ -493,10 +492,9 @@ def _assert_exact_sha_release_observer(name: str, *, artifact_prefix: str) -> st
 def test_core_release_gate_observes_exact_sha_without_rerunning_tests() -> None:
     workflow = _assert_exact_sha_release_observer(
         "release-gate.yml",
-        artifact_prefix="release-taut",
+        artifact_prefix="release-taut-chat",
     )
 
-    assert "package_name: taut" in workflow
     assert "package_dir: ." in workflow
 
 
@@ -535,58 +533,98 @@ def test_mcp_workflow_runs_sqlite_postgres_quality_and_build_gates() -> None:
     assert "release-taut-mcp" not in workflow
 
 
-def test_pg_release_gate_is_github_only() -> None:
+@pytest.mark.parametrize(
+    ("name", "tag_pattern", "package_dir", "package_name", "artifact_prefix"),
+    (
+        ("release-gate.yml", "v*", ".", "taut-chat", "release-taut-chat"),
+        (
+            "release-gate-pg.yml",
+            "taut_pg/v*",
+            "extensions/taut_pg",
+            "taut-pg",
+            "release-taut-pg",
+        ),
+        (
+            "release-gate-summon.yml",
+            "taut_summon/v*",
+            "extensions/taut_summon",
+            "taut-summon",
+            "release-taut-summon",
+        ),
+        (
+            "release-gate-mcp.yml",
+            "taut_mcp/v*",
+            "extensions/taut_mcp",
+            "taut-mcp",
+            "release-taut-mcp",
+        ),
+    ),
+)
+def test_release_gates_publish_exact_artifact_through_top_level_pypi_job(
+    name: str,
+    tag_pattern: str,
+    package_dir: str,
+    package_name: str,
+    artifact_prefix: str,
+) -> None:
     workflow = _assert_exact_sha_release_observer(
-        "release-gate-pg.yml",
-        artifact_prefix="release-taut-pg",
+        name,
+        artifact_prefix=artifact_prefix,
     )
-    lower_workflow = workflow.lower()
+    stage = _job_block(workflow, "stage-release")
+    pypi = _job_block(workflow, "publish-to-pypi")
+    finalize = _job_block(workflow, "publish-github-release")
 
-    assert 'tags:\n      - "taut_pg/v*"' in workflow
-    assert "package_name: taut-pg" in workflow
-    assert "package_dir: extensions/taut_pg" in workflow
-    assert "uv publish" not in lower_workflow
-    assert "pypi" not in lower_workflow
-    assert "trusted-publishing" not in lower_workflow
-
-
-def test_summon_release_gate_is_github_only() -> None:
-    workflow = _assert_exact_sha_release_observer(
-        "release-gate-summon.yml",
-        artifact_prefix="release-taut-summon",
+    assert f'      - "{tag_pattern}"' in workflow
+    assert "uv build" not in workflow
+    assert "python -m build" not in workflow
+    assert workflow.count("pypa/gh-action-pypi-publish@") == 1
+    assert f"package_dir: {package_dir}" in stage
+    assert "uses: ./.github/workflows/release.yml" in stage
+    assert "contents: write" in stage
+    assert "needs:" in pypi
+    assert "release-evidence" in pypi
+    assert "stage-release" in pypi
+    assert "environment:" in pypi
+    assert "name: pypi" in pypi
+    assert f"url: https://pypi.org/p/{package_name}" in pypi
+    assert "actions: read" in pypi
+    assert "contents: read" in pypi
+    assert "id-token: write" in pypi
+    assert "contents: write" not in pypi
+    assert "release-artifact.py verify" in pypi
+    assert ".github/scripts/release_publication.py plan-pypi" in pypi
+    assert ".github/scripts/release_publication.py verify-pypi" in pypi
+    tag_recheck = pypi.index(".github/scripts/release_publication.py verify-tag")
+    upload = pypi.index("pypa/gh-action-pypi-publish@")
+    postflight = pypi.index(".github/scripts/release_publication.py verify-pypi")
+    assert tag_recheck < upload < postflight
+    assert (
+        "pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247" in pypi
     )
-    lower_workflow = workflow.lower()
-
-    assert 'tags:\n      - "taut_summon/v*"' in workflow
-    assert "package_name: taut-summon" in workflow
-    assert "package_dir: extensions/taut_summon" in workflow
-    assert "uv publish" not in lower_workflow
-    assert "pypi" not in lower_workflow
-    assert "trusted-publishing" not in lower_workflow
-
-
-def test_mcp_release_gate_is_github_only() -> None:
-    workflow = _assert_exact_sha_release_observer(
-        "release-gate-mcp.yml",
-        artifact_prefix="release-taut-mcp",
-    )
-    lower_workflow = workflow.lower()
-
-    assert 'tags:\n      - "taut_mcp/v*"' in workflow
-    assert "package_name: taut-mcp" in workflow
-    assert "package_dir: extensions/taut_mcp" in workflow
-    assert "uv publish" not in lower_workflow
-    assert "pypi" not in lower_workflow
-    assert "trusted-publishing" not in lower_workflow
+    assert "skip-existing: ${{ steps.publication.outputs.skip_existing }}" in pypi
+    assert "if: ${{ steps.publication.outputs.publish == 'true' }}" in pypi
+    assert "needs:" in finalize
+    assert "stage-release" in finalize
+    assert "publish-to-pypi" in finalize
+    assert "uses: ./.github/workflows/release-finalize.yml" in finalize
+    assert "contents: write" in finalize
 
 
-def test_release_workflow_publishes_github_release_only() -> None:
+def test_release_workflow_stages_draft_and_carries_verified_bundle() -> None:
     workflow = _workflow("release.yml")
     lower_workflow = workflow.lower()
 
     assert "softprops/action-gh-release@" in workflow
+    assert "draft: true" in workflow
+    assert "fail_on_unmatched_files: true" in workflow
+    assert "target_commitish: ${{ github.event.repository.default_branch }}" in workflow
+    assert "target_commitish: ${{ inputs.expected_tag_commit }}" not in workflow
     assert "dist/*.tar.gz" in workflow
     assert "dist/*.whl" in workflow
+    assert ".github/scripts/release_publication.py stage-draft" in workflow
+    assert "actions/upload-artifact@" in workflow
+    assert "carried_artifact_id:" in workflow
     assert "uv publish" not in lower_workflow
     assert "pypi" not in lower_workflow
     assert "trusted-publishing" not in lower_workflow
@@ -620,4 +658,27 @@ def test_release_workflow_consumes_pinned_verified_artifact_without_rebuild() ->
     assert "release-artifact.py verify" in workflow
     assert '--tag-name "${{ inputs.tag_name }}"' in workflow
     assert "uv build" not in workflow
-    assert "actions/upload-artifact" not in workflow
+    assert "python -m build" not in workflow
+
+
+def test_release_finalizer_is_least_privilege_and_never_publishes_to_pypi() -> None:
+    workflow = _workflow("release-finalize.yml")
+    lower_workflow = workflow.lower()
+    finalizer = _job_block(workflow, "github-release")
+
+    assert "workflow_call:" in workflow
+    assert "actions: read" in finalizer
+    assert "contents: write" in finalizer
+    assert "id-token: write" not in finalizer
+    assert "release-artifact.py verify" in finalizer
+    assert ".github/scripts/release_publication.py finalize" in finalizer
+    assert "pypa/gh-action-pypi-publish" not in workflow
+    assert "uv publish" not in lower_workflow
+    assert "python -m build" not in workflow
+
+
+def test_reusable_release_workflows_never_own_trusted_publishing() -> None:
+    for name in ("release.yml", "release-finalize.yml"):
+        workflow = _workflow(name)
+        assert "pypa/gh-action-pypi-publish" not in workflow
+        assert "id-token: write" not in workflow

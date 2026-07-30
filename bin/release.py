@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Repo-local GitHub-only release helper governed by [TAUT-12.5]."""
+"""Repo-local PyPI and GitHub release helper governed by [TAUT-12.5]."""
 
 from __future__ import annotations
 
@@ -49,9 +49,17 @@ PG_RELEASE_WORKFLOW: Final[str] = ".github/workflows/release-gate-pg.yml"
 SUMMON_RELEASE_WORKFLOW: Final[str] = ".github/workflows/release-gate-summon.yml"
 MCP_RELEASE_WORKFLOW: Final[str] = ".github/workflows/release-gate-mcp.yml"
 GITHUB_API_BASE: Final[str] = "https://api.github.com"
+GITHUB_API_VERSION: Final[str] = "2026-03-10"
+PYPI_API_BASE: Final[str] = "https://pypi.org/pypi"
 HTTP_TIMEOUT_SECONDS: Final[float] = 15.0
 PENDING_RELEASE_COMMIT: Final[str] = "<pending release commit>"
 ALL_RELEASE_TARGET_KEY: Final[str] = "all"
+PYPI_ENVIRONMENT_TAG_PATTERNS: Final[tuple[tuple[str, str], ...]] = (
+    ("tag", "v*"),
+    ("tag", "taut_pg/v*"),
+    ("tag", "taut_summon/v*"),
+    ("tag", "taut_mcp/v*"),
+)
 
 Command = tuple[str, ...]
 TagActionName = Literal[
@@ -70,7 +78,7 @@ CONSTANTS_VERSION_PATTERN: Final[re.Pattern[str]] = re.compile(
     r'(?m)^__version__(?::[^=]+)? = "([^"]+)"$'
 )
 TAUT_DEPENDENCY_PATTERN: Final[re.Pattern[str]] = re.compile(
-    r'(?m)^(\s*"taut>=)[^"]+(",\s*)$'
+    r'(?m)^(\s*"taut-chat>=)[^"]+(",\s*)$'
 )
 TAUT_SUMMON_DEPENDENCY_PATTERN: Final[re.Pattern[str]] = re.compile(
     r'(?m)^(\s*"taut-summon>=)([^"]+)(",\s*)$'
@@ -288,8 +296,6 @@ class ReleaseTarget:
     pyproject_path: Path
     constants_path: Path | None
     tag_namespace: str | None
-    github_release: bool
-    pypi_publish: bool
     release_workflow: str = ""
 
     @property
@@ -299,10 +305,6 @@ class ReleaseTarget:
     @property
     def display_name(self) -> str:
         return self.package_name
-
-    @property
-    def github_release_enabled(self) -> bool:
-        return self.github_release
 
     def tag_for_version(self, version: str) -> str:
         if self.tag_namespace is not None:
@@ -315,18 +317,19 @@ class ReleaseTarget:
 
 @dataclass(frozen=True)
 class ReleaseState:
-    """Observed GitHub publication and tag state for one package version."""
+    """Observed PyPI, GitHub Release, and tag state for one package version."""
 
     target: ReleaseTarget
     version: str
     tag_name: str
     github_release_exists: bool
+    pypi_release_exists: bool
     local_tag_commit: str | None
     remote_tag_commit: str | None
 
     @property
     def published(self) -> bool:
-        return self.github_release_exists
+        return self.github_release_exists or self.pypi_release_exists
 
 
 @dataclass(frozen=True)
@@ -355,13 +358,11 @@ class CommandStep:
 
 ROOT_TARGET: Final[ReleaseTarget] = ReleaseTarget(
     name="core",
-    package_name="taut",
+    package_name="taut-chat",
     package_dir=Path("."),
     pyproject_path=PYPROJECT_PATH,
     constants_path=CONSTANTS_PATH,
     tag_namespace=None,
-    github_release=True,
-    pypi_publish=False,
     release_workflow=ROOT_RELEASE_WORKFLOW,
 )
 PG_TARGET: Final[ReleaseTarget] = ReleaseTarget(
@@ -371,8 +372,6 @@ PG_TARGET: Final[ReleaseTarget] = ReleaseTarget(
     pyproject_path=PG_PYPROJECT_PATH,
     constants_path=None,
     tag_namespace="taut_pg",
-    github_release=True,
-    pypi_publish=False,
     release_workflow=PG_RELEASE_WORKFLOW,
 )
 SUMMON_TARGET: Final[ReleaseTarget] = ReleaseTarget(
@@ -382,8 +381,6 @@ SUMMON_TARGET: Final[ReleaseTarget] = ReleaseTarget(
     pyproject_path=SUMMON_PYPROJECT_PATH,
     constants_path=None,
     tag_namespace="taut_summon",
-    github_release=True,
-    pypi_publish=False,
     release_workflow=SUMMON_RELEASE_WORKFLOW,
 )
 MCP_TARGET: Final[ReleaseTarget] = ReleaseTarget(
@@ -393,8 +390,6 @@ MCP_TARGET: Final[ReleaseTarget] = ReleaseTarget(
     pyproject_path=MCP_PYPROJECT_PATH,
     constants_path=None,
     tag_namespace="taut_mcp",
-    github_release=True,
-    pypi_publish=False,
     release_workflow=MCP_RELEASE_WORKFLOW,
 )
 TARGETS: Final[dict[str, ReleaseTarget]] = {
@@ -612,7 +607,7 @@ def write_version_files(version: str, target: ReleaseTarget = ROOT_TARGET) -> No
             target.pyproject_path,
             TAUT_DEPENDENCY_PATTERN,
             rf"\g<1>{root_version}\g<2>",
-            f"{display_path(target.pyproject_path)} taut dependency",
+            f"{display_path(target.pyproject_path)} taut-chat dependency",
         )
 
 
@@ -772,7 +767,7 @@ def sync_extension_core_dependency(
     )
     if count != 1:
         fail(
-            f"Could not update {extension_label} taut dependency in "
+            f"Could not update {extension_label} taut-chat dependency in "
             f"{display_path(extension_pyproject_path)}"
         )
     if updated == text:
@@ -1305,7 +1300,7 @@ def github_api_headers() -> dict[str, str]:
     headers = {
         "Accept": "application/vnd.github+json",
         "User-Agent": "taut-release-helper",
-        "X-GitHub-Api-Version": "2022-11-28",
+        "X-GitHub-Api-Version": GITHUB_API_VERSION,
     }
     token = _github_api_token()
     if token:
@@ -1316,7 +1311,7 @@ def github_api_headers() -> dict[str, str]:
 def github_release_exists(tag_name: str) -> bool:
     slug = github_repo_slug_from_remote(origin_remote_url())
     if slug is None:
-        fail("Origin remote is not a GitHub repository; taut releases are GitHub-only")
+        fail("Origin remote is not a GitHub repository")
 
     encoded_tag = urllib.parse.quote(tag_name, safe="")
     url = f"{GITHUB_API_BASE}/repos/{slug}/releases/tags/{encoded_tag}"
@@ -1330,26 +1325,226 @@ def github_release_exists(tag_name: str) -> bool:
         fail(f"GitHub release lookup failed for {tag_name}: HTTP {exc.code}")
     except urllib.error.URLError as exc:
         fail(f"GitHub release lookup failed for {tag_name}: {exc.reason}")
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        fail(f"GitHub release lookup failed for {tag_name}: invalid JSON")
 
-    return isinstance(data, dict) and data.get("tag_name") == tag_name
+    if not isinstance(data, dict) or data.get("tag_name") != tag_name:
+        fail(f"GitHub release lookup failed for {tag_name}: unexpected response")
+    return True
+
+
+def _normalized_package_name(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def pypi_version_exists(package_name: str, version: str) -> bool:
+    """Return whether PyPI already contains the exact package version."""
+
+    encoded_package = urllib.parse.quote(package_name, safe="")
+    encoded_version = urllib.parse.quote(version, safe="")
+    url = f"{PYPI_API_BASE}/{encoded_package}/{encoded_version}/json"
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "taut-release-helper",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
+            data: object = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return False
+        fail(
+            f"PyPI release lookup failed for {package_name} {version}: HTTP {exc.code}"
+        )
+    except urllib.error.URLError as exc:
+        fail(f"PyPI release lookup failed for {package_name} {version}: {exc.reason}")
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        fail(f"PyPI release lookup failed for {package_name} {version}: invalid JSON")
+
+    if not isinstance(data, dict):
+        fail(
+            f"PyPI release lookup failed for {package_name} {version}: "
+            "unexpected response"
+        )
+    info = data.get("info")
+    if not isinstance(info, dict):
+        fail(
+            f"PyPI release lookup failed for {package_name} {version}: "
+            "missing project info"
+        )
+    observed_name = info.get("name")
+    observed_version = info.get("version")
+    if (
+        not isinstance(observed_name, str)
+        or _normalized_package_name(observed_name)
+        != _normalized_package_name(package_name)
+        or observed_version != version
+    ):
+        fail(
+            f"PyPI release lookup failed for {package_name} {version}: "
+            "project identity mismatch"
+        )
+    return True
+
+
+def _github_api_json(path: str, token: str) -> object:
+    if not path.startswith("/"):
+        raise RuntimeError("GitHub API path must start with /")
+    request = urllib.request.Request(
+        f"{GITHUB_API_BASE}{path}",
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "User-Agent": "taut-release-helper",
+            "X-GitHub-Api-Version": GITHUB_API_VERSION,
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(
+            f"GitHub API request failed for {path}: HTTP {exc.code}"
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(
+            f"GitHub API request failed for {path}: {exc.reason}"
+        ) from exc
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"GitHub API request failed for {path}: invalid JSON"
+        ) from exc
+
+
+def _setting_payload(
+    *,
+    label: str,
+    path: str,
+    token: str,
+    issues: list[str],
+) -> object | None:
+    try:
+        return _github_api_json(path, token)
+    except RuntimeError as exc:
+        issues.append(f"{label} could not be verified: {exc}")
+        return None
+
+
+def repository_settings_issues(repo_slug: str, token: str) -> tuple[str, ...]:
+    """Return release-blocking GitHub repository-setting issues."""
+
+    issues: list[str] = []
+    encoded_repo = urllib.parse.quote(repo_slug, safe="/")
+    base = f"/repos/{encoded_repo}"
+
+    immutable = _setting_payload(
+        label="immutable releases",
+        path=f"{base}/immutable-releases",
+        token=token,
+        issues=issues,
+    )
+    if immutable is not None and (
+        not isinstance(immutable, dict) or immutable.get("enabled") is not True
+    ):
+        issues.append("immutable releases must be enabled")
+
+    environment = _setting_payload(
+        label="pypi environment policy",
+        path=f"{base}/environments/pypi",
+        token=token,
+        issues=issues,
+    )
+    deployment_policy: object = None
+    if isinstance(environment, dict):
+        deployment_policy = environment.get("deployment_branch_policy")
+    if environment is not None and (
+        not isinstance(deployment_policy, dict)
+        or deployment_policy.get("protected_branches") is not False
+        or deployment_policy.get("custom_branch_policies") is not True
+    ):
+        issues.append("pypi environment must use custom tag policies only")
+
+    policies = _setting_payload(
+        label="pypi environment tag policies",
+        path=f"{base}/environments/pypi/deployment-branch-policies",
+        token=token,
+        issues=issues,
+    )
+    observed: set[tuple[str, str]] = set()
+    raw_policies = (
+        policies.get("branch_policies") if isinstance(policies, dict) else None
+    )
+    policy_records_valid = isinstance(raw_policies, list) and len(raw_policies) == len(
+        PYPI_ENVIRONMENT_TAG_PATTERNS
+    )
+    if isinstance(raw_policies, list):
+        for raw_policy in raw_policies:
+            if not isinstance(raw_policy, dict):
+                policy_records_valid = False
+                continue
+            policy_type = raw_policy.get("type")
+            name = raw_policy.get("name")
+            if isinstance(policy_type, str) and isinstance(name, str):
+                before = len(observed)
+                observed.add((policy_type, name))
+                if len(observed) == before:
+                    policy_records_valid = False
+            else:
+                policy_records_valid = False
+    if policies is not None and (
+        not policy_records_valid or observed != set(PYPI_ENVIRONMENT_TAG_PATTERNS)
+    ):
+        issues.append(
+            "pypi environment tag policies must be exactly v*, taut_pg/v*, "
+            "taut_summon/v*, and taut_mcp/v*"
+        )
+
+    return tuple(issues)
+
+
+def require_repository_settings() -> None:
+    """Fail closed unless GitHub release settings match [TAUT-12.5]."""
+
+    token = _github_api_token()
+    if not token:
+        fail("Authenticated GitHub access is required to verify repository settings")
+    remote_url = origin_remote_url()
+    repo_slug = github_repo_slug_from_remote(remote_url)
+    if repo_slug is None:
+        fail(f"Unable to determine GitHub repository from origin remote: {remote_url}")
+    issues = repository_settings_issues(repo_slug, token)
+    if issues:
+        fail("Repository settings are not ready for release:\n- " + "\n- ".join(issues))
+    print("repository setting ok: immutable releases enabled")
+    print("repository setting ok: pypi accepts only release tags")
 
 
 def inspect_release_state(target: ReleaseTarget, version: str) -> ReleaseState:
     normalized = validate_version(version)
     tag_name = target.tag_for_version(normalized)
-    exists = github_release_exists(tag_name) if target.github_release else False
+    github_exists = github_release_exists(tag_name)
+    pypi_exists = pypi_version_exists(target.package_name, normalized)
     return ReleaseState(
         target=target,
         version=normalized,
         tag_name=tag_name,
-        github_release_exists=exists,
+        github_release_exists=github_exists,
+        pypi_release_exists=pypi_exists,
         local_tag_commit=local_tag_commit(tag_name),
         remote_tag_commit=remote_tag_commit(tag_name),
     )
 
 
 def published_destinations(state: ReleaseState) -> str:
-    return "GitHub Release" if state.github_release_exists else "nowhere"
+    destinations: list[str] = []
+    if state.github_release_exists:
+        destinations.append("GitHub Release")
+    if state.pypi_release_exists:
+        destinations.append("PyPI publication")
+    return " and ".join(destinations) or "nowhere"
 
 
 def resolve_target_version(
@@ -1362,14 +1557,15 @@ def resolve_target_version(
     require_not_backdated(current_version, target_version)
     state = inspect_release_state(target, target_version)
     if state.published:
+        destinations = published_destinations(state)
         if requested_version is None:
             fail(
                 f"Current {target.package_name} version {current_version} already "
-                "exists as a GitHub Release; pass --version with a new version"
+                f"has a {destinations}; pass --version with a new version"
             )
         fail(
-            f"{target.package_name} {target_version} already exists as a "
-            "GitHub Release; choose a new version"
+            f"{target.package_name} {target_version} already has a "
+            f"{destinations}; choose a new version"
         )
     return current_version, target_version, state
 
@@ -1679,6 +1875,11 @@ def plan_tag_action(
 ) -> TagAction:
     if allow_retag is not None:
         retag = allow_retag
+    if state.published:
+        fail(
+            f"{state.target.package_name} {state.version} is already published via "
+            f"{published_destinations(state)}; choose a new version"
+        )
 
     local_commit = state.local_tag_commit
     remote_commit = state.remote_tag_commit
@@ -1807,16 +2008,17 @@ def print_release_summary(
     print(f"Tag: {state.tag_name}")
     print(f"Release workflow: {state.target.release_workflow}")
     print(f"GitHub Release exists: {'yes' if state.github_release_exists else 'no'}")
+    print(f"PyPI publication exists: {'yes' if state.pypi_release_exists else 'no'}")
     print(f"Local tag commit: {state.local_tag_commit or '<missing>'}")
     print(f"Remote tag commit: {state.remote_tag_commit or '<missing>'}")
     print(f"Tag action: {describe_tag_action(tag_action)}")
-    print("PyPI publish: disabled")
+    print("Tag workflow publishes: PyPI and immutable GitHub Release")
 
 
 def print_publish_note() -> None:
     print(
-        "--publish is ignored: taut is GitHub-only until PyPI name clearance; "
-        "pushing the GitHub tag is the publish boundary."
+        "--publish is ignored: tag-push release-gate workflows publish the exact "
+        "tested artifacts to PyPI and an immutable GitHub Release."
     )
 
 
@@ -1883,8 +2085,8 @@ def require_fresh_release_fence(
         if state.published:
             fail(
                 f"{candidate.target.package_name} {candidate.release_version} "
-                "became a GitHub Release during local checks; no remote release "
-                "action ran"
+                f"became published via {published_destinations(state)} during "
+                "local checks; no remote release action ran"
             )
         refreshed.append(replace(candidate, state=state))
     return tuple(refreshed)
@@ -1948,7 +2150,7 @@ def _print_batch_release_plan(
         print(f"  {candidate.target.display_name}:")
         print(f"    current:  {candidate.current_version}")
         print(f"    release:  {candidate.release_version}")
-        print("    status:   unpublished on GitHub Release")
+        print("    status:   unpublished on GitHub Release and PyPI")
         print(f"    tag:      {candidate.state.tag_name} ({action.action})")
         print(f"    workflow: {candidate.target.release_workflow}")
 
@@ -1966,7 +2168,7 @@ def _print_dry_run_root_dependency_notes(
     if _candidate_for_target(candidates, SUMMON_TARGET) is None:
         print(
             "dry-run: taut-summon is not in this batch; root still syncs to the "
-            "local extension version because publishing is GitHub-only"
+            "local extension version because dependency metadata is coordinated"
         )
     else:
         print(f"dry-run: taut-summon {summon_version} would be released in this batch")
@@ -1985,19 +2187,19 @@ def _sync_root_release_dependencies() -> None:
         print(f"Updated root dev dependency: simplebroker-pg>={pg_runtime_floor}")
     pg_dependency_version = sync_pg_core_dependency()
     if pg_dependency_version is None:
-        print("taut-pg dependency already matches taut")
+        print("taut-pg dependency already matches taut-chat")
     else:
-        print(f"Updated taut-pg dependency: taut>={pg_dependency_version}")
+        print(f"Updated taut-pg dependency: taut-chat>={pg_dependency_version}")
     core_dependency_version = sync_summon_core_dependency()
     if core_dependency_version is None:
-        print("taut-summon dependency already matches taut")
+        print("taut-summon dependency already matches taut-chat")
     else:
-        print(f"Updated taut-summon dependency: taut>={core_dependency_version}")
+        print(f"Updated taut-summon dependency: taut-chat>={core_dependency_version}")
     mcp_core_version = sync_mcp_core_dependency()
     if mcp_core_version is None:
-        print("taut-mcp dependency already matches taut")
+        print("taut-mcp dependency already matches taut-chat")
     else:
-        print(f"Updated taut-mcp dependency: taut>={mcp_core_version}")
+        print(f"Updated taut-mcp dependency: taut-chat>={mcp_core_version}")
     mcp_pg_version = sync_mcp_pg_dev_dependency()
     if mcp_pg_version is None:
         print("taut-mcp development dependency already matches taut-pg")
@@ -2011,7 +2213,7 @@ def _require_command(name: str) -> None:
 
 
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Prepare a taut GitHub-only release.")
+    parser = argparse.ArgumentParser(description="Prepare a Taut package release.")
     target_choices = (*TARGETS, ALL_RELEASE_TARGET_KEY)
     parser.add_argument(
         "target",
@@ -2068,7 +2270,15 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--publish",
         action="store_true",
-        help="Compatibility no-op. Taut releases are GitHub-only for now.",
+        help=("Compatibility no-op. Tag workflows publish to PyPI and GitHub."),
+    )
+    parser.add_argument(
+        "--check-repository-settings",
+        action="store_true",
+        help=(
+            "Read and verify immutable-release and PyPI-environment settings, "
+            "then exit."
+        ),
     )
     args = parser.parse_args(argv)
 
@@ -2180,7 +2390,7 @@ def _run_batch_release(args: argparse.Namespace) -> int:
         _dry_run_postupdate_steps(release_targets)
         print(
             "dry-run: would revalidate branch, HEAD, clean worktree, GitHub "
-            "Release state, and tags before remote actions"
+            "Release and PyPI state, and tags before remote actions"
         )
         for candidate in candidates:
             prepare_tag(tag_actions[candidate.target.key], dry_run=True)
@@ -2238,15 +2448,19 @@ def _run_batch_release(args: argparse.Namespace) -> int:
     print(
         "Next step: wait for release-gate workflows on "
         + ", ".join(candidate.state.tag_name for candidate in candidates)
-        + ". They will create GitHub Releases and upload artifacts."
+        + ". They will publish to PyPI and immutable GitHub Releases."
     )
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.check_repository_settings:
+        require_repository_settings()
+        return 0
     if not args.dry_run and not args.checks_only:
         require_publish_branch()
+        require_repository_settings()
     if args.target == ALL_RELEASE_TARGET_KEY:
         return _run_batch_release(args)
 
@@ -2325,7 +2539,7 @@ def main(argv: list[str] | None = None) -> int:
         run_postupdate_steps(target, dry_run=True)
         print(
             "dry-run: would revalidate branch, HEAD, clean worktree, GitHub "
-            "Release state, and tags before remote actions"
+            "Release and PyPI state, and tags before remote actions"
         )
         prepare_tag(tag_action, dry_run=True)
         push_current_branch(
@@ -2379,7 +2593,7 @@ def main(argv: list[str] | None = None) -> int:
     push_tag(tag_action, dry_run=False)
     print(
         f"Next step: wait for {target.release_workflow} on {state.tag_name}. "
-        "It will create the GitHub Release and upload artifacts."
+        "It will publish to PyPI and an immutable GitHub Release."
     )
     return 0
 

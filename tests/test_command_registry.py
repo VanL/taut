@@ -33,7 +33,16 @@ def test_installed_fixture_declares_command_protocol_core_floor() -> None:
     with fixture_manifest.open("rb") as stream:
         project = tomllib.load(stream)["project"]
 
-    assert project["dependencies"] == ["taut>=0.6.0"]
+    assert project["dependencies"] == ["taut-chat>=0.6.0"]
+
+
+def test_static_builtins_report_public_core_distribution_provenance() -> None:
+    from taut.commands._registry import CommandRegistry
+
+    selected = CommandRegistry(entry_points=()).get("say")
+
+    assert selected.builtin is True
+    assert selected.distribution_name == "taut-chat"
 
 
 class _EchoCommand:
@@ -686,98 +695,10 @@ def test_root_help_lists_broken_official_slot_once() -> None:
     assert stderr.getvalue().count("official manifest exploded") == 1
 
 
-@pytest.mark.parametrize(
-    ("argv", "expected_exit", "expected_stream", "expected_text"),
-    [
-        (
-            ("summon", "reviewer", "--provider", "zz-unknown", "dev"),
-            1,
-            "stderr",
-            "no adapter named 'zz-unknown'",
-        ),
-        (
-            ("summon", "--help"),
-            0,
-            "stdout",
-            "usage: taut-summon run",
-        ),
-        (
-            ("summon", "--", "anything"),
-            1,
-            "stderr",
-            "no adapter named 'anything'",
-        ),
-    ],
-)
-def test_reserved_summon_bridge_preserves_opaque_tail_and_exit_class(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    argv: tuple[str, ...],
-    expected_exit: int,
-    expected_stream: str,
-    expected_text: str,
-) -> None:
+def test_reserved_summon_bridge_uses_injected_stream_for_install_hint() -> None:
     from taut.commands._dispatch import dispatch
     from taut.commands._registry import CommandRegistry
 
-    monkeypatch.chdir(tmp_path)
-    stdout = StringIO()
-    stderr = StringIO()
-
-    result = dispatch(
-        argv,
-        registry=CommandRegistry(entry_points=()),
-        stdin=StringIO(),
-        stdout=stdout,
-        stderr=stderr,
-    )
-
-    assert result == expected_exit
-    selected_stream = stdout if expected_stream == "stdout" else stderr
-    other_stream = stderr if expected_stream == "stdout" else stdout
-    assert expected_text in selected_stream.getvalue()
-    assert other_stream.getvalue() == ""
-
-
-@pytest.mark.parametrize("db_position", ["before", "after"])
-def test_reserved_summon_bridge_forwards_merged_database_path(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    db_position: str,
-) -> None:
-    from taut.commands._dispatch import dispatch
-    from taut.commands._registry import CommandRegistry
-
-    monkeypatch.chdir(tmp_path)
-    db_path = str(tmp_path / "chat.db")
-    argv = (
-        ["--db", db_path, "summon", "zz-unknown"]
-        if db_position == "before"
-        else ["summon", "zz-unknown", "--db", db_path]
-    )
-    stderr = StringIO()
-
-    result = dispatch(
-        argv,
-        registry=CommandRegistry(entry_points=()),
-        stdin=StringIO(),
-        stdout=StringIO(),
-        stderr=stderr,
-    )
-
-    assert result == 1
-    assert "no adapter named 'zz-unknown'" in stderr.getvalue()
-    assert f"db: {db_path}" in stderr.getvalue()
-
-
-def test_reserved_summon_bridge_uses_injected_stream_for_install_hint(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from taut.commands import _summon_compat
-    from taut.commands._dispatch import dispatch
-    from taut.commands._registry import CommandRegistry
-
-    monkeypatch.setattr(_summon_compat.importlib.util, "find_spec", lambda _name: None)
     stdout = StringIO()
     stderr = StringIO()
 
@@ -793,11 +714,11 @@ def test_reserved_summon_bridge_uses_injected_stream_for_install_hint(
     assert stdout.getvalue() == ""
     assert stderr.getvalue() == (
         "taut summon requires the taut-summon extension "
-        "(pipx inject taut taut-summon)\n"
+        "(pipx inject taut-chat taut-summon)\n"
     )
 
 
-def test_reserved_summon_bridge_fails_loud_without_dispatch_separator() -> None:
+def test_reserved_summon_hint_fails_loud_without_dispatch_separator() -> None:
     from taut.commands import CommandContext
     from taut.commands._summon_compat import create_summon_command
 
@@ -815,53 +736,9 @@ def test_reserved_summon_bridge_fails_loud_without_dispatch_separator() -> None:
 
     with pytest.raises(
         RuntimeError,
-        match="summon compatibility tail separator is missing",
+        match="reserved Summon tail separator is missing",
     ):
         create_summon_command().run(context, argparse.Namespace(rest=[]))
-
-
-def test_reserved_summon_bridge_line_buffers_and_escapes_legacy_python_text(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import taut_summon.cli
-
-    from taut.commands import CommandContext
-    from taut.commands._summon_compat import create_summon_command
-
-    def legacy_main(_argv: list[str]) -> int:
-        sys.stdout.write("first\x1b]52;c;Y2xpcGJvYXJk\x07")
-        sys.stdout.write(" tail\nsecond\x9b[31m")
-        sys.stderr.write("warning\r\b\t")
-        return 0
-
-    monkeypatch.setattr(taut_summon.cli, "main", legacy_main)
-    stdout = StringIO()
-    stderr = StringIO()
-    context = CommandContext(
-        db_path=None,
-        as_name=None,
-        auth_token=None,
-        json=False,
-        timestamps=False,
-        quiet=False,
-        stdin=StringIO(),
-        stdout=stdout,
-        stderr=stderr,
-    )
-
-    result = create_summon_command().run(
-        context,
-        argparse.Namespace(rest=["--", "provider"]),
-    )
-
-    assert result == 0
-    assert stdout.getvalue() == (
-        r"first\x1b]52;c;Y2xpcGJvYXJk\a tail"
-        "\n"
-        r"second\x9b[31m"
-        "\n"
-    )
-    assert stderr.getvalue() == r"warning\r\b\t" + "\n"
 
 
 def test_compatible_installed_manifest_is_discovered_after_builtins() -> None:

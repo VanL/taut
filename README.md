@@ -7,8 +7,10 @@
 *Slack in your terminal, for you and your agents. No server, no daemon, no
 config, no accounts. One SQLite file by default; Postgres when you need it.*
 
-> **Status:** alpha, GitHub-release only. This README is the intended product
-> contract, written first on purpose. The core specification lives in
+> **Status:** alpha. The release path is configured for PyPI and immutable
+> GitHub Releases; configuring it does not mean a PyPI version has already
+> been published. This README is the intended product contract, written first
+> on purpose. The core specification lives in
 > [`docs/specs/02-taut-core.md`](docs/specs/02-taut-core.md); identity,
 > addressing, direct messages, and notifications are specified in
 > [`docs/specs/03-identity-addressing-notifications.md`](docs/specs/03-identity-addressing-notifications.md).
@@ -86,29 +88,62 @@ default, or a few machines through the Postgres extension.
 
 ## Installation
 
+The product, import package, and command are still named Taut and `taut`. The
+public core distribution is named `taut-chat` because the `taut` PyPI project
+name is unavailable.
+
+For command-line use, install the core application with `pipx`:
+
 ```bash
-pipx install "git+https://github.com/VanL/taut.git@v0.8.0"       # CLI use
-uv add "taut @ git+https://github.com/VanL/taut.git@v0.8.0"      # as a library
+pipx install taut-chat
+taut --help
+```
+
+The pipx environment is consequently named `taut-chat`, even though the
+installed executable is `taut`. Optional extensions must be injected into that
+environment. To install all three extensions and expose their standalone
+commands:
+
+```bash
+pipx inject --include-apps taut-chat taut-pg taut-summon taut-mcp
+```
+
+This provides `taut` plus the `taut-summon` and `taut-mcp` executables. The
+Postgres extension changes the backend available to `taut`; it does not add a
+standalone command.
+
+For a Python project or an existing virtual environment:
+
+```bash
+uv add taut-chat
+# or
+python -m pip install taut-chat
+```
+
+Add the unchanged extension distribution names when needed:
+
+```bash
+uv add taut-chat taut-pg taut-summon taut-mcp
+# or
+python -m pip install taut-chat taut-pg taut-summon taut-mcp
 ```
 
 Requirements: Python 3.11+. Runtime dependencies are `simplebroker>=5.6.1`
 (which itself has none) and `psutil` for cross-platform process metadata.
 
-PyPI install names stay out of the documented path until the `taut` package
-name is cleared.
-
 ### Postgres Extension
 
-`taut-pg` is a separate package. Install it into the same environment as
-`taut`; it brings in `simplebroker-pg` and the Postgres driver dependencies.
-Until PyPI clearance changes, install core from the desired Taut tag and
-inject compatible extension wheels from their extension release streams.
+`taut-pg` is a separate distribution. Install it into the same environment as
+`taut-chat`; it brings in `simplebroker-pg` and the Postgres driver
+dependencies.
 Extensions use their own tags (`taut_pg/vX.Y.Z`, `taut_summon/vX.Y.Z`), so
-their versions do not have to match the core package version:
+their versions do not generally have to match the core package version. The
+first PyPI publication is one coordinated version across all four
+distributions:
 
 ```bash
-pipx install "git+https://github.com/VanL/taut.git@v0.8.0"
-pipx inject taut ./taut_pg-0.8.0-py3-none-any.whl
+pipx install taut-chat
+pipx inject taut-chat taut-pg
 ```
 
 The Postgres database must already exist. Create `.taut.toml` in the project
@@ -165,7 +200,7 @@ by its continuity token (its mouth). It ships as a separate package with its
 own version tags:
 
 ```bash
-pipx inject taut ./taut_summon-0.8.0-py3-none-any.whl
+pipx inject --include-apps taut-chat taut-summon
 ```
 
 With it installed, the package registers native `taut summon` and
@@ -197,14 +232,14 @@ exposes 20 explicit workspace-scoped tools plus the repeatable
 `taut://notifications/current` resource. The resource reports notification
 pointers only; reading it does not claim them or advance chat cursors.
 
-The package is implemented and wired into the GitHub-only release path, but
-this configuration does not mean a release has been published. After the
-matching core and MCP GitHub Releases exist, install their exact artifacts into
-one environment:
+The package is implemented and wired into the coordinated PyPI and immutable
+GitHub Release path, but this configuration does not mean a release has been
+published. Once the matching packages are published, install them into one
+environment:
 
 ```bash
-pipx install "git+https://github.com/VanL/taut.git@v0.8.0"
-pipx inject --include-apps taut ./taut_mcp-0.8.0-py3-none-any.whl
+pipx install taut-chat
+pipx inject --include-apps taut-chat taut-mcp
 taut-mcp
 ```
 
@@ -686,7 +721,7 @@ In order, each behind its own spec (this project is docs-first):
   agent-task control contract Weft pioneered (same verbs, same queue
   shapes), with a portable conformance suite both projects can run. The
   `codex` adapter is the named follow-on.
-- **TUI** (`taut[tui]`): panes for threads, live presence, zero new core
+- **TUI** (`taut-chat[tui]`): panes for threads, live presence, zero new core
   dependencies.
 - **Redis/Valkey backend.** Queues already work (`simplebroker-redis`).
   Taut's member/cursor state rides sidecar *tables* on SQL backends, so
@@ -726,7 +761,7 @@ Tests follow the house anti-mocking rule: the broker is never mocked,
 identity tests spawn real process chains, and CLI tests drive the real
 entry point.
 
-Release prep is local and GitHub-only:
+Release preparation is local; publication is tag-driven:
 
 ```bash
 uv run python bin/release.py --dry-run
@@ -735,17 +770,36 @@ uv run python bin/release.py pg --dry-run
 uv run python bin/release.py summon --dry-run
 uv run python bin/release.py mcp --dry-run
 uv run python bin/release.py all --dry-run
+uv run python bin/release.py all --check-repository-settings
 ```
 
 The helper updates version files, runs the release gates, manages root
 `vX.Y.Z` tags plus extension `taut_pg/vX.Y.Z`, `taut_summon/vX.Y.Z`, and
 `taut_mcp/vX.Y.Z` tags, syncs first-party dependency floors and retained locks,
-and pushes to GitHub. Every target runs the same universal local prechecks,
+checks both PyPI and GitHub publication state, and pushes to GitHub. Every
+target runs the same universal local prechecks,
 including the explicit non-PostgreSQL MCP lane. Live MCP PostgreSQL proof comes
 from the required canonical MCP workflow, not from skipped local cases. Tag
 pushes run the package's GitHub Actions release gate, which requires the exact
-commit's root, PostgreSQL, and MCP workflows before publishing the immutable
-root-workflow bundle. It does not rebuild and does not upload to PyPI.
+commit's root, PostgreSQL, and MCP workflows. The gate stages the exact
+root-workflow bundle as a draft GitHub Release, publishes those bytes through
+the package's top-level PyPI Trusted Publisher, verifies PyPI filenames and
+SHA-256 digests, and only then publishes the GitHub Release as immutable. It
+does not rebuild.
+
+Before the first real release, enable immutable GitHub Releases and create a
+`pypi` environment whose custom tag policies are exactly `v*`, `taut_pg/v*`,
+`taut_summon/v*`, and `taut_mcp/v*`. Configure four PyPI Trusted Publishers
+for repository `VanL/taut`, environment `pypi`, and the exact top-level
+workflow for each distribution:
+
+- `taut-chat`: `.github/workflows/release-gate.yml`
+- `taut-pg`: `.github/workflows/release-gate-pg.yml`
+- `taut-summon`: `.github/workflows/release-gate-summon.yml`
+- `taut-mcp`: `.github/workflows/release-gate-mcp.yml`
+
+The settings check verifies the GitHub half. PyPI publisher configuration is
+operator-owned and must be checked in PyPI before pushing release tags.
 
 ## License
 

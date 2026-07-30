@@ -108,15 +108,22 @@ consuming or mutating call.
 
 ## Install and Run
 
-The repository publishes `taut-mcp` through its GitHub-only release path;
-configuring that path does not publish a release. Core Taut and the MCP
-extension must be installed into the same environment. For a release wheel:
+The extension distribution remains `taut-mcp`; its core dependency is the
+`taut-chat` distribution, which still provides `import taut` and the `taut`
+command. The repository's coordinated PyPI and immutable GitHub Release path
+is configured, but configuring it does not publish a release. Once the first
+coordinated PyPI version is published:
 
 ```bash
-pipx install "git+https://github.com/VanL/taut.git@v0.8.0"
-pipx inject --include-apps taut ./taut_mcp-0.8.0-py3-none-any.whl
+pipx install taut-chat
+pipx inject --include-apps taut-chat taut-mcp
 taut-mcp
 ```
+
+The tag gate reuses the exact wheel and sdist built by canonical Test. It
+stages them in a draft GitHub Release, publishes them through the `taut-mcp`
+top-level PyPI Trusted Publisher, verifies filenames and SHA-256 digests, and
+only then publishes the GitHub Release as immutable.
 
 From this checkout:
 

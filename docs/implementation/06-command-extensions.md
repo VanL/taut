@@ -56,7 +56,7 @@ the active Python environment:
 |---|---|---|
 | Core-owned built-in in `taut/commands/` | Static `BUILTIN_SPECS` | Present in the core source/package |
 | First-party extension in this monorepo | Installed `taut.commands` entry point | Extension installed, including editable installs |
-| Separately distributed third-party extension | Installed `taut.commands` entry point | Wheel installed into the same interpreter environment as `taut` |
+| Separately distributed third-party extension | Installed `taut.commands` entry point | Wheel installed into the same interpreter environment as core distribution `taut-chat` |
 
 Importability alone is not registration. A sibling source directory that is
 not installed contributes no commands. This matters for `pipx`: the extension
@@ -109,20 +109,23 @@ storage client, driver, provider adapters, PTY code, or start any work.
 
 Each entry-point key must equal `CommandSpec.name`, and each command is one
 entry point. The distribution name and version come from installed metadata
-and become diagnostic provenance. For reserved first-party names, the
-normalized distribution name is also the ownership selector. It is not an
-authentication mechanism; installed command code is already trusted in-process.
+and become diagnostic provenance. Static built-ins report normalized owner
+`taut-chat`, even though their import package and console command remain
+`taut`. For reserved first-party names, the normalized extension distribution
+name is also the ownership selector. It is not an authentication mechanism;
+installed command code is already trusted in-process.
 The manifest and implementation modules must both be included in the built
 wheel; a source test that imports them does not prove packaging. A separately
-packaged extension must declare a `taut` dependency floor that contains the
-command-interface version it uses. Version 1 first ships in Taut 0.6.0.
+packaged extension must declare a `taut-chat` dependency floor that contains
+the command-interface version it uses. Runtime imports still use `taut`.
+Version 1 first ships in Taut 0.6.0.
 
 A minimal extension package therefore contains three connected declarations:
 
 ```toml
 # pyproject.toml
 [project]
-dependencies = ["taut>=0.6.0"]
+dependencies = ["taut-chat>=0.6.0"]
 
 [project.entry-points."taut.commands"]
 review = "review_extension.manifest:review"
@@ -246,12 +249,10 @@ are reserved first-party slots. A unique valid entry point from the normalized
 the first-party path. Broken or duplicate official claims fail loudly and do
 not fall back to older code.
 
-Core 0.6.0 retains `taut/commands/_summon_compat.py` only for paired rollout
-with Summon 0.5.4. When Summon 0.6.0 is installed, its entry points win and the
-bridge does not execute. Remove the bridge only in a later paired release when
-0.6.0 is the immediately previous supported Summon, both 0.6.0 entry points
-remain present, and artifact policy no longer promises 0.5.4 compatibility.
-The bridge must not grow into a generic fallback mechanism.
+Core retains `taut/commands/_summon_compat.py` only as the absent-extension
+install-hint path. It does not import or delegate to an older Summon CLI:
+historical Summon wheels require distribution `taut`, which `taut-chat`
+cannot satisfy. When current Summon is installed, its entry points win.
 
 There are two cached registry paths in CLI dispatch. `taut --version` uses
 neither. Direct execution of a known core built-in uses the static snapshot and
@@ -341,7 +342,7 @@ specification. Adding them here would be speculative coupling.
 | Root/global splitting, lazy factory load, cleanup | `taut/commands/_dispatch.py` |
 | Built-in command adapters and renderers | `taut/commands/` |
 | Maintained documentation command claims | `tests/test_cli_claims.py` and `bin/check-cli-claims` |
-| Temporary Summon 0.5.4 bridge | `taut/commands/_summon_compat.py` |
+| Absent-Summon install hint | `taut/commands/_summon_compat.py` |
 | Native Summon manifests/adapters | `extensions/taut_summon/taut_summon/command_manifest.py` and `commands/` |
 | Reusable Summon operations | `extensions/taut_summon/taut_summon/controller.py`, `models.py`, and `interaction.py` |
 | Fresh-wheel compatibility | `bin/check-core-summon-wheel-matrix.py` and `bin/build-and-check-release-wheels.py` |
@@ -387,10 +388,11 @@ without paying for all ten OS/Python combinations.
 
 `bin/build-and-check-release-wheels.py` remains the build-owning entry point for
 local release checks. Canonical CI may pass one explicit core wheel and one
-explicit Summon wheel that it just built; paired arguments are required, and
-the historical compatibility wheels and all six installed-wheel cases still
-run. This avoids rebuilding current artifacts without weakening the historical
-matrix.
+explicit Summon wheel that it just built; paired arguments are required. The
+matrix exercises current `taut-chat`/Summon artifacts and records a historical
+Summon wheel's `Requires-Dist: taut` metadata without pretending that Python
+packaging aliases it to `taut-chat`. This avoids rebuilding current artifacts
+without hiding the distribution-rename boundary.
 
 The principal firing tests are:
 
@@ -423,12 +425,13 @@ For a new core built-in:
 For a new installed extension command:
 
 1. Put domain behavior behind the extension's typed public API.
-2. Declare a compatible `taut` dependency floor, one `taut.commands` entry
+2. Declare a compatible `taut-chat` dependency floor, one `taut.commands` entry
    point per verb, and matching lightweight `CommandSpec` objects.
 3. Write the failing manifest/package contract, then add zero-argument
    factories and thin adapters. Ensure every target module is included in the
    built wheel. Use `taut.escape_terminal_text` for human text and raise the
-   package's `taut` floor to the first version that exports every helper used.
+   package's `taut-chat` floor to the first version that exports every helper
+   used.
 4. Test real domain state and subprocess behavior. Do not replace broker,
    storage, or CLI execution with mocks.
 5. Build and install the wheel into a checkout-free environment. Test
@@ -446,6 +449,7 @@ product need with its own compatibility plan.
 
 ## Related Plan
 
+- `docs/plans/2026-07-29-taut-chat-pypi-publication-plan.md`
 - `docs/plans/2026-07-28-channel-topics-plan.md`
 - `docs/plans/2026-07-28-direct-message-navigation-plan.md`
 - `docs/plans/2026-07-14-terminal-output-safety-plan.md`

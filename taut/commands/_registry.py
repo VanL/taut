@@ -65,7 +65,7 @@ class CommandRegistry:
             RegisteredCommand(
                 name=spec.name,
                 spec=spec,
-                distribution_name="taut",
+                distribution_name="taut-chat",
                 distribution_version="built-in",
                 builtin=True,
             )

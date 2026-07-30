@@ -1,0 +1,84 @@
+name: Finalize Release
+
+on:
+  workflow_call:
+    inputs:
+      package_dir:
+        description: Package directory whose manifest verifies the artifact.
+        required: true
+        type: string
+      tag_name:
+        description: Release tag whose draft should become public.
+        required: true
+        type: string
+      release_ref:
+        description: Exact Git ref to check out for finalization.
+        required: true
+        type: string
+      expected_tag_commit:
+        description: Commit SHA the release tag must still reference.
+        required: true
+        type: string
+      carried_artifact_id:
+        description: Immutable same-run artifact id for the verified inner bundle.
+        required: true
+        type: string
+
+jobs:
+  github-release:
+    name: Publish immutable GitHub Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: write
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        timeout-minutes: 5
+        with:
+          ref: ${{ inputs.release_ref }}
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        timeout-minutes: 5
+        with:
+          python-version: "3.14"
+
+      - name: Verify checked out commit matches tested release commit
+        timeout-minutes: 2
+        run: |
+          test "$(git rev-parse HEAD)" = "${{ inputs.expected_tag_commit }}"
+
+      - name: Download the carried verified bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        timeout-minutes: 5
+        with:
+          artifact-ids: ${{ inputs.carried_artifact_id }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.run_id }}
+          path: bundle/
+          merge-multiple: true
+
+      - name: Reverify inner provenance and distribution bytes
+        timeout-minutes: 2
+        run: |
+          python bin/release-artifact.py verify \
+            --package-dir "${{ inputs.package_dir }}" \
+            --bundle-dir bundle \
+            --commit "${{ inputs.expected_tag_commit }}" \
+            --tag-name "${{ inputs.tag_name }}" \
+            --output-dir dist
+
+      - name: Verify PyPI and publish the exact immutable release
+        timeout-minutes: 5
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python .github/scripts/release_publication.py finalize \
+            --repo "${GITHUB_REPOSITORY}" \
+            --tag "${{ inputs.tag_name }}" \
+            --expected-sha "${{ inputs.expected_tag_commit }}" \
+            --manifest bundle/release-manifest.json \
+            --dist-dir dist

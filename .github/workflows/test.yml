@@ -560,7 +560,7 @@ jobs:
         if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
         timeout-minutes: 5
         run: |
-          python bin/release-artifact.py create --package-dir . --dist-dir release-dist/core --output-dir release-bundles/taut --commit "${{ github.sha }}"
+          python bin/release-artifact.py create --package-dir . --dist-dir release-dist/core --output-dir release-bundles/taut-chat --commit "${{ github.sha }}"
           python bin/release-artifact.py create --package-dir extensions/taut_summon --dist-dir release-dist/summon --output-dir release-bundles/taut-summon --commit "${{ github.sha }}"
           python bin/release-artifact.py create --package-dir extensions/taut_pg --dist-dir release-dist/pg --output-dir release-bundles/taut-pg --commit "${{ github.sha }}"
           python bin/release-artifact.py create --package-dir extensions/taut_mcp --dist-dir release-dist/mcp --output-dir release-bundles/taut-mcp --commit "${{ github.sha }}"
@@ -569,8 +569,8 @@ jobs:
         if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-taut-attempt-${{ github.run_attempt }}
-          path: release-bundles/taut/
+          name: release-taut-chat-attempt-${{ github.run_attempt }}
+          path: release-bundles/taut-chat/
           if-no-files-found: error
           include-hidden-files: true
 
