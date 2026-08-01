@@ -342,16 +342,16 @@ wheels = [
 
 [[package]]
 name = "simplebroker"
-version = "5.6.1"
+version = "6.0.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/29/a4/e95c3af506f8c559c11ab607cb03451acfae03930f1cafe4d60d5a36cd94/simplebroker-5.6.1.tar.gz", hash = "sha256:7a209fd6a2c22d4f9cf1bc973754e78ae0918389fca2d90b52f3e289124e5a5a", size = 219181, upload-time = "2026-07-28T17:28:12.275Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/5a/91/ea3cd29f05f07029bb7f1d5a901fee8f8c5021f25b840939d0acb16e22fd/simplebroker-6.0.0.tar.gz", hash = "sha256:530874549f6a7895b34c1d87d00b4dabcee616014ecc65d828862aa9e5e8cfd1", size = 224033, upload-time = "2026-07-31T20:38:13.329Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8b/e9/aa792ae27ef76da5c758e5466aa81625b11bd8ea48abe4ecb56345c63186/simplebroker-5.6.1-py3-none-any.whl", hash = "sha256:74a943e87f2f7d1b94bd2b2114206a9c29ec30ef0356231bf9324c8cba113b8d", size = 240480, upload-time = "2026-07-28T17:28:10.663Z" },
+    { url = "https://files.pythonhosted.org/packages/32/0b/3b35871bcdae3611a046daa306baaed8a7633efcd59b42f517fec73235f0/simplebroker-6.0.0-py3-none-any.whl", hash = "sha256:c0018dfa457b42558f682c7d5c160c4fa0bca66d70fd107ce3f953c008180a0d", size = 247363, upload-time = "2026-07-31T20:38:11.696Z" },
 ]
 
 [[package]]
 name = "taut-chat"
-version = "0.8.0"
+version = "0.8.1"
 source = { editable = "../../" }
 dependencies = [
     { name = "psutil" },
@@ -370,8 +370,8 @@ requires-dist = [
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.0" },
     { name = "pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
-    { name = "simplebroker", specifier = ">=5.6.1" },
-    { name = "simplebroker-pg", marker = "extra == 'dev'", specifier = ">=3.3.1" },
+    { name = "simplebroker", specifier = ">=6.0.0" },
+    { name = "simplebroker-pg", marker = "extra == 'dev'", specifier = ">=3.5.0" },
     { name = "taut-summon", marker = "extra == 'dev'", editable = "." },
     { name = "types-psutil", marker = "extra == 'dev'", specifier = ">=6.0" },
 ]
@@ -379,7 +379,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "taut-summon"
-version = "0.8.0"
+version = "0.8.1"
 source = { editable = "." }
 dependencies = [
     { name = "taut-chat" },

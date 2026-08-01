@@ -341,7 +341,7 @@ an accident. Two consequences are binding:
   CLI/client work, persistent owned handles for long-lived actors, and
   `close()` at owned lifetime end.
 
-  The `simplebroker>=5.6.1` floor is load-bearing. Version 5.2.0 supplies the
+  The `simplebroker>=6.0.0` floor is load-bearing. Version 5.2.0 supplies the
   reference ownership model, 5.2.2 first passed Taut's persistent-owner
   process/control proof, 5.3.0 supplies the public live activity-waiter
   replacement contract, 5.3.1 makes `Queue.write()` return the exact committed
@@ -357,7 +357,13 @@ an accident. Two consequences are binding:
   every unique name including names with no retained row, or writes none. Taut
   uses that mode exactly once for reaction fanout. It does not preflight queue
   existence, treat the broker count as a delivery receipt, or access private
-  broker state. Persistent Queue handles for one
+  broker state. Version 6.0.0 is the supported compatibility boundary: its
+  command-layer options are keyword-only, its project-config discovery helpers
+  are public through `simplebroker.ext`, and `simplebroker-pg>=3.5.0` requires
+  that core line. Taut uses neither the SimpleBroker command layer nor the newly
+  re-exported project-config helpers; it continues to use the root queue/target
+  API and the existing `simplebroker.ext` embedder surfaces. Persistent Queue
+  handles for one
   resolved target share a process-local broker session; each driving thread
   receives its own thread-local backend core. Releasing an ordinary operation
   ends only its active-operation lease; it does not recycle the owning thread's
@@ -1194,10 +1200,10 @@ through read-only identity resolution. It does not update activity, record an
 identity claim, inspect unread state, or create membership. Long-lived
 extensions use it to reconcile their own thread-scoped resources.
 
-Core runtime dependencies: exactly `simplebroker>=5.6.1` and `psutil`. The
-optional `taut-pg` extension adds `simplebroker-pg` and its driver dependencies
-in the same environment as Taut. Python ≥ 3.11. The CLI uses argparse, not a CLI
-framework.
+Core runtime dependencies: exactly `simplebroker>=6.0.0` and `psutil`. The
+optional `taut-pg` extension adds `simplebroker-pg>=3.5.0` and its driver
+dependencies in the same environment as Taut. Python ≥ 3.11. The CLI uses
+argparse, not a CLI framework.
 
 `taut.commands` is the typed extension-author surface for command manifests,
 adapters, the command parser, command context, and command errors
@@ -2273,6 +2279,8 @@ installing `taut-chat`.
 
 ## Related Plans
 
+- `docs/plans/2026-07-31-simplebroker-6-reconciliation-plan.md` —
+  SimpleBroker 6.0.0 and SimpleBroker-PG 3.5.0 compatibility reconciliation.
 - `docs/plans/2026-07-28-channel-topics-plan.md` — top-level channel topics,
   atomic metadata merge, reserved `channel` CLI namespace, and coordinated
   Python/MCP contracts; close/reopen remains possible future work.

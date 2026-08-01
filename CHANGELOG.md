@@ -1,7 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.8.1 - 2026-07-31
 
+- Raised the supported dependency floors to SimpleBroker 6.0.0 and
+  SimpleBroker-PG 3.5.0. Taut does not call the keyword-only
+  `simplebroker.commands` surfaces changed in 6.0.0, and its existing advanced
+  imports already use the public `simplebroker.ext` facade.
 - Changed the public core distribution name from `taut` to `taut-chat` while
   preserving the Taut product name, `taut` import package, `taut` console
   command, existing extension distribution names, and all four release-tag

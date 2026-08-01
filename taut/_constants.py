@@ -15,7 +15,7 @@ import re
 from collections.abc import Mapping
 from typing import Any, Final
 
-__version__: Final[str] = "0.8.0"
+__version__: Final[str] = "0.8.1"
 
 DEFAULT_DB_NAME: Final[str] = ".taut.db"
 PROJECT_CONFIG_NAME: Final[str] = ".taut.toml"

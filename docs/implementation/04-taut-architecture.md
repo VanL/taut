@@ -69,13 +69,16 @@ filesystem error surfaces. Core rejects those paths before constructing
 `Queue`; it does not broaden this into a portable filename policy, so POSIX
 acceptance and non-SQLite targets remain unchanged.
 
-The load-bearing supported SimpleBroker floor is 5.6.1. In addition to
-interruptible watcher bootstrap, corrected runner cleanup, and initialized
-timestamp-conflict metrics, it provides atomic exact-name
-`broadcast(..., queue_names=..., create_missing=True)`. Taut's reactor treats
-SimpleBroker's `StopWatching` as terminal handler control flow even when it
-arrives before Taut's own stop flag becomes visible. The other core runtime
-dependency is `psutil`.
+The load-bearing supported SimpleBroker floor is 6.0.0, aligned with
+`simplebroker-pg>=3.5.0`. Version 5.6.1 remains the origin of atomic exact-name
+`broadcast(..., queue_names=..., create_missing=True)`, in addition to the
+earlier interruptible watcher bootstrap, corrected runner cleanup, and
+initialized timestamp-conflict metrics. Taut does not use
+`simplebroker.commands` or the project-config helpers newly re-exported by
+`simplebroker.ext` in 6.0.0; its existing advanced imports already use that
+public facade. Taut's reactor treats SimpleBroker's `StopWatching` as terminal
+handler control flow even when it arrives before Taut's own stop flag becomes
+visible. The other core runtime dependency is `psutil`.
 SimpleBroker owns the storage and queue substrate; `psutil` is scoped to
 cross-platform process metadata for identity capture so taut does not rely on
 fragile platform-specific argv parsing for the core recognition path.

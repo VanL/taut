@@ -128,7 +128,7 @@ uv add taut-chat taut-pg taut-summon taut-mcp
 python -m pip install taut-chat taut-pg taut-summon taut-mcp
 ```
 
-Requirements: Python 3.11+. Runtime dependencies are `simplebroker>=5.6.1`
+Requirements: Python 3.11+. Runtime dependencies are `simplebroker>=6.0.0`
 (which itself has none) and `psutil` for cross-platform process metadata.
 
 ### Postgres Extension
@@ -703,7 +703,7 @@ security model.
 <summary><strong>Why argparse and a small dependency set?</strong></summary>
 
 Taut follows SimpleBroker's discipline: the install should be boring.
-Runtime dependencies are exactly `simplebroker>=5.6.1` and `psutil`. The CLI is
+Runtime dependencies are exactly `simplebroker>=6.0.0` and `psutil`. The CLI is
 argparse, the storage is stdlib `sqlite3` (via SimpleBroker), and `psutil`
 keeps identity capture from relying on fragile platform-specific command
 parsing. The planned TUI ships as an optional extra so the core dependency
@@ -751,10 +751,10 @@ uv run --extra dev mypy taut tests bin/release.py extensions/taut_pg/taut_pg ext
 # and one mypy invocation cannot hold two modules named `conftest`
 uv run --extra dev mypy taut tests extensions/taut_summon/taut_summon extensions/taut_summon/tests --config-file pyproject.toml
 uv run --project extensions/taut_mcp --extra dev mypy extensions/taut_mcp/taut_mcp extensions/taut_mcp/tests --config-file extensions/taut_mcp/pyproject.toml
-uv build
-uv build extensions/taut_pg
-uv build extensions/taut_summon
-uv build extensions/taut_mcp
+uv build --out-dir dist .
+uv build --out-dir extensions/taut_pg/dist extensions/taut_pg
+uv build --out-dir extensions/taut_summon/dist extensions/taut_summon
+uv build --out-dir extensions/taut_mcp/dist extensions/taut_mcp
 ```
 
 Tests follow the house anti-mocking rule: the broker is never mocked,

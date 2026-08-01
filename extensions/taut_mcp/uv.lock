@@ -1079,25 +1079,25 @@ wheels = [
 
 [[package]]
 name = "simplebroker"
-version = "5.6.1"
+version = "6.0.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/29/a4/e95c3af506f8c559c11ab607cb03451acfae03930f1cafe4d60d5a36cd94/simplebroker-5.6.1.tar.gz", hash = "sha256:7a209fd6a2c22d4f9cf1bc973754e78ae0918389fca2d90b52f3e289124e5a5a", size = 219181, upload-time = "2026-07-28T17:28:12.275Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/5a/91/ea3cd29f05f07029bb7f1d5a901fee8f8c5021f25b840939d0acb16e22fd/simplebroker-6.0.0.tar.gz", hash = "sha256:530874549f6a7895b34c1d87d00b4dabcee616014ecc65d828862aa9e5e8cfd1", size = 224033, upload-time = "2026-07-31T20:38:13.329Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8b/e9/aa792ae27ef76da5c758e5466aa81625b11bd8ea48abe4ecb56345c63186/simplebroker-5.6.1-py3-none-any.whl", hash = "sha256:74a943e87f2f7d1b94bd2b2114206a9c29ec30ef0356231bf9324c8cba113b8d", size = 240480, upload-time = "2026-07-28T17:28:10.663Z" },
+    { url = "https://files.pythonhosted.org/packages/32/0b/3b35871bcdae3611a046daa306baaed8a7633efcd59b42f517fec73235f0/simplebroker-6.0.0-py3-none-any.whl", hash = "sha256:c0018dfa457b42558f682c7d5c160c4fa0bca66d70fd107ce3f953c008180a0d", size = 247363, upload-time = "2026-07-31T20:38:11.696Z" },
 ]
 
 [[package]]
 name = "simplebroker-pg"
-version = "3.3.1"
+version = "3.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "psycopg", extra = ["binary"] },
     { name = "psycopg-pool" },
     { name = "simplebroker" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/3b/89/535799e736b77b77b6b056e53a02a3475a9469fe5c194e866ebe9fb887b7/simplebroker_pg-3.3.1.tar.gz", hash = "sha256:ae439512bf320f8e10687198471c0cd31d649a5d8910ce9ae0fac3969407be5c", size = 21039, upload-time = "2026-07-28T17:27:55.962Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9e/98/79e01b7e85f47bf55a04e82a88b6264d7f82ead1471b08ff91fb63300360/simplebroker_pg-3.5.0.tar.gz", hash = "sha256:7a5240bf04c09d3ced19585f430d8fb02abdf75e27c5db3e61872c6cb082ce32", size = 21104, upload-time = "2026-07-31T20:38:23.4Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/2d/05/6377dad789805d10a02a5649f068cb5d3cc102f4814e425df7eb4a9b4789/simplebroker_pg-3.3.1-py3-none-any.whl", hash = "sha256:e9e0eb450b4f63852ce40e79442a25ee22710483f54a37427b2ba49ed6e5e5d5", size = 27228, upload-time = "2026-07-28T17:27:54.888Z" },
+    { url = "https://files.pythonhosted.org/packages/4f/33/fbf7f018118c89e42560443791a9a17c5db2eb3fe3f43285ab2b6bb1fc35/simplebroker_pg-3.5.0-py3-none-any.whl", hash = "sha256:f7cd77728ab6c95190a9abca1287f4f1c761defdcc19b84f878c04e3737cab3d", size = 27319, upload-time = "2026-07-31T20:38:22.085Z" },
 ]
 
 [[package]]
@@ -1128,7 +1128,7 @@ wheels = [
 
 [[package]]
 name = "taut-chat"
-version = "0.8.0"
+version = "0.8.1"
 source = { editable = "../../" }
 dependencies = [
     { name = "psutil" },
@@ -1147,8 +1147,8 @@ requires-dist = [
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.0" },
     { name = "pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
-    { name = "simplebroker", specifier = ">=5.6.1" },
-    { name = "simplebroker-pg", marker = "extra == 'dev'", specifier = ">=3.3.1" },
+    { name = "simplebroker", specifier = ">=6.0.0" },
+    { name = "simplebroker-pg", marker = "extra == 'dev'", specifier = ">=3.5.0" },
     { name = "taut-summon", marker = "extra == 'dev'", editable = "../taut_summon" },
     { name = "types-psutil", marker = "extra == 'dev'", specifier = ">=6.0" },
 ]
@@ -1156,7 +1156,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "taut-mcp"
-version = "0.8.0"
+version = "0.8.1"
 source = { editable = "." }
 dependencies = [
     { name = "jsonschema" },
@@ -1194,7 +1194,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "taut-pg"
-version = "0.8.0"
+version = "0.8.1"
 source = { editable = "../taut_pg" }
 dependencies = [
     { name = "simplebroker-pg" },
@@ -1208,7 +1208,7 @@ requires-dist = [
     { name = "pytest-timeout", marker = "extra == 'dev'", specifier = ">=2.4.0" },
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
-    { name = "simplebroker-pg", specifier = ">=3.3.1" },
+    { name = "simplebroker-pg", specifier = ">=3.5.0" },
     { name = "taut-chat", editable = "../../" },
 ]
 provides-extras = ["dev"]

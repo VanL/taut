@@ -37,10 +37,12 @@ handles or per-turn cleanup. SimpleBroker 5.2.2 was the first release with the
 required persistent-session visibility behavior; 5.3.0 added the live waiter
 replacement required by the shared core reactor; 5.3.2 made cancellation
 interrupt locked watcher bootstrap; and 5.3.3 added the cleanup and metric
-properties Summon requires. The repository-wide supported floor is now 5.6.1
-for core reaction fanout; Summon still relies on those earlier guarantees. The 5.2.0 reactor
-example remains the ownership-model provenance, not the supported runtime
-floor.
+properties Summon requires. Version 5.6.1 added core reaction fanout; the
+repository-wide supported floor is now 6.0.0, aligned with
+`simplebroker-pg>=3.5.0`. Summon does not use the SimpleBroker command layer
+whose option binding changed in 6.0.0 and still relies on the earlier reactor
+guarantees. The 5.2.0 reactor example remains the ownership-model provenance,
+not the supported runtime floor.
 
 ## Governing Spec References
 
@@ -523,7 +525,7 @@ or inherited wait template. It does not classify
 `malformed summon session row` errors as transient in Taut. If SimpleBroker
 still leaks a lock/busy contention failure after its own budget, the fix belongs
 in SimpleBroker or the dependency selection, not in a second retry wrapper.
-SimpleBroker 5.6.1 is the minimum supported runtime. Its reference reactor and
+SimpleBroker 6.0.0 is the minimum supported runtime. Its reference reactor and
 persistent session design provide one process-local session with
 owner-thread-local cores; cancellation can interrupt watcher bootstrap while
 PhaseLock or SQLite connection setup is blocked; runner cleanup does not infer

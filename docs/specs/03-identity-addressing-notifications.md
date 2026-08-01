@@ -681,16 +681,17 @@ normalized from `rename` without an alias.
 Taut must use a public SimpleBroker queue-rename API for broker queue renames.
 Taut must not update SimpleBroker-owned message tables directly.
 
-Taut requires `simplebroker>=5.6.1` and `taut-pg` requires
-`simplebroker-pg>=3.3.1`. This compatible pair supplies atomic write ids, the
-rename-capable backend handshake, safe persistent-reactor ownership, public
-live activity-waiter replacement, and interruptible watcher bootstrap during
-locked PhaseLock and SQLite connection setup. It also includes corrected
-runner cleanup and initialized timestamp-conflict metrics for concurrent first
-writes. The
-implementation must use `simplebroker.open_broker(...).rename_queue(...)`
-against Taut's resolved broker target; it must not assume `Queue.rename()` or
-a module-level `simplebroker.rename_queue()` exists.
+Taut requires `simplebroker>=6.0.0` and `taut-pg` requires
+`simplebroker-pg>=3.5.0`. This compatible pair preserves the atomic write ids,
+rename-capable backend handshake, persistent-reactor ownership, live
+activity-waiter replacement, interruptible watcher bootstrap, corrected
+runner cleanup, and timestamp-conflict metrics on which rename relies. The
+6.0.0 command-layer binding change does not affect rename because Taut uses
+`simplebroker.open_broker(...).rename_queue(...)`, not
+`simplebroker.commands`. The implementation must use
+`simplebroker.open_broker(...).rename_queue(...)` against Taut's resolved
+broker target; it must not assume `Queue.rename()` or a module-level
+`simplebroker.rename_queue()` exists.
 
 ### [IAN-8.3] Rename failure handling
 
@@ -859,6 +860,8 @@ Required proofs:
 
 ## Related Plans
 
+- `docs/plans/2026-07-31-simplebroker-6-reconciliation-plan.md` —
+  SimpleBroker 6.0.0 and SimpleBroker-PG 3.5.0 compatibility reconciliation.
 - `docs/plans/2026-07-28-channel-topics-plan.md` — per-channel topic and
   rename-marker serialization, metadata preservation, and cross-backend race
   proof.
