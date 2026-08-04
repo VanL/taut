@@ -80,6 +80,26 @@ reply shapes, and excludes request/protocol keys. STOP still requires both a
 correlated ACK and evidence-relative ledger release before returning a
 `StopResult`.
 
+The foreground controller defaults to rich-host ownership:
+`install_signal_handlers=False` does not inspect or change process signal
+state. The native command adapter opts in explicitly because it owns a
+short-lived foreground CLI process. Opt-in is restricted to the Python main
+thread. The driver snapshots the exact prior `SIGINT` and `SIGTERM`
+dispositions, rolls back a partial installation before lifecycle work starts,
+and restores every installed disposition in `finally`, including
+`BaseException` exits. A restoration error becomes the public operation error
+only when no earlier failure exists; otherwise the driver logs it as secondary
+cleanup evidence and preserves the primary failure.
+
+Rich-host identity is object-local rather than process-global. Driver and
+control-loop `TautClient` instances pass
+`inherit_environment_identity=False` and select identity only through their
+explicit name, token, or capture arguments. Each provider adapter copies the
+host environment, removes inherited `TAUT_AS` and `TAUT_TOKEN` from that local
+copy, then applies the summoned member's explicit environment overlay. This
+keeps the host's identity usable during a foreground run without leaking it
+into the provider child or mutating `os.environ`.
+
 `cli.py` owns only argparse, human rendering, database-path suffixes, and the
 exit mapping (`NothingSummoned` to 2, other operation errors to 1). It imports
 the controller inside the selected command function, after parsing. The
@@ -108,9 +128,10 @@ The ears are an injected stream. `extensions/taut_summon/taut_summon/_driver.py`
 watches, over the public `TautClient.watch(...)` surface, every thread the
 member has joined plus its notification inbox, and pushes each message into
 the child's stdin as a user-role event ([SUM-5]). The mouth is credential,
-not code: the child environment carries `TAUT_TOKEN` (the member's
-continuity token, [SUM-6]) and, on path-addressed backends, `TAUT_DB`; the
-agent runs `taut say ...` like a human. Those CLI calls are transient broker
+not code: after adapter-side removal of inherited host selectors, the child
+environment carries the explicit `TAUT_TOKEN` (the member's continuity token,
+[SUM-6]) and, on path-addressed backends, `TAUT_DB`; the agent runs
+`taut say ...` like a human. Those CLI calls are transient broker
 clients. Config-backed targets such as Postgres are rediscovered from the
 child's inherited working directory; their DSN is never placed in `TAUT_DB`.
 Prompts and diagnostics use `BrokerTarget.display_target`, so any credentials
@@ -658,13 +679,13 @@ require a separately drained subprocess pipe.
 | [SUM-3], distribution identity, `taut-chat` floor, command registration, name/provider resolution, CLI help, database discovery, and exit classes | `extensions/taut_summon/pyproject.toml`, `extensions/taut_summon/taut_summon/command_manifest.py`, `extensions/taut_summon/taut_summon/commands/`, `extensions/taut_summon/taut_summon/controller.py`, `extensions/taut_summon/taut_summon/cli.py` | `extensions/taut_summon/tests/test_controller.py`, `extensions/taut_summon/tests/test_summon_cli.py` parser-inventory, help-phrase, grammar, discovery, and exit-class tests; current installed-wheel ownership/parity/floor cases plus the historical `Requires-Dist: taut` diagnostic in `tests/test_core_summon_wheel_matrix.py`; real root adapter lifecycle in `extensions/taut_summon/tests/test_driver.py` |
 | [SUM-4], bootstrap, identity, presence | `extensions/taut_summon/taut_summon/_driver.py`, `extensions/taut_summon/taut_summon/_state.py` | `extensions/taut_summon/tests/test_driver.py` |
 | [SUM-5], ears injection contract | `extensions/taut_summon/taut_summon/_driver.py` | `extensions/taut_summon/tests/test_driver.py`, `extensions/taut_summon/tests/test_conformance.py` |
-| [SUM-6], mouth CLI contract | `extensions/taut_summon/taut_summon/_driver.py`, `extensions/taut_summon/taut_summon/_persona.py` | `extensions/taut_summon/tests/test_driver.py`, including real-process blank-then-visible and nonblank-post-failure cases; `extensions/taut_summon/tests/test_persona.py`; installed paired exception proof in `tests/test_core_summon_wheel_matrix.py` |
+| [SUM-6], mouth CLI contract | `extensions/taut_summon/taut_summon/_driver.py`, `extensions/taut_summon/taut_summon/_persona.py`, `extensions/taut_summon/taut_summon/_scripted.py`, `extensions/taut_summon/taut_summon/_claude.py`, `extensions/taut_summon/taut_summon/_pty.py` | `extensions/taut_summon/tests/test_driver.py`, including real-process blank-then-visible and nonblank-post-failure cases; real child identity cases in each adapter suite; `extensions/taut_summon/tests/test_persona.py`; installed paired exception proof in `tests/test_core_summon_wheel_matrix.py` |
 | [SUM-7.1], [SUM-7.2], adapters | `extensions/taut_summon/taut_summon/_adapter.py`, `extensions/taut_summon/taut_summon/_stream.py`, `extensions/taut_summon/taut_summon/_pty.py`, `extensions/taut_summon/taut_summon/_scripted.py`, `extensions/taut_summon/taut_summon/_claude.py` | `extensions/taut_summon/tests/test_scripted_adapter.py`, `extensions/taut_summon/tests/test_claude_adapter.py`, `extensions/taut_summon/tests/test_pty_adapter.py`, including reusable interrupt, one-signal terminal request, reentry, and direct/concurrent finalization |
 | [SUM-7.4], PTY shell adapter | `extensions/taut_summon/taut_summon/_pty.py`, `extensions/taut_summon/taut_summon/_driver.py` | `extensions/taut_summon/tests/test_pty_adapter.py`, PTY cases in `extensions/taut_summon/tests/test_driver.py`, `extensions/taut_summon/tests/test_interaction.py`, `extensions/taut_summon/tests/test_live_harness.py` |
 | [SUM-8], session ledger and guard | `extensions/taut_summon/taut_summon/_state.py` | `extensions/taut_summon/tests/test_state.py`, `extensions/taut_summon/tests/test_driver.py` |
 | [SUM-9], [SUM-10], [SUM-11], control lifecycle, backstop, recovery, and fatal supervision | `extensions/taut_summon/taut_summon/_control.py::_ControlReactor`, `extensions/taut_summon/taut_summon/_control.py::ControlLoop`, `extensions/taut_summon/taut_summon/_driver.py::SummonDriver._run_control_loop`, `_report_control_failure`, `_raise_if_control_failed` | `extensions/taut_summon/tests/test_control.py` fixed topology, ownership, native wake, inter-turn recovery, audit, partial-bundle, and close tests; `extensions/taut_summon/tests/test_driver.py` publication-race, request ordering, physical STOP signal-count, fatal-control, and PING cases |
 | [SUM-12], conformance | (all of the above), `bin/combine-coverage.py` | `extensions/taut_summon/tests/test_conformance.py`, `extensions/taut_summon/tests/test_driver.py` real child-boundary signal-count cases, `extensions/taut_summon/tests/test_live_harness.py`, `extensions/taut_summon/tests/test_live_local_llm.py`, `tests/test_combine_coverage.py`, `tests/test_github_workflows.py` |
-| [SUM-13], typed embedding and lazy host boundary | `extensions/taut_summon/taut_summon/__init__.py`, `extensions/taut_summon/taut_summon/models.py`, `extensions/taut_summon/taut_summon/controller.py`, `extensions/taut_summon/taut_summon/interaction.py`, `extensions/taut_summon/taut_summon/cli.py` | `extensions/taut_summon/tests/test_controller.py`, `extensions/taut_summon/tests/test_interaction.py`, controller-backed CLI and real-process driver cases |
+| [SUM-13], typed embedding and lazy host boundary | `extensions/taut_summon/taut_summon/__init__.py`, `extensions/taut_summon/taut_summon/models.py`, `extensions/taut_summon/taut_summon/controller.py`, `extensions/taut_summon/taut_summon/interaction.py`, `extensions/taut_summon/taut_summon/_driver.py`, `extensions/taut_summon/taut_summon/_control.py`, `extensions/taut_summon/taut_summon/commands/summon.py` | `extensions/taut_summon/tests/test_controller.py`, `extensions/taut_summon/tests/test_interaction.py` real environment and signal-boundary cases, `extensions/taut_summon/tests/test_summon_cli.py` explicit CLI opt-in, controller-backed CLI and real-process driver cases |
 
 ## Change Guidance
 

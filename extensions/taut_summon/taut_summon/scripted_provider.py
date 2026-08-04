@@ -332,6 +332,7 @@ def main() -> int:
         {
             "event": "start",
             "session": os.environ.get("TAUT_SUMMON_SESSION"),
+            "env_as": os.environ.get("TAUT_AS"),
             "env_token": os.environ.get("TAUT_TOKEN"),
             "env_db": os.environ.get("TAUT_DB"),
             "env_system_prompt": os.environ.get("TAUT_SUMMON_SYSTEM_PROMPT"),

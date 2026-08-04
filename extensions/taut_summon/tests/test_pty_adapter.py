@@ -179,6 +179,7 @@ def _spawn_fake(
     rows: int = 24,
     cols: int = 80,
     stall_s: float = 0.5,
+    env: dict[str, str] | None = None,
 ) -> tuple[PtyHandle, Path]:
     log = tmp_path / "fake-tui.jsonl"
     spec = PtySpec(
@@ -198,6 +199,7 @@ def _spawn_fake(
             "TAUT_FAKE_TUI_LOG": str(log),
             "TAUT_FAKE_TUI_ROWS": str(rows),
             "TAUT_FAKE_TUI_COLS": str(cols),
+            **(env or {}),
         },
     )
     assert isinstance(handle, PtyHandle)
@@ -271,6 +273,30 @@ def test_registry_maps_named_harnesses_to_pty_specs() -> None:
         assert adapter.emits_session_events is False
     with pytest.raises(UnknownAdapterError, match="known adapters"):
         get_adapter("code")
+
+
+def test_spawn_replaces_inherited_host_identity_in_real_pty_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TAUT_AS", "HostPersona")
+    monkeypatch.setenv("TAUT_TOKEN", "host-token")
+    handle, log = _spawn_fake(
+        tmp_path,
+        {"queries": False, "modes": False, "redraw": False},
+        env={"TAUT_TOKEN": "summoned-token"},
+    )
+    pump = EventPump(handle)
+    try:
+        start = _wait_for(log, "start")
+    finally:
+        handle.close()
+        pump.drain_until_exit(timeout=5.0)
+
+    assert start["env_as"] is None
+    assert start["env_token"] == "summoned-token"
+    assert os.environ["TAUT_AS"] == "HostPersona"
+    assert os.environ["TAUT_TOKEN"] == "host-token"
 
 
 def test_fake_tui_preserves_input_that_arrives_before_query_reply() -> None:

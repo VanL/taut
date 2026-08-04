@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import ast
 import dataclasses
 import inspect
 import json
 import os
 import select
+import signal
 import subprocess
 import sys
 import threading
@@ -28,6 +30,10 @@ class _TTYStream:
 
     def isatty(self) -> bool:
         return self._is_tty
+
+
+class _HostAbort(BaseException):
+    pass
 
 
 class _PtyHostInteraction:
@@ -247,8 +253,488 @@ def test_controller_foreground_run_requires_explicit_interaction() -> None:
 
     parameters = inspect.signature(SummonController.run_foreground).parameters
 
-    assert list(parameters) == ["self", "request", "interaction"]
+    assert list(parameters) == [
+        "self",
+        "request",
+        "interaction",
+        "install_signal_handlers",
+    ]
     assert parameters["interaction"].default is inspect.Parameter.empty
+    assert parameters["install_signal_handlers"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameters["install_signal_handlers"].default is False
+
+
+def test_controller_default_never_inspects_or_installs_signal_handlers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut_summon import ShellSummonInteraction, SummonController, SummonRequest
+    from taut_summon._driver import SummonDriver
+
+    monkeypatch.setattr(SummonDriver, "_run", lambda _driver: 0)
+
+    def unexpected_signal_access(*_args: object) -> None:
+        pytest.fail("rich-host default accessed process signal state")
+
+    monkeypatch.setattr(signal, "getsignal", unexpected_signal_access)
+    monkeypatch.setattr(signal, "signal", unexpected_signal_access)
+
+    SummonController().run_foreground(
+        SummonRequest(
+            name="scripted",
+            threads=("general",),
+            terminal=False,
+            persona=None,
+            system_prompt_file=None,
+            rate_limit=None,
+        ),
+        ShellSummonInteraction(),
+    )
+
+
+def test_controller_rejects_worker_thread_signal_opt_in_before_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut_summon import (
+        ShellSummonInteraction,
+        SummonController,
+        SummonOperationError,
+        SummonRequest,
+    )
+    from taut_summon._driver import SummonDriver
+
+    lifecycle_started = threading.Event()
+
+    def run_driver(_driver: SummonDriver) -> int:
+        lifecycle_started.set()
+        return 0
+
+    monkeypatch.setattr(SummonDriver, "_run", run_driver)
+    failures: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            SummonController().run_foreground(
+                SummonRequest(
+                    name="scripted",
+                    threads=("general",),
+                    terminal=False,
+                    persona=None,
+                    system_prompt_file=None,
+                    rate_limit=None,
+                ),
+                ShellSummonInteraction(),
+                install_signal_handlers=True,
+            )
+        except BaseException as exc:  # noqa: BLE001 - relayed to test owner
+            failures.append(exc)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    thread.join(timeout=5.0)
+
+    assert not thread.is_alive()
+    assert len(failures) == 1
+    assert isinstance(failures[0], SummonOperationError)
+    assert "main thread" in str(failures[0])
+    assert not lifecycle_started.is_set()
+
+
+@pytest.mark.parametrize("prior_kind", ["callable", "default", "ignore"])
+@pytest.mark.parametrize(
+    "exit_kind", ["clean", "translated", "exception", "base-exception"]
+)
+def test_controller_signal_opt_in_restores_exact_handlers(
+    monkeypatch: pytest.MonkeyPatch,
+    prior_kind: str,
+    exit_kind: str,
+) -> None:
+    from taut_summon import (
+        ShellSummonInteraction,
+        SummonController,
+        SummonOperationError,
+        SummonRequest,
+    )
+    from taut_summon._driver import DriverError, SummonDriver
+
+    original_sigint = signal.getsignal(signal.SIGINT)
+    original_sigterm = signal.getsignal(signal.SIGTERM)
+
+    def prior_sigint(_signum: int, _frame: object) -> None:
+        return None
+
+    def prior_sigterm(_signum: int, _frame: object) -> None:
+        return None
+
+    prior_sigint_value: Any
+    prior_sigterm_value: Any
+    if prior_kind == "callable":
+        prior_sigint_value = prior_sigint
+        prior_sigterm_value = prior_sigterm
+    elif prior_kind == "default":
+        prior_sigint_value = signal.SIG_DFL
+        prior_sigterm_value = signal.SIG_DFL
+    else:
+        prior_sigint_value = signal.SIG_IGN
+        prior_sigterm_value = signal.SIG_IGN
+
+    def run_driver(_driver: SummonDriver) -> int:
+        if exit_kind == "translated":
+            raise DriverError("driver failure")
+        if exit_kind == "exception":
+            raise RuntimeError("host failure")
+        if exit_kind == "base-exception":
+            raise _HostAbort("host abort")
+        return 0
+
+    signal.signal(signal.SIGINT, prior_sigint_value)
+    signal.signal(signal.SIGTERM, prior_sigterm_value)
+    monkeypatch.setattr(SummonDriver, "_run", run_driver)
+    try:
+        if exit_kind == "clean":
+            SummonController().run_foreground(
+                SummonRequest(
+                    name="scripted",
+                    threads=("general",),
+                    terminal=False,
+                    persona=None,
+                    system_prompt_file=None,
+                    rate_limit=None,
+                ),
+                ShellSummonInteraction(),
+                install_signal_handlers=True,
+            )
+        else:
+            expected_type: type[BaseException]
+            expected_message: str
+            if exit_kind == "translated":
+                expected_type = SummonOperationError
+                expected_message = "driver failure"
+            elif exit_kind == "exception":
+                expected_type = RuntimeError
+                expected_message = "host failure"
+            else:
+                expected_type = _HostAbort
+                expected_message = "host abort"
+            with pytest.raises(expected_type, match=expected_message):
+                SummonController().run_foreground(
+                    SummonRequest(
+                        name="scripted",
+                        threads=("general",),
+                        terminal=False,
+                        persona=None,
+                        system_prompt_file=None,
+                        rate_limit=None,
+                    ),
+                    ShellSummonInteraction(),
+                    install_signal_handlers=True,
+                )
+
+        assert signal.getsignal(signal.SIGINT) is prior_sigint_value
+        assert signal.getsignal(signal.SIGTERM) is prior_sigterm_value
+    finally:
+        signal.signal(signal.SIGINT, original_sigint)
+        signal.signal(signal.SIGTERM, original_sigterm)
+
+
+@pytest.mark.parametrize("failure_signum", [signal.SIGINT, signal.SIGTERM])
+def test_signal_install_failure_rolls_back_before_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+    failure_signum: int,
+) -> None:
+    from taut_summon import (
+        ShellSummonInteraction,
+        SummonController,
+        SummonOperationError,
+        SummonRequest,
+    )
+    from taut_summon._driver import SummonDriver
+
+    prior_int = object()
+    prior_term = object()
+    handlers: dict[int, object] = {
+        signal.SIGINT: prior_int,
+        signal.SIGTERM: prior_term,
+    }
+    lifecycle_started = False
+
+    def get_handler(signum: int) -> object:
+        return handlers[signum]
+
+    def set_handler(signum: int, handler: object) -> None:
+        prior = prior_int if signum == signal.SIGINT else prior_term
+        if signum == failure_signum and handler is not prior:
+            raise OSError("signal install refused")
+        handlers[signum] = handler
+
+    def run_driver(_driver: SummonDriver) -> int:
+        nonlocal lifecycle_started
+        lifecycle_started = True
+        return 0
+
+    monkeypatch.setattr(signal, "getsignal", get_handler)
+    monkeypatch.setattr(signal, "signal", set_handler)
+    monkeypatch.setattr(SummonDriver, "_run", run_driver)
+
+    with pytest.raises(SummonOperationError, match="signal install refused"):
+        SummonController().run_foreground(
+            SummonRequest(
+                name="scripted",
+                threads=("general",),
+                terminal=False,
+                persona=None,
+                system_prompt_file=None,
+                rate_limit=None,
+            ),
+            ShellSummonInteraction(),
+            install_signal_handlers=True,
+        )
+
+    assert handlers == {signal.SIGINT: prior_int, signal.SIGTERM: prior_term}
+    assert lifecycle_started is False
+
+
+@pytest.mark.parametrize("primary_failure", [False, True])
+def test_signal_restore_failure_preserves_primary_failure_precedence(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    primary_failure: bool,
+) -> None:
+    from taut_summon import (
+        ShellSummonInteraction,
+        SummonController,
+        SummonOperationError,
+        SummonRequest,
+    )
+    from taut_summon._driver import SummonDriver
+
+    prior_int = object()
+    prior_term = object()
+    handlers: dict[int, object] = {
+        signal.SIGINT: prior_int,
+        signal.SIGTERM: prior_term,
+    }
+
+    def get_handler(signum: int) -> object:
+        return handlers[signum]
+
+    def set_handler(signum: int, handler: object) -> None:
+        if signum == signal.SIGTERM and handler is prior_term:
+            raise OSError("term restore refused")
+        handlers[signum] = handler
+
+    def run_driver(_driver: SummonDriver) -> int:
+        if primary_failure:
+            raise _HostAbort("primary host abort")
+        return 0
+
+    monkeypatch.setattr(signal, "getsignal", get_handler)
+    monkeypatch.setattr(signal, "signal", set_handler)
+    monkeypatch.setattr(SummonDriver, "_run", run_driver)
+    caplog.set_level("ERROR", logger="taut_summon.driver")
+
+    def invocation() -> None:
+        SummonController().run_foreground(
+            SummonRequest(
+                name="scripted",
+                threads=("general",),
+                terminal=False,
+                persona=None,
+                system_prompt_file=None,
+                rate_limit=None,
+            ),
+            ShellSummonInteraction(),
+            install_signal_handlers=True,
+        )
+
+    if primary_failure:
+        with pytest.raises(_HostAbort, match="primary host abort"):
+            invocation()
+        assert "could not restore summon signal handlers" in caplog.text
+        assert f"prior disposition {prior_term!r}" in caplog.text
+    else:
+        with pytest.raises(
+            SummonOperationError, match="term restore refused"
+        ) as caught:
+            invocation()
+        assert f"prior disposition {prior_term!r}" in str(caught.value)
+    assert handlers[signal.SIGINT] is prior_int
+
+
+def test_controller_foreground_run_preserves_host_identity_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut_summon import (
+        ShellSummonInteraction,
+        SummonController,
+        SummonRequest,
+    )
+    from taut_summon._driver import SummonDriver
+
+    monkeypatch.setenv("TAUT_AS", "Host Persona")
+    monkeypatch.setenv("TAUT_TOKEN", "host-token")
+    monkeypatch.setattr(SummonDriver, "_run", lambda _driver: 0)
+    controller = SummonController()
+    request = SummonRequest(
+        name="scripted",
+        threads=("general",),
+        terminal=False,
+        persona=None,
+        system_prompt_file=None,
+        rate_limit=None,
+    )
+
+    for expected_as, expected_token in (
+        ("Host Persona", "host-token"),
+        ("Changed Host", "changed-token"),
+    ):
+        monkeypatch.setenv("TAUT_AS", expected_as)
+        monkeypatch.setenv("TAUT_TOKEN", expected_token)
+        controller.run_foreground(request, ShellSummonInteraction())
+        assert os.environ["TAUT_AS"] == expected_as
+        assert os.environ["TAUT_TOKEN"] == expected_token
+
+
+def test_controller_foreground_run_preserves_absent_host_identity_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut_summon import ShellSummonInteraction, SummonController, SummonRequest
+    from taut_summon._driver import SummonDriver
+
+    monkeypatch.delenv("TAUT_AS", raising=False)
+    monkeypatch.delenv("TAUT_TOKEN", raising=False)
+    monkeypatch.setattr(SummonDriver, "_run", lambda _driver: 0)
+
+    SummonController().run_foreground(
+        SummonRequest(
+            name="scripted",
+            threads=("general",),
+            terminal=False,
+            persona=None,
+            system_prompt_file=None,
+            rate_limit=None,
+        ),
+        ShellSummonInteraction(),
+    )
+
+    assert "TAUT_AS" not in os.environ
+    assert "TAUT_TOKEN" not in os.environ
+
+
+def test_rich_host_identity_remains_usable_while_scripted_driver_runs(
+    summon_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut_summon import (
+        ShellSummonInteraction,
+        SummonController,
+        SummonRequest,
+    )
+
+    from taut import TautClient
+
+    host_client = TautClient(db_path=summon_db, as_name="HostPersona")
+    try:
+        host_client.join("general", new=True)
+        host_member = host_client.last_created_member
+        assert host_member is not None
+        assert host_member.token is not None
+    finally:
+        host_client.close()
+
+    monkeypatch.setenv("TAUT_AS", host_member.name)
+    monkeypatch.setenv("TAUT_TOKEN", host_member.token)
+    failures: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            SummonController(db_path=summon_db).run_foreground(
+                SummonRequest(
+                    name="hosted",
+                    threads=("general",),
+                    terminal=False,
+                    persona=None,
+                    system_prompt_file=None,
+                    rate_limit=None,
+                    provider_flag="scripted",
+                ),
+                ShellSummonInteraction(),
+            )
+        except BaseException as exc:  # noqa: BLE001 - relayed to test owner
+            failures.append(exc)
+
+    thread = threading.Thread(target=run, daemon=True, name="rich-host-identity")
+    thread.start()
+    controller = SummonController(db_path=summon_db)
+    try:
+
+        def driver_ready_or_failed() -> bool:
+            member = _member_by_name(summon_db, "hosted")
+            row = None if member is None else _session_row(summon_db, member.member_id)
+            return bool(failures or (row is not None and row["driver_pid"] is not None))
+
+        wait_until(driver_ready_or_failed, message="rich-host scripted driver")
+        assert failures == []
+        assert os.environ["TAUT_AS"] == host_member.name
+        assert os.environ["TAUT_TOKEN"] == host_member.token
+
+        ambient_client = TautClient(db_path=summon_db)
+        try:
+            assert ambient_client.whoami().member_id == host_member.member_id
+        finally:
+            ambient_client.close()
+
+        with monkeypatch.context() as stop_environment:
+            stop_environment.delenv("TAUT_AS")
+            stop_environment.delenv("TAUT_TOKEN")
+            assert controller.stop("hosted").name == "hosted"
+        thread.join(timeout=10.0)
+        assert not thread.is_alive()
+        assert failures == []
+        assert os.environ["TAUT_AS"] == host_member.name
+        assert os.environ["TAUT_TOKEN"] == host_member.token
+    finally:
+        if thread.is_alive():
+            try:
+                with monkeypatch.context() as stop_environment:
+                    stop_environment.delenv("TAUT_AS")
+                    stop_environment.delenv("TAUT_TOKEN")
+                    controller.stop("hosted")
+            except Exception:
+                pass
+            thread.join(timeout=10.0)
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    ("taut_summon._driver", "taut_summon._control"),
+)
+def test_driver_owned_clients_never_inherit_host_environment_identity(
+    module_name: str,
+) -> None:
+    module = __import__(module_name, fromlist=["unused"])
+    tree = ast.parse(inspect.getsource(module))
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "TautClient"
+    ]
+
+    assert calls
+    for call in calls:
+        setting = next(
+            (
+                keyword.value
+                for keyword in call.keywords
+                if keyword.arg == "inherit_environment_identity"
+            ),
+            None,
+        )
+        assert isinstance(setting, ast.Constant), (
+            f"missing setting at line {call.lineno}"
+        )
+        assert setting.value is False, f"unsafe setting at line {call.lineno}"
 
 
 def test_controller_rejects_attach_and_detach_as_typed_request_error() -> None:

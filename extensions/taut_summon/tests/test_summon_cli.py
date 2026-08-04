@@ -211,9 +211,16 @@ def test_native_summon_command_owns_safe_logging_without_replacing_host_handlers
         def __init__(self, *, db_path: str | None) -> None:
             assert db_path == "project.db"
 
-        def run_foreground(self, request: object, interaction: object) -> None:
+        def run_foreground(
+            self,
+            request: object,
+            interaction: object,
+            *,
+            install_signal_handlers: bool = False,
+        ) -> None:
             assert request is not None
             assert interaction is not None
+            assert install_signal_handlers is True
             logging.getLogger("taut_summon.driver").warning("%s", probe)
 
     monkeypatch.setattr(controller_module, "SummonController", Controller)

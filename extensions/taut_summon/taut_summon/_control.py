@@ -772,6 +772,7 @@ class ControlLoop:
             db_path=self._db_path,
             token=self._token,
             persistent=True,
+            inherit_environment_identity=False,
         )
         reactor: _ControlReactor | None = None
         try:

@@ -955,7 +955,13 @@ def test_driver_ledger_client_is_persistent_and_foreground_owned(
     monkeypatch.setattr(driver, "_release", lambda: None)
 
     assert driver._run() == 0
-    assert FakeClient.init_kwargs == [{"db_path": None, "persistent": True}]
+    assert FakeClient.init_kwargs == [
+        {
+            "db_path": None,
+            "persistent": True,
+            "inherit_environment_identity": False,
+        }
+    ]
     assert FakeClient.created_on == [owner]
     assert FakeClient.closed_on == [owner]
 
@@ -1015,7 +1021,12 @@ def test_watcher_failure_wakes_driver_for_rebuild(
     assert driver._watcher_failed.is_set()
     assert driver._wake.is_set()
     assert FakeClient.init_kwargs == [
-        {"db_path": None, "token": "tok", "persistent": True}
+        {
+            "db_path": None,
+            "token": "tok",
+            "persistent": True,
+            "inherit_environment_identity": False,
+        }
     ]
     assert FakeClient.watch_kwargs == [{"persistent": True}]
     assert FakeClient.created_on == [thread.ident]

@@ -325,12 +325,16 @@ own-send history, so [SUM-10] audits separately.) Consequences, all required:
 
 ## 6. Mouth — the CLI Contract [SUM-6]
 
-- The child environment carries `TAUT_TOKEN` (the member's continuity
-  token — continuity, **not** authentication, per [TAUT-5]/[TAUT-9]: it
-  selects the member within the storage trust boundary and proves
-  nothing) and, when the backend is path-addressed, `TAUT_DB`. The agent
-  speaks with ordinary CLI calls; replies route wherever the agent says
-  (`taut say dev ...`, `taut reply`, `taut say @van ...`).
+- The adapter constructs the provider child environment from a copy of the
+  host environment, removes inherited `TAUT_AS` and `TAUT_TOKEN` from that
+  copy, then applies the driver's explicit child overlay. The resulting
+  child carries exactly the summoned member's `TAUT_TOKEN` (continuity,
+  **not** authentication, per [TAUT-5]/[TAUT-9]: it selects the member within
+  the storage trust boundary and proves nothing) and, when the backend is
+  path-addressed, `TAUT_DB`. The adapter does not mutate the host environment
+  or change unrelated inherited variables. The agent speaks with ordinary
+  CLI calls; replies route wherever the agent says (`taut say dev ...`,
+  `taut reply`, `taut say @van ...`).
 - **stdout is diagnostics, not speech.** In multi-thread operation the
   driver never posts harness output to chat. Assistant text that arrives
   unrouted goes to the driver's log. Exception — *terminal mode*: when
@@ -1228,9 +1232,31 @@ The controller hides extension table rows, queue handles and names, control
 JSON, evidence predicates, adapter handles, and driver mutable state. `status`
 proves a live correlated control response; a session row alone is not live
 status. `stop` succeeds only after correlated ACK and evidence-relative release
-confirmation. `run_foreground(request, interaction)` remains blocking and owns
-exactly one foreground driver lifecycle; it never silently daemonizes or
-detaches.
+confirmation.
+`run_foreground(request, interaction, *, install_signal_handlers=False)`
+remains blocking and owns exactly one foreground driver lifecycle; it never
+silently daemonizes or detaches. The default is the rich-host boundary: it
+does not inspect, install, or replace process signal handlers. Command
+adapters that own a short-lived foreground process pass
+`install_signal_handlers=True` explicitly. Opt-in is valid only on the
+Python main thread; an invalid opt-in fails before the driver lifecycle
+starts with `SummonOperationError`.
+
+A controller foreground run never mutates the host process's `TAUT_AS` or
+`TAUT_TOKEN`. Every driver-owned and control-loop-owned core client disables
+ambient identity inheritance and uses only its explicit name, token, or
+capture inputs ([TAUT-8.3]); the provider child receives only the summoned
+member's explicit identity overlay after adapter-side removal of inherited
+host identity as required by [SUM-6]. This non-mutation invariant applies
+while the run is active and after every success or failure, so concurrent host
+work retains its own process environment.
+
+When signal handling is explicitly enabled, Summon temporarily installs its
+driver handler for `SIGINT` and `SIGTERM` and restores the exact prior
+disposition for each successfully installed signal on every exit. Partial
+installation rolls back earlier installations before the lifecycle begins.
+The temporary opt-in does not grant ownership of unrelated signals, logging,
+terminal policy, or host environment.
 
 A host interaction reports terminal availability and grants a scoped lease
 containing input/output fds. Summon owns provider PTY bytes, calls the attach
@@ -1243,8 +1269,9 @@ policy, and rollback in its own spec; [SUM-13] does not guess those behaviors.
 `SummonController` is bound to one optional database path. It exposes sorted
 provider names through `provider_names()` without constructing adapters; live
 session summaries through `list_live()`; one correlated live status; one
-confirmed stop result; and a blocking foreground run that returns no value on
-clean completion. `list_live()` returns an empty tuple when no database or no
+confirmed stop result; and a blocking foreground run with keyword-only
+`install_signal_handlers: bool = False` that returns no value on clean
+completion. `list_live()` returns an empty tuple when no database or no
 live rows exist; command adapters, not embedders, translate that empty result to
 the nothing-summoned exit class. The request model contains `name`, `threads`, `terminal`,
 `persona`, `system_prompt_file`, `rate_limit`, `attach`, `detach`,
@@ -1261,6 +1288,15 @@ print, return CLI exit codes, or require callers to parse human or JSON output.
 Command adapters own rendering and map `NothingSummoned` to exit 2 and the other
 public operation errors to exit 1.
 
+[SUM-13] verification crosses the public controller boundary with real
+process environment and signal APIs. It proves environment non-mutation
+during and after a real rich-host lifecycle; default signal non-ownership;
+exact opt-in restoration on clean and failing exits; invalid worker-thread
+opt-in; exact child `TAUT_TOKEN` with absent child `TAUT_AS` through all three
+shipped adapter families; and unchanged CLI SIGINT/STOP release. Tests that
+clear ambient identity, disable signal installation, or run only off the main
+thread do not satisfy this boundary by themselves.
+
 ## Implementation Mapping
 
 - `docs/implementation/05-taut-summon-architecture.md` explains controller,
@@ -1275,6 +1311,10 @@ public operation errors to exit 1.
 
 ## Related Plans
 
+- `docs/plans/2026-08-01-summon-rich-host-global-state-plan.md` — makes
+  driver identity object-local, prevents inherited host identity in provider
+  children, and separates safe rich-host signal defaults from explicit
+  temporary CLI signal ownership.
 - `docs/plans/2026-07-31-simplebroker-6-reconciliation-plan.md` —
   SimpleBroker 6.0.0 and SimpleBroker-PG 3.5.0 compatibility reconciliation.
 - `docs/plans/2026-07-14-blank-message-no-op-plan.md` — silent terminal-mode

@@ -303,6 +303,15 @@ plus its typed models and `SummonInteraction`. The standalone
 `taut-summon` console and the installed `taut summon`/`taut dismiss` adapters
 share parser helpers and controller calls; neither invokes the other.
 
+That shared call path also makes process ownership explicit. A rich host calls
+`SummonController.run_foreground(...)` with the default
+`install_signal_handlers=False`, so embedding does not inspect or replace the
+host's `SIGINT` or `SIGTERM` dispositions. The native and standalone Summon
+command adapters share `SummonCommand.run`, which passes
+`install_signal_handlers=True` because the command owns its short-lived
+foreground process. Terminal interaction and signal authority remain separate:
+supplying a `SummonInteraction` never opts a host into process signal takeover.
+
 Core commands may call `context.client()` because `TautClient` is their domain
 surface. An extension should call its own public controller. If an operation
 cannot be expressed without importing another package's private state, the
@@ -449,6 +458,9 @@ product need with its own compatibility plan.
 
 ## Related Plan
 
+- `docs/plans/2026-08-01-summon-rich-host-global-state-plan.md`
+  — object-local Summon identity, sanitized provider-child selectors, safe
+  rich-host signal defaults, and explicit command-adapter signal ownership.
 - `docs/plans/2026-07-29-taut-chat-pypi-publication-plan.md`
 - `docs/plans/2026-07-28-channel-topics-plan.md`
 - `docs/plans/2026-07-28-direct-message-navigation-plan.md`

@@ -101,6 +101,8 @@ class ClaudeAdapter:
         if session_id is not None:
             command.extend(["--resume", session_id])
         child_env = dict(os.environ)
+        child_env.pop("TAUT_AS", None)
+        child_env.pop("TAUT_TOKEN", None)
         child_env.update(env)
         try:
             proc = subprocess.Popen(

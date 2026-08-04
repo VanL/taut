@@ -17,6 +17,7 @@ is skipped when it is absent (``requires_claude``).
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -24,6 +25,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
+import taut_summon._claude as claude_module
 from taut_summon._adapter import (
     ActivityEvent,
     AdapterError,
@@ -177,6 +179,46 @@ def test_translation_echo_round_trip_against_scripted_provider(
         assert reply.text == "echo: hello"
     finally:
         handle.close()
+
+
+def test_spawn_replaces_inherited_host_identity_in_real_stream_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wrapper = tmp_path / "claude-wrapper"
+    wrapper.write_text(
+        f"#!{sys.executable}\n"
+        "import os, sys\n"
+        f"os.execv(sys.executable, [sys.executable, {str(SCRIPTED_PROVIDER)!r}])\n",
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
+    log = tmp_path / "received.jsonl"
+    monkeypatch.setattr(claude_module, "_CLAUDE_BIN", str(wrapper))
+    monkeypatch.setenv("TAUT_AS", "HostPersona")
+    monkeypatch.setenv("TAUT_TOKEN", "host-token")
+    handle = ClaudeAdapter().spawn(
+        session_id=None,
+        system_prompt="identity boundary",
+        env={
+            "TAUT_TOKEN": "summoned-token",
+            "TAUT_SUMMON_RECEIVED_LOG": str(log),
+        },
+    )
+    try:
+        EventPump(handle).next_of(SessionEvent)
+    finally:
+        handle.close()
+
+    start = next(
+        json.loads(line)
+        for line in log.read_text(encoding="utf-8").splitlines()
+        if json.loads(line).get("event") == "start"
+    )
+    assert start["env_as"] is None
+    assert start["env_token"] == "summoned-token"
+    assert os.environ["TAUT_AS"] == "HostPersona"
+    assert os.environ["TAUT_TOKEN"] == "host-token"
 
 
 def test_unknown_event_shape_is_rejected_loudly(tmp_path: Path) -> None:

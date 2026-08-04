@@ -338,6 +338,38 @@ def test_spawn_session_id_resumes_that_session(tmp_path: Path) -> None:
         assert handle.session_id == "resume-9"
 
 
+def test_spawn_replaces_inherited_host_identity_in_real_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log = tmp_path / "received.jsonl"
+    monkeypatch.setenv("TAUT_AS", "HostPersona")
+    monkeypatch.setenv("TAUT_TOKEN", "host-token")
+    adapter = get_adapter("scripted")
+    handle = adapter.spawn(
+        session_id=None,
+        system_prompt="identity boundary",
+        env={
+            "TAUT_TOKEN": "summoned-token",
+            "TAUT_SUMMON_RECEIVED_LOG": str(log),
+        },
+    )
+    try:
+        EventPump(handle).next_of(SessionEvent)
+    finally:
+        handle.close()
+
+    start = next(
+        json.loads(line)
+        for line in log.read_text(encoding="utf-8").splitlines()
+        if json.loads(line).get("event") == "start"
+    )
+    assert start["env_as"] is None
+    assert start["env_token"] == "summoned-token"
+    assert os.environ["TAUT_AS"] == "HostPersona"
+    assert os.environ["TAUT_TOKEN"] == "host-token"
+
+
 def test_crash_scenario_yields_exit_event(tmp_path: Path) -> None:
     scenario = {"responses": [[{"exit": 3}]]}
     with scripted_handle(tmp_path, scenario) as handle:

@@ -102,6 +102,8 @@ class PtyAdapter:
         del session_id, system_prompt
         master_fd, slave_fd = pty.openpty()
         child_env = dict(os.environ)
+        child_env.pop("TAUT_AS", None)
+        child_env.pop("TAUT_TOKEN", None)
         child_env.update(env)
         child_env["TERM"] = "xterm-256color"
         child_env.setdefault("COLORTERM", "truecolor")

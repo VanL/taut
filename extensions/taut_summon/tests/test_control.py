@@ -1411,8 +1411,10 @@ def test_partial_control_handle_construction_closes_every_created_owner(
             db_path: str,
             token: str,
             persistent: bool,
+            inherit_environment_identity: bool,
         ) -> None:
             assert (db_path, token) == ("unused", "taut-tok")
+            assert inherit_environment_identity is False
             persistent_flags.append(persistent)
 
         def close(self) -> None:

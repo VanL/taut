@@ -48,6 +48,8 @@ class ScriptedAdapter:
         env: Mapping[str, str],
     ) -> ScriptedHandle:
         child_env = dict(os.environ)
+        child_env.pop("TAUT_AS", None)
+        child_env.pop("TAUT_TOKEN", None)
         child_env.update(env)
         child_env["TAUT_SUMMON_SYSTEM_PROMPT"] = system_prompt
         if session_id is not None:

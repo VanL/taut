@@ -185,7 +185,11 @@ class SummonController:
             client.close()
 
     def run_foreground(
-        self, request: SummonRequest, interaction: SummonInteraction
+        self,
+        request: SummonRequest,
+        interaction: SummonInteraction,
+        *,
+        install_signal_handlers: bool = False,
     ) -> None:
         """Run exactly one driver lifecycle in the foreground."""
 
@@ -201,6 +205,7 @@ class SummonController:
                 request,
                 interaction,
                 db_path=None if self._db_path is None else str(self._db_path),
+                install_signal_handlers=install_signal_handlers,
             )
         except NotInitializedError as exc:
             if request.provider_flag is None:

@@ -140,7 +140,9 @@ class SummonCommand:
 
         try:
             SummonController(db_path=context.db_path).run_foreground(
-                request_from_args(args), ShellSummonInteraction()
+                request_from_args(args),
+                ShellSummonInteraction(),
+                install_signal_handlers=True,
             )
         except NothingSummoned as exc:
             raise command_error(exc, context, exit_code=2) from exc

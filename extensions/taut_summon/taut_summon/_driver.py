@@ -287,7 +287,7 @@ class SummonDriver:
         *,
         interaction: SummonInteraction,
         db_path: str | None = None,
-        install_signal_handlers: bool = True,
+        install_signal_handlers: bool = False,
     ) -> None:
         if request.attach and request.detach:
             raise SummonOperationError("--attach and --detach cannot be used together")
@@ -343,27 +343,39 @@ class SummonDriver:
     # --- public entry ----------------------------------------------------
 
     def run(self) -> None:
-        # The driver process is nobody: its clients are explicitly
-        # selected (as_name/token/capture), and ambient TAUT_AS/TAUT_TOKEN
-        # from the launching shell must not leak into them — or into
-        # rejoin's exactly-one-selector contract.
-        os.environ.pop("TAUT_AS", None)
-        os.environ.pop("TAUT_TOKEN", None)
-        if self._install_signal_handlers:
-            self._install_signals()
+        previous_signals = (
+            self._install_signals() if self._install_signal_handlers else {}
+        )
+        primary_failure: BaseException | None = None
         try:
-            result = self._run()
-        except NotInitializedError:
-            # The controller owns this diagnostic: with no database there can be
-            # no session row, so [SUM-3] resolution may still surface the
-            # unknown-adapter error instead ([SUM-3] step 3).
+            try:
+                result = self._run()
+            except NotInitializedError:
+                # The controller owns this diagnostic: with no database there can be
+                # no session row, so [SUM-3] resolution may still surface the
+                # unknown-adapter error instead ([SUM-3] step 3).
+                raise
+            except DriverError as exc:
+                raise SummonOperationError(str(exc)) from exc
+            except (BrokerError, SummonStateError, AdapterError, TautError) as exc:
+                raise SummonOperationError(str(exc)) from exc
+            if result != 0:
+                raise SummonOperationError(f"summon driver exited with status {result}")
+        except BaseException as exc:
+            primary_failure = exc
             raise
-        except DriverError as exc:
-            raise SummonOperationError(str(exc)) from exc
-        except (BrokerError, SummonStateError, AdapterError, TautError) as exc:
-            raise SummonOperationError(str(exc)) from exc
-        if result != 0:
-            raise SummonOperationError(f"summon driver exited with status {result}")
+        finally:
+            if previous_signals:
+                try:
+                    self._restore_signals(previous_signals)
+                except SummonOperationError:
+                    if primary_failure is None:
+                        raise
+                    logger.error(
+                        "could not restore summon signal handlers after primary "
+                        "failure",
+                        exc_info=True,
+                    )
 
     def request_stop(self) -> None:
         self._shutdown.set()
@@ -376,7 +388,11 @@ class SummonDriver:
         self._wake.set()
 
     def _persistent_client(self, **kwargs: Any) -> TautClient:
-        client = TautClient(**kwargs, persistent=True)
+        client = TautClient(
+            **kwargs,
+            persistent=True,
+            inherit_environment_identity=False,
+        )
         self._owned_clients.append(client)
         return client
 
@@ -544,6 +560,7 @@ class SummonDriver:
                         os.getpid(), rule="summon driver bootstrap anchor"
                     ),
                     persistent=True,
+                    inherit_environment_identity=False,
                 )
                 creator.join(
                     self._request.threads[0],
@@ -662,7 +679,11 @@ class SummonDriver:
         persona = self._request.persona
         if not boot.resummon or persona is None:
             return
-        client = TautClient(db_path=self._db_path, token=boot.token)
+        client = TautClient(
+            db_path=self._db_path,
+            token=boot.token,
+            inherit_environment_identity=False,
+        )
         try:
             updated = client.set_persona(persona)
         finally:
@@ -741,7 +762,11 @@ class SummonDriver:
                         terminal_thread=terminal_thread,
                     )
                 self._rejoin(handle, boot)
-                setup_client = TautClient(db_path=self._db_path, token=boot.token)
+                setup_client = TautClient(
+                    db_path=self._db_path,
+                    token=boot.token,
+                    inherit_environment_identity=False,
+                )
                 try:
                     self._ensure_threads(setup_client, boot.member_id)
                 finally:
@@ -1062,7 +1087,12 @@ class SummonDriver:
             with self._generation_lock:
                 if self._active_generation is not generation:
                     return
-                mouth = TautClient(db_path=db_path, token=token, persistent=True)
+                mouth = TautClient(
+                    db_path=db_path,
+                    token=token,
+                    persistent=True,
+                    inherit_environment_identity=False,
+                )
                 queue = mouth.queue(_LEDGER_QUEUE_NAME)
             for event in handle.events():
                 last_activity = self._pump_event(
@@ -1185,6 +1215,7 @@ class SummonDriver:
             db_path=self._db_path,
             token=boot.token,
             identity_capture=capture,
+            inherit_environment_identity=False,
         )
         try:
             rejoin_client.rejoin()
@@ -1755,7 +1786,12 @@ class SummonDriver:
             client: TautClient | None = None
             watcher: Any | None = None
             try:
-                client = TautClient(db_path=db_path, token=token, persistent=True)
+                client = TautClient(
+                    db_path=db_path,
+                    token=token,
+                    persistent=True,
+                    inherit_environment_identity=False,
+                )
                 watcher = client.watch(self._on_item, persistent=True)
                 self._watcher = watcher
                 if _stop_requested():
@@ -1839,14 +1875,48 @@ class SummonDriver:
             self._wake.wait(timeout=0.2)
             self._wake.clear()
 
-    def _install_signals(self) -> None:
+    def _install_signals(self) -> dict[int, Any]:
         if threading.current_thread() is not threading.main_thread():
-            return  # pragma: no cover - the CLI always runs on the main thread
+            raise SummonOperationError(
+                "signal handler installation requires the Python main thread"
+            )
+        previous: dict[int, Any] = {}
         for signum in (signal.SIGINT, signal.SIGTERM):
             try:
+                prior = signal.getsignal(signum)
                 signal.signal(signum, self._on_signal)
-            except (ValueError, OSError):  # pragma: no cover - odd embeddings
-                pass
+            except (ValueError, OSError) as exc:
+                for installed_signum, installed_prior in reversed(previous.items()):
+                    try:
+                        signal.signal(installed_signum, installed_prior)
+                    except (ValueError, OSError):
+                        logger.error(
+                            "could not roll back signal %s after installation failure",
+                            installed_signum,
+                            exc_info=True,
+                        )
+                raise SummonOperationError(
+                    f"could not install signal handler for signal {signum}: {exc}"
+                ) from exc
+            previous[signum] = prior
+        return previous
+
+    @staticmethod
+    def _restore_signals(previous: dict[int, Any]) -> None:
+        failures: list[tuple[int, Any, BaseException]] = []
+        for signum, prior in reversed(previous.items()):
+            try:
+                signal.signal(signum, prior)
+            except (ValueError, OSError) as exc:
+                failures.append((signum, prior, exc))
+        if failures:
+            details = "; ".join(
+                f"signal {signum} to prior disposition {prior!r}: {failure}"
+                for signum, prior, failure in failures
+            )
+            raise SummonOperationError(
+                f"could not restore summon signal handlers: {details}"
+            ) from failures[0][2]
 
     def _on_signal(self, signum: int, _frame: object) -> None:
         logger.info("received signal %s; stopping", signum)
@@ -1858,7 +1928,13 @@ def run_driver(
     interaction: SummonInteraction,
     *,
     db_path: str | None = None,
+    install_signal_handlers: bool = False,
 ) -> None:
     """Controller entry: run one summon driver in the foreground."""
 
-    SummonDriver(request, interaction=interaction, db_path=db_path).run()
+    SummonDriver(
+        request,
+        interaction=interaction,
+        db_path=db_path,
+        install_signal_handlers=install_signal_handlers,
+    ).run()

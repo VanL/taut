@@ -206,7 +206,13 @@ def main() -> int:
         raise SystemExit(0)
 
     signal.signal(signal.SIGTERM, _term)
-    _record(record_paths, "start", pid=os.getpid())
+    _record(
+        record_paths,
+        "start",
+        pid=os.getpid(),
+        env_as=os.environ.get("TAUT_AS"),
+        env_token=os.environ.get("TAUT_TOKEN"),
+    )
 
     if config.get("modes", True):
         _write(
