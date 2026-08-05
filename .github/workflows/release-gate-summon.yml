@@ -154,12 +154,22 @@ jobs:
           packages-dir: dist/
           skip-existing: ${{ steps.publication.outputs.skip_existing }}
 
+      - name: Recreate clean verified distributions for postflight
+        timeout-minutes: 2
+        run: |
+          python bin/release-artifact.py verify \
+            --package-dir extensions/taut_summon \
+            --bundle-dir bundle \
+            --commit "${{ needs.release-evidence.outputs.tag_commit }}" \
+            --tag-name "${{ github.ref_name }}" \
+            --output-dir postflight-dist
+
       - name: Verify complete exact PyPI publication
         timeout-minutes: 5
         run: |
           python .github/scripts/release_publication.py verify-pypi \
             --manifest bundle/release-manifest.json \
-            --dist-dir dist
+            --dist-dir postflight-dist
 
   publish-github-release:
     needs: [release-evidence, stage-release, publish-to-pypi]

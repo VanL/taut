@@ -39,6 +39,9 @@
 - Split the reactor SIGINT subprocess proof into startup-readiness and behavior
   phases, keeping the strict deadlock watchdog while avoiding false failures
   when a Windows worker is slow to launch the child.
+- Reconstruct a clean verified distribution directory after PyPI upload before
+  the exact remote postflight, isolating release bytes from attestation
+  sidecars created by the trusted-publishing action.
 
 ## 0.8.0 - 2026-07-28
 

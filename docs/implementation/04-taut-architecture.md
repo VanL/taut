@@ -221,7 +221,10 @@ contents write access. Existing PyPI files are accepted only when their names
 and SHA-256 digests are a matching subset of the expected wheel/sdist pair;
 only that preflight permits completion with `skip-existing`, whose
 filename-only behavior is not itself the safety check. A bounded post-upload
-check requires the complete exact PyPI set. Only then does a separate
+check requires the complete exact PyPI set. The publish action may create
+attestation sidecars in its input directory, so the postflight reconstructs a
+separate clean wheel/sdist directory from the carried verified bundle; it does
+not weaken the distribution allowlist to ignore new files. Only then does a separate
 least-privilege finalizer recheck the tag and exact draft assets and publish
 the GitHub Release as immutable. To tolerate eventual release-API visibility,
 the finalizer boundedly polls only when an expected asset's uploaded state or

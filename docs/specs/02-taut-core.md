@@ -2221,7 +2221,11 @@ Workflow obligations:
   Only that preflight-proven partial state enables the publisher's
   `skip-existing: true`; that option compares filenames, not digests, and is
   not the safety check. The surrounding preflight subset-digest and bounded
-  post-upload full-set digest checks enforce the invariant.
+  post-upload full-set digest checks enforce the invariant. Because the PyPI
+  action may add attestation sidecars to its input directory, postflight
+  verification reconstructs a separate clean wheel/sdist directory from the
+  carried verified bundle. Unexpected files remain fatal in either verified
+  distribution directory; the workflow does not ignore sidecars in place.
 - Only after the PyPI check succeeds does a separate least-privilege finalizer
   recheck the tag, draft, and exact asset set and publish the GitHub Release.
   The finalizer boundedly retries only an expected asset whose uploaded state

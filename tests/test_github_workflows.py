@@ -61,6 +61,15 @@ def _job_block(workflow: str, name: str) -> str:
     return match.group(0)
 
 
+def _step_block(job: str, name: str) -> str:
+    match = re.search(
+        rf"(?ms)^      - name: {re.escape(name)}\n(.*?)(?=^      - (?:name|uses):|\Z)",
+        job,
+    )
+    assert match is not None, name
+    return match.group(0)
+
+
 def _summon_collection_records(path: str) -> tuple[dict[str, object], ...]:
     env = os.environ.copy()
     env["PYTEST_ADDOPTS"] = ""
@@ -601,10 +610,24 @@ def test_release_gates_publish_exact_artifact_through_top_level_pypi_job(
     assert "release-artifact.py verify" in pypi
     assert ".github/scripts/release_publication.py plan-pypi" in pypi
     assert ".github/scripts/release_publication.py verify-pypi" in pypi
+    recreate = _step_block(pypi, "Recreate clean verified distributions for postflight")
+    postflight_step = _step_block(pypi, "Verify complete exact PyPI publication")
+    assert f"--package-dir {package_dir} \\" in recreate
+    assert "--bundle-dir bundle \\" in recreate
+    assert '--commit "${{ needs.release-evidence.outputs.tag_commit }}" \\' in recreate
+    assert '--tag-name "${{ github.ref_name }}" \\' in recreate
+    assert "--output-dir postflight-dist" in recreate
+    assert "if:" not in recreate
+    assert pypi.count(".github/scripts/release_publication.py verify-pypi") == 1
+    assert "--dist-dir postflight-dist" in postflight_step
+    assert "--dist-dir dist" not in postflight_step
     tag_recheck = pypi.index(".github/scripts/release_publication.py verify-tag")
     upload = pypi.index("pypa/gh-action-pypi-publish@")
-    postflight = pypi.index(".github/scripts/release_publication.py verify-pypi")
-    assert tag_recheck < upload < postflight
+    clean_postflight = pypi.index(
+        "Recreate clean verified distributions for postflight"
+    )
+    postflight = pypi.rindex(".github/scripts/release_publication.py verify-pypi")
+    assert tag_recheck < upload < clean_postflight < postflight
     assert (
         "pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247" in pypi
     )
