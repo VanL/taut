@@ -182,22 +182,22 @@ class TautState(Protocol):
 
 
 __all__ = [
+    "PORTABLE_SQL_DIALECT",
+    "POSTGRES_SQL_DIALECT",
+    "SCHEMA_VERSION_KEY",
+    "SQLITE_SQL_DIALECT",
     "ChannelRenameRow",
     "ChannelTopicRecord",
     "IdentityClaimRow",
     "MemberRow",
     "MembershipRow",
-    "PORTABLE_SQL_DIALECT",
-    "POSTGRES_SQL_DIALECT",
-    "SCHEMA_VERSION_KEY",
-    "SQLITE_SQL_DIALECT",
     "SqlDialect",
     "SqlSidecarTautState",
     "TautState",
     "ThreadKind",
     "ThreadRow",
-    "dialect_for_taut_target",
     "decode_channel_topic",
+    "dialect_for_taut_target",
     "require_topic_compatible_kind",
     "validate_channel_topic_text",
 ]

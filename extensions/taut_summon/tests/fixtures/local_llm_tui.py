@@ -115,7 +115,8 @@ def _call_local_llm(prompt: str, *, log: Path | None) -> str:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
+        # This harness calls only the explicitly configured local endpoint.
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             raw_payload = response.read()
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
@@ -171,6 +172,7 @@ def _post_sentinel(target: str, sentinel: str, *, log: Path | None) -> None:
         text=True,
         capture_output=True,
         timeout=30,
+        check=False,
     )
     _record(
         log,

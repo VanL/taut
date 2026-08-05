@@ -225,7 +225,7 @@ def test_installed_wheel_terminal_text_export_loads_packaged_policy(
 ) -> None:
     project_policy = installed_command_fixture.root / ".taut.toml"
     project_policy.write_text(
-        "\n".join(
+        "\n".join(  # noqa: FLY002 approved [DOM-10.2.1] [RUFF-SUP-072] exception
             (
                 "version = 1",
                 'backend = "sqlite"',
@@ -365,11 +365,13 @@ def test_sdist_rebuild_installs_terminal_policy_outside_checkout(
             str(python),
             "-I",
             "-c",
-            "from pathlib import Path; import taut; "
-            "assert Path(taut.__file__).resolve().is_relative_to(Path.cwd().parent); "
-            "assert taut.escape_terminal_text('PROJECT\\x1b') == "
-            "'\\\\x50\\\\x52\\\\x4f\\\\x4a\\\\x45\\\\x43"
-            "\\\\x54\\\\x1b'",
+            (
+                "from pathlib import Path; import taut; "
+                "assert Path(taut.__file__).resolve().is_relative_to(Path.cwd().parent); "
+                "assert taut.escape_terminal_text('PROJECT\\x1b') == "
+                "'\\\\x50\\\\x52\\\\x4f\\\\x4a\\\\x45\\\\x43"
+                "\\\\x54\\\\x1b'"
+            ),
         ],
         cwd=probe_root,
         env=env,

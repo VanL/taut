@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-"""Check that combined coverage executed every required cross-process path."""
+"""Check that combined coverage executed every required cross-process path."""  # noqa: N999 approved [DOM-10.2.1] [RUFF-SUP-075] exception
 
 from __future__ import annotations
 

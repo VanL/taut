@@ -5,8 +5,7 @@ from pathlib import Path
 
 import pytest
 
-import taut.identity as identity
-from taut import addressing
+from taut import addressing, identity
 from taut._exceptions import EmptyResultError, NotFoundError, ThreadNameError
 from taut.client import Message, TautClient
 from taut.state import MemberRow, SqlSidecarTautState

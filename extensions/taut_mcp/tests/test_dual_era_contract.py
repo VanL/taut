@@ -76,7 +76,7 @@ def _valid_rate_probe_arguments(
         name: {"workspace": workspace, "token": token, **values}
         for name, values in DOMAIN_TOOL_ARGUMENTS.items()
     }
-    for name in {"message_delete", "message_react", "message_show", "reply"}:
+    for name in ("message_delete", "message_react", "message_show", "reply"):
         arguments[name]["msg_id"] = message_id
     return {
         "attach_workspace": {"workspace": workspace, "token": token},
@@ -309,9 +309,7 @@ def test_every_domain_tool_can_be_the_first_lazy_request(
     other.close()
 
     arguments = dict(DOMAIN_TOOL_ARGUMENTS[tool_name])
-    if tool_name in {"message_delete", "message_react", "message_show"}:
-        arguments["msg_id"] = parent_id
-    elif tool_name == "reply":
+    if tool_name in {"message_delete", "message_react", "message_show", "reply"}:
         arguments["msg_id"] = parent_id
 
     async def scenario() -> None:

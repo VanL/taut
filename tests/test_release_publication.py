@@ -8,6 +8,7 @@ import urllib.error
 from email.message import Message
 from pathlib import Path
 from types import ModuleType
+from typing import Self
 
 import pytest
 
@@ -37,7 +38,7 @@ class _Response:
     def __init__(self, payload: object) -> None:
         self._payload = payload
 
-    def __enter__(self) -> _Response:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *args: object) -> None:

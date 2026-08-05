@@ -102,7 +102,7 @@ def _run_probe() -> dict[str, object]:  # noqa: C901 approved [DOM-10.2.1] [RUFF
         return next(waiters)
 
     strategy = InterruptingStrategy()
-    with tempfile.TemporaryDirectory(prefix="taut-sigint-probe-") as temp_dir:
+    with tempfile.TemporaryDirectory(prefix="taut-sigint-probe-") as temp_dir:  # noqa: SIM117 approved [DOM-10.2.1] [RUFF-SUP-074] exception
         with patch(
             "taut.watcher.create_activity_waiter_for_queues",
             side_effect=create_waiter,
@@ -155,7 +155,7 @@ def main() -> int:
 
     try:
         _emit(_run_probe())
-    except BaseException as exc:
+    except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
         _emit(
             {
                 "error": str(exc),

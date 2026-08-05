@@ -424,9 +424,11 @@ def test_unofficial_claim_cannot_override_reserved_summon_slot() -> None:
     assert registry.get("summon").spec is not None
     assert registry.get("summon").verbatim_tail is True
     assert registry.diagnostics() == (
-        "installed command 'summon' from counterfeit-owner 1.0.0 "
-        "(counterfeit.manifest:summon) cannot own the reserved first-party slot; "
-        "the official owner is taut-summon",
+        (
+            "installed command 'summon' from counterfeit-owner 1.0.0 "
+            "(counterfeit.manifest:summon) cannot own the reserved first-party slot; "
+            "the official owner is taut-summon"
+        ),
     )
 
 
@@ -541,9 +543,11 @@ def test_official_claim_wins_reserved_slot_with_unofficial_diagnostic() -> None:
         forward.diagnostics()
         == reverse.diagnostics()
         == (
-            "installed command 'summon' from counterfeit-owner 1.0.0 "
-            "(counterfeit.manifest:summon) cannot own the reserved first-party slot; "
-            "the official owner is taut-summon",
+            (
+                "installed command 'summon' from counterfeit-owner 1.0.0 "
+                "(counterfeit.manifest:summon) cannot own the reserved first-party slot; "
+                "the official owner is taut-summon"
+            ),
         )
     )
 
@@ -1947,9 +1951,11 @@ def test_invalid_entry_point_name_is_diagnostic_not_a_help_command() -> None:
 
     assert "Bad_Name" not in registry.names()
     assert registry.diagnostics() == (
-        "command 'Bad_Name' from invalid-owner 1.0.0 "
-        "(invalid.manifest:command) is unavailable: command name must match "
-        "[a-z][a-z0-9-]*",
+        (
+            "command 'Bad_Name' from invalid-owner 1.0.0 "
+            "(invalid.manifest:command) is unavailable: command name must match "
+            "[a-z][a-z0-9-]*"
+        ),
     )
 
 

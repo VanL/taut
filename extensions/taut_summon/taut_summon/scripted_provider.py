@@ -178,7 +178,7 @@ def _load_scenario() -> dict[str, Any]:
     with open(path, encoding="utf-8") as handle:
         loaded = json.load(handle)
     if not isinstance(loaded, dict):
-        raise ValueError("scenario file must hold a JSON object")
+        raise ValueError("scenario file must hold a JSON object")  # noqa: TRY004 approved [DOM-10.2.1] [RUFF-SUP-073] exception
     return loaded
 
 
@@ -225,10 +225,10 @@ def _extract_text(event: dict[str, Any]) -> str:
         raise ValueError(f"expected a user event, got {event.get('type')!r}")
     message = event.get("message")
     if not isinstance(message, dict):
-        raise ValueError("user event carries no message object")
+        raise ValueError("user event carries no message object")  # noqa: TRY004 approved [DOM-10.2.1] [RUFF-SUP-073] exception
     content = message.get("content")
     if not isinstance(content, list):
-        raise ValueError("user message carries no content list")
+        raise ValueError("user message carries no content list")  # noqa: TRY004 approved [DOM-10.2.1] [RUFF-SUP-073] exception
     parts = [
         str(block.get("text", ""))
         for block in content
@@ -307,6 +307,7 @@ def _exec_taut(spec: Any) -> None:
         result = subprocess.run(
             [sys.executable, "-m", "taut", *args],
             env=os.environ.copy(),
+            check=False,
         )
         if result.returncode != 0:
             _write_stderr(f"scripted provider: taut exited {result.returncode}")
@@ -360,7 +361,7 @@ def main() -> int:
                 continue
             event = json.loads(stripped)
             if not isinstance(event, dict):
-                raise ValueError("stdin event must be a JSON object")
+                raise ValueError("stdin event must be a JSON object")  # noqa: TRY004 approved [DOM-10.2.1] [RUFF-SUP-073] exception
             text = _extract_text(event)
             _record({"event": "message", "text": text})
             steps = responses[index] if index < len(responses) else default_response

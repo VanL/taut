@@ -86,7 +86,6 @@ def test_taut_watcher_polls_and_refreshes_membership_without_native_waiter(  # n
     ) -> None:
         del stop_event
         waiter_factory_observed.set()
-        return None
 
     monkeypatch.setattr(
         watcher_module,

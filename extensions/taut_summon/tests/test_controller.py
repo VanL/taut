@@ -376,7 +376,7 @@ def test_controller_refuses_error_stop_ack_before_release_confirmation(
                 )
             finally:
                 reply_queue.close()
-        except BaseException as exc:
+        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
             responder_errors.append(exc)
         finally:
             request_queue.close()
@@ -444,7 +444,12 @@ def test_package_facade_preserves_exact_public_exports_and_object_identity() -> 
     from taut_summon.interaction import ShellSummonInteraction, TerminalLease
     from taut_summon.models import SummonRequest
 
-    assert taut_summon.__all__ == EXPECTED_PUBLIC_EXPORTS
+    assert (
+        len(taut_summon.__all__)
+        == len(set(taut_summon.__all__))
+        == len(EXPECTED_PUBLIC_EXPORTS)
+    )
+    assert set(taut_summon.__all__) == set(EXPECTED_PUBLIC_EXPORTS)
     assert taut_summon.ActivityEvent is _adapter.ActivityEvent
     assert taut_summon.ScriptedAdapter is _scripted.ScriptedAdapter
     assert taut_summon.adapter_names is _adapter.adapter_names

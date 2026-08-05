@@ -98,7 +98,7 @@ def _fatal_readiness_reason(status: SummonStatus) -> str | None:
     return None
 
 
-def _status_with_details(**details: str | int | float | bool | None) -> SummonStatus:
+def _status_with_details(**details: str | int | float | bool | None) -> SummonStatus:  # noqa: PYI041 approved [DOM-10.2.1] [RUFF-SUP-081] exception
     return SummonStatus(
         member_id="m_" + "a" * 26,
         name="codex",
@@ -361,7 +361,7 @@ def test_live_pty_harness_reaches_ready_and_accepts_injection(
     env = _base_env()
     env["TAUT_SUMMON_LOG"] = "DEBUG"
     stderr_path = tmp_path / f"{provider}.err"
-    stderr_file = open(stderr_path, "w", encoding="utf-8")
+    stderr_file = open(stderr_path, "w", encoding="utf-8")  # noqa: SIM115 approved [DOM-10.2.1] [RUFF-SUP-076] exception
     proc = subprocess.Popen(
         [
             sys.executable,

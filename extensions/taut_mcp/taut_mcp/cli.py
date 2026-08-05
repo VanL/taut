@@ -72,7 +72,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     args = parser.parse_args(argv)
     try:
         asyncio.run(run_server(claude_channel=bool(args.claude_channel)))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-065] exception
         if _is_broken_transport(exc):
             _silence_broken_stdout()
             return

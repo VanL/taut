@@ -243,7 +243,7 @@ def test_version_three_index_and_lookup_cover_a_late_version_two_writer(
     assert visible is not None
     assert visible["name"] == "Legacy"
 
-    with pytest.raises(IntegrityError):
+    with pytest.raises(IntegrityError):  # noqa: SIM117 approved [DOM-10.2.1] [RUFF-SUP-074] exception
         with state_queue.sidecar(transaction=True) as session:
             session.run(
                 """
@@ -615,7 +615,7 @@ def test_driver_liveness_classifies_partial_evidence_as_indeterminate(
 def test_session_sql_templates_are_static_and_canonical() -> None:
     select_one = state_module._SESSION_SELECT_BY_MEMBER
     select_all = state_module._SESSION_SELECT_ALL
-    expected_columns = " ".join(
+    expected_columns = " ".join(  # noqa: FLY002 approved [DOM-10.2.1] [RUFF-SUP-072] exception
         (
             "member_id, token, provider, provider_session_id,",
             "driver_pid, driver_start_time, wired, updated_ts",
@@ -862,7 +862,7 @@ def test_claim_driver_race_has_exactly_one_owner(summon_db: Path) -> None:
                     claimed["driver_start_time"],
                 ) == candidate
                 return candidate
-            except Exception as exc:  # returned for symmetric race assertions
+            except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
                 return exc
             finally:
                 queue.close()

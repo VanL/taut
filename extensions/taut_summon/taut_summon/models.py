@@ -76,8 +76,8 @@ __all__ = [
     "DriverUnresponsive",
     "NothingSummoned",
     "StopResult",
-    "SummonedMember",
     "SummonOperationError",
     "SummonRequest",
     "SummonStatus",
+    "SummonedMember",
 ]

@@ -22,9 +22,8 @@ from taut_summon._state import (
     get_summon_schema_version,
 )
 
-import taut.identity as identity
 import taut.state._sql as sql_state
-from taut import addressing
+from taut import addressing, identity
 from taut._constants import META_QUEUE_NAME, load_config
 from taut._exceptions import (
     BlankMessageError,
@@ -686,7 +685,7 @@ def test_project_summon_v2_claim_migration_and_route_index_contract(
                 ("Legacy", "scripted", 789, "late-v2-start", 2),
             )
         assert get_claim(queue, name="legacy", provider="scripted") is not None
-        with pytest.raises(IntegrityError):
+        with pytest.raises(IntegrityError):  # noqa: SIM117 approved [DOM-10.2.1] [RUFF-SUP-074] exception
             with queue.sidecar(transaction=True) as session:
                 session.run(
                     """

@@ -6,8 +6,7 @@ from typing import Any, cast
 
 from simplebroker.ext import IntegrityError
 
-import taut.identity as identity
-from taut import addressing
+from taut import addressing, identity
 from taut._constants import route_key, validate_member_name
 from taut._exceptions import IdentityError, NotFoundError, TokenError
 from taut.state import MemberRow

@@ -847,7 +847,7 @@ def _optional_str(value: Any, column: str) -> str | None:
 
 def _required_int(value: Any, column: str) -> int:
     if isinstance(value, bool):
-        raise ValueError(f"{column} must be an integer")
+        raise ValueError(f"{column} must be an integer")  # noqa: TRY004 approved [DOM-10.2.1] [RUFF-SUP-073] exception
     return int(value)
 
 

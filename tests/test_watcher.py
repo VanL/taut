@@ -108,7 +108,7 @@ def _run_base_reactor_sigint_probe(
             f"stdout={stdout!r}; stderr={stderr!r}"
         ) from exc
     if not isinstance(payload, dict):
-        raise AssertionError(
+        raise AssertionError(  # noqa: TRY004 approved [DOM-10.2.1] [RUFF-SUP-073] exception
             "BaseReactor SIGINT probe result must be an object; "
             f"stdout={stdout!r}; stderr={stderr!r}"
         )
@@ -272,7 +272,7 @@ def test_base_reactor_turns_have_single_thread_owner(tmp_path: Path) -> None:
     def drive() -> None:
         try:
             watcher.process_once()
-        except BaseException as exc:  # pragma: no cover - diagnostic capture
+        except BaseException as exc:  # pragma: no cover  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
             drive_error.append(exc)
 
     thread = threading.Thread(target=drive)
@@ -302,7 +302,7 @@ def test_base_reactor_wait_is_owner_only(tmp_path: Path) -> None:
     def foreign_wait() -> None:
         try:
             watcher.wait_for_activity(timeout=0.01)
-        except BaseException as exc:  # pragma: no cover - diagnostic capture
+        except BaseException as exc:  # pragma: no cover  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
             errors.append(exc)
 
     thread = threading.Thread(target=foreign_wait)
@@ -551,7 +551,6 @@ def test_base_reactor_defers_waiter_creation_until_drive_owner(
     ) -> None:
         del stop_event
         creation_threads.append(threading.current_thread())
-        return None
 
     monkeypatch.setattr(
         "taut.watcher.create_activity_waiter_for_queues",
@@ -1137,7 +1136,7 @@ def test_base_reactor_live_queue_is_owner_only_after_drive(tmp_path: Path) -> No
     def foreign_get() -> None:
         try:
             watcher.get_queue("owned.queue")
-        except BaseException as exc:  # pragma: no cover - diagnostic capture
+        except BaseException as exc:  # pragma: no cover  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
             errors.append(exc)
 
     thread = threading.Thread(target=foreign_get)

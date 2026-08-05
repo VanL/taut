@@ -9,8 +9,8 @@ import pytest
 from simplebroker import BrokerTarget, Queue
 from simplebroker.ext import IntegrityError
 
-import taut.identity as identity
 import taut.state._sql as sql_state
+from taut import identity
 from taut._constants import META_QUEUE_NAME
 from taut._exceptions import TautError
 from taut.client import TautClient

@@ -1145,7 +1145,7 @@ class LocalLlmPreparation:
                 self.model,
                 timeout=LOCAL_LLM_MODEL_WAIT_SECONDS,
             )
-        except BaseException as exc:  # noqa: BLE001 - propagated at wait gate
+        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-069] exception
             self._error = exc
 
 
@@ -1281,8 +1281,7 @@ def github_repo_slug_from_remote(remote_url: str) -> str | None:
     else:
         return None
 
-    if path.endswith(".git"):
-        path = path[:-4]
+    path = path.removesuffix(".git")
     if path.count("/") != 1:
         return None
     owner, repo = path.split("/", maxsplit=1)
@@ -2294,9 +2293,12 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     args = parser.parse_args(argv)
 
-    if args.target_option is not None and args.target is not None:
-        if TARGETS.get(args.target_option) != TARGETS.get(args.target):
-            parser.error("positional target and --target disagree")
+    if (
+        args.target_option is not None
+        and args.target is not None
+        and TARGETS.get(args.target_option) != TARGETS.get(args.target)
+    ):
+        parser.error("positional target and --target disagree")
     args.target = args.target_option or args.target or ROOT_TARGET.key
     if args.checks_only and args.skip_checks:
         parser.error("--checks-only cannot be combined with --skip-checks")

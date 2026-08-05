@@ -30,7 +30,7 @@ import types
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 import pytest
 import taut_summon._driver as driver_module
@@ -572,19 +572,25 @@ def test_required_unavailable_terminal_is_fatal_before_lease(
     [
         (
             TerminalAvailability.NO_TTY,
-            "provider 'pty' is not wired yet and no tty is available; "
-            "run taut summon --attach ptybot from a real terminal",
+            (
+                "provider 'pty' is not wired yet and no tty is available; "
+                "run taut summon --attach ptybot from a real terminal"
+            ),
         ),
         (
             TerminalAvailability.NESTED_HOST,
-            "provider 'pty' is not wired yet but attach is refused inside "
-            "TAUT_HOST_TUI=1; run from a real terminal or pane",
+            (
+                "provider 'pty' is not wired yet but attach is refused inside "
+                "TAUT_HOST_TUI=1; run from a real terminal or pane"
+            ),
         ),
         (
             TerminalAvailability.UNAVAILABLE,
-            "provider 'pty' is not wired yet because the host terminal is "
-            "unavailable; run taut summon --attach ptybot from an available "
-            "terminal",
+            (
+                "provider 'pty' is not wired yet because the host terminal is "
+                "unavailable; run taut summon --attach ptybot from an available "
+                "terminal"
+            ),
         ),
     ],
 )
@@ -928,9 +934,9 @@ def test_driver_ledger_client_is_persistent_and_foreground_owned(
             return 1
 
     class FakeClient:
-        init_kwargs: list[dict[str, Any]] = []
-        created_on: list[int] = []
-        closed_on: list[int] = []
+        init_kwargs: ClassVar[list[dict[str, Any]]] = []
+        created_on: ClassVar[list[int]] = []
+        closed_on: ClassVar[list[int]] = []
 
         def __init__(self, **kwargs: Any) -> None:
             self.init_kwargs.append(kwargs)
@@ -977,10 +983,10 @@ def test_watcher_failure_wakes_driver_for_rebuild(
             watcher_stop_on.append(threading.get_ident())
 
     class FakeClient:
-        created_on: list[int] = []
-        closed_on: list[int] = []
-        init_kwargs: list[dict[str, Any]] = []
-        watch_kwargs: list[dict[str, Any]] = []
+        created_on: ClassVar[list[int]] = []
+        closed_on: ClassVar[list[int]] = []
+        init_kwargs: ClassVar[list[dict[str, Any]]] = []
+        watch_kwargs: ClassVar[list[dict[str, Any]]] = []
 
         def __init__(self, **kwargs: Any) -> None:
             self.init_kwargs.append(kwargs)
@@ -1055,8 +1061,8 @@ def test_harness_death_before_watcher_publication_stops_owner_before_run(
             watcher_stop_on.append(threading.get_ident())
 
     class FakeClient:
-        created_on: list[int] = []
-        closed_on: list[int] = []
+        created_on: ClassVar[list[int]] = []
+        closed_on: ClassVar[list[int]] = []
 
         def __init__(self, **_kwargs: Any) -> None:
             self.created_on.append(threading.get_ident())
@@ -1096,7 +1102,7 @@ def test_harness_death_before_watcher_publication_stops_owner_before_run(
                     provider_session_id=None,
                 )
             )
-        except BaseException as exc:
+        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
             errors.append(exc)
 
     supervisor = threading.Thread(target=supervise)
@@ -1185,7 +1191,7 @@ def test_live_watcher_after_bounded_join_is_fatal(
                     provider_session_id=None,
                 )
             )
-        except BaseException as exc:
+        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
             errors.append(exc)
 
     supervisor = threading.Thread(target=supervise)
@@ -1271,9 +1277,9 @@ def test_pump_constructs_mouth_client_on_pump_thread(
             return 1
 
     class FakeMouth:
-        created_on: list[int] = []
-        whoami_on: list[int] = []
-        closed_on: list[int] = []
+        created_on: ClassVar[list[int]] = []
+        whoami_on: ClassVar[list[int]] = []
+        closed_on: ClassVar[list[int]] = []
 
         def __init__(self, **kwargs: Any) -> None:
             assert kwargs.get("persistent") is True
@@ -2410,7 +2416,7 @@ def test_terminal_mode_posts_assistant_text_to_single_thread(
     def _echo_posted() -> bool:
         try:
             log = _client(summon_db).log("general")
-        except Exception:
+        except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
             return False
         return any(
             m.from_name == "Scripted" and m.text == "echo: [#general] van: hi"
@@ -2456,7 +2462,7 @@ def test_terminal_mode_ignores_blank_event_and_posts_next_text(
     def _visible_posted() -> bool:
         try:
             log = _client(summon_db).log("general")
-        except Exception:
+        except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
             return False
         return any(
             message.from_name == "Scripted" and message.text == visible
@@ -2674,7 +2680,7 @@ def test_pty_status_reports_awaiting_query(
     def _status_has_query() -> bool:
         try:
             reply = _control_request(summon_db, member.member_id, "STATUS", timeout=5.0)
-        except Exception:
+        except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
             return False
         return reply is not None and reply.get("awaiting_query") == "[?15n"
 
@@ -2747,7 +2753,7 @@ def test_pty_first_run_attaches_until_chord_and_sets_wired(
     )
     user_master, user_slave = pty.openpty()
     stderr_path = tmp_path / "pty-attach-driver.err"
-    stderr_file = open(stderr_path, "w", encoding="utf-8")
+    stderr_file = open(stderr_path, "w", encoding="utf-8")  # noqa: SIM115 approved [DOM-10.2.1] [RUFF-SUP-076] exception
     proc = subprocess.Popen(
         [
             sys.executable,
@@ -2833,7 +2839,7 @@ def test_backpressure_blocked_inject_grows_unread_and_stop_still_works(
         client = TautClient(db_path=summon_db, token=token)
         try:
             threads = client.list_threads(all_threads=True)
-        except Exception:
+        except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
             return -1
         for thread in threads:
             if thread.name == "general":
@@ -3115,7 +3121,7 @@ def test_direct_name_all_candidate_exhaustion_leaves_no_summon_debris(
         assert [(item.ts, item.text) for item in resolver.log("general")] == before_log
         assert list_sessions(queue) == []
         with queue.sidecar() as session:
-            claim_count = list(
+            claim_count = list(  # noqa: RUF015 approved [DOM-10.2.1] [RUFF-SUP-077] exception
                 session.run("SELECT COUNT(*) FROM taut_summon_claims", fetch=True)
             )[0][0]
         assert claim_count == 0
@@ -3193,7 +3199,7 @@ def test_multi_collision_then_post_insert_failure_reports_and_recovers_real_memb
         assert [item.member_id for item in resolver.who("general")] == before_membership
         assert [(item.ts, item.text) for item in resolver.log("general")] == before_log
         with queue.sidecar() as session:
-            claim_count = list(
+            claim_count = list(  # noqa: RUF015 approved [DOM-10.2.1] [RUFF-SUP-077] exception
                 session.run("SELECT COUNT(*) FROM taut_summon_claims", fetch=True)
             )[0][0]
         assert claim_count == 0
@@ -3701,7 +3707,7 @@ def test_mouth_proof_scripted_runs_taut_say(
     def _posted_by_member() -> bool:
         try:
             log = _client(summon_db).log("general")
-        except Exception:
+        except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
             return False
         return any(
             m.from_name == "Scripted" and m.text == "pong-from-mouth" for m in log
@@ -4112,7 +4118,7 @@ def test_dismiss_leaves_no_unclaimed_control_rows(
                 reply = _control_request(
                     summon_db, member.member_id, "STATUS", timeout=5.0
                 )
-            except Exception as exc:  # noqa: BLE001 - diagnostic for CI flakes
+            except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
                 last_detail = f"{type(exc).__name__}: {exc}"
             else:
                 last_detail = repr(reply)
@@ -4318,7 +4324,7 @@ def test_stop_while_inject_blocked_completes(
         client = TautClient(db_path=summon_db, token=token)
         try:
             threads = client.list_threads(all_threads=True)
-        except Exception:
+        except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
             return -1
         for thread in threads:
             if thread.name == "general":

@@ -173,7 +173,7 @@ def test_project_policy_omitted_keys_and_unknown_keys(
     from taut import escape_terminal_text
 
     (tmp_path / ".taut.toml").write_text(
-        "\n".join(
+        "\n".join(  # noqa: FLY002 approved [DOM-10.2.1] [RUFF-SUP-072] exception
             (
                 "version = 1",
                 'backend = "sqlite"',
@@ -193,7 +193,7 @@ def test_explicit_replacement_skips_ambient_and_packaged_policy_loading(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    import taut.terminal as terminal
+    from taut import terminal
 
     (tmp_path / ".taut.toml").write_text("terminal_text = [", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
@@ -275,7 +275,7 @@ def test_other_project_files_do_not_define_terminal_policy(
     from taut import escape_terminal_text
 
     (tmp_path / project_file).write_text(
-        "\n".join(
+        "\n".join(  # noqa: FLY002 approved [DOM-10.2.1] [RUFF-SUP-072] exception
             [
                 "[tool.taut.terminal_text]",
                 "inherit_defaults = false",
@@ -302,7 +302,7 @@ def test_project_terminal_policy_does_not_merge_other_project_files(
         inherit_defaults=False,
     )
     (tmp_path / "pyproject.toml").write_text(
-        "\n".join(
+        "\n".join(  # noqa: FLY002 approved [DOM-10.2.1] [RUFF-SUP-072] exception
             [
                 "[tool.taut.terminal_text]",
                 'escape_patterns = ["OTHER"]',
@@ -339,7 +339,7 @@ def test_project_policy_parse_cache_is_bounded(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    import taut.terminal as terminal
+    from taut import terminal
 
     terminal._load_project_policy.cache_clear()
     try:
@@ -387,7 +387,7 @@ def test_representative_project_policy_location_matches_broker_resolution(
 ) -> None:
     from simplebroker import resolve_broker_target
 
-    import taut.terminal as terminal
+    from taut import terminal
     from taut._constants import load_config
 
     nested = tmp_path / "nested" / "deeper"
@@ -425,7 +425,7 @@ def test_invalid_project_policy_uses_bootstrap_safe_error(
     from taut import escape_terminal_text
 
     (tmp_path / ".taut.toml").write_text(
-        "\n".join(
+        "\n".join(  # noqa: FLY002 approved [DOM-10.2.1] [RUFF-SUP-072] exception
             (
                 "version = 1",
                 'backend = "sqlite"',
@@ -549,7 +549,7 @@ def test_packaged_policy_failures_use_one_bootstrap_safe_error(
     tmp_path: Path,
     policy: str | None,
 ) -> None:
-    import taut.terminal as terminal
+    from taut import terminal
 
     if policy is not None:
         (tmp_path / "defaults.toml").write_text(policy, encoding="utf-8")
@@ -571,7 +571,7 @@ def test_dispatch_policy_failure_is_exit_one_without_recursion_or_traceback(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    import taut.terminal as terminal
+    from taut import terminal
     from taut.commands._dispatch import dispatch
     from taut.commands._registry import CommandRegistry
 
@@ -617,7 +617,7 @@ def test_json_watch_skips_human_policy_preflight(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    import taut.terminal as terminal
+    from taut import terminal
     from taut.commands._dispatch import dispatch
     from taut.commands._registry import CommandRegistry
 

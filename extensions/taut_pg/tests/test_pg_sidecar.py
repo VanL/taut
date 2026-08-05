@@ -20,8 +20,8 @@ from taut_summon._state import (
     record_session,
 )
 
-import taut.identity as identity
 import taut.state._sql as sql_state
+from taut import identity
 from taut._constants import META_QUEUE_NAME, load_config
 from taut.client import TautClient
 from taut.state import POSTGRES_SQL_DIALECT, SqlSidecarTautState
@@ -218,7 +218,7 @@ def test_postgres_member_create_and_alias_create_share_one_route_namespace(
                 meta={},
                 created_ts=20,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
             return exc
         return None
 
@@ -230,7 +230,7 @@ def test_postgres_member_create_and_alias_create_share_one_route_namespace(
                 alias="contended",
                 created_ts=20,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
             return exc
         return None
 
@@ -307,7 +307,7 @@ def test_postgres_member_rename_and_alias_create_share_one_route_namespace(
         start.wait(timeout=5)
         try:
             states[0].update_member_name(members[0]["member_id"], "contended")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
             return exc
         return None
 
@@ -319,7 +319,7 @@ def test_postgres_member_rename_and_alias_create_share_one_route_namespace(
                 alias="contended",
                 created_ts=20,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
             return exc
         return None
 
@@ -421,7 +421,7 @@ def test_summon_driver_claim_race_has_one_exact_postgres_owner(
                     claimed["driver_start_time"],
                 ) == candidate
                 return candidate
-            except Exception as exc:  # returned for symmetric race assertions
+            except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
                 return exc
 
         with ThreadPoolExecutor(max_workers=2) as pool:

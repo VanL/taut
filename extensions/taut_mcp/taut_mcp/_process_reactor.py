@@ -10,6 +10,7 @@ import os
 import queue
 import threading
 from collections.abc import Awaitable, Callable, Coroutine
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -466,7 +467,7 @@ class ProcessReactor:
                 self._candidates[generation] = candidate
                 owner.send(bootstrap)
                 owner.thread.start()
-            except Exception:
+            except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-066] exception
                 token = ""
                 fingerprint = b""
                 if bootstrap is not None:
@@ -552,7 +553,7 @@ class ProcessReactor:
         ensured = await ensure
         canonical_workspace = ensured.get("workspace")
         if not isinstance(canonical_workspace, str):
-            raise AssertionError("successful ensure requires canonical workspace")
+            raise AssertionError("successful ensure requires canonical workspace")  # noqa: TRY004 approved [DOM-10.2.1] [RUFF-SUP-073] exception
         return await self._execute_ready_tool(
             canonical_workspace,
             name,
@@ -679,7 +680,7 @@ class ProcessReactor:
             return
         try:
             awaitable = self._modern_resource_sender()
-        except Exception:
+        except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-066] exception
             return
         future = asyncio.ensure_future(awaitable, loop=self._loop)
         self._resource_tasks.add(future)
@@ -695,7 +696,7 @@ class ProcessReactor:
         self.last_claude_attempted_text = self.current_text
         try:
             awaitable = self._claude_sender()
-        except Exception:
+        except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-066] exception
             if self._claude_warning is not None:
                 self._claude_warning(CLAUDE_CHANNEL_FAILURE)
             return
@@ -709,16 +710,14 @@ class ProcessReactor:
             future.result()
         except asyncio.CancelledError:
             return
-        except Exception:
+        except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-066] exception
             if not self._closing and self._claude_warning is not None:
                 self._claude_warning(CLAUDE_CHANNEL_FAILURE)
 
     def _finish_resource_attempt(self, future: asyncio.Future[None]) -> None:
         self._resource_tasks.discard(future)
-        try:
+        with suppress(asyncio.CancelledError, Exception):
             future.result()
-        except (asyncio.CancelledError, Exception):
-            pass
 
     def _recompute_resource(self) -> None:
         workspaces: list[dict[str, Any]] = []

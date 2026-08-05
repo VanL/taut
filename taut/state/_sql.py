@@ -1357,7 +1357,7 @@ def _json_loads_object(
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"{context}: invalid JSON") from exc
     if not isinstance(decoded, dict):
-        raise RuntimeError(f"{context}: expected an object")
+        raise RuntimeError(f"{context}: expected an object")  # noqa: TRY004 approved [DOM-10.2.1] [RUFF-SUP-073] exception
     return decoded
 
 
@@ -1373,14 +1373,14 @@ def _json_loads_rename_list(
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"{context}: invalid JSON") from exc
     if not isinstance(decoded, list):
-        raise RuntimeError(f"{context}: expected a list")
+        raise RuntimeError(f"{context}: expected a list")  # noqa: TRY004 approved [DOM-10.2.1] [RUFF-SUP-073] exception
     affected: list[dict[str, str]] = []
     for index, item in enumerate(decoded):
         if not isinstance(item, dict):
-            raise RuntimeError(f"{context}: item {index}: expected an object")
+            raise RuntimeError(f"{context}: item {index}: expected an object")  # noqa: TRY004 approved [DOM-10.2.1] [RUFF-SUP-073] exception
         old = item.get("old")
         new = item.get("new")
         if not isinstance(old, str) or not isinstance(new, str):
-            raise RuntimeError(f"{context}: item {index}: expected string old and new")
+            raise RuntimeError(f"{context}: item {index}: expected string old and new")  # noqa: TRY004 approved [DOM-10.2.1] [RUFF-SUP-073] exception
         affected.append({"old": old, "new": new})
     return affected

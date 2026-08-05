@@ -21,7 +21,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any, NoReturn, Self
 
 import pytest
 from conftest import _base_env, summon_cli, taut_cli
@@ -47,10 +47,11 @@ _FALSEY_ENV = {"", "0", "false", "no", "off"}
 class _CountingProxyHandler(http.server.BaseHTTPRequestHandler):
     proxy: _CountingProxy
 
-    def do_GET(self) -> None:  # noqa: N802 - stdlib hook name
+    # These names implement hooks fixed by BaseHTTPRequestHandler.
+    def do_GET(self) -> None:
         self._forward()
 
-    def do_POST(self) -> None:  # noqa: N802 - stdlib hook name
+    def do_POST(self) -> None:
         self._forward()
 
     def log_message(self, format: str, *args: object) -> None:
@@ -83,7 +84,7 @@ class _CountingProxyHandler(http.server.BaseHTTPRequestHandler):
                     )
             except urllib.error.HTTPError as exc:
                 self._send_response(exc.code, exc.headers.items(), exc.read())
-        except Exception as exc:  # noqa: BLE001 - keep proxy diagnostics
+        except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
             payload = f"proxy forwarding error: {exc}".encode()
             self.send_response(502)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
@@ -110,7 +111,7 @@ class _CountingProxy:
     thread: threading.Thread | None = None
     request_bodies: list[str] = field(default_factory=list)
 
-    def __enter__(self) -> _CountingProxy:
+    def __enter__(self) -> Self:
         handler = type(
             "_BoundCountingProxyHandler",
             (_CountingProxyHandler,),
@@ -148,13 +149,14 @@ class _StubCompletionEndpoint:
     server: Any | None = None
     thread: threading.Thread | None = None
 
-    def __enter__(self) -> _StubCompletionEndpoint:
+    def __enter__(self) -> Self:
         import http.server
 
         stub = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
-            def do_POST(self) -> None:  # noqa: N802 - stdlib hook name
+            # This name implements a hook fixed by BaseHTTPRequestHandler.
+            def do_POST(self) -> None:
                 length = int(self.headers.get("Content-Length", "0") or "0")
                 if length:
                     self.rfile.read(length)

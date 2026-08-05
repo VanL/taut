@@ -692,7 +692,7 @@ def test_wheel_matrix_checker_accepts_exact_historical_summon_ref(
     core.touch()
     summon.touch()
 
-    inputs = wheel_matrix_module._parse_args(  # noqa: SLF001
+    inputs = wheel_matrix_module._parse_args(
         [
             "--new-core",
             str(core),
@@ -719,7 +719,7 @@ def test_wheel_matrix_checker_rejects_mutable_historical_summon_ref(
         wheel_matrix_module.WheelMatrixError,
         match="historical Summon ref must be immutable release ref",
     ):
-        wheel_matrix_module._parse_args(  # noqa: SLF001
+        wheel_matrix_module._parse_args(
             [
                 "--new-core",
                 str(core),
@@ -781,7 +781,7 @@ def test_release_wheel_checker_rejects_retained_summon_lock_below_floor(
         builder.ReleaseWheelCheckError,
         match="retained Summon lock resolved simplebroker 5.2.2 below 5.3.0",
     ):
-        builder._check_retained_summon_lock(lock)  # noqa: SLF001
+        builder._check_retained_summon_lock(lock)
 
 
 def test_release_wheel_checker_rejects_resolved_pg_plugin_below_floor(
@@ -796,7 +796,7 @@ def test_release_wheel_checker_rejects_resolved_pg_plugin_below_floor(
         builder.ReleaseWheelCheckError,
         match="ephemeral PG resolution selected simplebroker-pg 3.1.1 below 3.2.0",
     ):
-        builder._check_pg_resolution(requirements)  # noqa: SLF001
+        builder._check_pg_resolution(requirements)
 
 
 @pytest.mark.parametrize(
@@ -827,7 +827,7 @@ def test_release_wheel_checker_rejects_weak_pg_manifest_floors(
     )
 
     with pytest.raises(builder.ReleaseWheelCheckError, match=expected):
-        builder._check_pg_manifest(manifest)  # noqa: SLF001
+        builder._check_pg_manifest(manifest)
 
 
 def test_release_wheel_checker_accepts_required_pg_manifest_floors(
@@ -841,7 +841,7 @@ def test_release_wheel_checker_accepts_required_pg_manifest_floors(
         encoding="utf-8",
     )
 
-    builder._check_pg_manifest(manifest)  # noqa: SLF001
+    builder._check_pg_manifest(manifest)
 
 
 def test_release_wheel_checker_checks_retained_and_ephemeral_floors(

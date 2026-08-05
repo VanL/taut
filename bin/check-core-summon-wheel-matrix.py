@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-"""Check the installed core/Summon wheel matrix required by [SUM-12]."""
+"""Check the installed core/Summon wheel matrix required by [SUM-12]."""  # noqa: N999 approved [DOM-10.2.1] [RUFF-SUP-075] exception
 
 from __future__ import annotations
 
@@ -1041,7 +1040,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("core/Summon wheel-matrix check interrupted", file=sys.stderr)
         return 130
-    except Exception as exc:  # fail closed without exposing an agent/tool traceback
+    except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-065] exception
         detail = str(exc).replace("\n", " ")
         print(
             "core/Summon wheel-matrix check failed: internal checker "

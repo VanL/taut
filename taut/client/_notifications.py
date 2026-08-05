@@ -51,7 +51,7 @@ class NotificationsMixin(_ClientBase):
         queue = self.queue(addressing.notification_queue_name(to_id))
         try:
             queue.write(_json_dumps(payload))
-        except Exception as exc:  # pragma: no cover - backend-specific warning path.
+        except Exception as exc:  # pragma: no cover  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-068] exception
             # Entries carry their own context; the CLI renders each one
             # verbatim under a bare "warning: " prefix.
             self.last_notification_warnings.append(

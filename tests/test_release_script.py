@@ -8,7 +8,7 @@ import sys
 import urllib.error
 from email.message import Message
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar, Self
 
 import pytest
 
@@ -153,7 +153,7 @@ def test_write_version_files_updates_pg_dependency_floor(
     pyproject_path = tmp_path / "extensions" / "taut_pg" / "pyproject.toml"
     pyproject_path.parent.mkdir(parents=True)
     pyproject_path.write_text(
-        "\n".join(
+        "\n".join(  # noqa: FLY002 approved [DOM-10.2.1] [RUFF-SUP-072] exception
             [
                 "[project]",
                 'name = "taut-pg"',
@@ -197,7 +197,7 @@ def test_write_version_files_updates_summon_dependency_floor(
     pyproject_path = tmp_path / "extensions" / "taut_summon" / "pyproject.toml"
     pyproject_path.parent.mkdir(parents=True)
     pyproject_path.write_text(
-        "\n".join(
+        "\n".join(  # noqa: FLY002 approved [DOM-10.2.1] [RUFF-SUP-072] exception
             [
                 "[project]",
                 'name = "taut-summon"',
@@ -315,7 +315,7 @@ def test_sync_readme_simplebroker_requirement_replaces_every_exact_copy(
     pyproject = tmp_path / "pyproject.toml"
     readme = tmp_path / "README.md"
     pyproject.write_text(
-        "\n".join(
+        "\n".join(  # noqa: FLY002 approved [DOM-10.2.1] [RUFF-SUP-072] exception
             (
                 "[project]",
                 'name = "taut-chat"',
@@ -358,7 +358,7 @@ def test_prepare_release_metadata_repairs_all_derived_copies_idempotently(
     (tmp_path / "extensions" / "taut_summon").mkdir(parents=True)
     (tmp_path / "extensions" / "taut_mcp").mkdir(parents=True)
     (tmp_path / "pyproject.toml").write_text(
-        "\n".join(
+        "\n".join(  # noqa: FLY002 approved [DOM-10.2.1] [RUFF-SUP-072] exception
             (
                 "[project]",
                 'name = "taut-chat"',
@@ -690,7 +690,7 @@ def test_public_release_flow_commits_preparation_then_reuses_it_after_failure(
             ("git", "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD")
         ).splitlines()
     )
-    assert changed_paths == set(release._release_file_args(release.ROOT_TARGET))  # noqa: SLF001
+    assert changed_paths == set(release._release_file_args(release.ROOT_TARGET))
     assert transport.events == [
         "lock",
         "lock",
@@ -735,7 +735,7 @@ def test_sync_root_summon_dev_dependency_updates_root_floor(tmp_path: Path) -> N
     summon_pyproject_path = tmp_path / "extensions" / "taut_summon" / "pyproject.toml"
     summon_pyproject_path.parent.mkdir(parents=True)
     root_pyproject_path.write_text(
-        "\n".join(
+        "\n".join(  # noqa: FLY002 approved [DOM-10.2.1] [RUFF-SUP-072] exception
             [
                 "[project]",
                 'name = "taut-chat"',
@@ -895,7 +895,7 @@ def test_release_sync_updates_all_first_party_dependency_directions(
         sync_pg_to_mcp_dev,
     )
 
-    release._sync_root_release_dependencies()  # noqa: SLF001
+    release._sync_root_release_dependencies()
 
     assert calls == [
         "root-to-summon",
@@ -1058,7 +1058,7 @@ class _JsonResponse:
     def __init__(self, payload: object) -> None:
         self._raw = json.dumps(payload).encode()
 
-    def __enter__(self) -> _JsonResponse:
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *args: object) -> None:
@@ -1900,10 +1900,10 @@ def test_summon_precheck_commands_include_extension_gate() -> None:
 def test_summon_precheck_env_splits_live_and_local_llm_lanes() -> None:
     release = _load_release_module()
 
-    live_env = release._precheck_env_overrides(  # noqa: SLF001
+    live_env = release._precheck_env_overrides(
         release.SUMMON_LIVE_HARNESS_TEST_COMMAND,
     )
-    local_llm_env = release._precheck_env_overrides(  # noqa: SLF001
+    local_llm_env = release._precheck_env_overrides(
         release.SUMMON_LOCAL_LLM_TEST_COMMAND,
         local_llm_env={
             "TAUT_SUMMON_LOCAL_LLM_ENDPOINT": "http://127.0.0.1:9999/v1",
@@ -1939,9 +1939,7 @@ def test_local_llm_model_probe_treats_startup_disconnect_as_not_ready(
     monkeypatch.setattr(release, "_read_json_url", disconnected)
 
     assert (
-        release._endpoint_has_model(  # noqa: SLF001
-            "http://127.0.0.1:9999/v1", "local-test:latest"
-        )
+        release._endpoint_has_model("http://127.0.0.1:9999/v1", "local-test:latest")
         is False
     )
 
@@ -1969,7 +1967,7 @@ def test_prechecks_start_local_llm_before_other_release_gates(
     )
 
     class FakeLocalLlmPreparation:
-        env_overrides = {
+        env_overrides: ClassVar[dict[str, str]] = {
             "TAUT_SUMMON_LOCAL_LLM": "1",
             "TAUT_SUMMON_LOCAL_LLM_ENDPOINT": "http://127.0.0.1:9999/v1",
             "TAUT_SUMMON_LOCAL_LLM_MODEL": "local-test:latest",
@@ -2047,7 +2045,7 @@ def test_every_single_target_closes_local_llm_after_an_earlier_gate_failure(
     earlier_gate = ("earlier-gate",)
 
     class FakeLocalLlmPreparation:
-        env_overrides: dict[str, str] = {}
+        env_overrides: ClassVar[dict[str, str]] = {}
 
         def __init__(self, *, dry_run: bool) -> None:
             events.append(("init", dry_run))
@@ -2282,7 +2280,7 @@ def test_release_wheel_failure_leaves_preparation_commit_and_stops_remote_mutati
         (
             "git",
             "add",
-            *release._release_file_args(release.ROOT_TARGET),  # noqa: SLF001
+            *release._release_file_args(release.ROOT_TARGET),
         ),
         ("git", "commit", "-m", "Release taut-chat 0.1.1"),
         ("uv", "build"),
@@ -2822,7 +2820,7 @@ def test_discover_unpublished_releases_filters_published_targets(
 def test_release_file_paths_for_targets_dedupes_root_files() -> None:
     release = _load_release_module()
 
-    paths = release._release_file_paths_for_targets(  # noqa: SLF001
+    paths = release._release_file_paths_for_targets(
         (release.ROOT_TARGET, release.ROOT_TARGET, release.SUMMON_TARGET)
     )
 
@@ -2845,7 +2843,7 @@ def test_release_file_paths_for_targets_dedupes_root_files() -> None:
 def test_core_release_tracks_paired_summon_floor_and_retained_lock() -> None:
     release = _load_release_module()
 
-    paths = release._release_file_paths(release.ROOT_TARGET)  # noqa: SLF001
+    paths = release._release_file_paths(release.ROOT_TARGET)
 
     assert release.SUMMON_PYPROJECT_PATH in paths
     assert release.SUMMON_UV_LOCK_PATH in paths
@@ -2854,7 +2852,7 @@ def test_core_release_tracks_paired_summon_floor_and_retained_lock() -> None:
 def test_summon_release_tracks_root_dev_floor() -> None:
     release = _load_release_module()
 
-    paths = release._release_file_paths(release.SUMMON_TARGET)  # noqa: SLF001
+    paths = release._release_file_paths(release.SUMMON_TARGET)
 
     assert release.PYPROJECT_PATH in paths
 

@@ -275,7 +275,7 @@ def _agent_capture(pid: int, rule: str) -> IdentityCapture:
         raise DriverError(f"cannot capture identity evidence for pid {pid}")
     try:
         login = getpass.getuser()
-    except Exception:  # pragma: no cover - platform-specific lookup gaps
+    except Exception:  # pragma: no cover  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-067] exception
         login = "summon"
     return IdentityCapture(
         chain=(proc,),
@@ -381,10 +381,8 @@ class SummonDriver:
                 except SummonOperationError:
                     if primary_failure is None:
                         raise
-                    logger.error(
-                        "could not restore summon signal handlers after primary "
-                        "failure",
-                        exc_info=True,
+                    logger.exception(
+                        "could not restore summon signal handlers after primary failure"
                     )
 
     def request_stop(self) -> None:
@@ -1127,7 +1125,7 @@ class SummonDriver:
         self._retire_generation(generation)
         try:
             handle.close()
-        except BaseException as cleanup:
+        except BaseException as cleanup:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-067] exception
             if inherited is None:
                 close_error = cleanup
             else:
@@ -1140,7 +1138,7 @@ class SummonDriver:
                     timeout=timeout,
                     primary=inherited,
                 )
-            except BaseException as cleanup:
+            except BaseException as cleanup:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-067] exception
                 if inherited is None:
                     join_error = cleanup
                 else:
@@ -1541,7 +1539,7 @@ class SummonDriver:
         except BaseException as primary:
             try:
                 lease_manager.__exit__(type(primary), primary, primary.__traceback__)
-            except BaseException as restore_error:
+            except BaseException as restore_error:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-067] exception
                 if restore_error is not primary:
                     logger.error(
                         "terminal lease restoration also failed: %s", restore_error
@@ -2016,7 +2014,7 @@ class SummonDriver:
                 driver_start_time=start,
                 updated_ts=self._ledger().generate_timestamp(),
             )
-        except Exception as exc:  # noqa: BLE001 - cleanup must never crash exit
+        except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-067] exception
             # The ledger release is best-effort cleanup: a stale claim is
             # reclaimable by evidence ([SUM-11]), so cleanup failure must not
             # turn process exit into a second failure. But we could NOT confirm
@@ -2051,10 +2049,9 @@ class SummonDriver:
                     try:
                         signal.signal(installed_signum, installed_prior)
                     except (ValueError, OSError):
-                        logger.error(
+                        logger.exception(
                             "could not roll back signal %s after installation failure",
                             installed_signum,
-                            exc_info=True,
                         )
                 raise SummonOperationError(
                     f"could not install signal handler for signal {signum}: {exc}"

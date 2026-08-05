@@ -14,8 +14,7 @@ from typing import Any, NoReturn
 
 from simplebroker import BrokerTarget, Queue, resolve_broker_target
 
-import taut.identity as identity
-from taut import addressing
+from taut import addressing, identity
 from taut._constants import (
     MEMBER_ID_RE,
     META_QUEUE_NAME,

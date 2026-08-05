@@ -52,7 +52,7 @@ def _load_grammar():
     sys.path.insert(0, str(REPO_ROOT))
     try:
         from tests import test_docs_references as gate
-    except Exception as exc:  # pragma: no cover - environment problem
+    except Exception as exc:  # pragma: no cover  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-065] exception
         print(
             "check-doc-paths: cannot import tests/test_docs_references.py "
             f"({exc}). Run under the project environment, e.g. "
@@ -125,6 +125,6 @@ if __name__ == "__main__":
         sys.exit(main())
     except SystemExit:
         raise
-    except Exception as exc:  # pragma: no cover - defensive
+    except Exception as exc:  # pragma: no cover  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-065] exception
         print(f"check-doc-paths: internal error: {exc}")
         sys.exit(2)

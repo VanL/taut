@@ -267,6 +267,7 @@ def _run_command_loop(record_paths: list[Path]) -> int:
                 text=True,
                 capture_output=True,
                 timeout=30,
+                check=False,
             )
             _record(
                 record_paths,

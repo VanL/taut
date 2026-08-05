@@ -116,12 +116,12 @@ class StreamJsonHandle(ABC):
     def wait_until_quiet(self) -> None:
         """Structured streams need no terminal-output settle period."""
 
-        return None
+        return
 
     def mark_awaiting_onboarding(self) -> None:
         """Structured streams do not expose terminal onboarding state."""
 
-        return None
+        return
 
     def attach(
         self,

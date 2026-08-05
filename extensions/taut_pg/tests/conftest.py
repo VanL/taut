@@ -100,6 +100,7 @@ def run_taut_cli(
         encoding="utf-8",
         errors="replace",
         timeout=timeout,
+        check=False,
     )
     return completed.returncode, completed.stdout.strip(), completed.stderr.strip()
 

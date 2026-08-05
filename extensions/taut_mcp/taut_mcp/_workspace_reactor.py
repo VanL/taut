@@ -7,6 +7,7 @@ import queue
 import time
 import tomllib
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
@@ -298,11 +299,9 @@ class _WorkspaceReactor:
                 return
             try:
                 native_activity = self.activity_waiter.wait(min(remaining, 0.01))
-            except Exception:
-                try:
+            except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-066] exception
+                with suppress(Exception):
                     self.activity_waiter.close()
-                except Exception:
-                    pass
                 self.activity_waiter = None
                 return
             if native_activity:
@@ -400,7 +399,7 @@ class _WorkspaceReactor:
                     [notification_queue],
                     stop_event=self.activity_stop,
                 )
-            except Exception:
+            except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-066] exception
                 self.activity_waiter = None
             pending = tuple(self.client.peek_inbox(limit=101))
             self.token = ""
@@ -415,7 +414,7 @@ class _WorkspaceReactor:
             )
             self._emit(WorkspaceFailed(self.generation, "validation", message))
             return False
-        except Exception:
+        except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-066] exception
             self._emit(
                 WorkspaceFailed(self.generation, "validation", ATTACHMENT_FAILED)
             )
@@ -460,7 +459,7 @@ class _WorkspaceReactor:
         except (TautError, TypeError, ValueError) as exc:
             command_record_type = RECORD_TYPE_BY_TOOL[command.name]
             command_error = str(exc)
-        except Exception:
+        except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-066] exception
             self._emit(WorkspaceCrashed(self.generation))
             return False
         refresh_outcome = self._refresh_after_command(command.name)
@@ -495,7 +494,7 @@ class _WorkspaceReactor:
             self.degraded = True
             self._emit(WorkspaceIdentityLost(self.generation))
             return _RefreshOutcome.IDENTITY_LOST
-        except Exception:
+        except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-066] exception
             self._emit(WorkspaceCrashed(self.generation))
             return _RefreshOutcome.CRASHED
         self.previous_snapshot = pending[:100]
@@ -559,7 +558,7 @@ class _WorkspaceReactor:
             self.degraded = True
             self._emit(WorkspaceIdentityLost(self.generation))
             return True
-        except Exception:
+        except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-066] exception
             self._emit(WorkspaceCrashed(self.generation))
             return False
         snapshot = pending[:100]
@@ -599,22 +598,18 @@ class _WorkspaceReactor:
         self.token = ""
         self.activity_stop.set()
         if self.activity_waiter is not None:
-            try:
+            with suppress(Exception):
                 self.activity_waiter.close()
-            except Exception:
-                pass
         if self.client is not None:
-            try:
+            with suppress(Exception):
                 self.client.close()
-            except Exception:
-                pass
         if self.generation >= 0:
             self._emit(WorkspaceStopped(self.generation))
 
     def run(self) -> None:
         try:
             self._run_loop()
-        except BaseException:
+        except BaseException:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-066] exception
             if self.generation >= 0:
                 self._emit(WorkspaceCrashed(self.generation))
         finally:

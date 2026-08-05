@@ -51,7 +51,7 @@ def parse_target(value: str, *, allow_dm: bool = True) -> TargetAddress:
             raise ThreadNameError(str(exc)) from exc
         return TargetAddress(kind="dm", route_key=route_key(raw), raw_route=raw)
 
-    raw_thread = value[1:] if value.startswith("#") else value
+    raw_thread = value.removeprefix("#")
     if "." in raw_thread:
         channel, dot, origin = raw_thread.partition(".")
         if not dot or "." in origin:
@@ -113,7 +113,7 @@ def classify_registered_queue(name: str) -> str:
         return "dm"
     if name.startswith("notify."):
         return "notification"
-    if name.startswith("sys.") or name.startswith("taut."):
+    if name.startswith(("sys.", "taut.")):
         return "system"
     if "." in name:
         return "subthread"

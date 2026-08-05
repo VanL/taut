@@ -97,6 +97,7 @@ def _run_summon_cli(
         encoding="utf-8",
         errors="replace",
         timeout=timeout,
+        check=False,
     )
     return completed.returncode, completed.stdout.strip(), completed.stderr.strip()
 
@@ -192,6 +193,7 @@ def taut_cli(
         encoding="utf-8",
         input=stdin,
         timeout=30.0,
+        check=False,
     )
     return completed.returncode, completed.stdout.strip(), completed.stderr.strip()
 
@@ -217,6 +219,7 @@ def summon_cli(
         text=True,
         encoding="utf-8",
         timeout=timeout,
+        check=False,
     )
     return completed.returncode, completed.stdout.strip(), completed.stderr.strip()
 
@@ -309,7 +312,7 @@ def _await_control_request(
                 timeout=request_timeout,
                 session_row=session_row,
             )
-        except Exception as exc:  # noqa: BLE001 - diagnostic for CI contention
+        except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
             last_detail = f"{type(exc).__name__}: {exc}"
         else:
             last_detail = repr(reply)
@@ -380,7 +383,7 @@ class DriverProcess:
         if provider is not None:
             command.extend(["--provider", provider])
         command.extend(extra_args)
-        self._stderr_file = open(self.stderr_path, "w", encoding="utf-8")
+        self._stderr_file = open(self.stderr_path, "w", encoding="utf-8")  # noqa: SIM115 approved [DOM-10.2.1] [RUFF-SUP-076] exception
         self.proc = subprocess.Popen(
             command,
             cwd=tmp_path,

@@ -570,7 +570,7 @@ def human_message_row(
 
 
 def format_message_time(ts: int) -> str:
-    return datetime.fromtimestamp(ts / 1_000_000_000).strftime("%H:%M")
+    return datetime.fromtimestamp(ts / 1_000_000_000).strftime("%H:%M")  # noqa: DTZ006 approved [DOM-10.2.1] [RUFF-SUP-078] exception
 
 
 def format_unread_count(count: int) -> str:

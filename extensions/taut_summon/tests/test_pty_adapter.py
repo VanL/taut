@@ -77,7 +77,7 @@ class EventPump:
         try:
             for event in handle.events():
                 self._items.put(event)
-        except Exception as exc:  # noqa: BLE001 - relayed to the test thread
+        except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
             self._items.put(exc)
 
     def next(self, timeout: float = 10.0) -> AdapterEvent:
@@ -562,7 +562,7 @@ def test_query_reply_waits_for_partial_injection_writer(
     def inject() -> None:
         try:
             handle.inject("serialize-me")
-        except BaseException as exc:  # noqa: BLE001 - asserted below
+        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
             failures.append(exc)
 
     injector = threading.Thread(target=inject)
@@ -651,9 +651,9 @@ def test_bracketed_paste_preserves_newlines_after_sanitizing(
     try:
         # Wait until the reader has observed the fake TUI's bracketed-paste enable.
         deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline and not handle._bracketed_paste:  # noqa: SLF001
+        while time.monotonic() < deadline and not handle._bracketed_paste:
             time.sleep(0.05)
-        assert handle._bracketed_paste is True  # noqa: SLF001
+        assert handle._bracketed_paste is True
 
         handle.inject("one\ntwo\x1b[201~\x7f")
         deadline = time.monotonic() + 5.0
@@ -736,7 +736,7 @@ def test_close_does_not_block_behind_full_pty_input_queue(
     def _inject_large() -> None:
         try:
             handle.inject("x" * 5_000_000)
-        except BaseException as exc:  # noqa: BLE001 - asserted after close
+        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
             injected.append(exc)
 
     injector = threading.Thread(
@@ -775,7 +775,7 @@ def test_close_rereads_reader_ownership_after_reap(
     def close() -> None:
         try:
             handle.close()
-        except BaseException as exc:  # noqa: BLE001 - asserted below
+        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
             failures.append(exc)
 
     closer = threading.Thread(target=close, name="scheduled-closer")
@@ -804,7 +804,7 @@ def test_concurrent_close_has_one_reap_and_fd_owner() -> None:
     def close() -> None:
         try:
             handle.close()
-        except BaseException as exc:  # noqa: BLE001 - asserted below
+        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
             failures.append(exc)
 
     first = threading.Thread(target=close)
@@ -864,7 +864,8 @@ def test_request_close_cancels_active_and_queued_pty_writes(
     proc = _ScheduledPtyProcess()
     handle = _boundary_pty_handle(proc, master_socket.detach())
     writer_lock = _TrackingWriterLock(tracked_thread="queued-injector")
-    handle._normal_writer_lock = cast(Any, writer_lock)  # noqa: SLF001
+    # Install a white-box writer-serialization seam.
+    handle._normal_writer_lock = cast(Any, writer_lock)
     real_write = os.write
     active_write_started = threading.Event()
     release_active_write = threading.Event()
@@ -889,7 +890,7 @@ def test_request_close_cancels_active_and_queued_pty_writes(
     def inject(text: str) -> None:
         try:
             handle.inject(text)
-        except BaseException as exc:  # noqa: BLE001 - asserted below
+        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
             failures.append(exc)
 
     active = threading.Thread(
@@ -983,12 +984,13 @@ def test_queued_pty_inject_rechecks_retirement_under_serialization() -> None:
     handle = _boundary_pty_handle(proc, master_socket.detach())
     failures: list[BaseException] = []
     gate = _BlockingWriterLock()
-    handle._normal_writer_lock = cast(Any, gate)  # noqa: SLF001
+    # Install a white-box writer-serialization seam.
+    handle._normal_writer_lock = cast(Any, gate)
 
     def inject() -> None:
         try:
             handle.inject("queued before close")
-        except BaseException as exc:  # noqa: BLE001 - asserted below
+        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
             failures.append(exc)
 
     injector = threading.Thread(target=inject)
@@ -1287,7 +1289,7 @@ def test_interrupt_wins_over_inflight_pty_io_error(
     def inject() -> None:
         try:
             handle.inject("old-epoch")
-        except BaseException as exc:  # noqa: BLE001 - asserted below
+        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
             failures.append(exc)
 
     injector = threading.Thread(target=inject, name="injector")
@@ -1331,15 +1333,16 @@ def test_interrupt_cancellation_outranks_concurrent_reader_close(
     def inject() -> None:
         try:
             handle.inject("old-epoch")
-        except BaseException as exc:  # noqa: BLE001 - asserted below
+        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
             failures.append(exc)
 
     injector = threading.Thread(target=inject, name="injector")
     injector.start()
     assert write_entered.wait(timeout=1.0)
     handle.interrupt()
-    with handle._lifecycle_lock:  # noqa: SLF001 - deterministic reader-close race
-        handle._close_master_unlocked()  # noqa: SLF001
+    # Drive the private close path while holding its documented owner lock.
+    with handle._lifecycle_lock:
+        handle._close_master_unlocked()
     release_write.set()
     injector.join(timeout=2.0)
     proc.returncode = 0
@@ -1358,7 +1361,7 @@ def test_interrupt_at_write_lease_retirement_cancels_completed_write(
     master_socket, child_socket = socket.socketpair()
     proc = _ScheduledPtyProcess()
     handle = _boundary_pty_handle(proc, master_socket.detach())
-    real_close_operation_fd = handle._close_operation_fd  # noqa: SLF001
+    real_close_operation_fd = handle._close_operation_fd
     interrupt_published = False
 
     def interrupt_before_close(fd: int) -> None:
@@ -1530,7 +1533,7 @@ def test_interrupt_unblocks_full_pty_input_queue(
     def _inject_large() -> None:
         try:
             handle.inject("x" * 5_000_000)
-        except BaseException as exc:  # noqa: BLE001 - expected after interrupt
+        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
             injected.append(exc)
 
     injector = threading.Thread(
@@ -1562,7 +1565,8 @@ def test_interrupt_cancels_active_and_queued_writes_then_rearms(
     active_write_started = threading.Event()
     release_active_write = threading.Event()
     writer_lock = _TrackingWriterLock(tracked_thread="queued-injector")
-    handle._normal_writer_lock = cast(Any, writer_lock)  # noqa: SLF001
+    # Install a white-box writer-serialization seam.
+    handle._normal_writer_lock = cast(Any, writer_lock)
     first_active_write = True
     old_queued_write = threading.Event()
 
@@ -1584,7 +1588,7 @@ def test_interrupt_cancels_active_and_queued_writes_then_rearms(
     def inject(text: str) -> None:
         try:
             handle.inject(text)
-        except BaseException as exc:  # noqa: BLE001 - asserted below
+        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
             failures.append(exc)
 
     active = threading.Thread(
@@ -1784,7 +1788,7 @@ def test_attach_forwarding_serializes_with_injection(
     def inject() -> None:
         try:
             handle.inject("agent")
-        except BaseException as exc:  # noqa: BLE001 - asserted below
+        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
             failures.append(exc)
 
     injector = threading.Thread(target=inject)
@@ -1865,7 +1869,7 @@ def test_attach_output_failure_still_restores_input_termios(tmp_path: Path) -> N
                 input_fd=user_slave,
                 output_fd=output_w,
             )
-        except BaseException as exc:  # noqa: BLE001 - asserted below
+        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
             failures.append(exc)
 
     thread = threading.Thread(target=attach, daemon=True)

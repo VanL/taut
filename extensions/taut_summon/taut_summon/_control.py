@@ -525,7 +525,7 @@ class ControlLoop:
         if completed:
             try:
                 outcome = self._shutdown_outcome()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-067] exception
                 release_error = f"driver slot release confirmation failed: {exc}"
                 logger.error("%s", release_error)
         outcome_error = outcome.error_detail() if outcome is not None else None
@@ -562,7 +562,7 @@ class ControlLoop:
             self._audit_pass()
         except (BrokerError, OSError) as exc:
             self._mark_rate_audit_failure(exc)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-067] exception
             self._record_control_fault("rate audit", exc, recoverable=False)
             self._mark_unhealthy("rate audit", exc)
         else:
@@ -746,7 +746,7 @@ class ControlLoop:
         old_thread_queues = dict(self._thread_queues)
         try:
             handles = self._make_broker_handles()
-        except Exception as reopen_exc:  # noqa: BLE001 - STATUS should expose it
+        except Exception as reopen_exc:  # STATUS should expose the reopen failure.
             logger.exception(
                 "control broker handle reopen failed after %s error: %s",
                 where,
@@ -1050,10 +1050,13 @@ class ControlLoop:
         for row in rows:
             body, ts = cast("tuple[str, int]", row)
             highest = max(highest, ts)
-            if ts >= cutoff and decode_envelope(body).from_id == self._member_id:
-                if ts not in self._own_posts_seen:
-                    self._own_posts.append(ts)
-                    self._own_posts_seen.add(ts)
+            if (
+                ts >= cutoff
+                and decode_envelope(body).from_id == self._member_id
+                and ts not in self._own_posts_seen
+            ):
+                self._own_posts.append(ts)
+                self._own_posts_seen.add(ts)
         self._audit_cursor[thread] = highest
 
     def _audit_peek_many(

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Select immutable GitHub workflow and artifact evidence for a release SHA."""
+"""Select immutable GitHub workflow and artifact evidence for a release SHA."""  # noqa: N999 approved [DOM-10.2.1] [RUFF-SUP-075] exception
 
 from __future__ import annotations
 
@@ -847,7 +847,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-065] exception
         print(
             f"workflow evidence gate failed: {_one_line(str(exc))}",
             file=sys.stderr,

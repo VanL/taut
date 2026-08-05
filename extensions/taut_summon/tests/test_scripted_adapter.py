@@ -179,7 +179,7 @@ class EventPump:
         try:
             for event in handle.events():
                 self._items.put(event)
-        except Exception as exc:  # noqa: BLE001 - relayed to the test thread
+        except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
             self._items.put(exc)
 
     def next(self, timeout: float = 10.0) -> AdapterEvent:
@@ -432,7 +432,7 @@ def test_interrupt_unblocks_blocked_inject(tmp_path: Path) -> None:
             blocked.set()
             try:
                 handle.inject("x" * 8_000_000)
-            except Exception as exc:  # noqa: BLE001 - inspected below
+            except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
                 failures.append(exc)
 
         injector = threading.Thread(target=blocked_inject, daemon=True)
@@ -466,7 +466,7 @@ def test_request_close_unblocks_blocked_inject_and_rejects_later_inject(
             blocked.set()
             try:
                 handle.inject("x" * 8_000_000)
-            except Exception as exc:  # noqa: BLE001 - inspected below
+            except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
                 failures.append(exc)
 
         injector = threading.Thread(target=blocked_inject, daemon=True)
@@ -533,13 +533,14 @@ def test_queued_inject_rechecks_close_state_under_serialization() -> None:
     proc = _BlockingCloseProcess()
     handle = ScriptedHandle(cast(Any, proc), session_id=None)
     gate = _BlockingInjectLock()
-    handle._inject_lock = cast(Any, gate)  # noqa: SLF001 - lifecycle race seam
+    # Install a white-box lifecycle race seam.
+    handle._inject_lock = cast(Any, gate)
     failures: list[BaseException] = []
 
     def inject() -> None:
         try:
             handle.inject("queued before close")
-        except BaseException as exc:  # noqa: BLE001 - asserted below
+        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
             failures.append(exc)
 
     injector = threading.Thread(target=inject)
@@ -571,7 +572,7 @@ def test_interrupt_can_reenter_close_while_lifecycle_state_is_owned() -> None:
     def close() -> None:
         try:
             handle.close()
-        except BaseException as exc:  # noqa: BLE001 - asserted below
+        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
             failures.append(exc)
 
     closer = threading.Thread(target=close, daemon=True)
@@ -601,7 +602,7 @@ def test_interrupt_can_reenter_close_during_process_wait() -> None:
     def close() -> None:
         try:
             handle.close()
-        except BaseException as exc:  # noqa: BLE001 - asserted below
+        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
             failures.append(exc)
 
     closer = threading.Thread(target=close, daemon=True)
@@ -670,7 +671,7 @@ def test_concurrent_close_has_one_escalation_and_stream_closer() -> None:
     def close() -> None:
         try:
             handle.close()
-        except BaseException as exc:  # noqa: BLE001 - asserted below
+        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
             failures.append(exc)
 
     first = threading.Thread(target=close)

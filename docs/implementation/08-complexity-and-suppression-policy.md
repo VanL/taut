@@ -2,20 +2,26 @@
 
 ## Purpose
 
-Taut enables Ruff `C901` at McCabe complexity 10 across every first-party
-Python source. The score is an audit signal. It does not override cohesion,
-failure locality, transaction ownership, or real-process proof.
+Taut uses Ruff's stable defaults plus the reviewed `E`, `W`, `F`, `I`, `B`,
+`C901`, `C4`, and `UP` families across every first-party Python source. `C901`
+stays at McCabe complexity 10. Lint findings are audit signals; they do not
+override cohesion, failure locality, transaction ownership, resource lifetime,
+public error shape, or real-process proof.
 
 The governing contract is [DOM-10.2] and [DOM-10.2.1] in
 `docs/specs/01-development-documentation-operating-model.md`.
 
 ## Ownership and boundaries
 
-The root and MCP Ruff configurations explicitly select the reviewed rule
-families. All four development manifests pin the same Ruff version. Root CI
-owns repository-wide `ruff check .` and suppression reconciliation; PG and MCP
-jobs keep their scoped extension checks as independent environment proof.
-Formatting retains its prior explicit paths.
+The root and MCP Ruff configurations retain Ruff's stable defaults through
+`extend-select` and add the same reviewed families. Both ignore only `E501` and
+`B008`; preview rules remain opt-in. All four development manifests pin the
+same Ruff version. `tests/fixtures/ruff-enabled-rules.txt` owns the exact
+reviewed 453-rule inventory for that version, and `tests/test_ruff_policy.py`
+proves both real environments resolve it. Root CI owns repository-wide
+`ruff check .` and suppression reconciliation; PG and MCP jobs keep their
+scoped extension checks as independent environment proof. Formatting retains
+its prior explicit paths.
 
 The source directive owns only rule codes and a stable group pointer. The human
 DOM-10.2.1 table owns approval, cardinality, protected invariant, real proof,
@@ -68,3 +74,9 @@ uv run --extra dev python bin/ruff_suppression_index.py --check
 Never use a threshold increase, per-file ignore, blanket file directive, or
 baseline allowlist to absorb a new finding. Refactor at a real ownership seam
 or add a reviewed narrow group with firing behavioral proof.
+
+When the Ruff pin changes, review the stable-default delta before updating the
+fixture. Re-run normal Ruff and the raw `--ignore-noqa` audit, re-evaluate every
+affected suppression rather than grandfathering it, update both configurations
+together, and regenerate the derived index only after explicit approval of any
+changed human-owned registry field.

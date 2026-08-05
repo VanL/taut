@@ -18,7 +18,7 @@ from tempfile import TemporaryDirectory
 import pytest
 from simplebroker import Queue
 
-import taut.identity as identity
+from taut import identity
 from taut.client import TautClient
 from taut.envelope import encode_envelope
 

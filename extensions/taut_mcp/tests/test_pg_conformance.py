@@ -9,9 +9,8 @@ from typing import Any
 
 import pytest
 
-import taut.identity as identity
 import taut_mcp._workspace_reactor as workspace_reactor
-from taut import TautClient
+from taut import TautClient, identity
 from taut_mcp._process_reactor import ProcessReactor
 
 

@@ -86,7 +86,7 @@ def test_standalone_human_records_inherit_project_terminal_policy(
     from taut_summon.cli import _print_live_member
 
     (tmp_path / ".taut.toml").write_text(
-        "\n".join(
+        "\n".join(  # noqa: FLY002 approved [DOM-10.2.1] [RUFF-SUP-072] exception
             (
                 "version = 1",
                 'backend = "sqlite"',
@@ -149,12 +149,12 @@ def test_summon_logging_formatter_escapes_messages_and_bootstraps_safely(
 
     from taut_summon.commands.summon import _TerminalSafeFormatter
 
-    import taut.terminal as terminal
+    from taut import terminal
 
     output = StringIO()
     handler = logging.StreamHandler(output)
     handler.setFormatter(_TerminalSafeFormatter("%(name)s %(levelname)s %(message)s"))
-    logger = logging.Logger("summon-test")
+    logger = logging.Logger("summon-test")  # noqa: LOG001 approved [DOM-10.2.1] [RUFF-SUP-080] exception
     logger.addHandler(handler)
     logger.propagate = False
     logger.warning("assistant %s", "text\x1b]52;c;Y2xpcGJvYXJk\x07\nrow")
@@ -273,7 +273,7 @@ def test_standalone_policy_failure_is_one_fixed_exit_one_diagnostic(
 ) -> None:
     from taut_summon.cli import main
 
-    import taut.terminal as terminal
+    from taut import terminal
 
     (tmp_path / "defaults.toml").write_text("terminal_text = [", encoding="utf-8")
     monkeypatch.setattr(terminal.resources, "files", lambda _package: tmp_path)
@@ -302,7 +302,7 @@ def test_standalone_project_policy_failure_preflights_before_controller(
     from taut_summon.cli import main
 
     (tmp_path / ".taut.toml").write_text(
-        "\n".join(
+        "\n".join(  # noqa: FLY002 approved [DOM-10.2.1] [RUFF-SUP-072] exception
             (
                 "version = 1",
                 'backend = "sqlite"',

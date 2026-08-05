@@ -31,12 +31,12 @@ import sys
 import time
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace, TracebackType
-from typing import Any, cast
+from typing import Any, Self, cast
 
 import psutil
 import pytest
 
-import taut.identity as identity
+from taut import identity
 from taut._constants import (
     HISTORICAL_NAME_POOL,
     PER_BASENAME_NAME_POOLS,
@@ -79,6 +79,7 @@ def _taut_via_shell(
         capture_output=True,
         text=True,
         timeout=20,
+        check=False,
     )
 
 
@@ -89,6 +90,7 @@ def _init_db(cwd: Path) -> None:
         capture_output=True,
         text=True,
         timeout=20,
+        check=False,
     )
     assert completed.returncode == 0, completed.stderr
 
@@ -580,7 +582,7 @@ def test_capture_psutil_process_reads_best_effort_fields(  # noqa: C901 approved
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeOneshot:
-        def __enter__(self) -> FakeOneshot:
+        def __enter__(self) -> Self:
             return self
 
         def __exit__(
@@ -647,7 +649,7 @@ def test_capture_psutil_process_returns_none_when_psutil_fails(
     assert identity._capture_psutil_process(123) is None
 
     class BrokenOneshot:
-        def __enter__(self) -> BrokenOneshot:
+        def __enter__(self) -> Self:
             raise psutil.Error("gone")
 
         def __exit__(
@@ -1206,6 +1208,7 @@ def test_anchor_match_survives_anchor_chdir_in_real_chain(tmp_path: Path) -> Non
         capture_output=True,
         text=True,
         timeout=120,
+        check=False,
         # The harness invokes `python -m taut`; without the repo on
         # PYTHONPATH it could import an installed taut and prove nothing
         # about the working tree.

@@ -46,9 +46,11 @@ def test_required_coverage_paths_requires_every_marker(tmp_path: Path) -> None:
     missing = module.missing_required_paths(data_file)
 
     assert missing == [
-        "extensions/taut_summon/taut_summon/_control.py:"
-        f"{module._marker_line(PROJECT_ROOT / 'extensions/taut_summon/taut_summon/_control.py', 'self._reconcile_audit_threads()')} "
-        "(self._reconcile_audit_threads())"
+        (
+            "extensions/taut_summon/taut_summon/_control.py:"
+            f"{module._marker_line(PROJECT_ROOT / 'extensions/taut_summon/taut_summon/_control.py', 'self._reconcile_audit_threads()')} "
+            "(self._reconcile_audit_threads())"
+        )
     ]
 
 
@@ -87,6 +89,8 @@ def test_required_coverage_paths_rejects_missing_mcp_rate_debit(
     missing = module.missing_required_paths(data_file)
 
     assert missing == [
-        f"{relative.as_posix()}:{module._marker_line(PROJECT_ROOT / relative, marker)} "
-        f"({marker})"
+        (
+            f"{relative.as_posix()}:{module._marker_line(PROJECT_ROOT / relative, marker)} "
+            f"({marker})"
+        )
     ]

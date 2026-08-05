@@ -392,7 +392,7 @@ class PtyHandle:
             self._reap_child()
         except AdapterError as exc:
             failure = exc
-        except Exception as exc:  # pragma: no cover - defensive Popen boundary
+        except Exception as exc:  # pragma: no cover  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-067] exception
             failure = AdapterError(f"PTY child cleanup failed: {exc}")
             failure.__cause__ = exc
         finally:

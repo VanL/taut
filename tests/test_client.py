@@ -4,7 +4,7 @@ import json
 import threading
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Self, cast
 
 import pytest
 from simplebroker import BrokerTarget, Queue, open_broker, resolve_broker_target
@@ -12,8 +12,7 @@ from simplebroker.ext import IntegrityError
 
 import taut.client._base as client_base
 import taut.client._messaging as messaging
-import taut.identity as identity
-from taut import addressing
+from taut import addressing, identity
 from taut._constants import META_QUEUE_NAME, load_config
 from taut._exceptions import (
     AmbiguousMessageError,
@@ -501,7 +500,7 @@ def test_react_to_message_is_best_effort_after_cursor_advance(
     calls: list[tuple[str, ...]] = []
 
     class FailingBroker:
-        def __enter__(self) -> FailingBroker:
+        def __enter__(self) -> Self:
             return self
 
         def __exit__(self, *_args: object) -> None:
@@ -1379,7 +1378,7 @@ def test_concurrent_delete_message_has_exactly_one_winner(
     def delete(index: int, actor: TautClient) -> None:
         try:
             outcomes[index] = actor.delete_message(str(target.ts))
-        except BaseException as exc:  # pragma: no cover - asserted below
+        except BaseException as exc:  # pragma: no cover  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
             outcomes[index] = exc
 
     workers = [
@@ -3206,7 +3205,7 @@ def test_reply_join_race_may_emit_one_stale_pointer(
     def post_reply() -> None:
         try:
             replies.append(bob.reply("general", str(root.ts), "raced reply"))
-        except BaseException as exc:  # pragma: no cover - asserted below
+        except BaseException as exc:  # pragma: no cover  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
             errors.append(exc)
 
     worker = threading.Thread(target=post_reply)
@@ -5192,8 +5191,10 @@ def test_dm_mentions_suppressed_when_registry_row_lacks_members_meta(
     van.say("@bob", "hello @bob")
 
     assert van.last_notification_warnings == [
-        "mention notifications suppressed: direct-message registry row for "
-        f"{thread} lacks participant metadata"
+        (
+            "mention notifications suppressed: direct-message registry row for "
+            f"{thread} lacks participant metadata"
+        )
     ]
     with pytest.raises(EmptyResultError):
         bob.inbox()
@@ -5251,8 +5252,10 @@ def test_dm_mentions_suppressed_on_wrong_participant_cardinality(
     van.say("@bob", "hello @bob and @eve")
 
     assert van.last_notification_warnings == [
-        "mention notifications suppressed: direct-message registry row for "
-        f"{thread} lacks participant metadata"
+        (
+            "mention notifications suppressed: direct-message registry row for "
+            f"{thread} lacks participant metadata"
+        )
     ]
     with pytest.raises(EmptyResultError):
         eve.inbox()

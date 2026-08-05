@@ -340,7 +340,7 @@ def test_markdown_sources_match_the_maintained_contract() -> None:
 def test_extracts_inline_and_fenced_shell_like_claims(tmp_path: Path) -> None:
     source = tmp_path / "claims.md"
     source.write_text(
-        "\n".join(
+        "\n".join(  # noqa: FLY002 approved [DOM-10.2.1] [RUFF-SUP-072] exception
             (
                 "Use `taut channel show dev` or ``TAUT_TOKEN=x taut say dev hi``.",
                 "The package name `taut` and prose saying taut channel are inert.",
@@ -413,7 +413,7 @@ def test_stale_and_missing_command_paths_fail_with_source_and_line(
 def test_prompt_env_root_global_and_pipeline_forms_validate(tmp_path: Path) -> None:
     source = tmp_path / "README.md"
     source.write_text(
-        "\n".join(
+        "\n".join(  # noqa: FLY002 approved [DOM-10.2.1] [RUFF-SUP-072] exception
             (
                 "`$ taut --json channel show dev`",
                 "`TAUT_TOKEN=secret taut message --quiet show 1800000000000000001`",

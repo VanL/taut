@@ -248,7 +248,7 @@ class ConformanceHarness:
             for entry in client.list_threads(all_threads=True):
                 if entry.name == thread:
                     return entry.unread_count
-        except Exception:  # noqa: BLE001 - transient during teardown
+        except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
             return -1
         return -1
 
@@ -266,7 +266,7 @@ class ConformanceHarness:
             return []
         try:
             log = TautClient(db_path=self.summon_db).log(thread)
-        except Exception:  # noqa: BLE001 - transient during teardown
+        except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
             return []
         return [m for m in log if m.from_id == member.member_id and m.kind == "message"]
 
@@ -610,6 +610,7 @@ def _run_summon(*args: str, cwd: Path, env: dict[str, str]) -> tuple[int, str, s
         text=True,
         encoding="utf-8",
         timeout=60.0,
+        check=False,
     )
     return completed.returncode, completed.stdout.strip(), completed.stderr.strip()
 

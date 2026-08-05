@@ -3,7 +3,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 from types import TracebackType
-from typing import Any
+from typing import Any, Self
 
 import pytest
 
@@ -166,7 +166,7 @@ def test_host_port_accepts_connections_reports_invalid_success_and_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeConnection:
-        def __enter__(self) -> FakeConnection:
+        def __enter__(self) -> Self:
             return self
 
         def __exit__(
@@ -312,7 +312,7 @@ def test_verify_postgres_test_dsn_from_env_connects_until_select_succeeds(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeCursor:
-        def __enter__(self) -> FakeCursor:
+        def __enter__(self) -> Self:
             return self
 
         def __exit__(
@@ -330,7 +330,7 @@ def test_verify_postgres_test_dsn_from_env_connects_until_select_succeeds(
             return (1,)
 
     class FakeConnection:
-        def __enter__(self) -> FakeConnection:
+        def __enter__(self) -> Self:
             return self
 
         def __exit__(

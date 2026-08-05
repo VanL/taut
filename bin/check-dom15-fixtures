@@ -45,7 +45,7 @@ def strip_fenced_blocks(text: str) -> str:
     out, fenced = [], False
     for line in text.splitlines():
         stripped = line.lstrip()
-        if stripped.startswith("```") or stripped.startswith("~~~"):
+        if stripped.startswith(("```", "~~~")):
             fenced = not fenced
             continue
         if not fenced:
@@ -104,11 +104,14 @@ def check(section: str) -> list[str]:  # noqa: C901 approved [DOM-10.2.1] [RUFF-
             seen_classes.add(cls.split()[-1][0])
         else:
             seen_classes.add(cls[0])
-        if cls[0] in ("1", "2") and not cls.startswith("Escalate"):
-            if not any(m in fact for m in NEGATIVE_FACT_MARKERS):
-                problems.append(
-                    f"class-{cls[0]} fixture missing negative-trigger facts: {fact[:60]}..."
-                )
+        if (
+            cls[0] in ("1", "2")
+            and not cls.startswith("Escalate")
+            and not any(m in fact for m in NEGATIVE_FACT_MARKERS)
+        ):
+            problems.append(
+                f"class-{cls[0]} fixture missing negative-trigger facts: {fact[:60]}..."
+            )
 
     for required in ("0", "1", "2", "3", "4", "5", "+P"):
         if required not in seen_classes:
@@ -214,6 +217,6 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except Exception as exc:  # the no-traceback floor: fail loud, fail clean
+    except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-065] exception
         print(f"check-dom15-fixtures: internal error: {exc}")
         sys.exit(2)

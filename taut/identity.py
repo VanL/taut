@@ -734,7 +734,7 @@ def _login_name(uid: int) -> str:
             pass
     try:
         return getpass.getuser()
-    except Exception:
+    except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-068] exception
         return platform.node() or "human"
 
 

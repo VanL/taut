@@ -149,7 +149,7 @@ class MessagingMixin(_ClientBase):
                     queue_names=queue_names,
                     create_missing=True,
                 )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-068] exception
             self.last_notification_warnings.append(
                 f"reaction notification broadcast failed: {exc}"
             )

@@ -19,7 +19,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 import pytest
 import taut_summon._control as control_module
@@ -485,7 +485,7 @@ def test_control_reactor_rejects_second_drive_caller(tmp_path: Path) -> None:
         def drive() -> None:
             try:
                 reactor.process_once()
-            except BaseException as exc:
+            except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
                 errors.append(exc)
 
         thread = threading.Thread(target=drive)
@@ -1167,7 +1167,7 @@ def test_control_reactor_native_activity_wakes_before_probe_interval(
             waiting.set()
             reactor.wait_for_activity(timeout=10.0)
             reactor.process_once()
-        except BaseException as exc:
+        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
             errors.append(exc)
         finally:
             reactor.stop(join=False)
@@ -1403,7 +1403,7 @@ def test_partial_control_handle_construction_closes_every_created_owner(
 
     class FakeClient:
         target = "unused"
-        config: dict[str, Any] = {}
+        config: ClassVar[dict[str, Any]] = {}
 
         def __init__(
             self,
@@ -1501,7 +1501,7 @@ def test_control_loop_constructs_and_closes_persistent_handles_on_owner_thread(
     def run() -> None:
         try:
             loop.run()
-        except BaseException as exc:
+        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
             errors.append(exc)
 
     owner = threading.Thread(target=run)
@@ -1574,7 +1574,7 @@ def test_control_loop_real_correlated_ping_round_trip(tmp_path: Path) -> None:
     def run() -> None:
         try:
             loop.run()
-        except BaseException as exc:
+        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
             errors.append(exc)
 
     owner = threading.Thread(target=run)
@@ -1701,7 +1701,7 @@ def test_control_loop_cross_process_ping_wakes_and_replies(tmp_path: Path) -> No
     def run() -> None:
         try:
             loop.run()
-        except BaseException as exc:
+        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
             errors.append(exc)
 
     owner = threading.Thread(target=run)

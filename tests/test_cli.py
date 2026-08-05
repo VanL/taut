@@ -16,8 +16,7 @@ from typing import TextIO, cast
 import pytest
 from simplebroker import Queue
 
-import taut.cli as cli
-from taut import addressing
+from taut import addressing, cli
 from taut._constants import META_QUEUE_NAME
 from taut._exceptions import TautError
 from taut.client import InitResult, Message, TautClient, _validate_sqlite_path
@@ -3320,14 +3319,17 @@ def test_cli_summon_without_extension_exits_1_with_install_hint(
             sys.executable,
             "-S",
             "-c",
-            "import importlib.util; import sys; "
-            "sys.exit(3 if importlib.util.find_spec('taut_summon') else 0)",
+            (
+                "import importlib.util; import sys; "
+                "sys.exit(3 if importlib.util.find_spec('taut_summon') else 0)"
+            ),
         ],
         cwd=tmp_path,
         env=env,
         capture_output=True,
         text=True,
         timeout=20,
+        check=False,
     )
     assert probe.returncode == 0, "guard: taut_summon still importable under -S"
 
@@ -3338,6 +3340,7 @@ def test_cli_summon_without_extension_exits_1_with_install_hint(
         capture_output=True,
         text=True,
         timeout=20,
+        check=False,
     )
 
     assert completed.returncode == 1, completed.stderr

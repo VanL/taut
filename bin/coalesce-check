@@ -52,9 +52,9 @@ CUE_RE = re.compile(r"git show ([0-9a-f]{7,40}):([A-Za-z0-9_./-]+)")
 # taut's declared lessons derivation (skills/coalescing/SKILL.md step 2):
 #   grep -E '^- 20[0-9]{2}-[0-9]{2}-[0-9]{2}:' docs/lessons.md
 # The trailing colon is part of the contract; keep it.
-LESSON_RE = re.compile(r"^- (20[0-9]{2}-[0-9]{2}-[0-9]{2}):", re.M)
+LESSON_RE = re.compile(r"^- (20[0-9]{2}-[0-9]{2}-[0-9]{2}):", re.MULTILINE)
 WATERMARK_RE = re.compile(
-    r"^\|\s*Lessons\s*\|\s*(20[0-9]{2}-[0-9]{2}-[0-9]{2})\s*\|", re.M
+    r"^\|\s*Lessons\s*\|\s*(20[0-9]{2}-[0-9]{2}-[0-9]{2})\s*\|", re.MULTILINE
 )
 
 # Foreign attribution is a REPORTING aid, never a resolution mechanism: it
@@ -91,6 +91,7 @@ def git(*args: str, repo: Path | None = None) -> subprocess.CompletedProcess:
         ["git", "-C", str(repo or REPO_ROOT), *args],
         capture_output=True,
         text=True,
+        check=False,
     )
 
 
@@ -245,6 +246,6 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except Exception as exc:  # pragma: no cover - defensive
+    except Exception as exc:  # pragma: no cover  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-065] exception
         print(f"coalesce-check: internal error: {exc}")
         sys.exit(2)

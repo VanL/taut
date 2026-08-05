@@ -75,7 +75,8 @@ def _typed_public_surface(
 
 
 def test_exception_leaves_are_public_exports() -> None:
-    assert taut.__all__ == EXPECTED_PUBLIC_EXPORTS
+    assert len(taut.__all__) == len(set(taut.__all__)) == len(EXPECTED_PUBLIC_EXPORTS)
+    assert set(taut.__all__) == set(EXPECTED_PUBLIC_EXPORTS)
     assert issubclass(taut.BlankMessageError, taut.EmptyResultError)
     assert taut.NotFoundError.__name__ == "NotFoundError"
     assert taut.TokenError.__name__ == "TokenError"

@@ -123,15 +123,15 @@ line-length = 88
 extend-include = ["bin/*"]
 
 [tool.ruff.lint]
-select = [
+extend-select = [
     "E",
     "W",
     "F",
     "I",
     "B",
+    "C901",
     "C4",
     "UP",
-    "C901",
 ]
 ignore = [
     "E501",

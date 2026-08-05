@@ -81,6 +81,6 @@ if __name__ == "__main__":
         sys.exit(main())
     except SystemExit:
         raise
-    except Exception as exc:  # pragma: no cover - defensive environment boundary
+    except Exception as exc:  # pragma: no cover  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-065] exception
         print(f"check-cli-claims: internal error: {exc}")
         sys.exit(2)

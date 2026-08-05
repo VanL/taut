@@ -412,7 +412,7 @@ def run_cli(
         # (e.g. invalid UTF-8 probes). Output is decoded back to str here
         # so the (int, str, str) return contract is identical.
         kwargs["input"] = stdin_bytes
-        completed = subprocess.run(cmd, text=False, **kwargs)
+        completed = subprocess.run(cmd, text=False, check=False, **kwargs)
         return (
             completed.returncode,
             completed.stdout.decode("utf-8", errors="replace").strip(),
@@ -421,7 +421,7 @@ def run_cli(
     kwargs.update(text=True, encoding="utf-8", errors="replace")
     if stdin is not None:
         kwargs["input"] = stdin
-    completed = subprocess.run(cmd, **kwargs)
+    completed = subprocess.run(cmd, check=False, **kwargs)
     return (
         completed.returncode,
         completed.stdout.strip(),

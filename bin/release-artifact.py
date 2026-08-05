@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-"""Create and verify immutable release-distribution bundles."""
+"""Create and verify immutable release-distribution bundles."""  # noqa: N999 approved [DOM-10.2.1] [RUFF-SUP-075] exception
 
 from __future__ import annotations
 

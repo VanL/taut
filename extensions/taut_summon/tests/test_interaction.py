@@ -14,7 +14,7 @@ import sys
 import threading
 import time
 from collections.abc import Iterator
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import AbstractContextManager, contextmanager, suppress
 from pathlib import Path
 from typing import Any
 
@@ -100,7 +100,7 @@ def _start_foreground_run(
     def run() -> None:
         try:
             SummonController(db_path=db).run_foreground(request, interaction)
-        except BaseException as exc:  # noqa: BLE001 - relayed to the test thread
+        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
             failures.append(exc)
 
     thread = threading.Thread(target=run, daemon=True, name="rich-host-summon")
@@ -223,7 +223,7 @@ def test_shell_interaction_refuses_lease_after_unavailable_probe(
     interaction = ShellSummonInteraction()
     interaction.terminal_availability(TerminalIntent.REQUIRED)
 
-    with pytest.raises(RuntimeError, match="terminal is not available"):
+    with pytest.raises(RuntimeError, match="terminal is not available"):  # noqa: SIM117 approved [DOM-10.2.1] [RUFF-SUP-074] exception
         with interaction.terminal_lease():
             pytest.fail("unavailable shell interaction granted a lease")
 
@@ -325,7 +325,7 @@ def test_controller_rejects_worker_thread_signal_opt_in_before_lifecycle(
                 ShellSummonInteraction(),
                 install_signal_handlers=True,
             )
-        except BaseException as exc:  # noqa: BLE001 - relayed to test owner
+        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
             failures.append(exc)
 
     thread = threading.Thread(target=run)
@@ -652,7 +652,7 @@ def test_rich_host_identity_remains_usable_while_scripted_driver_runs(
                 ),
                 ShellSummonInteraction(),
             )
-        except BaseException as exc:  # noqa: BLE001 - relayed to test owner
+        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
             failures.append(exc)
 
     thread = threading.Thread(target=run, daemon=True, name="rich-host-identity")
@@ -687,13 +687,11 @@ def test_rich_host_identity_remains_usable_while_scripted_driver_runs(
         assert os.environ["TAUT_TOKEN"] == host_member.token
     finally:
         if thread.is_alive():
-            try:
+            with suppress(Exception):  # noqa: SIM117 approved [DOM-10.2.1] [RUFF-SUP-074] exception
                 with monkeypatch.context() as stop_environment:
                     stop_environment.delenv("TAUT_AS")
                     stop_environment.delenv("TAUT_TOKEN")
                     controller.stop("hosted")
-            except Exception:
-                pass
             thread.join(timeout=10.0)
 
 
@@ -867,7 +865,7 @@ def test_rich_host_real_pty_lease_wires_once_then_wired_resume_skips_lease(  # n
         def stop_second() -> None:
             try:
                 SummonController(db_path=summon_db).stop("hosted")
-            except BaseException as exc:  # noqa: BLE001 - relayed to test owner
+            except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
                 stop_failures.append(exc)
 
         stop_thread = threading.Thread(
@@ -935,7 +933,7 @@ def test_driver_stop_during_rich_host_attach_restores_and_releases_lease(
     def run() -> None:
         try:
             driver.run()
-        except BaseException as exc:  # noqa: BLE001 - relayed to the test thread
+        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
             failures.append(exc)
 
     thread = threading.Thread(target=run, daemon=True, name="stopped-rich-host")

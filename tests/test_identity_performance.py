@@ -20,7 +20,7 @@ from typing import Literal
 
 import pytest
 
-import taut.identity as identity
+from taut import identity
 from taut.client import Message, TautClient
 
 pytestmark = [pytest.mark.sqlite_only, pytest.mark.slow]

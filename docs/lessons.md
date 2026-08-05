@@ -744,6 +744,18 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   operation boundary; do not clone dependency internals to preserve an old
   incidental behavior.
 
+- 2026-08-05: `uv --project` selects the dependency project but does not
+  change the command's working directory. Verification commands must still use
+  repository-relative paths (or an explicit directory contract). For the
+  intentionally lockless PG extension, use the root dev environment plus an
+  editable PG install for ordinary collection rather than creating a
+  non-canonical lock as a probe side effect.
+
+- 2026-08-05: An exact list comparison for `__all__` silently makes iteration
+  order part of the public contract. When only export membership is intended,
+  assert set equality and assert cardinality separately so order may be
+  normalized without allowing duplicates.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-"""Build and check one fresh paired Taut/Taut Summon release-wheel set."""
+"""Build and check one fresh paired Taut/Taut Summon release-wheel set."""  # noqa: N999 approved [DOM-10.2.1] [RUFF-SUP-075] exception
 
 from __future__ import annotations
 

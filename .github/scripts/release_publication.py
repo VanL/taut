@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Verify and advance exact draft-first package publication state."""
 
 from __future__ import annotations
@@ -50,7 +49,7 @@ class _GitHubAssetsPending(RuntimeError):
 
 def _mapping(value: object, *, label: str) -> Mapping[str, object]:
     if not isinstance(value, Mapping):
-        raise RuntimeError(f"{label} was not a JSON object")
+        raise RuntimeError(f"{label} was not a JSON object")  # noqa: TRY004 approved [DOM-10.2.1] [RUFF-SUP-073] exception
     return value
 
 
@@ -230,7 +229,7 @@ def pypi_release_files(package: str, version: str) -> dict[str, str] | None:  # 
 
     raw_urls = payload.get("urls")
     if not isinstance(raw_urls, list):
-        raise RuntimeError("PyPI response urls was not a JSON list")
+        raise RuntimeError("PyPI response urls was not a JSON list")  # noqa: TRY004 approved [DOM-10.2.1] [RUFF-SUP-073] exception
     files: dict[str, str] = {}
     for raw_file in raw_urls:
         file_record = _mapping(raw_file, label="PyPI file")
@@ -344,7 +343,7 @@ def _release_page(repo: str, page: int) -> tuple[Mapping[str, object], ...]:
         f"/repos/{encoded_repo}/releases?per_page=100&page={page}",
     )
     if not isinstance(value, list):
-        raise RuntimeError("GitHub releases response was not a JSON list")
+        raise RuntimeError("GitHub releases response was not a JSON list")  # noqa: TRY004 approved [DOM-10.2.1] [RUFF-SUP-073] exception
     return tuple(_mapping(release, label="GitHub Release") for release in value)
 
 
@@ -441,7 +440,7 @@ def require_exact_assets(
 
     raw_assets = release.get("assets")
     if not isinstance(raw_assets, list):
-        raise RuntimeError("GitHub Release asset set was not a JSON list")
+        raise RuntimeError("GitHub Release asset set was not a JSON list")  # noqa: TRY004 approved [DOM-10.2.1] [RUFF-SUP-073] exception
     seen: set[str] = set()
     observed: dict[str, str] = {}
     incomplete: list[str] = []
@@ -662,7 +661,7 @@ def _write_outputs(values: Mapping[str, str]) -> None:
     if not output_path:
         raise RuntimeError("GITHUB_OUTPUT is required")
     with Path(output_path).open("a", encoding="utf-8") as stream:
-        for name, value in values.items():
+        for name, value in values.items():  # noqa: FURB122 approved [DOM-10.2.1] [RUFF-SUP-079] exception
             stream.write(f"{name}={value}\n")
 
 

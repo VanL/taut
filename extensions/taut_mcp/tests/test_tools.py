@@ -13,9 +13,8 @@ import pytest
 from jsonschema import ValidationError, validate
 from simplebroker import BrokerTarget
 
-import taut.identity as identity
 import taut_mcp._workspace_reactor as workspace_reactor
-from taut import MessageDeletion, Notification, TautClient, TautError
+from taut import MessageDeletion, Notification, TautClient, TautError, identity
 from taut_mcp._commands import RECORD_TYPE_BY_TOOL, execute_command, record_object
 from taut_mcp._process_reactor import (
     ProcessReactor,

@@ -301,7 +301,7 @@ def test_fixed_attachment_rejections_pin_literal_recovery_text(
         "invalid-reaction",
     )
     (invalid_reaction_workspace / ".taut.toml").write_text(
-        "\n".join(
+        "\n".join(  # noqa: FLY002 approved [DOM-10.2.1] [RUFF-SUP-072] exception
             [
                 "version = 1",
                 'backend = "sqlite"',
