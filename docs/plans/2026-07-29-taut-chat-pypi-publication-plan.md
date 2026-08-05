@@ -704,6 +704,8 @@ Implementation gate:
 | I15 | Canonical workflows `31042098270`, `31042100480`, and `31042103597` all passed at `33a3d73`, including Windows 3.11-3.14 and the hosted local-LLM smoke. The first publication attempts failed OIDC against incorrect PyPI publisher records. After the owner corrected those records to match the SimpleBroker per-package workflow model, attempt 2 uploaded all eight 0.8.1 files, then every postflight failed because the PyPI action had added attestation sidecars to `dist/` and the verifier correctly rejected the expanded local set. | Keep the strict allowlist. After the publish action, reverify the carried bundle into a distinct empty `postflight-dist` directory and compare PyPI against those reconstructed wheel/sdist bytes. Do not delete or ignore action-generated files in the upload directory. Since PyPI 0.8.1 is irreversible, keep its tags fixed, verify and finalize the exact staged drafts through the existing finalizer logic, and prove the corrected normal machinery with coordinated 0.8.2. Recovery reruns failed jobs only, reusing the attempt-bound carried artifact; it must not rerun successful staging and substitute rebuilt bytes. | Four parametrized workflow tests failed before the new postflight stage. Attempt-2 logs and PyPI JSON prove the upload succeeded before the local-set rejection; every project exposes exactly one wheel and one sdist, non-yanked. Final local, independent-review, 0.8.1 recovery, and 0.8.2 rollout evidence follows. |
 | R13 | Independent I15 review passed the clean-directory design and blocked on tests that proved only package-independent postflight strings, allowing a copied wrong `--package-dir` to reach hosted release failure. It also noted ambiguous first-occurrence ordering, no explicit rejection of the old `dist` postflight, and an unstated failed-jobs-only recovery dependency. | Accepted all findings. The four-case test now extracts the named reconstruction and postflight steps, asserts the exact per-package directory plus bundle/commit/tag/output inputs, proves the step is unconditional, requires exactly one remote verifier, uses last-occurrence ordering, and rejects `--dist-dir dist`. The recovery plan now requires failed-jobs-only reuse of the carried artifact. | Claude Opus, 2026-08-05, read-only BLOCKED; a corrected follow-up is required before commit. |
 | R14 | I15 follow-up rechecked every R13 correction against the exact test delta. | Passed. Per-package reconstruction wiring, full provenance inputs, unconditional rerun behavior, unique verifier ordering, old-directory rejection, and failed-jobs-only recovery are all explicit firing contracts. | Claude Opus, 2026-08-05, read-only PASS; no remaining finding. |
+| I16 | The first local 0.8.2 proof stopped before tags and pushes because the MCP precheck used the persistent extension environment's 0.8.1 distribution metadata after preparing 0.8.2 source. | Retain the non-mutating `--no-sync` boundary, but overlay the prepared root and MCP trees for the MCP pytest command. A subprocess probe compares both installed distribution versions with their independent TOML manifests. Exact-command pins separately ensure both overlays remain present even when a developer's persistent environment happens already to be current. | The new probe failed under the old command with both distributions at 0.8.1 and both manifests at 0.8.2. The overlay command passed twice, then the full MCP lane passed with 206 tests and 6 PG-only deselections. |
+| R15 | Independent I16 review initially blocked because command tuple tests alone did not prove metadata freshness, the root overlay lacked a firing proof, and future uv cache reuse needed a fail-closed check. | Accepted. The subprocess probe now covers both distributions, inherited child execution, and stale cached metadata; the structural pins cover overlay removal in an already-current environment. | Claude Opus, 2026-08-05, read-only BLOCKED then PASS after the firing test and two consecutive overlay executions. |
 
 ## 14. Deviation Log
 
@@ -801,3 +803,34 @@ second unnecessary test write. The policy tests now disable that cache. The
 root and MCP manifest/lock checks remain the configured-pin proof; the Ruff
 module installed into the canonical dev-extra test interpreter is the runtime
 pin proof.
+
+Final rollout evidence on 2026-08-05:
+
+- The normal coordinated command
+  `uv run --no-sync --extra dev python bin/release.py all -v 0.8.2` passed
+  without `--skip-checks` and tagged all four packages at
+  `a12a8fa9eb6d1a4c954abc4d08a1fcb49733587d`. Local preflight took 235.56
+  seconds, down from 262.44 seconds for the successful 0.8.1 preflight (26.88
+  seconds, or 10.2%, faster) while retaining the live local-LLM smoke and adding
+  the MCP metadata-freshness probe.
+- Canonical root Test `31048764592`, PG Test `31048762407`, and MCP Test
+  `31048762562` passed at that exact SHA. Root included the hosted local-LLM
+  smoke and Windows 3.11 through 3.14. Their wall times were 1,039, 103, and 223
+  seconds. Compared with the prior green 0.8.1 runs, PG improved from 225
+  seconds and MCP from 307 seconds; root varied from 961 to 1,039 seconds and
+  remains bounded by the Windows matrix rather than packaging or coverage
+  aggregation.
+- Release gates `31048769442`, `31048766907`, `31048764615`, and `31048767033`
+  all passed on their first attempts. Each reused its canonical exact-SHA
+  bundle, published one wheel and one sdist to PyPI, passed the clean-directory
+  postflight, and finalized a public, non-prerelease, immutable GitHub Release.
+- GitHub and PyPI expose the same filename and SHA-256 pair for every package;
+  all eight PyPI files are non-yanked. PyPI's integrity endpoint reports one
+  attestation bundle per file from repository `VanL/taut`, environment `pypi`,
+  and the matching top-level workflow (`release-gate.yml` or the package's
+  `release-gate-*.yml`). Each gate also retained its attempt-bound publication
+  bundle as a GitHub Actions artifact.
+- A fresh Python 3.14 environment installed exact `taut-chat`, `taut-pg`,
+  `taut-summon`, and `taut-mcp` 0.8.2 from PyPI after an explicit index refresh;
+  all four imports resolved inside that environment, and both `taut --version`
+  and `taut-mcp --version` reported 0.8.2.
