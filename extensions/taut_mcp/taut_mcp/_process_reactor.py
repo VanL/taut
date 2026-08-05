@@ -153,6 +153,17 @@ def _is_strict_utf8(value: str) -> bool:
     return True
 
 
+def _validate_workspace_request(workspace: str, token: str) -> None:
+    """Reject malformed request values with fixed public diagnostics."""
+
+    if not _is_strict_utf8(workspace):
+        raise WorkspaceToolError(WORKSPACE_PATH_UTF8)
+    if not _is_strict_utf8(token):
+        raise WorkspaceToolError(WORKSPACE_TOKEN_UTF8)
+    if not os.path.isabs(workspace):
+        raise WorkspaceToolError(WORKSPACE_ABSOLUTE)
+
+
 def _workspace_record(entry: _Entry, *, status: str | None = None) -> dict[str, Any]:
     return {
         "backend": entry.backend,
@@ -374,6 +385,31 @@ class ProcessReactor:
                 return candidate
         return None
 
+    def _preflight_workspace(
+        self,
+        workspace: str,
+        fingerprint: bytes,
+    ) -> dict[str, Any] | None:
+        """Return an existing result or admit a new workspace candidate."""
+
+        entry = self._entries.get(workspace)
+        if entry is not None:
+            if entry.status != "ready":
+                raise WorkspaceToolError(self._entry_error(entry))
+            if entry.fingerprint is None:
+                raise AssertionError("ready workspace requires a token fingerprint")
+            if hmac.compare_digest(entry.fingerprint, fingerprint):
+                return workspace_result(
+                    [_workspace_record(entry)],
+                    workspace=entry.canonical_workspace,
+                )
+            raise WorkspaceToolError(WORKSPACE_CONFLICT)
+        if self._find_candidate_by_path(workspace) is not None:
+            raise WorkspaceToolError(WORKSPACE_BUSY)
+        if len(self._entries) + len(self._candidates) >= MAX_WORKSPACES:
+            raise WorkspaceToolError(WORKSPACE_LIMIT)
+        return None
+
     def _entry_error(self, entry: _Entry) -> str:
         if entry.attach_timed_out:
             return WORKSPACE_ATTACH_TIMEOUT
@@ -400,30 +436,15 @@ class ProcessReactor:
             if self._closing:
                 raise WorkspaceToolError(ATTACHMENT_FAILED)
             self._reap_dead_owners()
-            if not _is_strict_utf8(workspace):
-                raise WorkspaceToolError(WORKSPACE_PATH_UTF8)
-            if not _is_strict_utf8(token):
-                raise WorkspaceToolError(WORKSPACE_TOKEN_UTF8)
-            if not os.path.isabs(workspace):
-                raise WorkspaceToolError(WORKSPACE_ABSOLUTE)
+            _validate_workspace_request(workspace, token)
             fingerprint = self._fingerprint(token)
 
-            entry = self._entries.get(workspace)
-            if entry is not None:
-                if entry.status != "ready":
-                    raise WorkspaceToolError(self._entry_error(entry))
-                if entry.fingerprint is None:
-                    raise AssertionError("ready workspace requires a token fingerprint")
-                if hmac.compare_digest(entry.fingerprint, fingerprint):
-                    return workspace_result(
-                        [_workspace_record(entry)],
-                        workspace=entry.canonical_workspace,
-                    )
-                raise WorkspaceToolError(WORKSPACE_CONFLICT)
-            if self._find_candidate_by_path(workspace) is not None:
-                raise WorkspaceToolError(WORKSPACE_BUSY)
-            if len(self._entries) + len(self._candidates) >= MAX_WORKSPACES:
-                raise WorkspaceToolError(WORKSPACE_LIMIT)
+            existing = self._preflight_workspace(
+                workspace,
+                fingerprint,
+            )
+            if existing is not None:
+                return existing
 
             generation = self._next_generation
             self._next_generation += 1
@@ -838,7 +859,7 @@ class ProcessReactor:
         elif error is not None:
             self._fail_future(candidate.future, error)
 
-    def _on_resolved(self, event: WorkspaceResolved) -> None:
+    def _on_resolved(self, event: WorkspaceResolved) -> None:  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-014] exception
         candidate = self._candidates.get(event.generation)
         if candidate is None or candidate.retiring or candidate.phase != "resolution":
             return
@@ -1024,7 +1045,7 @@ class ProcessReactor:
         self._recompute_resource()
         self._settle_active_command(entry, self._entry_error(entry))
 
-    def _drain_events(self) -> None:
+    def _drain_events(self) -> None:  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-015] exception
         while True:
             try:
                 event = self._events.get_nowait()
@@ -1084,7 +1105,7 @@ class ProcessReactor:
                 self._maintain,
             )
 
-    async def aclose(self) -> None:
+    async def aclose(self) -> None:  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-016] exception
         if self._closing:
             return
         self._closing = True

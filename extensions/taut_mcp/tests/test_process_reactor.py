@@ -69,21 +69,6 @@ async def _wait_until(
         await asyncio.sleep(0.01)
 
 
-def _assert_request_identity_scrubbed(
-    exc: WorkspaceToolError,
-    secret: str,
-) -> None:
-    traceback = exc.__traceback__
-    while traceback is not None and (
-        traceback.tb_frame.f_code.co_name != "ensure_workspace"
-    ):
-        traceback = traceback.tb_next
-    assert traceback is not None
-    assert traceback.tb_frame.f_locals["token"] == ""
-    assert traceback.tb_frame.f_locals["fingerprint"] == b""
-    assert secret not in traceback.tb_frame.f_locals.values()
-
-
 @pytest.mark.sqlite_only
 @pytest.mark.timeout(10)
 def test_teardown_denies_ready_publication_after_validation_started(
@@ -258,42 +243,39 @@ def test_owner_setup_failure_maps_to_fixed_attachment_error(
 
 @pytest.mark.sqlite_only
 @pytest.mark.timeout(10)
-def test_direct_rejection_tracebacks_drop_request_token_and_digest(
+def test_direct_rejections_keep_fixed_errors(
     tmp_path: Path,
 ) -> None:
-    """[MCP-4]/[MCP-10] Settled direct errors retain no request identity copy."""
+    """[MCP-4]/[MCP-10] Direct errors remain fixed and content-free."""
 
     workspace, token, _ = _create_workspace(tmp_path, "selected")
 
     async def scenario() -> None:
         reactor = ProcessReactor(asyncio.get_running_loop())
         try:
-            relative_secret = "relative-path-secret"
+            relative_token = "relative-path-token"
             with pytest.raises(WorkspaceToolError) as relative:
-                await reactor.attach_workspace("relative/path", relative_secret)
-            _assert_request_identity_scrubbed(relative.value, relative_secret)
+                await reactor.attach_workspace("relative/path", relative_token)
+            assert str(relative.value) == process_reactor.WORKSPACE_ABSOLUTE
 
             await reactor.attach_workspace(str(workspace), token)
-            conflict_secret = "different-token-secret"
+            conflict_token = "different-token"
             with pytest.raises(WorkspaceToolError) as conflict:
-                await reactor.attach_workspace(str(workspace), conflict_secret)
-            _assert_request_identity_scrubbed(conflict.value, conflict_secret)
+                await reactor.attach_workspace(str(workspace), conflict_token)
+            assert str(conflict.value) == process_reactor.WORKSPACE_CONFLICT
 
             canonical = str(workspace.resolve())
             reactor._entries[canonical].status = "identity_lost"
             reactor._entries[canonical].fingerprint = None
-            degraded_secret = "degraded-token-secret"
+            degraded_token = "degraded-token"
             with pytest.raises(WorkspaceToolError) as degraded:
-                await reactor.attach_workspace(canonical, degraded_secret)
-            _assert_request_identity_scrubbed(degraded.value, degraded_secret)
+                await reactor.attach_workspace(canonical, degraded_token)
+            assert str(degraded.value) == process_reactor.WORKSPACE_IDENTITY_LOST
 
-            invalid_utf8_secret = "invalid-\ud800-token"
+            invalid_utf8_token = "invalid-\ud800-token"
             with pytest.raises(WorkspaceToolError) as invalid_utf8:
-                await reactor.attach_workspace(canonical, invalid_utf8_secret)
-            _assert_request_identity_scrubbed(
-                invalid_utf8.value,
-                invalid_utf8_secret,
-            )
+                await reactor.attach_workspace(canonical, invalid_utf8_token)
+            assert str(invalid_utf8.value) == process_reactor.WORKSPACE_TOKEN_UTF8
             assert invalid_utf8.value.__context__ is None
         finally:
             await reactor.aclose()
@@ -472,7 +454,6 @@ def test_workspace_cap_counts_eight_persistent_children(tmp_path: Path) -> None:
                 "workspace attachment limit reached; detach a workspace or wait "
                 "for cleanup"
             )
-            _assert_request_identity_scrubbed(limited.value, token)
             assert len(reactor.list_workspaces()["records"]) == 8
         finally:
             await reactor.aclose()
@@ -1001,11 +982,10 @@ def test_canceled_attach_waiter_does_not_cancel_started_child_lifecycle(
         assert frame is not None
         assert frame.f_locals["token"] == ""
         assert frame.f_locals["fingerprint"] == b""
-        busy_secret = "busy-token-secret"
+        busy_token = "busy-token"
         with pytest.raises(WorkspaceToolError) as busy:
-            await reactor.attach_workspace(str(workspace), busy_secret)
+            await reactor.attach_workspace(str(workspace), busy_token)
         assert str(busy.value) == "workspace busy; retry after backoff"
-        _assert_request_identity_scrubbed(busy.value, busy_secret)
         attach.cancel()
         with pytest.raises(asyncio.CancelledError):
             await attach

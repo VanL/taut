@@ -186,11 +186,7 @@ def _command_text(raw: bytes) -> str:
     return text.decode("utf-8", errors="replace")
 
 
-def main() -> int:
-    global REDRAW
-    tty.setraw(sys.stdin.fileno())
-    config = json.loads(os.environ.get("TAUT_FAKE_TUI_CONFIG", "{}"))
-    REDRAW = bool(config.get("redraw", True))
+def _record_paths_from_env() -> list[Path]:
     record_paths = []
     if os.environ.get("TAUT_FAKE_TUI_LOG"):
         record_paths.append(Path(os.environ["TAUT_FAKE_TUI_LOG"]))
@@ -198,6 +194,10 @@ def main() -> int:
         received_path = Path(os.environ["TAUT_SUMMON_RECEIVED_LOG"])
         if received_path not in record_paths:
             record_paths.append(received_path)
+    return record_paths
+
+
+def _run_startup(config: dict[str, object], record_paths: list[Path]) -> None:
     rows = int(os.environ.get("TAUT_FAKE_TUI_ROWS", "24"))
     cols = int(os.environ.get("TAUT_FAKE_TUI_COLS", "80"))
 
@@ -248,6 +248,8 @@ def main() -> int:
         )
     _write(b"\r\nready\r\n")
 
+
+def _run_command_loop(record_paths: list[Path]) -> int:
     while True:
         raw = _read_line()
         if raw is None:
@@ -275,6 +277,16 @@ def main() -> int:
             )
         else:
             _write(("echo:" + text + "\r\n").encode())
+
+
+def main() -> int:
+    global REDRAW
+    tty.setraw(sys.stdin.fileno())
+    config = json.loads(os.environ.get("TAUT_FAKE_TUI_CONFIG", "{}"))
+    REDRAW = bool(config.get("redraw", True))
+    record_paths = _record_paths_from_env()
+    _run_startup(config, record_paths)
+    return _run_command_loop(record_paths)
 
 
 if __name__ == "__main__":

@@ -2789,7 +2789,7 @@ def test_cli_who_unknown_thread_exit_2(tmp_path: Path) -> None:
     assert "thread not found" in err
 
 
-def test_cli_watch_json_flushes_records_while_live(tmp_path: Path) -> None:
+def test_cli_watch_json_flushes_records_while_live(tmp_path: Path) -> None:  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-054] exception
     """[TAUT-8.1] watch flushes message and notification NDJSON while live."""
 
     assert run_cli("init", cwd=tmp_path)[0] == 0

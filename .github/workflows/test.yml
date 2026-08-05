@@ -264,7 +264,12 @@ jobs:
       - name: Run linting with ruff
         timeout-minutes: 5
         run: |
-          ruff check taut tests bin extensions/taut_summon/taut_summon extensions/taut_summon/tests
+          ruff check .
+
+      - name: Check Ruff suppression registry
+        timeout-minutes: 5
+        run: |
+          uv run --extra dev python bin/ruff_suppression_index.py --check
 
       - name: Check formatting with ruff
         timeout-minutes: 5

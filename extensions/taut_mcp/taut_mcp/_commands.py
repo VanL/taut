@@ -78,7 +78,7 @@ def _integer(arguments: dict[str, CommandScalar], name: str, default: int) -> in
     return value
 
 
-def execute_command(
+def execute_command(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-011] exception
     client: TautClient,
     name: str,
     frozen_arguments: CommandArguments,
@@ -201,7 +201,7 @@ def execute_command(
     return CommandRecords(RECORD_TYPE_BY_TOOL[name], records)
 
 
-def record_object(record: CommandRecord) -> dict[str, object]:
+def record_object(record: CommandRecord) -> dict[str, object]:  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-012] exception
     """Encode one public value object without importing CLI rendering."""
 
     if isinstance(record, Message):

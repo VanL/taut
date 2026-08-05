@@ -245,6 +245,16 @@ class _GenerationContext:
     failure: _GenerationFailure
 
 
+@dataclass(frozen=True, slots=True)
+class _RunningGeneration:
+    """Foreground-owned resources for one fully bootstrapped generation."""
+
+    started_at: float
+    handle: AdapterHandle
+    generation: _GenerationContext
+    pump: threading.Thread
+
+
 def _resume_backoff_from_env() -> tuple[float, ...]:
     raw = os.environ.get("TAUT_SUMMON_RESUME_BACKOFF")
     if not raw:
@@ -506,7 +516,7 @@ class SummonDriver:
             logger.warning("summoned as '%s' — '%s' is taken", target, requested)
         return self._first_summon(client, requested, target, provider, implied)
 
-    def _first_summon(
+    def _first_summon(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-024] exception
         self,
         client: TautClient,
         requested: str,
@@ -733,146 +743,224 @@ class SummonDriver:
         consecutive_crashes = 0
         first_generation = True
         while True:
-            started_at = time.monotonic()
-            handle = self._spawn(adapter, session_id, system_prompt, env)
-            self._handle = handle
-            if self._shutdown.is_set() or self._control_failed.is_set():
-                try:
-                    handle.request_close()
-                except AdapterError:
-                    logger.debug(
-                        "adapter close request after publication failed",
-                        exc_info=True,
-                    )
-            generation = self._activate_generation()
-            self._halt_ack.clear()
-            pump: threading.Thread | None = None
-            try:
-                if self._should_start_pump_before_bootstrap(
-                    request,
-                    adapter,
-                    availability=terminal_availability,
-                ):
-                    pump = self._start_pump(
-                        generation,
-                        handle,
-                        db_path=self._db_path,
-                        token=boot.token,
-                        member_id=boot.member_id,
-                        terminal_thread=terminal_thread,
-                    )
-                self._rejoin(handle, boot)
-                setup_client = TautClient(
-                    db_path=self._db_path,
-                    token=boot.token,
-                    inherit_environment_identity=False,
-                )
-                try:
-                    self._ensure_threads(setup_client, boot.member_id)
-                finally:
-                    setup_client.close()
-                if adapter.supports_attach:
-                    wired = get_wired(self._ledger(), boot.member_id)
-                    attach_result = self._attach_if_needed(
-                        handle,
-                        boot=boot,
-                        wired=wired,
-                        first_generation=first_generation,
-                        availability=terminal_availability,
-                    )
-                    if attach_result == "shutdown":
-                        self._teardown_generation(generation, handle, pump)
-                        return 0
-                    if attach_result == "detached":
-                        set_wired(
-                            self._ledger(),
-                            member_id=boot.member_id,
-                            value=True,
-                            updated_ts=self._ledger().generate_timestamp(),
-                        )
-                        wired = True
-                    if not wired:
-                        handle.mark_awaiting_onboarding()
-                if pump is None:
-                    pump = self._start_pump(
-                        generation,
-                        handle,
-                        db_path=self._db_path,
-                        token=boot.token,
-                        member_id=boot.member_id,
-                        terminal_thread=terminal_thread,
-                    )
-                self._await_initial_session_event(adapter)
-                self._raise_if_pump_failed(generation)
-                self._start_control_thread(boot)
-                self._raise_if_control_failed()
-            except Exception:
-                self._teardown_generation(generation, handle, pump)
-                raise
-            assert pump is not None
-            if self._shutdown.is_set():
-                return self._shutdown_current_generation(generation, handle, pump, boot)
-            if first_generation:
-                first_generation = False
-            if adapter.orientation_via_inject:
-                try:
-                    self._settle_for_orientation(handle)
-                    if self._shutdown.is_set():
-                        return self._shutdown_current_generation(
-                            generation, handle, pump, boot
-                        )
-                    handle.inject(system_prompt)
-                except AdapterError as exc:
-                    self._raise_if_control_failed()
-                    if not self._shutdown.is_set():
-                        self._teardown_generation(generation, handle, pump)
-                        raise DriverError(f"cannot orient the harness: {exc}") from exc
-                # A STOP may retire an in-flight PTY write. Leave the caught
-                # AdapterError scope before teardown so sys.exception() cannot
-                # misclassify that expected interruption as a shutdown failure.
-                if self._shutdown.is_set():
-                    return self._shutdown_current_generation(
-                        generation, handle, pump, boot
-                    )
-            try:
-                self._watch_until_wake(boot)
-                self._raise_if_pump_failed(generation)
-            except Exception:
-                self._teardown_generation(generation, handle, pump)
-                raise
-
-            if self._shutdown.is_set():
-                return self._shutdown_current_generation(generation, handle, pump, boot)
-
-            # Harness death ([SUM-11]): one resume attempt with the stored
-            # session id; a failed spawn falls back to a fresh session
-            # whose cursor replay recovers the conversation.
-            self._teardown_generation(generation, handle, pump)
-            lived = time.monotonic() - started_at
-            consecutive_crashes = (
-                1 if lived >= _HEALTHY_RUN_SECONDS else consecutive_crashes + 1
+            running = self._start_live_generation(
+                boot=boot,
+                adapter=adapter,
+                env=env,
+                system_prompt=system_prompt,
+                session_id=session_id,
+                terminal_thread=terminal_thread,
+                terminal_availability=terminal_availability,
+                first_generation=first_generation,
             )
-            if consecutive_crashes > len(self._backoff):
-                raise DriverError(
-                    f"harness for '{boot.member_name}' exited "
-                    f"{consecutive_crashes} times in a row (last exit code "
-                    f"{generation.exit.returncode}); giving up"
-                )
-            delay = self._backoff[consecutive_crashes - 1]
-            logger.warning(
-                "harness exited (code %s); resuming in %.1fs (attempt %d/%d)",
-                generation.exit.returncode,
-                delay,
-                consecutive_crashes,
-                len(self._backoff),
+            if running is None:
+                return 0
+            if self._shutdown.is_set():
+                return self._shutdown_running_generation(running, boot)
+            first_generation = False
+            if self._orient_running_generation(running, adapter, system_prompt):
+                return self._shutdown_running_generation(running, boot)
+            self._await_running_generation(running, boot)
+            if self._shutdown.is_set():
+                return self._shutdown_running_generation(running, boot)
+            consecutive_crashes, session_id = self._resume_after_harness_exit(
+                running, boot, consecutive_crashes
             )
-            self._shutdown.wait(timeout=delay)
             if self._shutdown.is_set():
                 return 0
-            stored = get_session(self._ledger(), boot.member_id)
-            session_id = (
-                stored["provider_session_id"] if stored is not None else None
-            ) or handle.session_id
+
+    def _start_live_generation(
+        self,
+        *,
+        boot: _BootstrapResult,
+        adapter: ProviderAdapter,
+        env: dict[str, str],
+        system_prompt: str,
+        session_id: str | None,
+        terminal_thread: str | None,
+        terminal_availability: TerminalAvailability | None,
+        first_generation: bool,
+    ) -> _RunningGeneration | None:
+        started_at = time.monotonic()
+        handle = self._spawn(adapter, session_id, system_prompt, env)
+        self._handle = handle
+        self._request_close_after_publication_if_needed(handle)
+        generation = self._activate_generation()
+        self._halt_ack.clear()
+        pump: threading.Thread | None = None
+        try:
+            if self._should_start_pump_before_bootstrap(
+                self._request, adapter, availability=terminal_availability
+            ):
+                pump = self._start_generation_pump(
+                    generation, handle, boot, terminal_thread
+                )
+            self._rejoin(handle, boot)
+            self._ensure_generation_threads(boot)
+            if self._prepare_generation_attach(
+                handle,
+                adapter=adapter,
+                boot=boot,
+                availability=terminal_availability,
+                first_generation=first_generation,
+            ):
+                self._teardown_generation(generation, handle, pump)
+                return None
+            if pump is None:
+                pump = self._start_generation_pump(
+                    generation, handle, boot, terminal_thread
+                )
+            self._await_initial_session_event(adapter)
+            self._raise_if_pump_failed(generation)
+            self._start_control_thread(boot)
+            self._raise_if_control_failed()
+        except Exception:
+            self._teardown_generation(generation, handle, pump)
+            raise
+        assert pump is not None
+        return _RunningGeneration(started_at, handle, generation, pump)
+
+    def _request_close_after_publication_if_needed(self, handle: AdapterHandle) -> None:
+        if not (self._shutdown.is_set() or self._control_failed.is_set()):
+            return
+        try:
+            handle.request_close()
+        except AdapterError:
+            logger.debug(
+                "adapter close request after publication failed", exc_info=True
+            )
+
+    def _start_generation_pump(
+        self,
+        generation: _GenerationContext,
+        handle: AdapterHandle,
+        boot: _BootstrapResult,
+        terminal_thread: str | None,
+    ) -> threading.Thread:
+        return self._start_pump(
+            generation,
+            handle,
+            db_path=self._db_path,
+            token=boot.token,
+            member_id=boot.member_id,
+            terminal_thread=terminal_thread,
+        )
+
+    def _ensure_generation_threads(self, boot: _BootstrapResult) -> None:
+        setup_client = TautClient(
+            db_path=self._db_path,
+            token=boot.token,
+            inherit_environment_identity=False,
+        )
+        try:
+            self._ensure_threads(setup_client, boot.member_id)
+        finally:
+            setup_client.close()
+
+    def _prepare_generation_attach(
+        self,
+        handle: AdapterHandle,
+        *,
+        adapter: ProviderAdapter,
+        boot: _BootstrapResult,
+        availability: TerminalAvailability | None,
+        first_generation: bool,
+    ) -> bool:
+        if not adapter.supports_attach:
+            return False
+        wired = get_wired(self._ledger(), boot.member_id)
+        result = self._attach_if_needed(
+            handle,
+            boot=boot,
+            wired=wired,
+            first_generation=first_generation,
+            availability=availability,
+        )
+        if result == "shutdown":
+            return True
+        if result == "detached":
+            set_wired(
+                self._ledger(),
+                member_id=boot.member_id,
+                value=True,
+                updated_ts=self._ledger().generate_timestamp(),
+            )
+            wired = True
+        if not wired:
+            handle.mark_awaiting_onboarding()
+        return False
+
+    def _orient_running_generation(
+        self,
+        running: _RunningGeneration,
+        adapter: ProviderAdapter,
+        system_prompt: str,
+    ) -> bool:
+        if not adapter.orientation_via_inject:
+            return False
+        try:
+            self._settle_for_orientation(running.handle)
+            if self._shutdown.is_set():
+                return True
+            running.handle.inject(system_prompt)
+        except AdapterError as exc:
+            self._raise_if_control_failed()
+            if not self._shutdown.is_set():
+                self._teardown_generation(
+                    running.generation, running.handle, running.pump
+                )
+                raise DriverError(f"cannot orient the harness: {exc}") from exc
+        # Leave the AdapterError scope before shutdown teardown so the caught
+        # write interruption cannot become the primary shutdown failure.
+        return self._shutdown.is_set()
+
+    def _await_running_generation(
+        self, running: _RunningGeneration, boot: _BootstrapResult
+    ) -> None:
+        try:
+            self._watch_until_wake(boot)
+            self._raise_if_pump_failed(running.generation)
+        except Exception:
+            self._teardown_generation(running.generation, running.handle, running.pump)
+            raise
+
+    def _shutdown_running_generation(
+        self, running: _RunningGeneration, boot: _BootstrapResult
+    ) -> int:
+        return self._shutdown_current_generation(
+            running.generation, running.handle, running.pump, boot
+        )
+
+    def _resume_after_harness_exit(
+        self,
+        running: _RunningGeneration,
+        boot: _BootstrapResult,
+        consecutive_crashes: int,
+    ) -> tuple[int, str | None]:
+        self._teardown_generation(running.generation, running.handle, running.pump)
+        lived = time.monotonic() - running.started_at
+        crashes = 1 if lived >= _HEALTHY_RUN_SECONDS else consecutive_crashes + 1
+        if crashes > len(self._backoff):
+            raise DriverError(
+                f"harness for '{boot.member_name}' exited {crashes} times in a row "
+                f"(last exit code {running.generation.exit.returncode}); giving up"
+            )
+        delay = self._backoff[crashes - 1]
+        logger.warning(
+            "harness exited (code %s); resuming in %.1fs (attempt %d/%d)",
+            running.generation.exit.returncode,
+            delay,
+            crashes,
+            len(self._backoff),
+        )
+        self._shutdown.wait(timeout=delay)
+        if self._shutdown.is_set():
+            return crashes, None
+        stored = get_session(self._ledger(), boot.member_id)
+        session_id = (
+            stored["provider_session_id"] if stored is not None else None
+        ) or running.handle.session_id
+        return crashes, session_id
 
     # --- ears: the watch handler ([SUM-5]) ---------------------------------
 
@@ -1021,7 +1109,7 @@ class SummonDriver:
             return
         raise error
 
-    def _teardown_generation(
+    def _teardown_generation(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-026] exception
         self,
         generation: _GenerationContext,
         handle: AdapterHandle,
@@ -1134,47 +1222,75 @@ class SummonDriver:
             if self._active_generation is not generation:
                 return last_activity
             if isinstance(event, SessionEvent):
-                logger.debug("session id: %s", event.session_id)
-                if self._control_loop is not None:
-                    self._control_loop.update_session_id(event.session_id)
-                try:
-                    update_session(
-                        queue,
-                        member_id=member_id,
-                        provider_session_id=event.session_id,
-                        updated_ts=queue.generate_timestamp(),
-                    )
-                except SummonStateError as exc:
-                    logger.error("could not record session id: %s", exc)
-                finally:
-                    generation.session_observed.set()
+                self._record_session_event(event, queue, member_id, generation)
             elif isinstance(event, ActivityEvent):
-                logger.debug("activity: %s", event.description)
-                now = time.monotonic()
-                if now - last_activity >= _ACTIVITY_WINDOW_SECONDS:
-                    last_activity = now
-                    try:
-                        # The public activity seam: token-selected whoami()
-                        # updates last_active_ts ([SUM-7.1]/[IAN-3.3]).
-                        mouth.whoami()
-                    except TautError as exc:
-                        logger.debug("activity resolution failed: %s", exc)
+                last_activity = self._record_activity_event(event, mouth, last_activity)
             elif isinstance(event, AssistantTextEvent):
-                if terminal_thread is not None:
-                    try:
-                        mouth.say(terminal_thread, event.text)
-                    except BlankMessageError:
-                        pass
-                    except TautError as exc:
-                        logger.error("terminal-mode post failed: %s", exc)
-                else:
-                    # stdout is diagnostics, not speech ([SUM-6]).
-                    logger.info("assistant: %s", event.text)
+                self._record_assistant_event(event, mouth, terminal_thread)
             elif isinstance(event, ExitEvent):
-                generation.exit.returncode = event.returncode
-                self._exit_code = event.returncode
-                logger.info("harness exited with code %s", event.returncode)
+                self._record_exit_event(event, generation)
         return last_activity
+
+    def _record_session_event(
+        self,
+        event: SessionEvent,
+        queue: Queue,
+        member_id: str,
+        generation: _GenerationContext,
+    ) -> None:
+        logger.debug("session id: %s", event.session_id)
+        if self._control_loop is not None:
+            self._control_loop.update_session_id(event.session_id)
+        try:
+            update_session(
+                queue,
+                member_id=member_id,
+                provider_session_id=event.session_id,
+                updated_ts=queue.generate_timestamp(),
+            )
+        except SummonStateError as exc:
+            logger.error("could not record session id: %s", exc)
+        finally:
+            generation.session_observed.set()
+
+    @staticmethod
+    def _record_activity_event(
+        event: ActivityEvent, mouth: TautClient, last_activity: float
+    ) -> float:
+        logger.debug("activity: %s", event.description)
+        now = time.monotonic()
+        if now - last_activity < _ACTIVITY_WINDOW_SECONDS:
+            return last_activity
+        try:
+            # The public activity seam updates last_active_ts ([SUM-7.1]/[IAN-3.3]).
+            mouth.whoami()
+        except TautError as exc:
+            logger.debug("activity resolution failed: %s", exc)
+        return now
+
+    @staticmethod
+    def _record_assistant_event(
+        event: AssistantTextEvent,
+        mouth: TautClient,
+        terminal_thread: str | None,
+    ) -> None:
+        if terminal_thread is None:
+            # stdout is diagnostics, not speech ([SUM-6]).
+            logger.info("assistant: %s", event.text)
+            return
+        try:
+            mouth.say(terminal_thread, event.text)
+        except BlankMessageError:
+            pass
+        except TautError as exc:
+            logger.error("terminal-mode post failed: %s", exc)
+
+    def _record_exit_event(
+        self, event: ExitEvent, generation: _GenerationContext
+    ) -> None:
+        generation.exit.returncode = event.returncode
+        self._exit_code = event.returncode
+        logger.info("harness exited with code %s", event.returncode)
 
     # --- helpers ------------------------------------------------------------
 
@@ -1344,12 +1460,7 @@ class SummonDriver:
     ) -> str | None:
         request = self._request
         if request.attach:
-            if availability is TerminalAvailability.NO_TTY:
-                raise DriverError("--attach requires a tty")
-            if availability is TerminalAvailability.NESTED_HOST:
-                raise DriverError("--attach is not available inside TAUT_HOST_TUI=1")
-            if availability is TerminalAvailability.UNAVAILABLE:
-                raise DriverError("--attach requires an available terminal")
+            self._require_attach_available(availability)
         should_attach = first_generation and (
             request.attach
             or (
@@ -1359,29 +1470,56 @@ class SummonDriver:
             )
         )
         if not should_attach:
-            if not wired and availability is TerminalAvailability.NO_TTY:
-                logger.warning(
-                    "provider '%s' is not wired yet and no tty is available; "
-                    "run taut summon --attach %s from a real terminal",
-                    boot.provider,
-                    boot.member_name,
-                )
-            elif not wired and availability is TerminalAvailability.NESTED_HOST:
-                logger.warning(
-                    "provider '%s' is not wired yet but attach is refused inside "
-                    "TAUT_HOST_TUI=1; run from a real terminal or pane",
-                    boot.provider,
-                )
-            elif not wired and availability is TerminalAvailability.UNAVAILABLE:
-                logger.warning(
-                    "provider '%s' is not wired yet because the host terminal is "
-                    "unavailable; run taut summon --attach %s from an available "
-                    "terminal",
-                    boot.provider,
-                    boot.member_name,
-                )
+            if not wired:
+                self._warn_unwired_without_attach(boot, availability)
             return None
         logger.info("attaching '%s'; detach with Ctrl-\\ Ctrl-\\", boot.member_name)
+        return self._run_terminal_attach(handle)
+
+    @staticmethod
+    def _require_attach_available(
+        availability: TerminalAvailability | None,
+    ) -> None:
+        errors: dict[TerminalAvailability | None, str] = {
+            TerminalAvailability.NO_TTY: "--attach requires a tty",
+            TerminalAvailability.NESTED_HOST: (
+                "--attach is not available inside TAUT_HOST_TUI=1"
+            ),
+            TerminalAvailability.UNAVAILABLE: (
+                "--attach requires an available terminal"
+            ),
+        }
+        error = errors.get(availability)
+        if error is not None:
+            raise DriverError(error)
+
+    @staticmethod
+    def _warn_unwired_without_attach(
+        boot: _BootstrapResult,
+        availability: TerminalAvailability | None,
+    ) -> None:
+        if availability is TerminalAvailability.NO_TTY:
+            logger.warning(
+                "provider '%s' is not wired yet and no tty is available; "
+                "run taut summon --attach %s from a real terminal",
+                boot.provider,
+                boot.member_name,
+            )
+        elif availability is TerminalAvailability.NESTED_HOST:
+            logger.warning(
+                "provider '%s' is not wired yet but attach is refused inside "
+                "TAUT_HOST_TUI=1; run from a real terminal or pane",
+                boot.provider,
+            )
+        elif availability is TerminalAvailability.UNAVAILABLE:
+            logger.warning(
+                "provider '%s' is not wired yet because the host terminal is "
+                "unavailable; run taut summon --attach %s from an available terminal",
+                boot.provider,
+                boot.member_name,
+            )
+
+    def _run_terminal_attach(self, handle: AdapterHandle) -> str:
         try:
             lease_manager = self._interaction.terminal_lease()
             lease = lease_manager.__enter__()
@@ -1773,72 +1911,95 @@ class SummonDriver:
     ) -> threading.Thread:
         """Open and run the chat watcher on its owning thread."""
 
-        def _stop_requested() -> bool:
-            return (
-                attempt_stop.is_set()
-                or harness_dead.is_set()
-                or self._shutdown.is_set()
-                or self._control_failed.is_set()
-            )
-
-        def _run_watcher() -> None:
-            failed = False
-            client: TautClient | None = None
-            watcher: Any | None = None
-            try:
-                client = TautClient(
-                    db_path=db_path,
-                    token=token,
-                    persistent=True,
-                    inherit_environment_identity=False,
-                )
-                watcher = client.watch(self._on_item, persistent=True)
-                self._watcher = watcher
-                if _stop_requested():
-                    return
-                notify_ready = getattr(
-                    watcher, "notify_ready_after_initial_drain", None
-                )
-                if callable(notify_ready):
-                    notify_ready(ready_event)
-                else:  # pragma: no cover - TautClient.watch returns TautWatcher today
-                    ready_event.set()
-                if _stop_requested():
-                    return
-                watcher.run()
-            except Exception as exc:
-                if not _stop_requested() and not self._halt_ack.is_set():
-                    failed = True
-                    self._watcher_error = exc
-                    self._watcher_failed.set()
-                    logger.exception("watcher failed; rebuilding watcher from cursor")
-            finally:
-                if watcher is not None and self._watcher is watcher:
-                    self._watcher = None
-                if watcher is not None:
-                    try:
-                        watcher.stop(join=False)
-                    except Exception:  # pragma: no cover - defensive cleanup
-                        logger.debug(
-                            "watcher stop during cleanup failed", exc_info=True
-                        )
-                if client is not None:
-                    try:
-                        client.close()
-                    except Exception:  # pragma: no cover - defensive cleanup
-                        logger.debug("watcher client close failed", exc_info=True)
-                if not _stop_requested() and not self._halt_ack.is_set():
-                    if not failed:
-                        self._watcher_error = None
-                        self._watcher_failed.set()
-                        logger.warning("watcher exited; rebuilding watcher")
-                    self._wake.set()
-
         thread = threading.Thread(
-            target=_run_watcher, daemon=True, name="taut-summon-watcher"
+            target=self._run_watcher_attempt,
+            kwargs={
+                "db_path": db_path,
+                "token": token,
+                "ready_event": ready_event,
+                "attempt_stop": attempt_stop,
+                "harness_dead": harness_dead,
+            },
+            daemon=True,
+            name="taut-summon-watcher",
         )
         thread.start()
         return thread
+
+    def _watcher_stop_requested(
+        self, attempt_stop: threading.Event, harness_dead: threading.Event
+    ) -> bool:
+        return (
+            attempt_stop.is_set()
+            or harness_dead.is_set()
+            or self._shutdown.is_set()
+            or self._control_failed.is_set()
+        )
+
+    def _run_watcher_attempt(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-064] exception
+        self,
+        *,
+        db_path: str | None,
+        token: str,
+        ready_event: threading.Event,
+        attempt_stop: threading.Event,
+        harness_dead: threading.Event,
+    ) -> None:
+        """Own one watcher attempt from construction through cleanup."""
+
+        failed = False
+        client: TautClient | None = None
+        watcher: Any | None = None
+        try:
+            client = TautClient(
+                db_path=db_path,
+                token=token,
+                persistent=True,
+                inherit_environment_identity=False,
+            )
+            watcher = client.watch(self._on_item, persistent=True)
+            self._watcher = watcher
+            if self._watcher_stop_requested(attempt_stop, harness_dead):
+                return
+            notify_ready = getattr(watcher, "notify_ready_after_initial_drain", None)
+            if callable(notify_ready):
+                notify_ready(ready_event)
+            else:  # pragma: no cover - TautClient.watch returns TautWatcher today
+                ready_event.set()
+            if self._watcher_stop_requested(attempt_stop, harness_dead):
+                return
+            watcher.run()
+        except Exception as exc:
+            if (
+                not self._watcher_stop_requested(attempt_stop, harness_dead)
+                and not self._halt_ack.is_set()
+            ):
+                failed = True
+                self._watcher_error = exc
+                self._watcher_failed.set()
+                logger.exception("watcher failed; rebuilding watcher from cursor")
+        finally:
+            if watcher is not None and self._watcher is watcher:
+                self._watcher = None
+            if watcher is not None:
+                try:
+                    watcher.stop(join=False)
+                except Exception:  # pragma: no cover - defensive cleanup
+                    logger.debug("watcher stop during cleanup failed", exc_info=True)
+            if client is not None:
+                try:
+                    client.close()
+                except Exception:  # pragma: no cover - defensive cleanup
+                    logger.debug("watcher client close failed", exc_info=True)
+            if not (
+                self._watcher_stop_requested(attempt_stop, harness_dead)
+                or self._halt_ack.is_set()
+            ):
+                if not failed:
+                    self._watcher_error = None
+                    self._watcher_failed.set()
+                    logger.warning("watcher exited; rebuilding watcher")
+                self._wake.set()
 
     def _release(self) -> None:
         self._release_error = None

@@ -243,7 +243,7 @@ class _State:
         self.activity_index = 0
 
 
-def _run_steps(
+def _run_steps(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-036] exception
     steps: list[dict[str, Any]],
     state: _State,
     message_text: str,

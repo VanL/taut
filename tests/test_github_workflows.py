@@ -160,7 +160,11 @@ def test_test_workflow_is_reusable_and_owns_canonical_release_artifacts() -> Non
         "pytest extensions/taut_summon/tests/test_live_local_llm.py -v "
         "--tb=short -m requires_local_llm -n 1 --dist loadgroup" in workflow
     )
-    assert "ruff check taut tests bin" in workflow
+    assert "ruff check ." in workflow
+    assert "uv run --extra dev python bin/ruff_suppression_index.py --check" in workflow
+    assert workflow.index("ruff check .") < workflow.index(
+        "bin/ruff_suppression_index.py --check"
+    )
     assert "ruff format --check taut tests bin" in workflow
     # Guard against the stale-path regression: neither the removed generator script
     # nor the deleted logo asset may reappear in the lint command.
@@ -507,6 +511,7 @@ def test_pg_workflow_is_reusable_and_runs_pg_helper() -> None:
         "ruff check extensions/taut_pg/taut_pg extensions/taut_pg/tests bin/pytest-pg"
         in workflow
     )
+    assert "ruff_suppression_index.py" not in workflow
     assert (
         "mypy taut/_scripts.py extensions/taut_pg/taut_pg extensions/taut_pg/tests"
         in workflow
@@ -527,6 +532,7 @@ def test_mcp_workflow_runs_sqlite_postgres_quality_and_build_gates() -> None:
     assert (
         "ruff check extensions/taut_mcp/taut_mcp extensions/taut_mcp/tests" in workflow
     )
+    assert "ruff_suppression_index.py" not in workflow
     assert "mypy extensions/taut_mcp/taut_mcp extensions/taut_mcp/tests" in workflow
     assert "uv build --project extensions/taut_mcp" in workflow
     assert "release-artifact.py" not in workflow

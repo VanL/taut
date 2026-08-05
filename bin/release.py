@@ -191,6 +191,15 @@ RUFF_FORMAT_PREFIX: Final[Command] = (
     "format",
     "--check",
 )
+RUFF_SUPPRESSION_CHECK_COMMAND: Final[Command] = (
+    "uv",
+    "run",
+    "--extra",
+    "dev",
+    "python",
+    "bin/ruff_suppression_index.py",
+    "--check",
+)
 MYPY_PREFIX: Final[Command] = ("uv", "run", "--extra", "dev", "mypy")
 MYPY_SUFFIX: Final[Command] = ("--config-file", "pyproject.toml")
 ROOT_TOOL_PATHS: Final[Command] = ("taut", "tests", "bin")
@@ -1599,14 +1608,17 @@ def build_precheck_commands_for_targets(
     if not targets:
         fail("At least one release target is required")
 
-    tool_paths = _unique_strings((*ROOT_TOOL_PATHS, *PG_TOOL_PATHS, *SUMMON_TOOL_PATHS))
+    format_paths = _unique_strings(
+        (*ROOT_TOOL_PATHS, *PG_TOOL_PATHS, *SUMMON_TOOL_PATHS)
+    )
     return (
         *ROOT_TEST_COMMANDS,
         PG_TEST_COMMAND,
         *SUMMON_TEST_COMMANDS,
         MCP_TEST_COMMAND,
-        _ruff_check_command(tool_paths),
-        _ruff_format_command(tool_paths),
+        _ruff_check_command((".",)),
+        RUFF_SUPPRESSION_CHECK_COMMAND,
+        _ruff_format_command(format_paths),
         MCP_RUFF_CHECK_COMMAND,
         MCP_RUFF_FORMAT_COMMAND,
         _mypy_command(ROOT_MYPY_PATHS),
@@ -1865,7 +1877,7 @@ def _short_commit(commit: str) -> str:
     return commit[:12]
 
 
-def plan_tag_action(
+def plan_tag_action(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-008] exception
     state: ReleaseState,
     *,
     version_changed: bool,
@@ -2296,36 +2308,20 @@ def _dry_run_postupdate_steps(targets: tuple[ReleaseTarget, ...]) -> None:
         _run_postupdate_step(step, dry_run=True)
 
 
-def _run_batch_release(args: argparse.Namespace) -> int:
-    if args.checks_only:
-        release_targets = tuple(CANONICAL_TARGETS.values())
-        if args.version is not None:
-            target_version = validate_version(args.version)
-            require_changelog_heading(target_version)
-        else:
-            for target in release_targets:
-                require_changelog_heading(read_target_version(target))
-        _require_command("uv")
-        run_prechecks_for_targets(release_targets, dry_run=False)
-        print("Checks passed; no release files, artifacts, tags, or remotes changed.")
-        return 0
+@dataclass(frozen=True)
+class _BatchPreparationPlan:
+    candidates: tuple[ReleaseCandidate, ...]
+    release_targets: tuple[ReleaseTarget, ...]
+    preparation_targets: tuple[ReleaseTarget, ...]
+    preparation_versions: tuple[tuple[ReleaseTarget, str], ...]
+    preparation_branch: str
+    tag_actions: dict[str, TagAction]
 
-    dirty = is_dirty_worktree()
-    if dirty and not args.dry_run:
-        fail("Worktree is dirty; commit or stash changes before releasing")
 
-    candidates = discover_unpublished_releases(requested_version=args.version)
-    if not candidates:
-        if dirty:
-            print("dry-run: worktree is dirty; a real release would stop here")
-        if args.publish:
-            print_publish_note()
-        print("No unpublished release targets found.")
-        return 0
-
-    for candidate in candidates:
-        require_changelog_heading(candidate.release_version)
-
+def _plan_batch_preparation(
+    args: argparse.Namespace,
+    candidates: tuple[ReleaseCandidate, ...],
+) -> _BatchPreparationPlan:
     release_targets = _candidate_targets(candidates)
     preparation_targets = (
         BATCH_RELEASE_TARGETS if args.version is not None else release_targets
@@ -2352,80 +2348,136 @@ def _run_batch_release(args: argparse.Namespace) -> int:
         version_changed=version_change_planned or args.dry_run,
         retag=args.retag,
     )
-    _print_batch_release_plan(candidates, tag_actions)
+    return _BatchPreparationPlan(
+        candidates=candidates,
+        release_targets=release_targets,
+        preparation_targets=preparation_targets,
+        preparation_versions=preparation_versions,
+        preparation_branch=preparation_branch,
+        tag_actions=tag_actions,
+    )
 
-    if args.dry_run:
+
+def _run_dry_batch_release(
+    args: argparse.Namespace,
+    plan: _BatchPreparationPlan,
+    *,
+    dirty: bool,
+) -> int:
+    if dirty:
+        print("dry-run: worktree is dirty; a real release would stop here")
+    if args.publish:
+        print_publish_note()
+    print(
+        "dry-run: would prepare "
+        + ", ".join(
+            f"{target.package_name} {version}"
+            for target, version in plan.preparation_versions
+        )
+    )
+    print("dry-run: would reconcile every manifest-owned derived copy")
+    print(
+        "dry-run: tag planning assumes reconciliation creates a local commit; "
+        "the real command reuses HEAD when preparation is already exact"
+    )
+    _print_dry_run_root_dependency_notes(plan.candidates)
+    run_preparation_steps(plan.preparation_targets, dry_run=True)
+    print(
+        "dry-run: would create one local preparation commit if generated "
+        "release files change"
+    )
+    run_command(
+        ("git", "add", *_release_file_args_for_targets(plan.preparation_targets)),
+        dry_run=True,
+    )
+    run_command(
+        ("git", "commit", "-m", _batch_release_commit_message(plan.candidates)),
+        dry_run=True,
+    )
+    if not args.skip_checks:
+        run_prechecks_for_targets(plan.preparation_targets, dry_run=True)
+    _dry_run_postupdate_steps(plan.release_targets)
+    print(
+        "dry-run: would revalidate branch, HEAD, clean worktree, GitHub "
+        "Release and PyPI state, and tags before remote actions"
+    )
+    for candidate in plan.candidates:
+        prepare_tag(plan.tag_actions[candidate.target.key], dry_run=True)
+    push_current_branch(
+        dry_run=True,
+        head_commit=PENDING_RELEASE_COMMIT,
+    )
+    for candidate in plan.candidates:
+        push_tag(plan.tag_actions[candidate.target.key], dry_run=True)
+    print(
+        "dry-run: next step is to wait for release workflows on "
+        + ", ".join(candidate.state.tag_name for candidate in plan.candidates)
+    )
+    return 0
+
+
+def _run_batch_checks(args: argparse.Namespace) -> int:
+    release_targets = tuple(CANONICAL_TARGETS.values())
+    if args.version is not None:
+        target_version = validate_version(args.version)
+        require_changelog_heading(target_version)
+    else:
+        for target in release_targets:
+            require_changelog_heading(read_target_version(target))
+    _require_command("uv")
+    run_prechecks_for_targets(release_targets, dry_run=False)
+    print("Checks passed; no release files, artifacts, tags, or remotes changed.")
+    return 0
+
+
+def _run_batch_release(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-063] exception
+    args: argparse.Namespace,
+) -> int:
+    if args.checks_only:
+        return _run_batch_checks(args)
+
+    dirty = is_dirty_worktree()
+    if dirty and not args.dry_run:
+        fail("Worktree is dirty; commit or stash changes before releasing")
+
+    candidates = discover_unpublished_releases(requested_version=args.version)
+    if not candidates:
         if dirty:
             print("dry-run: worktree is dirty; a real release would stop here")
         if args.publish:
             print_publish_note()
-        print(
-            "dry-run: would prepare "
-            + ", ".join(
-                f"{target.package_name} {version}"
-                for target, version in preparation_versions
-            )
-        )
-        print("dry-run: would reconcile every manifest-owned derived copy")
-        print(
-            "dry-run: tag planning assumes reconciliation creates a local commit; "
-            "the real command reuses HEAD when preparation is already exact"
-        )
-        _print_dry_run_root_dependency_notes(candidates)
-        run_preparation_steps(preparation_targets, dry_run=True)
-        print(
-            "dry-run: would create one local preparation commit if generated "
-            "release files change"
-        )
-        run_command(
-            ("git", "add", *_release_file_args_for_targets(preparation_targets)),
-            dry_run=True,
-        )
-        run_command(
-            ("git", "commit", "-m", _batch_release_commit_message(candidates)),
-            dry_run=True,
-        )
-        if not args.skip_checks:
-            run_prechecks_for_targets(preparation_targets, dry_run=True)
-        _dry_run_postupdate_steps(release_targets)
-        print(
-            "dry-run: would revalidate branch, HEAD, clean worktree, GitHub "
-            "Release and PyPI state, and tags before remote actions"
-        )
-        for candidate in candidates:
-            prepare_tag(tag_actions[candidate.target.key], dry_run=True)
-        push_current_branch(
-            dry_run=True,
-            head_commit=PENDING_RELEASE_COMMIT,
-        )
-        for candidate in candidates:
-            push_tag(tag_actions[candidate.target.key], dry_run=True)
-        print(
-            "dry-run: next step is to wait for release workflows on "
-            + ", ".join(candidate.state.tag_name for candidate in candidates)
-        )
+        print("No unpublished release targets found.")
         return 0
+
+    for candidate in candidates:
+        require_changelog_heading(candidate.release_version)
+
+    plan = _plan_batch_preparation(args, candidates)
+    _print_batch_release_plan(plan.candidates, plan.tag_actions)
+
+    if args.dry_run:
+        return _run_dry_batch_release(args, plan, dirty=dirty)
 
     _require_command("uv")
     if args.publish:
         print_publish_note()
 
-    prepare_release_metadata(preparation_versions)
-    run_preparation_steps(preparation_targets, dry_run=False)
+    prepare_release_metadata(plan.preparation_versions)
+    run_preparation_steps(plan.preparation_targets, dry_run=False)
     release_commit_created, preparation_commit = commit_release_preparation(
-        preparation_targets,
-        message=_batch_release_commit_message(candidates),
+        plan.preparation_targets,
+        message=_batch_release_commit_message(plan.candidates),
     )
 
     if not args.skip_checks:
-        run_prechecks_for_targets(preparation_targets, dry_run=False)
+        run_prechecks_for_targets(plan.preparation_targets, dry_run=False)
 
-    for step in build_postupdate_steps_for_targets(release_targets):
+    for step in build_postupdate_steps_for_targets(plan.release_targets):
         _run_postupdate_step(step, dry_run=False)
 
     candidates = require_fresh_release_fence(
-        candidates,
-        preparation_branch=preparation_branch,
+        plan.candidates,
+        preparation_branch=plan.preparation_branch,
         preparation_commit=preparation_commit,
     )
     tag_actions = _plan_candidate_tag_actions(
@@ -2439,7 +2491,7 @@ def _run_batch_release(args: argparse.Namespace) -> int:
         prepare_tag(tag_actions[candidate.target.key], dry_run=False)
     push_current_branch(
         dry_run=False,
-        branch=preparation_branch,
+        branch=plan.preparation_branch,
         head_commit=preparation_commit,
     )
     for candidate in candidates:
@@ -2453,18 +2505,10 @@ def _run_batch_release(args: argparse.Namespace) -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
-    if args.check_repository_settings:
-        require_repository_settings()
-        return 0
-    if not args.dry_run and not args.checks_only:
-        require_publish_branch()
-        require_repository_settings()
-    if args.target == ALL_RELEASE_TARGET_KEY:
-        return _run_batch_release(args)
-
-    target = TARGETS[args.target]
+def _run_single_release(
+    args: argparse.Namespace,
+    target: ReleaseTarget,
+) -> int:
     if args.checks_only:
         target_version = validate_version(
             args.version if args.version is not None else read_target_version(target)
@@ -2596,6 +2640,19 @@ def main(argv: list[str] | None = None) -> int:
         "It will publish to PyPI and an immutable GitHub Release."
     )
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    if args.check_repository_settings:
+        require_repository_settings()
+        return 0
+    if not args.dry_run and not args.checks_only:
+        require_publish_branch()
+        require_repository_settings()
+    if args.target == ALL_RELEASE_TARGET_KEY:
+        return _run_batch_release(args)
+    return _run_single_release(args, TARGETS[args.target])
 
 
 if __name__ == "__main__":

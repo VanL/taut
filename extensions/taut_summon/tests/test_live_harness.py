@@ -14,6 +14,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import NoReturn
 
 import pytest
 from conftest import _base_env, summon_cli, taut_cli
@@ -249,6 +250,85 @@ def test_live_status_not_ready_reason_allows_plain_alive_status() -> None:
     assert _not_ready_reason(status) is None
 
 
+def _reject_unready_harness(provider: str, reason: str) -> NoReturn:
+    if _strict_live_harness():
+        pytest.fail(f"{provider} did not reach a ready prompt: {reason}")
+    pytest.skip(f"{provider} did not reach a ready prompt: {reason}")
+
+
+def _wait_for_live_ready(
+    provider: str,
+    proc: subprocess.Popen[str],
+    controller: SummonController,
+    stderr_path: Path,
+) -> SummonStatus:
+    deadline = time.monotonic() + _live_harness_timeout()
+    last_status = ""
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            stderr = _finished_stderr_tail(proc)
+            _reject_unready_harness(
+                provider,
+                f"detached session exited: {stderr[-500:]}",
+            )
+        try:
+            status = controller.status(provider)
+        except (NothingSummoned, DriverUnresponsive) as exc:
+            last_status = str(exc)
+        except SummonOperationError as exc:
+            pytest.fail(f"{provider} status failed during readiness: {exc}")
+        else:
+            last_status = repr(status)
+            reason = _not_ready_reason(status)
+            if reason is not None:
+                _reject_unready_harness(provider, reason)
+            fatal_reason = _fatal_readiness_reason(status)
+            if fatal_reason is not None:
+                pytest.fail(
+                    f"{provider} did not reach a ready prompt: {fatal_reason}; "
+                    f"stderr: {_file_tail(stderr_path)}"
+                )
+            return status
+        time.sleep(0.5)
+    stderr = _finished_stderr_tail(proc)
+    raise AssertionError(
+        f"{provider} did not reach a ready detached session; "
+        f"last status: {last_status[-500:]}; stderr: {stderr[-500:]}"
+    )
+
+
+def _wait_for_live_cursor_catch_up(
+    provider: str,
+    probe: str,
+    proc: subprocess.Popen[str],
+    controller: SummonController,
+    stderr_path: Path,
+) -> None:
+    deadline = time.monotonic() + _live_harness_timeout()
+    last_status = ""
+    while time.monotonic() < deadline:
+        try:
+            status = controller.status(provider)
+        except SummonOperationError as exc:
+            last_status = str(exc)
+        else:
+            last_status = repr(status)
+            fatal_reason = _fatal_readiness_reason(status)
+            if fatal_reason is not None:
+                pytest.fail(
+                    f"{provider} lost ready control status: {fatal_reason}; "
+                    f"stderr: {_file_tail(stderr_path)}"
+                )
+            if status.cursor_lag.get("general") == 0:
+                return
+        time.sleep(0.5)
+    stderr = _finished_stderr_tail(proc)
+    raise AssertionError(
+        f"{provider} did not catch up after injected probe {probe!r}; "
+        f"last status: {last_status[-500:]}; stderr: {stderr[-500:]}"
+    )
+
+
 @pytest.mark.requires_live_harness
 @pytest.mark.xdist_group("process")
 @pytest.mark.parametrize("provider", _HARNESSES)
@@ -306,53 +386,7 @@ def test_live_pty_harness_reaches_ready_and_accepts_injection(
     )
     try:
         controller = SummonController(db_path=db)
-        deadline = time.monotonic() + _live_harness_timeout()
-        last_status = ""
-        ready_status: SummonStatus | None = None
-
-        while time.monotonic() < deadline:
-            if proc.poll() is not None:
-                stderr = _finished_stderr_tail(proc)
-                if _strict_live_harness():
-                    pytest.fail(
-                        f"{provider} did not reach a ready detached session: "
-                        f"{stderr[-500:]}"
-                    )
-                pytest.skip(
-                    f"{provider} did not reach a ready detached session: {stderr[-500:]}"
-                )
-            try:
-                status = controller.status(provider)
-            except (NothingSummoned, DriverUnresponsive) as exc:
-                last_status = str(exc)
-            except SummonOperationError as exc:
-                pytest.fail(f"{provider} status failed during readiness: {exc}")
-            else:
-                last_status = repr(status)
-                reason = _not_ready_reason(status)
-                if reason is not None:
-                    if _strict_live_harness():
-                        pytest.fail(
-                            f"{provider} did not reach a ready prompt: {reason}"
-                        )
-                    pytest.skip(f"{provider} did not reach a ready prompt: {reason}")
-                fatal_reason = _fatal_readiness_reason(status)
-                if fatal_reason is not None:
-                    pytest.fail(
-                        f"{provider} did not reach a ready prompt: {fatal_reason}; "
-                        f"stderr: {_file_tail(stderr_path)}"
-                    )
-                ready_status = status
-                break
-            time.sleep(0.5)
-        else:
-            stderr = _finished_stderr_tail(proc)
-            raise AssertionError(
-                f"{provider} did not reach a ready detached session; "
-                f"last status: {last_status[-500:]}; stderr: {stderr[-500:]}"
-            )
-
-        assert ready_status is not None
+        ready_status = _wait_for_live_ready(provider, proc, controller, stderr_path)
         assert ready_status.name == provider
         assert ready_status.provider == provider
         assert ready_status.driver == "alive"
@@ -367,29 +401,7 @@ def test_live_pty_harness_reaches_ready_and_accepts_injection(
             stdin=probe,
         )
         assert rc == 0, err
-        deadline = time.monotonic() + _live_harness_timeout()
-        while time.monotonic() < deadline:
-            try:
-                status = controller.status(provider)
-            except SummonOperationError as exc:
-                last_status = str(exc)
-            else:
-                last_status = repr(status)
-                fatal_reason = _fatal_readiness_reason(status)
-                if fatal_reason is not None:
-                    pytest.fail(
-                        f"{provider} lost ready control status: {fatal_reason}; "
-                        f"stderr: {_file_tail(stderr_path)}"
-                    )
-                if status.cursor_lag.get("general") == 0:
-                    break
-            time.sleep(0.5)
-        else:
-            stderr = _finished_stderr_tail(proc)
-            raise AssertionError(
-                f"{provider} did not catch up after injected probe {probe!r}; "
-                f"last status: {last_status[-500:]}; stderr: {stderr[-500:]}"
-            )
+        _wait_for_live_cursor_catch_up(provider, probe, proc, controller, stderr_path)
     finally:
         try:
             summon_cli("stop", provider, db=db, cwd=tmp_path, timeout=30.0)

@@ -281,6 +281,41 @@ class MessagingMixin(_ClientBase):
     ) -> list[Message]:
         return self.read_unread(thread, limit=limit)
 
+    def _read_membership_page(
+        self,
+        membership: MembershipRow,
+        member: MemberRow,
+        *,
+        limit: int,
+    ) -> list[Message]:
+        row = self._state.get_thread(membership["thread"])
+        if row is None or row["kind"] == "notification":
+            return []
+        if row["kind"] == "dm":
+            dm_context = self._direct_message_context(row["name"], member)
+            if dm_context is not None:
+                self._remember_direct_message_display_name(dm_context)
+        queue = self.queue(membership["thread"])
+        raw_messages = cast(
+            list[tuple[str, int]],
+            queue.peek_many(
+                limit,
+                with_timestamps=True,
+                after_timestamp=membership["last_seen_ts"],
+            ),
+        )
+        page_messages = [
+            message_from_body(membership["thread"], body, ts)
+            for body, ts in raw_messages
+        ]
+        if raw_messages:
+            self._state.advance_cursor(
+                thread=membership["thread"],
+                member_id=member["member_id"],
+                seen_ts=max(ts for _body, ts in raw_messages),
+            )
+        return page_messages
+
     def read_unread(
         self,
         thread: str | None = None,
@@ -324,33 +359,7 @@ class MessagingMixin(_ClientBase):
             memberships = self._state.list_memberships(member["member_id"])
         messages: list[Message] = []
         for membership in memberships:
-            row = self._state.get_thread(membership["thread"])
-            if row is None or row["kind"] == "notification":
-                continue
-            if row["kind"] == "dm":
-                dm_context = self._direct_message_context(row["name"], member)
-                if dm_context is not None:
-                    self._remember_direct_message_display_name(dm_context)
-            queue = self.queue(membership["thread"])
-            raw_messages = cast(
-                list[tuple[str, int]],
-                queue.peek_many(
-                    limit,
-                    with_timestamps=True,
-                    after_timestamp=membership["last_seen_ts"],
-                ),
-            )
-            page_messages = [
-                message_from_body(membership["thread"], body, ts)
-                for body, ts in raw_messages
-            ]
-            messages.extend(page_messages)
-            if raw_messages:
-                self._state.advance_cursor(
-                    thread=membership["thread"],
-                    member_id=member["member_id"],
-                    seen_ts=max(ts for _body, ts in raw_messages),
-                )
+            messages.extend(self._read_membership_page(membership, member, limit=limit))
         if not messages:
             raise EmptyResultError("nothing unread")
         return messages

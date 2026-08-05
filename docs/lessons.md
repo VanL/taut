@@ -96,6 +96,22 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
 
 ## Project Lessons
 
+- 2026-08-05: Do not infer a security classification from opacity or identity
+  selection. Name the actual authority boundary, emitted and persistent
+  surfaces, live-state lifetime, and debug-only retention separately. A
+  continuity token can be application data a deployment chooses to handle
+  carefully without being a credential or security boundary. Calling it a
+  secret can overclaim the product's posture and motivate lower-locality code
+  whose only purpose is traceback scrubbing.
+
+- 2026-08-04: A ported policy generator can pass an exhaustive isolated fixture
+  suite while still targeting the wrong live document seam. The fixture and the
+  implementation may share the same mistaken heading, marker, or path. Add one
+  firing integration test against the active spec before promotion. After a
+  structural refactor, also rerun repository-wide proof-path sentinels: moving a
+  real call site can leave focused product tests green while invalidating the
+  coverage contract that proves the path executes.
+
 - 2026-07-13: Release checks must select the optional dependency set they
   claim to validate. A bare `uv run pytest` can inherit a stale package from an
   activated environment even when the repository maps that package to current

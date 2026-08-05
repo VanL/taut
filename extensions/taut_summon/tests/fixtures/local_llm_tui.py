@@ -132,6 +132,12 @@ def _call_local_llm(prompt: str, *, log: Path | None) -> str:
     except TimeoutError:
         _llm_failure(log, "timeout", f"request timed out after {timeout:g}s")
 
+    return _response_text(raw_payload, log=log)
+
+
+def _response_text(raw_payload: bytes, *, log: Path | None) -> str:
+    """Validate the one OpenAI-shaped response boundary."""
+
     try:
         payload = json.loads(raw_payload)
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:

@@ -12,7 +12,7 @@ import threading
 import time
 import tomllib
 from pathlib import Path
-from typing import Any, cast
+from typing import IO, Any, cast
 
 import pytest
 from jsonschema import validate
@@ -34,10 +34,85 @@ EXTENSION_ROOT = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = EXTENSION_ROOT.parents[1]
 NOTIFICATIONS_URL = "taut://notifications/current"
 EXPECTED_INSTRUCTIONS_SHA256 = (
-    "19a55f4735080ca38b33225f78f7fcf52dde10d5d1a3bcdf5f3371b694f76a5c"
+    "adaa86d05a6bb9a36751efc1163664ab6ab771c47fc95194808c53847b456c86"
 )
 with (EXTENSION_ROOT / "pyproject.toml").open("rb") as _project_stream:
     EXPECTED_VERSION = str(tomllib.load(_project_stream)["project"]["version"])
+
+
+class _RawStdioProcess:
+    """Expose raw JSON-RPC frames without interpreting their semantics."""
+
+    def __init__(self, server_code: str) -> None:
+        self.process = subprocess.Popen(
+            [sys.executable, "-c", server_code],
+            cwd=EXTENSION_ROOT,
+            env=os.environ.copy(),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+        stdin = self.process.stdin
+        stdout = self.process.stdout
+        stderr = self.process.stderr
+        assert stdin is not None
+        assert stdout is not None
+        assert stderr is not None
+        self.stdin = cast(IO[str], stdin)
+        self.stdout = cast(IO[str], stdout)
+        self.stderr = cast(IO[str], stderr)
+        self.received: queue.Queue[Any] = queue.Queue()
+        self.eof = object()
+        self.frames: list[dict[str, object]] = []
+        self.reader = threading.Thread(target=self._read_stdout, daemon=True)
+        self.reader.start()
+
+    def _read_stdout(self) -> None:
+        for line in self.stdout:
+            self.received.put_nowait(json.loads(line))
+        self.received.put_nowait(self.eof)
+
+    def send(self, frame: dict[str, object]) -> None:
+        self.stdin.write(
+            json.dumps(frame, sort_keys=True, separators=(",", ":")) + "\n"
+        )
+        self.stdin.flush()
+
+    def receive_until_id(self, request_id: int) -> dict[str, object]:
+        deadline = time.monotonic() + 5
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AssertionError(f"timed out waiting for response {request_id}")
+            item = self.received.get(timeout=remaining)
+            if item is self.eof:
+                raise AssertionError(
+                    f"server stdout closed before response {request_id}"
+                )
+            assert isinstance(item, dict)
+            self.frames.append(item)
+            if item.get("id") == request_id:
+                return item
+
+    def close_input_and_collect(self) -> None:
+        self.stdin.close()
+        assert self.process.wait(timeout=5) == 0
+        self.reader.join(timeout=5)
+        assert not self.reader.is_alive()
+        while True:
+            item = self.received.get_nowait()
+            if item is self.eof:
+                return
+            assert isinstance(item, dict)
+            self.frames.append(item)
+
+    def terminate_and_read_stderr(self) -> str:
+        if self.process.poll() is None:
+            self.process.kill()
+            self.process.wait(timeout=5)
+        return self.stderr.read()
 
 
 async def _inspect_empty_server(
@@ -395,7 +470,7 @@ def test_windows_einval_is_a_broken_output_transport(
 
 
 @pytest.mark.timeout(10)
-def test_broken_stdout_after_initialize_is_a_clean_transport_exit() -> None:
+def test_broken_stdout_after_initialize_is_a_clean_transport_exit() -> None:  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-019] exception
     """[MCP-3] A peer-closing output pipe after connection exits zero."""
 
     def peer_closed(exc: OSError) -> bool:
@@ -1330,53 +1405,7 @@ _process_reactor.ProcessReactor.attach_workspace = blocked_attach
 from taut_mcp.cli import main
 main([])
 """
-    process = subprocess.Popen(
-        [sys.executable, "-c", server_code],
-        cwd=EXTENSION_ROOT,
-        env=os.environ.copy(),
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,
-    )
-    stdin = process.stdin
-    stdout = process.stdout
-    stderr = process.stderr
-    assert stdin is not None
-    assert stdout is not None
-    assert stderr is not None
-    received: queue.Queue[Any] = queue.Queue()
-    eof = object()
-
-    def read_stdout() -> None:
-        for line in stdout:
-            received.put_nowait(json.loads(line))
-        received.put_nowait(eof)
-
-    reader = threading.Thread(target=read_stdout, daemon=True)
-    reader.start()
-    frames: list[dict[str, object]] = []
-
-    def send(frame: dict[str, object]) -> None:
-        stdin.write(json.dumps(frame, sort_keys=True, separators=(",", ":")) + "\n")
-        stdin.flush()
-
-    def receive_until_id(request_id: int) -> dict[str, object]:
-        deadline = time.monotonic() + 5
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise AssertionError(f"timed out waiting for response {request_id}")
-            item = received.get(timeout=remaining)
-            if item is eof:
-                raise AssertionError(
-                    f"server stdout closed before response {request_id}"
-                )
-            assert isinstance(item, dict)
-            frames.append(item)
-            if item.get("id") == request_id:
-                return item
+    probe = _RawStdioProcess(server_code)
 
     modern_meta = {
         PROTOCOL_VERSION_META_KEY: "2026-07-28",
@@ -1388,7 +1417,7 @@ main([])
     }
     try:
         if mode == "legacy":
-            send(
+            probe.send(
                 {
                     "jsonrpc": "2.0",
                     "id": 1,
@@ -1403,9 +1432,9 @@ main([])
                     },
                 }
             )
-            initialized = receive_until_id(1)
+            initialized = probe.receive_until_id(1)
             assert initialized["result"]["protocolVersion"] == "2025-11-25"  # type: ignore[index]
-            send(
+            probe.send(
                 {
                     "jsonrpc": "2.0",
                     "method": "notifications/initialized",
@@ -1426,7 +1455,7 @@ main([])
         if mode == "modern":
             call_params["_meta"] = modern_meta
             live_params["_meta"] = modern_meta
-        send(
+        probe.send(
             {
                 "jsonrpc": "2.0",
                 "id": 2,
@@ -1434,7 +1463,7 @@ main([])
                 "params": call_params,
             }
         )
-        send(
+        probe.send(
             {
                 "jsonrpc": "2.0",
                 "method": "notifications/cancelled",
@@ -1444,7 +1473,7 @@ main([])
                 },
             }
         )
-        send(
+        probe.send(
             {
                 "jsonrpc": "2.0",
                 "id": 3,
@@ -1452,27 +1481,15 @@ main([])
                 "params": live_params,
             }
         )
-        live = receive_until_id(3)
+        live = probe.receive_until_id(3)
         assert live.get("result")
 
-        stdin.close()
-        assert process.wait(timeout=5) == 0
-        reader.join(timeout=5)
-        assert not reader.is_alive()
-        while True:
-            item = received.get_nowait()
-            if item is eof:
-                break
-            assert isinstance(item, dict)
-            frames.append(item)
-        response_ids = {frame["id"] for frame in frames if "id" in frame}
+        probe.close_input_and_collect()
+        response_ids = {frame["id"] for frame in probe.frames if "id" in frame}
         assert 3 in response_ids
         assert 2 not in response_ids
     finally:
-        if process.poll() is None:
-            process.kill()
-            process.wait(timeout=5)
-        diagnostic = stderr.read()
+        diagnostic = probe.terminate_and_read_stderr()
         assert "Traceback" not in diagnostic
 
 

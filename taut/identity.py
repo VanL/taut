@@ -129,7 +129,7 @@ def capture_identity() -> IdentityCapture:
     )
 
 
-def capture_host_identity() -> HostIdentity:
+def capture_host_identity() -> HostIdentity:  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-052] exception
     """Return an opaque host id and human display label."""
 
     label = socket.gethostname()

@@ -8,6 +8,7 @@ import time
 import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum, auto
 from pathlib import Path
 from threading import Event
 from typing import Any, TypeAlias
@@ -106,6 +107,12 @@ WorkspaceControl: TypeAlias = (
     | RunWorkspaceCommand
     | CancelWorkspaceCommand
 )
+
+
+class _RefreshOutcome(Enum):
+    REFRESHED = auto()
+    IDENTITY_LOST = auto()
+    CRASHED = auto()
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,338 +236,397 @@ def _resolve_workspace(
     return target, config, canonical, directory_identity
 
 
+class _WorkspaceReactor:
+    """Single child-thread owner for one workspace lifecycle."""
+
+    def __init__(
+        self,
+        inbound: queue.Queue[WorkspaceControl],
+        wake: Event,
+        outbound: queue.Queue[WorkspaceEvent],
+        wake_master: Callable[[], None],
+    ) -> None:
+        self.inbound = inbound
+        self.wake = wake
+        self.outbound = outbound
+        self.wake_master = wake_master
+        self.generation = -1
+        self.client: TautClient | None = None
+        self.token = ""
+        self.target: BrokerTarget | None = None
+        self.config: dict[str, Any] | None = None
+        self.canonical = ""
+        self.directory_identity = (0, 0)
+        self.backend = ""
+        self.ready = False
+        self.degraded = False
+        self.previous_snapshot: tuple[Notification, ...] = ()
+        self.previous_truncated = False
+        self.last_finished_command_id = -1
+        self.activity_stop = Event()
+        self.activity_waiter: ActivityWaiter | None = None
+        self.next_backstop_at = time.monotonic() + NOTIFICATION_BACKSTOP_SECONDS
+        self.last_native_snapshot_at = float("-inf")
+        self.native_snapshot_pending = False
+
+    def _emit(self, event: WorkspaceEvent) -> None:
+        self.outbound.put_nowait(event)
+        self.wake_master()
+
+    def _stop_requested(self, controls: list[WorkspaceControl]) -> bool:
+        return any(
+            isinstance(control, StopWorkspace) and control.generation == self.generation
+            for control in controls
+        )
+
+    def _wait_for_work(self) -> None:
+        if not self.ready or self.activity_waiter is None:
+            timeout = NOTIFICATION_BACKSTOP_SECONDS
+            if self.ready:
+                timeout = max(0.0, self.next_backstop_at - time.monotonic())
+            self.wake.wait(timeout=timeout)
+            return
+        while not self.wake.is_set():
+            now = time.monotonic()
+            next_due = (
+                self.last_native_snapshot_at + NOTIFICATION_BACKSTOP_SECONDS
+                if self.native_snapshot_pending
+                else self.next_backstop_at
+            )
+            remaining = next_due - now
+            if remaining <= 0:
+                return
+            try:
+                native_activity = self.activity_waiter.wait(min(remaining, 0.01))
+            except Exception:
+                try:
+                    self.activity_waiter.close()
+                except Exception:
+                    pass
+                self.activity_waiter = None
+                return
+            if native_activity:
+                self.native_snapshot_pending = True
+                if (
+                    time.monotonic()
+                    >= self.last_native_snapshot_at + NOTIFICATION_BACKSTOP_SECONDS
+                ):
+                    return
+
+    def _drain_controls(self) -> list[WorkspaceControl]:
+        self.wake.clear()
+        controls: list[WorkspaceControl] = []
+        while True:
+            try:
+                controls.append(self.inbound.get_nowait())
+            except queue.Empty:
+                return controls
+
+    def _bootstrap(self, controls: list[WorkspaceControl]) -> bool:
+        bootstrap = next(
+            (item for item in controls if isinstance(item, Bootstrap)),
+            None,
+        )
+        if bootstrap is None:
+            return True
+        self.generation = bootstrap.generation
+        self.token = bootstrap.token
+        bootstrap.token = ""
+        try:
+            (
+                self.target,
+                self.config,
+                self.canonical,
+                self.directory_identity,
+            ) = _resolve_workspace(bootstrap.locator)
+            self.backend = self.target.backend_name
+        except NotInitializedError:
+            self._emit(
+                WorkspaceFailed(self.generation, "resolution", PROJECT_NOT_FOUND)
+            )
+            return False
+        except ValueError as exc:
+            self._emit(WorkspaceFailed(self.generation, "resolution", str(exc)))
+            return False
+        except RuntimeError as exc:
+            message = str(exc)
+            if message not in {
+                CONFIGURATION_UNAVAILABLE,
+                DIRECTORY_IDENTITY_UNAVAILABLE,
+            }:
+                message = ATTACHMENT_FAILED
+            self._emit(WorkspaceFailed(self.generation, "resolution", message))
+            return False
+        self._emit(
+            WorkspaceResolved(
+                self.generation,
+                self.canonical,
+                self.directory_identity,
+                self.backend,
+            )
+        )
+        return not self._stop_requested(controls)
+
+    def _validation_granted(self, controls: list[WorkspaceControl]) -> bool:
+        return any(
+            isinstance(control, GrantValidation)
+            and control.generation == self.generation
+            for control in controls
+        )
+
+    def _validate(self, controls: list[WorkspaceControl]) -> bool:
+        if not self._validation_granted(controls):
+            return True
+        if self.target is None or self.config is None:
+            raise AssertionError("validation grant requires resolved state")
+        try:
+            self.client = TautClient(
+                broker_target=self.target,
+                broker_config=self.config,
+                token=self.token,
+                persistent=True,
+                inherit_environment_identity=False,
+            )
+            resolved = self.client._resolve_member(
+                create=False,
+                _touch_activity=False,
+            )
+            member = self.client._require_member(resolved)
+            notification_queue = self.client.queue(
+                addressing.notification_queue_name(str(member["member_id"]))
+            )
+            try:
+                self.activity_waiter = create_activity_waiter_for_queues(
+                    [notification_queue],
+                    stop_event=self.activity_stop,
+                )
+            except Exception:
+                self.activity_waiter = None
+            pending = tuple(self.client.peek_inbox(limit=101))
+            self.token = ""
+        except (IdentityError, TokenError):
+            self._emit(WorkspaceFailed(self.generation, "validation", IDENTITY_INVALID))
+            return False
+        except TautError as exc:
+            message = (
+                CONFIGURATION_UNAVAILABLE
+                if str(exc) in _REACTION_CONFIGURATION_ERRORS
+                else ATTACHMENT_FAILED
+            )
+            self._emit(WorkspaceFailed(self.generation, "validation", message))
+            return False
+        except Exception:
+            self._emit(
+                WorkspaceFailed(self.generation, "validation", ATTACHMENT_FAILED)
+            )
+            return False
+        self.previous_snapshot = pending[:100]
+        self.previous_truncated = len(pending) > 100
+        self.next_backstop_at = time.monotonic() + NOTIFICATION_BACKSTOP_SECONDS
+        self.ready = True
+        self._emit(
+            WorkspaceReady(
+                self.generation,
+                self.canonical,
+                self.directory_identity,
+                self.backend,
+                str(member["member_id"]),
+                str(member["display_name"]),
+                self.previous_snapshot,
+                self.previous_truncated,
+            )
+        )
+        return True
+
+    def _execute_command(self, command: RunWorkspaceCommand) -> bool:
+        if self.client is None:
+            raise AssertionError("ready workspace requires a client")
+        self.client.last_notification_warnings.clear()
+        command_records: tuple[CommandRecord, ...] = ()
+        command_error: str | None = None
+        try:
+            result = execute_command(self.client, command.name, command.arguments)
+            command_record_type = result.record_type
+            command_records = result.records
+        except TokenError:
+            self.degraded = True
+            self._emit(WorkspaceIdentityLost(self.generation))
+            return True
+        except BlankMessageError as exc:
+            command_record_type = RECORD_TYPE_BY_TOOL[command.name]
+            command_error = str(exc)
+        except EmptyResultError:
+            command_record_type = RECORD_TYPE_BY_TOOL[command.name]
+        except (TautError, TypeError, ValueError) as exc:
+            command_record_type = RECORD_TYPE_BY_TOOL[command.name]
+            command_error = str(exc)
+        except Exception:
+            self._emit(WorkspaceCrashed(self.generation))
+            return False
+        refresh_outcome = self._refresh_after_command(command.name)
+        if refresh_outcome is _RefreshOutcome.IDENTITY_LOST:
+            return True
+        if refresh_outcome is _RefreshOutcome.CRASHED:
+            return False
+        assert refresh_outcome is _RefreshOutcome.REFRESHED
+        self._emit(
+            WorkspaceCommandOutcome(
+                self.generation,
+                command.command_id,
+                command.name,
+                command_record_type,
+                command_records,
+                tuple(self.client.last_notification_warnings),
+                self.previous_snapshot,
+                self.previous_truncated,
+                error=command_error,
+            )
+        )
+        return True
+
+    def _refresh_after_command(self, command_name: str) -> _RefreshOutcome:
+        if command_name == "channel_show":
+            return _RefreshOutcome.REFRESHED
+        if self.client is None:
+            raise AssertionError("ready workspace requires a client")
+        try:
+            pending = tuple(self.client.peek_inbox(limit=101))
+        except (IdentityError, TokenError):
+            self.degraded = True
+            self._emit(WorkspaceIdentityLost(self.generation))
+            return _RefreshOutcome.IDENTITY_LOST
+        except Exception:
+            self._emit(WorkspaceCrashed(self.generation))
+            return _RefreshOutcome.CRASHED
+        self.previous_snapshot = pending[:100]
+        self.previous_truncated = len(pending) > 100
+        self.native_snapshot_pending = False
+        self.next_backstop_at = time.monotonic() + NOTIFICATION_BACKSTOP_SECONDS
+        return _RefreshOutcome.REFRESHED
+
+    def _handle_command(self, controls: list[WorkspaceControl]) -> bool | None:
+        cancels = {
+            control.command_id
+            for control in controls
+            if isinstance(control, CancelWorkspaceCommand)
+            and control.generation == self.generation
+            and control.command_id > self.last_finished_command_id
+        }
+        command = next(
+            (
+                control
+                for control in controls
+                if isinstance(control, RunWorkspaceCommand)
+                and control.generation == self.generation
+                and control.command_id > self.last_finished_command_id
+            ),
+            None,
+        )
+        if command is None:
+            return None
+        self.last_finished_command_id = command.command_id
+        if command.command_id not in cancels:
+            return self._execute_command(command)
+        self._emit(
+            WorkspaceCommandOutcome(
+                self.generation,
+                command.command_id,
+                command.name,
+                "canceled",
+                (),
+                (),
+                self.previous_snapshot,
+                self.previous_truncated,
+                canceled=True,
+            )
+        )
+        return True
+
+    def _publish_snapshot_if_due(self) -> bool:
+        if self.client is None:
+            raise AssertionError("ready workspace requires a client")
+        now = time.monotonic()
+        backstop_due = now >= self.next_backstop_at
+        native_due = (
+            self.native_snapshot_pending
+            and now >= self.last_native_snapshot_at + NOTIFICATION_BACKSTOP_SECONDS
+        )
+        if not backstop_due and not native_due:
+            return True
+        try:
+            pending = tuple(self.client.peek_inbox(limit=101))
+        except (IdentityError, TokenError):
+            self.degraded = True
+            self._emit(WorkspaceIdentityLost(self.generation))
+            return True
+        except Exception:
+            self._emit(WorkspaceCrashed(self.generation))
+            return False
+        snapshot = pending[:100]
+        truncated = len(pending) > 100
+        if backstop_due:
+            self.next_backstop_at = now + NOTIFICATION_BACKSTOP_SECONDS
+        if native_due:
+            self.native_snapshot_pending = False
+            self.last_native_snapshot_at = now
+        if snapshot != self.previous_snapshot or truncated != self.previous_truncated:
+            self.previous_snapshot = snapshot
+            self.previous_truncated = truncated
+            self._emit(WorkspaceSnapshot(self.generation, snapshot, truncated))
+        return True
+
+    def _run_cycle(self) -> bool:
+        self._wait_for_work()
+        controls = self._drain_controls()
+        if self.generation < 0:
+            return self._bootstrap(controls)
+        if self._stop_requested(controls):
+            return False
+        if not self.ready:
+            return self._validate(controls)
+        if self.degraded:
+            return True
+        command_state = self._handle_command(controls)
+        if command_state is None:
+            return self._publish_snapshot_if_due()
+        return command_state
+
+    def _run_loop(self) -> None:
+        while self._run_cycle():
+            pass
+
+    def _cleanup(self) -> None:
+        self.token = ""
+        self.activity_stop.set()
+        if self.activity_waiter is not None:
+            try:
+                self.activity_waiter.close()
+            except Exception:
+                pass
+        if self.client is not None:
+            try:
+                self.client.close()
+            except Exception:
+                pass
+        if self.generation >= 0:
+            self._emit(WorkspaceStopped(self.generation))
+
+    def run(self) -> None:
+        try:
+            self._run_loop()
+        except BaseException:
+            if self.generation >= 0:
+                self._emit(WorkspaceCrashed(self.generation))
+        finally:
+            self._cleanup()
+
+
 def run_workspace_reactor(
     inbound: queue.Queue[WorkspaceControl],
     wake: Event,
     outbound: queue.Queue[WorkspaceEvent],
     wake_master: Callable[[], None],
 ) -> None:
-    """Own one workspace client from resolution through close.
+    """Own one workspace client from resolution through close."""
 
-    The wake is deliberately payload-free. Every payload crosses a declared
-    Queue, matching the BaseReactor communication contract without inheriting
-    its consuming watcher assumptions.
-    """
-
-    generation = -1
-    client: TautClient | None = None
-    token = ""
-    target: BrokerTarget | None = None
-    config: dict[str, Any] | None = None
-    canonical = ""
-    directory_identity = (0, 0)
-    backend = ""
-    ready = False
-    degraded = False
-    previous_snapshot: tuple[Notification, ...] = ()
-    previous_truncated = False
-    last_finished_command_id = -1
-    activity_stop = Event()
-    activity_waiter: ActivityWaiter | None = None
-    next_backstop_at = time.monotonic() + NOTIFICATION_BACKSTOP_SECONDS
-    last_native_snapshot_at = float("-inf")
-    native_snapshot_pending = False
-
-    def emit(event: WorkspaceEvent) -> None:
-        outbound.put_nowait(event)
-        wake_master()
-
-    def stop_requested(controls: list[WorkspaceControl]) -> bool:
-        return any(
-            isinstance(control, StopWorkspace) and control.generation == generation
-            for control in controls
-        )
-
-    try:
-        while True:
-            if not ready or activity_waiter is None:
-                timeout = NOTIFICATION_BACKSTOP_SECONDS
-                if ready:
-                    timeout = max(0.0, next_backstop_at - time.monotonic())
-                wake.wait(timeout=timeout)
-            else:
-                while not wake.is_set():
-                    now = time.monotonic()
-                    next_due = (
-                        last_native_snapshot_at + NOTIFICATION_BACKSTOP_SECONDS
-                        if native_snapshot_pending
-                        else next_backstop_at
-                    )
-                    remaining = next_due - now
-                    if remaining <= 0:
-                        break
-                    try:
-                        native_activity = activity_waiter.wait(min(remaining, 0.01))
-                    except Exception:
-                        try:
-                            activity_waiter.close()
-                        except Exception:
-                            pass
-                        activity_waiter = None
-                        break
-                    if native_activity:
-                        native_snapshot_pending = True
-                        if (
-                            time.monotonic()
-                            >= last_native_snapshot_at + NOTIFICATION_BACKSTOP_SECONDS
-                        ):
-                            break
-            wake.clear()
-            controls: list[WorkspaceControl] = []
-            while True:
-                try:
-                    controls.append(inbound.get_nowait())
-                except queue.Empty:
-                    break
-
-            if generation < 0:
-                bootstrap = next(
-                    (item for item in controls if isinstance(item, Bootstrap)),
-                    None,
-                )
-                if bootstrap is None:
-                    continue
-                generation = bootstrap.generation
-                token = bootstrap.token
-                bootstrap.token = ""
-                try:
-                    target, config, canonical, directory_identity = _resolve_workspace(
-                        bootstrap.locator
-                    )
-                    backend = target.backend_name
-                except NotInitializedError:
-                    emit(WorkspaceFailed(generation, "resolution", PROJECT_NOT_FOUND))
-                    return
-                except ValueError as exc:
-                    emit(WorkspaceFailed(generation, "resolution", str(exc)))
-                    return
-                except RuntimeError as exc:
-                    message = str(exc)
-                    if message not in {
-                        CONFIGURATION_UNAVAILABLE,
-                        DIRECTORY_IDENTITY_UNAVAILABLE,
-                    }:
-                        message = ATTACHMENT_FAILED
-                    emit(WorkspaceFailed(generation, "resolution", message))
-                    return
-                emit(
-                    WorkspaceResolved(
-                        generation,
-                        canonical,
-                        directory_identity,
-                        backend,
-                    )
-                )
-                if stop_requested(controls):
-                    return
-                continue
-
-            if stop_requested(controls):
-                return
-
-            if not ready:
-                granted = any(
-                    isinstance(control, GrantValidation)
-                    and control.generation == generation
-                    for control in controls
-                )
-                if not granted:
-                    continue
-                if target is None or config is None:
-                    raise AssertionError("validation grant requires resolved state")
-                try:
-                    client = TautClient(
-                        broker_target=target,
-                        broker_config=config,
-                        token=token,
-                        persistent=True,
-                        inherit_environment_identity=False,
-                    )
-                    resolved = client._resolve_member(
-                        create=False,
-                        _touch_activity=False,
-                    )
-                    member = client._require_member(resolved)
-                    notification_queue = client.queue(
-                        addressing.notification_queue_name(str(member["member_id"]))
-                    )
-                    try:
-                        activity_waiter = create_activity_waiter_for_queues(
-                            [notification_queue],
-                            stop_event=activity_stop,
-                        )
-                    except Exception:
-                        # Native delivery is an optional edge hint. The fixed
-                        # observational backstop remains authoritative when a
-                        # backend cannot create its hint source.
-                        activity_waiter = None
-                    pending = tuple(client.peek_inbox(limit=101))
-                    token = ""
-                except (IdentityError, TokenError):
-                    emit(WorkspaceFailed(generation, "validation", IDENTITY_INVALID))
-                    return
-                except TautError as exc:
-                    message = (
-                        CONFIGURATION_UNAVAILABLE
-                        if str(exc) in _REACTION_CONFIGURATION_ERRORS
-                        else ATTACHMENT_FAILED
-                    )
-                    emit(WorkspaceFailed(generation, "validation", message))
-                    return
-                except Exception as exc:
-                    del exc
-                    emit(WorkspaceFailed(generation, "validation", ATTACHMENT_FAILED))
-                    return
-                previous_snapshot = pending[:100]
-                previous_truncated = len(pending) > 100
-                next_backstop_at = time.monotonic() + NOTIFICATION_BACKSTOP_SECONDS
-                ready = True
-                emit(
-                    WorkspaceReady(
-                        generation,
-                        canonical,
-                        directory_identity,
-                        backend,
-                        str(member["member_id"]),
-                        str(member["display_name"]),
-                        previous_snapshot,
-                        previous_truncated,
-                    )
-                )
-                continue
-
-            if degraded:
-                continue
-            if client is None:
-                raise AssertionError("ready workspace requires a client")
-
-            cancels = {
-                control.command_id
-                for control in controls
-                if isinstance(control, CancelWorkspaceCommand)
-                and control.generation == generation
-                and control.command_id > last_finished_command_id
-            }
-            command = next(
-                (
-                    control
-                    for control in controls
-                    if isinstance(control, RunWorkspaceCommand)
-                    and control.generation == generation
-                    and control.command_id > last_finished_command_id
-                ),
-                None,
-            )
-            if command is not None:
-                last_finished_command_id = command.command_id
-                if command.command_id in cancels:
-                    emit(
-                        WorkspaceCommandOutcome(
-                            generation,
-                            command.command_id,
-                            command.name,
-                            "canceled",
-                            (),
-                            (),
-                            previous_snapshot,
-                            previous_truncated,
-                            canceled=True,
-                        )
-                    )
-                    continue
-                client.last_notification_warnings.clear()
-                command_records: tuple[CommandRecord, ...] = ()
-                command_error: str | None = None
-                try:
-                    result = execute_command(client, command.name, command.arguments)
-                    command_record_type = result.record_type
-                    command_records = result.records
-                except TokenError:
-                    degraded = True
-                    emit(WorkspaceIdentityLost(generation))
-                    continue
-                except BlankMessageError as exc:
-                    command_record_type = RECORD_TYPE_BY_TOOL[command.name]
-                    command_error = str(exc)
-                except EmptyResultError:
-                    command_record_type = RECORD_TYPE_BY_TOOL[command.name]
-                except (TautError, TypeError, ValueError) as exc:
-                    command_record_type = RECORD_TYPE_BY_TOOL[command.name]
-                    command_error = str(exc)
-                except Exception:
-                    emit(WorkspaceCrashed(generation))
-                    return
-                if command.name != "channel_show":
-                    try:
-                        pending = tuple(client.peek_inbox(limit=101))
-                    except (IdentityError, TokenError):
-                        degraded = True
-                        emit(WorkspaceIdentityLost(generation))
-                        continue
-                    except Exception:
-                        emit(WorkspaceCrashed(generation))
-                        return
-                    previous_snapshot = pending[:100]
-                    previous_truncated = len(pending) > 100
-                    native_snapshot_pending = False
-                    next_backstop_at = time.monotonic() + NOTIFICATION_BACKSTOP_SECONDS
-                emit(
-                    WorkspaceCommandOutcome(
-                        generation,
-                        command.command_id,
-                        command.name,
-                        command_record_type,
-                        command_records,
-                        tuple(client.last_notification_warnings),
-                        previous_snapshot,
-                        previous_truncated,
-                        error=command_error,
-                    )
-                )
-                continue
-            now = time.monotonic()
-            backstop_due = now >= next_backstop_at
-            native_due = (
-                native_snapshot_pending
-                and now >= last_native_snapshot_at + NOTIFICATION_BACKSTOP_SECONDS
-            )
-            if not backstop_due and not native_due:
-                continue
-            try:
-                pending = tuple(client.peek_inbox(limit=101))
-            except (IdentityError, TokenError):
-                degraded = True
-                emit(WorkspaceIdentityLost(generation))
-                continue
-            except Exception:
-                emit(WorkspaceCrashed(generation))
-                return
-            snapshot = pending[:100]
-            truncated = len(pending) > 100
-            if backstop_due:
-                next_backstop_at = now + NOTIFICATION_BACKSTOP_SECONDS
-            if native_due:
-                native_snapshot_pending = False
-                last_native_snapshot_at = now
-            if snapshot != previous_snapshot or truncated != previous_truncated:
-                previous_snapshot = snapshot
-                previous_truncated = truncated
-                emit(WorkspaceSnapshot(generation, snapshot, truncated))
-    except BaseException:
-        if generation >= 0:
-            emit(WorkspaceCrashed(generation))
-    finally:
-        token = ""
-        activity_stop.set()
-        if activity_waiter is not None:
-            try:
-                activity_waiter.close()
-            except Exception:
-                pass
-        if client is not None:
-            try:
-                client.close()
-            except Exception:
-                pass
-        if generation >= 0:
-            emit(WorkspaceStopped(generation))
+    _WorkspaceReactor(inbound, wake, outbound, wake_master).run()

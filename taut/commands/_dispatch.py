@@ -40,6 +40,22 @@ class _RootValues:
     quiet: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class _DispatchEnvironment:
+    stdin: TextIO
+    stdout: TextIO
+    stderr: TextIO
+    client_factory: Callable[..., Any] | None
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedInvocation:
+    verb: str
+    command: Any
+    args: argparse.Namespace
+    context: CommandContext
+
+
 class _UsageError(Exception):
     pass
 
@@ -149,22 +165,51 @@ def _dispatch(
         )
         return 1
 
+    prepared = _prepare_invocation(
+        root,
+        selected,
+        verb,
+        tail,
+        literal_tail=literal_tail,
+        environment=_DispatchEnvironment(
+            stdin=input_stream,
+            stdout=output_stream,
+            stderr=error_stream,
+            client_factory=client_factory,
+        ),
+    )
+    if isinstance(prepared, int):
+        return prepared
+    return _run_prepared_invocation(prepared)
+
+
+def _prepare_invocation(
+    root: _RootValues,
+    selected: RegisteredCommand,
+    verb: str,
+    tail: list[str],
+    *,
+    literal_tail: bool,
+    environment: _DispatchEnvironment,
+) -> _PreparedInvocation | int:
     try:
         if literal_tail:
             command_tail, post = ["--", *tail], _RootValues()
         else:
+            assert selected.spec is not None
             command_tail, post = _extract_post_globals(tail, selected.spec)
         merged = _merge_globals(root, post)
     except _UsageError as exc:
-        _write_usage_error(str(exc), error_stream, prog=f"taut {verb}")
+        _write_usage_error(str(exc), environment.stderr, prog=f"taut {verb}")
         return 1
     try:
         command = _load_command(selected)
+        assert selected.spec is not None
         parser = _build_command_parser(
             selected.spec,
             command,
-            output_stream,
-            error_stream,
+            environment.stdout,
+            environment.stderr,
             escape_description=(
                 not merged.json or _command_tail_requests_help(command_tail)
             ),
@@ -176,7 +221,7 @@ def _dispatch(
 
         if isinstance(exc, _TerminalOutputPolicyError):
             raise
-        _write_selected_error(selected, exc, error_stream)
+        _write_selected_error(selected, exc, environment.stderr)
         return 1
     try:
         parse_tail = ["--", *command_tail] if selected.verbatim_tail else command_tail
@@ -185,7 +230,7 @@ def _dispatch(
         if type(exc.code) is int and exc.code in (0, 1):
             return exc.code
         _write_human_line(
-            error_stream,
+            environment.stderr,
             f"taut {verb}: unexpected SystemExit({exc.code!r})",
         )
         return 1
@@ -196,22 +241,32 @@ def _dispatch(
         json=merged.json,
         timestamps=merged.timestamps,
         quiet=merged.quiet,
-        stdin=input_stream,
-        stdout=output_stream,
-        stderr=error_stream,
-        _client_factory=client_factory,
+        stdin=environment.stdin,
+        stdout=environment.stdout,
+        stderr=environment.stderr,
+        _client_factory=environment.client_factory,
     )
     if not context.json:
         from taut.commands._rendering import preflight_human_output_policy
 
         preflight_human_output_policy()
+    return _PreparedInvocation(
+        verb=verb,
+        command=command,
+        args=args,
+        context=context,
+    )
+
+
+def _run_prepared_invocation(prepared: _PreparedInvocation) -> int:
+    context = prepared.context
     primary: BaseException | None = None
     result = 1
     try:
-        result = command.run(context, args)
+        result = prepared.command.run(context, prepared.args)
         if result not in (0, 1, 2) or isinstance(result, bool):
             raise RuntimeError(
-                f"command {verb!r} returned invalid exit value {result!r}; "
+                f"command {prepared.verb!r} returned invalid exit value {result!r}; "
                 "expected 0, 1, or 2"
             )
     except BaseException as exc:

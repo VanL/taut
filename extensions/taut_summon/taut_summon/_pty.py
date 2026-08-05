@@ -218,7 +218,7 @@ class PtyHandle:
                 return
             time.sleep(0.05)
 
-    def attach(
+    def attach(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-030] exception
         self,
         *,
         wake: threading.Event,
@@ -427,7 +427,7 @@ class PtyHandle:
             return
         raise AdapterError(close_error)
 
-    def _event_stream(self) -> Iterator[AdapterEvent]:
+    def _event_stream(self) -> Iterator[AdapterEvent]:  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-031] exception
         with self._lifecycle_lock:
             self._reader_started = True
             self._last_output_ts = time.monotonic()
@@ -507,7 +507,7 @@ class PtyHandle:
         returncode = self._proc.returncode
         yield ExitEvent(returncode=0 if returncode is None else int(returncode))
 
-    def _write_all(self, data: bytes) -> None:
+    def _write_all(self, data: bytes) -> None:  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-032] exception
         offset = 0
         with self._lifecycle_lock:
             if self._retired or self._master_closed:
@@ -672,36 +672,43 @@ def _validate_spec(spec: PtySpec) -> None:
         ("rows", "TAUT_SUMMON_PTY_ROWS", spec.rows),
         ("cols", "TAUT_SUMMON_PTY_COLS", spec.cols),
     ):
-        if (
-            isinstance(dimension_value, bool)
-            or not isinstance(dimension_value, int)
-            or not 1 <= dimension_value <= 65_535
-        ):
-            raise AdapterError(f"{field} ({env_name}) must be between 1 and 65535")
+        _validate_dimension(field, env_name, dimension_value)
     for field, env_name, timing_value in (
         ("stall_s", "TAUT_SUMMON_PTY_STALL_S", spec.stall_s),
         ("max_settle_s", "TAUT_SUMMON_PTY_MAX_SETTLE_S", spec.max_settle_s),
     ):
-        if isinstance(timing_value, bool) or not isinstance(timing_value, (int, float)):
-            raise AdapterError(f"{field} ({env_name}) must be a finite positive number")
-        try:
-            finite_timing = float(timing_value)
-        except OverflowError as exc:
-            raise AdapterError(
-                f"{field} ({env_name}) must be a finite positive number"
-            ) from exc
-        if not math.isfinite(finite_timing) or finite_timing <= 0:
-            raise AdapterError(f"{field} ({env_name}) must be a finite positive number")
+        _validate_positive_timing(field, env_name, timing_value)
+    _validate_quiet_ms(spec.quiet_ms)
+
+
+def _validate_dimension(field: str, env_name: str, value: object) -> None:
     if (
-        isinstance(spec.quiet_ms, bool)
-        or not isinstance(spec.quiet_ms, int)
-        or spec.quiet_ms < 0
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not 1 <= value <= 65_535
     ):
+        raise AdapterError(f"{field} ({env_name}) must be between 1 and 65535")
+
+
+def _validate_positive_timing(field: str, env_name: str, value: object) -> None:
+    error = f"{field} ({env_name}) must be a finite positive number"
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise AdapterError(error)
+    try:
+        finite_timing = float(value)
+    except OverflowError as exc:
+        raise AdapterError(error) from exc
+    if not math.isfinite(finite_timing) or finite_timing <= 0:
+        raise AdapterError(error)
+
+
+def _validate_quiet_ms(quiet_ms: object) -> None:
+    if isinstance(quiet_ms, bool) or not isinstance(quiet_ms, int) or quiet_ms < 0:
         raise AdapterError(
             "quiet_ms (TAUT_SUMMON_PTY_QUIET_MS) must be a non-negative integer"
         )
     try:
-        quiet_seconds = spec.quiet_ms / 1000.0
+        quiet_seconds = quiet_ms / 1000.0
     except OverflowError as exc:
         raise AdapterError(
             "quiet_ms (TAUT_SUMMON_PTY_QUIET_MS) must produce finite seconds"
@@ -833,7 +840,7 @@ class _TerminalResponder:
             return self._handle_osc(seq)
         return None
 
-    def _handle_csi(self, seq: bytes) -> bytes | None:
+    def _handle_csi(self, seq: bytes) -> bytes | None:  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-034] exception
         body = seq[2:-1]
         final = seq[-1:]
         self._track_cursor(body, final)

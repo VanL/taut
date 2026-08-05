@@ -108,6 +108,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 | `2026-07-29-taut-chat-pypi-publication-plan.md` | active | no | Class 5 core-distribution rename and exact-artifact PyPI Trusted Publishing plan; independent Opus review passed after factual corrections. |
 | `2026-07-31-simplebroker-6-reconciliation-plan.md` | completed | no | Class 5 compatibility reconciliation for the user-selected SimpleBroker 6.0.0 and SimpleBroker-PG 3.5.0 floors; implementation and completed-work review passed. |
 | `2026-08-01-summon-rich-host-global-state-plan.md` | completed | no | Class 5 rich-host environment, provider-child identity, and explicit signal-ownership implementation; all local gates and independent reviews passed before the owner-authorized targeted commit. |
+| `2026-08-04-ruff-complexity-and-suppression-registry-plan.md` | completed | no | Class 5+P repository-wide C901 visibility, symbol-keyed suppression registry, reviewed ownership refactors, and locality remediation completed with current local gates and independent review. |
 
 ## Retired Plans
 

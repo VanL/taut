@@ -215,24 +215,13 @@ def _read_manifest(path: Path) -> dict[str, Any]:
     return value
 
 
-def verify_bundle(
+def _verify_manifest_identity(
+    manifest: dict[str, Any],
     *,
-    package_dir: Path,
-    bundle_dir: Path,
+    expected_name: str,
+    expected_version: str,
     expected_commit: str,
-    expected_tag_name: str,
-    output_dir: Path | None,
-) -> tuple[Path, ...]:
-    """Verify provenance and bytes, then optionally copy publishable files."""
-
-    _validate_commit(expected_commit)
-    expected_name, expected_version = _package_identity(package_dir)
-    _validate_release_tag(
-        package_name=expected_name,
-        version=expected_version,
-        tag_name=expected_tag_name,
-    )
-    manifest = _read_manifest(bundle_dir / MANIFEST_NAME)
+) -> None:
     if manifest["format"] != MANIFEST_FORMAT:
         _fail(f"unsupported release manifest format {manifest['format']!r}")
     if manifest["commit"] != expected_commit.lower():
@@ -249,7 +238,8 @@ def verify_bundle(
     if version != expected_version:
         _fail("release manifest package version does not match the expected version")
 
-    entries = manifest["files"]
+
+def _manifest_file_digests(entries: object) -> dict[str, str]:
     if not isinstance(entries, list) or len(entries) != 2:
         _fail("release manifest file allowlist must contain exactly two entries")
     expected_digests: dict[str, str] = {}
@@ -269,6 +259,16 @@ def verify_bundle(
         if filename in expected_digests:
             _fail("release manifest file allowlist contains a duplicate filename")
         expected_digests[filename] = digest
+    return expected_digests
+
+
+def _verified_bundle_files(
+    bundle_dir: Path,
+    *,
+    expected_name: str,
+    expected_version: str,
+    expected_digests: dict[str, str],
+) -> tuple[Path, ...]:
 
     try:
         bundle_entries = sorted(bundle_dir.iterdir())
@@ -286,9 +286,12 @@ def verify_bundle(
     for path in actual_files:
         if _sha256(path) != expected_digests[path.name]:
             _fail(f"release bundle digest mismatch for {path.name}")
+    return actual_files
 
-    if output_dir is None:
-        return tuple(actual_files)
+
+def _copy_publishable_files(
+    actual_files: tuple[Path, ...], output_dir: Path
+) -> tuple[Path, ...]:
     _new_directory(output_dir, label="publish directory")
     copied: list[Path] = []
     for source in actual_files:
@@ -296,6 +299,43 @@ def verify_bundle(
         shutil.copy2(source, target)
         copied.append(target)
     return tuple(copied)
+
+
+def verify_bundle(
+    *,
+    package_dir: Path,
+    bundle_dir: Path,
+    expected_commit: str,
+    expected_tag_name: str,
+    output_dir: Path | None,
+) -> tuple[Path, ...]:
+    """Verify provenance and bytes, then optionally copy publishable files."""
+
+    _validate_commit(expected_commit)
+    expected_name, expected_version = _package_identity(package_dir)
+    _validate_release_tag(
+        package_name=expected_name,
+        version=expected_version,
+        tag_name=expected_tag_name,
+    )
+    manifest = _read_manifest(bundle_dir / MANIFEST_NAME)
+    _verify_manifest_identity(
+        manifest,
+        expected_name=expected_name,
+        expected_version=expected_version,
+        expected_commit=expected_commit,
+    )
+    expected_digests = _manifest_file_digests(manifest["files"])
+    actual_files = _verified_bundle_files(
+        bundle_dir,
+        expected_name=expected_name,
+        expected_version=expected_version,
+        expected_digests=expected_digests,
+    )
+
+    if output_dir is None:
+        return tuple(actual_files)
+    return _copy_publishable_files(actual_files, output_dir)
 
 
 def _parser() -> argparse.ArgumentParser:

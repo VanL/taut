@@ -27,7 +27,7 @@ from taut._constants import (
     load_config,
 )
 from taut._exceptions import MembershipError, TautError
-from taut.state import SqlSidecarTautState, dialect_for_taut_target
+from taut.state import MemberRow, SqlSidecarTautState, dialect_for_taut_target
 
 from ._base import (
     _ClientBase,
@@ -149,6 +149,42 @@ class TautClient(
         )
         return InitResult(db=display_target, created=created)
 
+    def _canonical_watch_threads(
+        self,
+        parsed_threads: list[tuple[str, addressing.TargetAddress | None]],
+        member: MemberRow,
+    ) -> list[str]:
+        canonical_threads: list[str] = []
+        seen: set[str] = set()
+        missing: set[str] = set()
+        for selector, dm_selector in parsed_threads:
+            if dm_selector is not None:
+                canonical = self._resolve_direct_message(
+                    selector,
+                    member,
+                ).thread["name"]
+            else:
+                canonical = addressing.validate_chat_thread_name(
+                    selector,
+                    allow_subthread=True,
+                )
+                if (
+                    self._state.get_membership(
+                        thread=canonical,
+                        member_id=member["member_id"],
+                    )
+                    is None
+                ):
+                    missing.add(canonical)
+            if canonical not in seen:
+                canonical_threads.append(canonical)
+                seen.add(canonical)
+        if missing:
+            raise MembershipError(
+                "not a member of watched thread(s): " + ", ".join(sorted(missing))
+            )
+        return canonical_threads
+
     def watch(
         self,
         handler: Callable[[Message | Notification], None],
@@ -184,37 +220,11 @@ class TautClient(
             context = self._direct_message_context(row["name"], member)
             if context is not None:
                 self._remember_direct_message_display_name(context)
-        canonical_threads: list[str] | None = None
-        if parsed_threads is not None:
-            canonical_threads = []
-            seen: set[str] = set()
-            missing: set[str] = set()
-            for selector, dm_selector in parsed_threads:
-                if dm_selector is not None:
-                    canonical = self._resolve_direct_message(
-                        selector,
-                        member,
-                    ).thread["name"]
-                else:
-                    canonical = addressing.validate_chat_thread_name(
-                        selector,
-                        allow_subthread=True,
-                    )
-                    if (
-                        self._state.get_membership(
-                            thread=canonical,
-                            member_id=member["member_id"],
-                        )
-                        is None
-                    ):
-                        missing.add(canonical)
-                if canonical not in seen:
-                    canonical_threads.append(canonical)
-                    seen.add(canonical)
-            if missing:
-                raise MembershipError(
-                    "not a member of watched thread(s): " + ", ".join(sorted(missing))
-                )
+        canonical_threads = (
+            self._canonical_watch_threads(parsed_threads, member)
+            if parsed_threads is not None
+            else None
+        )
         runtime = _watch_runtime_for_client(
             self,
             persistent=persistent,

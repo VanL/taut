@@ -82,7 +82,7 @@ def _markdown_sources(root: Path) -> list[Path]:
     ]
 
 
-def _shell_claim_tokens(fragment: str) -> tuple[list[tuple[str, ...]], str | None]:
+def _shell_claim_tokens(fragment: str) -> tuple[list[tuple[str, ...]], str | None]:  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-055] exception
     """Tokenize the Taut invocations in one inline/fenced shell fragment."""
 
     if re.search(r"(?<![\w-])taut(?=$|[\s;|&])", fragment) is None:
@@ -259,7 +259,7 @@ def _claim_path(
     return path, None
 
 
-def _validate_sources(
+def _validate_sources(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-056] exception
     root: Path,
     *,
     sources: list[Path],

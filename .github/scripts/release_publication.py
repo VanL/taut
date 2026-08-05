@@ -77,9 +77,7 @@ def _safe_filename(value: object) -> bool:
     )
 
 
-def read_publication(manifest_path: Path, dist_dir: Path) -> Publication:
-    """Read the strict release manifest and recheck the local distribution bytes."""
-
+def _read_release_manifest(manifest_path: Path) -> Mapping[str, object]:
     try:
         manifest_value = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -96,8 +94,12 @@ def read_publication(manifest_path: Path, dist_dir: Path) -> Publication:
     commit = manifest["commit"]
     if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}", commit) is None:
         raise RuntimeError("Release manifest commit is not an exact lowercase Git SHA")
+    return manifest
 
+
+def _publication_identity(manifest: Mapping[str, object]) -> tuple[str, str]:
     package = _mapping(manifest["package"], label="Release manifest package")
+
     if set(package) != {"name", "version"}:
         raise RuntimeError("Release manifest package has an invalid field allowlist")
     name = package["name"]
@@ -111,8 +113,12 @@ def read_publication(manifest_path: Path, dist_dir: Path) -> Publication:
         or "/" in version
     ):
         raise RuntimeError("Release manifest package identity is invalid")
+    return name, version
 
+
+def _publication_file_digests(manifest: Mapping[str, object]) -> dict[str, str]:
     raw_files = manifest["files"]
+
     if not isinstance(raw_files, list) or len(raw_files) != 2:
         raise RuntimeError(
             "Release manifest must allow exactly one wheel and one .tar.gz sdist"
@@ -139,6 +145,12 @@ def read_publication(manifest_path: Path, dist_dir: Path) -> Publication:
         raise RuntimeError(
             "Release manifest must allow exactly one wheel and one .tar.gz sdist"
         )
+    return expected
+
+
+def _verify_local_publication_files(
+    dist_dir: Path, expected: Mapping[str, str]
+) -> None:
 
     try:
         actual_paths = tuple(sorted(dist_dir.iterdir()))
@@ -158,6 +170,14 @@ def read_publication(manifest_path: Path, dist_dir: Path) -> Publication:
         if _sha256(path) != expected[path.name]:
             raise RuntimeError(f"Local distribution digest mismatch for {path.name}")
 
+
+def read_publication(manifest_path: Path, dist_dir: Path) -> Publication:
+    """Read the strict release manifest and recheck the local distribution bytes."""
+
+    manifest = _read_release_manifest(manifest_path)
+    name, version = _publication_identity(manifest)
+    expected = _publication_file_digests(manifest)
+    _verify_local_publication_files(dist_dir, expected)
     return Publication(package=name, version=version, files=expected)
 
 
@@ -172,7 +192,7 @@ def _decode_json_response(response: Any, *, label: str) -> object:
         raise RuntimeError(f"{label} returned invalid JSON") from exc
 
 
-def pypi_release_files(package: str, version: str) -> dict[str, str] | None:
+def pypi_release_files(package: str, version: str) -> dict[str, str] | None:  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-002] exception
     """Return exact PyPI filenames and SHA-256 digests; only 404 means absent."""
 
     url = (

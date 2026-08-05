@@ -323,7 +323,7 @@ def _with_default_suite_path(args: list[str], default_path: str) -> list[str]:
     return [*args, default_path]
 
 
-def _extract_pytest_runner_overrides(
+def _extract_pytest_runner_overrides(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-044] exception
     pytest_args: list[str],
 ) -> tuple[list[str], str | None, str | None, str | None]:
     """Extract pytest args that need to be merged with runner defaults."""

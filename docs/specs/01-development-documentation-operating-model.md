@@ -270,6 +270,192 @@ that now resolves is itself a failure. Failures identify source, line, command
 path, and reason. The standalone checker exits 0 for success, 1 for claim
 failures, and 2 for invocation or environment failure.
 
+### [DOM-10.2] Repository static-analysis and complexity gate
+
+Taut's Python lint gate uses one exact Ruff version across the root,
+PostgreSQL, Summon, and MCP development manifests and existing lockfiles.
+`pyproject.toml` and `extensions/taut_mcp/pyproject.toml` own their respective
+Ruff configuration; both explicitly select `E`, `W`, `F`, `I`, `B`, `C4`,
+`UP`, and `C901`, use `mccabe.max-complexity = 10`, and keep preview rules
+opt-in. A Ruff-version change must update every manifest and
+existing lock in one reviewed change, regenerate the effective-rule fixture,
+and re-run the raw suppression audit before adoption.
+
+Owner: the Ruff configurations own rule selection and discovery; the root CI
+lint job owns repository-wide enforcement; the PG and MCP lint jobs provide
+independent extension-environment proof. Boundary: every tracked first-party
+`.py` and `.pyi` file and every tracked extensionless Python-shebang tool,
+including repository tools, `.github/scripts`, tests, and all extension
+projects. Verification: `tests/test_ruff_policy.py` invokes the real canonical
+Ruff binary, compares effective discovery and enabled rules with reviewed
+inventories, proves complexity 10 passes and 11 fails, and checks CI and
+release command shape. Required action: normal lint uses `ruff check .`; Ruff
+formatting retains its explicit existing path boundary and does not expand to
+repository-wide formatting merely because lint discovery expands.
+
+Ruff's C901 score is a visibility signal, not a design verdict. Each finding
+must either be simplified at a real ownership seam with behavior-preserving
+proof or carry a narrow local C901 suppression registered in [DOM-10.2.1]. A
+retained finding requires a protected coupling, debugging-locality, or
+semantic-risk reason; real behavioral proof; rejected decompositions; and
+explicit approval. A cohesive parser, lifecycle owner, protocol dispatcher,
+atomic release sequence, stateful reactor, or real-process proof must not be
+fragmented merely to lower its score.
+
+The policy gate runs normal Ruff and a raw audit with `--ignore-noqa`. Source
+directives, human-owned [DOM-10.2.1] groups, the generated symbol index, and
+raw diagnostics at tagged locations using Ruff's `noqa_row` must reconcile
+exactly, including each group's approved directive and per-code raw-diagnostic
+cardinalities. A new unsuppressed finding, malformed or unregistered tagged
+directive, unknown or empty group, rule-scope mismatch, cardinality change,
+stale directive, stale generated index, or mismatched raw finding fails.
+
+A separate movement-stable global raw-diagnostic inventory records every
+diagnostic exposed by `--ignore-noqa` under the active repository rule set,
+including reasoned local suppressions outside the grouped registry. It is an
+exact aggregate by rule code, not a claim that disabled rule families are
+audited and not a second identity registry. Per-file ignores, global ignores,
+blanket file directives, threshold inflation, and baseline allowlists are not
+permitted as alternatives to review.
+
+#### [DOM-10.2.1] Approved Ruff suppression registry
+
+This subsection owns every approved suppression group and its human-reviewed
+meaning. The human table owns the stable group ID, allowed rules, approved
+directive count, approved raw-diagnostic count by rule, protected invariant,
+real proof, rejected alternatives, and approval. The local source directive
+owns its exact rule codes and group pointer. The generated index owns only
+derived repository-relative paths, qualified symbols, and actual counts.
+
+A generated symbol is the outermost enclosing function, qualified by enclosing
+class names, or `<module>` when no function owns the line. Decorator lines
+belong to their decorated function. The generator retains the physical line as
+internal identity for raw-diagnostic reconciliation and errors, but it renders
+one sorted `path::qualified_symbol` site per group. This makes ordinary line
+movement stable and makes a suppression moving between functions visible in
+review. Removing and adding the same rule within the same qualified symbol can
+remain invisible when both site set and cardinality stay fixed; this is an
+accepted residual, not a broader approval.
+
+The required local form is
+`# noqa: <codes> approved [DOM-10.2.1] [RUFF-SUP-NNN] exception`.
+The stable group points to the single durable full
+reason; source comments do not duplicate that rationale. Group IDs are unique,
+match `RUFF-SUP-[0-9]{3}`, and are never reused after retirement. A temporary
+group also names the active plan task that removes or re-evaluates it.
+
+The human table columns are `Group`, `Rules`, `Approved cardinality`,
+`Protected invariant`, `Real proof`, `Rejected alternatives`, and `Approval`.
+Approved cardinality states both directive count and raw count by code. Every
+group has at least one live directive; every human-owned rationale cell is
+non-empty. The subsection also owns exactly one canonical, lexically sorted
+`Global raw-noqa inventory:` line using backticked `CODE=count` entries.
+
+The generated location index is enclosed by unique begin/end markers and has
+columns `Group`, `Locations`, `Directives`, and `Raw diagnostics`. Rows are
+sorted by group ID; sites use repository-relative POSIX paths and qualified
+symbols; codes are lexical. Content outside the markers is human-owned and
+remains byte-for-byte unchanged during regeneration. The generator may never
+create or edit a group, rule approval, cardinality approval, invariant, proof,
+rejected alternative, or approval record.
+
+Verification commands are `uv run --extra dev python
+bin/ruff_suppression_index.py --check` and, after explicit human approval of
+every changed human-owned field, `uv run --extra dev python
+bin/ruff_suppression_index.py --write`. Check mode never writes. Write mode
+validates the complete evidence graph before replacing only the generated
+block through a same-directory temporary file and atomic `os.replace`.
+Anticipated policy mismatches exit 1; invocation, decoding, Ruff, source-read,
+and replacement failures exit 2 with one diagnostic and no traceback;
+unexpected programming errors retain their traceback. Any failure before
+replacement leaves the spec byte-for-byte unchanged.
+
+| Group | Rules | Approved cardinality | Protected invariant | Real proof | Rejected alternatives | Approval |
+|-------|-------|----------------------|---------------------|------------|-----------------------|----------|
+| `[RUFF-SUP-002]` | `C901` | `1` directive; raw: `C901=1` | One external-boundary request/404/identity/filename/digest parser | PyPI HTTP and malformed-response tests | Generic fetch/response layer before a second real caller exists | P3 retained; T3A independent no-blocker review; user-authorized implementation 2026-08-04. |
+| `[RUFF-SUP-003]` | `C901` | `1` directive; raw: `C901=1` | One enumerable fixture-table audit with a mutation probe per rule | checker self-test and live gate | General Markdown policy engine | P3 retained; T3A independent no-blocker review; user-authorized implementation 2026-08-04. |
+| `[RUFF-SUP-004]` | `C901` | `1` directive; raw: `C901=1` | Fail-closed parser for one section/table grammar | malformed/status/exemplar/self-application tests | General Markdown parser or partial-row acceptance | P3 retained; T3A independent no-blocker review; user-authorized implementation 2026-08-04. |
+| `[RUFF-SUP-005]` | `C901` | `1` directive; raw: `C901=1` | Bounded installed-tool mutation smoke over the closed vocabulary | direct self-test plus pytest matrix | Mini test framework inside the executable | P3 retained; T3A independent no-blocker review; user-authorized implementation 2026-08-04. |
+| `[RUFF-SUP-008]` | `C901` | `1` directive; raw: `C901=1` | Explicit fail-closed publication/local/remote tag decision table | plan-tag and conflict tests | Generic rule engine or one helper per branch | P3 retained; T3A independent no-blocker review; user-authorized implementation 2026-08-04. |
+| `[RUFF-SUP-011]` | `C901` | `1` directive; raw: `C901=1` | Closed 17-tool allowlist with explicit validation, public-client calls and result semantics | proxy and owner-thread matrices | Handler maps, CLI reflection or generic tool adapters | P3 retained; T3A independent no-blocker review; user-authorized implementation 2026-08-04. |
+| `[RUFF-SUP-012]` | `C901` | `1` directive; raw: `C901=1` | Closed type-discriminated output serializer | exact object and schema tests | Reflection or generic dataclass serialization | P3 retained; T3A independent no-blocker review; user-authorized implementation 2026-08-04. |
+| `[RUFF-SUP-014]` | `C901` | `1` directive; raw: `C901=1` | One alias/candidate/fingerprint/retirement/deadline arbitration transition | routing and concurrent-candidate tests | Predicate helpers that hide terminal-action order | P3 retained; T3A independent no-blocker review; user-authorized implementation 2026-08-04. |
+| `[RUFF-SUP-015]` | `C901` | `1` directive; raw: `C901=1` | Closed event dispatcher with mandatory dead-owner reap | maintenance/fault/detach/identity-loss tests | Visitor or handler registry | P3 retained; T3A independent no-blocker review; user-authorized implementation 2026-08-04. |
+| `[RUFF-SUP-016]` | `C901` | `1` directive; raw: `C901=1` | Nonblocking owner for admission close, cancellation, settlement, bounded drain, escalation and clearing | shutdown/deadline/transport tests | Split cleanup owners or event-loop blocking shutdown | P3 retained; T3A independent no-blocker review; user-authorized implementation 2026-08-04. |
+| `[RUFF-SUP-018]` | `C901` | `1` directive; raw: `C901=1` | One server assembly unit shares bus, lifespan, protocol-era and registration state | dual-era/discovery/unknown-tool tests | Top-level handler churn or parallel legacy/modern servers | P3 retained; T3A independent no-blocker review; user-authorized implementation 2026-08-04. |
+| `[RUFF-SUP-019]` | `C901` | `1` directive; raw: `C901=1` | Real-pipe peer-close, saturation, clean-exit and cleanup protocol | test plus platform classifier cases | Mocked pipes/process or counting forced cleanup as clean exit | P3 retained; T3A independent no-blocker review; user-authorized implementation 2026-08-04. |
+| `[RUFF-SUP-021]` | `C901` | `1` directive; raw: `C901=1` | Real-PG fallback refresh, delivery, cursor, health and cleanup scenario | shared watcher lifecycle proof | Mocked PG, watcher or threads | P3 retained; T3A independent no-blocker review; user-authorized implementation 2026-08-04. |
+| `[RUFF-SUP-022]` | `C901` | `1` directive; raw: `C901=1` | Causal add/remove/rebind/close/native-wake sequence | test plus topology suite | Split add/remove tests or fake waiters | P3 retained; T3A independent no-blocker review; user-authorized implementation 2026-08-04. |
+| `[RUFF-SUP-024]` | `C901` | `1` directive; raw: `C901=1` | Compensating claim/create/detect/close/publish/release transaction | collision, exhaustion, cleanup and concurrency tests | Helpers passing partial creator/member/claim ownership | P3 retained; T3A independent no-blocker review; user-authorized implementation 2026-08-04. |
+| `[RUFF-SUP-026]` | `C901` | `1` directive; raw: `C901=1` | Single inherited-primary/close/join/note/error-publication precedence owner | cleanup and timeout-precedence tests | Separate close and join exception owners | P3 retained; T3A independent no-blocker review; user-authorized implementation 2026-08-04. |
+| `[RUFF-SUP-030]` | `C901` | `1` directive; raw: `C901=1` | One select-loop owner multiplexes input, PTY, wake, detach and terminal restoration | bridge/chord/forwarding/injection/wake/failure tests | Per-fd threads or fragmented multiplex ownership | P3 retained; T3A independent no-blocker review; user-authorized implementation 2026-08-04. |
+| `[RUFF-SUP-031]` | `C901` | `1` directive; raw: `C901=1` | Single-consumer read/reply/activity/exit/master-retirement state machine | responder, close and consumer tests | Separating responder state from activity or master-close ownership | P3 retained; T3A independent no-blocker review; user-authorized implementation 2026-08-04. |
+| `[RUFF-SUP-032]` | `C901` | `1` directive; raw: `C901=1` | FD lease, epoch rechecks, serialized writes, wait retry and retirement stay together | cancellation/fd-reuse/signal tests | Generic write loop lacking every pre/post-syscall epoch check | P3 retained; T3A independent no-blocker review; user-authorized implementation 2026-08-04. |
+| `[RUFF-SUP-034]` | `C901` | `1` directive; raw: `C901=1` | Explicit query/reply dispatch and unsupported-query marking | live/startup/incomplete-scan tests | Opaque callback table or protocol module without a real subprotocol owner | P3 retained; T3A independent no-blocker review; user-authorized implementation 2026-08-04. |
+| `[RUFF-SUP-035]` | `C901` | `1` directive; raw: `C901=1` | Sole blocking finalizer owns concurrent close election, escalation, streams and primary-error precedence | close/timeout/reap tests | Separate kill and stream-close owners | P3 retained; T3A independent no-blocker review; user-authorized implementation 2026-08-04. |
+| `[RUFF-SUP-036]` | `C901` | `1` directive; raw: `C901=1` | Compact enumerable scenario-opcode dispatcher with firing proof per opcode | scripted and driver scenario suites | One trivial function per opcode | P3 retained; T3A independent no-blocker review; user-authorized implementation 2026-08-04. |
+| `[RUFF-SUP-040]` | `C901` | `1` directive; raw: `C901=1` | Cross-generation real-PTY proof binds first lease, wired persistence, resumed no-lease and STOP ordering | neighboring restoration test | Splitting first run and resume into independent scenarios | P3 retained; T3A independent no-blocker review; user-authorized implementation 2026-08-04. |
+| `[RUFF-SUP-043]` | `C901` | `1` directive; raw: `C901=1` | One real discovery/prewire/proxy/PTY/sentinel/cleanup story with exactly one completion and no pre-success recovery | diagnostic tests | Mocked or independently split stages | P3 retained; T3A independent no-blocker review; user-authorized implementation 2026-08-04. |
+| `[RUFF-SUP-044]` | `C901` | `1` directive; raw: `C901=1` | Single-pass argv grammar and precedence | joined/separate/repeated/missing-value tests | Parser combinator or reordered token pass-through | P3 retained; T3A independent no-blocker review; user-authorized implementation 2026-08-04. |
+| `[RUFF-SUP-046]` | `C901` | `1` directive; raw: `C901=1` | One target-precedence and backend error-translation boundary | path/config/handoff/shared-backend tests | Backend-specific or separate ambient resolvers | P3 retained; T3A independent no-blocker review; user-authorized implementation 2026-08-04. |
+| `[RUFF-SUP-047]` | `C901` | `1` directive; raw: `C901=1` | One selector/token/claim/anchor-healing/human-fallback/creation owner preserves mutation and race precedence | dense identity/rejoin suites | Decomposition without a named resolution context that owns all shared evidence | P3 retained; T3A independent no-blocker review; user-authorized implementation 2026-08-04. |
+| `[RUFF-SUP-048]` | `C901` | `1` directive; raw: `C901=1` | Bounded collision/race/recovery and evidence publication protocol | collision/claim/authority tests | Generic retry machinery or split publication | P3 retained; T3A independent no-blocker review; user-authorized implementation 2026-08-04. |
+| `[RUFF-SUP-052]` | `C901` | `1` directive; raw: `C901=1` | Ordered Linux/Darwin/hostname portability fallback | platform preference/failure tests | Strategy classes or subprocess abstraction solely for score | P3 retained; T3A independent no-blocker review; user-authorized implementation 2026-08-04. |
+| `[RUFF-SUP-053]` | `C901` | `1` directive; raw: `C901=1` | Isolated real-signal waiter replacement, topology and close protocol | reentrant SIGINT and watchdog tests | In-process or mocked-signal proof | P3 retained; T3A independent no-blocker review; user-authorized implementation 2026-08-04. |
+| `[RUFF-SUP-054]` | `C901` | `1` directive; raw: `C901=1` | Real subprocess proves pre-exit message/notification NDJSON flush | adjacent cursor/policy cases | Post-exit-only observation or fake pipes | P3 retained; T3A independent no-blocker review; user-authorized implementation 2026-08-04. |
+| `[RUFF-SUP-055]` | `C901` | `1` directive; raw: `C901=1` | One-pass shell precedence parser | extraction and tokenization matrices | Generic parser combinators or branch predicates | P3 retained; T3A independent no-blocker review; user-authorized implementation 2026-08-04. |
+| `[RUFF-SUP-056]` | `C901` | `1` directive; raw: `C901=1` | Deterministic extraction/resolution/exemption/stale/count audit | defect fixtures and repository self-application | Broad or unconsumed exemptions | P3 retained; T3A independent no-blocker review; user-authorized implementation 2026-08-04. |
+| `[RUFF-SUP-058]` | `C901` | `1` directive; raw: `C901=1` | Real SQLite/thread/output/cursor replay transaction boundary | test plus closed-pipe case | Storage/output call-count mocks | P3 retained; T3A independent no-blocker review; user-authorized implementation 2026-08-04. |
+| `[RUFF-SUP-060]` | `C901` | `1` directive; raw: `C901=1` | Local fake protocol remains beside one exact ProcessInfo assertion | psutil failure neighbors | Reusable fake hierarchy | P3 retained; T3A independent no-blocker review; user-authorized implementation 2026-08-04. |
+| `[RUFF-SUP-061]` | `C901` | `1` directive; raw: `C901=1` | Explicit adversarial manifest/filesystem/tag checklist | parameter matrix plus success and CLI-failure tests | Mutation DSL or synthetic verifier inputs | P3 retained; T3A independent no-blocker review; user-authorized implementation 2026-08-04. |
+| `[RUFF-SUP-063]` | `C901` | `1` directive; raw: `C901=1` | One batch release owner preserves checks-only, dirty-worktree, discovery, changelog, dry-run, preparation/commit/precheck/postupdate/fresh-fence/tag/push order | Batch checks-only, no-op, dry-run, preparation-rerun, fence, wheel-failure, and explicit-version tests in `tests/test_release_script.py` | Branch-displacing admission helpers or a divergent dry-run planning path | P3 retained after T10 locality remediation and independent review; user-authorized implementation 2026-08-05. |
+| `[RUFF-SUP-064]` | `C901` | `1` directive; raw: `C901=1` | One attempt-local watcher owner preserves construction, publication/recheck, run, failure classification, watcher/client cleanup, and rebuild wake order | Watcher failure, pre-publication harness death, fatal bounded-join, and provider-isolation tests in `extensions/taut_summon/tests/test_driver.py` | A cleanup helper that mirrors attempt locals or a second/global watcher owner | P3 retained after T10 locality remediation and independent review; user-authorized implementation 2026-08-05. |
+
+Global raw-`noqa` inventory: `C901=38`, `F401=1`
+
+<!-- BEGIN GENERATED RUFF SUPPRESSION INDEX -->
+| Group | Locations | Directives | Raw diagnostics |
+|-------|-----------|-----------:|-----------------|
+| `[RUFF-SUP-002]` | `.github/scripts/release_publication.py::pypi_release_files` | 1 | `C901=1` |
+| `[RUFF-SUP-003]` | `bin/check-dom15-fixtures::check` | 1 | `C901=1` |
+| `[RUFF-SUP-004]` | `bin/check-plan-status-index::parse_rows` | 1 | `C901=1` |
+| `[RUFF-SUP-005]` | `bin/check-plan-status-index::self_test` | 1 | `C901=1` |
+| `[RUFF-SUP-008]` | `bin/release.py::plan_tag_action` | 1 | `C901=1` |
+| `[RUFF-SUP-011]` | `extensions/taut_mcp/taut_mcp/_commands.py::execute_command` | 1 | `C901=1` |
+| `[RUFF-SUP-012]` | `extensions/taut_mcp/taut_mcp/_commands.py::record_object` | 1 | `C901=1` |
+| `[RUFF-SUP-014]` | `extensions/taut_mcp/taut_mcp/_process_reactor.py::ProcessReactor._on_resolved` | 1 | `C901=1` |
+| `[RUFF-SUP-015]` | `extensions/taut_mcp/taut_mcp/_process_reactor.py::ProcessReactor._drain_events` | 1 | `C901=1` |
+| `[RUFF-SUP-016]` | `extensions/taut_mcp/taut_mcp/_process_reactor.py::ProcessReactor.aclose` | 1 | `C901=1` |
+| `[RUFF-SUP-018]` | `extensions/taut_mcp/taut_mcp/server.py::create_server` | 1 | `C901=1` |
+| `[RUFF-SUP-019]` | `extensions/taut_mcp/tests/test_stdio_server.py::test_broken_stdout_after_initialize_is_a_clean_transport_exit` | 1 | `C901=1` |
+| `[RUFF-SUP-021]` | `extensions/taut_pg/tests/test_reactor.py::test_taut_watcher_polls_and_refreshes_membership_without_native_waiter` | 1 | `C901=1` |
+| `[RUFF-SUP-022]` | `extensions/taut_pg/tests/test_reactor.py::test_taut_watcher_native_waiter_rebinds_on_membership_topology_change` | 1 | `C901=1` |
+| `[RUFF-SUP-024]` | `extensions/taut_summon/taut_summon/_driver.py::SummonDriver._first_summon` | 1 | `C901=1` |
+| `[RUFF-SUP-026]` | `extensions/taut_summon/taut_summon/_driver.py::SummonDriver._teardown_generation` | 1 | `C901=1` |
+| `[RUFF-SUP-030]` | `extensions/taut_summon/taut_summon/_pty.py::PtyHandle.attach` | 1 | `C901=1` |
+| `[RUFF-SUP-031]` | `extensions/taut_summon/taut_summon/_pty.py::PtyHandle._event_stream` | 1 | `C901=1` |
+| `[RUFF-SUP-032]` | `extensions/taut_summon/taut_summon/_pty.py::PtyHandle._write_all` | 1 | `C901=1` |
+| `[RUFF-SUP-034]` | `extensions/taut_summon/taut_summon/_pty.py::_TerminalResponder._handle_csi` | 1 | `C901=1` |
+| `[RUFF-SUP-035]` | `extensions/taut_summon/taut_summon/_stream.py::StreamJsonHandle.close` | 1 | `C901=1` |
+| `[RUFF-SUP-036]` | `extensions/taut_summon/taut_summon/scripted_provider.py::_run_steps` | 1 | `C901=1` |
+| `[RUFF-SUP-040]` | `extensions/taut_summon/tests/test_interaction.py::test_rich_host_real_pty_lease_wires_once_then_wired_resume_skips_lease` | 1 | `C901=1` |
+| `[RUFF-SUP-043]` | `extensions/taut_summon/tests/test_live_local_llm.py::test_local_llm_pty_harness_posts_sentinel` | 1 | `C901=1` |
+| `[RUFF-SUP-044]` | `taut/_scripts.py::_extract_pytest_runner_overrides` | 1 | `C901=1` |
+| `[RUFF-SUP-046]` | `taut/client/_base.py::_ClientBase._resolve_target` | 1 | `C901=1` |
+| `[RUFF-SUP-047]` | `taut/client/_identity.py::IdentityMixin._resolve_member` | 1 | `C901=1` |
+| `[RUFF-SUP-048]` | `taut/client/_identity.py::IdentityMixin._create_member` | 1 | `C901=1` |
+| `[RUFF-SUP-052]` | `taut/identity.py::capture_host_identity` | 1 | `C901=1` |
+| `[RUFF-SUP-053]` | `tests/helpers/base_reactor_sigint_probe.py::_run_probe` | 1 | `C901=1` |
+| `[RUFF-SUP-054]` | `tests/test_cli.py::test_cli_watch_json_flushes_records_while_live` | 1 | `C901=1` |
+| `[RUFF-SUP-055]` | `tests/test_cli_claims.py::_shell_claim_tokens` | 1 | `C901=1` |
+| `[RUFF-SUP-056]` | `tests/test_cli_claims.py::_validate_sources` | 1 | `C901=1` |
+| `[RUFF-SUP-058]` | `tests/test_command_registry.py::test_registry_watch_flushes_dynamic_membership_and_preserves_broken_pipe_cursor` | 1 | `C901=1` |
+| `[RUFF-SUP-060]` | `tests/test_identity.py::test_capture_psutil_process_reads_best_effort_fields` | 1 | `C901=1` |
+| `[RUFF-SUP-061]` | `tests/test_release_artifact.py::test_verify_bundle_fails_closed_for_each_manifest_contract` | 1 | `C901=1` |
+| `[RUFF-SUP-063]` | `bin/release.py::_run_batch_release` | 1 | `C901=1` |
+| `[RUFF-SUP-064]` | `extensions/taut_summon/taut_summon/_driver.py::SummonDriver._run_watcher_attempt` | 1 | `C901=1` |
+<!-- END GENERATED RUFF SUPPRESSION INDEX -->
+
 ## 11. Independent Review Workflow [DOM-11]
 
 Non-trivial plans and completed work should receive an independent review.
@@ -565,3 +751,6 @@ touch the operating model.
 - `docs/plans/2026-07-28-channel-topics-plan.md`: adds the deterministic
   executable CLI-claim gate alongside the channel command rehome that exposed
   the prior prose-only gap.
+- `docs/plans/2026-08-04-ruff-complexity-and-suppression-registry-plan.md`:
+  activates repository-wide C901 visibility at 10 and the reviewed,
+  symbol-keyed suppression registry and generator.

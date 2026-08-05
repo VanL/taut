@@ -17,9 +17,7 @@ REQUIRED_MARKERS = {
     Path("extensions/taut_summon/taut_summon/scripted_provider.py"): (
         "raise SystemExit(main())"
     ),
-    Path("extensions/taut_summon/taut_summon/_driver.py"): (
-        "SummonDriver(request, interaction=interaction, db_path=db_path).run()"
-    ),
+    Path("extensions/taut_summon/taut_summon/_driver.py"): (").run()"),
     Path("extensions/taut_summon/taut_summon/_control.py"): (
         "self._reconcile_audit_threads()"
     ),

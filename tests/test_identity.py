@@ -576,7 +576,7 @@ def test_capture_linux_process_returns_none_for_missing_or_malformed_stat(
     assert identity._capture_linux_process(123) is None
 
 
-def test_capture_psutil_process_reads_best_effort_fields(
+def test_capture_psutil_process_reads_best_effort_fields(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-060] exception
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeOneshot:

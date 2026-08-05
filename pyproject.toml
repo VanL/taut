@@ -45,7 +45,7 @@ dev = [
     "pytest-timeout>=2.4.0",
     "pytest-xdist>=3.0",
     "pyyaml>=6.0",
-    "ruff>=0.1.0",
+    "ruff==0.16.1",
     "simplebroker-pg>=3.5.0",
     "taut-summon>=0.8.1",
     "types-psutil>=6.0",
@@ -120,6 +120,7 @@ exclude = [
 [tool.ruff]
 target-version = "py311"
 line-length = 88
+extend-include = ["bin/*"]
 
 [tool.ruff.lint]
 select = [
@@ -130,6 +131,7 @@ select = [
     "B",
     "C4",
     "UP",
+    "C901",
 ]
 ignore = [
     "E501",
@@ -138,6 +140,9 @@ ignore = [
 
 [tool.ruff.lint.isort]
 known-first-party = ["taut"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
 
 [tool.coverage.run]
 source = ["taut", "taut_summon", "taut_mcp"]

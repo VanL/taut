@@ -111,10 +111,13 @@ until that explicit cleanup.
 ### Token lifetime and the domain boundary
 
 The process computes an exact-byte SHA-256 fingerprint for resident-binding
-comparison, then drops its raw request reference after child dispatch. The
-child clears the mutable bootstrap token and its local validation copy. Its
-one canonical `TautClient` keeps the constructor token required by core
-continuity operations until the owner closes.
+comparison, then removes its raw request reference from live reactor state
+after child dispatch. The child clears the mutable bootstrap token and its
+local validation copy. Its one canonical `TautClient` keeps the constructor
+token required by core continuity operations until the owner closes. A caught
+internal exception traceback may retain request values until traceback
+collection; that local debugging context is outside the live-state cleanup
+invariant.
 
 The token and workspace locator end at the ensure boundary. `server.py`
 removes both before constructing `RunWorkspaceCommand`; `_commands.py`
@@ -198,10 +201,20 @@ access control. Schema rejection and protocol-owned work are free, admitted
 calls are never refunded, and abusive resource polling can throttle a later
 tool.
 
+Storage access is the security boundary. A continuity token selects an
+identity; it is not a credential, access-control token, or added security
+boundary. Deployments may still classify it as sensitive application data.
 Workspace paths and tokens are intentionally supplied inputs, but they never
-enter fixed diagnostics. Tokens, fingerprints, DSNs, participant names, and
-message text are absent from stderr and protocol control text. Canonical
-workspace paths are returned identifiers and remain untrusted data.
+enter fixed diagnostics. Attachment processing does not add the supplied
+request token or derived fingerprint to tool results, protocol control text,
+stderr, or MCP-owned logs. Core Taut member storage retains the existing
+continuity token; the MCP extension persists no additional request-token copy
+or fingerprint. Participant names and message text may appear in domain tool
+results, and that content could independently contain the same text as a token;
+it does not enter fixed diagnostics or protocol control text. Caught internal
+exception tracebacks may retain token or fingerprint context for local
+debugging. Canonical workspace paths are returned identifiers and remain
+untrusted data.
 
 ### Release bytes and backend evidence have different owners
 
@@ -270,7 +283,8 @@ backend-conformance evidence.
 Read [MCP-4], [MCP-5], [MCP-8], and [MCP-11] before changing reactor state.
 Most apparent shortcuts create a second path or move work to the wrong owner:
 resolving on the master blocks all workspaces; forwarding identity fields into
-domain envelopes expands secret lifetime; sharing a client crosses queue
+domain envelopes unnecessarily broadens token propagation; sharing a client
+crosses queue
 ownership; force-removing a live failed child permits overlap; and using
 `TautWatcher` consumes the pointers this adapter must only observe.
 

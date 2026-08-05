@@ -126,7 +126,7 @@ class IdentityMixin(_ClientBase):
             raise IdentityError("unrecognized caller")
         return self._member_from_row(updated)
 
-    def _resolve_member(
+    def _resolve_member(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-047] exception
         self,
         *,
         create: bool,
@@ -357,7 +357,7 @@ class IdentityMixin(_ClientBase):
             rule=rule,
         )
 
-    def _create_member(
+    def _create_member(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-048] exception
         self,
         capture: identity.IdentityCapture,
         *,

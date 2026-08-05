@@ -511,76 +511,57 @@ def test_target_specific_preparation_preserves_other_manifest_versions(
     ]
 
 
-def test_public_release_flow_commits_preparation_then_reuses_it_after_failure(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    (tmp_path / "bin").mkdir()
+def _build_public_release_repository(tmp_path: Path) -> Path:
     script = tmp_path / "bin" / "release.py"
-    script.write_text(RELEASE_SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
-    (tmp_path / "taut").mkdir()
-    (tmp_path / "extensions" / "taut_pg").mkdir(parents=True)
-    (tmp_path / "extensions" / "taut_summon").mkdir(parents=True)
-    (tmp_path / "extensions" / "taut_mcp").mkdir(parents=True)
-    (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "taut-chat"\nversion = "0.6.1"\n'
-        'dependencies = [\n    "simplebroker>=5.3.2",\n]\n'
-        "[project.optional-dependencies]\ndev = [\n"
-        '    "simplebroker-pg>=3.2.0",\n'
-        '    "taut-summon>=0.5.0",\n]\n',
-        encoding="utf-8",
-    )
-    (tmp_path / "taut" / "_constants.py").write_text(
-        '__version__: Final[str] = "0.5.0"\n', encoding="utf-8"
-    )
-    (tmp_path / "extensions" / "taut_pg" / "pyproject.toml").write_text(
-        '[project]\nname = "taut-pg"\nversion = "0.6.1"\n'
-        'dependencies = [\n    "taut-chat>=0.5.0",\n'
-        '    "simplebroker-pg>=3.2.1",\n]\n',
-        encoding="utf-8",
-    )
-    (tmp_path / "extensions" / "taut_summon" / "pyproject.toml").write_text(
-        '[project]\nname = "taut-summon"\nversion = "0.6.1"\n'
-        'dependencies = [\n    "taut-chat>=0.5.0",\n]\n',
-        encoding="utf-8",
-    )
-    (tmp_path / "extensions" / "taut_mcp" / "pyproject.toml").write_text(
-        '[project]\nname = "taut-mcp"\nversion = "0.6.1"\n'
-        'dependencies = [\n    "taut-chat>=0.5.0",\n    "mcp>=1.28.1,<2",\n]\n'
-        '[project.optional-dependencies]\ndev = [\n    "taut-pg>=0.5.0",\n]\n',
-        encoding="utf-8",
-    )
-    (tmp_path / "README.md").write_text(
-        "core @v0.5.0\n"
-        "taut_pg-0.5.0-py3-none-any.whl\n"
-        "taut_summon-0.5.0-py3-none-any.whl\n"
-        "taut_mcp-0.5.0-py3-none-any.whl\n"
-        "simplebroker>=5.3.0\nsimplebroker>=5.3.1\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "extensions" / "taut_pg" / "README.md").write_text(
-        "core @v0.5.0\ntaut_pg-0.5.0-py3-none-any.whl\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "extensions" / "taut_summon" / "README.md").write_text(
-        "core @v0.5.0\ntaut_summon-0.5.0-py3-none-any.whl\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "extensions" / "taut_mcp" / "README.md").write_text(
-        "core @v0.5.0\ntaut_mcp-0.5.0-py3-none-any.whl\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "extensions" / "taut_summon" / "uv.lock").write_text(
-        "stale retained lock\n", encoding="utf-8"
-    )
-    (tmp_path / "extensions" / "taut_mcp" / "uv.lock").write_text(
-        "stale retained lock\n", encoding="utf-8"
-    )
-    (tmp_path / "CHANGELOG.md").write_text(
-        "# Changelog\n\n## 0.6.1 - 2026-07-13\n", encoding="utf-8"
-    )
-    (tmp_path / ".gitignore").write_text("__pycache__/\n", encoding="utf-8")
-    (tmp_path / "unrelated.txt").write_text("untouched\n", encoding="utf-8")
+    files = {
+        script: RELEASE_SCRIPT.read_text(encoding="utf-8"),
+        tmp_path / "pyproject.toml": (
+            '[project]\nname = "taut-chat"\nversion = "0.6.1"\n'
+            'dependencies = [\n    "simplebroker>=5.3.2",\n]\n'
+            "[project.optional-dependencies]\ndev = [\n"
+            '    "simplebroker-pg>=3.2.0",\n'
+            '    "taut-summon>=0.5.0",\n]\n'
+        ),
+        tmp_path / "taut" / "_constants.py": ('__version__: Final[str] = "0.5.0"\n'),
+        tmp_path / "extensions" / "taut_pg" / "pyproject.toml": (
+            '[project]\nname = "taut-pg"\nversion = "0.6.1"\n'
+            'dependencies = [\n    "taut-chat>=0.5.0",\n'
+            '    "simplebroker-pg>=3.2.1",\n]\n'
+        ),
+        tmp_path / "extensions" / "taut_summon" / "pyproject.toml": (
+            '[project]\nname = "taut-summon"\nversion = "0.6.1"\n'
+            'dependencies = [\n    "taut-chat>=0.5.0",\n]\n'
+        ),
+        tmp_path / "extensions" / "taut_mcp" / "pyproject.toml": (
+            '[project]\nname = "taut-mcp"\nversion = "0.6.1"\n'
+            'dependencies = [\n    "taut-chat>=0.5.0",\n    "mcp>=1.28.1,<2",\n]\n'
+            '[project.optional-dependencies]\ndev = [\n    "taut-pg>=0.5.0",\n]\n'
+        ),
+        tmp_path / "README.md": (
+            "core @v0.5.0\n"
+            "taut_pg-0.5.0-py3-none-any.whl\n"
+            "taut_summon-0.5.0-py3-none-any.whl\n"
+            "taut_mcp-0.5.0-py3-none-any.whl\n"
+            "simplebroker>=5.3.0\nsimplebroker>=5.3.1\n"
+        ),
+        tmp_path / "extensions" / "taut_pg" / "README.md": (
+            "core @v0.5.0\ntaut_pg-0.5.0-py3-none-any.whl\n"
+        ),
+        tmp_path / "extensions" / "taut_summon" / "README.md": (
+            "core @v0.5.0\ntaut_summon-0.5.0-py3-none-any.whl\n"
+        ),
+        tmp_path / "extensions" / "taut_mcp" / "README.md": (
+            "core @v0.5.0\ntaut_mcp-0.5.0-py3-none-any.whl\n"
+        ),
+        tmp_path / "extensions" / "taut_summon" / "uv.lock": ("stale retained lock\n"),
+        tmp_path / "extensions" / "taut_mcp" / "uv.lock": "stale retained lock\n",
+        tmp_path / "CHANGELOG.md": "# Changelog\n\n## 0.6.1 - 2026-07-13\n",
+        tmp_path / ".gitignore": "__pycache__/\n",
+        tmp_path / "unrelated.txt": "untouched\n",
+    }
+    for path, content in files.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
     for command in (
         ("git", "init", "-b", "main"),
         ("git", "config", "user.name", "Release Test"),
@@ -589,14 +570,18 @@ def test_public_release_flow_commits_preparation_then_reuses_it_after_failure(
         ("git", "commit", "-m", "Initial stale metadata"),
     ):
         subprocess.run(command, cwd=tmp_path, check=True, capture_output=True)
+    return script
 
-    release = _load_release_module(script)
-    initial_head = release.current_head_commit()
-    events: list[str] = []
-    precheck_count = 0
 
-    def fake_inspect_release_state(target: Any, version: str) -> Any:
-        return release.ReleaseState(
+class _PublicReleaseTransport:
+    def __init__(self, release: Any, initial_head: str) -> None:
+        self.release = release
+        self.initial_head = initial_head
+        self.events: list[str] = []
+        self.precheck_count = 0
+
+    def inspect_release_state(self, target: Any, version: str) -> Any:
+        return self.release.ReleaseState(
             target=target,
             version=version,
             tag_name=target.tag_for_version(version),
@@ -606,69 +591,93 @@ def test_public_release_flow_commits_preparation_then_reuses_it_after_failure(
             remote_tag_commit=None,
         )
 
-    def fake_run_command(
+    def run_command(
+        self,
         command: tuple[str, ...],
         *,
-        cwd: Path = release.PROJECT_ROOT,
+        cwd: Path | None = None,
         **_kwargs: object,
     ) -> None:
+        release = self.release
+        effective_cwd = release.PROJECT_ROOT if cwd is None else cwd
         if command[:2] == ("uv", "lock"):
-            events.append("lock")
-            if cwd == release.SUMMON_EXTENSION_DIR:
+            self.events.append("lock")
+            if effective_cwd == release.SUMMON_EXTENSION_DIR:
                 release.SUMMON_UV_LOCK_PATH.write_text(
                     "taut=0.6.1\ntaut-summon=0.6.1\nsimplebroker=5.3.2\n",
                     encoding="utf-8",
                 )
-            elif cwd == release.MCP_EXTENSION_DIR:
+            elif effective_cwd == release.MCP_EXTENSION_DIR:
                 release.MCP_UV_LOCK_PATH.write_text(
                     "taut=0.6.1\ntaut-pg=0.6.1\ntaut-mcp=0.6.1\n",
                     encoding="utf-8",
                 )
             return
         if command[:2] == ("git", "add"):
-            events.append("git-add")
-            subprocess.run(command, cwd=cwd, check=True)
+            self.events.append("git-add")
+            subprocess.run(command, cwd=effective_cwd, check=True)
             return
         if command[:2] == ("git", "commit"):
-            events.append("git-commit")
-            subprocess.run(command, cwd=cwd, check=True, capture_output=True)
+            self.events.append("git-commit")
+            subprocess.run(command, cwd=effective_cwd, check=True, capture_output=True)
             return
         if command == ("uv", "build"):
-            events.append("build")
+            self.events.append("build")
             return
         if command == (sys.executable, str(release.RELEASE_WHEEL_SET_CHECKER)):
-            events.append("wheel-check")
+            self.events.append("wheel-check")
             return
         pytest.fail(f"unexpected command: {command}")
 
-    def fake_prechecks(_target: Any, *, dry_run: bool) -> None:
-        nonlocal precheck_count
+    def prechecks(self, _target: Any, *, dry_run: bool) -> None:
         assert dry_run is False
-        assert release.is_dirty_worktree() is False
-        assert release.current_head_commit() != initial_head
-        precheck_count += 1
-        events.append(f"precheck-{precheck_count}")
-        if precheck_count == 1:
+        assert self.release.is_dirty_worktree() is False
+        assert self.release.current_head_commit() != self.initial_head
+        self.precheck_count += 1
+        self.events.append(f"precheck-{self.precheck_count}")
+        if self.precheck_count == 1:
             raise SystemExit("simulated proof failure")
 
-    monkeypatch.setattr(release, "inspect_release_state", fake_inspect_release_state)
-    monkeypatch.setattr(release, "run_command", fake_run_command)
-    monkeypatch.setattr(release, "run_prechecks", fake_prechecks)
+    def record_tag(self, *_args: object, **_kwargs: object) -> None:
+        self.events.append("tag")
+
+    def record_branch_push(self, **_kwargs: object) -> None:
+        self.events.append("push-branch")
+
+    def record_tag_push(self, *_args: object, **_kwargs: object) -> None:
+        self.events.append("push-tag")
+
+
+def test_public_release_flow_commits_preparation_then_reuses_it_after_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = _build_public_release_repository(tmp_path)
+
+    release = _load_release_module(script)
+    initial_head = release.current_head_commit()
+    transport = _PublicReleaseTransport(release, initial_head)
+
+    monkeypatch.setattr(
+        release, "inspect_release_state", transport.inspect_release_state
+    )
+    monkeypatch.setattr(release, "run_command", transport.run_command)
+    monkeypatch.setattr(release, "run_prechecks", transport.prechecks)
     monkeypatch.setattr(release, "_require_command", lambda _name: None)
     monkeypatch.setattr(
         release,
         "prepare_tag",
-        lambda *_args, **_kwargs: events.append("tag"),
+        transport.record_tag,
     )
     monkeypatch.setattr(
         release,
         "push_current_branch",
-        lambda **_kwargs: events.append("push-branch"),
+        transport.record_branch_push,
     )
     monkeypatch.setattr(
         release,
         "push_tag",
-        lambda *_args, **_kwargs: events.append("push-tag"),
+        transport.record_tag_push,
     )
 
     with pytest.raises(SystemExit, match="simulated proof failure"):
@@ -682,13 +691,19 @@ def test_public_release_flow_commits_preparation_then_reuses_it_after_failure(
         ).splitlines()
     )
     assert changed_paths == set(release._release_file_args(release.ROOT_TARGET))  # noqa: SLF001
-    assert events == ["lock", "lock", "git-add", "git-commit", "precheck-1"]
+    assert transport.events == [
+        "lock",
+        "lock",
+        "git-add",
+        "git-commit",
+        "precheck-1",
+    ]
     assert release.is_dirty_worktree() is False
 
-    events.clear()
+    transport.events.clear()
     assert release.main(["core"]) == 0
     assert release.current_head_commit() == preparation_head
-    assert events == [
+    assert transport.events == [
         "lock",
         "lock",
         "precheck-2",
@@ -1705,14 +1720,16 @@ def test_every_target_set_plans_one_literal_universal_precheck_sequence(
             "dev",
             "ruff",
             "check",
-            "taut",
-            "tests",
-            "bin",
-            "extensions/taut_pg/taut_pg",
-            "extensions/taut_pg/tests",
-            "bin/pytest-pg",
-            "extensions/taut_summon/taut_summon",
-            "extensions/taut_summon/tests",
+            ".",
+        ),
+        (
+            "uv",
+            "run",
+            "--extra",
+            "dev",
+            "python",
+            "bin/ruff_suppression_index.py",
+            "--check",
         ),
         (
             "uv",
@@ -2996,6 +3013,52 @@ def test_checks_only_runs_real_prechecks_then_exits_before_mutation(
 
     assert release.main(["core", "--checks-only"]) == 0
     assert events == ["changelog:0.5.3", "uv", "prechecks:core:False"]
+
+
+def test_batch_checks_only_runs_all_prechecks_before_release_discovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _load_release_module()
+    targets = tuple(release.CANONICAL_TARGETS.values())
+    events: list[str] = []
+
+    monkeypatch.setattr(
+        release,
+        "read_target_version",
+        lambda target: f"version-{target.key}",
+    )
+    monkeypatch.setattr(
+        release,
+        "require_changelog_heading",
+        lambda version: events.append(f"changelog:{version}"),
+    )
+    monkeypatch.setattr(release, "_require_command", lambda name: events.append(name))
+    monkeypatch.setattr(
+        release,
+        "run_prechecks_for_targets",
+        lambda selected, *, dry_run: events.append(
+            "prechecks:" + ",".join(target.key for target in selected) + f":{dry_run}"
+        ),
+    )
+    monkeypatch.setattr(
+        release,
+        "is_dirty_worktree",
+        lambda: pytest.fail("batch checks-only must not inspect worktree state"),
+    )
+    monkeypatch.setattr(
+        release,
+        "discover_unpublished_releases",
+        lambda **_kwargs: pytest.fail(
+            "batch checks-only must not discover release candidates"
+        ),
+    )
+
+    assert release.main(["all", "--checks-only"]) == 0
+    assert events == [
+        *(f"changelog:version-{target.key}" for target in targets),
+        "uv",
+        "prechecks:" + ",".join(target.key for target in targets) + ":False",
+    ]
 
 
 def test_checks_only_rejects_dry_run_and_skip_checks() -> None:

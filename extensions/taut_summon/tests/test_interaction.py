@@ -365,32 +365,35 @@ def test_controller_signal_opt_in_restores_exact_handlers(
     def prior_sigterm(_signum: int, _frame: object) -> None:
         return None
 
-    prior_sigint_value: Any
-    prior_sigterm_value: Any
-    if prior_kind == "callable":
-        prior_sigint_value = prior_sigint
-        prior_sigterm_value = prior_sigterm
-    elif prior_kind == "default":
-        prior_sigint_value = signal.SIG_DFL
-        prior_sigterm_value = signal.SIG_DFL
-    else:
-        prior_sigint_value = signal.SIG_IGN
-        prior_sigterm_value = signal.SIG_IGN
+    prior_handlers: dict[str, tuple[Any, Any]] = {
+        "callable": (prior_sigint, prior_sigterm),
+        "default": (signal.SIG_DFL, signal.SIG_DFL),
+        "ignore": (signal.SIG_IGN, signal.SIG_IGN),
+    }
+    prior_sigint_value, prior_sigterm_value = prior_handlers[prior_kind]
 
     def run_driver(_driver: SummonDriver) -> int:
-        if exit_kind == "translated":
-            raise DriverError("driver failure")
-        if exit_kind == "exception":
-            raise RuntimeError("host failure")
-        if exit_kind == "base-exception":
-            raise _HostAbort("host abort")
+        failures: dict[str, BaseException] = {
+            "translated": DriverError("driver failure"),
+            "exception": RuntimeError("host failure"),
+            "base-exception": _HostAbort("host abort"),
+        }
+        failure = failures.get(exit_kind)
+        if failure is not None:
+            raise failure
         return 0
 
     signal.signal(signal.SIGINT, prior_sigint_value)
     signal.signal(signal.SIGTERM, prior_sigterm_value)
     monkeypatch.setattr(SummonDriver, "_run", run_driver)
     try:
-        if exit_kind == "clean":
+        expected_failures: dict[str, tuple[type[BaseException], str]] = {
+            "translated": (SummonOperationError, "driver failure"),
+            "exception": (RuntimeError, "host failure"),
+            "base-exception": (_HostAbort, "host abort"),
+        }
+        expected = expected_failures.get(exit_kind)
+        if expected is None:
             SummonController().run_foreground(
                 SummonRequest(
                     name="scripted",
@@ -404,17 +407,7 @@ def test_controller_signal_opt_in_restores_exact_handlers(
                 install_signal_handlers=True,
             )
         else:
-            expected_type: type[BaseException]
-            expected_message: str
-            if exit_kind == "translated":
-                expected_type = SummonOperationError
-                expected_message = "driver failure"
-            elif exit_kind == "exception":
-                expected_type = RuntimeError
-                expected_message = "host failure"
-            else:
-                expected_type = _HostAbort
-                expected_message = "host abort"
+            expected_type, expected_message = expected
             with pytest.raises(expected_type, match=expected_message):
                 SummonController().run_foreground(
                     SummonRequest(
@@ -766,7 +759,7 @@ def test_controller_rejects_attach_and_detach_as_typed_request_error() -> None:
 
 @pytest.mark.xdist_group("process")
 @pytest.mark.sqlite_only
-def test_rich_host_real_pty_lease_wires_once_then_wired_resume_skips_lease(
+def test_rich_host_real_pty_lease_wires_once_then_wired_resume_skips_lease(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-040] exception
     summon_db: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

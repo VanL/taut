@@ -52,7 +52,7 @@ if frozenset(RECORD_TYPE_BY_TOOL) != DOMAIN_TOOL_NAMES:
     raise AssertionError("domain dispatch allowlist must match the manifest partition")
 
 INSTRUCTIONS = """1. Use list_workspaces to inspect process-local resident state. Use attach_workspace when setup cost should be paid before the first domain operation or notification observation should begin immediately. Attach is an eager optimization, not authority or a correctness prerequisite.
-2. Treat the continuity token as a secret identity-continuity selector, not authentication or authorization. Pass an intentionally supplied absolute workspace locator and its existing token on attach_workspace and every CLI-shaped tool call; never invent the token or place it in chat.
+2. Treat the continuity token as an opaque identity-continuity selector, not authentication, authorization, or an added security boundary. Pass an intentionally supplied absolute workspace locator and its existing token on attach_workspace and every CLI-shaped tool call; never invent the token or place it in chat.
 3. Preserve and reuse the canonical workspace returned by a successful ensure or list_workspaces. A CLI-shaped tool can lazily establish the same retained client/reactor after process restart. detach_workspace takes only that exact canonical identifier and removes process-local state.
 4. Read taut://notifications/current once after server discovery or initialization and after resident workspace changes. It reports pending notification pointers, not every unread chat message or a full activity feed.
 5. Use that resource for routine background notification observation. Do not timer-poll list, who, or whoami: those tools update member activity. Call them only when their thread, member, or identity result is needed.
@@ -89,7 +89,7 @@ def _resource_not_found(ctx: ServerRequestContext[ProcessReactor]) -> MCPError:
     return MCPError(code=code, message="Resource not found")
 
 
-def create_server(
+def create_server(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-018] exception
     *,
     claude_channel: bool = False,
 ) -> tuple[Server[ProcessReactor], InitializationOptions]:

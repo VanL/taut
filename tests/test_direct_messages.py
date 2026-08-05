@@ -291,6 +291,65 @@ def test_dm_selection_requires_both_persisted_memberships(tmp_path: Path) -> Non
     assert alice._state.get_membership(thread=stable, member_id=alice_id) is not None
 
 
+def _corrupt_direct_message_state(
+    alice: TautClient,
+    *,
+    stable: str,
+    corruption: str,
+    alice_id: str,
+    bob_id: str,
+    carol_id: str,
+) -> None:
+    if corruption == "missing-actor-membership":
+        assert alice._state.remove_membership(thread=stable, member_id=alice_id)
+        return
+    if corruption == "missing-other-membership":
+        assert alice._state.remove_membership(thread=stable, member_id=bob_id)
+        return
+    if corruption == "missing-participant-row":
+        with alice._meta_queue.sidecar(transaction=True) as session:
+            session.run(
+                "DELETE FROM taut_membership WHERE member_id = ?",
+                (bob_id,),
+            )
+            session.run(
+                "DELETE FROM taut_identity_claims WHERE member_id = ?",
+                (bob_id,),
+            )
+            session.run(
+                "DELETE FROM taut_member_aliases WHERE member_id = ?",
+                (bob_id,),
+            )
+            session.run("DELETE FROM taut_members WHERE member_id = ?", (bob_id,))
+        return
+
+    metadata: dict[str, dict[str, object]] = {
+        "missing-members-meta": {},
+        "members-not-list": {"members": "not-a-list"},
+        "member-not-string": {"members": [alice_id, 7]},
+        "wrong-cardinality-one": {"members": [alice_id]},
+        "wrong-cardinality-three": {"members": [alice_id, bob_id, carol_id]},
+        "duplicate-member-ids": {"members": [alice_id, alice_id]},
+        "invalid-member-id": {"members": [alice_id, "invalid-id"]},
+        "pair-name-mismatch": {"members": [alice_id, carol_id]},
+        "actor-absent-metadata": {"members": [bob_id, carol_id]},
+        "wrong-kind": {"members": [alice_id, bob_id]},
+    }
+    if corruption == "pair-name-mismatch":
+        alice._state.add_membership(
+            thread=stable,
+            member_id=carol_id,
+            joined_ts=alice._meta_queue.generate_timestamp(),
+            last_seen_ts=0,
+        )
+    kind = "channel" if corruption == "wrong-kind" else "dm"
+    with alice._meta_queue.sidecar(transaction=True) as session:
+        session.run(
+            "UPDATE taut_threads SET kind = ?, meta = ? WHERE name = ?",
+            (kind, json.dumps(metadata[corruption]), stable),
+        )
+
+
 @pytest.mark.parametrize(
     "corruption",
     [
@@ -327,68 +386,14 @@ def test_corrupt_dm_state_fails_closed_before_queue_or_watch_runtime(
     carol_id = carol.whoami().member_id
     stable = alice.say("@bob", "private body").thread
 
-    if corruption == "missing-actor-membership":
-        assert alice._state.remove_membership(thread=stable, member_id=alice_id)
-    elif corruption == "missing-other-membership":
-        assert alice._state.remove_membership(thread=stable, member_id=bob_id)
-    elif corruption == "missing-participant-row":
-        with alice._meta_queue.sidecar(transaction=True) as session:
-            session.run(
-                "DELETE FROM taut_membership WHERE member_id = ?",
-                (bob_id,),
-            )
-            session.run(
-                "DELETE FROM taut_identity_claims WHERE member_id = ?",
-                (bob_id,),
-            )
-            session.run(
-                "DELETE FROM taut_member_aliases WHERE member_id = ?",
-                (bob_id,),
-            )
-            session.run("DELETE FROM taut_members WHERE member_id = ?", (bob_id,))
-    else:
-        meta: dict[str, object]
-        if corruption == "missing-members-meta":
-            meta = {}
-            kind = "dm"
-        elif corruption == "members-not-list":
-            meta = {"members": "not-a-list"}
-            kind = "dm"
-        elif corruption == "member-not-string":
-            meta = {"members": [alice_id, 7]}
-            kind = "dm"
-        elif corruption == "wrong-cardinality-one":
-            meta = {"members": [alice_id]}
-            kind = "dm"
-        elif corruption == "wrong-cardinality-three":
-            meta = {"members": [alice_id, bob_id, carol_id]}
-            kind = "dm"
-        elif corruption == "duplicate-member-ids":
-            meta = {"members": [alice_id, alice_id]}
-            kind = "dm"
-        elif corruption == "invalid-member-id":
-            meta = {"members": [alice_id, "invalid-id"]}
-            kind = "dm"
-        elif corruption == "pair-name-mismatch":
-            meta = {"members": [alice_id, carol_id]}
-            kind = "dm"
-            alice._state.add_membership(
-                thread=stable,
-                member_id=carol_id,
-                joined_ts=alice._meta_queue.generate_timestamp(),
-                last_seen_ts=0,
-            )
-        elif corruption == "actor-absent-metadata":
-            meta = {"members": [bob_id, carol_id]}
-            kind = "dm"
-        else:
-            meta = {"members": [alice_id, bob_id]}
-            kind = "channel"
-        with alice._meta_queue.sidecar(transaction=True) as session:
-            session.run(
-                "UPDATE taut_threads SET kind = ?, meta = ? WHERE name = ?",
-                (kind, json.dumps(meta), stable),
-            )
+    _corrupt_direct_message_state(
+        alice,
+        stable=stable,
+        corruption=corruption,
+        alice_id=alice_id,
+        bob_id=bob_id,
+        carol_id=carol_id,
+    )
 
     def fail_queue(_name: str, *, persistent: bool | None = None) -> None:
         del persistent

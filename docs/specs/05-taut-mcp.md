@@ -336,8 +336,10 @@ the hidden digest, and retains the cap/path/join seat until owner exit. If the
 initial exact published-canonical lookup resolves the request before any seat
 or child exists, ready same-token success, ready different-token conflict, and
 direct degraded/detaching results perform no child stop or cleanup work; they
-delete only the transient request digest and master raw-token reference before
-settling the result. An implementation must not send direct published hits
+remove only the transient request digest and master raw-token reference from
+live reactor state before settling the result. A caught internal traceback may
+retain those request values as described by [MCP-10]. An implementation must
+not send direct published hits
 through the hidden-candidate cleanup branch or remove a started losing seat
 before its owner exits.
 
@@ -508,18 +510,21 @@ removal. Validation timeout/tombstone deletes it during canonical publication.
 Ready transfer is the sole hidden-seat transition that preserves
 the same digest. Clean detach, identity loss, or reactor
 failure deletes the ready digest; degraded entries never compare
-fingerprints. The process reactor drops its raw-token
-reference immediately after
-successful candidate-thread dispatch, completing a direct ready-entry
-fingerprint comparison, or completing rollback; SDK- or host-owned request
-copies remain the exposure described by [MCP-10].
+fingerprints. The process reactor removes its raw-token reference from live
+reactor state immediately after successful candidate-thread dispatch,
+completing a direct ready-entry fingerprint comparison, or completing rollback.
+SDK- or host-owned request copies remain the exposure described by [MCP-10].
+Caught internal exception traceback frames may retain a request token or
+fingerprint until traceback collection; this is allowed local debugging state,
+not a persistent or externally emitted copy.
 Any transient request digest not transferred into a hidden seat or ready entry
-is deleted before its result is settled, including direct-ready idempotent
-success and different-token conflict.
+is removed from live reactor state before its result is settled, including
+direct-ready idempotent success and different-token conflict.
 Any charged master-side rejection that installs no hidden seat, including
 exact-hidden busy, cap exhaustion, direct degraded/detaching status, or a
-path/token semantic failure, drops its transient request digest and raw-token
-reference before returning the fixed result.
+path/token semantic failure, removes its transient request digest and raw-token
+reference from live reactor state before returning the fixed result. A caught
+traceback may retain the rejected request values as described by [MCP-10].
 
 One immutable member id is bound independently to each ready resident
 workspace. Member rename does not change it. `attach_workspace` and every
@@ -737,7 +742,7 @@ include these descriptions, not only types and required-property lists.
 |--------------|------------------------|---------------------------|
 | identity-using `workspace` | Absolute local directory containing an existing Taut project. The server resolves it to a canonical workspace identifier; reuse the returned canonical value to avoid repeated resolution. | No relative path or file URI; used by `attach_workspace` and the 17 CLI-shaped tools. |
 | `detach_workspace.workspace` | Exact canonical workspace identifier returned by a successful ensure or `list_workspaces`. Detach removes only this process's resident state. | No filesystem re-resolution and no identity token; an exact active hidden-candidate string reports busy but is never removed. |
-| identity-using `token` | Sensitive existing Taut continuity token for this workspace. It selects one member and is never returned. | Required on `attach_workspace` and every CLI-shaped tool; do not invent it or repeat it in chat. |
+| identity-using `token` | Existing Taut continuity token for this workspace. It selects one member and is never returned. | Required on `attach_workspace` and every CLI-shaped tool; do not invent it or repeat it in chat. |
 | channel `thread` | Taut channel matching `^[a-z0-9][a-z0-9_-]{0,63}$`; `dm`, `notify`, `sys`, and `taut` are reserved. | `join`, `reply`, `channel_rename.old_name`, and `channel_rename.new_name` require a top-level channel. |
 | `channel` | Taut channel matching `^[a-z0-9][a-z0-9_-]{0,63}$`; `dm`, `notify`, `sys`, and `taut` are reserved. | Used by `channel_show` and `channel_topic`; no subthread or DM form. |
 | chat `thread` | Taut channel or one-level subthread. A subthread is `<channel>.<19-digit-parent-message-id>`. | `leave` and `who` accept only this narrow form. |
@@ -1341,10 +1346,11 @@ initialization and modern discovery. They require:
    `attach_workspace` when setup cost should be paid before the first domain
    operation or notification observation should begin immediately. Attach is
    an eager optimization, not authority or a correctness prerequisite.
-2. Treat the continuity token as a secret identity-continuity selector, not
-   authentication or authorization. Pass an intentionally supplied absolute
-   workspace locator and its existing token on `attach_workspace` and every
-   CLI-shaped tool call; never invent the token or place it in chat.
+2. Treat the continuity token as an opaque identity-continuity selector, not
+   authentication, authorization, or an added security boundary. Pass an
+   intentionally supplied absolute workspace locator and its existing token
+   on `attach_workspace` and every CLI-shaped tool call; never invent the token
+   or place it in chat.
 3. Preserve and reuse the canonical workspace returned by a successful
    ensure or `list_workspaces`. A CLI-shaped tool can lazily establish the
    same retained client/reactor after process restart. `detach_workspace`
@@ -1429,27 +1435,33 @@ part of the host-specific adapter.
 
 ## 10. Trust and Safety [MCP-10]
 
-Taut's trust model remains [TAUT-9]. Storage access is the security boundary;
-a continuity token chooses an identity only inside its selected workspace and
-is not a remote-authentication credential. It is nevertheless a
-secret-equivalent local impersonation handle. Supplying it as an MCP tool
+Taut's trust model remains [TAUT-9]. Storage access is the security boundary. A
+continuity token is an opaque identity-continuity selector inside its selected
+workspace. It is not a remote-authentication credential, an access-control
+token, or an additional security boundary. Possession can select an existing
+identity through Taut's public continuity paths, so a deployment may still
+choose to treat it as sensitive application data. Supplying it as an MCP tool
 argument can expose it to the client, model context, or host transcript;
-`taut-mcp` cannot prevent or redact those host-owned copies. Users must not use
-dynamic workspace selection through a host that cannot protect sensitive tool
-input. The local stdio boundary does not authorize a remote listener. This
-contract defines no `TAUT_TOKEN`, token-file, or launch-time workspace-token
-map for the MCP extension. A future non-transcript channel would need its own
-workspace-keying, file-authority, redaction, and host-compatibility contract;
-it is not inferred from core CLI environment rules.
+`taut-mcp` does not claim to prevent or redact those host-owned copies. The
+local stdio boundary does not authorize a remote listener. This contract
+defines no `TAUT_TOKEN`, token-file, or launch-time workspace-token map for the
+MCP extension. A future non-transcript channel would need its own workspace-
+keying, file-authority, redaction, and host-compatibility contract; it is not
+inferred from core CLI environment rules.
 
 Each request host may temporarily hold its supplied token string. The process
 reactor computes only the exact-byte SHA-256 fingerprint needed for resident
-binding comparison and drops its raw-token reference immediately after child
-dispatch. The child validates the raw token and clears its bootstrap envelope
-and local request copy. The one child-owned `TautClient` retains its
-constructor token because core public operations use it for continuity;
-that canonical client is not a second host copy. Tokens are never returned,
-logged, persisted, or placed in fixed diagnostics.
+binding comparison and removes the raw-token and transient-digest references
+from live reactor state after their owner transition. The child validates the
+raw token and clears its bootstrap envelope and local request copy. The one
+child-owned `TautClient` retains its constructor token because core public
+operations use it for continuity; that canonical client is not a second host
+copy. Caught internal exception traceback frames may retain request tokens or
+fingerprints temporarily because that context can aid local debugging. Core
+Taut member storage retains the existing continuity token; `taut-mcp` persists
+no additional request-token copy or fingerprint. Expected attachment failures
+do not return or log request tokens or fingerprints, place them in fixed
+diagnostics, serialize them to protocol output, or emit them to stderr.
 
 An attachment path grants the server the same local project access that a
 separately configured `TautClient` would have. The server provides no sandbox
@@ -2005,12 +2017,14 @@ Required proof includes:
 - a candidate crash before emitting an ordinary resolution/validation outcome
   returns fixed `workspace attachment failed; use list_workspaces before
   retrying`, enters retiring, and is reaped
-- every charged semantic/serial rejection that installs no seat drops the
-  transient digest and parent raw-token reference, including invalid path/
-  token, exact-hidden busy, cap, and direct degraded/detaching outcomes
-- direct-ready same-token success and different-token conflict delete the
-  transient request digest before result settlement because neither transfers
-  it into a new hidden or ready entry
+- every charged semantic/serial rejection that installs no seat removes the
+  transient digest and parent raw-token reference from live reactor state,
+  including invalid path/token, exact-hidden busy, cap, and direct degraded/
+  detaching outcomes; caught internal traceback frames may retain request
+  values
+- direct-ready same-token success and different-token conflict remove the
+  transient request digest from live reactor state before result settlement
+  because neither transfers it into a new hidden or ready entry
 - separate attach-terminal branches: direct published ready/degraded/
   detaching hits create no hidden seat or child and perform no stop, while a
   started alias candidate that reaches the same published outcomes always
@@ -2030,7 +2044,8 @@ Required proof includes:
   pre-start cancellation, and deliberate tool starvation under abusive
   resource polling
 - continuity-token non-echo across every server-owned output and diagnostic,
-  per-request host/process/bootstrap-copy lifetime, canonical child
+  live per-request process/bootstrap-copy lifetime, allowed caught internal
+  traceback retention, canonical child
   `TautClient` constructor-token retention, parent-only fingerprint lifecycle,
   no raw token in a domain-command envelope, explicit
   host-transcript exposure guidance, DSN/participant redaction, and hostile

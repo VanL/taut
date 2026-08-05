@@ -81,103 +81,10 @@ class CommandRegistry:
             )
             for spec in _RESERVED_FIRST_PARTY_SPECS
         )
-        external: list[RegisteredCommand] = []
-        for entry_point in discovered:
-            distribution_name = "unknown distribution"
-            distribution_version = "unknown version"
-            try:
-                distribution = getattr(entry_point, "dist", None)
-                if distribution is not None:
-                    metadata_name = distribution.metadata.get("Name")
-                    distribution_name = metadata_name or distribution_name
-                    distribution_version = str(distribution.version)
-                loaded = entry_point.load()
-                _validate_manifest(entry_point.name, loaded)
-            except BaseException as exc:
-                if isinstance(exc, KeyboardInterrupt):
-                    raise
-                reason = _exception_message(exc)
-                external.append(
-                    RegisteredCommand(
-                        name=entry_point.name,
-                        spec=None,
-                        distribution_name=distribution_name,
-                        distribution_version=distribution_version,
-                        entry_point=entry_point,
-                        error=_manifest_error(
-                            entry_point,
-                            distribution_name,
-                            distribution_version,
-                            reason,
-                        ),
-                    )
-                )
-                continue
-            assert isinstance(loaded, CommandSpec)
-            external.append(
-                RegisteredCommand(
-                    name=loaded.name,
-                    spec=loaded,
-                    distribution_name=distribution_name,
-                    distribution_version=distribution_version,
-                    entry_point=entry_point,
-                )
-            )
-        external.sort(
-            key=lambda command: (
-                command.name,
-                _normalize_distribution_name(command.distribution_name),
-                command.distribution_name,
-                command.distribution_version,
-                command.entry_point.value if command.entry_point is not None else "",
-            )
+        external = _load_external_commands(discovered)
+        selected_reserved, selected_external, diagnostics = _select_external_commands(
+            external, compatibility_commands
         )
-        builtin_names = {spec.name for spec in BUILTIN_SPECS}
-        reserved_names = {command.name for command in compatibility_commands}
-        diagnostics: list[str] = []
-        grouped: dict[str, list[RegisteredCommand]] = {}
-        reserved_claims: dict[str, list[RegisteredCommand]] = {
-            name: [] for name in reserved_names
-        }
-        for command in external:
-            if _COMMAND_NAME_RE.fullmatch(command.name) is None:
-                if command.error is not None:
-                    diagnostics.append(command.error)
-                continue
-            if command.name in builtin_names:
-                diagnostics.append(
-                    f"installed command {command.name!r} from "
-                    f"{command.distribution_name} {command.distribution_version} "
-                    "cannot override the core built-in"
-                )
-                continue
-            if command.name in reserved_names:
-                reserved_claims[command.name].append(command)
-                continue
-            grouped.setdefault(command.name, []).append(command)
-        selected_reserved = _select_reserved_commands(
-            compatibility_commands,
-            reserved_claims,
-            diagnostics,
-        )
-        selected_external: list[RegisteredCommand] = []
-        for name, claimants in grouped.items():
-            if len(claimants) == 1:
-                selected_external.append(claimants[0])
-                continue
-            owners = ", ".join(_claimant_label(claimant) for claimant in claimants)
-            selected_external.append(
-                RegisteredCommand(
-                    name=name,
-                    spec=None,
-                    distribution_name="multiple distributions",
-                    distribution_version="",
-                    error=(
-                        f"command {name!r} is unavailable because multiple "
-                        f"distributions claim it: {owners}"
-                    ),
-                )
-            )
         self._commands = (*commands, *selected_reserved, *selected_external)
         self._by_name = {command.name: command for command in self._commands}
         self._diagnostics = tuple(sorted(diagnostics))
@@ -199,6 +106,120 @@ def is_core_builtin(name: str) -> bool:
     """Return whether *name* is a statically owned core command."""
 
     return name in _CORE_BUILTIN_NAMES
+
+
+def _load_external_commands(
+    discovered: tuple[Any, ...],
+) -> tuple[RegisteredCommand, ...]:
+    external: list[RegisteredCommand] = []
+    for entry_point in discovered:
+        distribution_name = "unknown distribution"
+        distribution_version = "unknown version"
+        try:
+            distribution = getattr(entry_point, "dist", None)
+            if distribution is not None:
+                metadata_name = distribution.metadata.get("Name")
+                distribution_name = metadata_name or distribution_name
+                distribution_version = str(distribution.version)
+            loaded = entry_point.load()
+            _validate_manifest(entry_point.name, loaded)
+        except BaseException as exc:
+            if isinstance(exc, KeyboardInterrupt):
+                raise
+            external.append(
+                RegisteredCommand(
+                    name=entry_point.name,
+                    spec=None,
+                    distribution_name=distribution_name,
+                    distribution_version=distribution_version,
+                    entry_point=entry_point,
+                    error=_manifest_error(
+                        entry_point,
+                        distribution_name,
+                        distribution_version,
+                        _exception_message(exc),
+                    ),
+                )
+            )
+            continue
+        assert isinstance(loaded, CommandSpec)
+        external.append(
+            RegisteredCommand(
+                name=loaded.name,
+                spec=loaded,
+                distribution_name=distribution_name,
+                distribution_version=distribution_version,
+                entry_point=entry_point,
+            )
+        )
+    return tuple(external)
+
+
+def _select_external_commands(
+    external: tuple[RegisteredCommand, ...],
+    compatibility_commands: tuple[RegisteredCommand, ...],
+) -> tuple[
+    tuple[RegisteredCommand, ...],
+    tuple[RegisteredCommand, ...],
+    tuple[str, ...],
+]:
+    ordered = sorted(
+        external,
+        key=lambda command: (
+            command.name,
+            _normalize_distribution_name(command.distribution_name),
+            command.distribution_name,
+            command.distribution_version,
+            command.entry_point.value if command.entry_point is not None else "",
+        ),
+    )
+    builtin_names = {spec.name for spec in BUILTIN_SPECS}
+    reserved_names = {command.name for command in compatibility_commands}
+    diagnostics: list[str] = []
+    grouped: dict[str, list[RegisteredCommand]] = {}
+    reserved_claims: dict[str, list[RegisteredCommand]] = {
+        name: [] for name in reserved_names
+    }
+    for command in ordered:
+        if _COMMAND_NAME_RE.fullmatch(command.name) is None:
+            if command.error is not None:
+                diagnostics.append(command.error)
+            continue
+        if command.name in builtin_names:
+            diagnostics.append(
+                f"installed command {command.name!r} from "
+                f"{command.distribution_name} {command.distribution_version} "
+                "cannot override the core built-in"
+            )
+            continue
+        if command.name in reserved_names:
+            reserved_claims[command.name].append(command)
+            continue
+        grouped.setdefault(command.name, []).append(command)
+    selected_reserved = _select_reserved_commands(
+        compatibility_commands,
+        reserved_claims,
+        diagnostics,
+    )
+    selected_external: list[RegisteredCommand] = []
+    for name, claimants in grouped.items():
+        if len(claimants) == 1:
+            selected_external.append(claimants[0])
+            continue
+        owners = ", ".join(_claimant_label(claimant) for claimant in claimants)
+        selected_external.append(
+            RegisteredCommand(
+                name=name,
+                spec=None,
+                distribution_name="multiple distributions",
+                distribution_version="",
+                error=(
+                    f"command {name!r} is unavailable because multiple "
+                    f"distributions claim it: {owners}"
+                ),
+            )
+        )
+    return selected_reserved, tuple(selected_external), tuple(sorted(diagnostics))
 
 
 def _select_reserved_commands(

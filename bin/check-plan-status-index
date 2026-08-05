@@ -36,7 +36,7 @@ def _cells(line: str) -> list[str]:
     return [cell.strip() for cell in line.strip().strip("|").split("|")]
 
 
-def parse_rows(text: str) -> tuple[list[tuple[str, str, str]], bool]:
+def parse_rows(text: str) -> tuple[list[tuple[str, str, str]], bool]:  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-004] exception
     """Return plan/status/exemplar rows and whether the table is well formed."""
     lines = text.splitlines()
     try:
@@ -128,7 +128,7 @@ def run(index: Path, plans_dir: Path) -> int:
     return 0
 
 
-def self_test() -> int:
+def self_test() -> int:  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-005] exception
     failures: list[str] = []
     with tempfile.TemporaryDirectory() as raw:
         plans_dir = Path(raw)

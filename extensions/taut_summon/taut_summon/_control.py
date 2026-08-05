@@ -447,38 +447,16 @@ class ControlLoop:
             self._open()
             while not self._shutdown.is_set() and not self._pending_stop_seen:
                 if self._pending_control_fault is not None:
-                    if self._recover_pending_control_fault():
-                        # The local reactor snapshot, if any, is retired. Always
-                        # reacquire the installed generation at loop head.
-                        continue
-                    delay = min(
-                        5.0,
-                        max(self._interval, 0.25)
-                        * (
-                            2
-                            ** max(
-                                0,
-                                self._control_fault_failure_count() - 1,
-                            )
-                        ),
-                    )
-                    if self._shutdown.wait(delay):
-                        break
+                    self._recover_control_fault_or_backoff()
                     continue
 
                 reactor = self._control_reactor
                 if reactor is None:
                     raise RuntimeError("control reactor disappeared while running")
-                try:
-                    reactor.process_once()
-                except StopWatching:
-                    if self._pending_control_fault is not None:
-                        continue
-                    if self._shutdown.is_set() or self._pending_stop_seen:
-                        break
-                    raise
-                except (BrokerError, OSError) as exc:
-                    self._mark_control_drain_failure(exc)
+                turn_result = self._process_control_turn(reactor)
+                if turn_result is False:
+                    break
+                if turn_result is None:
                     continue
 
                 if self._pending_control_fault is not None:
@@ -492,66 +470,86 @@ class ControlLoop:
                 if self._pending_control_fault is not None:
                     continue
 
-                try:
-                    reactor.wait_for_activity(timeout=self._next_control_wait_timeout())
-                except StopWatching:
-                    if self._pending_control_fault is not None:
-                        continue
-                    if self._shutdown.is_set() or self._pending_stop_seen:
-                        break
-                    raise
-                except (BrokerError, OSError) as exc:
-                    self._record_control_fault("control wait", exc, recoverable=True)
-                    continue
+                if not self._wait_for_control_activity(reactor):
+                    break
             if self._pending_stop_seen:
-                # A control STOP: wait for the clean-shutdown path to
-                # release the driver slot, then reply — so the stop client
-                # sees the reply only after the ledger is clear ([SUM-9]).
-                # The ack asserts release; if the shutdown timed out or the
-                # release could not be confirmed (persistent broker
-                # failure), reply an error so the client never treats an
-                # unreleased slot as stopped.
-                completed = self._shutdown_complete.wait(
-                    timeout=_STOP_ACK_TIMEOUT_SECONDS
-                )
-                outcome: StopShutdownOutcome | None = None
-                release_error: str | None = None
-                if completed:
-                    try:
-                        outcome = self._shutdown_outcome()
-                    except Exception as exc:
-                        release_error = (
-                            f"driver slot release confirmation failed: {exc}"
-                        )
-                        logger.error("%s", release_error)
-                outcome_error = outcome.error_detail() if outcome is not None else None
-                if completed and outcome is not None and outcome_error is None:
-                    self._reply(
-                        encode_control_reply(
-                            CONTROL_STOP, "ack", request_id=self._pending_stop
-                        ),
-                        reply_to=self._pending_stop_reply_to,
-                    )
-                else:
-                    self._reply(
-                        encode_control_reply(
-                            CONTROL_STOP,
-                            "error",
-                            request_id=self._pending_stop,
-                            error=(
-                                "shutdown timed out"
-                                if not completed
-                                else (
-                                    release_error
-                                    or outcome_error
-                                    or "driver slot release could not be confirmed"
-                                )
-                            ),
-                        ),
-                        reply_to=self._pending_stop_reply_to,
-                    )
+                self._reply_to_pending_stop()
         finally:
             self._close()
+
+    def _recover_control_fault_or_backoff(self) -> None:
+        if self._recover_pending_control_fault():
+            return
+        delay = min(
+            5.0,
+            max(self._interval, 0.25)
+            * (2 ** max(0, self._control_fault_failure_count() - 1)),
+        )
+        self._shutdown.wait(delay)
+
+    def _process_control_turn(self, reactor: _ControlReactor) -> bool | None:
+        """Return true after a turn, false on expected stop, or None on recovery."""
+
+        try:
+            reactor.process_once()
+        except StopWatching:
+            if self._pending_control_fault is not None:
+                return None
+            if self._shutdown.is_set() or self._pending_stop_seen:
+                return False
+            raise
+        except (BrokerError, OSError) as exc:
+            self._mark_control_drain_failure(exc)
+            return None
+        return True
+
+    def _wait_for_control_activity(self, reactor: _ControlReactor) -> bool:
+        try:
+            reactor.wait_for_activity(timeout=self._next_control_wait_timeout())
+        except StopWatching:
+            if self._pending_control_fault is not None:
+                return True
+            if self._shutdown.is_set() or self._pending_stop_seen:
+                return False
+            raise
+        except (BrokerError, OSError) as exc:
+            self._record_control_fault("control wait", exc, recoverable=True)
+        return True
+
+    def _reply_to_pending_stop(self) -> None:
+        """Reply only after the driver slot release outcome is known ([SUM-9])."""
+
+        completed = self._shutdown_complete.wait(timeout=_STOP_ACK_TIMEOUT_SECONDS)
+        outcome: StopShutdownOutcome | None = None
+        release_error: str | None = None
+        if completed:
+            try:
+                outcome = self._shutdown_outcome()
+            except Exception as exc:
+                release_error = f"driver slot release confirmation failed: {exc}"
+                logger.error("%s", release_error)
+        outcome_error = outcome.error_detail() if outcome is not None else None
+        if completed and outcome is not None and outcome_error is None:
+            reply = encode_control_reply(
+                CONTROL_STOP, "ack", request_id=self._pending_stop
+            )
+        else:
+            error = (
+                "shutdown timed out"
+                if not completed
+                else (
+                    release_error
+                    or outcome_error
+                    or "driver slot release could not be confirmed"
+                )
+            )
+            reply = encode_control_reply(
+                CONTROL_STOP,
+                "error",
+                request_id=self._pending_stop,
+                error=error,
+            )
+        self._reply(reply, reply_to=self._pending_stop_reply_to)
 
     def _audit_if_due(self) -> None:
         if self._pending_stop_seen:

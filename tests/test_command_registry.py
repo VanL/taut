@@ -19,9 +19,12 @@ from dataclasses import dataclass
 from importlib import metadata
 from io import BytesIO, StringIO, TextIOWrapper
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
+
+if TYPE_CHECKING:
+    from taut.client import Message, Notification
 
 pytestmark = pytest.mark.sqlite_only
 
@@ -3866,125 +3869,161 @@ def test_registry_rename_resumes_matching_interrupted_operation(
         verify.close()
 
 
-def test_registry_watch_sigint_path_stops_watcher_and_closes_client() -> None:
-    from taut.client import Message, Notification
-    from taut.commands._dispatch import dispatch
-    from taut.commands._registry import CommandRegistry
+class _WatchCountingStream(StringIO):
+    def __init__(self) -> None:
+        super().__init__()
+        self.flush_count = 0
 
-    message_text = "live\nmessage\x1b]52;c;Y2xpcGJvYXJk\x07\x9b"
-    actor_name = "bob\x1b]0;title\x07\t"
-    items: list[Message | Notification] = [
+    def flush(self) -> None:
+        self.flush_count += 1
+        super().flush()
+
+
+_WATCH_MESSAGE_TEXT = "live\nmessage\x1b]52;c;Y2xpcGJvYXJk\x07\x9b"
+_WATCH_ACTOR_NAME = "bob\x1b]0;title\x07\t"
+
+
+def _interrupting_watch_items() -> list[Message | Notification]:
+    from taut.client import Message, Notification
+
+    return [
         Message(
             thread="general",
             ts=1_785_000_000_000_000_001,
             from_id="m_" + "a" * 26,
             from_name="van",
             kind="message",
-            text=message_text,
+            text=_WATCH_MESSAGE_TEXT,
         ),
         Notification(
             type="reply",
             to_id="m_" + "a" * 26,
             actor_id="m_" + "b" * 26,
-            actor_name=actor_name,
+            actor_name=_WATCH_ACTOR_NAME,
             thread="general.1785000000000000001",
             message_ts=1_785_000_000_000_000_002,
         ),
     ]
 
-    class CountingStream(StringIO):
-        def __init__(self) -> None:
-            super().__init__()
-            self.flush_count = 0
 
-        def flush(self) -> None:
-            self.flush_count += 1
-            super().flush()
+class _InterruptingWatch:
+    def __init__(
+        self,
+        handler: Callable[[Message | Notification], None],
+        items: list[Message | Notification],
+    ) -> None:
+        self.handler = handler
+        self.items = items
+        self.stop_calls: list[tuple[bool, float]] = []
 
-    class InterruptingWatcher:
-        def __init__(
-            self,
-            handler: Callable[[Message | Notification], None],
-        ) -> None:
-            self.handler = handler
-            self.stop_calls: list[tuple[bool, float]] = []
+    def run_forever(self) -> None:
+        for item in self.items:
+            self.handler(item)
+        raise KeyboardInterrupt
 
-        def run_forever(self) -> None:
-            for item in items:
-                self.handler(item)
-            raise KeyboardInterrupt
+    def stop(self, *, join: bool, timeout: float) -> None:
+        self.stop_calls.append((join, timeout))
 
-        def stop(self, *, join: bool, timeout: float) -> None:
-            self.stop_calls.append((join, timeout))
 
-    class WatchClient:
-        def __init__(self, **_kwargs: object) -> None:
-            self.watcher: InterruptingWatcher | None = None
-            self.closed = False
-            self.threads: list[str] | None = None
+class _InterruptingWatchClient:
+    def __init__(self, items: list[Message | Notification]) -> None:
+        self.items = items
+        self.watcher: _InterruptingWatch | None = None
+        self.closed = False
+        self.threads: list[str] | None = None
 
-        def watch(
-            self,
-            handler: Callable[[Message | Notification], None],
-            *,
-            threads: list[str] | None,
-        ) -> InterruptingWatcher:
-            self.threads = threads
-            self.watcher = InterruptingWatcher(handler)
-            return self.watcher
+    def watch(
+        self,
+        handler: Callable[[Message | Notification], None],
+        *,
+        threads: list[str] | None,
+    ) -> _InterruptingWatch:
+        self.threads = threads
+        self.watcher = _InterruptingWatch(handler, self.items)
+        return self.watcher
 
-        def close(self) -> None:
-            self.closed = True
+    def close(self) -> None:
+        self.closed = True
 
-    clients: list[WatchClient] = []
 
-    def create_client(**kwargs: object) -> WatchClient:
-        client = WatchClient(**kwargs)
-        clients.append(client)
+class _InterruptingWatchHarness:
+    def __init__(self, items: list[Message | Notification]) -> None:
+        self.items = items
+        self.clients: list[_InterruptingWatchClient] = []
+
+    def create_client(self, **_kwargs: object) -> _InterruptingWatchClient:
+        client = _InterruptingWatchClient(self.items)
+        self.clients.append(client)
         return client
 
-    stdout = CountingStream()
+
+def _dispatch_interrupting_watch(
+    harness: _InterruptingWatchHarness,
+    *,
+    json_mode: bool,
+) -> tuple[int, _WatchCountingStream, StringIO]:
+    from taut.commands._dispatch import dispatch
+    from taut.commands._registry import CommandRegistry
+
+    stdout = _WatchCountingStream()
+    stderr = StringIO()
+    argv = ["watch", "general", "ops"]
+    if json_mode:
+        argv.append("--json")
     result = dispatch(
-        ["watch", "general", "ops", "--json"],
+        argv,
         registry=CommandRegistry(entry_points=()),
         stdin=StringIO(),
         stdout=stdout,
-        stderr=StringIO(),
-        client_factory=create_client,
+        stderr=stderr,
+        client_factory=harness.create_client,
+    )
+    return result, stdout, stderr
+
+
+def test_registry_watch_sigint_json_stops_watcher_and_closes_client() -> None:
+    harness = _InterruptingWatchHarness(_interrupting_watch_items())
+    result, stdout, _stderr = _dispatch_interrupting_watch(
+        harness,
+        json_mode=True,
     )
 
     assert result == 0
-    assert len(clients) == 1
-    assert clients[0].threads == ["general", "ops"]
-    assert clients[0].watcher is not None
-    assert clients[0].watcher.stop_calls == [(True, 5.0)]
-    assert clients[0].closed is True
+    assert len(harness.clients) == 1
+    client = harness.clients[0]
+    assert client.threads == ["general", "ops"]
+    assert client.watcher is not None
+    assert client.watcher.stop_calls == [(True, 5.0)]
+    assert client.closed is True
     records = [json.loads(line) for line in stdout.getvalue().splitlines()]
-    assert records[0]["text"] == message_text
-    assert records[1]["actor_name"] == actor_name
+    assert records[0]["text"] == _WATCH_MESSAGE_TEXT
+    assert records[1]["actor_name"] == _WATCH_ACTOR_NAME
     assert records[1]["type"] == "reply"
     assert stdout.flush_count == 2
 
-    human_stdout = CountingStream()
-    human_stderr = StringIO()
-    result = dispatch(
-        ["watch", "general", "ops"],
-        registry=CommandRegistry(entry_points=()),
-        stdin=StringIO(),
-        stdout=human_stdout,
-        stderr=human_stderr,
-        client_factory=create_client,
+
+def test_registry_watch_sigint_human_stops_watcher_and_closes_client() -> None:
+    harness = _InterruptingWatchHarness(_interrupting_watch_items())
+    result, stdout, stderr = _dispatch_interrupting_watch(
+        harness,
+        json_mode=False,
     )
 
     assert result == 0
-    assert r"live\nmessage\x1b]52;c;Y2xpcGJvYXJk\a\x9b" in (human_stdout.getvalue())
-    assert r"bob\x1b]0;title\a\t" in human_stdout.getvalue()
+    assert len(harness.clients) == 1
+    client = harness.clients[0]
+    assert client.threads == ["general", "ops"]
+    assert client.watcher is not None
+    assert client.watcher.stop_calls == [(True, 5.0)]
+    assert client.closed is True
+    assert r"live\nmessage\x1b]52;c;Y2xpcGJvYXJk\a\x9b" in stdout.getvalue()
+    assert r"bob\x1b]0;title\a\t" in stdout.getvalue()
     assert all(
         character == "\n"
         or not (ord(character) < 0x20 or 0x7F <= ord(character) <= 0x9F)
-        for character in human_stdout.getvalue() + human_stderr.getvalue()
+        for character in stdout.getvalue() + stderr.getvalue()
     )
-    assert human_stdout.flush_count == 2
+    assert stdout.flush_count == 2
 
 
 def test_registry_watch_unjoined_filter_keeps_exit_two(tmp_path: Path) -> None:
@@ -4000,7 +4039,7 @@ def test_registry_watch_unjoined_filter_keeps_exit_two(tmp_path: Path) -> None:
     assert err == "not a member of watched thread(s): missing\n"
 
 
-def test_registry_watch_flushes_dynamic_membership_and_preserves_broken_pipe_cursor(
+def test_registry_watch_flushes_dynamic_membership_and_preserves_broken_pipe_cursor(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-058] exception
     tmp_path: Path,
 ) -> None:
     from taut._exceptions import EmptyResultError

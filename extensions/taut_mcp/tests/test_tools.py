@@ -849,6 +849,80 @@ def test_channel_show_does_not_refresh_notification_snapshot(
     asyncio.run(scenario())
 
 
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(15)
+def test_post_command_snapshot_identity_loss_marks_workspace_lost(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[MCP-11] Identity loss during post-command refresh is terminal."""
+
+    workspace, token = _workspace_with_two_members(tmp_path)
+
+    def lost_identity(self: TautClient, *, limit: int = 1000) -> Any:
+        del self, limit
+        raise workspace_reactor.TokenError("identity disappeared")
+
+    async def scenario() -> None:
+        reactor = ProcessReactor(asyncio.get_running_loop())
+        try:
+            attached = await reactor.attach_workspace(str(workspace), token)
+            canonical = str(attached["workspace"])
+            monkeypatch.setattr(
+                workspace_reactor.TautClient,
+                "peek_inbox",
+                lost_identity,
+            )
+            with _tool_error("workspace identity lost; detach and reattach"):
+                await reactor._execute_ready_tool(
+                    canonical,
+                    "say",
+                    {"target": "general", "text": "committed before identity loss"},
+                )
+            assert reactor.list_workspaces()["records"][0]["status"] == "identity_lost"
+        finally:
+            await reactor.aclose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(15)
+def test_post_command_snapshot_crash_marks_workspace_failed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[MCP-11] Unexpected post-command refresh failure crashes the owner."""
+
+    workspace, token = _workspace_with_two_members(tmp_path)
+
+    def unexpected_failure(self: TautClient, *, limit: int = 1000) -> Any:
+        del self, limit
+        raise RuntimeError("private refresh failure")
+
+    async def scenario() -> None:
+        reactor = ProcessReactor(asyncio.get_running_loop())
+        try:
+            attached = await reactor.attach_workspace(str(workspace), token)
+            canonical = str(attached["workspace"])
+            monkeypatch.setattr(
+                workspace_reactor.TautClient,
+                "peek_inbox",
+                unexpected_failure,
+            )
+            with _tool_error("workspace reactor failed; detach and reattach"):
+                await reactor._execute_ready_tool(
+                    canonical,
+                    "say",
+                    {"target": "general", "text": "committed before refresh crash"},
+                )
+            assert reactor.list_workspaces()["records"][0]["status"] == "reactor_failed"
+        finally:
+            await reactor.aclose()
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize(
     ("tool_name", "method_name", "arguments"),
     [
@@ -2340,7 +2414,7 @@ def test_exact_tool_manifest_snapshot() -> None:
         separators=(",", ":"),
     ).encode()
     assert hashlib.sha256(encoded).hexdigest() == (
-        "b543a5b6fc6d0ae8f61889ae8a1b4a1c0757ce3639f7eaae2f6dd8d6cbd52466"
+        "57ee763c236a8765098ed061019306c7a9ce208e9b38efc3695d688fa22c3624"
     )
 
     def assert_property_descriptions(schema: dict[str, object]) -> None:

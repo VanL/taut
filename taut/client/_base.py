@@ -254,7 +254,7 @@ class _ClientBase(ABC):
             queue.close()
         self._queue_cache.clear()
 
-    def _resolve_target(
+    def _resolve_target(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-046] exception
         self,
         db_path: str | Path | None,
         *,

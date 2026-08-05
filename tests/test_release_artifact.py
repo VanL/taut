@@ -249,7 +249,7 @@ def test_verify_bundle_accepts_taut_chat_on_unchanged_core_tag_family(
         ("wrong-tag-version", "release tag"),
     ),
 )
-def test_verify_bundle_fails_closed_for_each_manifest_contract(
+def test_verify_bundle_fails_closed_for_each_manifest_contract(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-061] exception
     tmp_path: Path, mutation: str, message: str
 ) -> None:
     module, package, bundle, commit = _bundle(tmp_path)

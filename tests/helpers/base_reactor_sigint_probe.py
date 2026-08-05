@@ -54,7 +54,7 @@ class RecordingPollingStrategy(PollingStrategy):
         return super().replace_activity_waiter(activity_waiter)
 
 
-def _run_probe() -> dict[str, object]:
+def _run_probe() -> dict[str, object]:  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-053] exception
     installed_waiter = FakeWaiter()
     replacement_waiter = FakeWaiter()
     waiters = iter((installed_waiter, replacement_waiter))

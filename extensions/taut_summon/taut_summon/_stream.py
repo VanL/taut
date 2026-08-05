@@ -157,7 +157,7 @@ class StreamJsonHandle(ABC):
             self._close_state = "close_requested"
             self._send_interrupt()
 
-    def close(self) -> None:
+    def close(self) -> None:  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-035] exception
         primary_error = sys.exception()
         self.request_close()
         owns_close = False

@@ -34,9 +34,9 @@ DETACH_WORKSPACE_DESCRIPTION = (
     "does not re-resolve aliases or use an identity token."
 )
 TOKEN_DESCRIPTION = (
-    "Sensitive existing Taut continuity token for this workspace. It selects "
-    "one member and is never returned. Required on identity-using calls; do "
-    "not invent it or repeat it in chat."
+    "Existing Taut continuity token for this workspace. It selects one member "
+    "and is never returned. Required on identity-using calls; do not invent it "
+    "or repeat it in chat."
 )
 CHANNEL_DESCRIPTION = (
     "Taut channel matching ^[a-z0-9][a-z0-9_-]{0,63}$; dm, notify, sys, and "

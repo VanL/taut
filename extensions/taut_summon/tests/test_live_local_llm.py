@@ -8,6 +8,7 @@ targets real installed harness CLIs.
 
 from __future__ import annotations
 
+import http.server
 import json
 import os
 import select
@@ -43,6 +44,65 @@ LOCAL_SENTINEL_TIMEOUT_SECONDS = 240.0
 _FALSEY_ENV = {"", "0", "false", "no", "off"}
 
 
+class _CountingProxyHandler(http.server.BaseHTTPRequestHandler):
+    proxy: _CountingProxy
+
+    def do_GET(self) -> None:  # noqa: N802 - stdlib hook name
+        self._forward()
+
+    def do_POST(self) -> None:  # noqa: N802 - stdlib hook name
+        self._forward()
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+    def _forward(self) -> None:
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        body = self.rfile.read(length) if length else b""
+        if self.command == "POST" and _is_completion_path(self.path):
+            self.proxy.request_bodies.append(body.decode("utf-8", errors="replace"))
+        headers = {
+            key: value
+            for key, value in self.headers.items()
+            if key.lower()
+            not in {"host", "content-length", "connection", "accept-encoding"}
+        }
+        request = urllib.request.Request(
+            self.proxy.forward_url(self.path),
+            data=body if body else None,
+            headers=headers,
+            method=self.command,
+        )
+        try:
+            try:
+                with urllib.request.urlopen(
+                    request, timeout=LOCAL_SENTINEL_TIMEOUT_SECONDS
+                ) as response:
+                    self._send_response(
+                        response.status, response.headers.items(), response.read()
+                    )
+            except urllib.error.HTTPError as exc:
+                self._send_response(exc.code, exc.headers.items(), exc.read())
+        except Exception as exc:  # noqa: BLE001 - keep proxy diagnostics
+            payload = f"proxy forwarding error: {exc}".encode()
+            self.send_response(502)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    def _send_response(self, status: int, headers: Any, payload: bytes) -> None:
+        self.send_response(status)
+        for key, value in headers:
+            if key.lower() in {"connection", "content-length", "transfer-encoding"}:
+                continue
+            self.send_header(key, value)
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(payload)
+
+
 @dataclass
 class _CountingProxy:
     upstream_endpoint: str
@@ -51,79 +111,12 @@ class _CountingProxy:
     request_bodies: list[str] = field(default_factory=list)
 
     def __enter__(self) -> _CountingProxy:
-        import http.server
-
-        proxy = self
-
-        class Handler(http.server.BaseHTTPRequestHandler):
-            def do_GET(self) -> None:  # noqa: N802 - stdlib hook name
-                self._forward()
-
-            def do_POST(self) -> None:  # noqa: N802 - stdlib hook name
-                self._forward()
-
-            def log_message(self, format: str, *args: object) -> None:
-                return
-
-            def _forward(self) -> None:
-                length = int(self.headers.get("Content-Length", "0") or "0")
-                body = self.rfile.read(length) if length else b""
-                if self.command == "POST" and _is_completion_path(self.path):
-                    proxy.request_bodies.append(body.decode("utf-8", errors="replace"))
-                headers = {
-                    key: value
-                    for key, value in self.headers.items()
-                    if key.lower()
-                    not in {"host", "content-length", "connection", "accept-encoding"}
-                }
-                request = urllib.request.Request(
-                    proxy.forward_url(self.path),
-                    data=body if body else None,
-                    headers=headers,
-                    method=self.command,
-                )
-                try:
-                    try:
-                        with urllib.request.urlopen(
-                            request, timeout=LOCAL_SENTINEL_TIMEOUT_SECONDS
-                        ) as response:
-                            payload = response.read()
-                            self._send_response(
-                                response.status,
-                                response.headers.items(),
-                                payload,
-                            )
-                    except urllib.error.HTTPError as exc:
-                        self._send_response(exc.code, exc.headers.items(), exc.read())
-                except Exception as exc:  # noqa: BLE001 - keep proxy diagnostics
-                    payload = f"proxy forwarding error: {exc}".encode()
-                    self.send_response(502)
-                    self.send_header("Content-Type", "text/plain; charset=utf-8")
-                    self.send_header("Content-Length", str(len(payload)))
-                    self.end_headers()
-                    self.wfile.write(payload)
-
-            def _send_response(
-                self,
-                status: int,
-                headers: Any,
-                payload: bytes,
-            ) -> None:
-                self.send_response(status)
-                for key, value in headers:
-                    if key.lower() in {
-                        "connection",
-                        "content-length",
-                        "transfer-encoding",
-                    }:
-                        continue
-                    self.send_header(key, value)
-                self.send_header("Content-Length", str(len(payload)))
-                self.send_header("Connection", "close")
-                self.end_headers()
-                self.wfile.write(payload)
-
-        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        handler = type(
+            "_BoundCountingProxyHandler",
+            (_CountingProxyHandler,),
+            {"proxy": self},
+        )
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         return self
@@ -652,7 +645,7 @@ def test_local_llm_prewire_marks_pty_member_wired(tmp_path: Path) -> None:
 
 @pytest.mark.requires_local_llm
 @pytest.mark.xdist_group("process")
-def test_local_llm_pty_harness_posts_sentinel(
+def test_local_llm_pty_harness_posts_sentinel(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-043] exception
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

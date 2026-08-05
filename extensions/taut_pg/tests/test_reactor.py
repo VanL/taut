@@ -62,7 +62,7 @@ class RecordingNativeWaiter:
         self._delegate.close()
 
 
-def test_taut_watcher_polls_and_refreshes_membership_without_native_waiter(
+def test_taut_watcher_polls_and_refreshes_membership_without_native_waiter(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-021] exception
     taut_pg_project: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -169,7 +169,7 @@ def test_taut_watcher_polls_and_refreshes_membership_without_native_waiter(
     assert drive_errors == []
 
 
-def test_taut_watcher_native_waiter_rebinds_on_membership_topology_change(
+def test_taut_watcher_native_waiter_rebinds_on_membership_topology_change(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-022] exception
     taut_pg_project: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
