@@ -145,14 +145,37 @@ def _emit(payload: dict[str, object]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=("probe", "hang"), default="probe")
+    parser.add_argument(
+        "--mode",
+        choices=(
+            "probe",
+            "hang",
+            "startup-hang",
+            "early-exit",
+            "invalid-startup",
+            "unexpected-startup",
+        ),
+        default="probe",
+    )
     args = parser.parse_args()
 
+    if args.mode == "early-exit":
+        return 7
+    if args.mode == "invalid-startup":
+        print("not-json", flush=True)
+        return 0
+    if args.mode == "unexpected-startup":
+        _emit({"status": "unexpected"})
+        return 0
+    if args.mode == "startup-hang":
+        threading.Event().wait()
+        raise AssertionError("unreachable")
     if args.mode == "hang":
         _emit({"status": "hanging"})
         threading.Event().wait()
         raise AssertionError("unreachable")
 
+    _emit({"status": "ready"})
     try:
         _emit(_run_probe())
     except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception

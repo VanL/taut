@@ -621,6 +621,14 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   signal delivery in a probe child, let the pytest worker own the watchdog and
   structured result, and prove a following same-worker sentinel still runs.
 
+- 2026-08-05: A subprocess watchdog must not start a production-behavior clock
+  at `Popen`. On saturated Windows CI, interpreter and import startup can spend
+  the whole budget before the child reaches the behavior under test. Use a
+  structured readiness handshake, start the strict behavior deadline only
+  after readiness, keep a separate bounded startup watchdog, and group the
+  probe plus watchdog/sentinel tests on one xdist worker. Empty stdout then
+  means startup starvation; readiness followed by timeout means a real hang.
+
 - 2026-07-13: Model discovery proves inventory, not inference readiness. A
   prepared local-model smoke should poll only the cheap model-list boundary,
   then make one completion request and fail on that result. Keep production

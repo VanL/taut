@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
 import signal
 import subprocess
 import sys
@@ -10,7 +11,7 @@ import time
 from collections.abc import Callable, Sequence
 from functools import partial
 from pathlib import Path
-from typing import Any, TypeVar, cast
+from typing import IO, Any, TypeVar, cast
 
 import pytest
 from simplebroker import Queue
@@ -33,6 +34,7 @@ pytestmark = pytest.mark.sqlite_only
 
 _TautWatcherT = TypeVar("_TautWatcherT", bound=TautWatcher)
 _BASE_REACTOR_SIGINT_PROBE_MODULE = "tests.helpers.base_reactor_sigint_probe"
+_BASE_REACTOR_SIGINT_PROBE_STARTUP_TIMEOUT = 15.0
 _BASE_REACTOR_SIGINT_PROBE_TIMEOUT = 3.0
 _BASE_REACTOR_SIGINT_PROBE_GROUP = pytest.mark.xdist_group("base-reactor-sigint-probe")
 
@@ -58,9 +60,56 @@ def _spawn_cli(cwd: Path, *args: object) -> subprocess.Popen[str]:
     )
 
 
+class _ProbeOutputCapture:
+    def __init__(self, process: subprocess.Popen[str]) -> None:
+        assert process.stdout is not None
+        assert process.stderr is not None
+        self.process = process
+        self.stdout_pipe: IO[str] = process.stdout
+        self.stderr_pipe: IO[str] = process.stderr
+        self.stdout_lines: list[str] = []
+        self.stderr_lines: list[str] = []
+        self.first_line: queue.Queue[tuple[int, str] | None] = queue.Queue(maxsize=1)
+        self.stdout_reader = threading.Thread(target=self._drain_stdout, daemon=True)
+        self.stderr_reader = threading.Thread(target=self._drain_stderr, daemon=True)
+        self.stdout_reader.start()
+        self.stderr_reader.start()
+
+    def _drain_stdout(self) -> None:
+        reported_first_line = False
+        for line in self.stdout_pipe:
+            self.stdout_lines.append(line)
+            if not reported_first_line and line.strip():
+                self.first_line.put((len(self.stdout_lines) - 1, line))
+                reported_first_line = True
+        if not reported_first_line:
+            self.first_line.put(None)
+
+    def _drain_stderr(self) -> None:
+        self.stderr_lines.extend(self.stderr_pipe)
+
+    def finish(self, *, kill: bool) -> tuple[str, str]:
+        if kill and self.process.poll() is None:
+            self.process.kill()
+        try:
+            self.process.wait(timeout=5.0)
+        except subprocess.TimeoutExpired as exc:
+            raise AssertionError(
+                "BaseReactor SIGINT probe did not terminate after it was killed"
+            ) from exc
+        self.stdout_reader.join(timeout=1.0)
+        self.stderr_reader.join(timeout=1.0)
+        if self.stdout_reader.is_alive() or self.stderr_reader.is_alive():
+            raise AssertionError("BaseReactor SIGINT probe output reader did not stop")
+        self.stdout_pipe.close()
+        self.stderr_pipe.close()
+        return "".join(self.stdout_lines), "".join(self.stderr_lines)
+
+
 def _run_base_reactor_sigint_probe(
     *,
     mode: str = "probe",
+    startup_timeout: float = _BASE_REACTOR_SIGINT_PROBE_STARTUP_TIMEOUT,
     timeout: float = _BASE_REACTOR_SIGINT_PROBE_TIMEOUT,
 ) -> dict[str, object]:
     process = subprocess.Popen(
@@ -78,15 +127,49 @@ def _run_base_reactor_sigint_probe(
         encoding="utf-8",
         errors="replace",
     )
+    capture = _ProbeOutputCapture(process)
     try:
-        stdout, stderr = process.communicate(timeout=timeout)
+        startup_result = capture.first_line.get(timeout=startup_timeout)
+    except queue.Empty:
+        stdout, stderr = capture.finish(kill=True)
+        raise AssertionError(
+            "BaseReactor SIGINT probe did not report startup readiness after "
+            f"{startup_timeout:.1f}s and was killed; stdout={stdout!r}; "
+            f"stderr={stderr!r}"
+        ) from None
+    if startup_result is None:
+        stdout, stderr = capture.finish(kill=False)
+        raise AssertionError(
+            "BaseReactor SIGINT probe exited before startup readiness "
+            f"(code {process.returncode}); stdout={stdout!r}; stderr={stderr!r}"
+        )
+    startup_index, startup_line = startup_result
+
+    expected_startup_status = "hanging" if mode == "hang" else "ready"
+    try:
+        startup_payload = json.loads(startup_line)
+    except json.JSONDecodeError as exc:
+        stdout, stderr = capture.finish(kill=True)
+        raise AssertionError(
+            "BaseReactor SIGINT probe emitted invalid startup status; "
+            f"stdout={stdout!r}; stderr={stderr!r}"
+        ) from exc
+    if startup_payload != {"status": expected_startup_status}:
+        stdout, stderr = capture.finish(kill=True)
+        raise AssertionError(
+            "BaseReactor SIGINT probe emitted unexpected startup status; "
+            f"stdout={stdout!r}; stderr={stderr!r}"
+        )
+
+    try:
+        process.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
-        process.kill()
-        stdout, stderr = process.communicate()
+        stdout, stderr = capture.finish(kill=True)
         raise AssertionError(
             f"BaseReactor SIGINT probe timed out after {timeout:.1f}s and was killed; "
             f"stdout={stdout!r}; stderr={stderr!r}"
         ) from None
+    stdout, stderr = capture.finish(kill=False)
 
     if process.returncode != 0:
         raise AssertionError(
@@ -94,7 +177,7 @@ def _run_base_reactor_sigint_probe(
             f"stdout={stdout!r}; stderr={stderr!r}"
         )
 
-    lines = [line for line in stdout.splitlines() if line.strip()]
+    lines = [line for line in capture.stdout_lines[startup_index + 1 :] if line.strip()]
     if len(lines) != 1:
         raise AssertionError(
             "BaseReactor SIGINT probe did not emit exactly one structured result; "
@@ -933,6 +1016,7 @@ def test_base_reactor_rebinds_callback_topology_before_second_strategy_wait(
         watcher.stop(join=False)
 
 
+@_BASE_REACTOR_SIGINT_PROBE_GROUP
 def test_base_reactor_defers_reentrant_sigint_until_waiter_replacement_commits() -> (
     None
 ):
@@ -962,7 +1046,32 @@ def test_base_reactor_sigint_probe_watchdog_reports_hung_child_as_failure() -> N
 
 
 @_BASE_REACTOR_SIGINT_PROBE_GROUP
+def test_base_reactor_sigint_probe_startup_watchdog_is_distinct() -> None:
+    with pytest.raises(AssertionError, match="did not report startup readiness"):
+        _run_base_reactor_sigint_probe(mode="startup-hang", startup_timeout=0.2)
+
+
+@_BASE_REACTOR_SIGINT_PROBE_GROUP
+def test_base_reactor_sigint_probe_reports_exit_before_readiness() -> None:
+    with pytest.raises(AssertionError, match="exited before startup readiness.*code 7"):
+        _run_base_reactor_sigint_probe(mode="early-exit")
+
+
+@_BASE_REACTOR_SIGINT_PROBE_GROUP
+def test_base_reactor_sigint_probe_rejects_invalid_startup_json() -> None:
+    with pytest.raises(AssertionError, match="emitted invalid startup status"):
+        _run_base_reactor_sigint_probe(mode="invalid-startup")
+
+
+@_BASE_REACTOR_SIGINT_PROBE_GROUP
+def test_base_reactor_sigint_probe_rejects_unexpected_startup_status() -> None:
+    with pytest.raises(AssertionError, match="emitted unexpected startup status"):
+        _run_base_reactor_sigint_probe(mode="unexpected-startup")
+
+
+@_BASE_REACTOR_SIGINT_PROBE_GROUP
 def test_base_reactor_sigint_probe_watchdog_same_worker_sentinel() -> None:
+    assert _BASE_REACTOR_SIGINT_PROBE_STARTUP_TIMEOUT == 15.0
     assert _BASE_REACTOR_SIGINT_PROBE_TIMEOUT == 3.0
 
 

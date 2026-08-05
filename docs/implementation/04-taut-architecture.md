@@ -501,11 +501,15 @@ installation, running-state publication, and drive-owner claim; the CLI's
 `finally` remains an idempotent backstop. This keeps native waiter locks and
 coverage shutdown hooks outside asynchronous signal re-entry.
 The firing proof for the real SIGINT path runs the reactor in a dedicated child
-process. The parent owns a bounded watchdog, terminates only that child on a
-hang, and converts the failure into a normal assertion before a following
-same-worker sentinel. Do not put a thread-mode `pytest-timeout` marker around a
-real-signal proof: its timeout path exits the entire xdist worker and reports an
-opaque `node down` instead of isolating the faulty probe.
+process. The child first emits structured startup readiness after imports; only
+then does the parent start the strict three-second behavior watchdog. A distinct
+bounded startup watchdog diagnoses scheduler or interpreter-launch stalls
+without weakening the production-deadlock check. All probe and watchdog tests
+share one xdist group. The parent terminates only the child on a hang and
+converts the failure into a normal assertion before a following same-worker
+sentinel. Do not put a thread-mode `pytest-timeout` marker around a real-signal
+proof: its timeout path exits the entire xdist worker and reports an opaque
+`node down` instead of isolating the faulty probe.
 Fixed topology is the default; `TautWatcher` is the explicit owner-thread-only
 dynamic-topology policy. A constructor-time compatibility check rejects legacy
 subclasses that override lifecycle templates before queue construction while

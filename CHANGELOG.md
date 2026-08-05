@@ -36,6 +36,9 @@
 - Make repository policy tests portable across Windows path and newline rules.
   Run pinned Ruff checks and all release prechecks without dependency syncing,
   so test workers and ambient parent workspaces cannot create a root lockfile.
+- Split the reactor SIGINT subprocess proof into startup-readiness and behavior
+  phases, keeping the strict deadlock watchdog while avoiding false failures
+  when a Windows worker is slow to launch the child.
 
 ## 0.8.0 - 2026-07-28
 
