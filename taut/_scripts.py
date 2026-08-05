@@ -212,17 +212,24 @@ def _build_test_env(*, dsn: str, include_backend_marker: bool) -> dict[str, str]
 def _pg_test_uv_command(*args: str) -> list[str]:
     """Build a uv command with the dependencies used by PG-backed tests."""
 
-    return [
+    command = [
         "uv",
         "run",
-        "--extra",
-        "dev",
-        "--with-editable",
-        ".",
-        "--with-editable",
-        "./extensions/taut_pg[dev]",
-        *args,
     ]
+    if os.environ.get("TAUT_PG_UV_NO_SYNC") == "1":
+        command.append("--no-sync")
+    command.extend(
+        [
+            "--extra",
+            "dev",
+            "--with-editable",
+            ".",
+            "--with-editable",
+            "./extensions/taut_pg[dev]",
+            *args,
+        ]
+    )
+    return command
 
 
 _POSTGRES_DSN_VERIFY_COMMAND = (

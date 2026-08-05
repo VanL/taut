@@ -1958,11 +1958,13 @@ def test_summon_precheck_env_splits_live_and_local_llm_lanes() -> None:
     )
 
     assert live_env["PYTEST_ADDOPTS"] == "-x --maxfail=1"
+    assert live_env["TAUT_PG_UV_NO_SYNC"] == "1"
     assert live_env["UV_NO_SYNC"] == "1"
     assert live_env["TAUT_SUMMON_LIVE_HARNESS"] == "1"
     assert live_env["TAUT_SUMMON_LIVE_HARNESS_STRICT"] == "1"
     assert "TAUT_SUMMON_LOCAL_LLM" not in live_env
     assert local_llm_env["PYTEST_ADDOPTS"] == "-x --maxfail=1"
+    assert local_llm_env["TAUT_PG_UV_NO_SYNC"] == "1"
     assert local_llm_env["UV_NO_SYNC"] == "1"
     assert local_llm_env["TAUT_SUMMON_LOCAL_LLM"] == "1"
     assert local_llm_env["TAUT_SUMMON_LOCAL_LLM_ENDPOINT"] == "http://127.0.0.1:9999/v1"

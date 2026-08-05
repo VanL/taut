@@ -299,13 +299,28 @@ def test_build_test_env_sets_backend_marker_only_when_requested(
     assert with_marker["BROKER_TEST_BACKEND"] == "postgres"
 
 
-def test_build_pg_test_uv_command_installs_extension() -> None:
+def test_build_pg_test_uv_command_installs_extension(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("TAUT_PG_UV_NO_SYNC", raising=False)
+
     command = scripts._pg_test_uv_command("pytest")
 
     assert command[:2] == ["uv", "run"]
+    assert "--no-sync" not in command
     assert "--with-editable" in command
     assert "./extensions/taut_pg[dev]" in command
     assert command[-1] == "pytest"
+
+
+def test_build_pg_test_uv_command_honors_release_no_sync(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TAUT_PG_UV_NO_SYNC", "1")
+
+    command = scripts._pg_test_uv_command("pytest")
+
+    assert command[:3] == ["uv", "run", "--no-sync"]
 
 
 def test_verify_postgres_test_dsn_from_env_connects_until_select_succeeds(

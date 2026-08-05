@@ -281,6 +281,7 @@ MCP_MYPY_COMMAND: Final[Command] = (
 )
 PRECHECK_ENV_OVERRIDES: Final[dict[str, str]] = {
     "PYTEST_ADDOPTS": "-x --maxfail=1",
+    "TAUT_PG_UV_NO_SYNC": "1",
     "UV_NO_SYNC": "1",
 }
 LOCAL_LLM_DEFAULT_ENDPOINT: Final[str] = "http://127.0.0.1:11434/v1"
