@@ -335,5 +335,9 @@ def test_normal_repository_ruff_and_documented_registry_commands_are_current() -
     spec = (
         ROOT / "docs" / "specs" / "01-development-documentation-operating-model.md"
     ).read_text(encoding="utf-8")
-    assert "uv run --extra dev python\nbin/ruff_suppression_index.py --check" in spec
-    assert "uv run --extra dev python\nbin/ruff_suppression_index.py --write" in spec
+    assert (
+        "uv run --no-sync --extra dev python\nbin/ruff_suppression_index.py --check"
+    ) in spec
+    assert (
+        "uv run --no-sync --extra dev python\nbin/ruff_suppression_index.py --write"
+    ) in spec

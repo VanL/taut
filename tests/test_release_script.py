@@ -994,6 +994,7 @@ def test_mcp_precheck_lock_build_and_quality_are_package_local() -> None:
     assert (
         "uv",
         "run",
+        "--no-sync",
         "--project",
         "extensions/taut_mcp",
         "--extra",
@@ -1008,6 +1009,7 @@ def test_mcp_precheck_lock_build_and_quality_are_package_local() -> None:
     assert (
         "uv",
         "run",
+        "--no-sync",
         "--project",
         "extensions/taut_mcp",
         "--extra",
@@ -1020,6 +1022,7 @@ def test_mcp_precheck_lock_build_and_quality_are_package_local() -> None:
     assert (
         "uv",
         "run",
+        "--no-sync",
         "--project",
         "extensions/taut_mcp",
         "--extra",
@@ -1603,7 +1606,7 @@ def test_precheck_commands_select_dev_extra_and_include_typed_release_helper() -
 
     commands = release.build_precheck_commands()
 
-    pytest_prefix = ("uv", "run", "--extra", "dev", "pytest")
+    pytest_prefix = ("uv", "run", "--no-sync", "--extra", "dev", "pytest")
     assert release.ROOT_BROAD_TEST_COMMAND == (
         *pytest_prefix,
         "-m",
@@ -1627,20 +1630,22 @@ def test_precheck_commands_select_dev_extra_and_include_typed_release_helper() -
         release.SUMMON_LIVE_HARNESS_TEST_COMMAND,
         release.SUMMON_LOCAL_LLM_TEST_COMMAND,
     ):
-        assert command[:5] == pytest_prefix
-    assert ("uv", "run", "./bin/pytest-pg", "--fast") in commands
+        assert command[:6] == pytest_prefix
+    assert ("uv", "run", "--no-sync", "./bin/pytest-pg", "--fast") in commands
     assert release.SUMMON_UNIT_TEST_COMMAND in commands
     assert release.SUMMON_PROCESS_TEST_COMMAND in commands
     assert release.SUMMON_LIVE_HARNESS_TEST_COMMAND in commands
     assert release.SUMMON_LOCAL_LLM_TEST_COMMAND in commands
     assert any(
-        command[:5] == ("uv", "run", "--extra", "dev", "ruff") for command in commands
+        command[:6] == ("uv", "run", "--no-sync", "--extra", "dev", "ruff")
+        for command in commands
     )
     assert any("extensions/taut_pg/taut_pg" in command for command in commands)
     assert any("extensions/taut_summon/taut_summon" in command for command in commands)
     assert (
         "uv",
         "run",
+        "--no-sync",
         "--extra",
         "dev",
         "mypy",
@@ -1868,7 +1873,9 @@ def test_every_target_set_plans_one_literal_universal_precheck_sequence(
 
     commands = release.build_precheck_commands_for_targets(targets)
 
-    assert commands == expected
+    assert all(command[:3] == ("uv", "run", "--no-sync") for command in commands)
+    without_no_sync = tuple((*command[:2], *command[3:]) for command in commands)
+    assert without_no_sync == expected
 
 
 def test_pg_precheck_commands_include_pg_gate_and_extension_checks() -> None:
@@ -1876,7 +1883,7 @@ def test_pg_precheck_commands_include_pg_gate_and_extension_checks() -> None:
 
     commands = release.build_precheck_commands(release.PG_TARGET)
 
-    assert ("uv", "run", "./bin/pytest-pg", "--fast") in commands
+    assert ("uv", "run", "--no-sync", "./bin/pytest-pg", "--fast") in commands
     assert any("extensions/taut_pg/taut_pg" in command for command in commands)
     assert any("taut/_scripts.py" in command for command in commands)
     assert all("pypi" not in " ".join(command).lower() for command in commands)
@@ -1951,10 +1958,12 @@ def test_summon_precheck_env_splits_live_and_local_llm_lanes() -> None:
     )
 
     assert live_env["PYTEST_ADDOPTS"] == "-x --maxfail=1"
+    assert live_env["UV_NO_SYNC"] == "1"
     assert live_env["TAUT_SUMMON_LIVE_HARNESS"] == "1"
     assert live_env["TAUT_SUMMON_LIVE_HARNESS_STRICT"] == "1"
     assert "TAUT_SUMMON_LOCAL_LLM" not in live_env
     assert local_llm_env["PYTEST_ADDOPTS"] == "-x --maxfail=1"
+    assert local_llm_env["UV_NO_SYNC"] == "1"
     assert local_llm_env["TAUT_SUMMON_LOCAL_LLM"] == "1"
     assert local_llm_env["TAUT_SUMMON_LOCAL_LLM_ENDPOINT"] == "http://127.0.0.1:9999/v1"
     assert local_llm_env["TAUT_SUMMON_LOCAL_LLM_MODEL"] == "local-test:latest"

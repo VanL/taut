@@ -2,8 +2,8 @@
 
 Repository commands:
 
-    uv run --extra dev python bin/ruff_suppression_index.py --check
-    uv run --extra dev python bin/ruff_suppression_index.py --write
+    uv run --no-sync --extra dev python bin/ruff_suppression_index.py --check
+    uv run --no-sync --extra dev python bin/ruff_suppression_index.py --write
 """
 
 from __future__ import annotations

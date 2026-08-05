@@ -13,8 +13,12 @@ from bin.ruff_suppression_index import repository_path
 
 ROOT = Path(__file__).resolve().parents[1]
 pytestmark = pytest.mark.shared
-CHECK_COMMAND = "uv run --extra dev python bin/ruff_suppression_index.py --check"
-WRITE_COMMAND = "uv run --extra dev python bin/ruff_suppression_index.py --write"
+CHECK_COMMAND = (
+    "uv run --no-sync --extra dev python bin/ruff_suppression_index.py --check"
+)
+WRITE_COMMAND = (
+    "uv run --no-sync --extra dev python bin/ruff_suppression_index.py --write"
+)
 
 
 def test_script_documents_both_direct_commands() -> None:

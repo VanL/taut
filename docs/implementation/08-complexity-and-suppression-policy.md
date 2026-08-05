@@ -49,26 +49,29 @@ layout before it creates a same-directory temporary file and calls
 anticipated tool, decoding, source-read, and replacement failures exit 2 with
 one diagnostic and no traceback; unexpected defects retain their traceback.
 
-The repository has no root lockfile. Unlike SimpleBroker, the canonical command
-therefore uses `uv run --extra dev`, not `--frozen --no-sync`. Exact manifest
-pins, the two existing extension locks, and policy tests comparing the running
-root and MCP binaries to the pin provide the reproducibility proof.
+The repository has no root lockfile. Commands that verify an already prepared
+development or release environment therefore use `uv run --no-sync`: they must
+not resolve dependencies, join an ambient parent workspace, or write lock state.
+Exact manifest pins and the two existing extension locks prove configuration.
+The Ruff module in the canonical root pytest interpreter proves its installed
+pin; MCP retains a static extension-lock proof rather than a second runtime
+binary comparison.
 
 ## Required workflow
 
 Normal review runs:
 
 ```bash
-uv run --extra dev ruff check .
-uv run --extra dev python bin/ruff_suppression_index.py --check
+uv run --no-sync --extra dev ruff check .
+uv run --no-sync --extra dev python bin/ruff_suppression_index.py --check
 ```
 
 After explicit human approval changes a human-owned field or source pointer,
 regenerate only the derived block and immediately recheck:
 
 ```bash
-uv run --extra dev python bin/ruff_suppression_index.py --write
-uv run --extra dev python bin/ruff_suppression_index.py --check
+uv run --no-sync --extra dev python bin/ruff_suppression_index.py --write
+uv run --no-sync --extra dev python bin/ruff_suppression_index.py --check
 ```
 
 Never use a threshold increase, per-file ignore, blanket file directive, or

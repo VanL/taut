@@ -112,7 +112,8 @@ MCP_WHEEL_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"taut_mcp-\d+\.\d+\.\d+-py3-none-any\.whl"
 )
 
-PYTEST_PREFIX: Final[Command] = ("uv", "run", "--extra", "dev", "pytest")
+UV_RUN_PREFIX: Final[Command] = ("uv", "run", "--no-sync")
+PYTEST_PREFIX: Final[Command] = (*UV_RUN_PREFIX, "--extra", "dev", "pytest")
 ROOT_BROAD_TEST_COMMAND: Final[Command] = (
     *PYTEST_PREFIX,
     "-m",
@@ -130,7 +131,7 @@ ROOT_TEST_COMMANDS: Final[tuple[Command, ...]] = (
     ROOT_INSTALLED_WHEEL_TEST_COMMAND,
 )
 PUBLISH_BRANCHES: Final[frozenset[str]] = frozenset({"main", "master"})
-PG_TEST_COMMAND: Final[Command] = ("uv", "run", "./bin/pytest-pg", "--fast")
+PG_TEST_COMMAND: Final[Command] = (*UV_RUN_PREFIX, "./bin/pytest-pg", "--fast")
 SUMMON_UNIT_TEST_COMMAND: Final[Command] = (
     *PYTEST_PREFIX,
     "extensions/taut_summon/tests",
@@ -174,8 +175,7 @@ SUMMON_TEST_COMMANDS: Final[tuple[Command, ...]] = (
     SUMMON_LOCAL_LLM_TEST_COMMAND,
 )
 MCP_TEST_COMMAND: Final[Command] = (
-    "uv",
-    "run",
+    *UV_RUN_PREFIX,
     "--project",
     "extensions/taut_mcp",
     "--extra",
@@ -187,10 +187,15 @@ MCP_TEST_COMMAND: Final[Command] = (
     "-n",
     "0",
 )
-RUFF_CHECK_PREFIX: Final[Command] = ("uv", "run", "--extra", "dev", "ruff", "check")
+RUFF_CHECK_PREFIX: Final[Command] = (
+    *UV_RUN_PREFIX,
+    "--extra",
+    "dev",
+    "ruff",
+    "check",
+)
 RUFF_FORMAT_PREFIX: Final[Command] = (
-    "uv",
-    "run",
+    *UV_RUN_PREFIX,
     "--extra",
     "dev",
     "ruff",
@@ -198,15 +203,14 @@ RUFF_FORMAT_PREFIX: Final[Command] = (
     "--check",
 )
 RUFF_SUPPRESSION_CHECK_COMMAND: Final[Command] = (
-    "uv",
-    "run",
+    *UV_RUN_PREFIX,
     "--extra",
     "dev",
     "python",
     "bin/ruff_suppression_index.py",
     "--check",
 )
-MYPY_PREFIX: Final[Command] = ("uv", "run", "--extra", "dev", "mypy")
+MYPY_PREFIX: Final[Command] = (*UV_RUN_PREFIX, "--extra", "dev", "mypy")
 MYPY_SUFFIX: Final[Command] = ("--config-file", "pyproject.toml")
 ROOT_TOOL_PATHS: Final[Command] = ("taut", "tests", "bin")
 PG_TOOL_PATHS: Final[Command] = (
@@ -241,8 +245,7 @@ SUMMON_MYPY_PATHS: Final[Command] = (
     "extensions/taut_summon/tests/conftest.py",
 )
 MCP_RUFF_CHECK_COMMAND: Final[Command] = (
-    "uv",
-    "run",
+    *UV_RUN_PREFIX,
     "--project",
     "extensions/taut_mcp",
     "--extra",
@@ -253,8 +256,7 @@ MCP_RUFF_CHECK_COMMAND: Final[Command] = (
     "extensions/taut_mcp/tests",
 )
 MCP_RUFF_FORMAT_COMMAND: Final[Command] = (
-    "uv",
-    "run",
+    *UV_RUN_PREFIX,
     "--project",
     "extensions/taut_mcp",
     "--extra",
@@ -266,8 +268,7 @@ MCP_RUFF_FORMAT_COMMAND: Final[Command] = (
     "extensions/taut_mcp/tests",
 )
 MCP_MYPY_COMMAND: Final[Command] = (
-    "uv",
-    "run",
+    *UV_RUN_PREFIX,
     "--project",
     "extensions/taut_mcp",
     "--extra",
@@ -278,7 +279,10 @@ MCP_MYPY_COMMAND: Final[Command] = (
     "--config-file",
     "extensions/taut_mcp/pyproject.toml",
 )
-PRECHECK_ENV_OVERRIDES: Final[dict[str, str]] = {"PYTEST_ADDOPTS": "-x --maxfail=1"}
+PRECHECK_ENV_OVERRIDES: Final[dict[str, str]] = {
+    "PYTEST_ADDOPTS": "-x --maxfail=1",
+    "UV_NO_SYNC": "1",
+}
 LOCAL_LLM_DEFAULT_ENDPOINT: Final[str] = "http://127.0.0.1:11434/v1"
 LOCAL_LLM_DEFAULT_MODEL: Final[str] = "taut-summon-local-model:latest"
 LOCAL_LLM_DEFAULT_BASE_MODEL: Final[str] = "qwen2.5:0.5b"

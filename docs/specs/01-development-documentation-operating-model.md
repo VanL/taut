@@ -363,9 +363,9 @@ remains byte-for-byte unchanged during regeneration. The generator may never
 create or edit a group, rule approval, cardinality approval, invariant, proof,
 rejected alternative, or approval record.
 
-Verification commands are `uv run --extra dev python
+Verification commands are `uv run --no-sync --extra dev python
 bin/ruff_suppression_index.py --check` and, after explicit human approval of
-every changed human-owned field, `uv run --extra dev python
+every changed human-owned field, `uv run --no-sync --extra dev python
 bin/ruff_suppression_index.py --write`. Check mode never writes. Write mode
 validates the complete evidence graph before replacing only the generated
 block through a same-directory temporary file and atomic `os.replace`.
