@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Make the MCP native-activity pacing proof independent of event-loop
+  scheduling delays while retaining a deterministic fake-clock assertion for
+  the production 0.5-second coalescing boundary.
+
 ## 0.8.2 - 2026-08-05
 
 - Reconstruct a clean verified distribution directory after PyPI upload before

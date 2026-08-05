@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import queue
 import threading
 from pathlib import Path
 from typing import Any
@@ -350,6 +351,56 @@ class _FakeActivityWaiter:
         self._event.set()
 
 
+def test_workspace_reactor_defers_pending_native_snapshot_until_pacing_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[MCP-8] Native pacing uses the child clock, not master-loop timing."""
+
+    class SnapshotClient:
+        def peek_inbox(self, *, limit: int) -> list[Any]:
+            assert limit == 101
+            return ["new snapshot"]
+
+    outbound: queue.Queue[Any] = queue.Queue()
+    master_wakes: list[None] = []
+    reactor = workspace_reactor._WorkspaceReactor(
+        queue.Queue(),
+        threading.Event(),
+        outbound,
+        lambda: master_wakes.append(None),
+    )
+    reactor.client = SnapshotClient()  # type: ignore[assignment]
+    reactor.generation = 7
+    reactor.ready = True
+    # Isolate the native deadline. Stable-snapshot deduplication owns a nearby
+    # observational backstop, which is covered by the integration tests.
+    reactor.next_backstop_at = 1_000.0
+    reactor.last_native_snapshot_at = 100.0
+    reactor.native_snapshot_pending = True
+    interval = workspace_reactor.NOTIFICATION_BACKSTOP_SECONDS
+    now = [100.0 + interval / 2]
+    monkeypatch.setattr(workspace_reactor.time, "monotonic", lambda: now[0])
+
+    assert reactor._publish_snapshot_if_due() is True
+    assert outbound.empty()
+    assert reactor.native_snapshot_pending is True
+    assert reactor.last_native_snapshot_at == 100.0
+
+    now[0] = 100.0 + interval
+    assert reactor._publish_snapshot_if_due() is True
+    event = outbound.get_nowait()
+    assert isinstance(event, workspace_reactor.WorkspaceSnapshot)
+    assert event.notifications == ("new snapshot",)
+    assert reactor.native_snapshot_pending is False
+    assert reactor.last_native_snapshot_at == 100.0 + interval
+    assert master_wakes == [None]
+
+    now[0] += interval
+    assert reactor._publish_snapshot_if_due() is True
+    assert outbound.empty()
+    assert master_wakes == [None]
+
+
 @pytest.mark.sqlite_only
 @pytest.mark.timeout(15)
 def test_native_activity_wake_is_immediate_but_bursts_are_paced(
@@ -417,8 +468,6 @@ def test_native_activity_wake_is_immediate_but_bursts_are_paced(
 
             other.say("general", "second @selected")
             waiter.fire()
-            await asyncio.sleep(0.2)
-            assert len(updates) == 1
             await _wait_until(lambda: len(updates) == 2, timeout=0.6)
             assert updates[1] - updates[0] >= 0.45
             notifications = json.loads(reactor.current_text)["workspaces"][0][

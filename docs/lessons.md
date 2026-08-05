@@ -772,6 +772,13 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   assert set equality and assert cardinality separately so order may be
   normalized without allowing duplicates.
 
+- 2026-08-05: An awaited sleep establishes a minimum suspension, not a maximum
+  one. A test must not assert that an intermediate timed state still exists
+  after the task resumes. Prove the deadline calculation with a controlled
+  clock, then let the real-thread integration test assert eventual output and
+  timestamps; runner descheduling can delay observation without violating the
+  producer's pacing contract.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent
