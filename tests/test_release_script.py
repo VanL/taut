@@ -653,7 +653,7 @@ class _PublicReleaseTransport:
             self.events.append("git-commit")
             subprocess.run(command, cwd=effective_cwd, check=True, capture_output=True)
             return
-        if command == ("uv", "build"):
+        if command == ("uv", "build", "--no-sources", "--out-dir", "dist", "."):
             self.events.append("build")
             return
         if command == (sys.executable, str(release.RELEASE_WHEEL_SET_CHECKER)):
@@ -1037,7 +1037,14 @@ def test_mcp_precheck_lock_build_and_quality_are_package_local() -> None:
         for step in preparation
     )
     builds = release.build_postupdate_steps(release.MCP_TARGET)
-    assert builds[0].command == ("uv", "build", "extensions/taut_mcp")
+    assert builds[0].command == (
+        "uv",
+        "build",
+        "--no-sources",
+        "--out-dir",
+        "extensions/taut_mcp/dist",
+        "extensions/taut_mcp",
+    )
 
 
 def test_target_version_files_helper_is_removed() -> None:
@@ -2124,7 +2131,14 @@ def test_pg_postupdate_builds_extension_path() -> None:
 
     steps = release.build_postupdate_steps(release.PG_TARGET)
 
-    assert steps[0].command == ("uv", "build", "extensions/taut_pg")
+    assert steps[0].command == (
+        "uv",
+        "build",
+        "--no-sources",
+        "--out-dir",
+        "extensions/taut_pg/dist",
+        "extensions/taut_pg",
+    )
 
 
 def test_summon_preparation_reconciles_both_retained_locks_before_builds() -> None:
@@ -2141,7 +2155,14 @@ def test_summon_preparation_reconciles_both_retained_locks_before_builds() -> No
     ]
     assert preparation_steps[0].cwd == release.SUMMON_EXTENSION_DIR
     assert preparation_steps[1].cwd == release.MCP_EXTENSION_DIR
-    assert build_steps[0].command == ("uv", "build", "extensions/taut_summon")
+    assert build_steps[0].command == (
+        "uv",
+        "build",
+        "--no-sources",
+        "--out-dir",
+        "extensions/taut_summon/dist",
+        "extensions/taut_summon",
+    )
     assert build_steps[1].command == (
         sys.executable,
         str(release.RELEASE_WHEEL_SET_CHECKER),
@@ -2167,7 +2188,7 @@ def test_core_postupdate_checks_fresh_paired_release_wheels_after_build() -> Non
     steps = release.build_postupdate_steps(release.ROOT_TARGET)
 
     assert [step.command for step in steps] == [
-        ("uv", "build"),
+        ("uv", "build", "--no-sources", "--out-dir", "dist", "."),
         (
             sys.executable,
             str(release.RELEASE_WHEEL_SET_CHECKER),
@@ -2207,7 +2228,7 @@ def test_core_dry_run_executes_preparation_then_artifact_plan(
     assert calls == [
         (("uv", "lock", "--upgrade-package", "simplebroker"), True),
         (("uv", "lock"), True),
-        (("uv", "build"), True),
+        (("uv", "build", "--no-sources", "--out-dir", "dist", "."), True),
         (
             (
                 sys.executable,
@@ -2323,7 +2344,16 @@ def test_pg_postupdate_skips_paired_release_wheel_check() -> None:
 
     steps = release.build_postupdate_steps(release.PG_TARGET)
 
-    assert [step.command for step in steps] == [("uv", "build", "extensions/taut_pg")]
+    assert [step.command for step in steps] == [
+        (
+            "uv",
+            "build",
+            "--no-sources",
+            "--out-dir",
+            "extensions/taut_pg/dist",
+            "extensions/taut_pg",
+        )
+    ]
 
 
 def test_matching_batch_checks_once_after_all_normal_builds() -> None:
@@ -2334,11 +2364,77 @@ def test_matching_batch_checks_once_after_all_normal_builds() -> None:
     )
 
     assert [step.command for step in steps] == [
-        ("uv", "build"),
-        ("uv", "build", "extensions/taut_pg"),
-        ("uv", "build", "extensions/taut_summon"),
+        ("uv", "build", "--no-sources", "--out-dir", "dist", "."),
+        (
+            "uv",
+            "build",
+            "--no-sources",
+            "--out-dir",
+            "extensions/taut_pg/dist",
+            "extensions/taut_pg",
+        ),
+        (
+            "uv",
+            "build",
+            "--no-sources",
+            "--out-dir",
+            "extensions/taut_summon/dist",
+            "extensions/taut_summon",
+        ),
         (sys.executable, str(release.RELEASE_WHEEL_SET_CHECKER)),
     ]
+
+
+def test_release_builds_pin_each_package_local_dist_directory() -> None:
+    release = _load_release_module()
+    release.RELEASE_DIST_PATHS = (
+        release.PROJECT_ROOT / "dist",
+        release.PG_EXTENSION_DIR / "dist",
+        release.SUMMON_EXTENSION_DIR / "dist",
+        release.MCP_EXTENSION_DIR / "dist",
+    )
+
+    steps = release.build_postupdate_steps_for_targets(
+        (
+            release.ROOT_TARGET,
+            release.PG_TARGET,
+            release.SUMMON_TARGET,
+            release.MCP_TARGET,
+        )
+    )
+
+    assert [step.command for step in steps[:4]] == [
+        ("uv", "build", "--no-sources", "--out-dir", "dist", "."),
+        (
+            "uv",
+            "build",
+            "--no-sources",
+            "--out-dir",
+            "extensions/taut_pg/dist",
+            "extensions/taut_pg",
+        ),
+        (
+            "uv",
+            "build",
+            "--no-sources",
+            "--out-dir",
+            "extensions/taut_summon/dist",
+            "extensions/taut_summon",
+        ),
+        (
+            "uv",
+            "build",
+            "--no-sources",
+            "--out-dir",
+            "extensions/taut_mcp/dist",
+            "extensions/taut_mcp",
+        ),
+    ]
+    assert all(step.cwd == release.PROJECT_ROOT for step in steps[:4])
+    assert (
+        tuple((step.cwd / step.command[4]).resolve() for step in steps[:4])
+        == release.RELEASE_DIST_PATHS
+    )
 
 
 def test_release_wheel_failure_leaves_preparation_commit_and_stops_remote_mutation(
@@ -2417,7 +2513,7 @@ def test_release_wheel_failure_leaves_preparation_commit_and_stops_remote_mutati
             *release._release_file_args(release.ROOT_TARGET),
         ),
         ("git", "commit", "-m", "Release taut-chat 0.1.1"),
-        ("uv", "build"),
+        ("uv", "build", "--no-sources", "--out-dir", "dist", "."),
         (sys.executable, str(release.RELEASE_WHEEL_SET_CHECKER)),
     ]
 
@@ -2578,7 +2674,7 @@ def test_version_changed_core_prepares_and_commits_before_prechecks_and_builds(
         "git-add",
         "git-commit",
         "prechecks",
-        "uv:build",
+        "uv:build:--no-sources:--out-dir:dist:.",
         "check-release-wheels",
         "tag",
         "push-branch",
@@ -2810,7 +2906,7 @@ def test_clean_rerun_reuses_preparation_commit_without_duplicate_commit(
     assert commands == [
         ("uv", "lock", "--upgrade-package", "simplebroker"),
         ("uv", "lock"),
-        ("uv", "build"),
+        ("uv", "build", "--no-sources", "--out-dir", "dist", "."),
         (sys.executable, str(release.RELEASE_WHEEL_SET_CHECKER)),
     ]
 

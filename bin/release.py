@@ -1678,25 +1678,51 @@ def build_postupdate_steps_for_targets(
     target_keys = {target.key for target in targets}
     steps: list[CommandStep] = []
     if ROOT_TARGET.key in target_keys:
-        steps.append(CommandStep(("uv", "build"), "Build taut source and wheel"))
+        steps.append(
+            CommandStep(
+                ("uv", "build", "--no-sources", "--out-dir", "dist", "."),
+                "Build taut source and wheel",
+            )
+        )
     if PG_TARGET.key in target_keys:
         steps.append(
             CommandStep(
-                ("uv", "build", PG_TARGET.package_dir.as_posix()),
+                (
+                    "uv",
+                    "build",
+                    "--no-sources",
+                    "--out-dir",
+                    (PG_TARGET.package_dir / "dist").as_posix(),
+                    PG_TARGET.package_dir.as_posix(),
+                ),
                 "Build taut-pg source and wheel",
             )
         )
     if SUMMON_TARGET.key in target_keys:
         steps.append(
             CommandStep(
-                ("uv", "build", SUMMON_TARGET.package_dir.as_posix()),
+                (
+                    "uv",
+                    "build",
+                    "--no-sources",
+                    "--out-dir",
+                    (SUMMON_TARGET.package_dir / "dist").as_posix(),
+                    SUMMON_TARGET.package_dir.as_posix(),
+                ),
                 "Build taut-summon source and wheel",
             )
         )
     if MCP_TARGET.key in target_keys:
         steps.append(
             CommandStep(
-                ("uv", "build", MCP_TARGET.package_dir.as_posix()),
+                (
+                    "uv",
+                    "build",
+                    "--no-sources",
+                    "--out-dir",
+                    (MCP_TARGET.package_dir / "dist").as_posix(),
+                    MCP_TARGET.package_dir.as_posix(),
+                ),
                 "Build taut-mcp source and wheel",
             )
         )

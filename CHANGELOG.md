@@ -29,6 +29,10 @@
   every such example when one is present.
 - Empty all four package `dist/` directories immediately before release builds
   so stale artifacts cannot be mistaken for the current coordinated release.
+- Pin every release build's source and output directory explicitly, preventing
+  an ambient parent uv workspace from redirecting root artifacts outside the
+  repository, and disable workspace source resolution so builds cannot create
+  a forbidden root lockfile.
 
 ## 0.8.0 - 2026-07-28
 

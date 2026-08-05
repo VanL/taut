@@ -2130,7 +2130,11 @@ Helper obligations:
   Summon, and MCP `dist/` directories and verify that all four are empty before
   starting any ordinary release build. Do this for every release target so an
   unselected package cannot retain stale release artifacts. Then build each
-  selected package's artifacts. The Summon and MCP locks have already been
+  selected package's artifacts with an explicit source and its matching fixed
+  package-local `dist/` output; ambient parent uv workspaces must not redirect
+  any artifact or cause creation of a root lockfile. Ordinary package builds
+  disable workspace source resolution so they use publishable metadata rather
+  than local workspace overrides. The Summon and MCP locks have already been
   reconciled during preparation. Core/Summon retain their separate
   paired-wheel compatibility proof; selecting MCP adds its ordinary package
   build without changing that paired boundary. Dry-run reports the cleanup
