@@ -692,6 +692,8 @@ Implementation gate:
 | I11 | The live helper run showed root `uv build` writing to `/Users/van/dist` because the checkout was a member of an ambient parent uv workspace, while cleanup correctly emptied the repository's own root `dist/`. The first explicit-source probe corrected the output but created a forbidden root `uv.lock`. | Accepted as a release-boundary bug. Every ordinary build now names its source and matching package-local output directory explicitly and uses `--no-sources`; cleanup and build share one fixed path owner without workspace source resolution or root-lock creation. | The new command-shape test failed on bare `uv build` before implementation. Under the same parent workspace, `uv build --no-sources --out-dir dist .` reported repository-local artifacts and left no root lock. The already-pushed 0.8.1 tag was not moved; canonical CI bytes use an isolated checkout and remain independently verified. |
 | R5 | Independent I11 review found no blocker. It noted the explicit output paths remain relative to the fixed `CommandStep.cwd`, and no assertion directly equated the resolved build outputs with cleanup owners. | Accepted the useful proof: the all-four command test now asserts every step's cwd is `PROJECT_ROOT` and each resolved `--out-dir` equals the corresponding `RELEASE_DIST_PATHS` entry. Retained readable relative CLI paths because their cwd owner is explicit and now test-bound. | Claude Opus, 2026-08-05, read-only PASS; local executable gates own runtime proof. |
 | R6 | Narrow follow-up review examined the `--no-sources` addition after the real explicit-source probe created a root lock. | Passed. `--no-sources` disables only development workspace redirects, preserves PEP 621 dependency names and floors in artifact metadata, and is the correct publishable-build mode. Tests and docs consistently pin it on all four ordinary builds. | Claude Opus, 2026-08-05, read-only PASS; the real parent-workspace build produced repository-local wheel/sdist files and no root lock. |
+| I12 | The first canonical 0.8.1 root Test run exposed three deterministic Windows failures in repository policy tests: OS-native separators were compared with Git's POSIX paths, a fixture doubled existing CRLF bytes, and another fixture used the Windows-invalid `|` filename. A focused xdist run also exposed that Ruff subprocesses could create the forbidden root `uv.lock` concurrently with the test asserting its absence. | Accepted. Normalize discovered paths with `as_posix()`, normalize fixture bytes before constructing CRLF, use a Windows-valid Markdown-unsafe backtick filename, and invoke the already-installed pinned Ruff module through the current interpreter. The manifest and retained extension-lock assertions continue to prove the dependency pin without a hidden workspace write. Because no 0.8.1 GitHub Release or PyPI file exists, recover all four staging tags with the helper's leased `--retag` path after the corrected commit passes local gates. | The same three failures reproduced on all four supported Windows Python versions (3.11-3.14). All 40 focused tests then passed under two xdist workers and left root `uv.lock` absent; serial and parallel three-test probes also passed. Root CI run `31035630991` is retained as failed evidence, not rerun into invisibility. |
+| R7 | Independent I12 review found the Windows fixes sound and the named lockfile race closed. It noted that the MCP runtime-pin proof becomes a static lock proof, the current interpreter must contain the dev-extra Ruff pin, and Ruff's own cache was another repository-local write. | Accepted the cache finding: every test-owned Ruff check now uses `--no-cache`. Accepted the pin tradeoff explicitly: all manifests and retained extension locks prove the configured pin, while the current canonical pytest interpreter proves the installed pin; canonical jobs install `.[dev]` before pytest. Confirmed Git emits POSIX paths for the normalized comparison. | Claude Opus, 2026-08-05, read-only PASS; focused execution and the canonical workflow definition provide the runtime evidence. |
 
 ## 14. Deviation Log
 
@@ -773,3 +775,19 @@ filesystem and build-order tests also failed before implementation. After both
 corrections, the full release-helper suite, focused Ruff format/check, targeted
 mypy, and `git diff --check` passed. Hosted OIDC publication and exact
 both-destination digest proof remain the final rollout gates.
+
+The first canonical 0.8.1 root Test run subsequently failed on deterministic
+Windows-only assumptions in three repository policy tests. The same run also
+made visible a hidden write/race in those tests: Ruff was launched through
+`uv run`, which could create the root lock while another xdist worker asserted
+that the lock was absent. The portable, non-mutating focused suite passed in
+both serial and two-worker modes. Since publication had not begun, the four
+0.8.1 staging tags are eligible for the release helper's leased retag recovery;
+the failed run remains permanent evidence and the replacement commit must pass
+fresh canonical workflows before any publication gate can succeed.
+
+The independent review also identified Ruff's default repository cache as a
+second unnecessary test write. The policy tests now disable that cache. The
+root and MCP manifest/lock checks remain the configured-pin proof; the Ruff
+module installed into the canonical dev-extra test interpreter is the runtime
+pin proof.

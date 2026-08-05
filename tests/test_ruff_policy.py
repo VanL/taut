@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import sys
 import tomllib
 from collections import Counter
 from pathlib import Path
@@ -102,9 +103,9 @@ def _locked_ruff_version(path: Path) -> str:
     return version
 
 
-def _ruff_version(*command: str) -> str:
+def _ruff_version() -> str:
     result = subprocess.run(
-        command,
+        (sys.executable, "-m", "ruff", "--version"),
         cwd=ROOT,
         text=True,
         capture_output=True,
@@ -115,11 +116,16 @@ def _ruff_version(*command: str) -> str:
     return version
 
 
-def _enabled_rules(*, project: str | None, source: str) -> set[str]:
-    command = ["uv", "run"]
-    if project is not None:
-        command.extend(("--project", project))
-    command.extend(("--extra", "dev", "ruff", "check", "--show-settings", source))
+def _enabled_rules(*, source: str) -> set[str]:
+    command = [
+        sys.executable,
+        "-m",
+        "ruff",
+        "check",
+        "--no-cache",
+        "--show-settings",
+        source,
+    ]
     result = subprocess.run(
         command,
         cwd=ROOT,
@@ -137,12 +143,9 @@ def _enabled_rules(*, project: str | None, source: str) -> set[str]:
 
 
 def _ruff(
-    *args: str, project: str | None = None, input_text: str | None = None
+    *args: str, input_text: str | None = None
 ) -> subprocess.CompletedProcess[str]:
-    command = ["uv", "run"]
-    if project is not None:
-        command.extend(("--project", project))
-    command.extend(("--extra", "dev", "ruff", *args))
+    command = [sys.executable, "-m", "ruff", args[0], "--no-cache", *args[1:]]
     return subprocess.run(
         command,
         cwd=ROOT,
@@ -186,24 +189,8 @@ def test_existing_extension_locks_resolve_the_exact_ruff_pin() -> None:
     assert {_locked_ruff_version(path) for path in LOCKS} == {RUFF_VERSION}
 
 
-def test_running_root_and_mcp_ruff_binaries_match_the_pin() -> None:
-    assert (
-        _ruff_version("uv", "run", "--extra", "dev", "ruff", "--version")
-        == RUFF_VERSION
-    )
-    assert (
-        _ruff_version(
-            "uv",
-            "run",
-            "--project",
-            "extensions/taut_mcp",
-            "--extra",
-            "dev",
-            "ruff",
-            "--version",
-        )
-        == RUFF_VERSION
-    )
+def test_running_ruff_binary_matches_the_pin() -> None:
+    assert _ruff_version() == RUFF_VERSION
 
 
 def test_tracked_python_inventory_includes_all_six_extensionless_tools() -> None:
@@ -246,10 +233,9 @@ def test_generator_registry_heading_matches_the_promoted_spec() -> None:
 def test_effective_root_and_mcp_rules_match_the_reviewed_fixture() -> None:
     expected = set(RULE_FIXTURE.read_text(encoding="utf-8").splitlines())
     assert expected
-    assert _enabled_rules(project=None, source="taut/__init__.py") == expected
+    assert _enabled_rules(source="taut/__init__.py") == expected
     assert (
         _enabled_rules(
-            project="extensions/taut_mcp",
             source="extensions/taut_mcp/taut_mcp/__init__.py",
         )
         == expected
@@ -314,7 +300,7 @@ def test_root_ruff_discovers_every_tracked_python_source() -> None:
     result = _ruff("check", "--show-files", ".")
     assert result.returncode == 0, result.stderr
     discovered = {
-        str(Path(line).resolve().relative_to(ROOT))
+        Path(line).resolve().relative_to(ROOT).as_posix()
         for line in result.stdout.splitlines()
         if line
     }

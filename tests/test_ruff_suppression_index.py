@@ -346,7 +346,7 @@ def test_write_preserves_crlf_and_non_ascii_bytes_outside_markers(
 ) -> None:
     spec = _write_fixture(tmp_path)
     original = spec.read_bytes().replace(b"Human-owned suffix.", "café".encode())
-    original = original.replace(b"\n", b"\r\n")
+    original = original.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
     spec.write_bytes(original)
     begin = b"<!-- BEGIN GENERATED RUFF SUPPRESSION INDEX -->"
     end = b"<!-- END GENERATED RUFF SUPPRESSION INDEX -->"
@@ -568,7 +568,7 @@ select = ["BLE001", "F841"]
 
 def test_markdown_unsafe_source_path_fails_before_rendering(tmp_path: Path) -> None:
     spec = _write_fixture(tmp_path)
-    (tmp_path / "probe.py").rename(tmp_path / "probe|unsafe.py")
+    (tmp_path / "probe.py").rename(tmp_path / "probe`unsafe.py")
     original = spec.read_bytes()
 
     result = _run_tool(tmp_path, "--write")

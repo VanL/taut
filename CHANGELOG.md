@@ -33,6 +33,9 @@
   an ambient parent uv workspace from redirecting root artifacts outside the
   repository, and disable workspace source resolution so builds cannot create
   a forbidden root lockfile.
+- Make repository policy tests portable across Windows path and newline rules,
+  and run their pinned Ruff checks without allowing test workers to create a
+  root lockfile concurrently.
 
 ## 0.8.0 - 2026-07-28
 
