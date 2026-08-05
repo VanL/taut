@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "taut-chat"
-version = "0.8.1"
+version = "0.8.2"
 
 description = "Private, no-config chat with agents and humans in your terminal"
 readme = "README.md"
@@ -47,7 +47,7 @@ dev = [
     "pyyaml>=6.0",
     "ruff==0.16.1",
     "simplebroker-pg>=3.5.0",
-    "taut-summon>=0.8.1",
+    "taut-summon>=0.8.2",
     "types-psutil>=6.0",
 ]
 
