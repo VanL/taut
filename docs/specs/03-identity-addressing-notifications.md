@@ -681,7 +681,7 @@ normalized from `rename` without an alias.
 Taut must use a public SimpleBroker queue-rename API for broker queue renames.
 Taut must not update SimpleBroker-owned message tables directly.
 
-Taut requires `simplebroker>=6.0.0` and `taut-pg` requires
+Taut requires `simplebroker>=6.0.1` and `taut-pg` requires
 `simplebroker-pg>=3.5.0`. This compatible pair preserves the atomic write ids,
 rename-capable backend handshake, persistent-reactor ownership, live
 activity-waiter replacement, interruptible watcher bootstrap, corrected
