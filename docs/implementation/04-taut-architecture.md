@@ -98,16 +98,20 @@ watcher behavior.
 Release tooling lives in `bin/release.py`. Its boundary is repository hygiene,
 not runtime behavior. Each package manifest owns its version. A target-specific
 release changes only that selected version, while every normal invocation
-reconciles all derived copies: the core constant, README tags and wheel names,
-all three extension core floors, the root Summon and SimpleBroker PG dev floors,
-MCP's development-only `taut-pg` floor, every root README SimpleBroker
-requirement, and the retained Summon and MCP locks. The Summon lock refresh is
-selective (`uv lock --upgrade-package simplebroker`); the MCP project uses a
-plain `uv lock` because its local core/PG sources and SDK range must reconcile
-without a targeted dependency upgrade. The helper stages only that fixed
-metadata allowlist and creates a local preparation commit before pytest, type,
-lint, and build gates. A later gate failure therefore leaves a clean, unpushed
-commit that can be inspected or reused on a rerun.
+reconciles all derived copies: the core constant, any README tags and wheel
+names that remain present, all three extension core floors, the root Summon and
+SimpleBroker PG dev floors, MCP's development-only `taut-pg` floor, every root
+README SimpleBroker requirement, and the retained Summon and MCP locks. The
+Summon lock refresh is selective (`uv lock --upgrade-package simplebroker`);
+the MCP project uses a plain `uv lock` because its local core/PG sources and SDK
+range must reconcile without a targeted dependency upgrade. The helper stages
+only that fixed metadata allowlist and creates a local preparation commit
+before pytest, type, lint, and build gates. Immediately before ordinary release
+builds, it preserves and empties all four package `dist/` directories, rejects
+a symlink or non-directory at any fixed boundary, and verifies each directory
+is empty. This happens even for a single-package release so unselected-package
+artifacts cannot linger. A later gate failure therefore leaves a clean,
+unpushed commit that can be inspected or reused on a rerun.
 
 The helper accepts `core`/`pg`/`summon`/`mcp` targets plus `all`;
 `all --version X.Y.Z` coordinates all four manifests, while target-specific

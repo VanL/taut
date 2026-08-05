@@ -51,6 +51,9 @@ Taut's stronger single-build, exact-SHA artifact ownership.
   GitHub-installed `taut` distribution and new `taut-chat` must not coexist in
   one environment, and old extension wheels requiring `taut` are not
   dependency-resolver compatible with `taut-chat`.
+- Every release empties and verifies all four fixed package `dist/` directories
+  immediately before ordinary builds, preventing stale artifacts from any
+  package from entering operator inspection or later tooling.
 
 ## 3. Source Documents
 
@@ -683,6 +686,9 @@ Implementation gate:
 | I7 | The public-GitHub/incomplete-PyPI guard is unreachable in the managed order but lacked an explanation. | Accepted. Added the ordering invariant next to the fail-closed guard. | Finalization verifies exact PyPI state before changing the draft to public. |
 | I8 | Confirm the wheel-matrix deletion did not leave `core_metadata` dead. | Verified; no change required. | `core_metadata` remains consumed by `_validate_new_metadata`; the changed-file Ruff gate passes. |
 | R3 | Narrow Opus second pass over I4-I8 found no blocker, but noted repository-wide refetch cost and a needless wait on immutable public state. | Passed with both non-blocking tightenings accepted. Asset retries stop as soon as the push-visible release listing finds the known id; immutable public state is checked once without waiting; the finalizer performs a single PyPI recheck because the preceding job owns the bounded wait. | Claude Opus, 2026-07-29, read-only; focused tests cover known-id recovery, exhaustion, and no-wait immutable failure. |
+| I9 | The first live 0.8.1 release preflight rejected the new PyPI-only READMEs because the helper required removed legacy tag and wheel examples to exist. | Accepted. Reconciliation now updates every matching example when present and treats zero examples as a valid no-op; the spec's every-copy invariant remains unchanged. | A failing-first regression test reproduced the real preflight exit, then the full release-helper suite, focused Ruff, and mypy passed. |
+| I10 | Existing package `dist/` directories could retain artifacts from earlier versions because ordinary `uv build` writes alongside existing files. | Accepted from the owner's rollout requirement. Empty and verify all four fixed directories immediately before any ordinary build; preserve the directories, fail closed on symlink/non-directory boundaries, and make dry-run non-mutating. | Failing-first real-filesystem tests cover nested stale content and dry-run preservation; an order test proves cleanup precedes the first build; the full release-helper suite passes under xdist without touching repository outputs. |
+| R4 | Independent rollout review found no release blocker. It noted that dry-run skipped read-only symlink/non-directory boundary checks, the symlink firing test is branch-level for cross-platform compatibility, and absent README patterns can no longer diagnose a changed example format. | Accepted F1: dry-run now performs the same non-mutating boundary checks, with a firing test for both modes. Accepted F2 as the portable branch proof paired with real nested-file cleanup. Accepted F3 as the explicit I9 contract: zero legacy examples is valid, while the retained positive test proves present examples update. | Claude Opus, 2026-08-05, read-only PASS; local author reran the executable gates because the reviewer sandbox could not run pytest. |
 
 ## 14. Deviation Log
 
@@ -754,3 +760,13 @@ records; every changed Python and Markdown file passes the formatter. Hosted
 OIDC publication, immutable-release transition, and live GitHub asset-digest
 evidence remain rollout gates. The work remains uncommitted until the user
 requests a commit.
+
+Rollout follow-up on 2026-08-05: the first real 0.8.1 invocation stopped before
+mutation because the helper still required legacy versioned README examples
+removed by this plan's PyPI-first documentation. The no-example regression
+test failed at that exact guard before the correction. The owner then required
+all package `dist/` directories to be empty before release builds; its direct
+filesystem and build-order tests also failed before implementation. After both
+corrections, the full release-helper suite, focused Ruff format/check, targeted
+mypy, and `git diff --check` passed. Hosted OIDC publication and exact
+both-destination digest proof remain the final rollout gates.

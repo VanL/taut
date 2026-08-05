@@ -40,6 +40,12 @@ MCP_EXTENSION_DIR: Final[Path] = PROJECT_ROOT / "extensions" / "taut_mcp"
 MCP_PYPROJECT_PATH: Final[Path] = MCP_EXTENSION_DIR / "pyproject.toml"
 MCP_README_PATH: Final[Path] = MCP_EXTENSION_DIR / "README.md"
 MCP_UV_LOCK_PATH: Final[Path] = MCP_EXTENSION_DIR / "uv.lock"
+RELEASE_DIST_PATHS: Final[tuple[Path, ...]] = (
+    PROJECT_ROOT / "dist",
+    PG_EXTENSION_DIR / "dist",
+    SUMMON_EXTENSION_DIR / "dist",
+    MCP_EXTENSION_DIR / "dist",
+)
 RELEASE_WHEEL_SET_CHECKER: Final[Path] = (
     PROJECT_ROOT / "bin" / "build-and-check-release-wheels.py"
 )
@@ -517,12 +523,13 @@ def _replace_version(
     path.write_text(updated, encoding="utf-8")
 
 
-def _replace_all(path: Path, pattern: re.Pattern[str], replacement: str) -> None:
+def _replace_existing_examples(
+    path: Path, pattern: re.Pattern[str], replacement: str
+) -> None:
     text = path.read_text(encoding="utf-8")
-    updated, count = pattern.subn(replacement, text)
-    if count == 0:
-        fail(f"Could not update release example in {display_path(path)}")
-    path.write_text(updated, encoding="utf-8")
+    updated = pattern.sub(replacement, text)
+    if updated != text:
+        path.write_text(updated, encoding="utf-8")
 
 
 def sync_readme_version_examples(
@@ -542,22 +549,22 @@ def sync_readme_version_examples(
             summon_readme_path,
             mcp_readme_path,
         ):
-            _replace_all(path, CORE_README_TAG_PATTERN, f"@v{normalized}")
+            _replace_existing_examples(path, CORE_README_TAG_PATTERN, f"@v{normalized}")
         return
     if target == PG_TARGET:
         replacement = f"taut_pg-{normalized}-py3-none-any.whl"
         for path in (root_readme_path, pg_readme_path):
-            _replace_all(path, PG_WHEEL_PATTERN, replacement)
+            _replace_existing_examples(path, PG_WHEEL_PATTERN, replacement)
         return
     if target == SUMMON_TARGET:
         replacement = f"taut_summon-{normalized}-py3-none-any.whl"
         for path in (root_readme_path, summon_readme_path):
-            _replace_all(path, SUMMON_WHEEL_PATTERN, replacement)
+            _replace_existing_examples(path, SUMMON_WHEEL_PATTERN, replacement)
         return
     if target == MCP_TARGET:
         replacement = f"taut_mcp-{normalized}-py3-none-any.whl"
         for path in (root_readme_path, mcp_readme_path):
-            _replace_all(path, MCP_WHEEL_PATTERN, replacement)
+            _replace_existing_examples(path, MCP_WHEEL_PATTERN, replacement)
 
 
 def sync_readme_simplebroker_requirement(
@@ -1772,9 +1779,48 @@ def _run_postupdate_step(step: CommandStep, *, dry_run: bool) -> None:
     run_command(step.command, cwd=step.cwd, dry_run=dry_run)
 
 
-def run_postupdate_steps(target: ReleaseTarget, *, dry_run: bool) -> None:
-    for step in build_postupdate_steps(target):
+def empty_release_dist_directories(
+    *,
+    dry_run: bool,
+    dist_paths: tuple[Path, ...] | None = None,
+) -> None:
+    """Keep every package dist directory present and empty before building."""
+
+    paths = RELEASE_DIST_PATHS if dist_paths is None else dist_paths
+    for dist_path in paths:
+        print(f"Empty release artifact directory: {display_path(dist_path)}")
+        if dist_path.is_symlink():
+            fail(f"Release artifact directory must not be a symlink: {dist_path}")
+        if dist_path.exists() and not dist_path.is_dir():
+            fail(f"Release artifact path is not a directory: {dist_path}")
+        if dry_run:
+            continue
+        dist_path.mkdir(parents=True, exist_ok=True)
+        for entry in tuple(dist_path.iterdir()):
+            if entry.is_symlink() or not entry.is_dir():
+                entry.unlink(missing_ok=True)
+            else:
+                try:
+                    shutil.rmtree(entry)
+                except FileNotFoundError:
+                    pass
+        if tuple(dist_path.iterdir()):
+            fail(f"Release artifact directory is not empty: {dist_path}")
+
+
+def run_postupdate_steps_for_targets(
+    targets: tuple[ReleaseTarget, ...], *, dry_run: bool
+) -> None:
+    steps = build_postupdate_steps_for_targets(targets)
+    if not steps:
+        return
+    empty_release_dist_directories(dry_run=dry_run)
+    for step in steps:
         _run_postupdate_step(step, dry_run=dry_run)
+
+
+def run_postupdate_steps(target: ReleaseTarget, *, dry_run: bool) -> None:
+    run_postupdate_steps_for_targets((target,), dry_run=dry_run)
 
 
 def run_preparation_steps(targets: tuple[ReleaseTarget, ...], *, dry_run: bool) -> None:
@@ -2306,8 +2352,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 
 def _dry_run_postupdate_steps(targets: tuple[ReleaseTarget, ...]) -> None:
-    for step in build_postupdate_steps_for_targets(targets):
-        _run_postupdate_step(step, dry_run=True)
+    run_postupdate_steps_for_targets(targets, dry_run=True)
 
 
 @dataclass(frozen=True)
@@ -2474,8 +2519,7 @@ def _run_batch_release(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-063] excep
     if not args.skip_checks:
         run_prechecks_for_targets(plan.preparation_targets, dry_run=False)
 
-    for step in build_postupdate_steps_for_targets(plan.release_targets):
-        _run_postupdate_step(step, dry_run=False)
+    run_postupdate_steps_for_targets(plan.release_targets, dry_run=False)
 
     candidates = require_fresh_release_fence(
         plan.candidates,

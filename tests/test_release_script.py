@@ -30,6 +30,7 @@ def _load_release_module(script_path: Path = RELEASE_SCRIPT) -> Any:
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     module.__dict__["require_repository_settings"] = lambda: None
+    module.__dict__["RELEASE_DIST_PATHS"] = ()
     return module
 
 
@@ -305,6 +306,37 @@ def test_sync_readme_version_examples_updates_only_selected_artifact(
     )
     assert mcp.read_text(encoding="utf-8") == (
         "core @v0.5.3\n./taut_mcp-0.5.6-py3-none-any.whl\n"
+    )
+
+
+def test_sync_readme_version_examples_accepts_absent_legacy_examples(
+    tmp_path: Path,
+) -> None:
+    release = _load_release_module()
+    readmes = tuple(
+        tmp_path / name for name in ("root.md", "pg.md", "summon.md", "mcp.md")
+    )
+    for readme in readmes:
+        readme.write_text("Install the package from PyPI.\n", encoding="utf-8")
+
+    for target in (
+        release.ROOT_TARGET,
+        release.PG_TARGET,
+        release.SUMMON_TARGET,
+        release.MCP_TARGET,
+    ):
+        release.sync_readme_version_examples(
+            target,
+            "0.8.1",
+            root_readme_path=readmes[0],
+            pg_readme_path=readmes[1],
+            summon_readme_path=readmes[2],
+            mcp_readme_path=readmes[3],
+        )
+
+    assert all(
+        readme.read_text(encoding="utf-8") == "Install the package from PyPI.\n"
+        for readme in readmes
     )
 
 
@@ -2165,6 +2197,9 @@ def test_core_dry_run_executes_preparation_then_artifact_plan(
         calls.append((command, dry_run))
 
     monkeypatch.setattr(release, "run_command", fake_run_command)
+    monkeypatch.setattr(
+        release, "empty_release_dist_directories", lambda *, dry_run: None
+    )
 
     release.run_preparation_steps((release.ROOT_TARGET,), dry_run=True)
     release.run_postupdate_steps(release.ROOT_TARGET, dry_run=True)
@@ -2182,6 +2217,105 @@ def test_core_dry_run_executes_preparation_then_artifact_plan(
             False,
         ),
     ]
+
+
+def test_empty_release_dist_directories_removes_contents_but_keeps_directories(
+    tmp_path: Path,
+) -> None:
+    release = _load_release_module()
+    dist_paths = tuple(
+        tmp_path / name / "dist" for name in ("root", "pg", "summon", "mcp")
+    )
+    for dist_path in dist_paths:
+        (dist_path / "nested").mkdir(parents=True)
+        (dist_path / "old.whl").write_text("old", encoding="utf-8")
+        (dist_path / "nested" / "old.tar.gz").write_text("old", encoding="utf-8")
+
+    release.empty_release_dist_directories(
+        dry_run=False,
+        dist_paths=dist_paths,
+    )
+
+    assert all(dist_path.is_dir() for dist_path in dist_paths)
+    assert all(not tuple(dist_path.iterdir()) for dist_path in dist_paths)
+
+
+def test_empty_release_dist_directories_dry_run_preserves_contents(
+    tmp_path: Path,
+) -> None:
+    release = _load_release_module()
+    dist_path = tmp_path / "dist"
+    dist_path.mkdir()
+    artifact = dist_path / "old.whl"
+    artifact.write_text("old", encoding="utf-8")
+
+    release.empty_release_dist_directories(
+        dry_run=True,
+        dist_paths=(dist_path,),
+    )
+
+    assert artifact.read_text(encoding="utf-8") == "old"
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_empty_release_dist_directories_rejects_non_directory(
+    tmp_path: Path,
+    dry_run: bool,
+) -> None:
+    release = _load_release_module()
+    dist_path = tmp_path / "dist"
+    dist_path.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="is not a directory"):
+        release.empty_release_dist_directories(
+            dry_run=dry_run,
+            dist_paths=(dist_path,),
+        )
+
+
+def test_empty_release_dist_directories_rejects_symlink_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _load_release_module()
+    dist_path = tmp_path / "dist"
+    dist_path.mkdir()
+    original_is_symlink = Path.is_symlink
+    monkeypatch.setattr(
+        Path,
+        "is_symlink",
+        lambda path: path == dist_path or original_is_symlink(path),
+    )
+
+    with pytest.raises(SystemExit, match="must not be a symlink"):
+        release.empty_release_dist_directories(
+            dry_run=False,
+            dist_paths=(dist_path,),
+        )
+
+
+def test_release_build_steps_empty_dist_before_first_build(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _load_release_module()
+    events: list[str] = []
+    monkeypatch.setattr(
+        release,
+        "empty_release_dist_directories",
+        lambda *, dry_run: events.append(f"empty:{dry_run}"),
+    )
+    monkeypatch.setattr(
+        release,
+        "_run_postupdate_step",
+        lambda step, *, dry_run: events.append(f"build:{step.command[0]}:{dry_run}"),
+    )
+
+    release.run_postupdate_steps_for_targets(
+        (release.PG_TARGET,),
+        dry_run=False,
+    )
+
+    assert events == ["empty:False", "build:uv:False"]
 
 
 def test_pg_postupdate_skips_paired_release_wheel_check() -> None:

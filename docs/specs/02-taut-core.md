@@ -2126,11 +2126,15 @@ Helper obligations:
   lane uses factor coverage: all four supported Python versions on Ubuntu,
   plus one macOS and one Windows representative, with the active matrix
   interpreter used inside the fresh wheel environment.
-- After metadata preparation and prechecks, build each selected package's
-  artifacts. The Summon and MCP locks have already been reconciled during
-  preparation. Core/Summon retain their separate paired-wheel compatibility
-  proof; selecting MCP adds its ordinary package build without changing that
-  paired boundary.
+- After metadata preparation and prechecks, preserve but empty the root, PG,
+  Summon, and MCP `dist/` directories and verify that all four are empty before
+  starting any ordinary release build. Do this for every release target so an
+  unselected package cannot retain stale release artifacts. Then build each
+  selected package's artifacts. The Summon and MCP locks have already been
+  reconciled during preparation. Core/Summon retain their separate
+  paired-wheel compatibility proof; selecting MCP adds its ordinary package
+  build without changing that paired boundary. Dry-run reports the cleanup
+  without changing any directory.
 - Keep branch pushes, tag creation or replacement, tag pushes, and publication
   after prechecks, normal artifact builds, and the paired core/Summon wheel
   check. Immediately before remote action, verify that the branch and `HEAD`

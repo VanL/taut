@@ -24,6 +24,11 @@
 - Removed the obsolete core-to-legacy-Summon CLI delegation branch. When
   current `taut-summon` entry points are absent, core now owns only the
   installation hint.
+- Made release metadata reconciliation accept PyPI-only READMEs that contain
+  no legacy versioned GitHub tag or wheel examples, while continuing to update
+  every such example when one is present.
+- Empty all four package `dist/` directories immediately before release builds
+  so stale artifacts cannot be mistaken for the current coordinated release.
 
 ## 0.8.0 - 2026-07-28
 
