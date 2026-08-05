@@ -5,6 +5,9 @@
 - Reconstruct a clean verified distribution directory after PyPI upload before
   the exact remote postflight, isolating release bytes from attestation
   sidecars created by the trusted-publishing action.
+- Run MCP release tests against ephemeral editable overlays of the prepared
+  core and MCP trees, so package metadata cannot come from a stale persistent
+  virtual environment while prechecks remain non-mutating.
 
 ## 0.8.1 - 2026-07-31
 

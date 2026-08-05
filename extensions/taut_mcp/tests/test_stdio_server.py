@@ -38,6 +38,8 @@ EXPECTED_INSTRUCTIONS_SHA256 = (
 )
 with (EXTENSION_ROOT / "pyproject.toml").open("rb") as _project_stream:
     EXPECTED_VERSION = str(tomllib.load(_project_stream)["project"]["version"])
+with (PROJECT_ROOT / "pyproject.toml").open("rb") as _project_stream:
+    EXPECTED_CORE_VERSION = str(tomllib.load(_project_stream)["project"]["version"])
 
 
 class _RawStdioProcess:
@@ -207,6 +209,35 @@ async def _inspect_modern_empty_server(
         assert [(str(item.uri), item.mime_type) for item in resources.resources] == [
             (NOTIFICATIONS_URL, "application/json")
         ]
+
+
+@pytest.mark.timeout(10)
+def test_stdio_environment_uses_prepared_distribution_metadata() -> None:
+    # This semantic probe detects stale overlay metadata. The exact-command
+    # tests in test_release_script.py separately pin creation of both overlays
+    # when the persistent environment happens already to be current.
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import json; from importlib.metadata import version; "
+                "print(json.dumps({name: version(name) for name in "
+                "('taut-chat', 'taut-mcp')}))"
+            ),
+        ],
+        cwd=EXTENSION_ROOT,
+        env=os.environ.copy(),
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+
+    assert json.loads(probe.stdout) == {
+        "taut-chat": EXPECTED_CORE_VERSION,
+        "taut-mcp": EXPECTED_VERSION,
+    }
 
 
 @pytest.mark.timeout(10)
