@@ -80,6 +80,22 @@ class MessageReaction:
 
 
 @dataclass(frozen=True, slots=True)
+class SearchHit:
+    """One hydrated full-text search result."""
+
+    thread: str
+    ts: int
+    from_id: str | None
+    from_name: str
+    kind: str
+    text: str
+    thread_kind: str
+    channel: str | None
+    parent: str | None
+    members: tuple[str, str] | None
+
+
+@dataclass(frozen=True, slots=True)
 class Notification:
     """A notification pointer returned by a consuming read or read-only peek."""
 
@@ -111,5 +127,6 @@ Channel.__module__ = "taut.client"
 Message.__module__ = "taut.client"
 MessageDeletion.__module__ = "taut.client"
 MessageReaction.__module__ = "taut.client"
+SearchHit.__module__ = "taut.client"
 Notification.__module__ = "taut.client"
 InitResult.__module__ = "taut.client"

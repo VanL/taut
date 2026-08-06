@@ -399,6 +399,11 @@ queues to every core command — exactly the treatment unknown broker
 queues already get. Core never routes chat to `sys.*`; only the owning
 extension reads or writes them.
 
+Core-owned unregistered system queues use the reserved `taut.*` namespace.
+Search owns `taut.search_index`, `taut.search_index.claimed`, and
+`taut.search_index.failed` under [SRCH-8]. They are invisible to every chat
+route and listing surface; only the owning core subsystem consumes them.
+
 ### [IAN-6.2] Channel names
 
 Channel names match:
@@ -860,6 +865,8 @@ Required proofs:
 
 ## Related Plans
 
+- `docs/plans/2026-08-06-taut-search-plan.md` — search internal queues,
+  actor-scoped DM visibility, and cursor-neutral candidate hydration.
 - `docs/plans/2026-07-31-simplebroker-6-reconciliation-plan.md` —
   SimpleBroker 6.0.0 and SimpleBroker-PG 3.5.0 compatibility reconciliation.
 - `docs/plans/2026-07-28-channel-topics-plan.md` — per-channel topic and

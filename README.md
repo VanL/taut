@@ -13,7 +13,8 @@ config, no accounts. One SQLite file by default; Postgres when you need it.*
 > on purpose. The core specification lives in
 > [`docs/specs/02-taut-core.md`](docs/specs/02-taut-core.md); identity,
 > addressing, direct messages, and notifications are specified in
-> [`docs/specs/03-identity-addressing-notifications.md`](docs/specs/03-identity-addressing-notifications.md).
+> [`docs/specs/03-identity-addressing-notifications.md`](docs/specs/03-identity-addressing-notifications.md),
+> and search in [`docs/specs/06-search.md`](docs/specs/06-search.md).
 
 ```bash
 $ taut init
@@ -69,6 +70,10 @@ default, or a few machines through the Postgres extension.
   (ndjson) output; agents are recognized automatically (see below).
 - **Real history** — ordinary reads never consume messages. Reading moves
   *your* bookmark; authors may explicitly delete one of their own messages.
+- **Disposable full-text search** — `taut search parser --channel general`
+  searches current source history without moving a cursor. SQLite uses its
+  built-in FTS5 support; `taut-pg` uses PostgreSQL's built-in text search and
+  GIN, with no optional server extension required.
 - **Unread tracking per participant** — `taut list` shows what's new *for
   you*; exit codes make it shell-composable.
 - **Live following** — `taut watch` streams every thread you're in, and
@@ -428,6 +433,7 @@ pass `TAUT_AS` or `TAUT_TOKEN` through.
 | `taut read [THREAD_OR_DM]` | Show unread and advance your bookmark; a DM accepts `@name-or-alias` or its stable handle; bare = all your threads |
 | `taut inbox` | Claim and show notification pointers for mentions and new DMs |
 | `taut log THREAD_OR_DM [--since TS] [--limit N]` | Show channel, sub-thread, or accessible DM history; never moves your bookmark or activity for a DM |
+| `taut search QUERY... [--channel CHANNEL] [--dm @NAME] [--dms]` | Search visible channel and DM history without moving cursors; add `--from`, `--kind`, `--before`, `--limit`, or `--reindex` to refine or rebuild |
 | `taut list [--all \| --dms]` | Your threads with unread state; `--all` = every thread; `--dms` = every accessible DM, including read and empty conversations |
 | `taut watch [THREAD_OR_DM ...]` | Follow selected channels/sub-threads or existing DMs; default = everything you're in plus your notification inbox |
 | `taut who [THREAD]` | Members and presence |
@@ -497,6 +503,16 @@ not safe to blind-retry because commit may already have occurred.
 messages per thread. To drain a large backlog, run `taut read` again until it
 exits `2` for nothing unread.
 
+Search is also source-hydrated and cursor-neutral. Its index stores derived
+lexemes and message identity, not a second verbatim body. Bare search covers
+registered channels, their sub-threads, and DMs visible to the resolved actor;
+explicit scope flags replace that default with their union. Results are newest
+first. The SQLite and PostgreSQL interfaces, filters, visibility checks, and
+ordering are the same, while backend-native Unicode tokenization can produce
+different lexical matches. Portable ASCII word searches have the shared
+result floor. Use `--json` for the fixed per-hit facet record and `--reindex`
+to rebuild the disposable index before one query.
+
 ## Working With Agents
 
 The agent side of taut is just the CLI with `--json`:
@@ -526,7 +542,14 @@ cursor-tracked, membership-aware, with its fan-in waiter installed through
 SimpleBroker's watcher lifecycle hooks):
 
 ```python
-from taut import Channel, Message, MessageDeletion, MessageReaction, TautClient
+from taut import (
+    Channel,
+    Message,
+    MessageDeletion,
+    MessageReaction,
+    SearchHit,
+    TautClient,
+)
 
 client = TautClient()  # finds .taut.db like git finds .git
 # (or TautClient(db_path="…"))
@@ -550,6 +573,10 @@ for dm in client.list_direct_messages():
 
 for msg in client.log("@claude"):  # stable dm.d_* handles also work
     print(msg.thread, msg.from_name, msg.text)
+
+for hit in client.search("parser green", channels=("general",)):
+    assert isinstance(hit, SearchHit)
+    print(hit.thread, hit.ts, hit.kind, hit.text)
 
 
 def handle(event):

@@ -18,6 +18,9 @@ dependencies = [
     "simplebroker-pg>=3.5.0",
 ]
 
+[project.entry-points."taut.search_backends"]
+postgres = "taut_pg.search_manifest:postgres"
+
 [project.optional-dependencies]
 dev = [
     "mypy>=1.0",

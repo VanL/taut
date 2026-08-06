@@ -213,6 +213,7 @@ class ThreadsMixin(_ClientBase):
         )
 
     def rename_channel(self, old_name: str, new_name: str) -> Thread:
+        self.last_search_warnings.clear()
         old_name = addressing.validate_chat_thread_name(old_name, allow_subthread=False)
         new_name = addressing.validate_chat_thread_name(new_name, allow_subthread=False)
         incomplete = self._state.incomplete_channel_renames()
@@ -271,6 +272,11 @@ class ThreadsMixin(_ClientBase):
         renamed = self._state.get_thread(new_name)
         if renamed is None:
             raise RuntimeError("renamed channel could not be read back")
+        self._enqueue_search_thread_rename(
+            old=old_name,
+            new=new_name,
+            affected=affected,
+        )
         return self._thread_from_row(renamed, None)
 
     def _resume_channel_rename(self, marker: ChannelRenameRow) -> Thread:
@@ -319,6 +325,11 @@ class ThreadsMixin(_ClientBase):
         renamed = self._state.get_thread(marker["new_name"])
         if renamed is None:
             raise RuntimeError("renamed channel could not be read back")
+        self._enqueue_search_thread_rename(
+            old=marker["old_name"],
+            new=marker["new_name"],
+            affected=affected,
+        )
         return self._thread_from_row(renamed, None)
 
     def _thread_from_row(

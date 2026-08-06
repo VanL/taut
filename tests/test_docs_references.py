@@ -73,6 +73,7 @@ LOCAL_SPEC_FILES = {
     "IAN": REPO_ROOT / "docs" / "specs" / "03-identity-addressing-notifications.md",
     "SUM": REPO_ROOT / "docs" / "specs" / "04-summon.md",
     "MCP": REPO_ROOT / "docs" / "specs" / "05-taut-mcp.md",
+    "SRCH": REPO_ROOT / "docs" / "specs" / "06-search.md",
 }
 
 # These cite contracts copied from upstream projects. They are provenance,
@@ -255,6 +256,7 @@ def test_fenced_citation_samples_are_not_claims(tmp_path: Path) -> None:
 def test_external_and_unknown_citation_classification() -> None:
     valid = _valid_local_codes()
 
+    assert _citation_failure("[SRCH-12.2]", Path("README.md"), valid) is None
     assert _citation_failure("[CC-2.1]", Path("taut/watcher.py"), valid) is None
     assert _citation_failure("[SB-0.4]", Path("taut/watcher.py"), valid) is None
     assert (

@@ -62,6 +62,7 @@ class MessagingMixin(_ClientBase):
     def delete_message(self, msg_id: str) -> MessageDeletion:
         """Physically delete one exact ordinary message owned by this member."""
 
+        self.last_search_warnings.clear()
         exact = _validate_exact_message_id(msg_id)
         self._ensure_no_incomplete_channel_rename()
         resolved = self._resolve_member(create=False)
@@ -80,6 +81,10 @@ class MessagingMixin(_ClientBase):
             raise NotFoundError(f"message not found or not deletable: {msg_id}")
         if not located.queue.delete(message_id=located.message.ts):
             raise NotFoundError(f"message not found or not deletable: {msg_id}")
+        self._enqueue_search_message(
+            message_ts=located.message.ts,
+            thread=located.message.thread,
+        )
         return MessageDeletion(
             thread=located.message.thread,
             ts=located.message.ts,
@@ -564,6 +569,7 @@ class MessagingMixin(_ClientBase):
         text: str,
         notify_mentions: bool,
     ) -> Message:
+        self.last_search_warnings.clear()
         body = encode_envelope(
             from_id=from_id,
             from_name=from_name,
@@ -572,6 +578,7 @@ class MessagingMixin(_ClientBase):
         )
         ts = queue.write(body)
         message = message_from_body(thread, body, ts)
+        self._enqueue_search_message(message_ts=ts, thread=thread)
         if notify_mentions and kind == "message":
             self._write_mention_notifications(message, text)
         return message

@@ -10,7 +10,11 @@ from __future__ import annotations
 import argparse
 
 from taut.commands._protocol import CommandArgumentParser, CommandContext
-from taut.commands._rendering import emit_channel, emit_renamed_thread
+from taut.commands._rendering import (
+    emit_channel,
+    emit_renamed_thread,
+    emit_search_warnings,
+)
 
 
 class ChannelCommand:
@@ -111,7 +115,8 @@ class ChannelCommand:
             )
             return 0
         if args.channel_command == "rename":
-            thread = context.client().rename_channel(args.old_name, args.new_name)
+            client = context.client()
+            thread = client.rename_channel(args.old_name, args.new_name)
             emit_renamed_thread(
                 thread,
                 old_name=args.old_name,
@@ -119,6 +124,7 @@ class ChannelCommand:
                 quiet=context.quiet,
                 stdout=context.stdout,
             )
+            emit_search_warnings(client, quiet=context.quiet, stderr=context.stderr)
             return 0
         raise RuntimeError(f"unsupported channel operation: {args.channel_command}")
 

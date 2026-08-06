@@ -164,6 +164,7 @@ class _ClientBase(ABC):
     last_created_member: Member | None
     last_candidates: list[tuple[str, list[str]]]
     last_notification_warnings: list[str]
+    last_search_warnings: list[str]
     last_thread_display_names: dict[str, str]
     _meta_queue: Queue
     _persistent: bool
@@ -209,6 +210,7 @@ class _ClientBase(ABC):
         self.last_created_member = None
         self.last_candidates = []
         self.last_notification_warnings = []
+        self.last_search_warnings = []
         self.last_thread_display_names = {}
         self._meta_queue = self.queue(META_QUEUE_NAME)
         self._state = SqlSidecarTautState(
@@ -252,6 +254,44 @@ class _ClientBase(ABC):
             seen.add(queue_id)
             queue.close()
         self._queue_cache.clear()
+
+    def _enqueue_search_message(self, *, message_ts: int, thread: str) -> None:
+        """Best-effort durable invalidation after canonical source success."""
+
+        from taut.search._jobs import PENDING_QUEUE_NAME, encode_message_job
+
+        queue = Queue(
+            PENDING_QUEUE_NAME,
+            db_path=self.target,
+            config=self.config,
+        )
+        try:
+            queue.write(encode_message_job(message_ts=message_ts, thread=thread))
+        except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-082] exception
+            self.last_search_warnings.append(
+                f"search invalidation enqueue failed for {thread}/{message_ts}: {exc}"
+            )
+        finally:
+            queue.close()
+
+    def _enqueue_search_thread_rename(
+        self,
+        *,
+        old: str,
+        new: str,
+        affected: list[dict[str, str]],
+    ) -> None:
+        from taut.search._jobs import PENDING_QUEUE_NAME, encode_thread_rename_job
+
+        queue = Queue(PENDING_QUEUE_NAME, db_path=self.target, config=self.config)
+        try:
+            queue.write(encode_thread_rename_job(old=old, new=new, affected=affected))
+        except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-082] exception
+            self.last_search_warnings.append(
+                f"search rename invalidation enqueue failed for {old} -> {new}: {exc}"
+            )
+        finally:
+            queue.close()
 
     def _resolve_target(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-046] exception
         self,

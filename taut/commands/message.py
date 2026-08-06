@@ -10,6 +10,7 @@ from taut.commands._rendering import (
     emit_message_deletion,
     emit_message_reaction,
     emit_messages,
+    emit_search_warnings,
 )
 
 
@@ -86,13 +87,15 @@ class MessageCommand:
             )
             return 0
         if args.message_command == "delete":
-            deletion = context.client().delete_message(args.msg_id)
+            client = context.client()
+            deletion = client.delete_message(args.msg_id)
             emit_message_deletion(
                 deletion,
                 json_output=context.json,
                 quiet=context.quiet,
                 stdout=context.stdout,
             )
+            emit_search_warnings(client, quiet=context.quiet, stderr=context.stderr)
             return 0
         if args.message_command == "react":
             client = context.client()

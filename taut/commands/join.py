@@ -5,7 +5,11 @@ from __future__ import annotations
 import argparse
 
 from taut.commands._protocol import CommandArgumentParser, CommandContext
-from taut.commands._rendering import emit_created_member, emit_messages
+from taut.commands._rendering import (
+    emit_created_member,
+    emit_messages,
+    emit_search_warnings,
+)
 
 
 class JoinCommand:
@@ -47,6 +51,7 @@ class JoinCommand:
             stdout=context.stdout,
             stderr=context.stderr,
         )
+        emit_search_warnings(client, quiet=context.quiet, stderr=context.stderr)
         return 0
 
 

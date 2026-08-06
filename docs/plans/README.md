@@ -110,6 +110,8 @@ directory. Run `bin/check-plan-status-index` after changing it.
 | `2026-08-01-summon-rich-host-global-state-plan.md` | completed | no | Class 5 rich-host environment, provider-child identity, and explicit signal-ownership implementation; all local gates and independent reviews passed before the owner-authorized targeted commit. |
 | `2026-08-04-ruff-complexity-and-suppression-registry-plan.md` | completed | no | Class 5+P repository-wide C901 visibility, symbol-keyed suppression registry, reviewed ownership refactors, and locality remediation completed with current local gates and independent review. |
 | `2026-08-05-ruff-stable-default-expansion-plan.md` | completed | no | Class 5+P exact SimpleBroker Ruff 0.16.1 rule parity; implementation, local verification, independent review, and owner-authorized targeted landing completed. |
+| `2026-08-06-taut-search-plan.md` | completed | no | Class 5 search implementation, verification, and explicit Opus review completed before the owner-authorized final commit. |
+| `2026-08-06-taut-search-spec-draft.md` | superseded | no | Historical reviewed draft superseded by active `docs/specs/06-search.md`. |
 
 ## Retired Plans
 

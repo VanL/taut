@@ -24,3 +24,4 @@ read order stay aligned instead of competing.
 6. `06-command-extensions.md`
 7. `07-taut-mcp-architecture.md`
 8. `08-complexity-and-suppression-policy.md`
+9. `09-search-architecture.md`

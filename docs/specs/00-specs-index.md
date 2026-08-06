@@ -32,6 +32,9 @@ stay aligned instead of competing.
    dynamic workspace attachment, per-workspace identity, explicit CLI-shaped
    tools, the aggregate read-only notifications resource, edge hints, host
    adapters, and conformance
+6. `06-search.md` - cursor-neutral full-text message search, canonical query
+   semantics, visible scope, derived indexing, deferred work, recovery,
+   reconciliation, and SQLite/PostgreSQL parity
 
 ## Naming
 

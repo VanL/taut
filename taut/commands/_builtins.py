@@ -39,6 +39,7 @@ BUILTIN_SPECS = (
     _spec("read", "Show unread messages and advance chat cursors."),
     _spec("inbox", "Claim and show pending notification pointers."),
     _spec("log", "Show thread history without moving a cursor."),
+    _spec("search", "Search visible message history."),
     _spec("list", "List joined threads and unread state."),
     _spec("watch", "Live-follow chat and notification activity."),
     _spec("who", "Show members and presence evidence."),

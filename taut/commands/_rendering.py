@@ -26,6 +26,7 @@ if TYPE_CHECKING:
         MessageDeletion,
         MessageReaction,
         Notification,
+        SearchHit,
         TautClient,
         Thread,
     )
@@ -94,6 +95,7 @@ def emit_sent_message(
     elif timestamps and not quiet:
         write_human_line(stdout, str(message.ts))
     emit_notification_warnings(client, quiet=quiet, stderr=stderr)
+    emit_search_warnings(client, quiet=quiet, stderr=stderr)
 
 
 def emit_created_member(
@@ -133,6 +135,20 @@ def emit_notification_warnings(
     if quiet:
         return
     for warning in client.last_notification_warnings:
+        write_human_line(stderr, f"warning: {warning}")
+
+
+def emit_search_warnings(
+    client: TautClient,
+    *,
+    quiet: bool,
+    stderr: TextIO,
+) -> None:
+    """Render best-effort derived-index warnings after source success."""
+
+    if quiet:
+        return
+    for warning in client.last_search_warnings:
         write_human_line(stderr, f"warning: {warning}")
 
 
@@ -179,6 +195,35 @@ def emit_messages(
                     stream=stdout,
                 ),
             )
+
+
+def emit_search_hits(
+    client: TautClient,
+    hits: list[SearchHit],
+    *,
+    json_output: bool,
+    timestamps: bool,
+    quiet: bool,
+    stdout: TextIO,
+    stderr: TextIO,
+    query: str,
+) -> None:
+    """Render newest-first hydrated search hits and operation warnings."""
+
+    if not quiet:
+        if json_output:
+            for hit in hits:
+                write_json(stdout, search_hit_object(hit))
+        else:
+            for hit in hits:
+                message_id = f" {hit.ts}" if timestamps else ""
+                label = client.last_thread_display_names.get(hit.thread, hit.thread)
+                write_human_line(
+                    stdout,
+                    f"{label}{message_id} {hit.from_name}: "
+                    f"{_search_excerpt(hit.text, query=query)}",
+                )
+        emit_search_warnings(client, quiet=False, stderr=stderr)
 
 
 def emit_message_deletion(
@@ -434,6 +479,40 @@ def message_object(message: Message) -> dict[str, Any]:
         "kind": message.kind,
         "text": message.text,
     }
+
+
+def search_hit_object(hit: SearchHit) -> dict[str, Any]:
+    """Return the exact fixed [SRCH-5.3] NDJSON record."""
+
+    return {
+        "channel": hit.channel,
+        "from": hit.from_name,
+        "from_id": hit.from_id,
+        "kind": hit.kind,
+        "members": hit.members,
+        "parent": hit.parent,
+        "text": hit.text,
+        "thread": hit.thread,
+        "thread_kind": hit.thread_kind,
+        "ts": hit.ts,
+    }
+
+
+def _search_excerpt(text: str, *, query: str, max_chars: int = 240) -> str:
+    """Return a bounded hydrated excerpt near the first shared query chunk."""
+
+    from taut.search import query_chunks
+
+    folded = text.casefold()
+    positions = [folded.find(chunk) for chunk in query_chunks(query)]
+    matched = min((position for position in positions if position >= 0), default=0)
+    start = max(0, matched - max_chars // 3)
+    end = min(len(text), start + max_chars)
+    if end - start < max_chars:
+        start = max(0, end - max_chars)
+    prefix = "..." if start else ""
+    suffix = "..." if end < len(text) else ""
+    return f"{prefix}{text[start:end]}{suffix}"
 
 
 def channel_object(channel: Channel) -> dict[str, Any]:

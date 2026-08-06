@@ -104,6 +104,7 @@ Quick pointers to the key guidance documents in this repository.
 | `docs/implementation/05-taut-summon-architecture.md` | Summon extension rationale: ears/mouth split, three-thread driver, session ledger, control plane, and SimpleBroker handle ownership |
 | `docs/implementation/06-command-extensions.md` | Static and installed command registration, registry/dispatch ownership, lazy imports, extension packaging, and rich composition guidance |
 | `docs/implementation/07-taut-mcp-architecture.md` | MCP reactor-over-reactors rationale: workspace ownership, explicit tool dispatch, cached notification resource, edge hints, and cancellation boundaries |
+| `docs/implementation/09-search-architecture.md` | Search rationale: source-hydrated derived state, backend provider boundary, durable work recovery, reconciliation, and generation rebuilds |
 | `docs/lessons.md` | Canonical lessons ledger |
 
 ## Product Code
@@ -120,6 +121,7 @@ Quick pointers to the key guidance documents in this repository.
 | `taut/state/` | Internal Taut state interface, SQL dialect marker, and sidecar SQL adapter |
 | `taut/identity.py` | Process fingerprint capture, anchor selection, presence checks |
 | `taut/client/` | Public Python API package: facade plus identity, actor-scoped DM selection/directory, messaging (including exact show/delete/react), notification, thread mixins, and plain SimpleBroker queue ownership |
+| `taut/search/` | Core search projection, SQLite FTS5 provider, strict PostgreSQL provider discovery, durable invalidation jobs, and worker state machine |
 | `taut/watcher.py` | Shared `BaseReactor`, vendored multi-queue scheduling, and cursor-aware `TautWatcher` with persistent owned queue handles |
 | `taut/cli.py` | Thin console entry point into the registry-backed dispatcher |
 | `taut/commands/` | Versioned command manifests/protocol, deterministic installed-command registry, root dispatcher, shared renderers, lazy per-verb adapters, and the temporary reserved Summon compatibility bridge |
@@ -127,7 +129,7 @@ Quick pointers to the key guidance documents in this repository.
 | `tests/test_docs_references.py` | Maintained-source path and local/external citation-family gate |
 | `tests/test_cli_claims.py` | Maintained-source inline/fenced Taut command-path grammar, deterministic registry validation, and exact exemption gate |
 | `tests/test_project_metadata_consistency.py` | Relational gate comparing constants, first-party floors, README pins, wheel names, and retained-lock versions to their owning package manifests |
-| `extensions/taut_pg/` | Separate `taut-pg` project with extension metadata, README, and PG-only tests |
+| `extensions/taut_pg/` | Separate `taut-pg` project with backend registration, built-in PostgreSQL full-text search provider, extension metadata, README, and PG-only tests |
 | `extensions/taut_summon/` | Separate `taut-summon` project: lazy public facade, typed rich-host controller with non-owning signal default and object-local identity, explicit CLI signal opt-in, one-signal terminal-retirement adapters with sanitized child identity, ledger, control plane, persona, and real-process conformance suite |
 | `extensions/taut_mcp/` | Separate `taut-mcp` project: dual-era stdio server, master process reactor, one owner-thread reactor per resident workspace, explicit workspace-plus-token schemas for identity-using tools, notification resource, legacy/modern subscription adapters, and optional legacy Claude channel hint |
 

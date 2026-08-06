@@ -169,6 +169,8 @@ class TautState(Protocol):
 
     def incomplete_channel_renames(self) -> list[ChannelRenameRow]: ...
 
+    def completed_channel_renames(self) -> list[ChannelRenameRow]: ...
+
     def apply_channel_rename_state(
         self,
         *,

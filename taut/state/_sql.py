@@ -381,6 +381,9 @@ class SqlSidecarTautState:
     def incomplete_channel_renames(self) -> list[ChannelRenameRow]:
         return incomplete_channel_renames(self.queue)
 
+    def completed_channel_renames(self) -> list[ChannelRenameRow]:
+        return completed_channel_renames(self.queue)
+
     def apply_channel_rename_state(
         self,
         *,
@@ -1114,6 +1117,20 @@ def incomplete_channel_renames(queue: Queue) -> list[ChannelRenameRow]:
             FROM taut_channel_renames
             WHERE state != 'complete'
             ORDER BY started_ts
+            """,
+        )
+    return [_require_channel_rename_row(row) for row in rows]
+
+
+def completed_channel_renames(queue: Queue) -> list[ChannelRenameRow]:
+    with queue.sidecar() as session:
+        rows = _all(
+            session,
+            """
+            SELECT old_name, new_name, state, affected_json, started_ts, updated_ts
+            FROM taut_channel_renames
+            WHERE state = 'complete'
+            ORDER BY started_ts, old_name
             """,
         )
     return [_require_channel_rename_row(row) for row in rows]

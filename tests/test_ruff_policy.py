@@ -39,7 +39,7 @@ EXTENSIONLESS_PYTHON = {
 REVIEWED_FAMILIES = ["E", "W", "F", "I", "B", "C901", "C4", "UP"]
 GLOBAL_IGNORES = ["E501", "B008"]
 RAW_RULE_COUNTS = {
-    "BLE001": 89,
+    "BLE001": 91,
     "C901": 38,
     "DTZ006": 1,
     "F401": 1,
@@ -323,10 +323,10 @@ def test_raw_active_rule_inventory_and_registry_are_exact() -> None:
     )
     assert [group.group_id for group in snapshot.groups] == [
         f"RUFF-SUP-{number:03d}"
-        for number in range(1, 82)
+        for number in range(1, 83)
         if number not in RETIRED_GROUP_NUMBERS
     ]
-    assert len(snapshot.directives) == 180
+    assert len(snapshot.directives) == 182
 
 
 def test_normal_repository_ruff_and_documented_registry_commands_are_current() -> None:

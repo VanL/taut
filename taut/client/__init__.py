@@ -44,9 +44,11 @@ from ._models import (
     MessageDeletion,
     MessageReaction,
     Notification,
+    SearchHit,
     Thread,
 )
 from ._notifications import NotificationsMixin
+from ._searching import SearchingMixin
 from ._threads import ThreadsMixin
 
 if TYPE_CHECKING:
@@ -79,6 +81,7 @@ __all__ = [
     "MessageDeletion",
     "MessageReaction",
     "Notification",
+    "SearchHit",
     "TautClient",
     "Thread",
     "database_path_from_target",
@@ -89,6 +92,7 @@ class TautClient(
     IdentityMixin,
     MessagingMixin,
     NotificationsMixin,
+    SearchingMixin,
     ThreadsMixin,
     _ClientBase,
 ):

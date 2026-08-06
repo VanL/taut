@@ -336,6 +336,84 @@ def test_channel_rename_marker_rejects_corrupt_topic_without_marker(
     assert row["meta"] == corrupt_meta
 
 
+def test_completed_channel_renames_filters_incomplete_and_preserves_ledger(
+    taut_project: Path,
+) -> None:
+    TautClient.init()
+    client = TautClient(as_name="owner")
+    client.join("alpha")
+    affected = [
+        {"old": "alpha", "new": "beta"},
+        {"old": "alpha.17", "new": "beta.17"},
+    ]
+
+    client._state.start_channel_rename(
+        old_name="pending",
+        new_name="later",
+        affected=[{"old": "pending", "new": "later"}],
+        started_ts=90,
+    )
+    client._state.start_channel_rename(
+        old_name="alpha",
+        new_name="beta",
+        affected=affected,
+        started_ts=100,
+    )
+
+    assert client._state.completed_channel_renames() == []
+
+    client._state.apply_channel_rename_state(
+        old_name="alpha",
+        new_name="beta",
+        affected=affected,
+        updated_ts=110,
+    )
+    expected = [
+        {
+            "old_name": "alpha",
+            "new_name": "beta",
+            "state": "complete",
+            "affected": affected,
+            "started_ts": 100,
+            "updated_ts": 110,
+        }
+    ]
+    assert client._state.completed_channel_renames() == expected
+    assert client._state.completed_channel_renames() == expected
+
+
+def test_completed_channel_renames_orders_transitive_chain_oldest_first(
+    taut_project: Path,
+) -> None:
+    TautClient.init()
+    client = TautClient(as_name="owner")
+    client.join("alpha")
+
+    for old_name, new_name, started_ts in (
+        ("alpha", "beta", 100),
+        ("beta", "gamma", 200),
+    ):
+        affected = [{"old": old_name, "new": new_name}]
+        client._state.start_channel_rename(
+            old_name=old_name,
+            new_name=new_name,
+            affected=affected,
+            started_ts=started_ts,
+        )
+        client._state.apply_channel_rename_state(
+            old_name=old_name,
+            new_name=new_name,
+            affected=affected,
+            updated_ts=started_ts + 10,
+        )
+
+    completed = client._state.completed_channel_renames()
+    assert [(row["old_name"], row["new_name"]) for row in completed] == [
+        ("alpha", "beta"),
+        ("beta", "gamma"),
+    ]
+
+
 def test_nullable_owned_metadata_decodes_sql_null_as_empty_object(
     taut_project: Path,
 ) -> None:

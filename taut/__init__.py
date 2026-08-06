@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         MessageDeletion,
         MessageReaction,
         Notification,
+        SearchHit,
         TautClient,
         Thread,
     )
@@ -46,6 +47,7 @@ _LAZY_EXPORTS = {
     "MessageDeletion": ("taut.client", "MessageDeletion"),
     "MessageReaction": ("taut.client", "MessageReaction"),
     "Notification": ("taut.client", "Notification"),
+    "SearchHit": ("taut.client", "SearchHit"),
     "TautClient": ("taut.client", "TautClient"),
     "TautWatcher": ("taut.watcher", "TautWatcher"),
     "Thread": ("taut.client", "Thread"),
@@ -68,6 +70,7 @@ __all__ = [
     "NotInitializedError",
     "Notification",
     "SchemaVersionError",
+    "SearchHit",
     "TautClient",
     "TautError",
     "TautWatcher",

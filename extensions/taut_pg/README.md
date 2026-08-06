@@ -18,6 +18,11 @@ backend.
 The Postgres database must already exist. `taut init` initializes the configured
 schema and tables inside that database; it does not create the database.
 
+The package also supplies Taut's PostgreSQL search provider. It uses only
+PostgreSQL's built-in `tsvector`, `pg_catalog.simple` configuration, GIN, and
+advisory locks. It never requires `CREATE EXTENSION` or a separately compiled
+server extension.
+
 ## Installation
 
 The core distribution is `taut-chat`; it still installs the `taut` command and

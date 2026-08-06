@@ -129,6 +129,7 @@ class _RuntimeImportVisitor(ast.NodeVisitor):
                 "log",
                 "list",
                 "channel",
+                "search",
             )
         ),
         (
@@ -167,7 +168,7 @@ class _RuntimeImportVisitor(ast.NodeVisitor):
         (
             Path("taut/commands/_rendering.py"),
             {"taut", "taut._exceptions"},
-            {"taut.client"},
+            {"taut.client", "taut.search"},
         ),
         (
             Path("taut/commands/_protocol.py"),

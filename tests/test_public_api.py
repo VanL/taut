@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 import subprocess
 import sys
+from dataclasses import FrozenInstanceError, fields
 from pathlib import Path
 
 import pytest
@@ -29,6 +30,7 @@ EXPECTED_PUBLIC_EXPORTS = [
     "NotFoundError",
     "Notification",
     "SchemaVersionError",
+    "SearchHit",
     "TautClient",
     "TautError",
     "TautWatcher",
@@ -49,6 +51,7 @@ def _typed_public_surface(
     deletion: taut.MessageDeletion,
     reaction: taut.MessageReaction,
     notification: taut.Notification,
+    search_hit: taut.SearchHit,
     thread: taut.Thread,
 ) -> tuple[
     taut.TautClient,
@@ -59,6 +62,7 @@ def _typed_public_surface(
     taut.MessageDeletion,
     taut.MessageReaction,
     taut.Notification,
+    taut.SearchHit,
     taut.Thread,
 ]:
     return (
@@ -70,6 +74,7 @@ def _typed_public_surface(
         deletion,
         reaction,
         notification,
+        search_hit,
         thread,
     )
 
@@ -92,6 +97,45 @@ def test_exception_leaves_are_public_exports() -> None:
     assert "MessageReaction" in taut.__all__
     assert taut.Channel.__name__ == "Channel"
     assert "Channel" in taut.__all__
+    assert taut.SearchHit.__name__ == "SearchHit"
+    assert "SearchHit" in taut.__all__
+
+
+def test_search_hit_is_exact_frozen_slotted_public_value() -> None:
+    """[SRCH-5.2] Search hits have one exact typed public shape."""
+
+    from taut.client import SearchHit
+
+    assert taut.SearchHit is SearchHit
+    assert SearchHit.__module__ == "taut.client"
+    assert [field.name for field in fields(SearchHit)] == [
+        "thread",
+        "ts",
+        "from_id",
+        "from_name",
+        "kind",
+        "text",
+        "thread_kind",
+        "channel",
+        "parent",
+        "members",
+    ]
+    hit = SearchHit(
+        thread="general",
+        ts=1786032926849409024,
+        from_id="m_abcd1234abcd1234abcd1234ab",
+        from_name="van",
+        kind="message",
+        text="parser is green",
+        thread_kind="channel",
+        channel="general",
+        parent=None,
+        members=None,
+    )
+
+    assert not hasattr(hit, "__dict__")
+    with pytest.raises(FrozenInstanceError):
+        hit.text = "changed"  # type: ignore[misc]
 
 
 def test_lazy_public_exports_cache_and_unknown_names_fail_normally() -> None:
@@ -147,6 +191,7 @@ def test_lazy_exports_are_the_owning_module_objects() -> None:
         MessageDeletion,
         MessageReaction,
         Notification,
+        SearchHit,
         TautClient,
         Thread,
     )
@@ -159,6 +204,7 @@ def test_lazy_exports_are_the_owning_module_objects() -> None:
     assert taut.MessageDeletion is MessageDeletion
     assert taut.MessageReaction is MessageReaction
     assert taut.Notification is Notification
+    assert taut.SearchHit is SearchHit
     assert taut.TautClient is TautClient
     assert taut.TautWatcher is TautWatcher
     assert taut.Thread is Thread

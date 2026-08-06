@@ -367,6 +367,7 @@ def test_static_builtins_do_not_depend_on_installed_metadata() -> None:
         "read",
         "inbox",
         "log",
+        "search",
         "list",
         "watch",
         "who",

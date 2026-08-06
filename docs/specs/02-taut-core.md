@@ -27,6 +27,8 @@ In scope:
 - the read model: cursors, unread state, chat-history peek discipline, and
   notification-inbox claim discipline
 - exact-message inspection and author-owned physical deletion
+- cursor-neutral full-text message search governed by
+  `docs/specs/06-search.md` [SRCH-1] through [SRCH-12]
 - the CLI surface, the `TautClient` Python API, and the `TautWatcher`
 - the trust model and its limits
 
@@ -222,9 +224,12 @@ selection.
 
 ### [TAUT-3.3] Sidecar schema
 
-Taut-owned tables are created through `Queue.sidecar(transaction=True)`
-with idempotent DDL at `taut init` time and verified (created if missing)
-on first write access. All tables are prefixed `taut_`.
+Core state tables are created through `Queue.sidecar(transaction=True)` with
+idempotent DDL at `taut init` time and verified (created if missing) on first
+core write access. They are prefixed `taut_`. Disposable `taut_search_*`
+provider objects are excluded from the core schema and core `schema_version`;
+they initialize lazily on first search and follow [SRCH-6] and [SRCH-11]. A
+search-schema failure cannot make `taut init` or a non-search operation fail.
 
 ```sql
 CREATE TABLE IF NOT EXISTS taut_meta (
@@ -323,6 +328,11 @@ Schema evolution is additive within the current schema generation when possible
 require an explicit migration plan. Older taut versions encountering a newer
 `schema_version` must refuse with a clear error rather than guess.
 
+Search adds disposable `taut_search_*` provider tables under [SRCH-6] and
+[SRCH-11]. They are derived state inside the resolved SimpleBroker target, not
+a second message authority. Search schema/version failure is isolated from the
+core sidecar schema and cannot block non-search operations.
+
 ### [TAUT-3.4] SimpleBroker interop
 
 `.taut.db` is a standard SimpleBroker database. `broker -f .taut.db list`,
@@ -380,8 +390,11 @@ an accident. Two consequences are binding:
 - Exact-message operations use only SimpleBroker's public pending peek and
   queue-scoped delete APIs. Message timestamps are globally unique within one
   resolved broker, but deletion still requires Taut to locate the registered
-  chat queue before calling `Queue.delete(message_id=...)`. Taut does not
-  query private broker tables or maintain a message-id index or cache.
+  chat queue before calling `Queue.delete(message_id=...)`. Exact-message
+  operations do not query private broker tables and do not rely on the
+  disposable search index. Search may map message IDs to derived segments
+  solely for [SRCH-4.2] candidate hydration; canonical lookup and deletion
+  still locate registered chat queues and use public exact-ID APIs.
 
 ### [TAUT-3.5] One timestamp domain
 
@@ -998,6 +1011,7 @@ later token is command-local. `--version` is a root action before the verb.
 | `read [THREAD_OR_DM]` | Show unread (all joined threads when bare, grouped), advance each selected cursor through displayed messages. An explicit DM may be `@name-or-alias` or a stable `dm.d_*` handle and must already be accessible under [IAN-5.3]. Reads are paged at up to 1,000 unread messages per thread; rerun until exit 2 to drain. Subthreads retain implicit-join behavior. | 0 showed messages; 1 error; 2 nothing unread / unrecognized member / not a member or accessible conversation |
 | `inbox` | Claim and show pending notifications for the acting member. Notifications are consumed; source chat history is not changed. | 0 showed notifications; 1 error; 2 nothing pending |
 | `log THREAD_OR_DM [--since TS] [--limit N]` | Show cursor-neutral history. A DM may be `@name-or-alias` or a stable `dm.d_*` handle and requires actor access under [IAN-5.3]. `--limit N` selects the most recent N messages after `--since`, rendered chronologically. | 0; 1 error; 2 empty / unrecognized member / inaccessible conversation |
+| `search QUERY... [--channel CHANNEL]... [--dm TARGET]... [--dms] [--from MEMBER] [--kind KIND]... [--before MSG_ID] [--limit N] [--reindex]` | Cursor-neutral search over registered chat and actor-accessible DMs. Query, scope, freshness, and repair follow spec 06. | 0 hits; 1 usage, malformed selector, provider, or index error; 2 no hits or well-formed explicit selector miss |
 | `list [--all | --dms]` | Bare: joined threads with unread state. `--all`: every registered thread. `--dms`: every valid actor-accessible DM, including read and empty conversations, in [TAUT-7.8] order. The two flags are mutually exclusive. | 0; 2 when the selected actor-scoped view is empty |
 | `watch [THREAD_OR_DM ...]` | Live-follow selected existing memberships plus the acting member's notification inbox. DM filters may be `@name-or-alias` or stable handles; they resolve once and deduplicate before watcher construction. Bare watch retains dynamic all-membership behavior. | 0 on clean stop; 1 error; 2 unrecognized member / explicit thread or DM miss |
 | `channel rename OLD NEW` | Rename a channel and every registered one-level sub-thread under it. Uses SimpleBroker's public queue rename API and sidecar rename markers. Does not rewrite message bodies. | 0; 1 error/collision/invalid name; 2 no such channel |
@@ -1054,6 +1068,10 @@ exit classes apply equally to built-in and extension command adapters.
   a defined JSON shape** — an agent must never have to guess:
   - message objects (`message show`, `read`, `log`, `watch`): `thread`, `ts`, `from_id`,
     `from`, `kind`, `text`;
+  - search hit objects: exactly `thread`, `ts`, `from_id`, `from`, `kind`,
+    `text`, `thread_kind`, `channel`, `parent`, and `members`, with nullability
+    and facet semantics defined by [SRCH-5.3]. They always contain hydrated
+    source text and never a provider score or snippet-only substitute;
   - writing verbs (`say`, `reply`) echo the message object they wrote, with the
     same fields as read messages. A blank attempt filtered under [TAUT-6.5]
     writes no message, emits no human or JSON record, and exits 2. For a
@@ -1129,10 +1147,15 @@ argument-parsing layer over it — every CLI behavior above must be
 reachable through one public client method with the same semantics (the
 SimpleBroker/Weft layering rule: CLI and library share one operational
 model). Public exports from `taut`: `TautClient`, `TautWatcher`, `Message`,
-`MessageDeletion`, `MessageReaction`, `Channel`, `Thread`, `Member`, the
+`MessageDeletion`, `MessageReaction`, `SearchHit`, `Channel`, `Thread`, `Member`, the
 exception hierarchy rooted at `TautError` including `BlankMessageError`,
 `escape_terminal_text`, and `__version__`. The package ships typed
 (`py.typed`).
+
+`SearchHit` and the exact
+`TautClient.search(...) -> list[SearchHit]` signature are defined by
+[SRCH-5.2]. The CLI adapter owns only argument translation and rendering; the
+client owns query, scope, freshness, hydration, and filtering semantics.
 
 `Channel` is a frozen, slotted public value with exact fields
 `name: str`, `topic: str | None`, `topic_updated_ts: int | None`,
@@ -1590,6 +1613,11 @@ implied by docs or output.
   thread, and never a cursor pointing past messages that were skipped.
   Sidecar writes are idempotent upserts so retrying the command
   converges.
+- Search invalidation enqueue and detached worker launch occur only after the
+  source operation's existing success point. Both are auxiliary best-effort
+  work: failure warns but never downgrades the source result or changes cursor
+  or notification ordering. [SRCH-10] reconciles the deliberate
+  commit-before-enqueue crash window.
 - Locked/busy database: SimpleBroker's busy-timeout and retry discipline apply;
   surfaced errors name the database path when the broker budget is exhausted.
   Taut does not add a second retry wrapper for corruption-shaped page-read,
@@ -1851,9 +1879,13 @@ refresh remains the portable correctness path.
 
 Implementation boundaries:
 
-- `extensions/taut_pg` is packaging, docs, and PG-only tests. It does not own
-  target resolution, queue construction, sidecar SQL, identity, CLI behavior,
-  or watcher behavior.
+- `extensions/taut_pg` owns packaging, docs, PG-only tests, and the installed
+  PostgreSQL search provider defined by [SRCH-7] and [SRCH-11.2]. It owns no
+  target resolution, queue construction, identity, general CLI behavior,
+  watcher behavior, or search domain semantics. PostgreSQL search DDL and
+  query translation stay in the extension, but operate only through the
+  core-supplied public `Queue.sidecar()` accessor and the fixed search-schema
+  advisory lock. All other Taut sidecar SQL remains core-owned.
 - The backend plugin is SimpleBroker's `simplebroker-pg` plugin, exposed
   through SimpleBroker's public backend entry point.
 - Shared root tests marked `shared` must run against SQLite in the default
@@ -2292,6 +2324,9 @@ installing `taut-chat`.
 
 ## Related Plans
 
+- `docs/plans/2026-08-06-taut-search-plan.md` — reviewed search spec promotion,
+  core/SQLite implementation, PostgreSQL provider, deferred indexing, and
+  cross-backend verification.
 - `docs/plans/2026-07-31-simplebroker-6-reconciliation-plan.md` —
   SimpleBroker 6.0.0 and SimpleBroker-PG 3.5.0 compatibility reconciliation.
 - `docs/plans/2026-07-28-channel-topics-plan.md` — top-level channel topics,
