@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Added cursor-neutral full-text search across visible channel and direct-message
+  history through the Python client and `taut search`. Search supports stable
+  JSON facets, channel and DM scope, author, kind, time, and result-limit
+  filters, plus an explicit disposable-index rebuild.
+- Kept message writes independent of indexing through durable internal
+  SimpleBroker work queues, atomic move-based claims, 60-second stale-claim
+  recovery, revision fencing, and source-history reconciliation. Core uses
+  SQLite FTS5; `taut-pg` uses PostgreSQL's built-in text search and GIN without
+  requiring an optional server extension. Both backends share the public API
+  and safety contract while retaining backend-native lexical behavior.
 - Make the MCP native-activity pacing proof independent of event-loop
   scheduling delays while retaining a deterministic fake-clock assertion for
   the production 0.5-second coalescing boundary.
