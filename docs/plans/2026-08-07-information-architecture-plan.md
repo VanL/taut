@@ -1,11 +1,10 @@
 # Information Architecture Plan (Diataxis Cutover)
 
-Status: draft — revision 2 after round-1 plan review (codex, BLOCKED,
-F1–F11 all accepted and applied to this text); **blocked on a fixed
-baseline: the dump/load WIP (spec 08, [PIO-*]) must land before the
-equivalence-ledger and registry slices run**, since it changes the
-registry's row set. Revision 1 was edited in place (uncommitted
-draft; no supersession ceremony owed).
+Status: draft — revision 2 reviewed (round-1 F1–F11 applied); the
+blocking dependency has cleared and **Slice 1 is complete**: baseline
+pinned at `2313c3c` (dump/load landed at 9410b6b; spec 08 [PIO-1..11]
+stable), all 24 registry row codes re-verified at the pin, persistence
+row added. Slices 2–7 (equivalence ledger onward) are ready to run.
 Class: 5+P — creates `docs/specs/product-section-registry.md`, amends
 [DOM-10.1]'s enumerated source sets, and restructures the README (the
 contract of record). Effective: class 5 plus pre-landing
@@ -28,11 +27,11 @@ and the layered `docs/README.md` ownership statement; widen the
 
 ## Spec Baseline
 
-To be pinned when the blocking dependency clears: the commit at which
-the dump/load work has landed (spec 08 `[PIO-*]` stable in the spec
-tree). Mid-flight claims are against that identifier; this plan does
-not run its registry or ledger slices against a moving worktree
-(round-1 F1; the WIP changed during the review itself).
+- `2313c3c` (2026-08-07) — dump/load landed (its 9410b6b), first
+  sweep complete (its a86d669), tree clean. Spec 08
+  `08-persistence-io.md` [PIO-1] through [PIO-11] stable. All
+  registry row codes in D1 re-verified present at this pin
+  (24/24). Mid-flight claims are against this identifier.
 
 ## Source Documents
 
@@ -116,7 +115,7 @@ pinned baseline before promotion):
 | Summon | `canonical-spec` | [SUM-*] (exact sections enumerated at promotion) |
 | MCP | `canonical-spec` | [MCP-*] (enumerated at promotion) |
 | Search | `canonical-spec` | [SRCH-*] (enumerated at promotion) |
-| Persistence / dump-load | added at the pinned baseline from landed [PIO-*] |
+| Persistence / dump-load (composite file contract, dump, load, failure modes) | `canonical-spec` | [PIO-4], [PIO-6], [PIO-7], [PIO-9] (surfaces [PIO-3]; verification [PIO-11]) |
 | Install / quickstart / roadmap / Recommended For | human entry, not SoT rows |
 
 No per-row Gate column (F9): global [DOM-10.1] path and CLI-claim
@@ -201,6 +200,13 @@ conflict rule, promotion rule). AGENTS wiring already exists
 ## Execution Log
 
 (append-only)
+
+- 2026-08-07: Slice 1 executed. Blocking dependency cleared: dump/load
+  landed (9410b6b, plan completed) and the first full coalescing
+  sweep ran in the other session (a86d669; the sweep handoff file was
+  consumed and deleted as designed). Baseline pinned `2313c3c`; all
+  24 D1 registry row codes verified present at the pin; persistence
+  row derived from landed [PIO-1..11]. Slices 2–7 unblocked.
 
 - 2026-08-07: Owner-directed README currency pass, executed ahead of
   the blocked structural slices as its own unit (Class 2 against the
