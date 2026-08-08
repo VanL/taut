@@ -79,6 +79,10 @@ replaces standard tools, resource reads, or subscriptions.
 
 ## Tool Notes
 
+`read` and `log` accept the same direct-message selectors as the CLI
+(`@name-or-alias` routes and exact stable `dm.d_*` handles), and `list`
+with `dms=true` returns the attached member's durable DM directory.
+
 `message_show(workspace, token, msg_id)` accepts an exact 19-digit message id
 and advances the selected member's seen cursor through that message. Use
 `log(workspace, token, ...)` for cursor-neutral inspection.

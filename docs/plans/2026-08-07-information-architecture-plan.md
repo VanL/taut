@@ -1,10 +1,12 @@
 # Information Architecture Plan (Diataxis Cutover)
 
-Status: draft — revision 2 reviewed (round-1 F1–F11 applied); the
-blocking dependency has cleared and **Slice 1 is complete**: baseline
-pinned at `2313c3c` (dump/load landed at 9410b6b; spec 08 [PIO-1..11]
-stable), all 24 registry row codes re-verified at the pin, persistence
-row added. Slices 2–7 (equivalence ledger onward) are ready to run.
+Status: completed — all seven slices executed. Slice 1 pinned the
+baseline at `2313c3c`; slices 2–7 ran 2026-08-08 (equivalence ledger,
+registry + [DOM-10.1] promotion with red-first probes, README
+extraction with per-block ledger, kernel/llms.txt/docs-README
+surfaces, full gates + rendered-link inspection, and the
+different-family completion review with all findings applied or
+answered below).
 Class: 5+P — creates `docs/specs/product-section-registry.md`, amends
 [DOM-10.1]'s enumerated source sets, and restructures the README (the
 contract of record). Effective: class 5 plus pre-landing
@@ -152,10 +154,64 @@ SimpleBroker's; surface-role table, duplication-resolution rule,
 conflict rule, promotion rule). AGENTS wiring already exists
 (newcomer item 1 — F11 no-op removed).
 
+## Equivalence Ledger (Slice 2, 2026-08-08)
+
+Fourteen concern families audited two-way (README promise ↔ owning
+spec) by four independent read-only agents with file:line evidence;
+~150 distinct promises checked. Family outcomes:
+
+| Family | Outcome |
+|--------|---------|
+| Reactions | COVERED (16/16 promises spec-stated, no contradictions) |
+| Search | COVERED (15/15); [SRCH-N] owner set enumerated for the registry |
+| Persistence / dump-load | COVERED (15/15); registry row widened to [PIO-2..7,9,10,11] |
+| Terminal escape policy | COVERED (22/22); one wording narrowing fixed README-side |
+| MCP | COVERED (18/18); "workspace-scoped" phrasing fixed README-side |
+| Extension packaging/release | COVERED except pipx mechanics — classified README how-to (human entry row) |
+| Threads/envelope/read model | COVERED; envelope promises owned by [TAUT-6.1]/[TAUT-6.3] (row widened); suffix rule rescoped to `reply` README-side |
+| CLI surface and JSON | GAPS fixed README-side: `whoami --json` example lacked the contractual `aliases` field; inbox row understated the four notification types; row widened to [TAUT-6.5] |
+| Watcher / live following | COVERED for behavior; burst/backoff + WAL + zero-process idle promises are README-owned (registry carve-out) |
+| Identity/addressing/names | GAPS fixed README-side (evidence list aligned to [IAN-3.2]); shells/wrappers heuristic + diagnostic block README-owned; row widened to [TAUT-8.2]/[TAUT-10] |
+| DMs and handles | COVERED; row widened to [IAN-5.1]/[IAN-9]/[TAUT-7.8]; sole-creator framing README-owned |
+| Notifications/inboxes | GAPS fixed README-side (types list); watch-claims generality, crash framing, no-pointer-for-ordinary-activity README-owned |
+| Storage/workspace/trust | COVERED except the [TAUT-9] Postgres-boundary tense (deviation row below); no-daemon headline README-owned; row widened to [TAUT-3.4] |
+| Summon | COVERED except the stale codex "named follow-on" roadmap claim, fixed README-side; trust bullets co-owned by [TAUT-9] (row annotated) |
+
+Every README-owned promise inside a registered family is listed in the
+registry's "README-owned promises" section — nothing ceded silently
+(F3). README-side fixes were applied in the extraction slice with
+ledger rows below.
+
+## Extraction Ledger (Slice 4, 2026-08-08)
+
+One row per removed README block; reviewer = the slice-7 completion
+review. All destinations verified present before removal.
+
+| Removed block (pre-edit span) | Destination / surviving duplicate | Hazard preserved | Pointer + gate retargets |
+|-------------------------------|-----------------------------------|------------------|--------------------------|
+| Postgres install + `.taut.toml` config depth (README §Postgres Extension, ~L163–201) | `extensions/taut_pg/README.md` Requirements/Installation/Configuration (verified duplicate incl. the exact toml block) | DSN-secret warning survives verbatim in the pg README (its L56–61) | README keeps compact statement + absolute link; path/CLI gates unchanged |
+| Reactions config block (~L203–219) | Compact statement in new §Project configuration; exact contract [TAUT-3.2] (verified, audit family COVERED 16/16) | Restart-after-change requirement kept in the compact statement | Spec link added; no gate retarget |
+| Summon usage/example block (~L230–248) | `extensions/taut_summon/README.md` Usage (verified: summon/dismiss/status commands present) + [SUM-3]/[SUM-9] | Trust-boundary bullet stays in README Trust Model (co-owned [TAUT-9]) | Absolute links to extension README + spec + impl docs |
+| MCP install/run + dev-checkout block (~L266–279) and tool-name enumeration (~L283–288) | `extensions/taut_mcp/README.md` Install and Run + Tool Notes (verified: pipx, uv checkout lines, `--claude-channel`) + [MCP-3]/[MCP-5] | "wired ≠ published" fact kept compact in README | Absolute links; tool-count phrasing corrected to "20 tools (17 CLI-shaped …)" per audit |
+| Working With Agents shell recipes + `CLAUDE.md`/`AGENTS.md` pattern (~L557–576) | `docs/agent-kernel.md` (sole recipe home; pattern block reproduced there verbatim) | rejoin-suggestion recipe, notification-drain and vanilla-`broker read` hazards all present in the kernel | README keeps compact statement + kernel link; kernel added to both [DOM-10.1] source lists (red-first probes recorded below) |
+
+Not removals, applied in the same slice (audit-driven README fixes):
+`whoami --json` example gains contractual `aliases`; inbox row and
+Weird-entry notification kinds corrected to four types; identity
+evidence list aligned to [IAN-3]; `MSG_ID` suffix rule rescoped to
+`reply`; codex "named follow-on" replaced with the shipped PTY-hosted
+provider statement; conformance-suite wording softened to the spec's
+claim; every relative link converted to an absolute GitHub URL (F10);
+owning links added to Trust Model, Identity Trick, and every
+Weird-but-Aren't entry; Documentation Map updated for the landed
+registry, kernel, and llms.txt.
+
 ## Deviation Log
 
 | Spec ref | Planned behavior | Actual behavior | Rationale | Spec proposal |
 |----------|------------------|-----------------|-----------|---------------|
+| [TAUT-9] | Registry cedes the trust-boundary family cleanly | Spec text still frames the Postgres boundary as future ("When a server-backed broker arrives") while `taut-pg` is shipped; README states it present-tense | Spec prose is stale relative to shipped behavior; this plan may not add or revise normative spec text (F1), so the promise stays README-owned via the registry conflict rule | Routed, not pending: a future spec-alignment unit updates [TAUT-9]'s tense; recorded in the registry's README-owned list until then |
+| [IAN-3], [IAN-5.3], [IAN-7], [TAUT-2], [TAUT-8.4] | All family promises spec-stated before ceding | Eleven promises have no spec sentence (enumerated in the registry's README-owned section) | Same F1 boundary: absorbing them is future spec work, not registry work | Routed, not pending: each names its natural home in the registry; promotion follows the registry's promotion rule |
 
 ## Tasks (dependency-ordered; slices 2+ blocked on the pinned baseline)
 
@@ -195,11 +251,32 @@ conflict rule, promotion rule). AGENTS wiring already exists
 
 | Date | Stage | Reviewer / result | Findings and disposition |
 |------|-------|-------------------|--------------------------|
+| 2026-08-08 | Slice-7 completion review | codex CLI (two scoped runs after a full-diff timeout; read-only) — run 1 (new surfaces + gates): 3×P1, 2×P2; run 2 (README extraction): 0×P1, 4×P2. All applied or answered: P1 docs-README conflict rule aligned to the promise-granular rule; P1 registry overlap semantics defined explicitly (concern-level non-overlap, shared owner sections; full README-section remap declined as the round-1-approved D1 shape); P1 the stale [TAUT-9] Postgres-tense promise added to the registry's README-owned list as an explicit promise-level exception; P2 same-repo GitHub-URL liveness test added (red-first via mutated URL, then green); P2 kernel gate claim narrowed to grammar-level checking; P2 init-`--json` Postgres contract restated in the pg README; P2 MCP DM-selector/`dms=true` facts restated in the mcp README; P2 [SUM-1] pattern pointer verified to resolve through the retained README section (no spec edit); P2 Documentation Map gains the third extension README. |
 | 2026-08-07 | Round-1 plan review | codex CLI (900 s bound, completed in bound) — **BLOCKED**, F1–F11 | All eleven accepted and applied in revision 2: F1 full Class-5 apparatus added (baseline gate, exact delta drafts, strategy A, deviation log; "no new normative claims" corrected); F2 registry owners redrawn non-overlapping with exact codes (CLI → [TAUT-8.1]/[TAUT-8.2]; reactions resolved `canonical-spec` via [TAUT-3.2]/[TAUT-7.7]/[IAN-7]; packaging [TAUT-12.5]/[SUM-3]/[MCP-3]; DM row [IAN-5.3]/[IAN-6.4]; broad core row split); F3 blocking two-way equivalence ledger added as its own slice; F4 both gate-grammar sources named and updated together; F5 probes redesigned (new source class; separate CLI-claim probe); F6 Development section kept intact with the implementation-doc ownership preserved; F7 extraction ledger format specified per removed block; F8 guide set slimmed (kernel owns agent recipes; extension READMEs are the extension homes; no design-notes; configuration guide default-no); F9 per-row Gate column dropped for one global hygiene statement + exact mappings only where real; F10 absolute-URL policy + rendered-link inspection gate; F11 census completed (Recommended For, MCP disposition), AGENTS no-op removed, commands named exactly. **Blocking dependency recorded: slices 2+ wait for the dump/load landing (spec 08 [PIO-*]) — the worktree changed during the review itself.** |
 
 ## Execution Log
 
 (append-only)
+
+- 2026-08-08: Slices 2–7 executed in one session. Slice 2: four
+  parallel read-only agents audited ~150 README promises across the
+  14 families two-way; outcomes in the Equivalence Ledger section.
+  Slice 3: registry landed with audit-widened owner rows and
+  enumerated [SUM-N]/[MCP-N]/[SRCH-N]/[PIO-N] codes; [DOM-10.1]
+  source sets + both pytest source lists + both membership tests
+  updated; both red-first probes fired in docs/agent-kernel.md (path
+  dangler and `taut frobnicate` claim), watched red, removed.
+  Slice 4: extraction per the Extraction Ledger; audit-driven accuracy
+  fixes applied; all README links absolute. Slice 5: kernel, llms.txt,
+  docs/README layered ownership statement. Slice 6: all named gates
+  green (58 sources, 1096 path claims, 238 command claims); GFM
+  rendered-link inspection — 72 targets all absolute-or-anchor, 12
+  anchors resolve. Slice 7: codex completion review (row above), all
+  findings applied or answered; index flipped to completed in the
+  landing change. Deviation from the plan's landing protocol: the
+  synthetic HEAD+mine blob staging was unnecessary — no concurrent
+  session held WIP in the shared files at landing time; ordinary
+  staging was used and the tree was clean.
 
 - 2026-08-07: Slice 1 executed. Blocking dependency cleared: dump/load
   landed (9410b6b, plan completed) and the first full coalescing

@@ -67,6 +67,11 @@ taut init
 taut join general
 ```
 
+`taut init` initializes the configured schema and tables; it does not
+provision the database. `taut init --json` reports `db` as the resolved
+backend display target, and for Postgres `created` is `false` because
+Taut has no public backend creation signal.
+
 `TAUT_DB`, `--db`, and `db_path=` remain filesystem path selectors. Use
 `.taut.toml` to select Postgres.
 

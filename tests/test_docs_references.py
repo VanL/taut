@@ -97,7 +97,9 @@ def _markdown_path_sources() -> list[Path]:
         REPO_ROOT / "README.md",
         REPO_ROOT / "AGENTS.md",
         REPO_ROOT / "CLAUDE.md",
+        REPO_ROOT / "llms.txt",
         REPO_ROOT / "docs" / "README.md",
+        REPO_ROOT / "docs" / "agent-kernel.md",
     ]
     sources += sorted((REPO_ROOT / "extensions").glob("*/README.md"))
     sources += sorted((REPO_ROOT / "docs" / "agent-context").glob("*.md"))
@@ -270,10 +272,34 @@ def test_external_and_unknown_citation_classification() -> None:
     )
 
 
+SAME_REPO_URL_RE = re.compile(
+    r"https://github\.com/VanL/taut/(?:blob|tree)/main/([A-Za-z0-9_./-]+)"
+)
+
+# Surfaces whose links are absolute GitHub URLs by policy (the README is
+# the PyPI long description; llms.txt is an external link index). The
+# path-claim grammar cannot see absolute URLs, so this check keeps those
+# links live: every same-repository URL must name an existing path.
+ABSOLUTE_URL_SOURCES = ("README.md", "llms.txt", "docs/agent-kernel.md")
+
+
+def test_same_repo_github_urls_resolve() -> None:
+    missing: list[str] = []
+    for name in ABSOLUTE_URL_SOURCES:
+        source = REPO_ROOT / name
+        for lineno, line in enumerate(source.read_text("utf-8").splitlines(), start=1):
+            for target in SAME_REPO_URL_RE.findall(line):
+                if not (REPO_ROOT / target.rstrip("/")).exists():
+                    missing.append(f"{name}:{lineno}: {target}")
+    assert not missing, "dead same-repo GitHub URLs:\n" + "\n".join(missing)
+
+
 def test_maintained_markdown_sources_cover_current_routing_surfaces() -> None:
     relative = {path.relative_to(REPO_ROOT) for path in _markdown_path_sources()}
 
     assert Path("README.md") in relative
+    assert Path("llms.txt") in relative
+    assert Path("docs/agent-kernel.md") in relative
     assert Path("extensions/taut_pg/README.md") in relative
     assert Path("extensions/taut_summon/README.md") in relative
     assert Path("docs/agent-context/runbooks/testing-patterns.md") in relative

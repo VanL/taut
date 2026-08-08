@@ -8,7 +8,9 @@ Quick pointers to the key guidance documents in this repository.
 |------|---------|
 | `AGENTS.md` | Canonical agent entry point |
 | `CLAUDE.md` | Alias for tools that expect Claude-style root guidance |
-| `README.md` | Product face and current CLI/API behavior contract (see `docs/specs/02-taut-core.md`) |
+| `README.md` | Product face and, per section, contract of record; ceded sections resolve through `docs/specs/product-section-registry.md` |
+| `llms.txt` | llmstxt.org link index for language models (absolute URLs) |
+| `docs/agent-kernel.md` | Agent product-use kernel: the sole home of agent-executable recipes; a view, never a contract |
 | `bin/release.py` | Four-package release helper for manifest-owned metadata/lock reconciliation, one universal default precheck sequence with an explicit human override, exact-path local preparation commits, non-mutating checks, fail-closed PyPI/GitHub publication-state fences, repository-settings preflight, namespaced tags, and coordinated `all --version` batches |
 | `bin/check-plan-status-index` | Structured plan status index gate: completeness, closed status/exemplar vocabulary, and table well-formedness |
 | `bin/check-doc-paths` | Pytest-free path-claim gate over the maintained guidance surfaces plus `docs/coalescing.md` and `docs/plans/README.md`; reuses the claim grammar in `tests/test_docs_references.py` |
@@ -62,6 +64,7 @@ Quick pointers to the key guidance documents in this repository.
 |------|---------|
 | `docs/specs/00-specs-index.md` | Numbered entry point for specs |
 | `docs/specs/01-development-documentation-operating-model.md` | Governing spec for the documentation workflow |
+| `docs/specs/product-section-registry.md` | Authority table naming the winning contract (README section or spec) per behavior family, with promise-granular conflict and promotion rules |
 | `docs/specs/02-taut-core.md` | Taut core spec: storage, threads, envelope, read model, surfaces, trust model |
 | `docs/specs/03-identity-addressing-notifications.md` | Identity, addressing, and notifications spec: member ids, names, DMs, queue namespace, rename |
 | `docs/specs/04-summon.md` | Summon extension spec: agent harness as member, injection ears, CLI mouth, adapters, session ledger, control plane |

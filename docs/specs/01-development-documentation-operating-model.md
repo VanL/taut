@@ -289,8 +289,9 @@ and performs no ambient entry-point discovery, client construction, project
 resolution, database access, or command execution. Full positional and shell
 grammar remain outside this claim gate.
 
-The exact source set is `README.md`, `AGENTS.md`, `CLAUDE.md`,
-`docs/README.md`, `docs/coalescing.md`, `docs/plans/README.md`,
+The exact source set is `README.md`, `AGENTS.md`, `CLAUDE.md`, `llms.txt`,
+`docs/README.md`, `docs/agent-kernel.md`, `docs/coalescing.md`,
+`docs/plans/README.md`,
 `extensions/*/README.md`, `docs/agent-context/*.md`,
 `docs/agent-context/runbooks/*.md`, `skills/**/*.md`,
 `docs/implementation/*.md`, and `docs/specs/*.md`. `CHANGELOG.md`,

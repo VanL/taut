@@ -2,6 +2,41 @@
 
 This repository uses a docs-first operating model for agentic development.
 
+## Layers and Ownership
+
+Documentation is layered; each surface has one role, and overlap is
+resolved by ownership, not duplication:
+
+| Surface | Role |
+|---------|------|
+| `README.md` (root) | Human product entry; per section, the contract of record until the registry cedes that section to a spec |
+| `docs/specs/product-section-registry.md` | Authority table: the winning contract (README section or spec) for each behavior family |
+| `docs/program-theory.md` | Conceptual account — what kind of system Taut is (its THEORY-7 defines the registry mechanism) |
+| `docs/specs/` | Exact intended behavior, invariants, and verification rules (normative) |
+| `docs/agent-kernel.md` | The sole home of agent-executable product recipes; a view, never a contract |
+| `llms.txt` (root) | Link index for language models (llmstxt.org format; absolute URLs) |
+| `extensions/*/README.md` | Extension depth: requirements, installation, configuration, usage |
+| `CHANGELOG.md` (root) | Released behavior deltas |
+| `docs/plans/` | Dated execution records (immutable history once completed) |
+| `docs/implementation/` | Current rationale, ownership, boundaries, repository maps |
+| `docs/lessons.md`, `docs/coalescing.md` | Incident ledger and its compaction state |
+
+Three rules keep the layers honest:
+
+- **Duplication resolution:** a behavior statement lives once, in its
+  owning surface; any other surface restates at most a compact summary
+  plus a link. When two surfaces disagree, fix the non-owner.
+- **Conflict:** for a family registered `canonical-spec`, the spec
+  wins **where it speaks**, and the README restates and links. Ceding
+  is promise-granular: a README promise the owning spec does not state
+  (or states only in recorded-stale form — see the registry's
+  README-owned list) remains README-owned; do not delete or "correct"
+  it against spec silence. For a `readme-only` family, the README is
+  the contract until promotion.
+- **Promotion:** a `readme-only` family becomes spec-owned by landing
+  the spec text, flipping its registry row, and binding the README
+  section to the spec — never by silent drift.
+
 ## Structure
 
 - `agent-context/`: shared context loaded by agents at session start

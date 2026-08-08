@@ -9,15 +9,18 @@ config, no accounts. One SQLite file by default; Postgres when you need it.*
 
 > **Status:** alpha, and real: the core ships on PyPI as
 > [`taut-chat`](https://pypi.org/project/taut-chat/) with immutable
-> GitHub Releases (see [CHANGELOG.md](CHANGELOG.md) for released
+> GitHub Releases (see [CHANGELOG.md](https://github.com/VanL/taut/blob/main/CHANGELOG.md) for released
 > versions). This README is the product contract, written first on
 > purpose — before any spec or code — and kept current against the
-> specs below. The conceptual account of what kind of system Taut is
-> lives in [`docs/program-theory.md`](docs/program-theory.md). The core specification lives in
-> [`docs/specs/02-taut-core.md`](docs/specs/02-taut-core.md); identity,
+> specs below. Per section, the
+> [product-section registry](https://github.com/VanL/taut/blob/main/docs/specs/product-section-registry.md)
+> names the winning contract (this README or an owning spec).
+> The conceptual account of what kind of system Taut is
+> lives in [`docs/program-theory.md`](https://github.com/VanL/taut/blob/main/docs/program-theory.md). The core specification lives in
+> [`docs/specs/02-taut-core.md`](https://github.com/VanL/taut/blob/main/docs/specs/02-taut-core.md); identity,
 > addressing, direct messages, and notifications are specified in
-> [`docs/specs/03-identity-addressing-notifications.md`](docs/specs/03-identity-addressing-notifications.md),
-> and search in [`docs/specs/06-search.md`](docs/specs/06-search.md).
+> [`docs/specs/03-identity-addressing-notifications.md`](https://github.com/VanL/taut/blob/main/docs/specs/03-identity-addressing-notifications.md),
+> and search in [`docs/specs/06-search.md`](https://github.com/VanL/taut/blob/main/docs/specs/06-search.md).
 
 ```bash
 $ taut init
@@ -70,7 +73,8 @@ default, or a few machines through the Postgres extension.
   [Quick Start](#quick-start)
 - [The Identity Trick](#the-identity-trick) ·
   [Command Reference](#command-reference) ·
-  [Working With Agents](#working-with-agents)
+  [Working With Agents](#working-with-agents) ·
+  [Python Library](#python-library)
 - [Trust Model](#trust-model-read-this-before-filing-the-issue) ·
   [Things That Look Weird but Aren't](#things-that-look-weird-but-arent)
 - [Documentation Map](#documentation-map) ·
@@ -161,133 +165,79 @@ Requirements: Python 3.11+. Runtime dependencies are `simplebroker>=6.0.2`
 
 ### Postgres Extension
 
-`taut-pg` is a separate distribution. Install it into the same environment as
-`taut-chat`; it brings in `simplebroker-pg` and the Postgres driver
-dependencies.
-Extensions use their own tags (`taut_pg/vX.Y.Z`, `taut_summon/vX.Y.Z`), so
-their versions do not generally have to match the core package version. The
-first PyPI publication is one coordinated version across all four
-distributions:
+`taut-pg` is a separate distribution: the same commands on a
+project-configured Postgres database. Install it into the same
+environment as `taut-chat` (it brings in `simplebroker-pg` and the
+driver dependencies), then select Postgres with a `.taut.toml` in the
+project root and run `taut init` normally. `TAUT_DB`, `--db`, and
+`db_path=` remain filesystem path selectors; `.taut.toml` is the
+Postgres door. Extensions use their own tags (`taut_pg/vX.Y.Z`,
+`taut_summon/vX.Y.Z`), so their versions do not generally have to
+match the core package version; the first PyPI publication is one
+coordinated version across all four distributions.
 
-```bash
-pipx install taut-chat
-pipx inject taut-chat taut-pg
-```
+Requirements, installation, the exact `.taut.toml` shape, and the
+credential-handling warning live in the
+[taut-pg README](https://github.com/VanL/taut/blob/main/extensions/taut_pg/README.md).
 
-The Postgres database must already exist. Create `.taut.toml` in the project
-root:
+### Project configuration (`.taut.toml`)
 
-```toml
-version = 1
-backend = "postgres"
-target = "postgresql://postgres:postgres@127.0.0.1:54329/taut_test"
-
-[backend_options]
-schema = "taut_project"
-```
-
-The credentials above are for a disposable local test database. A real target
-DSN may contain a password and must be treated as a secret. If `.taut.toml`
-contains one, add the file to your project's `.gitignore`, do not commit
-production credentials, and restrict it to the owner on POSIX systems (for
-example, `chmod 600 .taut.toml`). Taut does not interpolate environment
-variables in this file.
-
-Then run `taut init` normally. It initializes the configured schema and
-tables; it does not provision the database. `taut init --json` reports `db`
-as the resolved backend display target. For Postgres, `created` is `false`
-because Taut does not have a public backend creation signal. `TAUT_DB`,
-`--db`, and `db_path=` remain filesystem path selectors; `.taut.toml` is the
-Postgres door.
-
-Message reactions use the packaged `ack` and `blocked` vocabulary. A complete
-project `.taut.toml` can replace it. For example, for the default SQLite
-target:
-
-```toml
-version = 1
-backend = "sqlite"
-target = ".taut.db"
-
-[reactions]
-values = ["ack", "blocked", "done"]
-```
-
-Values are unique lowercase ASCII slugs. The local list replaces the packaged
-list rather than extending it; `values = []` disables outbound reactions.
-Each `TautClient` freezes the resolved list at construction, so restart a
-long-lived client or MCP attachment after changing the file.
+A complete project `.taut.toml` also owns the message-reaction
+vocabulary: the packaged default is `ack` and `blocked`, a local
+`[reactions]` list *replaces* it (unique lowercase ASCII slugs;
+`values = []` disables outbound reactions), and each `TautClient`
+freezes the resolved list at construction — restart a long-lived
+client or MCP attachment after changing the file. The exact contract
+is [TAUT-3.2] in the
+[core spec](https://github.com/VanL/taut/blob/main/docs/specs/02-taut-core.md);
+terminal rendering policy, the other `.taut.toml` table, is covered
+under the Trust Model below.
 
 ### Summon Extension
 
-`taut-summon` hosts an existing agent harness (Claude Code, or any resumable
-streaming CLI) as an ordinary workspace member — no daemon, no bespoke agent
-protocol. The summon driver feeds chat into the harness's own live session
-(its ears), and the agent speaks by running the ordinary `taut` CLI selected
-by its continuity token (its mouth). It ships as a separate package with its
-own version tags:
+`taut-summon` hosts an existing agent harness (Claude Code, or any
+interactive agent CLI — the universal PTY adapter hosts named
+providers including `claude` and `codex`) as an ordinary workspace
+member — no daemon, no bespoke agent protocol. The summon driver feeds
+chat into the harness's own live session (its ears), and the agent
+speaks by running the ordinary `taut` CLI selected by its continuity
+token (its mouth). It ships as a separate package with its own version
+tags; installed, it registers native `taut summon` and `taut dismiss`
+command adapters that share parser and controller code with the
+standalone console. Without the extension, `taut summon` exits 1 with
+an install hint.
 
-```bash
-pipx inject --include-apps taut-chat taut-summon
-```
-
-With it installed, the package registers native `taut summon` and
-`taut dismiss` command adapters. They share parser and controller code with
-the standalone extension console rather than calling it as a subprocess or
-parsing its output. Without the extension, `taut summon` exits 1 with an
-install hint:
-
-```bash
-# Summon a standing reviewer into #dev; a peer @-mentions it from another
-# terminal, and its reply routes back through the CLI.
-taut summon reviewer --provider claude dev
-taut say dev "@reviewer does the parser branch look right?"
-
-taut-summon status          # driver liveness, provider, session, cursor lag
-taut dismiss reviewer       # clean shutdown, ledger released
-```
-
-The full contract is `docs/specs/04-summon.md`; design rationale lives in
-`docs/implementation/05-taut-summon-architecture.md` and
-`docs/implementation/06-command-extensions.md`.
+Installation, usage (`taut summon`, `taut-summon status`,
+`taut dismiss`), and the trust boundary live in the
+[taut-summon README](https://github.com/VanL/taut/blob/main/extensions/taut_summon/README.md).
+The full contract is the
+[Summon spec](https://github.com/VanL/taut/blob/main/docs/specs/04-summon.md);
+design rationale lives in
+[`docs/implementation/05-taut-summon-architecture.md`](https://github.com/VanL/taut/blob/main/docs/implementation/05-taut-summon-architecture.md)
+and
+[`docs/implementation/06-command-extensions.md`](https://github.com/VanL/taut/blob/main/docs/implementation/06-command-extensions.md).
 
 ### MCP Extension
 
-`taut-mcp` is a separate, connection-scoped stdio adapter for MCP clients. One
-process serves one MCP connection and can attach up to eight existing Taut
-workspaces, each with its own continuity token, client, and owner thread. It
-exposes 20 explicit workspace-scoped tools plus the repeatable
-`taut://notifications/current` resource. The resource reports notification
+`taut-mcp` is a separate, connection-scoped stdio adapter for MCP
+clients. One process serves one MCP connection and can attach up to
+eight existing Taut workspaces, each with its own continuity token,
+client, and owner thread. The manifest contains exactly 20 tools —
+17 CLI-shaped, workspace- and token-scoped, plus three
+process-lifecycle tools — and the repeatable
+`taut://notifications/current` resource, which reports notification
 pointers only; reading it does not claim them or advance chat cursors.
+The package is wired into the coordinated PyPI and immutable GitHub
+Release path; that configuration does not itself mean a release has
+been published.
 
-The package is implemented and wired into the coordinated PyPI and immutable
-GitHub Release path, but this configuration does not mean a release has been
-published. Once the matching packages are published, install them into one
-environment:
-
-```bash
-pipx install taut-chat
-pipx inject --include-apps taut-chat taut-mcp
-taut-mcp
-```
-
-To run from this checkout instead, use the isolated extension environment:
-
-```bash
-uv sync --directory extensions/taut_mcp --extra dev
-uv run --directory extensions/taut_mcp taut-mcp
-```
-
-Use `--claude-channel` only for Claude hosts that support the experimental
-channel capability. It sends a fixed wake cue with no Taut content; standard
-resource subscriptions and manual reads remain the portable interface. The
-existing MCP `read` and `log` tools accept the same DM selectors as the CLI,
-and `list` with `dms=true` returns the attached member's durable DM directory.
-Channel operations use `channel_show`, `channel_topic`, and `channel_rename`;
-message operations use `message_show`, `message_delete`, and `message_react`.
-The manifest contains exactly 20 tools. The
-full contract is `docs/specs/05-taut-mcp.md`; design rationale lives in
-`docs/implementation/07-taut-mcp-architecture.md`.
+Installation, running from a checkout, and host notes (including the
+experimental `--claude-channel` wake cue) live in the
+[taut-mcp README](https://github.com/VanL/taut/blob/main/extensions/taut_mcp/README.md).
+The full contract is the
+[MCP spec](https://github.com/VanL/taut/blob/main/docs/specs/05-taut-mcp.md);
+design rationale lives in
+[`docs/implementation/07-taut-mcp-architecture.md`](https://github.com/VanL/taut/blob/main/docs/implementation/07-taut-mcp-architecture.md).
 
 ## Quick Start
 
@@ -373,7 +323,7 @@ The name you see is a current display name. It can change.
 
 ```bash
 $ taut whoami --json
-{"member_id":"m_abcd1234abcd1234abcd1234ab","name":"Claude","kind":"agent","presence":"here","last_active_ts":1837025672140161024,"persona":null}
+{"member_id":"m_abcd1234abcd1234abcd1234ab","name":"Claude","aliases":[],"kind":"agent","presence":"here","last_active_ts":1837025672140161024,"persona":null}
 $ taut set name Codex
 $ taut whoami --json | jq -r .member_id
 m_abcd1234abcd1234abcd1234ab
@@ -392,12 +342,14 @@ continuity token selects the acting member, taut walks the caller's process
 ancestry, looks past shells and wrapper commands, and derives a deterministic
 identity claim for the process or human session:
 
-- pid + process start time where available
+- anchor pid and its start token, where available
 - executable path, argv, cwd, uid
-- parent chain, process group, session, controlling tty
-- host identity plus hostname for display
+- process group, session id, controlling tty
+- an opaque host identity
 
-That claim maps to the member id. If the claim is known, taut knows who is
+That claim maps to the member id (the exact evidence contract is
+[IAN-3] in the
+[identity spec](https://github.com/VanL/taut/blob/main/docs/specs/03-identity-addressing-notifications.md)). If the claim is known, taut knows who is
 speaking. Taut also captures this evidence when an allowed first-contact
 operation must create a member, when `rejoin` deliberately associates the
 current process, and when `whoami --explain` renders current evidence. If an
@@ -467,7 +419,7 @@ pass `TAUT_AS` or `TAUT_TOKEN` through.
 | `taut channel topic CHANNEL --clear` | Clear the channel topic without posting a message or notification |
 | `taut channel rename OLD NEW` | Rename a channel and its sub-threads |
 | `taut read [THREAD_OR_DM]` | Show unread and advance your bookmark; a DM accepts `@name-or-alias` or its stable handle; bare = all your threads |
-| `taut inbox` | Claim and show notification pointers for mentions and new DMs |
+| `taut inbox` | Claim and show notification pointers for mentions, replies, new DMs, and reactions |
 | `taut log THREAD_OR_DM [--since TS] [--limit N]` | Show channel, sub-thread, or accessible DM history; never moves your bookmark or activity for a DM |
 | `taut search QUERY... [--channel CHANNEL] [--dm @NAME] [--dms]` | Search visible channel and DM history without moving cursors; add `--from`, `--kind`, `--before`, `--limit`, or `--reindex` to refine or rebuild |
 | `taut system dump --output FILE` | Write an owner-only portable logical dump of registered pending messages, core authority, and installed durable extension state |
@@ -524,11 +476,12 @@ chat threads. That post-departure operation is blind and irreversible: there
 may be no permitted way to inspect the row first. It intentionally reveals only
 whether a matching deletable own message was found.
 
-`MSG_ID` accepts the full 19-digit message id (always works, any age) or
-a unique suffix of 4+ digits — ids are timestamps, and the last few
-digits are the part that varies. Suffix search covers the thread's most
-recent 1,000 messages. `message show` and `message delete` are stricter:
-they require the full 19-digit id so the target is exact.
+For `reply`, `MSG_ID` accepts the full 19-digit message id (always
+works, any age) or a unique suffix of 4+ digits — ids are timestamps,
+and the last few digits are the part that varies. Suffix search covers
+the thread's most recent 1,000 messages. `message show` and
+`message delete` are stricter: they require the full 19-digit id so
+the target is exact.
 
 `message react` also requires the full id. It works only for an ordinary
 message visible through a current membership. The audience is the current
@@ -554,26 +507,15 @@ to rebuild the disposable index before one query.
 
 ## Working With Agents
 
-The agent side of taut is just the CLI with `--json`:
+The agent side of taut is just the CLI with `--json` (ndjson): an
+agent joins, catches up, and replies with three shell commands and
+zero setup, keying on `from_id` for stable identity. The recipes — 
+join/catch-up/say, identity selection, DM handles, the notification
+and vanilla-`broker read` hazards, exit codes, and a session-start
+pattern for `CLAUDE.md` / `AGENTS.md` — live in one place, the
+[agent kernel](https://github.com/VanL/taut/blob/main/docs/agent-kernel.md).
 
-```bash
-# An agent catching up and replying
-$ taut read --json
-{"thread":"general","ts":1837025672140161024,"from_id":"m_k7p9x2q4m6n8r1s3t5v7w9y0za","from":"van","kind":"message","text":"anyone awake?"}
-$ taut say general "on it"
-
-# An agent following everything, as a stream
-$ taut watch --json | while IFS= read -r line; do handle "$line"; done
-```
-
-A pattern that works well in `CLAUDE.md` / `AGENTS.md`:
-
-```markdown
-This project uses taut for coordination. At the start of a session run
-`taut join dev`, check `taut read --json`, and post status updates with
-`taut say dev "..."`. If taut says it created a new identity, run the
-suggested `taut rejoin` command.
-```
+## Python Library
 
 From Python, the CLI's exact semantics are available as a library, plus a
 multi-thread watcher (peek-only for chat history, claim/read for notifications,
@@ -643,7 +585,8 @@ restored = TautClient.load(input_path=dumped.path, db_path="restored.db")
 ## Trust Model (Read This Before Filing the Issue)
 
 Taut's trust model is deliberately weak, and saying so loudly is part of
-the design:
+the design. The exact boundary is [TAUT-9] in the
+[core spec](https://github.com/VanL/taut/blob/main/docs/specs/02-taut-core.md):
 
 - **Everyone who can access the storage is root of the chat.** Any process
   that can read `.taut.db` or the configured Postgres schema can read all
@@ -675,6 +618,8 @@ writing dynamic text to a terminal. Storage, Python objects, and `--json`
 remain exact. This is a safety control against accidental relay, not a security
 boundary: a trusted caller may change or disable the display policy, and an
 explicit Summon PTY attach remains a byte-transparent terminal protocol.
+The exact escape contract is [TAUT-6.4] in the
+[core spec](https://github.com/VanL/taut/blob/main/docs/specs/02-taut-core.md).
 
 The baseline policy lives in packaged `taut/defaults.toml`. Humans can append
 this optional table to a complete `.taut.toml`:
@@ -717,7 +662,8 @@ broker itself. `message show` is also a peek, but it advances the acting
 member's cursor through the shown message. `message delete` is the explicit
 exception: an author may remove their own ordinary message.
 
-Notification inboxes are different. They are pointers for pings, new direct
+Notification inboxes are different. They are pointers for mentions,
+replies, new direct
 messages, and reactions, so `taut inbox` and `taut watch` claim them. If two sessions are the
 same member, one can drain the other's notifications. That is the intended
 single-directory model. A crash after `inbox` or notification watch has claimed
@@ -729,6 +675,11 @@ while ordinary chat activity does not necessarily create one.
 One consequence worth knowing: if you point a vanilla `broker read` at a taut
 chat-history queue, you will consume messages out of the history. Taut
 tolerates it; your teammates may not.
+
+Owning contracts: [TAUT-7] read model in the
+[core spec](https://github.com/VanL/taut/blob/main/docs/specs/02-taut-core.md);
+[IAN-7] notifications in the
+[identity spec](https://github.com/VanL/taut/blob/main/docs/specs/03-identity-addressing-notifications.md).
 </details>
 
 <details>
@@ -738,7 +689,11 @@ There isn't one. SQLite WAL gives concurrent
 readers and writers; SimpleBroker gives durable ordered queues over it;
 `taut watch` is an efficient poller (burst, then backoff, woken by the
 database's own change counter) rather than a resident service. When no
-one is watching, taut is no processes at all.
+one is watching, taut is no processes at all. The no-daemon account —
+including what could ever change it — is adopted alternative A4 in the
+[program theory](https://github.com/VanL/taut/blob/main/docs/program-theory.md);
+watcher behavior is [TAUT-8.4] in the
+[core spec](https://github.com/VanL/taut/blob/main/docs/specs/02-taut-core.md).
 </details>
 
 <details>
@@ -750,6 +705,10 @@ notifications, and read cursors all live in `.taut.db` (SQLite's transient
 still possible, but `taut system dump` is the portable logical backup and also
 works across SQLite and PostgreSQL. Under `taut-pg`, the same `taut_*` sidecar
 tables live beside SimpleBroker's tables in the configured Postgres schema.
+Owning contracts: [TAUT-2] storage model in the
+[core spec](https://github.com/VanL/taut/blob/main/docs/specs/02-taut-core.md)
+and the
+[persistence spec](https://github.com/VanL/taut/blob/main/docs/specs/08-persistence-io.md).
 </details>
 
 <details>
@@ -762,6 +721,8 @@ the convention every shell tool already speaks. The broker's 64-bit hybrid
 timestamp is the message id *and* its time, so the envelope never carries
 either. Bodies that aren't envelopes (someone `broker write`-ing into a
 thread) render as plain text from sender `?` instead of breaking anything.
+Owning contract: [TAUT-6.1] and [TAUT-6.3] in the
+[core spec](https://github.com/VanL/taut/blob/main/docs/specs/02-taut-core.md).
 </details>
 
 <details>
@@ -771,7 +732,10 @@ Because it would be theater at this layer. Anyone in the trust boundary
 (your machine, your uid) can already modify the database file directly.
 Taut spends its effort on the thing that's actually missing — frictionless
 identity and coordination — and is honest that the filesystem is the
-security model.
+security model. The refusal is durable: adopted alternative A3 in the
+[program theory](https://github.com/VanL/taut/blob/main/docs/program-theory.md),
+with the boundary itself specified by [TAUT-9] in the
+[core spec](https://github.com/VanL/taut/blob/main/docs/specs/02-taut-core.md).
 </details>
 
 <details>
@@ -782,32 +746,43 @@ Runtime dependencies are exactly `simplebroker>=6.0.2` and `psutil`. The CLI is
 argparse, the storage is stdlib `sqlite3` (via SimpleBroker), and `psutil`
 keeps identity capture from relying on fragile platform-specific command
 parsing. The planned TUI ships as an optional extra so the core dependency
-set stays small.
+set stays small. The dependency contract is exact in the
+[core spec](https://github.com/VanL/taut/blob/main/docs/specs/02-taut-core.md)
+(runtime dependencies section), and dependencies are gated against the
+package manifests.
 </details>
 
 ## Documentation Map
 
 This README is the human product entry and, per section, the contract
-of record until a section is ceded to its spec (the per-section
-registry is planned work). The layers:
+of record until a section is ceded to its spec — the
+[product-section registry](https://github.com/VanL/taut/blob/main/docs/specs/product-section-registry.md)
+is the authority table naming the winning contract for each behavior
+family. The layers:
 
 - **Conceptual account:**
-  [`docs/program-theory.md`](docs/program-theory.md) — what kind of
+  [`docs/program-theory.md`](https://github.com/VanL/taut/blob/main/docs/program-theory.md) — what kind of
   system Taut is, the durable principles and non-goals, and the
   adopted design decisions with their reconsider-when conditions.
 - **Exact behavior (normative):** the specs, indexed at
-  [`docs/specs/00-specs-index.md`](docs/specs/00-specs-index.md) —
-  core ([`02-taut-core.md`](docs/specs/02-taut-core.md)), identity
-  ([`03-identity-addressing-notifications.md`](docs/specs/03-identity-addressing-notifications.md)),
-  summon ([`04-summon.md`](docs/specs/04-summon.md)), MCP
-  ([`05-taut-mcp.md`](docs/specs/05-taut-mcp.md)), search
-  ([`06-search.md`](docs/specs/06-search.md)).
+  [`docs/specs/00-specs-index.md`](https://github.com/VanL/taut/blob/main/docs/specs/00-specs-index.md) —
+  core ([`02-taut-core.md`](https://github.com/VanL/taut/blob/main/docs/specs/02-taut-core.md)), identity
+  ([`03-identity-addressing-notifications.md`](https://github.com/VanL/taut/blob/main/docs/specs/03-identity-addressing-notifications.md)),
+  summon ([`04-summon.md`](https://github.com/VanL/taut/blob/main/docs/specs/04-summon.md)), MCP
+  ([`05-taut-mcp.md`](https://github.com/VanL/taut/blob/main/docs/specs/05-taut-mcp.md)), search
+  ([`06-search.md`](https://github.com/VanL/taut/blob/main/docs/specs/06-search.md)).
 - **Extension depth:** each extension's own README —
-  [`extensions/taut_pg/README.md`](extensions/taut_pg/README.md),
-  [`extensions/taut_summon/README.md`](extensions/taut_summon/README.md).
-- **Released behavior deltas:** [CHANGELOG.md](CHANGELOG.md).
+  [`extensions/taut_pg/README.md`](https://github.com/VanL/taut/blob/main/extensions/taut_pg/README.md),
+  [`extensions/taut_summon/README.md`](https://github.com/VanL/taut/blob/main/extensions/taut_summon/README.md),
+  [`extensions/taut_mcp/README.md`](https://github.com/VanL/taut/blob/main/extensions/taut_mcp/README.md).
+- **Released behavior deltas:** [CHANGELOG.md](https://github.com/VanL/taut/blob/main/CHANGELOG.md).
+- **For agents using a Taut workspace:** the
+  [agent kernel](https://github.com/VanL/taut/blob/main/docs/agent-kernel.md)
+  — the one home for agent-executable recipes; a machine-oriented link
+  index also ships as
+  [`llms.txt`](https://github.com/VanL/taut/blob/main/llms.txt).
 - **For agents working in this repository:** start at
-  [`AGENTS.md`](AGENTS.md), which routes to the canonical startup
+  [`AGENTS.md`](https://github.com/VanL/taut/blob/main/AGENTS.md), which routes to the canonical startup
   order.
 
 ## Roadmap
@@ -818,19 +793,20 @@ Docs-first: everything ships behind its own spec.
 
 - **Summon** — `taut-summon` hosts an agent harness as a thread member
   (chat its ears, the CLI its mouth), daemon-free, speaking the
-  agent-task control contract Weft pioneered, with a portable
-  conformance suite both projects run
-  ([`docs/specs/04-summon.md`](docs/specs/04-summon.md)). The `codex`
-  adapter is the named follow-on.
+  agent-task control contract Weft pioneered, with a conformance suite
+  portable enough for Weft to run against its own agent lane
+  ([`docs/specs/04-summon.md`](https://github.com/VanL/taut/blob/main/docs/specs/04-summon.md)).
+  The universal PTY adapter hosts named providers including `claude`
+  and `codex`.
 - **MCP** — `taut-mcp` exposes the workspace to MCP clients: stdio
   lifecycle, per-workspace identity, CLI-shaped tools
-  ([`docs/specs/05-taut-mcp.md`](docs/specs/05-taut-mcp.md)).
+  ([`docs/specs/05-taut-mcp.md`](https://github.com/VanL/taut/blob/main/docs/specs/05-taut-mcp.md)).
 - **Search** — cursor-neutral full-text search over visible history,
   SQLite FTS5 and PostgreSQL text search behind one API
-  ([`docs/specs/06-search.md`](docs/specs/06-search.md)).
+  ([`docs/specs/06-search.md`](https://github.com/VanL/taut/blob/main/docs/specs/06-search.md)).
 
 **In progress:** portable dump/load maintenance commands (see
-[CHANGELOG.md](CHANGELOG.md) Unreleased; spec in review).
+[CHANGELOG.md](https://github.com/VanL/taut/blob/main/CHANGELOG.md) Unreleased; spec in review).
 
 **Ahead, in order:**
 
@@ -844,10 +820,10 @@ Docs-first: everything ships behind its own spec.
 ## Development
 
 Taut is developed docs-first: the spec
-([`docs/specs/02-taut-core.md`](docs/specs/02-taut-core.md)) defines
-behavior, dated plans in [`docs/plans/`](docs/plans/) define execution,
+([`docs/specs/02-taut-core.md`](https://github.com/VanL/taut/blob/main/docs/specs/02-taut-core.md)) defines
+behavior, dated plans in [`docs/plans/`](https://github.com/VanL/taut/tree/main/docs/plans) define execution,
 and both are kept in CI-grade sync with the code. Start with
-[`AGENTS.md`](AGENTS.md) if you're contributing — human or otherwise.
+[`AGENTS.md`](https://github.com/VanL/taut/blob/main/AGENTS.md) if you're contributing — human or otherwise.
 
 ```bash
 git clone git@github.com:VanL/taut.git && cd taut

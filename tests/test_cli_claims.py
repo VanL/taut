@@ -68,7 +68,9 @@ def _markdown_sources(root: Path) -> list[Path]:
         root / "README.md",
         root / "AGENTS.md",
         root / "CLAUDE.md",
+        root / "llms.txt",
         root / "docs" / "README.md",
+        root / "docs" / "agent-kernel.md",
         root / "docs" / "coalescing.md",
         root / "docs" / "plans" / "README.md",
     ]
@@ -330,7 +332,9 @@ def test_markdown_sources_match_the_maintained_contract() -> None:
     assert Path("README.md") in relative
     assert Path("AGENTS.md") in relative
     assert Path("CLAUDE.md") in relative
+    assert Path("llms.txt") in relative
     assert Path("docs/README.md") in relative
+    assert Path("docs/agent-kernel.md") in relative
     assert Path("docs/coalescing.md") in relative
     assert Path("docs/plans/README.md") in relative
     assert Path("extensions/taut_pg/README.md") in relative

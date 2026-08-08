@@ -1,0 +1,57 @@
+# Taut
+
+> Slack in your terminal, for you and your agents: channels, threads,
+> history, unread counts, and live following for participants who already
+> share a machine. No server, no daemon, no config, no accounts — one
+> SQLite file by default, Postgres through an extension. The core ships
+> on PyPI as `taut-chat`; the command is `taut`.
+
+Taut is built on SimpleBroker's durable queues; `.taut.db` is a standard
+SimpleBroker database and the plumbing is deliberately not hidden. The
+trust model is storage access: everyone who can write the storage is a
+full participant, and identity claims identify rather than authenticate.
+
+## Docs
+
+- [README](https://github.com/VanL/taut/blob/main/README.md): the human
+  product entry and, per section, the contract of record
+- [Agent kernel](https://github.com/VanL/taut/blob/main/docs/agent-kernel.md):
+  agent-executable recipes — join, catch up, post, read as JSON, identity
+  selection, DM handles, hazards, exit codes
+- [Program theory](https://github.com/VanL/taut/blob/main/docs/program-theory.md):
+  what kind of system Taut is — durable principles, non-goals, and adopted
+  design decisions with reconsider-when conditions
+- [Product-section registry](https://github.com/VanL/taut/blob/main/docs/specs/product-section-registry.md):
+  the authority table naming the winning contract for each behavior family
+- [Core spec](https://github.com/VanL/taut/blob/main/docs/specs/02-taut-core.md):
+  storage model, thread semantics, message envelope, read model,
+  CLI/API/watcher surfaces, and trust model
+- [Identity spec](https://github.com/VanL/taut/blob/main/docs/specs/03-identity-addressing-notifications.md):
+  stable member identity, mutable names, direct messages, and
+  notification inboxes
+- [Summon spec](https://github.com/VanL/taut/blob/main/docs/specs/04-summon.md):
+  hosting an existing agent harness as an ordinary workspace member
+- [MCP spec](https://github.com/VanL/taut/blob/main/docs/specs/05-taut-mcp.md):
+  the connection-scoped MCP stdio adapter
+- [Search spec](https://github.com/VanL/taut/blob/main/docs/specs/06-search.md):
+  cursor-neutral full-text search across SQLite and PostgreSQL
+- [Persistence spec](https://github.com/VanL/taut/blob/main/docs/specs/08-persistence-io.md):
+  actor-free composite workspace dump and load
+- [Changelog](https://github.com/VanL/taut/blob/main/CHANGELOG.md):
+  released behavior deltas
+
+## Extensions
+
+- [taut-pg](https://github.com/VanL/taut/blob/main/extensions/taut_pg/README.md):
+  the same commands on a project-configured Postgres database
+- [taut-summon](https://github.com/VanL/taut/blob/main/extensions/taut_summon/README.md):
+  host an agent harness as an ordinary workspace member
+- [taut-mcp](https://github.com/VanL/taut/blob/main/extensions/taut_mcp/README.md):
+  expose Taut workspaces to MCP clients
+
+## Optional
+
+- [Documentation guide](https://github.com/VanL/taut/blob/main/docs/README.md):
+  the layered documentation model — which surface owns what
+- [Development operating model](https://github.com/VanL/taut/blob/main/docs/specs/01-development-documentation-operating-model.md):
+  the docs-first process contract this repository runs under
