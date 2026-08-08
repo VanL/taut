@@ -102,6 +102,17 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
 
 ## Project Lessons
 
+- 2026-08-08: A dependency-floor bump reconciles manifests and the
+  release-machinery-owned README copies, but hand-maintained spec and
+  implementation-doc floor claims drift silently (specs said
+  `simplebroker>=6.0.1` for a week while the manifests required 6.0.2).
+  Restate floors in docs only in the literal requirement form and gate every
+  restatement against the manifests
+  (`tests/test_dependency_floor_claims.py`); prose floor statements escape
+  any gate and should be converted to the literal form. Extends the
+  2026-07-13 derived-state consistency lesson from README to the whole
+  maintained doc tree.
+
 - 2026-08-05: Do not infer a security classification from opacity or identity
   selection. Name the actual authority boundary, emitted and persistent
   surfaces, live-state lifetime, and debug-only retention separately. A

@@ -862,14 +862,15 @@ durable conversation; the harness session is an optimization of it.
   thread own reap or join.
   The control reactor follows SimpleBroker 5.2.0's reference
   persistent-session and thread-local-core ownership model, with
-  SimpleBroker 6.0.1 or newer required for the supported reactor lane. Version
+  `simplebroker>=6.0.2` required for the supported reactor lane. Version
   5.2.2 first proved persistent process visibility; 5.3.2 makes cancellation
   interrupt watcher bootstrap while PhaseLock or SQLite connection setup is
   blocked; and 5.3.3 removes unsafe path-name-based runner cleanup and
   initializes timestamp-conflict metrics before concurrent first writes.
   Version 5.6.1 supplies core reaction fanout's full-requested-set exact-name
-  broadcast; 6.0.1 is the repository-wide supported floor, aligned with
-  `simplebroker-pg>=3.5.0`. Summon does not call the SimpleBroker command layer,
+  broadcast; `simplebroker>=6.0.2` is the repository-wide supported floor,
+  aligned with
+  `simplebroker-pg>=3.5.1`. Summon does not call the SimpleBroker command layer,
   so 6.0.0's keyword-only command-option binding does not alter the control
   reactor path.
   Operation release ends only the active lease; the owner thread retains its

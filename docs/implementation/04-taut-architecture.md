@@ -69,8 +69,9 @@ filesystem error surfaces. Core rejects those paths before constructing
 `Queue`; it does not broaden this into a portable filename policy, so POSIX
 acceptance and non-SQLite targets remain unchanged.
 
-The load-bearing supported SimpleBroker floor is 6.0.1, aligned with
-`simplebroker-pg>=3.5.0`. Version 5.6.1 remains the origin of atomic exact-name
+The load-bearing supported SimpleBroker floor is `simplebroker>=6.0.2`, aligned
+with
+`simplebroker-pg>=3.5.1`. Version 5.6.1 remains the origin of atomic exact-name
 `broadcast(..., queue_names=..., create_missing=True)`, in addition to the
 earlier interruptible watcher bootstrap, corrected runner cleanup, and
 initialized timestamp-conflict metrics. Taut does not use
