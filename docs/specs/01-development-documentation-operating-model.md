@@ -33,6 +33,14 @@ Agent-usable documentation should make these explicit whenever they matter:
 
 The repository documentation surface is split by role:
 
+- `docs/program-theory.md`: conceptual identity of **this product** —
+  the current externalized account of what kind of system Taut is,
+  why it has its shape, what it deliberately is not, and what would
+  falsify that account. Program theory frames interpretation and
+  placement; it is not a behavioral contract and does not override
+  the winning product contract. Status values include `Draft`
+  (provisional account under refinement) and `Active` (current
+  account in force); revisions gate on the human owner.
 - `docs/agent-context/`: canonical shared context and reusable runbooks
 - `docs/specs/`: intended behavior, invariants, and verification expectations
 - `docs/plans/`: dated execution documents for concrete work
@@ -45,6 +53,11 @@ The roles should remain distinct. A document may link to another role, but it
 should not collapse multiple roles into one file without a strong reason.
 
 ## 3. Agent Startup Context [DOM-3]
+
+Program theory loads first among conceptual surfaces (see [DOM-2]);
+when theory and the winning contract appear to conflict, the contract
+governs current behavior — call out the mismatch and revise one or
+the other explicitly.
 
 At the start of a session, agents follow the canonical order in
 `docs/agent-context/README.md`. Root entry points and newcomer guides link to

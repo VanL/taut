@@ -17,12 +17,17 @@ This is the one canonical startup sequence. Root entry points and newcomer
 guides link here rather than copying it.
 
 1. If it was not already loaded by the tool, read `../../AGENTS.md`.
-2. Read `decision-hierarchy.md`.
-3. Read `principles.md`.
-4. Read `engineering-principles.md`.
-5. Read the relevant runbook(s) in `runbooks/`.
-6. Read `lessons.md`.
-7. Read `../lessons.md` — required startup reading is the **Golden Rules
+2. Read `../program-theory.md` — conceptual identity of **this
+   product** (frames placement and refusal; load-bearing for
+   product-scope judgment — audits, reviews, feature-fit and design
+   opinions — not only for implementation). Theory does not override
+   the winning product contract.
+3. Read `decision-hierarchy.md`.
+4. Read `principles.md`.
+5. Read `engineering-principles.md`.
+6. Read the relevant runbook(s) in `runbooks/`.
+7. Read `lessons.md`.
+8. Read `../lessons.md` — required startup reading is the **Golden Rules
    plus dated entries after the lessons watermark** (see
    `../coalescing.md`); older entries are searchable reference.
 8. Read the relevant spec, active plan, and implementation note for the task.
