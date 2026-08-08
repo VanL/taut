@@ -95,7 +95,7 @@ Quick pointers to the key guidance documents in this repository.
 | `docs/plans/2026-07-28-taut-mcp-dual-era-sessionless-plan.md` | Reviewed implementation plan for one SDK v2 server serving both MCP wire eras through explicit workspace-and-token continuity, shared ensure, and independent notification adapters |
 | `docs/plans/2026-07-28-summon-terminal-retirement-plan.md` | Reviewed implementation plan separating reusable adapter interruption from one-signal terminal retirement and making invalid raw coverage evidence fatal |
 | `docs/plans/2026-07-29-taut-chat-pypi-publication-plan.md` | Reviewed implementation plan for the `taut-chat` core distribution rename, exact-artifact Trusted Publishing, draft-first immutable GitHub finalization, and explicit migration boundary |
-| `docs/plans/2026-07-14-terminal-output-safety-plan.md` | Reviewed implementation plan for packaged and project-customizable terminal-text policy, public extension API, human renderer coverage, and raw PTY exemption |
+| retired: 2026-07-14-terminal-output-safety-plan (source `281f04fa`; see the ledger in docs/plans/README.md) | Retired reviewed implementation plan for packaged and project-customizable terminal-text policy, public extension API, human renderer coverage, and raw PTY exemption |
 | `docs/plans/2026-07-14-blank-message-no-op-plan.md` | Reviewed implementation plan for the built-in Unicode blank-input guard, typed empty result, silent CLI exit 2, and Summon terminal-mode adaptation |
 | `docs/implementation/00-implementation-index.md` | Numbered entry point for implementation docs |
 | `docs/implementation/01-documentation-system.md` | Why the documentation system is shaped this way |

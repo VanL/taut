@@ -2383,9 +2383,10 @@ installing `taut-chat`.
 - `docs/plans/2026-07-14-taut-mcp-extension-plan.md` — optional stdio MCP
   extension, read-only notification peek, workspace-scoped identity, reactor
   hierarchy, explicit tool/resource contracts, and cross-backend conformance.
-- `docs/plans/2026-07-15-per-call-read-limit-plan.md` — bounded per-call
+- retired: 2026-07-15-per-call-read-limit-plan — bounded per-call
   unread pages, exact cursor advancement, shared SQLite/PostgreSQL proof, and
-  a smaller MCP surface default without post-read slicing.
+  a smaller MCP surface default without post-read slicing; source
+  `4a129e94`; see the ledger in docs/plans/README.md.
 - `docs/plans/2026-07-14-blank-message-no-op-plan.md` — built-in Unicode
   blank-input guard, typed empty result, silent CLI exit 2, and Summon
   terminal-mode adaptation.
@@ -2399,12 +2400,14 @@ installing `taut-chat`.
 - `docs/plans/2026-07-14-smaller-quality-followups-plan.md` — real
   PostgreSQL polling-fallback coverage, bounded client state-machine coverage,
   and a measured caught-up unread-list fast path that preserves [TAUT-7.3].
-- `docs/plans/2026-07-14-single-project-config-source-spec-plan.md` — makes
+- retired: 2026-07-14-single-project-config-source-spec-plan — makes
   `.taut.toml` the explicit sole project file for Taut settings and rejects
-  alternate-manifest scanning or cross-file settings merging.
-- `docs/plans/2026-07-14-terminal-output-safety-plan.md` — configurable safe
+  alternate-manifest scanning or cross-file settings merging; source
+  `db67b94b`; see the ledger in docs/plans/README.md.
+- retired: 2026-07-14-terminal-output-safety-plan — configurable safe
   terminal-text defaults, one public core/extension escape utility, exact
-  storage and JSON preservation, and explicit raw-PTY/trust-model boundaries.
+  storage and JSON preservation, and explicit raw-PTY/trust-model boundaries;
+  source `281f04fa`; see the ledger in docs/plans/README.md.
 - `docs/plans/2026-07-14-universal-release-gates-plan.md` — one universal
   default local release boundary, explicit human override, and root-plus-PG
   exact-SHA evidence for every package tag.
@@ -2426,8 +2429,9 @@ installing `taut-chat`.
 - `docs/plans/2026-07-11-v0.5.2-coordinated-release-plan.md` — coordinated
   0.5.2 version sync, batch release execution, GitHub Actions monitoring, and
   artifact evidence for core, PG, and Summon.
-- `docs/plans/2026-07-10-ci-failure-remediation-plan.md` — removes wall-clock
-  throughput assumptions from the [TAUT-8.5] callback-topology rebind proof.
+- retired: 2026-07-10-ci-failure-remediation-plan — removes wall-clock
+  throughput assumptions from the [TAUT-8.5] callback-topology rebind proof;
+  source `b03709452`; see the ledger in docs/plans/README.md.
 - `docs/plans/2026-07-10-taut-dynamic-native-waiter-replacement-plan.md` —
   active owner-thread live waiter replacement implementation and PostgreSQL
   native-wake proof.

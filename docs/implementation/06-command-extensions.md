@@ -464,9 +464,10 @@ product need with its own compatibility plan.
 - `docs/plans/2026-07-29-taut-chat-pypi-publication-plan.md`
 - `docs/plans/2026-07-28-channel-topics-plan.md`
 - `docs/plans/2026-07-28-direct-message-navigation-plan.md`
-- `docs/plans/2026-07-14-terminal-output-safety-plan.md`
+- retired: 2026-07-14-terminal-output-safety-plan
   — shared packaged/project policy, renderer integration, extension guidance,
-  and raw PTY exemption.
+  and raw PTY exemption; source `281f04fa`; see the ledger in
+  docs/plans/README.md.
 - `docs/plans/2026-07-13-ci-speed-determinism-release-evidence-plan.md`
   — derived installed-wheel ownership, serial CI execution, and explicit
   current-wheel reuse without dropping historical compatibility builds.

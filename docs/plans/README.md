@@ -71,7 +71,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 | `2026-07-08-release-helper-simplebroker-port-plan.md` | completed | no | Completed; landed evidence includes `9f16343a`. |
 | `2026-07-08-taut-sqlite-contention-hardening-plan.md` | superseded | no | Explicitly replaced by the 2026-07-09 reactor-safety plan. |
 | `2026-07-09-taut-reactor-safety-plan.md` | completed | no | Completed; landed evidence includes `7ba4def`. |
-| `2026-07-10-ci-failure-remediation-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |
+| `2026-07-10-ci-failure-remediation-plan.md` | retired-pending | no | Soft-retired 2026-08-08 coalescing sweep; harvest gate re-verified from the current tree; source `b03709452`. |
 | `2026-07-10-taut-dynamic-native-waiter-replacement-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |
 | `2026-07-10-taut-summon-quality-remediation-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |
 | `2026-07-11-multi-factor-review-remediation-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |
@@ -86,14 +86,14 @@ directory. Run `bin/check-plan-status-index` after changing it.
 | `2026-07-14-agent-interfaces-runbook-adoption-plan.md` | completed | yes | Completed exemplar retained for its review dispositions. |
 | `2026-07-14-blank-message-no-op-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |
 | `2026-07-14-routine-release-classification-plan.md` | completed | no | Completed; landed evidence includes `b2da819`. |
-| `2026-07-14-single-project-config-source-spec-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |
+| `2026-07-14-single-project-config-source-spec-plan.md` | retired-pending | no | Soft-retired 2026-08-08 coalescing sweep; harvest gate re-verified from the current tree; source `db67b94b`. |
 | `2026-07-14-smaller-quality-followups-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |
 | `2026-07-14-taut-mcp-extension-plan.md` | completed | no | Completed; landed evidence includes `4d25deb`. |
 | `2026-07-14-taut-tui-cross-reference-correction-plan.md` | completed | no | Completed; landed evidence includes `b2da819`. |
-| `2026-07-14-terminal-output-safety-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |
+| `2026-07-14-terminal-output-safety-plan.md` | retired-pending | no | Soft-retired 2026-08-08 coalescing sweep; harvest gate re-verified from the current tree; source `281f04fa`. |
 | `2026-07-14-trusted-identity-selector-fast-path-plan.md` | completed | no | Completed; landed evidence includes `b2da819`. |
 | `2026-07-14-universal-release-gates-plan.md` | completed | no | Completed; landed evidence includes `ce2bbb1`. |
-| `2026-07-15-per-call-read-limit-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |
+| `2026-07-15-per-call-read-limit-plan.md` | retired-pending | no | Soft-retired 2026-08-08 coalescing sweep; harvest gate re-verified (the handoff's durable-rationale blocker did not reproduce — [TAUT-7.2] carries the contract rationale); source `4a129e94`. |
 | `2026-07-15-taut-0.7.1-portability-and-coverage-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |
 | `2026-07-15-taut-mcp-release-integration-plan.md` | completed | no | Completed; landed evidence includes `dd699e4`. |
 | `2026-07-28-agent-guidance-delta-wave-plan.md` | completed | no | Class 3+P propagation of the agent-guidance wave at `51626db`; transplants applied and local gates green, independent review and landing authorization outstanding. |
@@ -124,3 +124,7 @@ One line per retired plan; the body lives in git at the source SHA.
 
 | Plan | Dates | Outcome | Absorbed into | Source SHA |
 |------|-------|---------|---------------|------------|
+| `2026-07-10-ci-failure-remediation-plan.md` | 2026-07-10, soft-retired 2026-08-08 | v0.5.1 CI remediation: PTY write leases, watcher pre-publication stop, artifact fixture portability, deterministic waiter-rebind proof | [TAUT-8.5] rebind proof text, [SUM-*] related-plan history, and five 2026-07-10 lessons | `b03709452` |
+| `2026-07-14-single-project-config-source-spec-plan.md` | 2026-07-14, soft-retired 2026-08-08 | Spec-authoring clarification making `.taut.toml` the sole project settings file, rejecting alternate-manifest scanning | [TAUT-2]/[TAUT-3.2] (the governing spec is the durable record) | `db67b94b` |
+| `2026-07-14-terminal-output-safety-plan.md` | 2026-07-14, soft-retired 2026-08-08 | Packaged and project-customizable terminal-text safety policy, public escape utility, raw-PTY exemption | [TAUT-3.2]/[TAUT-6.4], Summon terminal-safety text, `taut/terminal.py` + `taut/defaults.toml`, and two 2026-07-14 lessons | `281f04fa` |
+| `2026-07-15-per-call-read-limit-plan.md` | 2026-07-15, soft-retired 2026-08-08 | Bounded per-call unread pages with exact cursor advancement and dual-backend proof | [TAUT-7.2] (request-policy limit, rejected persistent-config and post-read-slicing alternatives) and the 04-taut-architecture traceability row | `4a129e94` |

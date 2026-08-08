@@ -209,12 +209,12 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   model). (distilled from 3 entries, 2026-06-12..2026-06-12, source
   c09e95e)
 
-- 2026-06-17: Treat cross-backend integer types as an executable portability
-  invariant, not a naming convention. SQLite accepts SimpleBroker's 64-bit
-  hybrid timestamps in `INTEGER` columns, but Postgres `integer` overflows.
-  Sidecar columns that store timestamps, process ids, or uid-like values must
-  be documented and implemented as `BIGINT` before PG acceptance tests can be
-  trusted.
+- 2026-06-17: cross-backend BIGINT portability, verified distilled —
+  sidecar timestamps, process ids, and uid-like values are `BIGINT` in
+  documented DDL so Postgres does not truncate what SQLite accepts as
+  unbounded integers ([TAUT-12.1] and the schema DDL in
+  docs/specs/02-taut-core.md, matching `taut/state/_sql.py`).
+  (distilled from 1 entry, 2026-06-17..2026-06-17, source 9410b6b)
 
 - 2026-06-17: Backend-selection tests must prove resolution through the real
   client or CLI path, not just inspect config-file contents or fabricated
@@ -234,16 +234,10 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   baseline/deviation/claims additions, and the writing-plans deviation log.
   Source incident record: the backstitch repo's `docs/lessons.md`.
 
-- 2026-07-06: Cohesion beats file size; floors beat line counts. Do not
-  propose or perform a file split on size grounds alone, and do not treat
-  file size by itself as a review finding — a large cohesive module like
-  `taut/state/_sql.py` is a deliberate pre-joined index for grep-navigating
-  agents, not neglected debt. What is a finding, at any size: an implicit
-  coupling with no explicit marker at the edit point, or a live-state machine
-  (queue activity, cursors, stop ordering — e.g. `MultiQueueWatcher` in
-  `taut/watcher.py`) without a name and a firing contract test. Codified as
-  engineering-principles §14
+- 2026-07-06: distilled as engineering-principles §14, Cohesion Over File
+  Size — floors, not line counts
   (`docs/agent-context/engineering-principles.md`).
+  (distilled from 1 entry, 2026-07-06..2026-07-06, source 9410b6b)
 
 - 2026-07-08: Release gates must prove the oldest supported parser/runtime
   surface when CLI grammar changed. Python 3.14 accepted
@@ -258,19 +252,15 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   multi-process SQLite/PTY tests that show corruption or load-sensitive
   failures need a separate command lane, not only a group marker.
 
-- 2026-07-08: A separate command lane may also need a fresh pytest invocation,
-  not just a one-worker xdist group. Long-lived workers that run deterministic
-  process tests, external live harnesses, and local-LLM PTY proofs back to back
-  can carry enough SQLite/WAL churn that a later test fails as storage noise.
-  Split materially different real-process workloads into fresh one-worker
-  invocations while still starting slow independent setup, such as local LLM
-  image/model preparation, in parallel at the beginning.
-
-- 2026-07-08: CI needs the same fresh-process boundary as the local release
-  helper. Running summon process tests as a separate `-n 1` pytest command is
-  not enough if that command sits after broad root and extension xdist suites in
-  the same CI job; give real-process SQLite/PTY lanes their own fresh job while
-  keeping the selector and coverage intact.
+- 2026-07-08 (3 entries): real-process lane topology, verified distilled —
+  materially different real-process workloads run as fresh pytest
+  invocations; the deterministic summon lane gets a dedicated fresh CI
+  matrix job rather than trailing broad suites in one runner; lanes stay
+  correctness-first on sync semantics, overlapping independent setup (such
+  as local-LLM image/model preparation) instead of weakening storage
+  guarantees ([TAUT-12.5] test-lane text in docs/specs/02-taut-core.md,
+  docs/implementation/05-taut-summon-architecture.md lane section).
+  (distilled from 3 entries, 2026-07-08..2026-07-08, source 9410b6b)
 
 - 2026-07-08: Release-helper lane splits must be mirrored in reusable CI
   workflows. Splitting summon local release gates is insufficient if the GitHub
@@ -279,13 +269,20 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   worker. Guard the exact CI selector in workflow tests so local release
   readiness and tag-gate readiness do not drift.
 
-- 2026-07-08: Ephemeral control queues should be made inert by naming and
-  correlation, not by sweeping them with delete-all on shutdown. In a real
-  driver test, hard-deleting `sys.*` queues during a flood added SQLite
-  maintenance pressure exactly when driver/provider/CLI subprocesses were all
-  active. Prefer `read_one()` consumption for completed commands/replies, random
-  per-request reply queues for timeout residue, a driver-evidence fence for
-  stable inbound queues, and handle close on shutdown.
+- 2026-07-08 (7 entries): shutdown and supervision lifecycle, verified
+  distilled — control cleanup is consume-and-close (per-request random reply
+  queues, driver-evidence fence, handle close), never delete-all; signal and
+  control stop paths publish shutdown and request nonblocking adapter close
+  before any join; watcher death is a watcher-rebuild signal over the same
+  live provider session, never a silent stall and not an automatic provider
+  crash; health separates repeated drain failure (degraded) from programming
+  errors (fatal); wake callbacks are hints rechecked against authoritative
+  state with no second retry policy; copied Weft primitives stay copied with
+  Taut adaptation in `TautWatcher` subclasses (docs/specs/04-summon.md
+  control/shutdown/supervision text, docs/specs/02-taut-core.md watcher and
+  reactor text, docs/implementation/04-taut-architecture.md and
+  05-taut-summon-architecture.md).
+  (distilled from 7 entries, 2026-07-08..2026-07-08, source 9410b6b)
 
 - 2026-07-08: Do not pass intentionally large integration-test payloads as
   subprocess argv. Local hosts may tolerate a 200 KB argument, while GitHub
@@ -294,57 +291,31 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   fixtures should use the public stdin path for large bodies and keep argv for
   routing, flags, and small contract tokens.
 
-- 2026-07-08: Signal-driven shutdown must close blocked adapters before waiting
-  behind unrelated joins. A SIGINT handler that only sets an event is not enough
-  when another path is in a restartable syscall or a PTY child is waiting on a
-  terminal query; shutdown ordering should interrupt/close the adapter first,
-  then drain watchers and pumps. Idempotent control probes (STATUS/PING) should
-  retry with the same reply route so one transient lost reply does not turn a
-  healthy driver into a false timeout.
+- 2026-07-08 (2 entries): detached PTY startup, verified distilled — the
+  pump starts immediately after spawn, before rejoin and thread setup, so
+  terminal queries are answered; the human attach path stays the
+  single-reader exception; STOP/SIGINT interrupt pre-watch phases with an
+  orientation write interrupted by shutdown classified as clean exit; the
+  CI local-LLM lane prewires the synthetic PTY member as already onboarded
+  (docs/specs/04-summon.md detached-startup and local-LLM lane text,
+  docs/implementation/05-taut-summon-architecture.md).
+  (distilled from 2 entries, 2026-07-08..2026-07-08, source 9410b6b)
 
-- 2026-07-08: Detached PTY startup cannot leave the terminal-query responder
-  behind bootstrap work. Interactive CLIs may emit DSR, XTVERSION, or kitty
-  queries immediately after spawn; if no human attach bridge owns the master,
-  start the pump first, then do rejoin and thread setup. Keep the human attach
-  path as the single-reader exception. STOP/SIGINT paths that race this
-  pre-watch phase must interrupt the current adapter immediately and classify an
-  orientation write interrupted by shutdown as clean exit.
-
-- 2026-07-08: Long-lived process supervisors must propagate owned-thread death
-  as a first-class state transition. A child process can be healthy while its
-  watcher thread has exhausted broker retries or exited; if the supervisor waits
-  only on child death or explicit shutdown, the member becomes live-but-deaf and
-  tests fail as slow timeouts. Wrap watcher threads so unexpected exit wakes the
-  supervisor and drives the same replay/resume path as child failure.
-
-- 2026-07-08: Correction to the same-day SQLite contention lessons:
-  SimpleBroker owns queue-operation retry; Taut must not layer a retry
-  classifier over SimpleBroker or retry `malformed`, magic mismatch, disk I/O,
-  timestamp row-shape, or taut-authored row-decode errors by substring.
-  Long-lived actors use persistent owned handles and close/reopen them on
-  surfaced broker faults. Transient CLI paths use non-persistent handles.
-  Readiness proves live correlated control, not repeated session-row polling.
-  Earlier 2026-07-08 notes recommending short-lived watcher handles, fresh
-  retrying readers, swallowed malformed session rows, or larger Taut retry
-  budgets are superseded by this rule.
-
-- 2026-07-08: The summon control proof isolated the SQLite churn root cause
-  below Taut: SimpleBroker 5.1.0 persistent SQLite sessions kept thread-local
-  cores across operations, which could leave long-lived control/watch readers
-  stale and then surface `database disk image is malformed` or `disk I/O error`
-  while `PRAGMA integrity_check` stayed `ok`. The fix is a SimpleBroker
-  release-path contract: retain the persistent queue lease, but disconnect the
-  operation's thread-local SQLite core after each operation. Taut's floor is
-  therefore `simplebroker>=5.1.1`; Taut must stay a thin layer and not add a
-  summon retry or cleanup policy for this class.
-
-- 2026-07-09: Correction to the preceding SimpleBroker 5.1.1 conclusion:
-  5.1.1's per-operation core-release mechanism was buggy. Taut requires
-  SimpleBroker 5.2.0 and follows its executable reference-reactor pattern:
-  persistent sessions are process-local, each drive owner uses its own
-  thread-local core, stop signaling is separate from close, and reactor
-  recovery replaces complete handle generations only after the current turn
-  unwinds. The 5.1.x runtime and its verification direction are unsupported.
+- 2026-07-08..09 (4 entries): SimpleBroker retry/handle ownership and the
+  version-floor correction chain, verified distilled — SimpleBroker owns
+  queue-operation retry; Taut layers no retry classifier and never treats
+  `malformed`, magic mismatch, disk I/O, or row-decode errors as transient
+  by substring; long-lived actors own persistent handles and close/reopen
+  them on surfaced faults; one lost control reply is recoverable while
+  repeated drain failures degrade control health. The 5.1.x floor
+  conclusions were superseded in place: the spec now separates the 5.2.0
+  reference ownership model from the first accepted runtime and the current
+  floor (docs/specs/02-taut-core.md broker-ownership and floor text,
+  docs/specs/04-summon.md control-health text,
+  docs/implementation/05-taut-summon-architecture.md). Forensic gist kept:
+  thread-local core staleness surfaced as malformed/disk-I/O reads while
+  `PRAGMA integrity_check` stayed `ok`.
+  (distilled from 4 entries, 2026-07-08..2026-07-09, source 9410b6b)
 
 - 2026-07-10: Correction to the preceding supported-floor statement: 5.2.0
   remains the provenance of the reactor ownership model, but 5.2.2 is the first
@@ -371,20 +342,33 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   xdist lane and pin test-only SQLite maintenance settings instead of treating
   load-sensitive timeouts as expected slowness.
 
-- 2026-07-08: Retry policies must cover the public wrapper shape of a transient,
-  not only the low-level exception. SimpleBroker can turn a transient SQLite
-  malformed-page read during connection setup into
-  `RuntimeError("Failed to get database connection: ...")`; a narrowly marked
-  wrapper retry is safer than broad RuntimeError retrying and prevents real
-  process gates from failing on a known WAL checkpoint blip.
+- 2026-07-08 (5 entries): superseded transient-retry guidance, folded to
+  git — these entries prescribed wrapper-shape retries, substring-transient
+  classification, malformed-rows-as-"not ready" masking, role-differentiated
+  Taut retry budgets with an executable budget-order guard, and per-probe
+  reader reopening. All were artifacts of the removed Taut-owned broker
+  retry layer; the surviving rule is the inverse and is owned with firing
+  no-retry tests (SimpleBroker owns retry; Taut classifies nothing as
+  transient by substring; the harness must not hide malformed rows or churn
+  fresh clients — docs/specs/02-taut-core.md, docs/specs/04-summon.md,
+  docs/implementation/05-taut-summon-architecture.md;
+  `taut/_broker_retry.py` is a fail-closed shim).
+  (superseded; folded from 5 entries, 2026-07-08..2026-07-08, source
+  9410b6b)
 
-- 2026-07-08: Real-process readiness barriers must wait for the consumer, not
-  just the child process, ledger row, or thread start. A summon provider can be
-  spawned and its session row recorded before the chat watcher has entered its
-  first drain; tests that speak during that gap create legitimate "message was
-  before join" misses. Make any readiness log downstream of an explicit
-  consumer-ready event, then wait on that log or event before asserting live
-  message delivery.
+- 2026-07-08 (5 entries): summon real-process readiness barriers, verified
+  distilled — readiness is downstream of the watcher's first drain and is
+  proven by a correlated PING/STATUS control round-trip; session rows,
+  provider starts, and logs are diagnostics, not readiness; probe timeouts
+  and the overall readiness deadline are bounded separately; harness
+  factories without a received-log keep the weaker portable barrier and owe
+  their own provider-specific proof before control traffic; readiness
+  helpers reuse one reader rather than tight fresh-client polling loops
+  (docs/specs/04-summon.md driver-readiness text,
+  docs/implementation/05-taut-summon-architecture.md real-process harness
+  posture, and the conformance-barrier note in
+  `extensions/taut_summon/tests/test_conformance.py`).
+  (distilled from 5 entries, 2026-07-08..2026-07-08, source 9410b6b)
 
 - 2026-07-08: Native activity waiters need an arming-point proof before they
   are used as a readiness boundary. If a write can land after a consumer's
@@ -393,46 +377,12 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   readiness-sensitive multi-queue watchers unless the native waiter proves that
   pre-wait writes are observed.
 
-- 2026-07-08: Health flags should distinguish non-recoverable control-path
-  failure from recoverable long-lived-handle failure and adjacent safety-audit
-  failure. A real STOP/STATUS drain fault can make the system uncontrollable
-  and should degrade immediately; a recoverable broker-handle read blip under
-  heavy SQLite process churn should close/reopen the handles, let clients retry,
-  and degrade only if it repeats. Otherwise a live process gets permanently
-  marked unhealthy for one skipped pass.
-
-- 2026-07-08: Read-before-insert uniqueness checks need an idempotent collision
-  path. Deterministic identity claims can be recorded by two processes at the
-  same time; if the insert loses the race, reread the unique key and accept it
-  only when it belongs to the same owner. Treating the primary-key collision as
-  fatal turns normal concurrent recognition into driver crashes.
-
-- 2026-07-08: Real-process test readiness should prove every plane the test
-  will use. A driver can have a provider child, a session row, presence, and a
-  watcher-ready log while its control consumer is still recovering from SQLite
-  sidecar contention. If a test will send PING/STATUS or rely on later control
-  health, include a bounded control round-trip in the readiness barrier and keep
-  the failure diagnostic tied to the driver stderr tail.
-
-- 2026-07-08: Watcher wake callbacks are hints, not delivery guarantees. If a
-  backend data-version callback hits a known transient SQLite sidecar read
-  failure, convert it into "poll soon" and keep the watcher alive; delivery
-  correctness belongs to the subsequent pending scan and cursor checks.
-  Letting the callback exception escape can strand a live watcher as silent
-  while the provider process remains healthy.
-
-- 2026-07-08: Do not trade SQLite sync semantics for speed in real-process
-  correctness lanes. Disabling test-only maintenance writes can reduce
-  irrelevant churn, but `BROKER_SYNC_MODE=NORMAL` made CI more likely to observe
-  false malformed-page reads under summon driver/provider/CLI WAL load. Keep the
-  slow lane correctness-first and overlap independent setup work, such as the
-  local LLM image/model preparation, instead of weakening storage guarantees.
-
-- 2026-07-08: Readiness probes must outlast the retry budget they rely on. A
-  summon process-lane bootstrap PING with a 5s request timeout failed in CI while
-  the live driver was correctly riding out bounded SQLite transient retries;
-  size the probe timeout above one broker retry loop and keep the overall
-  readiness deadline bounded separately.
+- 2026-07-08: identity-claim race recovery, verified distilled —
+  read-before-insert collisions reread the unique key and accept only
+  same-owner rows; another member stays an ownership collision (the
+  member-creation race text in docs/specs/02-taut-core.md, implemented in
+  `taut/state/_sql.py`).
+  (distilled from 1 entry, 2026-07-08..2026-07-08, source 9410b6b)
 
 - 2026-07-08: Treat SQLite `database disk image is malformed` in real-process
   tests as a handle-lifetime bug until disproven. A summon failure recovered
@@ -441,13 +391,6 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   to shorten `TautWatcher` queue handles, not to broaden retries or hide the
   lane behind skips.
 
-- 2026-07-08: A provider-agnostic conformance barrier is not enough for tests
-  that send summon control traffic. Presence plus a session row proves that the
-  provider joined; it does not prove the watcher has drained or the control
-  broker is accepting PING/STATUS/STOP. Scripted harnesses with a received-log
-  should reuse the full driver readiness barrier before the first control
-  round-trip, while live harnesses need an equivalent provider-specific proof.
-
 - 2026-07-08: Do not make cross-platform CI depend on instantaneous
   `psutil.open_files()` handle deltas for ephemeral SQLite queue tests. macOS,
   Windows, Python version, and xdist scheduling can expose temporary handle
@@ -455,11 +398,6 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   instead: the watcher creates ephemeral queues (`conn is None`), calls
   `Queue.close()` when membership churn removes a dynamic queue, and still
   delivers messages after repeated churn.
-
-- 2026-07-08: Real-process readiness polling should classify the known summon
-  sidecar malformed-row read as "not ready yet" at the harness boundary. The
-  production ledger still retries and fails closed; the test wait loop should
-  not let one exhausted transient read escape while bootstrap is still racing.
 
 - 2026-07-08: Single-shot summon session-event writes need a larger bounded
   retry budget than ordinary polling reads. A failed readiness read can simply
@@ -480,25 +418,11 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   entropy source and checking the stable shape/source contract; test
   name-derived behavior at the call sites that actually receive names.
 
-- 2026-07-08: Control-plane retry budgets must match the role of the operation,
-  and the spec needs an executable guard for that budget order. A dropped
-  STATUS/PING reply or a session-row read that exhausts the ordinary broker
-  budget can turn a healthy driver into a false timeout under tag-CI storage
-  load. Keep non-transient errors loud, but give control reply writes,
-  control-drain reads, and session-row readiness reads explicit budgets with
-  tests that outlast the normal broker retry count.
-
 - 2026-07-08: Do stable summon token lookups at the startup barrier, not inside
   the churn window being tested. Once `wait_for_start()` has proven the durable
   session row, the token is stable; rereading it after flood writes, mid-run
   joins, or blocked injects adds sidecar pressure unrelated to the behavior
   under test and can turn a storage transient into a false timeout.
-
-- 2026-07-08: Real-process readiness helpers should reuse a session-reader
-  queue across a wait loop. Opening a fresh broker queue every 50 ms is not a
-  neutral poll under SQLite WAL pressure; it creates connection churn that can
-  make a committed summon session row look absent in CI and hides the behavior
-  the test is meant to prove.
 
 - 2026-07-08: Once a real-process startup barrier has read a summon session
   row, reuse that row for the bootstrap control PING instead of doing a second
@@ -513,23 +437,10 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   orientation input" instead of telling whether bootstrap, spawn, or injection
   stalled.
 
-- 2026-07-08: SimpleBroker connection-open WAL churn can surface as a wrapped
-  `RuntimeError("Failed to get database connection: Database magic string
-  mismatch ...")`, not only as `malformed` or `disk I/O error`. Treat the
-  connection-wrapper marker as retryable with the same bounded budget; a real
-  wrong target still fails after the budget, but a transient header-page misread
-  does not kill a healthy summon restart.
-
 - 2026-07-08: Retry public broker operations, not whole CLI commands. A
   whole-command retry for `taut say` can duplicate a message if the insert
   succeeded and a later cursor or notification step blipped. Put the bounded
   transient retry at the queue/sidecar operation boundary instead.
-
-- 2026-07-08: Readiness pollers should reopen their broker reader between
-  probes under high SQLite churn. Holding one helper queue across a whole
-  session-row wait can turn an exhausted malformed-row read into a long false
-  timeout; a fresh retrying reader per probe better matches the intended
-  ephemeral SQLite posture.
 
 - 2026-07-08: PTY fake harnesses must model terminal input buffering while
   answering startup queries. Detached summon can inject orientation while a TUI
@@ -537,34 +448,6 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   bytes that arrive before the query reply. Preserve those bytes in the test
   harness so CI catches responder races without inventing a stricter fake than
   production.
-
-- 2026-07-08: CI-safe PTY local-LLM tests should prewire the synthetic harness
-  as already onboarded. An unwired detached PTY correctly reports
-  `awaiting_onboarding=true` and waits for a human attach path; that proves the
-  onboarding guard, not local model transport. The local-LLM lane's job is the
-  deterministic sentinel-posting proof.
-
-- 2026-07-08: A control reply write that exhausts the transient retry budget
-  should reopen broker handles before idempotent clients retry. Logging and
-  keeping the same handle can leave a healthy driver alive but apparently
-  silent under SQLite WAL churn; one lost STATUS/PING reply is recoverable, a
-  repeated reply failure is degraded control health.
-
-- 2026-07-08: A watcher failure is not automatically a provider crash. Under
-  SQLite WAL churn, an exhausted watcher-side transient can make the ears lane
-  exit while the harness is still healthy; rebuilding the watcher over the same
-  live provider preserves the model session and avoids spending crash backoff
-  on a storage-side fault. Only pump exit and injection failure belong to the
-  harness-resume path.
-
-- 2026-07-08: Copied Weft primitives stay copied; Taut adaptation belongs in
-  subclasses. For `MultiQueueWatcher`, keep the copied add/remove/scheduling
-  behavior intact and put cursor-aware chat delivery, membership queue close,
-  summon control relevance, and SimpleBroker `last_ts` bypasses in `TautWatcher`
-  or the summon control reactor. A real-process churn proof that still surfaces
-  `disk I/O error` or connection-open `malformed` after that boundary is a
-  SimpleBroker/dependency issue to fix there, not a reason to restore a Taut
-  retry wrapper.
 
 - 2026-07-08: PTY "quiet" before first output is not readiness. A cold-start
   PTY child can take long enough on CI that injecting orientation during

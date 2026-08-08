@@ -1326,9 +1326,10 @@ thread do not satisfy this boundary by themselves.
   SimpleBroker 6.0.0 and SimpleBroker-PG 3.5.0 compatibility reconciliation.
 - `docs/plans/2026-07-14-blank-message-no-op-plan.md` — silent terminal-mode
   handling for core-filtered blank assistant events.
-- `docs/plans/2026-07-14-terminal-output-safety-plan.md` — shared terminal-text
+- retired: 2026-07-14-terminal-output-safety-plan — shared terminal-text
   safety defaults for Summon command/diagnostic output, coordinated core floor,
-  and an explicit byte-transparent PTY exemption.
+  and an explicit byte-transparent PTY exemption; source `281f04fa`; see the
+  ledger in docs/plans/README.md.
 - `docs/plans/2026-07-13-ci-speed-determinism-release-evidence-plan.md` —
   strict prepared local-LLM proof, complete failure evidence, and shared
   exact-SHA release artifacts without duplicate test workflow calls.
@@ -1342,9 +1343,10 @@ thread do not satisfy this boundary by themselves.
 - `docs/plans/2026-07-11-multi-factor-review-remediation-plan.md` — reviewed
   direct-name bootstrap, trust framing, dynamic audit, PTY bound, and
   documentation remediation program for v0.5.3.
-- `docs/plans/2026-07-10-ci-failure-remediation-plan.md` — v0.5.1 CI
+- retired: 2026-07-10-ci-failure-remediation-plan — v0.5.1 CI
   remediation for PTY write leases, watcher pre-publication stop, artifact
-  fixture portability, and deterministic waiter-rebind proof.
+  fixture portability, and deterministic waiter-rebind proof; source
+  `b03709452`; see the ledger in docs/plans/README.md.
 - `docs/plans/2026-07-10-taut-dynamic-native-waiter-replacement-plan.md` —
   active shared-core waiter replacement and paired dependency-floor follow-on;
   Summon's control topology remains fixed.
