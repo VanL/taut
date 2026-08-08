@@ -201,3 +201,30 @@ conflict rule, promotion rule). AGENTS wiring already exists
 ## Execution Log
 
 (append-only)
+
+- 2026-08-07: Owner-directed README currency pass, executed ahead of
+  the blocked structural slices as its own unit (Class 2 against the
+  README's own contract intent: reversible, no behavior claims
+  changed, verified by the [DOM-10.1] gates — path claims, CLI
+  claims 25/25, transcripts byte-untouched). Applied: status block
+  brought to published reality (taut-chat on PyPI, CHANGELOG as the
+  release record) with the program-theory link added; Table of
+  Contents; Features gains the extensions bullet; Roadmap split into
+  Shipped (summon, MCP, search — each with its governing spec) /
+  In progress (dump-load, owned by its own in-flight work) / Ahead
+  (TUI, Redis backend); new Documentation Map section (the
+  SimpleBroker "specifications and instructions" analog) naming the
+  layered surfaces and noting the registry as planned work. The
+  structural extraction, kernel, llms.txt, and registry remain this
+  plan's blocked slices.
+- 2026-08-07: Diataxis gap flags recorded for future development:
+  (tutorial) no learning path beyond Quick Start — a first-workspace
+  walkthrough with two agents is the natural piece once the kernel
+  exists; (how-to) agent-recipe home is the planned kernel (D3);
+  backup/migration how-to arrives with dump-load; a configuration
+  how-to (reactions vocabulary, terminal policy, .taut.toml
+  discovery) remains default-no per round-1 F8 unless implementation
+  shows it cross-cutting; (reference) llms.txt and the registry are
+  this plan's D4/D1; (explanation) the former biggest gap —
+  conceptual account — is now filled by the Active program theory;
+  presence/liveness semantics remain the thinnest explained area.

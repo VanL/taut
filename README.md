@@ -7,10 +7,13 @@
 *Slack in your terminal, for you and your agents. No server, no daemon, no
 config, no accounts. One SQLite file by default; Postgres when you need it.*
 
-> **Status:** alpha. The release path is configured for PyPI and immutable
-> GitHub Releases; configuring it does not mean a PyPI version has already
-> been published. This README is the intended product contract, written first
-> on purpose. The core specification lives in
+> **Status:** alpha, and real: the core ships on PyPI as
+> [`taut-chat`](https://pypi.org/project/taut-chat/) with immutable
+> GitHub Releases (see [CHANGELOG.md](CHANGELOG.md) for released
+> versions). This README is the product contract, written first on
+> purpose — before any spec or code — and kept current against the
+> specs below. The conceptual account of what kind of system Taut is
+> lives in [`docs/program-theory.md`](docs/program-theory.md). The core specification lives in
 > [`docs/specs/02-taut-core.md`](docs/specs/02-taut-core.md); identity,
 > addressing, direct messages, and notifications are specified in
 > [`docs/specs/03-identity-addressing-notifications.md`](docs/specs/03-identity-addressing-notifications.md),
@@ -61,6 +64,18 @@ Postgres database. Both paths are built on
 default, or a few machines through the Postgres extension.
 **Not for:** untrusted users, compliance, anything Slack is actually for.
 
+## Table of Contents
+
+- [Features](#features) · [Installation](#installation) ·
+  [Quick Start](#quick-start)
+- [The Identity Trick](#the-identity-trick) ·
+  [Command Reference](#command-reference) ·
+  [Working With Agents](#working-with-agents)
+- [Trust Model](#trust-model-read-this-before-filing-the-issue) ·
+  [Things That Look Weird but Aren't](#things-that-look-weird-but-arent)
+- [Documentation Map](#documentation-map) ·
+  [Roadmap](#roadmap) · [Development](#development)
+
 ## Features
 
 - **Zero configuration by default** — no server, no daemon, no dotfiles, no
@@ -93,6 +108,11 @@ default, or a few machines through the Postgres extension.
   keeps it inspectable.
 - **SimpleBroker all the way down** — `.taut.db` is a standard SimpleBroker
   database. `broker -f .taut.db list` works. Plumbing is not hidden.
+- **Three optional extensions, separately installable** — `taut-pg`
+  (same commands on a project-configured Postgres), `taut-summon`
+  (host an agent harness as an ordinary workspace member), and
+  `taut-mcp` (expose the workspace to MCP clients). Core stays
+  dependency-boring without them.
 
 ## Installation
 
@@ -765,17 +785,55 @@ parsing. The planned TUI ships as an optional extra so the core dependency
 set stays small.
 </details>
 
+## Documentation Map
+
+This README is the human product entry and, per section, the contract
+of record until a section is ceded to its spec (the per-section
+registry is planned work). The layers:
+
+- **Conceptual account:**
+  [`docs/program-theory.md`](docs/program-theory.md) — what kind of
+  system Taut is, the durable principles and non-goals, and the
+  adopted design decisions with their reconsider-when conditions.
+- **Exact behavior (normative):** the specs, indexed at
+  [`docs/specs/00-specs-index.md`](docs/specs/00-specs-index.md) —
+  core ([`02-taut-core.md`](docs/specs/02-taut-core.md)), identity
+  ([`03-identity-addressing-notifications.md`](docs/specs/03-identity-addressing-notifications.md)),
+  summon ([`04-summon.md`](docs/specs/04-summon.md)), MCP
+  ([`05-taut-mcp.md`](docs/specs/05-taut-mcp.md)), search
+  ([`06-search.md`](docs/specs/06-search.md)).
+- **Extension depth:** each extension's own README —
+  [`extensions/taut_pg/README.md`](extensions/taut_pg/README.md),
+  [`extensions/taut_summon/README.md`](extensions/taut_summon/README.md).
+- **Released behavior deltas:** [CHANGELOG.md](CHANGELOG.md).
+- **For agents working in this repository:** start at
+  [`AGENTS.md`](AGENTS.md), which routes to the canonical startup
+  order.
+
 ## Roadmap
 
-In order, each behind its own spec (this project is docs-first):
+Docs-first: everything ships behind its own spec.
 
-- **`taut summon` — captive agents.** *Shipped* as the `taut-summon`
-  extension (see [Summon Extension](#summon-extension) above and
-  `docs/specs/04-summon.md`): hosts an agent harness *as a thread member*
-  — chat becomes its ears, the CLI its mouth — daemon-free, speaking the
-  agent-task control contract Weft pioneered (same verbs, same queue
-  shapes), with a portable conformance suite both projects can run. The
-  `codex` adapter is the named follow-on.
+**Shipped** (each with its governing spec):
+
+- **Summon** — `taut-summon` hosts an agent harness as a thread member
+  (chat its ears, the CLI its mouth), daemon-free, speaking the
+  agent-task control contract Weft pioneered, with a portable
+  conformance suite both projects run
+  ([`docs/specs/04-summon.md`](docs/specs/04-summon.md)). The `codex`
+  adapter is the named follow-on.
+- **MCP** — `taut-mcp` exposes the workspace to MCP clients: stdio
+  lifecycle, per-workspace identity, CLI-shaped tools
+  ([`docs/specs/05-taut-mcp.md`](docs/specs/05-taut-mcp.md)).
+- **Search** — cursor-neutral full-text search over visible history,
+  SQLite FTS5 and PostgreSQL text search behind one API
+  ([`docs/specs/06-search.md`](docs/specs/06-search.md)).
+
+**In progress:** portable dump/load maintenance commands (see
+[CHANGELOG.md](CHANGELOG.md) Unreleased; spec in review).
+
+**Ahead, in order:**
+
 - **TUI** (`taut-chat[tui]`): panes for threads, live presence, zero new core
   dependencies.
 - **Redis/Valkey backend.** Queues already work (`simplebroker-redis`).
