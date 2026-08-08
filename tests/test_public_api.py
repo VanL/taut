@@ -19,8 +19,10 @@ EXPECTED_PUBLIC_EXPORTS = [
     "BackendNotSupportedError",
     "BlankMessageError",
     "Channel",
+    "DumpReport",
     "EmptyResultError",
     "IdentityError",
+    "LoadReport",
     "Member",
     "MembershipError",
     "Message",
@@ -29,6 +31,7 @@ EXPECTED_PUBLIC_EXPORTS = [
     "NotInitializedError",
     "NotFoundError",
     "Notification",
+    "PersistenceComponentReport",
     "SchemaVersionError",
     "SearchHit",
     "TautClient",
@@ -99,6 +102,44 @@ def test_exception_leaves_are_public_exports() -> None:
     assert "Channel" in taut.__all__
     assert taut.SearchHit.__name__ == "SearchHit"
     assert "SearchHit" in taut.__all__
+    assert taut.DumpReport.__name__ == "DumpReport"
+    assert taut.LoadReport.__name__ == "LoadReport"
+    assert taut.PersistenceComponentReport.__name__ == "PersistenceComponentReport"
+
+
+def test_persistence_reports_are_exact_frozen_slotted_public_values() -> None:
+    """[PIO-3.2] Persistence reports have exact typed public shapes."""
+
+    from taut.client import DumpReport, LoadReport, PersistenceComponentReport
+
+    assert taut.DumpReport is DumpReport
+    assert taut.LoadReport is LoadReport
+    assert taut.PersistenceComponentReport is PersistenceComponentReport
+    assert [field.name for field in fields(PersistenceComponentReport)] == [
+        "name",
+        "version",
+        "records",
+    ]
+    assert [field.name for field in fields(DumpReport)] == [
+        "path",
+        "format",
+        "version",
+        "components",
+        "queues",
+        "messages",
+        "omitted_claimed_messages",
+    ]
+    assert [field.name for field in fields(LoadReport)] == [
+        "path",
+        "format",
+        "version",
+        "components",
+        "queues",
+        "messages",
+        "dry_run",
+        "destination_checked",
+        "applied",
+    ]
 
 
 def test_search_hit_is_exact_frozen_slotted_public_value() -> None:
@@ -186,11 +227,14 @@ def test_client_environment_identity_inheritance_is_keyword_only_and_defaulted()
 def test_lazy_exports_are_the_owning_module_objects() -> None:
     from taut.client import (
         Channel,
+        DumpReport,
+        LoadReport,
         Member,
         Message,
         MessageDeletion,
         MessageReaction,
         Notification,
+        PersistenceComponentReport,
         SearchHit,
         TautClient,
         Thread,
@@ -205,6 +249,9 @@ def test_lazy_exports_are_the_owning_module_objects() -> None:
     assert taut.MessageReaction is MessageReaction
     assert taut.Notification is Notification
     assert taut.SearchHit is SearchHit
+    assert taut.DumpReport is DumpReport
+    assert taut.LoadReport is LoadReport
+    assert taut.PersistenceComponentReport is PersistenceComponentReport
     assert taut.TautClient is TautClient
     assert taut.TautWatcher is TautWatcher
     assert taut.Thread is Thread

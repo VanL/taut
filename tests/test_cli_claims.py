@@ -39,6 +39,12 @@ EXEMPTIONS: dict[ExemptionKey, str] = {
     (Path("docs/specs/02-taut-core.md"), ("COMMAND",)): (
         "Metasyntactic command placeholder in root dispatch documentation."
     ),
+    (Path("docs/specs/08-persistence-io.md"), ("dump",)): (
+        "Explicitly rejected top-level alias; persistence lives under taut system."
+    ),
+    (Path("docs/specs/08-persistence-io.md"), ("load",)): (
+        "Explicitly rejected top-level alias; persistence lives under taut system."
+    ),
 }
 
 _INLINE_CODE_RE = re.compile(r"(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)")

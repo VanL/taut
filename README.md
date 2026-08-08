@@ -74,6 +74,9 @@ default, or a few machines through the Postgres extension.
   searches current source history without moving a cursor. SQLite uses its
   built-in FTS5 support; `taut-pg` uses PostgreSQL's built-in text search and
   GIN, with no optional server extension required.
+- **Portable workspace dump/load** — `taut system dump --output backup.jsonl`
+  writes messages plus authoritative sidecar state; `taut system load` restores
+  exact ids into a fresh SQLite or PostgreSQL target.
 - **Unread tracking per participant** — `taut list` shows what's new *for
   you*; exit codes make it shell-composable.
 - **Live following** — `taut watch` streams every thread you're in, and
@@ -133,7 +136,7 @@ uv add taut-chat taut-pg taut-summon taut-mcp
 python -m pip install taut-chat taut-pg taut-summon taut-mcp
 ```
 
-Requirements: Python 3.11+. Runtime dependencies are `simplebroker>=6.0.1`
+Requirements: Python 3.11+. Runtime dependencies are `simplebroker>=6.0.2`
 (which itself has none) and `psutil` for cross-platform process metadata.
 
 ### Postgres Extension
@@ -308,6 +311,19 @@ $ make test 2>&1 | tail -20 | taut say ci -
 $ taut read --json | jq -r 'select(.kind=="message") | .text'
 ```
 
+Workspace maintenance is actor-free. Stop writers, watchers, Summon drivers,
+and foreign broker consumers for the full operation:
+
+```bash
+$ taut system dump --output backup.taut.jsonl
+$ taut system load --input backup.taut.jsonl --dry-run
+$ taut system load --input backup.taut.jsonl   # fresh target only
+```
+
+Dry-run validates the complete file without opening or checking the selected
+destination. A failed load after its guard is acquired leaves that fresh target
+unusable; recreate it and retry the same dump.
+
 Direct messages use `@name` and route through the member's current name, not
 through the display name captured in old messages:
 
@@ -434,6 +450,8 @@ pass `TAUT_AS` or `TAUT_TOKEN` through.
 | `taut inbox` | Claim and show notification pointers for mentions and new DMs |
 | `taut log THREAD_OR_DM [--since TS] [--limit N]` | Show channel, sub-thread, or accessible DM history; never moves your bookmark or activity for a DM |
 | `taut search QUERY... [--channel CHANNEL] [--dm @NAME] [--dms]` | Search visible channel and DM history without moving cursors; add `--from`, `--kind`, `--before`, `--limit`, or `--reindex` to refine or rebuild |
+| `taut system dump --output FILE` | Write an owner-only portable logical dump of registered pending messages, core authority, and installed durable extension state |
+| `taut system load --input FILE [--dry-run]` | Validate or restore a dump into a fresh target; maintenance requires quiescence |
 | `taut list [--all \| --dms]` | Your threads with unread state; `--all` = every thread; `--dms` = every accessible DM, including read and empty conversations |
 | `taut watch [THREAD_OR_DM ...]` | Follow selected channels/sub-threads or existing DMs; default = everything you're in plus your notification inbox |
 | `taut who [THREAD]` | Members and presence |
@@ -443,7 +461,8 @@ pass `TAUT_AS` or `TAUT_TOKEN` through.
 Global options: `--db PATH`, `--as NAME`, `--token TOKEN`, `--json`,
 `-t/--timestamps`, `-q/--quiet`. Environment: `TAUT_DB`, `TAUT_AS`,
 `TAUT_TOKEN`. Project reaction and terminal-rendering policy live in
-`.taut.toml`.
+`.taut.toml`. The actor-free `system` namespace accepts only `--db`, `--json`,
+and `--quiet`; actor selectors and timestamps are usage errors.
 
 **Exit codes** (SimpleBroker's convention): `0` success, `1` error, `2`
 empty / nothing new / not found. So this is a polling inbox:
@@ -593,6 +612,14 @@ watcher.stop()
 thread.join(timeout=2)
 ```
 
+Dump/load are actor-free class methods and do not require a client instance:
+
+```python
+dumped = TautClient.dump(output="backup.taut.jsonl")
+checked = TautClient.load(input_path=dumped.path, dry_run=True)
+restored = TautClient.load(input_path=dumped.path, db_path="restored.db")
+```
+
 ## Trust Model (Read This Before Filing the Issue)
 
 Taut's trust model is deliberately weak, and saying so loudly is part of
@@ -699,8 +726,9 @@ one is watching, taut is no processes at all.
 
 By default, yes. Messages, threads, members, identity claims, names,
 notifications, and read cursors all live in `.taut.db` (SQLite's transient
-`-wal`/`-shm` companions come and go). Backup is `cp`, deletion is `rm`, and
-"export the workspace" is the file. Under `taut-pg`, the same `taut_*` sidecar
+`-wal`/`-shm` companions come and go). A stopped-workspace physical copy is
+still possible, but `taut system dump` is the portable logical backup and also
+works across SQLite and PostgreSQL. Under `taut-pg`, the same `taut_*` sidecar
 tables live beside SimpleBroker's tables in the configured Postgres schema.
 </details>
 
@@ -730,7 +758,7 @@ security model.
 <summary><strong>Why argparse and a small dependency set?</strong></summary>
 
 Taut follows SimpleBroker's discipline: the install should be boring.
-Runtime dependencies are exactly `simplebroker>=6.0.1` and `psutil`. The CLI is
+Runtime dependencies are exactly `simplebroker>=6.0.2` and `psutil`. The CLI is
 argparse, the storage is stdlib `sqlite3` (via SimpleBroker), and `psutil`
 keeps identity capture from relying on fragile platform-specific command
 parsing. The planned TUI ships as an optional extra so the core dependency

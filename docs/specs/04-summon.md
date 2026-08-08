@@ -789,6 +789,11 @@ durable conversation; the harness session is an optimization of it.
   extension's SQL is fixed, module-level template text with qmark parameters;
   reads use the canonical session projection rather than `SELECT *` or
   runtime-assembled column lists.
+- **Persistence I/O:** Summon participates through the `taut-summon` component
+  [PIO-5.3]. Durable session continuity (`member_id`, token, provider, provider
+  session id, wired, and updated timestamp) is exported. Bootstrap claims and
+  driver pid/start-time evidence are transient and are never exported;
+  restored driver evidence is null.
 - **Single-driver guard:** `run` refuses when the ledger row shows a
   live driver (pid + start-time still alive, same evidence style as
   presence). Two drivers injecting into two harness sessions as one
@@ -1311,6 +1316,8 @@ thread do not satisfy this boundary by themselves.
 
 ## Related Plans
 
+- `docs/plans/2026-08-07-taut-dump-load-plan.md` — durable Summon session
+  export/import through the core persistence component seam.
 - `docs/plans/2026-08-01-summon-rich-host-global-state-plan.md` — makes
   driver identity object-local, prevents inherited host identity in provider
   children, and separates safe rich-host signal defaults from explicit

@@ -36,6 +36,125 @@ def _assert_clean_failure(rc: int, out: str, err: str, *, expected_rc: int) -> N
     assert "Traceback" not in err
 
 
+def test_probe_system_dump_load_json_and_missing_input_exit(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    assert run_cli("init", cwd=source)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=source)[0] == 0
+    assert run_cli("--as", "van", "say", "general", "hello", cwd=source)[0] == 0
+    dump_path = tmp_path / "backup.taut.jsonl"
+
+    rc, out, err = run_cli(
+        "system",
+        "dump",
+        "--output",
+        str(dump_path),
+        "--json",
+        cwd=source,
+    )
+
+    assert rc == 0, err
+    dumped = json.loads(out)
+    assert dumped["type"] == "system_dump"
+    assert dumped["path"] == str(dump_path)
+    assert dumped["messages"] == 2
+    assert err == ""
+
+    destination = tmp_path / "destination"
+    destination.mkdir()
+    rc, out, err = run_cli(
+        "system",
+        "load",
+        "--input",
+        str(dump_path),
+        "--json",
+        cwd=destination,
+    )
+    assert rc == 0, err
+    loaded = json.loads(out)
+    assert loaded["type"] == "system_load"
+    assert loaded["applied"] is True
+    assert loaded["destination_checked"] is True
+    assert err == ""
+
+    rc, out, err = run_cli(
+        "system",
+        "load",
+        "--input",
+        str(tmp_path / "missing.taut.jsonl"),
+        cwd=destination,
+    )
+    _assert_clean_failure(rc, out, err, expected_rc=2)
+    assert "input file not found" in err
+
+
+def test_probe_system_globals_quiet_dry_run_and_dash_prefixed_path(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    assert run_cli("init", cwd=workspace)[0] == 0
+    ordinary = workspace / "ordinary.taut.jsonl"
+
+    rc, out, err = run_cli(
+        "--as",
+        "van",
+        "system",
+        "dump",
+        "--output",
+        ordinary,
+        cwd=workspace,
+    )
+    _assert_clean_failure(rc, out, err, expected_rc=1)
+    assert "does not accept --as" in err
+
+    rc, out, err = run_cli(
+        "system",
+        "dump",
+        "--output",
+        ordinary,
+        "--as",
+        "van",
+        cwd=workspace,
+    )
+    assert rc == 1
+    assert out == ""
+    assert "unrecognized arguments" in err
+    assert "Traceback" not in err
+
+    rc, out, err = run_cli(
+        "system",
+        "dump",
+        f"--output={ordinary}",
+        "--quiet",
+        cwd=workspace,
+        env={"TAUT_AS": "ambient-actor", "TAUT_TOKEN": "ambient-token"},
+    )
+    assert (rc, out, err) == (0, "", "")
+
+    dash_path = workspace / "-backup.taut.jsonl"
+    ordinary.replace(dash_path)
+    destination = workspace / "must-not-exist.db"
+    rc, out, err = run_cli(
+        "--db",
+        destination,
+        "system",
+        "load",
+        "--input=-backup.taut.jsonl",
+        "--dry-run",
+        "--json",
+        cwd=workspace,
+    )
+    assert rc == 0, err
+    report = json.loads(out)
+    assert report["dry_run"] is True
+    assert report["destination_checked"] is False
+    assert report["applied"] is False
+    assert not destination.exists()
+
+
 def test_probe_garbage_taut_db_is_reported_without_traceback(tmp_path: Path) -> None:
     (tmp_path / ".taut.db").write_bytes(b"garbage, not a sqlite file")
 

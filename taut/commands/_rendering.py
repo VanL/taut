@@ -20,7 +20,9 @@ _POLICY_ERROR_MESSAGE = "terminal output policy is unavailable"
 if TYPE_CHECKING:
     from taut.client import (
         Channel,
+        DumpReport,
         InitResult,
+        LoadReport,
         Member,
         Message,
         MessageDeletion,
@@ -29,6 +31,87 @@ if TYPE_CHECKING:
         SearchHit,
         TautClient,
         Thread,
+    )
+
+
+def _persistence_components(report: DumpReport | LoadReport) -> list[dict[str, Any]]:
+    return [
+        {"name": part.name, "records": part.records, "version": part.version}
+        for part in report.components
+    ]
+
+
+def emit_dump_report(
+    report: DumpReport,
+    *,
+    json_output: bool,
+    quiet: bool,
+    stdout: TextIO,
+) -> None:
+    """Render one successful full-workspace dump receipt."""
+
+    if quiet:
+        return
+    if json_output:
+        write_json(
+            stdout,
+            {
+                "components": _persistence_components(report),
+                "format": report.format,
+                "messages": report.messages,
+                "omitted_claimed_messages": report.omitted_claimed_messages,
+                "path": report.path,
+                "queues": report.queues,
+                "type": "system_dump",
+                "version": report.version,
+            },
+        )
+        return
+    omitted = (
+        f"; omitted {report.omitted_claimed_messages} claimed messages"
+        if report.omitted_claimed_messages
+        else ""
+    )
+    write_human_line(
+        stdout,
+        f"dumped {len(report.components)} components, {report.queues} queues, "
+        f"{report.messages} messages to {report.path}{omitted}",
+    )
+
+
+def emit_load_report(
+    report: LoadReport,
+    *,
+    json_output: bool,
+    quiet: bool,
+    stdout: TextIO,
+) -> None:
+    """Render one successful preflight or workspace load receipt."""
+
+    if quiet:
+        return
+    if json_output:
+        write_json(
+            stdout,
+            {
+                "applied": report.applied,
+                "components": _persistence_components(report),
+                "destination_checked": report.destination_checked,
+                "dry_run": report.dry_run,
+                "format": report.format,
+                "messages": report.messages,
+                "path": report.path,
+                "queues": report.queues,
+                "type": "system_load",
+                "version": report.version,
+            },
+        )
+        return
+    action = "validated; wrote nothing" if report.dry_run else "loaded"
+    write_human_line(
+        stdout,
+        f"{action}: {len(report.components)} components, {report.queues} queues, "
+        f"{report.messages} messages from {report.path}",
     )
 
 

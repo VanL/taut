@@ -105,6 +105,7 @@ Quick pointers to the key guidance documents in this repository.
 | `docs/implementation/06-command-extensions.md` | Static and installed command registration, registry/dispatch ownership, lazy imports, extension packaging, and rich composition guidance |
 | `docs/implementation/07-taut-mcp-architecture.md` | MCP reactor-over-reactors rationale: workspace ownership, explicit tool dispatch, cached notification resource, edge hints, and cancellation boundaries |
 | `docs/implementation/09-search-architecture.md` | Search rationale: source-hydrated derived state, backend provider boundary, durable work recovery, reconciliation, and generation rebuilds |
+| `docs/implementation/10-persistence-io.md` | Composite logical dump/load rationale: SimpleBroker reuse, sidecar authority, extension contributors, quiescence, and guarded failure recovery |
 | `docs/lessons.md` | Canonical lessons ledger |
 
 ## Product Code
@@ -122,6 +123,7 @@ Quick pointers to the key guidance documents in this repository.
 | `taut/identity.py` | Process fingerprint capture, anchor selection, presence checks |
 | `taut/client/` | Public Python API package: facade plus identity, actor-scoped DM selection/directory, messaging (including exact show/delete/react), notification, thread mixins, and plain SimpleBroker queue ownership |
 | `taut/search/` | Core search projection, SQLite FTS5 provider, strict PostgreSQL provider discovery, durable invalidation jobs, and worker state machine |
+| `taut/persistence/` | Composite dump validation, official component discovery, actor-free file lifecycle, and guarded workspace restore |
 | `taut/watcher.py` | Shared `BaseReactor`, vendored multi-queue scheduling, and cursor-aware `TautWatcher` with persistent owned queue handles |
 | `taut/cli.py` | Thin console entry point into the registry-backed dispatcher |
 | `taut/commands/` | Versioned command manifests/protocol, deterministic installed-command registry, root dispatcher, shared renderers, lazy per-verb adapters, and the temporary reserved Summon compatibility bridge |

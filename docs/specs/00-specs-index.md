@@ -39,6 +39,9 @@ stay aligned instead of competing.
    what Agent Theory and program theory mean; read when the terms are
    unfamiliar or before revising `docs/program-theory.md` (adopted from
    the agent-theory hub @ `0423923`)
+8. `08-persistence-io.md` - actor-free composite workspace dump/load,
+   logical sidecar records, extension contribution, quiescence, exact-id
+   restoration, and fail-closed recovery
 
 ## Naming
 

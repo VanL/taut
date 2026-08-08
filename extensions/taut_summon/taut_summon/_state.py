@@ -24,6 +24,9 @@ transient claim names to lowercase route keys, and older versions refuse
 (recreate the development database). Core's own
 ``schema_version`` key is never read or written here.
 
+Composite dump/load projects only durable session continuity and clears driver
+evidence on import per [PIO-5.3].
+
 Single-driver guard ([SUM-8]): driver evidence is pid + start-time,
 live-checked the same way presence does (``taut.identity`` — a blessed
 extension surface per [SUM-4]). Guard semantics, applied by both
@@ -47,6 +50,7 @@ Spec references:
 from __future__ import annotations
 
 import os
+from collections.abc import Iterable
 from typing import Any, Literal, TypedDict, cast
 
 from simplebroker import Queue
@@ -144,6 +148,12 @@ SELECT member_id, token, provider, provider_session_id,
        driver_pid, driver_start_time, wired, updated_ts
 FROM taut_summon_sessions
 ORDER BY updated_ts DESC
+"""
+_SESSION_SELECT_PERSISTENCE = """
+SELECT member_id, token, provider, provider_session_id,
+       driver_pid, driver_start_time, wired, updated_ts
+FROM taut_summon_sessions
+ORDER BY member_id
 """
 _SELECT_SESSION_EXISTS_BY_MEMBER = """
 SELECT member_id FROM taut_summon_sessions WHERE member_id = ?
@@ -555,6 +565,63 @@ def list_sessions(queue: Queue) -> list[SummonSessionRow]:
         if parsed is not None:
             result.append(parsed)
     return result
+
+
+def persistence_records(queue: Queue) -> list[dict[str, Any]]:
+    """Project durable sessions without initializing or exporting live leases."""
+
+    with queue.sidecar() as session:
+        rows = list(session.run(_SESSION_SELECT_PERSISTENCE, (), fetch=True))
+    records: list[dict[str, Any]] = []
+    for row in rows:
+        parsed = _session_row(row)
+        if parsed is None:  # pragma: no cover - SELECT rows are non-null
+            continue
+        records.append(
+            {
+                "type": "session",
+                "member_id": parsed["member_id"],
+                "token": parsed["token"],
+                "provider": parsed["provider"],
+                "provider_session_id": parsed["provider_session_id"],
+                "wired": parsed["wired"],
+                "updated_ts": parsed["updated_ts"],
+            }
+        )
+    return records
+
+
+def persistence_is_fresh(queue: Queue) -> bool:
+    """Return whether both durable and transient Summon tables are empty."""
+
+    with queue.sidecar() as session:
+        for table in ("taut_summon_claims", "taut_summon_sessions"):
+            rows = list(session.run(f"SELECT COUNT(*) FROM {table}", (), fetch=True))
+            if not rows or int(rows[0][0]) != 0:
+                return False
+    return True
+
+
+def load_persistence_records(
+    session: SidecarSession,
+    records: Iterable[dict[str, Any]],
+) -> None:
+    """Insert preflighted durable sessions with cleared driver evidence."""
+
+    for record in records:
+        session.run(
+            _INSERT_SESSION,
+            (
+                record["member_id"],
+                record["token"],
+                record["provider"],
+                record["provider_session_id"],
+                None,
+                None,
+                1 if record["wired"] else 0,
+                record["updated_ts"],
+            ),
+        )
 
 
 def driver_liveness(row: SummonSessionRow) -> _Liveness:

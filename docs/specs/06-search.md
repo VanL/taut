@@ -42,6 +42,11 @@ but it must not store a second verbatim message body. Rebuilding the index from
 public SimpleBroker queue APIs plus Taut registry state must restore all search
 behavior.
 
+Taut persistence dumps exclude every search table and work queue. A restored
+workspace starts with no search generation or jobs; the existing absent-
+watermark reconciliation or explicit `--reindex` rebuilds from canonical
+broker history and registry state. Load never gates on indexing.
+
 "No second content copy" does not mean "no indexed representation." FTS5 and
 `tsvector` necessarily store derived lexemes and positions. It means that exact
 message text has one authority and every returned hit is hydrated from that
@@ -414,6 +419,8 @@ They have no `taut_threads` row, never appear in `list`, `read`, `log`,
 `watch`, or search scope, and are inspectable with ordinary broker tooling.
 Only search code reads, moves, writes, or deletes them.
 
+The queues are excluded from Taut persistence I/O [PIO-2.2].
+
 ### [SRCH-8.2] Work item contract
 
 One single-line JSON body identifies dirty source state without copying
@@ -626,6 +633,9 @@ fence; holding a broker or sidecar transaction across the source scan is
 forbidden. The ordinary commit-before-enqueue gap remains bounded by
 [SRCH-10.2]'s reconciliation rule.
 
+Persistence load creates no generation or jobs. This rebuild path is the
+canonical restoration mechanism [PIO-2.2].
+
 For actor privacy, rebuild may index all structurally valid DMs because the
 derived state shares the same target and trust boundary, but query scope and
 hydration always enforce actor access. Rebuild does not create chat registry or
@@ -758,6 +768,8 @@ Operational acceptance records, without turning host timing into CI truth:
 
 ## Related Plans
 
+- `docs/plans/2026-08-07-taut-dump-load-plan.md` defines search exclusion and
+  post-load rebuild behavior.
 - `docs/plans/2026-08-06-taut-search-plan.md` defines the reviewed promotion,
   implementation slices, hardening gates, and independent review.
 - `docs/plans/2026-08-06-taut-search-spec-draft.md` preserves the reviewed

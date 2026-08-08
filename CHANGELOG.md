@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Added actor-free `taut system dump` and `taut system load` maintenance
+  commands plus matching `TautClient` class methods. The portable logical
+  format reuses SimpleBroker's exact-id message stream, includes core sidecar
+  authority and durable Summon sessions, and excludes search indexes, work
+  queues, aliases, claimed rows, and live process leases.
+- Loads accept only fresh targets, validate the full file before target writes,
+  and use a fail-closed guard across sidecar and broker commits. SQLite and
+  PostgreSQL share the format and support both-direction restore without a new
+  PostgreSQL server extension; maintenance requires operator quiescence and a
+  failed guarded target must be recreated.
 - Added cursor-neutral full-text search across visible channel and direct-message
   history through the Python client and `taut search`. Search supports stable
   JSON facets, channel and DM scope, author, kind, time, and result-limit

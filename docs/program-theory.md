@@ -202,6 +202,34 @@ operation (the `weft manager serve` shape — systemd/launchd
 ownership, forced no-idle-exit). "We could build this" does not
 qualify. (Owner-refined 2026-08-07.)
 
+**A6 — A destructive operation's precondition is its contract, not
+its adversary.** Rejected (2026-08-07, dump/load design): connection
+census, exclusive-lock quiescence probes, and child-process handle
+scoping for SQLite load. When an operation is contractually
+destructive under an operator-supplied precondition (quiescence on a
+fresh target), in-band machinery to detect or survive precondition
+violations is over-hardening: neither SQLite nor the OS offers a
+portable, race-free attachment census; a lock probe shows conflicting
+activity at an instant, never its absence over the operation; and
+partial defenses launder unverifiable claims into apparent safety.
+The valid obligations are exactly three: structurally bound and close
+the operation's **own** handles (scopes plus a reopen-after-restore
+test); publish the precondition and the undefined concurrent boundary
+loudly; keep the operation's own reporting deterministic about its
+own attempts. Preserving work a concurrent writer does during a
+contractually destructive operation is not a requirement, so
+machinery to protect it buys nothing the contract sells. (Same
+position SimpleBroker reached only through multi-revision litigation:
+its cleanup amendment — "destructive, not protective maintenance; do
+not wait for quiescence; concurrent outcomes are undefined" — and its
+lesson that where the enforcing mechanism lives outside the layer you
+can address, no in-band protocol substitutes; recorded here at theory
+tier so the next proposer loads it before judgment.) Reconsider when:
+a product requirement emerges to preserve concurrent work during load
+or restore — at which point the operation stops being
+destructive-by-contract and needs its own design, never hardening
+bolted onto this one.
+
 **A5 — Cursor advancement follows the committed message, last and
 best-effort.** Rejected after adoption: treating cursor advancement
 as part of the authoritative-sidecar-first phase. The valid order
@@ -262,5 +290,29 @@ follow-up work.
 
 ## Revisions [THEORY-8]
 
-(None yet — this is the initial ratified account. Revisions append
-here as [REV-THEORY-NNN] records.)
+### [REV-THEORY-001] Destructive-operation preconditions are contract, not adversary (2026-08-07)
+
+Current account: [THEORY-5] gains adopted alternative A6 — for
+contractually destructive operations under operator-supplied
+preconditions, in-band violation defenses (census, quiescence probes,
+child-process handle scoping) are rejected; the obligations are
+bounded own-resource cleanup, a loudly published undefined boundary,
+and deterministic self-reporting.
+Supersedes: Nothing removed; the initial account had no record for
+this position, which is why it was re-proposed.
+Pressure: The dump/load design session (2026-08-07) re-proposed
+child-process hardening for load's handle cleanup; the owner
+recognized it as the same category SimpleBroker litigated across
+multiple revisions of its cleanup unit and rejected it in one
+exchange. The refusal lived in a sibling repository's closed plan —
+not in any surface this repository loads — so the category error was
+re-derivable here: the refusals-don't-transfer failure mode operating
+across repositories, fixed by recording the refusal at this
+repository's theory tier.
+Evidence:
+- contemporaneous: the 2026-08-07 dump/load owner dialogue and the
+  agent's recorded withdrawal of the child-process proposal
+- contemporaneous (foreign, cited by name): SimpleBroker's
+  pre-release remediation plan, Unit E "Owner Amendment After
+  Experimental Re-review (Revision 5)", and its 2026-08-06
+  BEGIN-EXCLUSIVE lesson on out-of-layer enforcement

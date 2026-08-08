@@ -8,6 +8,7 @@ Spec references:
 - docs/specs/02-taut-core.md [TAUT-3.3], [TAUT-3.4], [TAUT-7.2], [TAUT-12.2]
 - docs/specs/03-identity-addressing-notifications.md [IAN-3], [IAN-4],
   [IAN-6], [IAN-8]
+- docs/specs/08-persistence-io.md [PIO-4.4], [PIO-7.2], [PIO-7.3]
 """
 
 from __future__ import annotations
@@ -38,6 +39,10 @@ from taut.state._types import (
 )
 
 SCHEMA_VERSION_KEY = "schema_version"
+LOAD_GUARD_KEY = "load_guard"
+LOAD_GUARD_MESSAGE = (
+    "load incomplete; recreate the target before running ordinary Taut operations"
+)
 
 
 META_DDL = """
@@ -139,8 +144,12 @@ class SqlSidecarTautState:
     queue: Queue
     dialect: SqlDialect
 
-    def ensure_schema(self) -> None:
-        ensure_schema(self.queue, dialect=self.dialect)
+    def ensure_schema(self, *, allow_load_guard: bool = False) -> None:
+        ensure_schema(
+            self.queue,
+            dialect=self.dialect,
+            allow_load_guard=allow_load_guard,
+        )
 
     def get_schema_version(self) -> int | None:
         return get_schema_version(self.queue)
@@ -403,8 +412,43 @@ class SqlSidecarTautState:
     def route_keys_in_use(self) -> set[str]:
         return route_keys_in_use(self.queue)
 
+    def persistence_meta(self) -> dict[str, str]:
+        """Return every core/extension version or operation marker."""
 
-def ensure_schema(queue: Queue, *, dialect: SqlDialect) -> None:
+        return persistence_meta(self.queue)
+
+    def persistence_records(self) -> list[dict[str, Any]]:
+        """Return the deterministic logical core persistence projection."""
+
+        return persistence_records(self.queue)
+
+    def acquire_load_guard(
+        self,
+        *,
+        allowed_meta_keys: frozenset[str] = frozenset(),
+    ) -> None:
+        acquire_load_guard(self.queue, allowed_meta_keys=allowed_meta_keys)
+
+    def clear_load_guard(self) -> None:
+        clear_load_guard(self.queue)
+
+    def load_persistence_records(self, records: list[dict[str, Any]]) -> None:
+        load_persistence_records(self.queue, records)
+
+    def load_persistence_records_in(
+        self,
+        session: SidecarSession,
+        records: list[dict[str, Any]],
+    ) -> None:
+        load_persistence_records(self.queue, records, shared_session=session)
+
+
+def ensure_schema(
+    queue: Queue,
+    *,
+    dialect: SqlDialect,
+    allow_load_guard: bool = False,
+) -> None:
     """Install or validate the current sidecar schema."""
 
     with queue.sidecar(transaction=True) as session:
@@ -429,6 +473,12 @@ def ensure_schema(queue: Queue, *, dialect: SqlDialect) -> None:
                 )
             for statement in DDL:
                 session.run(statement)
+            if not allow_load_guard and _one(
+                session,
+                "SELECT 1 FROM taut_meta WHERE key = ?",
+                (LOAD_GUARD_KEY,),
+            ):
+                raise TautError(LOAD_GUARD_MESSAGE)
             return
         for statement in DDL:
             session.run(statement)
@@ -436,6 +486,56 @@ def ensure_schema(queue: Queue, *, dialect: SqlDialect) -> None:
             "INSERT INTO taut_meta (key, value) VALUES (?, ?)",
             (SCHEMA_VERSION_KEY, str(SCHEMA_VERSION)),
         )
+
+
+def acquire_load_guard(
+    queue: Queue,
+    *,
+    allowed_meta_keys: frozenset[str] = frozenset(),
+) -> None:
+    """Atomically prove empty core authority and mark an in-progress load."""
+
+    tables = (
+        "taut_members",
+        "taut_member_aliases",
+        "taut_identity_claims",
+        "taut_threads",
+        "taut_membership",
+        "taut_channel_renames",
+    )
+    with queue.sidecar(transaction=True) as session:
+        meta_rows = _all(
+            session,
+            "SELECT key FROM taut_meta WHERE key != ? ORDER BY key",
+            (SCHEMA_VERSION_KEY,),
+        )
+        unexpected_meta = {
+            str(row[0]) for row in meta_rows if str(row[0]) not in allowed_meta_keys
+        }
+        if unexpected_meta:
+            raise TautError("load destination is not fresh")
+        for table in tables:
+            count = _one(session, f"SELECT COUNT(*) FROM {table}")
+            if count is None or int(count[0]) != 0:
+                raise TautError("load destination is not fresh")
+        try:
+            session.run(
+                "INSERT INTO taut_meta (key, value) VALUES (?, ?)",
+                (LOAD_GUARD_KEY, "1"),
+            )
+        except IntegrityError as exc:
+            raise TautError("another workspace load is already in progress") from exc
+
+
+def clear_load_guard(queue: Queue) -> None:
+    with queue.sidecar(transaction=True) as session:
+        deleted = _one(
+            session,
+            "DELETE FROM taut_meta WHERE key = ? RETURNING 1",
+            (LOAD_GUARD_KEY,),
+        )
+        if deleted is None:
+            raise TautError("workspace load guard disappeared before completion")
 
 
 def get_schema_version(queue: Queue) -> int | None:
@@ -1180,6 +1280,255 @@ def route_keys_in_use(queue: Queue) -> set[str]:
             """,
         )
     return {str(row[0]) for row in rows}
+
+
+def persistence_meta(queue: Queue) -> dict[str, str]:
+    """Read all Taut metadata without initializing another schema."""
+
+    with queue.sidecar() as session:
+        rows = _all(session, "SELECT key, value FROM taut_meta ORDER BY key")
+    return {str(row[0]): str(row[1]) for row in rows}
+
+
+def persistence_records(queue: Queue) -> list[dict[str, Any]]:
+    """Project authoritative core tables into deterministic logical records."""
+
+    records: list[dict[str, Any]] = []
+    with queue.sidecar() as session:
+        incomplete = _all(
+            session,
+            """
+            SELECT old_name, new_name, state, affected_json, started_ts, updated_ts
+            FROM taut_channel_renames
+            WHERE state != 'complete'
+            ORDER BY started_ts, old_name
+            """,
+        )
+        if incomplete:
+            rename = _require_channel_rename_row(incomplete[0])
+            raise TautError(
+                "incomplete channel rename exists: "
+                f"{rename['old_name']} -> {rename['new_name']}; "
+                "run 'taut channel rename "
+                f"{rename['old_name']} {rename['new_name']}' to finish it"
+            )
+
+        for row in _all(session, f"{_member_select('1 = 1')} ORDER BY member_id"):
+            member = _require_member_row(row)
+            records.append(
+                {
+                    "type": "member",
+                    "member_id": member["member_id"],
+                    "display_name": member["display_name"],
+                    "kind": member["kind"],
+                    "uid": member["uid"],
+                    "host_id": member["host_id"],
+                    "host_label": member["host_label"],
+                    "token": member["token"],
+                    "meta": member["meta"],
+                    "created_ts": member["created_ts"],
+                    "last_active_ts": member["last_active_ts"],
+                }
+            )
+        for row in _all(
+            session,
+            """
+            SELECT alias_key, member_id, created_ts
+            FROM taut_member_aliases
+            ORDER BY alias_key
+            """,
+        ):
+            records.append(
+                {
+                    "type": "member_alias",
+                    "alias_key": str(row[0]),
+                    "member_id": str(row[1]),
+                    "created_ts": int(row[2]),
+                }
+            )
+        for row in _all(
+            session,
+            """
+            SELECT claim_hash, member_id, claim_kind, host_id, host_label,
+                   evidence_json, first_seen_ts, last_seen_ts
+            FROM taut_identity_claims
+            ORDER BY claim_hash
+            """,
+        ):
+            claim = _identity_claim_row(row)
+            assert claim is not None
+            records.append({"type": "identity_claim", **claim})
+        for row in _all(
+            session,
+            """
+            SELECT name, kind, parent, origin_ts, created_by, meta, created_ts
+            FROM taut_threads
+            ORDER BY name
+            """,
+        ):
+            thread = _require_thread_row(row)
+            records.append({"type": "thread", **thread})
+        for row in _all(
+            session,
+            """
+            SELECT thread, member_id, joined_ts, last_seen_ts
+            FROM taut_membership
+            ORDER BY thread, member_id
+            """,
+        ):
+            membership = _require_membership_row(row)
+            records.append({"type": "membership", **membership})
+        for row in _all(
+            session,
+            """
+            SELECT old_name, new_name, state, affected_json, started_ts, updated_ts
+            FROM taut_channel_renames
+            WHERE state = 'complete'
+            ORDER BY old_name
+            """,
+        ):
+            rename = _require_channel_rename_row(row)
+            records.append({"type": "channel_rename", **rename})
+    return records
+
+
+def load_persistence_records(
+    queue: Queue,
+    records: list[dict[str, Any]],
+    *,
+    shared_session: SidecarSession | None = None,
+) -> None:
+    """Insert one preflighted core component in dependency order."""
+
+    if shared_session is not None:
+        _insert_persistence_records(shared_session, records)
+        return
+    with queue.sidecar(transaction=True) as session:
+        _insert_persistence_records(session, records)
+
+
+def _insert_persistence_records(
+    session: SidecarSession,
+    records: list[dict[str, Any]],
+) -> None:
+    guard = _one(
+        session,
+        "SELECT 1 FROM taut_meta WHERE key = ?",
+        (LOAD_GUARD_KEY,),
+    )
+    if guard is None:
+        raise TautError("workspace load guard is missing")
+    for record in records:
+        _insert_persistence_record(session, record)
+
+
+def _insert_persistence_record(
+    session: SidecarSession,
+    record: dict[str, Any],
+) -> None:
+    kind = record["type"]
+    if kind == "member":
+        session.run(
+            """
+            INSERT INTO taut_members (
+                member_id, display_name, name_key, kind, uid, host_id,
+                host_label, anchor_pid, anchor_start_time, fingerprint,
+                token, meta, created_ts, last_active_ts
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?)
+            """,
+            (
+                record["member_id"],
+                record["display_name"],
+                route_key(record["display_name"]),
+                record["kind"],
+                record["uid"],
+                record["host_id"],
+                record["host_label"],
+                record["token"],
+                _json_dumps(record["meta"]),
+                record["created_ts"],
+                record["last_active_ts"],
+            ),
+        )
+    elif kind == "member_alias":
+        session.run(
+            """
+            INSERT INTO taut_member_aliases (
+                alias_key, member_id, created_ts
+            ) VALUES (?, ?, ?)
+            """,
+            (record["alias_key"], record["member_id"], record["created_ts"]),
+        )
+    elif kind == "identity_claim":
+        session.run(
+            """
+            INSERT INTO taut_identity_claims (
+                claim_hash, member_id, claim_kind, host_id, host_label,
+                evidence_json, first_seen_ts, last_seen_ts
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record["claim_hash"],
+                record["member_id"],
+                record["claim_kind"],
+                record["host_id"],
+                record["host_label"],
+                _json_dumps(record["evidence"]),
+                record["first_seen_ts"],
+                record["last_seen_ts"],
+            ),
+        )
+    elif kind == "thread":
+        session.run(
+            """
+            INSERT INTO taut_threads (
+                name, kind, parent, origin_ts, created_by, meta, created_ts
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record["name"],
+                record["kind"],
+                record["parent"],
+                record["origin_ts"],
+                record["created_by"],
+                _json_dumps(record["meta"]),
+                record["created_ts"],
+            ),
+        )
+    elif kind == "membership":
+        session.run(
+            """
+            INSERT INTO taut_membership (
+                thread, member_id, joined_ts, last_seen_ts
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (
+                record["thread"],
+                record["member_id"],
+                record["joined_ts"],
+                record["last_seen_ts"],
+            ),
+        )
+    elif kind == "channel_rename":
+        session.run(
+            """
+            INSERT INTO taut_channel_renames (
+                old_name, new_name, state, affected_json,
+                started_ts, updated_ts
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record["old_name"],
+                record["new_name"],
+                record["state"],
+                _json_dumps(record["affected"]),
+                record["started_ts"],
+                record["updated_ts"],
+            ),
+        )
+    else:  # pragma: no cover - parser owns the closed set
+        raise TautError(f"unsupported core persistence record {kind!r}")
 
 
 def _member_select(where: str) -> str:

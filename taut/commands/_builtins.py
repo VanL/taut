@@ -10,6 +10,7 @@ from taut.commands._protocol import CommandSpec, GlobalOption
 
 _COMMON_GLOBALS = frozenset(GlobalOption)
 _REJOIN_GLOBALS = _COMMON_GLOBALS - {GlobalOption.TOKEN}
+_SYSTEM_GLOBALS = frozenset({GlobalOption.DB, GlobalOption.JSON, GlobalOption.QUIET})
 
 
 def _spec(
@@ -40,6 +41,11 @@ BUILTIN_SPECS = (
     _spec("inbox", "Claim and show pending notification pointers."),
     _spec("log", "Show thread history without moving a cursor."),
     _spec("search", "Search visible message history."),
+    _spec(
+        "system",
+        "Dump or load full-workspace maintenance data.",
+        globals_=_SYSTEM_GLOBALS,
+    ),
     _spec("list", "List joined threads and unread state."),
     _spec("watch", "Live-follow chat and notification activity."),
     _spec("who", "Show members and presence evidence."),

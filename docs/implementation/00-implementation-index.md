@@ -25,3 +25,4 @@ read order stay aligned instead of competing.
 7. `07-taut-mcp-architecture.md`
 8. `08-complexity-and-suppression-policy.md`
 9. `09-search-architecture.md`
+10. `10-persistence-io.md`

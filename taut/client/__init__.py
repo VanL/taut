@@ -4,6 +4,7 @@ Spec references:
 - docs/specs/02-taut-core.md [TAUT-3], [TAUT-4], [TAUT-5], [TAUT-7], [TAUT-8.3]
 - docs/specs/03-identity-addressing-notifications.md [IAN-3], [IAN-4],
   [IAN-5], [IAN-6], [IAN-7], [IAN-8]
+- docs/specs/08-persistence-io.md [PIO-3.2]
 """
 
 from __future__ import annotations
@@ -38,12 +39,15 @@ from ._identity import IdentityMixin
 from ._messaging import MessagingMixin
 from ._models import (
     Channel,
+    DumpReport,
     InitResult,
+    LoadReport,
     Member,
     Message,
     MessageDeletion,
     MessageReaction,
     Notification,
+    PersistenceComponentReport,
     SearchHit,
     Thread,
 )
@@ -75,12 +79,15 @@ def _validate_sqlite_path(
 
 __all__ = [
     "Channel",
+    "DumpReport",
     "InitResult",
+    "LoadReport",
     "Member",
     "Message",
     "MessageDeletion",
     "MessageReaction",
     "Notification",
+    "PersistenceComponentReport",
     "SearchHit",
     "TautClient",
     "Thread",
@@ -100,6 +107,37 @@ class TautClient(
 
     The CLI is a renderer over this class; command semantics live here.
     """
+
+    @classmethod
+    def dump(
+        cls,
+        *,
+        output: str | Path,
+        db_path: str | Path | None = None,
+    ) -> DumpReport:
+        """Write a composite logical backup of a quiescent workspace."""
+
+        from taut.persistence._operations import dump_workspace
+
+        return dump_workspace(output=output, db_path=db_path)
+
+    @classmethod
+    def load(
+        cls,
+        *,
+        input_path: str | Path,
+        db_path: str | Path | None = None,
+        dry_run: bool = False,
+    ) -> LoadReport:
+        """Preflight or restore a composite Taut workspace dump."""
+
+        from taut.persistence._operations import load_workspace
+
+        return load_workspace(
+            input_path=input_path,
+            db_path=db_path,
+            dry_run=dry_run,
+        )
 
     @classmethod
     def init(

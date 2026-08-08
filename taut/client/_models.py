@@ -120,6 +120,43 @@ class InitResult:
     created: bool
 
 
+@dataclass(frozen=True, slots=True)
+class PersistenceComponentReport:
+    """Record count for one composite persistence component."""
+
+    name: str
+    version: int
+    records: int
+
+
+@dataclass(frozen=True, slots=True)
+class DumpReport:
+    """Result of a completed full-workspace dump."""
+
+    path: str
+    format: str
+    version: int
+    components: tuple[PersistenceComponentReport, ...]
+    queues: int
+    messages: int
+    omitted_claimed_messages: int
+
+
+@dataclass(frozen=True, slots=True)
+class LoadReport:
+    """Result of dump preflight or a completed workspace load."""
+
+    path: str
+    format: str
+    version: int
+    components: tuple[PersistenceComponentReport, ...]
+    queues: int
+    messages: int
+    dry_run: bool
+    destination_checked: bool
+    applied: bool
+
+
 # Keep public value-object introspection aligned with the facade import path.
 Member.__module__ = "taut.client"
 Thread.__module__ = "taut.client"
@@ -130,3 +167,6 @@ MessageReaction.__module__ = "taut.client"
 SearchHit.__module__ = "taut.client"
 Notification.__module__ = "taut.client"
 InitResult.__module__ = "taut.client"
+PersistenceComponentReport.__module__ = "taut.client"
+DumpReport.__module__ = "taut.client"
+LoadReport.__module__ = "taut.client"

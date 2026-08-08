@@ -58,6 +58,20 @@ not the supported runtime floor.
 
 ## Design Rationale
 
+### Logical persistence contributor ([SUM-8], [PIO-5.3])
+
+Summon registers a lazy `taut-summon` persistence component for full-workspace
+dump/load. The component exports durable session continuity (`member_id`,
+token, provider, provider session id, wired state, and update timestamp) while
+excluding bootstrap claims and driver pid/start evidence. Restored sessions can
+resume their provider context but cannot falsely claim an old driver is live.
+
+Core owns framing, file and guard lifecycle, and supplies the Queue and shared
+SidecarSession. `persistence.py` owns logical validation; every SQL statement
+remains in `_state.py`. Dump activates the component only when
+`summon_schema_version` already exists, so installing Summon does not mutate or
+add an empty schema to an otherwise unused source.
+
 ### Typed embedding boundary ([SUM-13])
 
 `extensions/taut_summon/taut_summon/controller.py` is the finite public
@@ -683,6 +697,7 @@ require a separately drained subprocess pipe.
 | [SUM-7.1], [SUM-7.2], adapters | `extensions/taut_summon/taut_summon/_adapter.py`, `extensions/taut_summon/taut_summon/_stream.py`, `extensions/taut_summon/taut_summon/_pty.py`, `extensions/taut_summon/taut_summon/_scripted.py`, `extensions/taut_summon/taut_summon/_claude.py` | `extensions/taut_summon/tests/test_scripted_adapter.py`, `extensions/taut_summon/tests/test_claude_adapter.py`, `extensions/taut_summon/tests/test_pty_adapter.py`, including reusable interrupt, one-signal terminal request, reentry, and direct/concurrent finalization |
 | [SUM-7.4], PTY shell adapter | `extensions/taut_summon/taut_summon/_pty.py`, `extensions/taut_summon/taut_summon/_driver.py` | `extensions/taut_summon/tests/test_pty_adapter.py`, PTY cases in `extensions/taut_summon/tests/test_driver.py`, `extensions/taut_summon/tests/test_interaction.py`, `extensions/taut_summon/tests/test_live_harness.py` |
 | [SUM-8], session ledger and guard | `extensions/taut_summon/taut_summon/_state.py` | `extensions/taut_summon/tests/test_state.py`, `extensions/taut_summon/tests/test_driver.py` |
+| [SUM-8], [PIO-5.3], durable session persistence and live-lease exclusion | `extensions/taut_summon/taut_summon/persistence_manifest.py`, `persistence.py`, `_state.py::persistence_records`, `persistence_is_fresh`, `load_persistence_records` | `extensions/taut_summon/tests/test_persistence.py`; cross-backend component coverage in `extensions/taut_pg/tests/test_persistence_io.py` |
 | [SUM-9], [SUM-10], [SUM-11], control lifecycle, backstop, recovery, and fatal supervision | `extensions/taut_summon/taut_summon/_control.py::_ControlReactor`, `extensions/taut_summon/taut_summon/_control.py::ControlLoop`, `extensions/taut_summon/taut_summon/_driver.py::SummonDriver._run_control_loop`, `_report_control_failure`, `_raise_if_control_failed` | `extensions/taut_summon/tests/test_control.py` fixed topology, ownership, native wake, inter-turn recovery, audit, partial-bundle, and close tests; `extensions/taut_summon/tests/test_driver.py` publication-race, request ordering, physical STOP signal-count, fatal-control, and PING cases |
 | [SUM-12], conformance | (all of the above), `bin/combine-coverage.py` | `extensions/taut_summon/tests/test_conformance.py`, `extensions/taut_summon/tests/test_driver.py` real child-boundary signal-count cases, `extensions/taut_summon/tests/test_live_harness.py`, `extensions/taut_summon/tests/test_live_local_llm.py`, `tests/test_combine_coverage.py`, `tests/test_github_workflows.py` |
 | [SUM-13], typed embedding and lazy host boundary | `extensions/taut_summon/taut_summon/__init__.py`, `extensions/taut_summon/taut_summon/models.py`, `extensions/taut_summon/taut_summon/controller.py`, `extensions/taut_summon/taut_summon/interaction.py`, `extensions/taut_summon/taut_summon/_driver.py`, `extensions/taut_summon/taut_summon/_control.py`, `extensions/taut_summon/taut_summon/commands/summon.py` | `extensions/taut_summon/tests/test_controller.py`, `extensions/taut_summon/tests/test_interaction.py` real environment and signal-boundary cases, `extensions/taut_summon/tests/test_summon_cli.py` explicit CLI opt-in, controller-backed CLI and real-process driver cases |

@@ -74,6 +74,7 @@ LOCAL_SPEC_FILES = {
     "SUM": REPO_ROOT / "docs" / "specs" / "04-summon.md",
     "MCP": REPO_ROOT / "docs" / "specs" / "05-taut-mcp.md",
     "SRCH": REPO_ROOT / "docs" / "specs" / "06-search.md",
+    "PIO": REPO_ROOT / "docs" / "specs" / "08-persistence-io.md",
 }
 
 # These cite contracts copied from upstream projects. They are provenance,

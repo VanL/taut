@@ -368,6 +368,7 @@ def test_static_builtins_do_not_depend_on_installed_metadata() -> None:
         "inbox",
         "log",
         "search",
+        "system",
         "list",
         "watch",
         "who",
@@ -3131,6 +3132,51 @@ def test_registry_channel_help_is_nested_and_does_not_initialize_client(
     rendered = stdout.getvalue()
     assert usage in rendered
     assert teaching_text in " ".join(rendered.split())
+    assert stderr.getvalue() == ""
+
+
+@pytest.mark.parametrize(
+    ("argv", "usage", "teaching_text"),
+    [
+        (["system", "--help"], "usage: taut system", "workspace maintenance"),
+        (
+            ["system", "dump", "--help"],
+            "usage: taut system dump",
+            "owner-only composite",
+        ),
+        (
+            ["system", "load", "--help"],
+            "usage: taut system load",
+            "fresh workspace",
+        ),
+    ],
+)
+def test_registry_system_help_is_nested_and_actor_free(
+    argv: list[str],
+    usage: str,
+    teaching_text: str,
+) -> None:
+    from taut.commands._dispatch import dispatch
+    from taut.commands._registry import CommandRegistry
+
+    stdout = StringIO()
+    stderr = StringIO()
+
+    result = dispatch(
+        argv,
+        registry=CommandRegistry(entry_points=()),
+        stdin=StringIO(),
+        stdout=stdout,
+        stderr=stderr,
+        client_factory=lambda **_kwargs: pytest.fail(
+            "system help initialized a client"
+        ),
+    )
+
+    assert result == 0
+    rendered = " ".join(stdout.getvalue().split())
+    assert usage in rendered
+    assert teaching_text in rendered
     assert stderr.getvalue() == ""
 
 

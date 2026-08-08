@@ -29,6 +29,8 @@ In scope:
 - exact-message inspection and author-owned physical deletion
 - cursor-neutral full-text message search governed by
   `docs/specs/06-search.md` [SRCH-1] through [SRCH-12]
+- actor-free full-workspace persistence I/O governed by
+  `docs/specs/08-persistence-io.md` [PIO-1] through [PIO-11]
 - the CLI surface, the `TautClient` Python API, and the `TautWatcher`
 - the trust model and its limits
 
@@ -332,6 +334,12 @@ Search adds disposable `taut_search_*` provider tables under [SRCH-6] and
 [SRCH-11]. They are derived state inside the resolved SimpleBroker target, not
 a second message authority. Search schema/version failure is isolated from the
 core sidecar schema and cannot block non-search operations.
+
+`taut_meta` may also hold the core-owned transient load guard defined by
+[PIO-7.3] and extension schema-version keys governed by [PIO-5.4]. Neither is
+exported as a raw meta row. While the load guard exists, every ordinary Taut
+operation fails closed; only persistence-load recovery inspection may read the
+target.
 
 ### [TAUT-3.4] SimpleBroker interop
 
@@ -1012,6 +1020,7 @@ later token is command-local. `--version` is a root action before the verb.
 | `inbox` | Claim and show pending notifications for the acting member. Notifications are consumed; source chat history is not changed. | 0 showed notifications; 1 error; 2 nothing pending |
 | `log THREAD_OR_DM [--since TS] [--limit N]` | Show cursor-neutral history. A DM may be `@name-or-alias` or a stable `dm.d_*` handle and requires actor access under [IAN-5.3]. `--limit N` selects the most recent N messages after `--since`, rendered chronologically. | 0; 1 error; 2 empty / unrecognized member / inaccessible conversation |
 | `search QUERY... [--channel CHANNEL]... [--dm TARGET]... [--dms] [--from MEMBER] [--kind KIND]... [--before MSG_ID] [--limit N] [--reindex]` | Cursor-neutral search over registered chat and actor-accessible DMs. Query, scope, freshness, and repair follow spec 06. | 0 hits; 1 usage, malformed selector, provider, or index error; 2 no hits or well-formed explicit selector miss |
+| `system dump --output FILE` / `system load --input FILE [--dry-run]` | Actor-free full-workspace maintenance under spec 08. Dump writes an owner-only composite logical backup; load preflights or restores it into a fresh target. | 0 success; 1 usage/validation/conflict/I/O/backend/apply error; 2 missing input |
 | `list [--all | --dms]` | Bare: joined threads with unread state. `--all`: every registered thread. `--dms`: every valid actor-accessible DM, including read and empty conversations, in [TAUT-7.8] order. The two flags are mutually exclusive. | 0; 2 when the selected actor-scoped view is empty |
 | `watch [THREAD_OR_DM ...]` | Live-follow selected existing memberships plus the acting member's notification inbox. DM filters may be `@name-or-alias` or stable handles; they resolve once and deduplicate before watcher construction. Bare watch retains dynamic all-membership behavior. | 0 on clean stop; 1 error; 2 unrecognized member / explicit thread or DM miss |
 | `channel rename OLD NEW` | Rename a channel and every registered one-level sub-thread under it. Uses SimpleBroker's public queue rename API and sidecar rename markers. Does not rewrite message bodies. | 0; 1 error/collision/invalid name; 2 no such channel |
@@ -1047,6 +1056,10 @@ from the owning subcommand, and root help names exit-code classes. The
 `message` noun requires `show`, `delete`, or `react`; the `channel` noun
 requires `show`, `topic`, or `rename`. A missing nested subcommand follows the
 same stderr usage and exit-1 rule as a missing top-level subcommand.
+The `system` noun requires `dump` or `load`, is core-owned, and accepts only
+`--db`, `--json`, and `--quiet` from the root-global vocabulary. It currently
+implements no `status` or `doctor` operation. An uninitialized dump source
+retains [TAUT-3.2]'s exit 1 and `taut init` hint.
 Channel help teaches the one-line 500-code-point topic bound, explicit
 `--clear`, membership requirement, observational `show` behavior, rename
 syntax and recovery role, and 0/1/2 exit classes.
@@ -1123,6 +1136,10 @@ exit classes apply equally to built-in and extension command adapters.
   - `init`: `db` (backend display target; a filesystem path for SQLite),
     `created` (bool). For Postgres, `created` is `false` because Taut has no
     public backend API for a reliable database-created signal.
+  - `system dump` emits the exact `system_dump` record defined by [PIO-3.3].
+    `system load` emits the exact `system_load` record defined there. The dump
+    body never uses stdout. Dry-run emits a normal success record with
+    `dry_run: true`, `destination_checked: false`, and `applied: false`.
 
   These field names are the current contract. Because the project is still in
   development, the specs describe the intended shape directly.
@@ -1147,7 +1164,8 @@ argument-parsing layer over it — every CLI behavior above must be
 reachable through one public client method with the same semantics (the
 SimpleBroker/Weft layering rule: CLI and library share one operational
 model). Public exports from `taut`: `TautClient`, `TautWatcher`, `Message`,
-`MessageDeletion`, `MessageReaction`, `SearchHit`, `Channel`, `Thread`, `Member`, the
+`MessageDeletion`, `MessageReaction`, `SearchHit`, `Channel`, `Thread`, `Member`,
+`PersistenceComponentReport`, `DumpReport`, `LoadReport`, the
 exception hierarchy rooted at `TautError` including `BlankMessageError`,
 `escape_terminal_text`, and `__version__`. The package ships typed
 (`py.typed`).
@@ -1156,6 +1174,13 @@ exception hierarchy rooted at `TautError` including `BlankMessageError`,
 `TautClient.search(...) -> list[SearchHit]` signature are defined by
 [SRCH-5.2]. The CLI adapter owns only argument translation and rendering; the
 client owns query, scope, freshness, hydration, and filtering semantics.
+
+`PersistenceComponentReport`, `DumpReport`, and `LoadReport` are frozen,
+slotted public values with the exact fields in [PIO-3.2]. The actor-free class
+methods are `TautClient.dump(*, output: str | Path, db_path: str | Path | None =
+None) -> DumpReport` and `TautClient.load(*, input_path: str | Path, db_path:
+str | Path | None = None, dry_run: bool = False) -> LoadReport`. They bypass
+identity-bearing client construction.
 
 `Channel` is a frozen, slotted public value with exact fields
 `name: str`, `topic: str | None`, `topic_updated_ts: int | None`,
@@ -1461,6 +1486,12 @@ intact; the former top-level registration ceases without an alias or
 retired-name mechanism. The top-level name `rename` then follows the ordinary
 installed-command rules; core gives it no special reservation.
 
+`system` is a reserved core nested-command adapter like `message` and
+`channel`, with actor-free maintenance policy. Installed extensions contribute
+logical persistence state through the lazy, selected-command-only
+`taut.persistence_components` entry-point group. They cannot add or override
+`system` operations.
+
 Distribution-name comparisons use Python packaging normalization: lowercase
 the name and collapse each run of hyphen, underscore, or dot to one hyphen.
 Thus `taut-summon`, `taut_summon`, and `TAUT.SUMMON` are the same owner for
@@ -1613,6 +1644,9 @@ implied by docs or output.
   thread, and never a cursor pointing past messages that were skipped.
   Sidecar writes are idempotent upserts so retrying the command
   converges.
+- Persistence load writes authoritative sidecar state before broker history
+  and keeps a fail-closed load guard across that boundary [PIO-7.3]. No
+  ordinary operation may observe or repair the intermediate target.
 - Search invalidation enqueue and detached worker launch occur only after the
   source operation's existing success point. Both are auxiliary best-effort
   work: failure warns but never downgrades the source result or changes cursor
@@ -2324,6 +2358,8 @@ installing `taut-chat`.
 
 ## Related Plans
 
+- `docs/plans/2026-08-07-taut-dump-load-plan.md` — composite persistence I/O,
+  logical sidecar records, extension state, and cross-backend recovery.
 - `docs/plans/2026-08-06-taut-search-plan.md` — reviewed search spec promotion,
   core/SQLite implementation, PostgreSQL provider, deferred indexing, and
   cross-backend verification.
