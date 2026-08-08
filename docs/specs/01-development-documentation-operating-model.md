@@ -49,6 +49,12 @@ The repository documentation surface is split by role:
 - `skills/`: reusable task-scoped workflow instructions
 - `docs/lessons.md`: canonical lessons ledger
 
+**Module theory** (conventional path `MODULE-THEORY.md` next to owning
+code) is a scoped extension of the product program theory for one
+subsystem. It is not a separate taxonomy tier and is not loaded at
+every session start — only on entry to that module. Keep the product
+theory short; extend with module theory when depth is local.
+
 The roles should remain distinct. A document may link to another role, but it
 should not collapse multiple roles into one file without a strong reason.
 
@@ -133,6 +139,20 @@ For this operating model, treat a change as risky when any of these are true:
 - rollback depends on backward compatibility or rollout order
 - it introduces a one-way door, destructive edge, new persistence, temp-file,
   cleanup, or deferred-input lifecycle
+
+Git-backed coalescing is not a destructive edge for classification
+purposes when every removed item has a verified pre-fold source SHA
+reachable from a retained Git ref and the repository's traceability
+gate passes. An ordinary authorized sweep does not require a task
+plan merely because it soft-retires or physically removes plans,
+removes already-distilled or expired raw ledger entries, advances
+watermarks, or updates the run log. A plan is required when the
+sweep promotes or materially changes durable guidance (for example a
+golden rule, principle, runbook, skill, or cross-repository rule),
+or when some other [DOM-5] trigger independently fires. The routine
+sweep is Class 2: explicit authorization supplies intent, Git makes
+it reversible, and this paragraph excludes the coalescing removals
+themselves from [DOM-5]'s triggers.
 
 The narrow routine-release exception in [DOM-15] overrides the non-trivial
 and risky trigger lists above only for execution of the established release
@@ -606,9 +626,11 @@ Requirements:
   and speculative redesign remain outside the sweep
 - ambiguous repairs, destructive actions, and changes that require new
   authority are deferred explicitly with the evidence gap, owner, and
-  reconsideration condition. Existing landing authorization remains mandatory
-  for deletion, watermark advancement, plan soft-retirement, and other
-  destructive or archival transitions
+  reconsideration condition. Deletion, watermark advancement, plan
+  soft-retirement, and other archival transitions require verified
+  pre-fold source cues reachable from a retained ref (the archive rule
+  below); they remain sweep work, not ad-hoc repair, and
+  durable-guidance promotion still escalates
 - enumerable coalescing metadata uses an executable gate. In this repository,
   every plan file appears exactly once in a structured status index with an
   allowed lifecycle status and explicit exemplar marker. The closed status
@@ -618,10 +640,21 @@ Requirements:
   `no`. Missing rows, duplicate rows, nonexistent-path rows, unknown statuses,
   unknown exemplar values, and malformed status tables fail the gate. A sweep
   repairs gate failures before trusting the affected trigger count
-- coalescing is additive-first across commit boundaries: distillation
-  drafts and retirement candidates may exist uncommitted; deleting raw
-  material, advancing watermarks, and retiring plans require a
-  landing-authorized phase with a durable checkpoint
+- coalescing removals are Git-backed archive maintenance, not
+  permanently destructive, when a verified pre-fold source SHA
+  reachable from a retained ref contains every removed item. The
+  authorized sweep may delete already-distilled, expired, or
+  otherwise nonnormative raw material, advance watermarks, and
+  retire plans without a separate task plan or coalescing-specific
+  commit authorization; an item that exists only in the worktree
+  remains ineligible because it has no archive cue
+- routine coalescing maintenance is plan-exempt. Promotion or
+  material revision of durable guidance (golden rules, principles,
+  runbooks, skills, or cross-repository rules) follows the ordinary
+  [DOM-5]/[DOM-15] planning and review requirements before that
+  promotion is written, and its gate is the human owner — agent
+  review supports the promotion decision but does not substitute for
+  owner ratification (hub owner decision 2026-08-07)
 - deferrals have real state: a checked-deferred record carries
   `checked_through` (date and SHA), the derived counts, the reason, and a
   reconsideration condition — so an unchanged count does not re-nag every
@@ -640,7 +673,11 @@ Requirements:
   (status `retired-pending`, backlinks converted, ledger line written)
   only after the harvest gate in `runbooks/writing-plans.md` passes, and
   physical deletion happens in a dedicated follow-up change after the
-  gate is independently verified; plans marked `exemplar` in the status
+  recorded gate results are re-checked from the current tree with
+  retrieval from the source SHA verified and the SHA reachable from a
+  retained ref. Second-agent verification is optional, not required —
+  deletion of source-pinned plans is reversible archive maintenance
+  (hub owner decision 2026-08-07); plans marked `exemplar` in the status
   index are exempt until their exemplar role is superseded
 - run-log entries are claims: each fold line must be spot-checkable against the
   diff of the fold commit. Each run-log entry records both folds and maintenance
@@ -706,6 +743,14 @@ corrective change before that rerun.
 
 Rules:
 
+- ordinary maintenance — repairs, cleanups, and reversible
+  housekeeping performed under an existing procedure — defaults to
+  Class 2 when intent is evidenced and the work is reversible; it
+  escalates only when it explicitly changes ongoing procedure or
+  durable guidance, or another [DOM-5]/[DOM-6] trigger independently
+  fires. For durable-guidance promotions the gate is the **human
+  owner**: agent review supports the decision but does not substitute
+  for owner ratification (hub owner decision 2026-08-07)
 - the review and verification floors accumulate; planning artifacts
   **subsume**: a higher-class plan replaces the lower-class records, it
   does not add to them (a class-3 plan is the planning record — no
@@ -776,6 +821,8 @@ checker enforces presence, review enforces meaning.
 | Materially change a skill, runbook, or gate — [DOM-6]-material to future process; base class 3 | Class 3+P (effective 5) |
 | Typo fix inside a skill file — not [DOM-6]-material | 1 |
 | Class-2 fix discovers a storage-format edit is needed — a [DOM-5] risky trigger fires mid-flight | Escalate to 4 at that moment, declared |
+| Authorized coalescing run that only removes already-distilled, expired, or nonnormative source-pinned raw entries, retires or deletes source-pinned plans, advances watermarks, and updates its run log — explicit user intent, reversible through a retained Git ref, and no [DOM-5] trigger fires because this section excludes those archive removals | 2 |
+| Coalescing run that promotes a lesson into a golden rule or materially changes a runbook/skill — durable guidance changes | Class 3+P (effective 5) |
 
 Owner: the agent starting the work declares the class; any reviewer
 may challenge it. Boundary: every unit of work from promotion of this

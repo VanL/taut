@@ -71,6 +71,8 @@ Exact spec files and reference codes that own the behavior.
 
 Why the implementation is structured the current way. Include important
 tradeoffs or rejected alternatives when they still constrain future work.
+Do not copy product non-goals or current capability limits here; link
+their owning theory or contract.
 
 ### 4. Boundaries and Invariants
 

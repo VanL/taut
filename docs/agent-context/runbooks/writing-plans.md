@@ -66,6 +66,13 @@ Plans are executable documents, not rough notes.
 - Red-green TDD is the default when the behavior can be expressed cleanly as a
   failing test first (see `runbooks/testing-patterns.md`, rule 5). If not, say
   why and name the smallest concrete proof that replaces it.
+- **Every surface a plan names must exist.** Before a plan is offered
+  for review, the author existence-checks every named flag, file path,
+  test seam, citation, and driver order against the executable code and
+  pinned sources — form fluency carries no information about
+  correctness, and a fluent plan can name nonexistent surfaces with
+  full confidence. Reviewers repeat the check first (see the
+  review-loops runbook). (Promoted by hub owner direction 2026-08-07.)
 - **Plans record completed work and evidence, never transient repository
   state.** "X is uncommitted," "currently in the worktree," "awaiting
   staging" are claims that fall false the moment the work lands — and a
@@ -154,7 +161,12 @@ For the change, list:
 
 For complex or risky changes, required reading should not stop at file paths.
 Add one or two comprehension questions so the implementer can verify they
-understood the load-bearing behavior before editing.
+understood the load-bearing behavior before editing. Comprehension
+questions have teeth: the plan writes the **expected answers**, the
+implementer writes their answers **in the execution log** before
+editing, and an incorrect answer blocks implementation until the cited
+owner text is reread. A question with no recorded answer and no failure
+consequence is an ungated convention.
 
 Do not make the implementer infer the file list from later prose.
 If the reader could still open the file cold and guess wrong about where or how
@@ -623,6 +635,11 @@ completion from age, filename, or free-form prose.
   candidates, recorded in the guidance repo's coalescing state and in
   mm's plan "2026-07-17-process-hardening-after-lifecycle-rollback" —
   both foreign to this repository.)
+- **Class ≥3 completion is not claimed until the Status Index row exists
+  and is `completed` or `superseded`.** Update `docs/plans/README.md` in
+  the same change as the completion claim. Do not require a binary
+  status checker beyond the existing index gate; the index is the
+  contract.
 - **Completed and superseded plans are harvest candidates.** They stay in
   the tree until the coalescing sweep retires them.
 - **The harvest gate — all four before deletion, no exceptions:**
@@ -632,15 +649,30 @@ completion from age, filename, or free-form prose.
   3. lessons extracted to `docs/lessons.md` where applicable
   4. every spec `## Related Plans` backlink converted to the retired
      citation form (see `maintaining-traceability.md`)
+- **Superseded in-plan decisions are demoted in place.** When a
+  revision supersedes an earlier decision recorded in the same plan,
+  edit the superseded text where it stands to say it is historical and
+  not implementation authority — do not leave outranked text reading
+  as current. (Promoted by hub owner direction 2026-08-07.)
 - **Superseded plans additionally require** the superseding plan to name
   what it inherits (open deviation rows, decided-but-unbuilt behavior)
-  before the predecessor retires.
+  before the predecessor retires. Flip the predecessor's index status to
+  `superseded` in the same change as the successor is accepted —
+  otherwise both remain "open" in the inventory.
 - **Retirement is two-step: soft-retire, then delete.** The sweep performs
   the soft retirement — status flips to `retired-pending` in the index,
   backlinks convert to the retired citation form, and the ledger line is
   written (name, date range, one-sentence outcome, what absorbed it,
-  source SHA). Physical deletion happens in a dedicated follow-up change only
-  after a second agent or the user verifies the harvest gate. Never
+  source SHA). Physical deletion happens in a dedicated follow-up
+  change after the harvest-gate results recorded at soft-retirement
+  are re-checked from the current tree, with retrieval from the source
+  SHA verified. A second-agent verification is optional, not required:
+  deletion of a source-pinned plan reachable from a retained ref is
+  reversible archive maintenance (hub owner decision 2026-08-07 — git
+  is the archive). Git-backed retirement is routine [DOM-14]
+  maintenance: it needs neither a separate task plan nor separate
+  commit authorization when every source SHA resolves and no durable
+  guidance is promoted or materially revised. Never
   soft-retire and delete in the same change, and never create a
   retired/archived plans directory — git is the archive.
 - **Exemplar plans are exempt.** The status index marks the separate Exemplar
@@ -651,6 +683,10 @@ completion from age, filename, or free-form prose.
 - Record the source SHA as a mainline commit that actually contains the
   plan's final state; with squash merges, the squashed mainline commit is
   the one to cite.
+- **The recorded source SHA must be reachable from a retained ref.** A
+  loose object that can be pruned is not a durable archive. Physical
+  deletion is blocked until retrieval from that SHA
+  (`git show <source-sha>:docs/plans/<plan>.md`) has been verified.
 
 ## Anti-Patterns
 

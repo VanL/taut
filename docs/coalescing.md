@@ -19,10 +19,28 @@ action: the session-start check is **read-only** — derive the counts,
 compare against the deferral state, and report a new trip to the user in
 one sentence. Inside an authorized sweep, repair reversible,
 evidence-backed in-boundary defects before folding. Destructive steps
-additionally require landing authorization.
+are archive maintenance when every removal has a verified pre-fold
+source cue reachable from a retained ref; such a routine authorized
+sweep is plan-exempt and needs no separate landing authorization, and
+worktree-only material remains ineligible for removal
+([DOM-5]/[DOM-14] archive rule, adopted from agent-theory @ `0423923`;
+durable-guidance promotion still escalates and gates on the human
+owner).
 
 Counts are always derived from watermarks and the current tree — never
 stored, never trusted from memory.
+The derivation recipe declared in this file and mirrored in
+`skills/coalescing/SKILL.md` step 1 is authoritative; `bin/coalesce-check`
+is an **evidence trail, not a second recipe** — read-only, never writes
+counts back, and when the tool and this file disagree, this file wins
+and the script is the defect.
+
+**Report when (one sentence to the user):** harvest candidates ≥ the
+plans threshold, or the index gate finds an unindexed plan file (any
+positive is reportable; `bin/check-plan-status-index` natively gates
+every-file-indexed here), or a reconsideration condition in the
+deferral table has fired and counts changed since checked-through.
+Unchanged counts against an unchanged deferral row: do not re-nag.
 
 ## Fold Unit and Progress Model
 
@@ -58,7 +76,19 @@ tune with a run-log note, not ad hoc.
 |------|------------------------|-----------|-----------|
 | Lessons | dated ledger entries after the lessons watermark | 20 | 30 days, and never entries cited by an active plan or in a still-accumulating theme |
 | Plans | plans with status completed/superseded, not `exemplar`, and no retired-ledger line | 8 | none — the harvest gate and two-step retirement are the guards |
+| Unindexed | plan files missing from the Status Index | 0 (any positive is reportable; natively gated — `bin/check-plan-status-index` requires every plan file to appear exactly once) | none |
 | Promotion | distinct citations of the same workflow theme (judgment-clustered) since the promotion watermark | 3 | n/a |
+
+## Reporting Cues (non-gating)
+
+Derived counts worth reporting alongside the threshold check when cheap to
+compute. They inform judgment and are never gates:
+
+- **Apparatus share** — the fraction of active (non-retired) plan files
+  whose subject is the process corpus itself (plans, docs, lessons,
+  coalescing, skills). A sustained rise is evidence for the process-tower
+  falsifier in the agent-theory hub's program theory; evaluate by
+  judgment, not by budget.
 
 ## Watermarks
 
@@ -77,7 +107,7 @@ does.
 | Tier | Checked through (date, SHA) | Counts at check | Reason deferred | Reconsider when |
 |------|------------------------------|-----------------|-----------------|-----------------|
 | Lessons | 2026-07-28, `788cdd38` | 87 past watermark: 2 cold and unfolded, 85 inside the age floor; below threshold 20 | Checked-deferred: the two 2026-06-17 cross-backend portability entries form a two-entry candidate and remain verbatim; no lesson or watermark changed | The 2026-07-08 block crosses the age floor on 2026-08-07, or 18 additional cold eligible entries accrue first |
-| Plans | 2026-07-28, base `788cdd38`, index SHA-256 `61ad88e66fc8d4307183fcc38f74e9eabca5457cba195c3117efad0c64c34ad6` | 49 indexed plans: 47 completed, 2 superseded, 1 exemplar, 0 retired; 48 completed/superseded non-exemplars are eligible against threshold 8 | Checked-deferred after maintenance repaired the incomplete, free-form status source and added its executable gate. The retirement trigger is tripped, but no soft retirement, backlink conversion, watermark change, or deletion is authorized in this wave | A landing-authorized retirement pass begins with the four-plan harvested batch, or the status index or retired ledger changes |
+| Plans | 2026-07-28, base `788cdd38`, index SHA-256 `61ad88e66fc8d4307183fcc38f74e9eabca5457cba195c3117efad0c64c34ad6` | 49 indexed plans: 47 completed, 2 superseded, 1 exemplar, 0 retired; 48 completed/superseded non-exemplars are eligible against threshold 8 | Checked-deferred after maintenance repaired the incomplete, free-form status source and added its executable gate. The retirement trigger is tripped, but no soft retirement, backlink conversion, watermark change, or deletion is authorized in this wave | A retirement pass under the [DOM-14] archive rule (verified retained-ref source cues; no separate landing authorization) begins with the four-plan harvested batch, or the status index or retired ledger changes |
 | Promotion | 2026-07-28, `788cdd38` | 3 coherent themes crossed threshold: 2 already owned, 1 missing runbook amendment, 0 missing skills | First derivation complete. The xdist worker-kill containment pattern belongs in `testing-patterns.md`, but that material process edit requires its own Class 3+P unit; no promotion watermark advanced | A Class 3+P runbook-amendment unit is authorized, or a new unowned workflow theme reaches 3 independent citations |
 
 ## Run Log

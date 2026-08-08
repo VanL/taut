@@ -90,9 +90,24 @@ and speculative redesign stay out of scope.
 Defer instead when the repair is ambiguous, destructive, or needs new
 authority. Record the evidence gap, owner, and reconsideration condition.
 Deletion, watermark advancement, plan soft-retirement, and archival
-transitions retain their landing-authorization requirements.
+transitions still require verified pre-fold source cues reachable from
+a retained ref (the [DOM-14] archive rule) and remain part of the
+authorized sweep, not of ad-hoc repair.
+
+If an in-boundary repair would promote or materially revise a golden
+rule, principle, runbook, skill, gate, or cross-repository rule, stop
+and classify it before editing. Routine-sweep authority does not waive
+the durable-guidance planning boundary, and the promotion gate is the
+human owner — agent review supports the decision but does not
+substitute for owner ratification (hub owner decision 2026-08-07).
 
 For the plan tier:
+
+Unindexed plan files are a zero-threshold reportable signal: any
+positive count is reported even when harvest candidates are below
+threshold. In this repository the signal is natively gated —
+`bin/check-plan-status-index` fails when any plan file is missing from
+the Status Index — so derivation is the gate run, not a new count.
 
 ```bash
 bin/check-plan-status-index
@@ -200,7 +215,10 @@ For each tripped or requested fold:
    the fold commit, which cannot contain its own hash and does not contain
    the deleted entries. The fold commit may be added to the run log after
    it exists, as metadata.
-5. **Destructive phase — only with landing authorization.** Only after the
+5. **Archive phase.** Git-backed removals with verified retained-ref
+   source cues are archive maintenance, not a destructive edge, and
+   need no separate landing authorization ([DOM-14]; hub owner
+   decision 2026-08-07). Only after the
    distillation is written, its links resolve, and `source_sha` is
    verified, delete the folded raw entries and advance the lessons
    watermark. In an uncommitted-review session, stop after step 4:
@@ -301,7 +319,9 @@ repo's committed SHA — never from a working tree.
    reconsideration. A later agent must be able to prove whether that
    condition fired without trusting the prior session's memory. This is what
    stops an unchanged count from re-nagging every session.
-3. Advance watermarks only in the destructive phase (landing-authorized).
+3. Advance watermarks only in the archive phase, and only after every
+   removed item has a verified pre-fold source cue reachable from a
+   retained ref; otherwise leave the watermark and say so.
    An additive-only session leaves watermarks untouched and says so in
    its run-log line.
 4. Rerun the repo's traceability gate and record the result in the run-log

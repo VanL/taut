@@ -35,6 +35,10 @@ stay aligned instead of competing.
 6. `06-search.md` - cursor-neutral full-text message search, canonical query
    semantics, visible scope, derived indexing, deferred work, recovery,
    reconciliation, and SQLite/PostgreSQL parity
+7. `07-agent-theory-and-program-theory.md` - definitional reference:
+   what Agent Theory and program theory mean; read when the terms are
+   unfamiliar or before revising `docs/program-theory.md` (adopted from
+   the agent-theory hub @ `0423923`)
 
 ## Naming
 

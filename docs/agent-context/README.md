@@ -30,10 +30,17 @@ guides link here rather than copying it.
 8. Read `../lessons.md` — required startup reading is the **Golden Rules
    plus dated entries after the lessons watermark** (see
    `../coalescing.md`); older entries are searchable reference.
-8. Read the relevant spec, active plan, and implementation note for the task.
-9. Read the relevant skill under `../../skills/` when one exists.
-10. For delegation or independent review, read
+9. Read the relevant spec, active plan, and implementation note for the task.
+10. Read the relevant skill under `../../skills/` when one exists.
+11. For delegation or independent review, read
     `../implementation/03-agent-inventory.md`.
+
+Read-order compliance is a declared-claim floor, not a gate: when you
+produce product-scope judgment — a plan, review, audit, or design
+opinion — declare which of these surfaces you consulted. Plans do this
+via their source-documents section; plan-free work declares it in its
+report. The declaration is checked by review, like task classification
+([DOM-15]), not by tooling.
 
 ## Runbooks
 

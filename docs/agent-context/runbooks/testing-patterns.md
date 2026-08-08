@@ -145,6 +145,50 @@ Fix:
 - for config keys specifically, prove each behavior-affecting key changes
   observable output versus the no-config baseline (no-op prevention)
 
+### Pattern 7: The Test Neutralizes the Hostile Default It Claims to Cover
+
+Symptoms:
+
+- the test forces an environment variable, buffering mode, payload size, or
+  timeout that bypasses the condition under test — `PYTHONUNBUFFERED=1` in a
+  closed-pipe test, payloads larger than the buffer the bug lives behind,
+  timeouts so generous the race never fires
+- the suite stays green for years while the shipped default invocation fails
+  in exactly the way the test names
+
+Fix:
+
+- run the case under the shipped default configuration; a fast or
+  deterministic variant is a second test, never a replacement for the
+  default-path one
+- when reaching the seam requires altering the environment, name the altered
+  dimension in the test and prove the default path in a companion test
+
+### Pattern 8: Multiprocess Coordination Needs Aggregate Deadlines
+
+Symptoms:
+
+- a parent fails on a short per-child receive timeout while children are
+  still starting normally under runner contention
+- a loop resets the timeout for each child, so the real total budget is
+  either too short for the first result or accidentally multiplied by the
+  child count
+- timeout failures omit child PIDs, exit codes, or liveness state
+
+Fix:
+
+- use one monotonic aggregate deadline for the coordination phase
+- scale that deadline with the repository's CI timing factor, where one
+  exists, when startup cost depends on process spawning or interpreter
+  imports
+- poll the result channel in short intervals so child error messages
+  surface promptly
+- on failure, report received child IDs plus each process's PID, exit
+  code, and liveness; do not turn a missing result into a silent pass
+- run threshold-bearing measurements in an exclusive phase: a
+  test-serialization group constrains only its own members, not work on
+  other runner workers
+
 ## Verification Pattern
 
 For meaningful changes:

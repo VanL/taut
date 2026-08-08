@@ -44,8 +44,11 @@ conversation die in conversation.
 
 1. **Harvest the decisions.** From the exploration, write down: what was
    decided, what was explicitly rejected (and why), and what remains
-   open. Rejected alternatives are load-bearing — they stop the next
-   session from relitigating.
+   open. Rejected alternatives can be load-bearing, but do not preserve
+   every local choice. Apply the admission test (as in this repo's
+   `docs/program-theory.md` adopted-alternatives section): likely
+   recurrence, material investigation cost, a hidden constraint
+   exposed, or harm from blind retry.
 2. **Classify the outcome:**
    - **Behavior decided, spec must change** → the plan is spec-changing:
      it needs `## Spec Baseline` and `## Proposed Spec Delta` with a

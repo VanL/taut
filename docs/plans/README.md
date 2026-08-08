@@ -113,6 +113,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 | `2026-08-06-taut-search-plan.md` | completed | no | Class 5 search implementation, verification, and explicit Opus review completed before the owner-authorized final commit. |
 | `2026-08-06-taut-search-spec-draft.md` | superseded | no | Historical reviewed draft superseded by active `docs/specs/06-search.md`. |
 | `2026-08-07-program-theory-crystallization-plan.md` | completed | no | Class 5 product program theory crystallized from the README-first contract, five durable alternatives adopted, independent semantic review ADOPT-WITH-EDITS applied, owner-ratified Active, wired into startup order and [DOM-2]/[DOM-3]. |
+| `2026-08-07-agent-theory-delta-wave-plan.md` | completed | no | Class 5+P agent-theory delta wave (source `0423923`); scoped review F1-F9 applied; landed 2026-08-07. |
 
 ## Retired Plans
 

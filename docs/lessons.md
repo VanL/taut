@@ -93,6 +93,12 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
     prevention test per key). Prose binds only what gets checked; agents
     comply uniformly with gates and unevenly with everything else. (See
     engineering-principles §12 and testing-patterns Pattern 6.)
+14. **The lessons ledger is itself a reviewable surface**, not a place
+    confident text lands unreviewed — an entry can teach a disproved
+    protocol as durable guidance hours after drafting. An uncommitted
+    entry corrected in place owes no supersession ceremony; the
+    ceremony is owed after landing. _(2026-08-07; adopted from the
+    agent-theory hub @ `0423923`.)_
 
 ## Project Lessons
 

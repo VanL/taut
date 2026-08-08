@@ -98,3 +98,38 @@ def test_broken_retrieval_cue_fails(tmp_path: Path) -> None:
     assert result.returncode == 1
     assert f"cue `git show {sha}:missing.txt` does not resolve here" in result.stdout
     assert "BROKEN (1)" in result.stdout
+
+
+def test_shallow_clone_skips_loudly(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    _script, _sha = _coalesce_repository(source)
+    (source / "docs" / "coalescing.md").write_text(
+        "evidence `deadbeef`\n",
+        encoding="utf-8",
+    )
+    (source / "docs" / "lessons.md").write_text(
+        "- 2026-08-01: a dated entry.\n",
+        encoding="utf-8",
+    )
+    subprocess.run(("git", "add", "."), cwd=source, check=True)
+    subprocess.run(
+        ("git", "commit", "-m", "Second commit"),
+        cwd=source,
+        check=True,
+        capture_output=True,
+    )
+    clone = tmp_path / "shallow"
+    subprocess.run(
+        ("git", "clone", "--quiet", "--depth", "1", source.as_uri(), str(clone)),
+        check=True,
+        capture_output=True,
+    )
+    script = clone / "bin" / "coalesce-check"
+
+    result = _run_coalesce(script)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "shallow clone detected" in result.stdout
+    assert "retrieval cues found (syntax only, unverified here):" in result.stdout
+    assert "lessons dated entries:" in result.stdout
