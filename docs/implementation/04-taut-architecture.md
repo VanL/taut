@@ -122,8 +122,8 @@ is empty. This happens even for a single-package release so unselected-package
 artifacts cannot linger. Every ordinary build names both its source and that
 same package-local output directory explicitly, so uv cannot inherit a parent
 workspace's output root. Those ordinary builds also use `--no-sources`, which
-prevents local workspace source resolution and the forbidden root lockfile it
-can create. A later gate failure therefore leaves a clean, unpushed commit that
+prevents local workspace source resolution and unintended lockfile rewrites.
+A later gate failure therefore leaves a clean, unpushed commit that
 can be inspected or reused on a rerun.
 
 The helper accepts `core`/`pg`/`summon`/`mcp` targets plus `all`;

@@ -25,6 +25,7 @@ MANIFESTS = (
     ROOT / "extensions" / "taut_mcp" / "pyproject.toml",
 )
 LOCKS = (
+    ROOT / "uv.lock",
     ROOT / "extensions" / "taut_summon" / "uv.lock",
     ROOT / "extensions" / "taut_mcp" / "uv.lock",
 )
@@ -183,8 +184,7 @@ def test_all_development_manifests_pin_the_same_exact_ruff() -> None:
     assert {_manifest_ruff_pin(path) for path in MANIFESTS} == {f"ruff=={RUFF_VERSION}"}
 
 
-def test_existing_extension_locks_resolve_the_exact_ruff_pin() -> None:
-    assert not (ROOT / "uv.lock").exists()
+def test_retained_locks_resolve_the_exact_ruff_pin() -> None:
     assert not (ROOT / "extensions" / "taut_pg" / "uv.lock").exists()
     assert {_locked_ruff_version(path) for path in LOCKS} == {RUFF_VERSION}
 

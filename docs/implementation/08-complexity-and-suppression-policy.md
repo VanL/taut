@@ -49,13 +49,13 @@ layout before it creates a same-directory temporary file and calls
 anticipated tool, decoding, source-read, and replacement failures exit 2 with
 one diagnostic and no traceback; unexpected defects retain their traceback.
 
-The repository has no root lockfile. Commands that verify an already prepared
-development or release environment therefore use `uv run --no-sync`: they must
-not resolve dependencies, join an ambient parent workspace, or write lock state.
-Exact manifest pins and the two existing extension locks prove configuration.
-The Ruff module in the canonical root pytest interpreter proves its installed
-pin; MCP retains a static extension-lock proof rather than a second runtime
-binary comparison.
+The repository retains root, Summon, and MCP lockfiles; the PostgreSQL extension
+has no separate lock. Commands that verify an already prepared development or
+release environment use `uv run --no-sync`: they must not resolve dependencies,
+join an ambient parent workspace, or rewrite lock state. Exact manifest pins and
+all three retained locks prove configuration. The Ruff module in the canonical
+root pytest interpreter proves its installed pin; static lock checks cover the
+other prepared environments without redundant runtime binary comparisons.
 
 ## Required workflow
 
