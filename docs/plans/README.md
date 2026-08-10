@@ -119,7 +119,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 | `2026-08-07-taut-dump-load-spec-draft.md` | superseded | no | Historical reviewed [PIO-*] draft superseded by active `docs/specs/08-persistence-io.md`. |
 | `2026-08-10-mcp-search-plan.md` | completed | no | Class 5 explicit MCP adapter for core search; exact manifest/result contracts, immutable selector transport, real SQLite/stdio/PostgreSQL proof, documentation, and final Opus review passed before owner-authorized close-out. |
 | `2026-08-10-simplebroker-7-json-id-boundary-plan.md` | completed | no | Class 5 SimpleBroker 7 floor and external JSON timestamp-string compatibility migration; implementation, local verification, and independent review passed before the owner-authorized close-out commit. |
-| `2026-08-10-test-quality-remediation-plan.md` | active | no | Class 4 repository-wide test-oracle remediation with replacement-before-deletion ownership and explicit coverage-preservation gates. |
+| `2026-08-10-test-quality-remediation-plan.md` | completed | no | Class 4 repository-wide test-oracle remediation; 79 audited dispositions, all hosted OS/Python jobs, required paths, and coverage-preservation gates passed at `3e334d1`. |
 
 ## Retired Plans
 

@@ -1120,6 +1120,7 @@ Append implementation evidence here. Do not record transient worktree state.
 | 2026-08-10 | S7 hosted portability | Exact-SHA run `31439636701` failed only `test_attach_forwarding_serializes_with_injection` on macOS 3.13: the fake TUI observed `human\ragent\r` in one PTY read instead of two input events. | The writer contest and exact byte order were correct; the oracle had pinned consumer read chunks to producer writes. The replacement reconstructs and compares the exact pre-detach byte stream, passed 20/20 local repetitions, and retains every original deadline. |
 | 2026-08-10 | S7 coverage reconciliation | Exact-SHA run `31440063336` passed the required-path gate. Against the baseline, aggregate coverage declined 0.016 percentage point, Summon 0.052, and core/MCP were unchanged; the comparator identified `_driver.py:768,956` and `watcher.py:963` as the only lost lines. Baseline coverage carried no dynamic test contexts, so their prior exact owners could not be recovered. | Restored the watcher line with a deterministic public manual-turn cleanup owner; removing deferred finalization fails it. A proposed driver no-respawn owner false-greened when both short-circuits were deleted because a replacement can close before publishing evidence, so it was deleted and the two internal lines were explicitly dispositioned. Final exact-SHA comparison remains required. |
 | 2026-08-10 | S7 hosted pipe portability | Exact-SHA run `31440063336` filled the real scripted-provider stdin pipe to `BlockingIOError`, then both full-pipe tests failed on Windows 3.12–3.14 when the helper passed that anonymous pipe descriptor to `select()`; Windows 3.11 lacks `os.get_blocking` for the setup. | Removed the redundant socket-only readiness query and capability-skip only runtimes without public nonblocking pipe controls. The deterministic entered-write terminal-action owner remains cross-platform; the real child/full-pipe smoke still runs on POSIX and supported Windows versions with its original join deadlines. |
+| 2026-08-10 | S7 final hosted gate | Exact SHA `3e334d171d9d31a5dcb4d6905ba22994206a4e57`, Test run `31441715026`; all 21 jobs passed, including the final coverage job. Artifacts: root/unit 3,751,414 bytes, Summon process 2,335,301, MCP 128,896, local LLM 35,016. The required-path checker passed. Windows 3.12–3.14 ran the real full-pipe proof; Windows 3.11 skipped only its two instances because the runtime lacks public nonblocking pipe controls, while the deterministic entered-write owner ran. | Aggregate: 11,628/12,483, 855 missing, 93.150685% (down 0.008011 point); core: 6,716/7,130, 414 missing, 94.193548% (down 0.014025); Summon: 3,494/3,827, 333 missing, 91.298667% (unchanged); MCP: 1,418/1,526, 108 missing, 92.922674% (unchanged). The only final `LOST` rows were `watcher.py:538–540`, private terminal-stop scheduling cleanup with no supported post-stop observation; all three are dispositioned in the line ledger. Every threshold passed. |
 
 ## Review Log
 
@@ -1145,17 +1146,18 @@ Append plan, slice, and completed-work review dispositions here.
 | 2026-08-10 | S3 release/workflow slice | Independent MCP/PG reviewer | Several replacements could still pass on pre-command token injection, missing family versions, duplicate runner/workflow roles, aliased `Queue` imports, unresolved public exports, or stale Ruff-debt totals. | Adopted: test both CLI option positions, complete the four-family wrong-version matrix, use exact multisets and robust option parsing, resolve AST aliases, require every export to resolve, and reconcile the suppression registry. The selected suite passed 100%. |
 | 2026-08-10 | S7 pre-landing review | Independent completed-work reviewer | Found pre-call blocked-write and pre-matcher chord snapshots; scope-leaky/incomplete AST flow; missing canonical workflow predicates and release permission owner; raw-segment and contentless-FTS gaps; conflated process startup/DB watchdog; dropped persona backstop concepts; and stale ledger/plan owners. | Adopted all findings. Each replacement received a firing mutation or adversarial fixture; startup and behavior watchdogs are separate; ledger maps all 33 deleted nodes; unrelated user plan files remain excluded. |
 | 2026-08-10 | S7 pre-landing re-review | Independent completed-work reviewer | No remaining blocker or major false-green in the 79-row remediation; residual risk is limited to intentionally lightweight static flow analysis for exotic Python aliasing. | Implementation approved. Landing remains gated only by the committed exact-SHA hosted four-artifact coverage comparison and lost-line reconciliation. |
+| 2026-08-10 | S7 final evidence review | Independent completed-work reviewer | Verified exact SHA, 21/21 successful jobs, four artifact sizes, required-path output, normalized package totals, exact comparator result, and all final line dispositions; no false coverage claim or missing gate remains. | Approved. The reviewer confirmed `watcher.py:538–540` have no supported post-stop oracle, the candidate driver dispositions should remain, the completed status is justified, and only the test-quality README hunk may be staged. |
 
 ## Fresh-Eyes Review Checklist
 
-- [ ] Every TQ inventory row maps to an exact task and file owner.
-- [ ] Every deletion names a green replacement or surviving owner.
-- [ ] Baseline and final coverage commands use identical selections.
-- [ ] Aggregate, per-package, required-marker, and lost-line gates are explicit.
-- [ ] Concurrency tasks name arrival, contested owner, release, and final state.
-- [ ] No task depends on a sleep, exact incidental timeout, or human prose.
-- [ ] Real broker, database, process, PTY, protocol, and release seams are named.
-- [ ] Product defects discovered by stronger tests cannot be hidden by weakening
+- [x] Every TQ inventory row maps to an exact task and file owner.
+- [x] Every deletion names a green replacement or surviving owner.
+- [x] Baseline and final coverage commands use identical selections.
+- [x] Aggregate, per-package, required-marker, and lost-line gates are explicit.
+- [x] Concurrency tasks name arrival, contested owner, release, and final state.
+- [x] No task depends on a sleep, exact incidental timeout, or human prose.
+- [x] Real broker, database, process, PTY, protocol, and release seams are named.
+- [x] Product defects discovered by stronger tests cannot be hidden by weakening
       the oracle.
-- [ ] Rollback and stop conditions are executable.
-- [ ] Independent plan, slice, and final reviews are assigned.
+- [x] Rollback and stop conditions are executable.
+- [x] Independent plan, slice, and final reviews are assigned.
