@@ -11,10 +11,18 @@ from typing import Any, cast
 
 import pytest
 from jsonschema import ValidationError, validate
-from simplebroker import BrokerTarget
+from simplebroker import BrokerTarget, Queue
 
 import taut_mcp._workspace_reactor as workspace_reactor
-from taut import MessageDeletion, Notification, TautClient, TautError, identity
+from taut import (
+    MessageDeletion,
+    Notification,
+    SearchHit,
+    TautClient,
+    TautError,
+    identity,
+)
+from taut.search._jobs import PENDING_QUEUE_NAME
 from taut_mcp._commands import RECORD_TYPE_BY_TOOL, execute_command, record_object
 from taut_mcp._process_reactor import (
     ProcessReactor,
@@ -186,6 +194,32 @@ def _assert_result(
             {"since": 11, "limit": 23},
         ),
         (
+            "search",
+            {
+                "query": "parser",
+                "channels": ("general",),
+                "direct_messages": ("@Ada",),
+                "all_direct_messages": True,
+                "from_member": "Ada",
+                "kinds": ("message", "notice"),
+                "before": "1234567890123456789",
+                "limit": 23,
+                "reindex": True,
+            },
+            "search",
+            ("parser",),
+            {
+                "channels": ("general",),
+                "direct_messages": ("@Ada",),
+                "all_direct_messages": True,
+                "from_member": "Ada",
+                "kinds": ("message", "notice"),
+                "before": "1234567890123456789",
+                "limit": 23,
+                "reindex": True,
+            },
+        ),
+        (
             "list",
             {"all": True},
             "list_threads",
@@ -214,7 +248,7 @@ def test_each_ordinary_tool_is_a_thin_public_client_proxy(
 
     record = object()
     calls: list[tuple[str, tuple[object, ...], dict[str, object]]] = []
-    iterable_methods = {"read", "inbox", "log", "list_threads", "who"}
+    iterable_methods = {"read", "inbox", "log", "search", "list_threads", "who"}
 
     class PublicClientSpy:
         def __getattr__(self, name: str) -> Any:
@@ -232,6 +266,105 @@ def test_each_ordinary_tool_is_a_thin_public_client_proxy(
     assert result.record_type == RECORD_TYPE_BY_TOOL[tool]
     assert result.records == (record,)
     assert calls == [(method, positional, keywords)]
+
+
+def test_search_command_layer_supplies_every_omitted_default_once() -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class PublicClientSpy:
+        def search(self, query: str, **kwargs: object) -> list[SearchHit]:
+            calls.append((query, kwargs))
+            return []
+
+    result = execute_command(
+        cast(TautClient, PublicClientSpy()),
+        "search",
+        (("query", "parser"),),
+    )
+
+    assert result.record_type == "search_hit"
+    assert result.records == ()
+    assert calls == [
+        (
+            "parser",
+            {
+                "channels": (),
+                "direct_messages": (),
+                "all_direct_messages": False,
+                "from_member": None,
+                "kinds": (),
+                "before": None,
+                "limit": 50,
+                "reindex": False,
+            },
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [TautError("domain failure"), TypeError("bad type"), ValueError("bad value")],
+)
+def test_search_preserves_domain_and_argument_failures(failure: Exception) -> None:
+    class PublicClientSpy:
+        def search(self, query: str, **kwargs: object) -> list[SearchHit]:
+            raise failure
+
+    with pytest.raises(type(failure)) as raised:
+        execute_command(
+            cast(TautClient, PublicClientSpy()),
+            "search",
+            (("query", "parser"),),
+        )
+    assert raised.value is failure
+
+
+def test_search_sanitizes_unexpected_provider_failures() -> None:
+    class PublicClientSpy:
+        def search(self, query: str, **kwargs: object) -> list[SearchHit]:
+            raise RuntimeError("postgres secret detail")
+
+    with pytest.raises(
+        TautError,
+        match=(
+            "^search provider or index unavailable; fix the workspace search "
+            "provider or index and retry$"
+        ),
+    ) as raised:
+        execute_command(
+            cast(TautClient, PublicClientSpy()),
+            "search",
+            (("query", "parser"),),
+        )
+    assert "postgres" not in str(raised.value)
+
+
+def test_search_hit_record_projection_is_exact_and_json_safe() -> None:
+    hit = SearchHit(
+        thread="dm.d_abcdefghijklmnopqrstuvwxyz",
+        ts=1_800_000_000_000_000_123,
+        from_id="m_author",
+        from_name="Ada",
+        kind="message",
+        text="parser is green",
+        thread_kind="dm",
+        channel=None,
+        parent=None,
+        members=("m_actor", "m_author"),
+    )
+
+    assert record_object(hit) == {
+        "thread": "dm.d_abcdefghijklmnopqrstuvwxyz",
+        "ts": "1800000000000000123",
+        "from_id": "m_author",
+        "from": "Ada",
+        "kind": "message",
+        "text": "parser is green",
+        "thread_kind": "dm",
+        "channel": None,
+        "parent": None,
+        "members": ["m_actor", "m_author"],
+    }
 
 
 def test_list_dms_is_a_thin_public_client_proxy() -> None:
@@ -1446,6 +1579,107 @@ def test_attached_workspaces_freeze_independent_reaction_vocabularies(
 
 @pytest.mark.sqlite_only
 @pytest.mark.timeout(15)
+def test_command_warnings_are_ordered_and_operation_local(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[MCP-6] Notification warnings precede search warnings and never leak."""
+
+    workspace, token = _workspace_with_two_members(tmp_path)
+    real_execute = workspace_reactor.execute_command
+
+    def execute_with_warnings(client: TautClient, name: str, arguments: Any) -> Any:
+        result = real_execute(client, name, arguments)
+        if name == "say":
+            client.last_notification_warnings.append("notification warning")
+            client.last_search_warnings.append("search warning")
+        return result
+
+    monkeypatch.setattr(
+        workspace_reactor,
+        "execute_command",
+        execute_with_warnings,
+    )
+
+    async def scenario() -> None:
+        reactor = ProcessReactor(asyncio.get_running_loop())
+        try:
+            canonical = str(
+                (await reactor.attach_workspace(str(workspace), token))["workspace"]
+            )
+            warned = await reactor._execute_ready_tool(
+                canonical,
+                "say",
+                {"target": "general", "text": "warning source commit"},
+            )
+            assert warned["records"][0]["text"] == "warning source commit"
+            assert warned["warnings"] == ["notification warning", "search warning"]
+
+            later = await reactor._execute_ready_tool(canonical, "whoami", {})
+            assert later["warnings"] == []
+        finally:
+            await reactor.aclose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(15)
+def test_search_enqueue_warning_preserves_real_source_and_does_not_leak(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[MCP-6]/[SRCH-8.3] Source success wins over derived-index warning."""
+
+    workspace, token = _workspace_with_two_members(tmp_path)
+    real_write = Queue.write
+
+    def failing_search_enqueue(queue: Queue, body: str) -> int:
+        if queue.name == PENDING_QUEUE_NAME:
+            raise RuntimeError("index queue offline")
+        return real_write(queue, body)
+
+    monkeypatch.setattr(Queue, "write", failing_search_enqueue)
+
+    async def scenario() -> None:
+        reactor = ProcessReactor(asyncio.get_running_loop())
+        try:
+            canonical = str(
+                (await reactor.attach_workspace(str(workspace), token))["workspace"]
+            )
+            sent = await reactor._execute_ready_tool(
+                canonical,
+                "say",
+                {"target": "general", "text": "source survives warning"},
+            )
+            assert sent["records"][0]["text"] == "source survives warning"
+            assert sent["warnings"] == [
+                (
+                    "search invalidation enqueue failed for general/"
+                    f"{sent['records'][0]['ts']}: index queue offline"
+                )
+            ]
+            assert "source survives" not in sent["warnings"][0]
+
+            observer = TautClient(db_path=workspace / ".taut.db", token=token)
+            try:
+                assert any(
+                    message.text == "source survives warning"
+                    for message in observer.log("general")
+                )
+            finally:
+                observer.close()
+
+            later = await reactor._execute_ready_tool(canonical, "whoami", {})
+            assert later["warnings"] == []
+        finally:
+            await reactor.aclose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(15)
 def test_same_workspace_rejects_overlap_while_another_workspace_progresses(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2093,6 +2327,216 @@ def test_well_formed_absent_and_inaccessible_dms_are_content_free_empty_results(
 
 
 @pytest.mark.sqlite_only
+@pytest.mark.timeout(30)
+def test_search_returns_all_facets_and_preserves_authoritative_state(
+    tmp_path: Path,
+) -> None:
+    """[MCP-5]/[SRCH-5.4] Real SQLite search is exact and state-neutral."""
+
+    workspace, token = _workspace_with_two_members(tmp_path)
+    db = workspace / ".taut.db"
+    selected = TautClient(db_path=db, token=token)
+    identity_record = selected.whoami(explain=False)
+    channel = selected.say("general", "verticalneedle channel")
+    parent = selected.say("general", "parent without marker")
+    subthread = selected.reply(
+        "general",
+        str(parent.ts),
+        "verticalneedle subthread",
+    )
+    direct = selected.say("@other", "verticalneedle direct")
+    selected.close()
+
+    observer = TautClient(db_path=db, token=token)
+
+    def snapshot() -> tuple[object, object, object]:
+        return (
+            observer._state.get_member(identity_record.member_id),
+            observer._state.list_memberships(identity_record.member_id),
+            observer.peek_inbox(limit=1000),
+        )
+
+    async def scenario() -> None:
+        reactor = ProcessReactor(asyncio.get_running_loop())
+        try:
+            canonical = str(
+                (await reactor.attach_workspace(str(workspace), token))["workspace"]
+            )
+            before = snapshot()
+            arguments = {
+                "query": "verticalneedle",
+                "channels": ["general"],
+                "direct_messages": [direct.thread],
+                "all_direct_messages": False,
+                "from_member": "selected",
+                "kinds": ["message"],
+                "before": None,
+                "limit": 50,
+                "reindex": False,
+            }
+            result = await reactor._execute_ready_tool(
+                canonical,
+                "search",
+                arguments,
+            )
+            _assert_result(result, record_type="search_hit", workspace=canonical)
+            assert {record["text"] for record in result["records"]} == {
+                "verticalneedle channel",
+                "verticalneedle subthread",
+                "verticalneedle direct",
+            }
+            by_text = {record["text"]: record for record in result["records"]}
+            assert by_text["verticalneedle channel"]["thread_kind"] == "channel"
+            assert by_text["verticalneedle channel"]["channel"] == "general"
+            assert by_text["verticalneedle channel"]["parent"] is None
+            assert by_text["verticalneedle channel"]["members"] is None
+            assert by_text["verticalneedle subthread"]["thread_kind"] == "subthread"
+            assert by_text["verticalneedle subthread"]["channel"] == "general"
+            assert by_text["verticalneedle subthread"]["parent"] == "general"
+            assert by_text["verticalneedle subthread"]["members"] is None
+            assert by_text["verticalneedle direct"]["thread_kind"] == "dm"
+            assert by_text["verticalneedle direct"]["channel"] is None
+            assert by_text["verticalneedle direct"]["parent"] is None
+            assert len(by_text["verticalneedle direct"]["members"]) == 2
+            assert all(
+                isinstance(record["ts"], str) and len(record["ts"]) == 19
+                for record in result["records"]
+            )
+            assert {record["ts"] for record in result["records"]} == {
+                str(channel.ts),
+                str(subthread.ts),
+                str(direct.ts),
+            }
+
+            rebuilt = await reactor._execute_ready_tool(
+                canonical,
+                "search",
+                {**arguments, "reindex": True},
+            )
+            assert rebuilt["records"] == result["records"]
+
+            empty = await reactor._execute_ready_tool(
+                canonical,
+                "search",
+                {**arguments, "query": "absentverticalneedle"},
+            )
+            _assert_result(empty, record_type="search_hit", workspace=canonical)
+            assert empty["records"] == []
+            assert snapshot() == before
+        finally:
+            observer.close()
+            await reactor.aclose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(15)
+def test_search_provider_failure_is_sanitized_without_retiring_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[MCP-6] Backend detail is hidden and the child remains usable."""
+
+    workspace, token = _workspace_with_two_members(tmp_path)
+
+    def unavailable(self: TautClient, query: str, **kwargs: object) -> list[SearchHit]:
+        raise RuntimeError("sqlite index path and secret provider detail")
+
+    monkeypatch.setattr(workspace_reactor.TautClient, "search", unavailable)
+
+    async def scenario() -> None:
+        reactor = ProcessReactor(asyncio.get_running_loop())
+        try:
+            canonical = str(
+                (await reactor.attach_workspace(str(workspace), token))["workspace"]
+            )
+            with _tool_error(
+                "search provider or index unavailable; fix the workspace "
+                "search provider or index and retry"
+            ):
+                await reactor._execute_ready_tool(
+                    canonical,
+                    "search",
+                    {"query": "needle"},
+                )
+            identity_result = await reactor._execute_ready_tool(
+                canonical,
+                "whoami",
+                {},
+            )
+            assert identity_result["records"][0]["name"] == "selected"
+            assert reactor.list_workspaces()["records"][0]["status"] == "ready"
+        finally:
+            await reactor.aclose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(15)
+def test_late_search_cancellation_does_not_retry_or_retire_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[MCP-5] Cancellation discards delivery, not the single core operation."""
+
+    workspace, token = _workspace_with_two_members(tmp_path)
+    source = TautClient(db_path=workspace / ".taut.db", token=token)
+    source.say("general", "cancel search needle")
+    source.close()
+    started = threading.Event()
+    release = threading.Event()
+    calls = 0
+    real_execute = workspace_reactor.execute_command
+
+    def delayed_execute(client: TautClient, name: str, arguments: Any) -> Any:
+        nonlocal calls
+        if name == "search":
+            calls += 1
+            started.set()
+            if not release.wait(timeout=5):
+                raise AssertionError("test did not release search")
+        return real_execute(client, name, arguments)
+
+    monkeypatch.setattr(workspace_reactor, "execute_command", delayed_execute)
+
+    async def scenario() -> None:
+        reactor = ProcessReactor(asyncio.get_running_loop())
+        try:
+            canonical = str(
+                (await reactor.attach_workspace(str(workspace), token))["workspace"]
+            )
+            pending = asyncio.create_task(
+                reactor._execute_ready_tool(
+                    canonical,
+                    "search",
+                    {"query": "needle", "channels": ["general"]},
+                )
+            )
+            assert await asyncio.to_thread(started.wait, 5)
+            pending.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await pending
+            release.set()
+            await _wait_until(
+                lambda: reactor._entries[canonical].active_command_id is None
+            )
+            assert calls == 1
+            identity_result = await reactor._execute_ready_tool(
+                canonical,
+                "whoami",
+                {},
+            )
+            assert identity_result["records"][0]["name"] == "selected"
+        finally:
+            release.set()
+            await reactor.aclose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.sqlite_only
 @pytest.mark.timeout(120)
 def test_explicit_read_limit_pages_without_post_read_slicing(tmp_path: Path) -> None:
     """[MCP-5]/[MCP-12] The bound reaches core before cursor movement."""
@@ -2247,6 +2691,7 @@ def test_every_tool_declares_a_closed_common_output_schema() -> None:
         "read": "message",
         "inbox": "notification",
         "log": "message",
+        "search": "search_hit",
         "list": "thread",
         "channel_show": "channel",
         "channel_topic": "channel",
@@ -2358,6 +2803,13 @@ def test_output_schemas_require_canonical_string_timestamps() -> None:
         field_schema = schemas[tool_name]["properties"][field]
         assert field_schema["pattern"] == canonical["pattern"]
         assert field_schema["type"] == canonical["type"]
+
+    search_schema = schemas["search"]
+    assert all(
+        branch["properties"]["ts"]["pattern"] == canonical["pattern"]
+        and branch["properties"]["ts"]["type"] == canonical["type"]
+        for branch in search_schema["oneOf"]
+    )
 
     for tool_name, field in (
         ("inbox", "message_ts"),
@@ -2506,6 +2958,190 @@ def test_react_to_message_manifest_contract_has_no_static_enum() -> None:
     }
 
 
+def test_search_manifest_and_result_family_are_exact() -> None:
+    """[MCP-5]/[MCP-6] Search is explicit, closed, and truthful."""
+
+    tool = next(tool for tool in TOOLS if tool.name == "search")
+
+    assert tool.description == (
+        "Search actor-visible Taut history without moving chat cursors, "
+        "claiming notifications, or touching member activity. The call may "
+        "reconcile disposable derived index state; reindex=true rebuilds it. "
+        "Backend tokenization and ranking may differ."
+    )
+    assert tool.input_schema["required"] == ["workspace", "token", "query"]
+    assert set(tool.input_schema["properties"]) == {
+        "workspace",
+        "token",
+        "query",
+        "channels",
+        "direct_messages",
+        "all_direct_messages",
+        "from_member",
+        "kinds",
+        "before",
+        "limit",
+        "reindex",
+    }
+    assert tool.input_schema["properties"]["channels"]["items"]["pattern"] == (
+        r"^[a-z0-9][a-z0-9_-]{0,63}$"
+    )
+    assert (
+        tool.input_schema["properties"]["direct_messages"]["items"]["pattern"]
+        == r"^(?:@[A-Za-z0-9][A-Za-z0-9_-]{0,63}|dm\.d_[a-z2-7]{26})$"
+    )
+    assert tool.input_schema["properties"]["kinds"]["items"]["enum"] == [
+        "message",
+        "notice",
+        "foreign",
+    ]
+    for name in ("channels", "direct_messages", "kinds"):
+        assert tool.input_schema["properties"][name]["default"] == []
+        assert "uniqueItems" not in tool.input_schema["properties"][name]
+    assert tool.input_schema["properties"]["before"]["anyOf"] == [
+        {"pattern": r"^[0-9]{19}$", "type": "string"},
+        {"type": "null"},
+    ]
+    assert tool.input_schema["properties"]["limit"] == {
+        "default": 50,
+        "description": (
+            "Maximum records requested from one queue, from 1 through 1,000 "
+            "inclusive. Defaults to 50."
+        ),
+        "maximum": 1000,
+        "minimum": 1,
+        "type": "integer",
+    }
+    assert tool.annotations is not None
+    assert tool.annotations.model_dump(
+        mode="json",
+        exclude_none=True,
+        by_alias=True,
+    ) == {
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+        "readOnlyHint": False,
+    }
+
+    assert tool.output_schema is not None
+    assert tool.output_schema["properties"]["record_type"]["const"] == "search_hit"
+    branches = tool.output_schema["properties"]["records"]["items"]["oneOf"]
+    assert [branch["properties"]["thread_kind"]["const"] for branch in branches] == [
+        "channel",
+        "subthread",
+        "dm",
+    ]
+    expected_fields = {
+        "thread",
+        "ts",
+        "from_id",
+        "from",
+        "kind",
+        "text",
+        "thread_kind",
+        "channel",
+        "parent",
+        "members",
+    }
+    for branch in branches:
+        assert branch["additionalProperties"] is False
+        assert set(branch["properties"]) == expected_fields
+        assert set(branch["required"]) == expected_fields
+        assert branch["properties"]["ts"]["pattern"] == r"^[0-9]{19}$"
+        assert branch["properties"]["kind"]["enum"] == [
+            "message",
+            "notice",
+            "foreign",
+        ]
+
+    channel, subthread, dm = branches
+    assert channel["properties"]["channel"]["type"] == "string"
+    assert channel["properties"]["parent"]["type"] == "null"
+    assert channel["properties"]["members"]["type"] == "null"
+    assert subthread["properties"]["channel"]["type"] == "string"
+    assert subthread["properties"]["parent"]["type"] == "string"
+    assert subthread["properties"]["members"]["type"] == "null"
+    assert dm["properties"]["channel"]["type"] == "null"
+    assert dm["properties"]["parent"]["type"] == "null"
+    assert dm["properties"]["members"]["minItems"] == 2
+    assert dm["properties"]["members"]["maxItems"] == 2
+
+
+def test_search_schema_accepts_defaults_nulls_and_duplicate_filters() -> None:
+    tool = next(tool for tool in TOOLS if tool.name == "search")
+
+    validate(
+        instance={"workspace": "/workspace", "token": "secret", "query": "x"},
+        schema=tool.input_schema,
+    )
+    validate(
+        instance={
+            "workspace": "/workspace",
+            "token": "secret",
+            "query": "parser",
+            "channels": ["general", "general"],
+            "direct_messages": ["@Ada", "@Ada"],
+            "all_direct_messages": True,
+            "from_member": None,
+            "kinds": ["message", "message"],
+            "before": None,
+            "limit": 1000,
+            "reindex": True,
+        },
+        schema=tool.input_schema,
+    )
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"workspace": "/workspace", "token": "secret"},
+        {"workspace": "/workspace", "token": "secret", "query": ""},
+        {"workspace": "/workspace", "token": "secret", "query": "x", "extra": 1},
+        {
+            "workspace": "/workspace",
+            "token": "secret",
+            "query": "x",
+            "channels": "general",
+        },
+        {
+            "workspace": "/workspace",
+            "token": "secret",
+            "query": "x",
+            "channels": ["General"],
+        },
+        {
+            "workspace": "/workspace",
+            "token": "secret",
+            "query": "x",
+            "direct_messages": ["general"],
+        },
+        {
+            "workspace": "/workspace",
+            "token": "secret",
+            "query": "x",
+            "kinds": ["event"],
+        },
+        {
+            "workspace": "/workspace",
+            "token": "secret",
+            "query": "x",
+            "before": 1_234_567_890_123_456_789,
+        },
+        {"workspace": "/workspace", "token": "secret", "query": "x", "before": "1234"},
+        {"workspace": "/workspace", "token": "secret", "query": "x", "limit": 0},
+        {"workspace": "/workspace", "token": "secret", "query": "x", "limit": 1001},
+        {"workspace": "/workspace", "token": "secret", "query": "x", "reindex": 1},
+    ],
+)
+def test_search_schema_rejects_malformed_calls(arguments: dict[str, object]) -> None:
+    tool = next(tool for tool in TOOLS if tool.name == "search")
+
+    with pytest.raises(ValidationError):
+        validate(instance=arguments, schema=tool.input_schema)
+
+
 def test_exact_tool_manifest_snapshot() -> None:
     """[MCP-5]/[MCP-12] Pin every agent-facing manifest contract field."""
 
@@ -2534,7 +3170,7 @@ def test_exact_tool_manifest_snapshot() -> None:
         separators=(",", ":"),
     ).encode()
     assert hashlib.sha256(encoded).hexdigest() == (
-        "e648b5e3f1498454442d69c66d6e625e5f3656b8f60a290e90d76e4ba3980a1f"
+        "60e4d48d629cc5628c1624603fb839a45ed64d65236aa0a170308cb4e4533500"
     )
 
     def assert_property_descriptions(schema: dict[str, object]) -> None:

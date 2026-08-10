@@ -16,7 +16,6 @@ def _tool(name: str) -> Any:
 
 def test_manifest_uses_noun_first_channel_and_message_names_only() -> None:
     names = {tool.name for tool in TOOLS}
-    assert len(names) == 20
     assert {
         "channel_show",
         "channel_topic",

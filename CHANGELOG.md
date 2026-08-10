@@ -22,6 +22,14 @@
   SQLite FTS5; `taut-pg` uses PostgreSQL's built-in text search and GIN without
   requiring an optional server extension. Both backends share the public API
   and safety contract while retaining backend-native lexical behavior.
+- Added the explicit MCP `search` tool, bringing the fixed surface to 21 tools
+  and 18 CLI-shaped operations. It delegates one core search call, preserves
+  string message IDs and backend-native lexical behavior, returns empty search
+  as typed success, keeps authoritative state neutral, and reports sanitized
+  provider failures plus operation-local notification/search warnings.
+- Extended `bin/pytest-pg` to route explicit MCP PostgreSQL tests with both
+  extension dependency overlays, so the MCP adapter is exercised against real
+  PostgreSQL and compared with direct `TautClient.search()` results.
 - Make the MCP native-activity pacing proof independent of event-loop
   scheduling delays while retaining a deterministic fake-clock assertion for
   the production 0.5-second coalescing boundary.

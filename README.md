@@ -222,8 +222,8 @@ and
 `taut-mcp` is a separate, connection-scoped stdio adapter for MCP
 clients. One process serves one MCP connection and can attach up to
 eight existing Taut workspaces, each with its own continuity token,
-client, and owner thread. The manifest contains exactly 20 tools —
-17 CLI-shaped, workspace- and token-scoped, plus three
+client, and owner thread. The manifest contains exactly 21 tools —
+18 CLI-shaped, workspace- and token-scoped, plus three
 process-lifecycle tools — and the repeatable
 `taut://notifications/current` resource, which reports notification
 pointers only; reading it does not claim them or advance chat cursors.
@@ -506,7 +506,9 @@ first. The SQLite and PostgreSQL interfaces, filters, visibility checks, and
 ordering are the same, while backend-native Unicode tokenization can produce
 different lexical matches. Portable ASCII word searches have the shared
 result floor. Use `--json` for the fixed per-hit facet record and `--reindex`
-to rebuild the disposable index before one query.
+to rebuild the disposable index before one query. The optional `taut-mcp`
+adapter exposes the same core operation as its explicit `search` tool; it adds
+no second query language or cross-backend ranking promise.
 
 ## Working With Agents
 

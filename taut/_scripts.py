@@ -226,6 +226,8 @@ def _pg_test_uv_command(*args: str) -> list[str]:
             ".",
             "--with-editable",
             "./extensions/taut_pg[dev]",
+            "--with-editable",
+            "./extensions/taut_mcp[dev]",
             *args,
         ]
     )
@@ -315,8 +317,8 @@ def _classify_pytest_target(arg: str) -> str | None:
 
     if relative == "tests" or relative.startswith("tests/"):
         return "shared"
-    if relative == "extensions/taut_pg/tests" or relative.startswith(
-        "extensions/taut_pg/tests/"
+    if relative in {"extensions/taut_pg/tests", "extensions/taut_mcp/tests"} or (
+        relative.startswith(("extensions/taut_pg/tests/", "extensions/taut_mcp/tests/"))
     ):
         return "extension"
     return None

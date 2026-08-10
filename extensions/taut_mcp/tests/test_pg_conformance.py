@@ -11,6 +11,7 @@ import pytest
 
 import taut_mcp._workspace_reactor as workspace_reactor
 from taut import TautClient, identity
+from taut_mcp._commands import record_object
 from taut_mcp._process_reactor import ProcessReactor
 
 
@@ -206,6 +207,143 @@ def test_postgres_explicit_dm_navigation_and_directory(
             await reactor.aclose()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.pg_only
+@pytest.mark.timeout(60)
+def test_postgres_search_matches_direct_client_and_preserves_state(
+    taut_pg_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[MCP-5]/[MCP-12]/[SRCH-12] Real PG owns its lexical behavior."""
+
+    monkeypatch.chdir(taut_pg_project)
+    TautClient.init()
+    selected = TautClient(as_name="selected")
+    selected.join("general")
+    member = selected.last_created_member
+    assert member is not None and member.token is not None
+    other = TautClient(as_name="other")
+    other.join("general")
+    channel = selected.say("general", "pgsearchneedle café channel")
+    parent = selected.say("general", "parent without marker")
+    subthread = selected.reply(
+        "general",
+        str(parent.ts),
+        "pgsearchneedle subthread",
+    )
+    direct = selected.say("@other", "pgsearchneedle direct")
+    selected.close()
+    other.close()
+    observer = TautClient(token=member.token)
+    arguments: dict[str, object] = {
+        "query": "pgsearchneedle",
+        "channels": ["general"],
+        "direct_messages": [direct.thread],
+        "all_direct_messages": False,
+        "from_member": "selected",
+        "kinds": ["message"],
+        "before": None,
+        "limit": 50,
+        "reindex": False,
+    }
+
+    def snapshot() -> tuple[object, object, object]:
+        return (
+            observer._state.get_member(member.member_id),
+            observer._state.list_memberships(member.member_id),
+            observer.peek_inbox(limit=1000),
+        )
+
+    async def scenario() -> None:
+        reactor = ProcessReactor(asyncio.get_running_loop())
+        try:
+            attached = await reactor.attach_workspace(
+                str(taut_pg_project),
+                member.token or "",
+            )
+            assert attached["records"][0]["backend"] == "postgres"
+            canonical = str(attached["workspace"])
+            before = snapshot()
+
+            result = await reactor._execute_ready_tool(
+                canonical,
+                "search",
+                arguments,
+            )
+            assert result["record_type"] == "search_hit"
+            expected = [
+                record_object(hit)
+                for hit in observer.search(
+                    "pgsearchneedle",
+                    channels=("general",),
+                    direct_messages=(direct.thread,),
+                    all_direct_messages=False,
+                    from_member="selected",
+                    kinds=("message",),
+                    before=None,
+                    limit=50,
+                    reindex=False,
+                )
+            ]
+            assert result["records"] == expected
+            assert {record["ts"] for record in result["records"]} == {
+                str(channel.ts),
+                str(subthread.ts),
+                str(direct.ts),
+            }
+            assert {record["thread_kind"] for record in result["records"]} == {
+                "channel",
+                "subthread",
+                "dm",
+            }
+            assert all(
+                isinstance(record["ts"], str) and len(record["ts"]) == 19
+                for record in result["records"]
+            )
+
+            rebuilt = await reactor._execute_ready_tool(
+                canonical,
+                "search",
+                {**arguments, "reindex": True},
+            )
+            assert rebuilt["records"] == expected
+
+            unicode_direct = [
+                record_object(hit)
+                for hit in observer.search(
+                    "café",
+                    channels=("general",),
+                    limit=50,
+                )
+            ]
+            unicode_mcp = await reactor._execute_ready_tool(
+                canonical,
+                "search",
+                {
+                    "query": "café",
+                    "channels": ["general"],
+                    "limit": 50,
+                },
+            )
+            assert unicode_mcp["records"] == unicode_direct
+
+            empty = await reactor._execute_ready_tool(
+                canonical,
+                "search",
+                {**arguments, "query": "absentpgsearchneedle"},
+            )
+            assert empty["record_type"] == "search_hit"
+            assert empty["records"] == []
+            assert empty["guidance"] == []
+            assert snapshot() == before
+        finally:
+            await reactor.aclose()
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        observer.close()
 
 
 @pytest.mark.pg_only

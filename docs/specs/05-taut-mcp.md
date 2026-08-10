@@ -640,6 +640,7 @@ stable MCP identifiers; the second column names the owning CLI behavior.
 | `read` | `taut read` | cursor-mutating through the core read contract |
 | `inbox` | `taut inbox` | notification-consuming |
 | `log` | `taut log` | read-only |
+| `search` | `taut search` | cursor/activity-neutral search that may reconcile or rebuild disposable derived index state |
 | `list` | `taut list` | read-oriented but updates existing member activity under the core identity contract |
 | `channel_rename` | `taut channel rename` | mutating |
 | `who` | `taut who` | read-oriented but updates existing member activity under the core identity contract |
@@ -649,7 +650,7 @@ MCP identifiers for nested CLI operations use noun-first underscore form.
 `channel_show`, `channel_topic`, `channel_rename`, `message_show`,
 `message_delete`, and `message_react` replace the former verb-first or generic
 identifiers one-for-one. The old identifiers are not aliases and do not appear
-in discovery. This normalization does not change the fixed 20-tool count,
+in discovery. This normalization does not change the fixed 21-tool count,
 input/output schemas, annotations, dispatch targets, or domain behavior.
 
 Tool descriptions and MCP annotations are normative agent-facing contract,
@@ -681,6 +682,7 @@ hint.
 | `read` | Return oldest unread messages and advance each selected cursor through its returned page. `thread` may select a channel, subthread, `@name-or-alias` DM, or stable `dm.d_*` conversation. Omit it for all joined chat threads. | false | true | false | true |
 | `inbox` | Claim and return notification pointers from this member's inbox. This consumes the pointers; source chat history is not changed by inbox but may already be author-deleted. | false | true | false | true |
 | `log` | Inspect cursor-neutral history for a channel, subthread, or existing actor-accessible DM selected by `@name-or-alias` or stable `dm.d_*` handle. | true | false | true | true |
+| `search` | Search actor-visible Taut history without moving chat cursors, claiming notifications, or touching member activity. The call may reconcile disposable derived index state; `reindex=true` rebuilds it. Backend tokenization and ranking may differ. | false | false | true | true |
 | `list` | List ordinary joined/unread threads, every registered thread, or every valid actor-accessible DM. `all` and `dms` are mutually exclusive. Resolving the existing member for actor-scoped list modes may update activity. | false | false | false | true |
 | `channel_rename` | Rename a Taut channel and its sub-threads. Replaces existing thread addresses. | false | true | false | true |
 | `who` | List Taut members or members of one thread. Resolving the existing member updates the caller's activity timestamp; it does not change the member anchor, token fingerprint, or computed presence. | false | false | false | true |
@@ -733,6 +735,15 @@ current-membership record. `message_react` has that cursor effect plus
 best-effort notification writes. `message_delete` is the only tool here that
 physically removes a chat row.
 
+`search` keeps `idempotentHint=true`: repeated calls converge the same
+disposable projection for the then-current source state and do not compound
+an authoritative effect. Concurrent source changes may still change the
+returned records. It deliberately keeps `readOnlyHint=false` because ordinary
+search may reconcile derived index state and `reindex=true` rebuilds it.
+Search creates no chat message and no search-result-specific resource update.
+It retains the existing post-command observational notification refresh, which
+may publish an independently changed inbox snapshot.
+
 Every input property has a nonempty normative `description`. Shared schema
 definitions use the following exact teaching text; tool-specific schemas may
 append only the restriction named in the last column. Schema snapshot tests
@@ -740,7 +751,7 @@ include these descriptions, not only types and required-property lists.
 
 | Property use | Exact base description | Tool-specific restriction |
 |--------------|------------------------|---------------------------|
-| identity-using `workspace` | Absolute local directory containing an existing Taut project. The server resolves it to a canonical workspace identifier; reuse the returned canonical value to avoid repeated resolution. | No relative path or file URI; used by `attach_workspace` and the 17 CLI-shaped tools. |
+| identity-using `workspace` | Absolute local directory containing an existing Taut project. The server resolves it to a canonical workspace identifier; reuse the returned canonical value to avoid repeated resolution. | No relative path or file URI; used by `attach_workspace` and the 18 CLI-shaped tools. |
 | `detach_workspace.workspace` | Exact canonical workspace identifier returned by a successful ensure or `list_workspaces`. Detach removes only this process's resident state. | No filesystem re-resolution and no identity token; an exact active hidden-candidate string reports busy but is never removed. |
 | identity-using `token` | Existing Taut continuity token for this workspace. It selects one member and is never returned. | Required on `attach_workspace` and every CLI-shaped tool; do not invent it or repeat it in chat. |
 | channel `thread` | Taut channel matching `^[a-z0-9][a-z0-9_-]{0,63}$`; `dm`, `notify`, `sys`, and `taut` are reserved. | `join`, `reply`, `channel_rename.old_name`, and `channel_rename.new_name` require a top-level channel. |
@@ -756,8 +767,16 @@ include these descriptions, not only types and required-property lists.
 | `reply.msg_id` | Parent message id: the full 19-digit id, or a unique suffix of at least 4 digits among the most recent 1,000 ids in the channel. | Used only by `reply`; ambiguity is an error. |
 | exact-message `msg_id` | Exact native Taut message id as a 19-digit decimal string. Preserve it as text; suffixes, whitespace, signs, and numeric JSON values are invalid. | Used by `message_show`, `message_delete`, and `message_react`; all three schemas set `pattern: ^[0-9]{19}$`, and core additionally rejects values outside the public signed-64-bit native timestamp range before identity or lookup. |
 | `reaction` | Configured lowercase ASCII reaction slug matching `^[a-z0-9][a-z0-9_-]{0,31}$`. | Used only by `message_react`; the schema is not an enum because the attached workspace config remains authoritative. |
-| `limit` | Maximum records requested from one queue, from 1 through 1,000 inclusive. | `read` defaults to 100 per selected thread; `inbox` defaults to 1,000; `log` defaults to 100 most-recent matches. |
+| `limit` | Maximum records requested from one queue, from 1 through 1,000 inclusive. | `read` defaults to 100 per selected thread; `inbox` defaults to 1,000; `log` defaults to 100 most-recent matches; `search` defaults to 50. |
 | `since` | Exclusive history lower bound: ISO 8601, Unix seconds/milliseconds/nanoseconds, or a native 19-digit message id. | Null means no lower bound; used only by `log`. String forms preserve the existing core grammar. Bare JSON integers are accepted only in JavaScript's safe range `[-(2**53-1), 2**53-1]`; larger numeric values must be strings. |
+| `query` | Required nonblank Unicode search query; core [SRCH-3] remains authoritative for normalization, length, and token rules. | Used only by `search`; schema rejects an empty string and core rejects queries with no alphanumeric chunk. |
+| `channels` | Optional array of channel names; default `[]`; each element uses the canonical channel pattern. | Used only by `search`; duplicates are accepted and collapse in core. |
+| `direct_messages` | Optional array of `@name-or-alias` routes or stable `dm.d_*` handles; default `[]`; each element uses [SRCH-4.1]'s exact chat-DM selector grammar. | Used only by `search`; duplicates are accepted and collapse in core. |
+| `all_direct_messages` | Optional boolean selecting every actor-accessible DM. | Used only by `search`; defaults to false and may coexist with explicit DM selectors. |
+| `from_member` | Optional current member name or alias used as an author filter. | Used only by `search`; null means no author filter. |
+| `kinds` | Optional array of message kinds drawn from `message`, `notice`, and `foreign`. | Used only by `search`; defaults to `[]`; duplicates are accepted and collapse in core. |
+| `before` | Optional exclusive upper message-id bound as a canonical 19-digit decimal string. | Used only by `search`; null means no upper bound and numeric JSON values are invalid. |
+| `reindex` | Whether to rebuild disposable search index state before querying. | Used only by `search`; defaults to false. |
 | `all` | When true, list every registered Taut thread. | Defaults to false; mutually exclusive with `dms`. |
 | `dms` | When true, list every valid actor-accessible DM, including read and empty conversations. | Defaults to false; mutually exclusive with `all`. |
 
@@ -779,6 +798,7 @@ include these descriptions, not only types and required-property lists.
 | `read` | `workspace: string`, `token: string`, `thread: string or null`, `limit: integer` | `workspace`, `token` | lazily ensures the workspace if needed; default limit 100; range 1..1,000; explicit DM selectors follow [TAUT-7.8]; null/omitted keeps bare joined-thread behavior; each selected queue has its own limit and cursor advance |
 | `inbox` | `workspace: string`, `token: string`, `limit: integer` | `workspace`, `token` | lazily ensures the workspace if needed; default 1,000; range 1..1,000 |
 | `log` | `workspace: string`, `token: string`, `thread: string`, `since: string, integer, or null`, `limit: integer` | `workspace`, `token`, `thread` | lazily ensures the workspace if needed; default limit 100; range 1..1,000; DM log is actor-scoped, cursor-neutral, and activity-neutral |
+| `search` | `workspace: string`, `token: string`, `query: string`, `channels: array[string]`, `direct_messages: array[string]`, `all_direct_messages: boolean`, `from_member: string or null`, `kinds: array[message\|notice\|foreign]`, `before: string or null`, `limit: integer`, `reindex: boolean` | `workspace`, `token`, `query` | lazily ensures the workspace; freezes every selector array to a tuple; calls `TautClient.search` once with defaults `[]`, `[]`, false, null, `[]`, null, 50, false; adds no retry or post-filter |
 | `list` | `workspace: string`, `token: string`, `all: boolean`, `dms: boolean` | `workspace`, `token` | lazily ensures the workspace if needed; both booleans default false; `all && dms` is rejected before child dispatch; `dms=true` calls `TautClient.list_direct_messages()` |
 | `channel_rename` | `workspace: string`, `token: string`, `old_name: string`, `new_name: string` | all | lazily ensures the workspace if needed; channel rename only |
 | `who` | `workspace: string`, `token: string`, `thread: string or null` | `workspace`, `token` | lazily ensures the workspace if needed; retains core activity-write and computed-presence semantics |
@@ -803,7 +823,7 @@ After validation and bucket charge, shared routing consumes `workspace` and
 domain-command argument mapping. The raw token never appears in a
 master-to-child domain-command envelope, result, or fixed error.
 
-The fixed manifest remains exactly 20 tools. `read.thread` and `log.thread`
+The fixed manifest remains exactly 21 tools. `read.thread` and `log.thread`
 schemas accept the existing channel/subthread grammar, the [IAN-4] `@` route
 grammar, and exact stable-DM grammar `^dm\.d_[a-z2-7]{26}$`. A malformed
 selector is rejected by schema before child dispatch. A well-formed absent or
@@ -919,6 +939,7 @@ workspace lifecycle schema:
 | `message_delete` | `deletion` | `thread`, `ts`, `deleted` |
 | `message_react` | `reaction` | `thread`, `message_ts`, `reaction`, `audience_count` |
 | `inbox` | `notification` | `type`, `to_id`, `actor_id`, `actor_name`, `thread`, `message_ts`, optional `matched`, optional `reaction` |
+| `search` | `search_hit` | `thread`, `ts`, `from_id`, `from`, `kind`, `text`, `thread_kind`, `channel`, `parent`, `members` |
 | `set_name`, `who`, `whoami` | `member` | `member_id`, `name`, `aliases`, `kind`, `presence`, `last_active_ts`, `persona` |
 | `channel_show`, `channel_topic` | `channel` | `channel`, `topic`, `topic_updated_ts`, `topic_updated_by_id`, `topic_updated_by_name` |
 | `list`, `channel_rename` | `thread` | Closed kind-discriminated shape: channels add required `topic`; DMs add required `members`; subthreads add neither |
@@ -980,8 +1001,12 @@ membership tools return their primary record: for example `join` and `leave`
 return the notice message, and `channel_rename` returns the renamed thread.
 Workspace
 identity already exists, so no tool emits a member-creation token prelude. A
-single logical result is still a one-record array. Warnings are exact warning
-strings produced by the client operation. In addition, `list_workspaces`
+single logical result is still a one-record array. Before every domain
+operation, the child clears both `last_notification_warnings` and
+`last_search_warnings`. Its completion returns both channels in deterministic
+notification-then-search order, even when search otherwise returns no records,
+and no warning leaks into the next call. Warnings are exact warning strings
+produced by the client operation. In addition, `list_workspaces`
 includes the fixed warning `stalled attachment reservation exists; restart
 taut-mcp to clear` whenever [MCP-4]'s retiring warning is due; it exposes
 neither the locator nor the token.
@@ -1008,6 +1033,29 @@ The `reaction` record schema is closed:
 "integer", "minimum": 1 } } }`. The count is the final authorized recipient-set
 size after actor exclusion and DM registry intersection. It equals the number
 of exact requested inbox names and makes no delivery or consumption claim.
+
+The `search_hit` record schema is a closed discriminated `oneOf`. Every branch
+contains exactly [SRCH-5.3]'s ten fields and no inline `record_type`:
+`thread`, canonical 19-digit string `ts`, nullable `from_id`, `from`, one of
+the three message `kind` values, `text`, `thread_kind`, `channel`, `parent`,
+and `members`. Channel hits require string `channel` with null `parent` and
+`members`; sub-thread hits require string `channel` and `parent` with null
+`members`; direct-message hits require null `channel` and `parent` with an
+exact two-string `members` array. `parent` is the top-level channel name, not
+a message id. Empty search returns the ordinary envelope with
+`record_type: "search_hit"`, `records: []`, and `guidance: []`. A provider
+failure is a sanitized tool error, never an empty result.
+
+The core search provider boundary intentionally surfaces backend-native
+non-domain exceptions. The MCP search command adapter re-raises existing
+`TautError`, `TypeError`, `ValueError`, `EmptyResultError`, and `TokenError`
+unchanged, but converts any other exception raised by its single
+`TautClient.search` call to `TautError` with the exact content-free message
+`search provider or index unavailable; fix the workspace search provider or
+index and retry`. This search-only mapping does not weaken the existing
+unexpected-exception reactor-fault rule for any other command. A re-raised
+`EmptyResultError` follows the existing empty-result handler and returns the
+empty `search_hit` success envelope above; it is not a tool error.
 
 “Canonical JSON” means UTF-8 JSON produced with Unicode preserved, every
 object key sorted lexicographically, and separators `,` and `:` with no
@@ -1396,25 +1444,33 @@ initialization and modern discovery. They require:
     conversation with `log` before retrying. A later log cannot prove which
     read page reached the host. Do not timer-poll `channel_show` or
     `channel_topic`.
-11. Use `message_show` only when the exact 19-digit id is known and moving
+11. Use `search` to discover visible history without knowing a thread. Bare
+    search covers registered channels, their subthreads, and actor-accessible
+    DMs; explicit channel, DM, author, kind, and before selectors replace or
+    refine that scope under the tool schema. Preserve returned 19-digit ids as
+    strings. SQLite and PostgreSQL may differ in Unicode lexical matches and
+    ranking; do not compare hit sets as authoritative state. Use
+    `reindex=true` only for an explicit complete derived-index rebuild because
+    it may be expensive.
+12. Use `message_show` only when the exact 19-digit id is known and moving
     seen state is intended. It may mark unseen intervening history seen. Use
     `log` for cursor-neutral inspection. Returned 19-digit timestamps are
     already exact JSON strings and may be reused directly by JavaScript.
-12. Treat `message_delete` as blind-capable, physical, and irreversible. It
+13. Treat `message_delete` as blind-capable, physical, and irreversible. It
     deletes only the selected member's own ordinary message, does not retract
     fetched output, and does not cascade. Do not infer prior success from an
     empty retry after an uncertain outcome.
-13. `message_react` advances the actor's high-water cursor and attempts one
+14. `message_react` advances the actor's high-water cursor and attempts one
     atomic best-effort broadcast to the requested notification queues. A
     warning means the commit result may be uncertain; do not blind-retry.
-14. Standard resource updates and the optional Claude channel are redundant
+15. Standard resource updates and the optional Claude channel are redundant
     wakes. Coalesce duplicates. Use bounded backoff for workspace-busy or
     rate-limit errors.
-15. If a lazy or explicit ensure request is canceled or times out, wait up to
+16. If a lazy or explicit ensure request is canceled or times out, wait up to
     30 seconds, then call `list_workspaces` once. Reuse any ready canonical
     entry. Restart the server process only for the fixed stalled-reservation
     warning; do not spin attach/detach retries.
-16. After any canceled or transport-lost consuming or mutating call, inspect
+17. After any canceled or transport-lost consuming or mutating call, inspect
     current Taut state before deciding whether a retry is safe. MCP
     cancellation is not transaction evidence.
 
@@ -1501,7 +1557,7 @@ The master serial point and no-wait parent admission slots in [MCP-5] permit
 at most one command per workspace while allowing different workspaces to
 progress concurrently.
 
-One process-wide in-memory token bucket covers all 20 schema-valid tool calls
+One process-wide in-memory token bucket covers all 21 schema-valid tool calls
 and successful direct reads of the fixed aggregate resource across both
 protocol eras: capacity 40, refill 20 operations per second. The process
 reactor owns a continuous monotonic-time bucket initialized to 40.0. On each
@@ -1656,8 +1712,8 @@ subscription.
 
 Required proof includes:
 
-- one manifest/schema snapshot proves the same exact 20 tools for legacy and
-  modern discovery; `attach_workspace` and all 17 CLI-shaped schemas require
+- one manifest/schema snapshot proves the same exact 21 tools for legacy and
+  modern discovery; `attach_workspace` and all 18 CLI-shaped schemas require
   both `workspace` and `token`, `detach_workspace` requires only exact
   canonical `workspace`, and `list_workspaces` remains empty-input;
 - malformed, extra, wrong-type, pattern, range, and cross-field-invalid tool
@@ -1671,7 +1727,7 @@ Required proof includes:
   result for both;
 - shared routing consumes `workspace` and `token` for ensure and proves that
   neither value, especially the raw token, reaches a domain-command envelope;
-- each of the 17 CLI-shaped tools succeeds without prior attach through the
+- each of the 18 CLI-shaped tools succeeds without prior attach through the
   shared lazy ensure path and reuses the published child on a second call;
 - explicit attach followed by an ordinary call performs no second project,
   identity, client, or reactor setup;
@@ -1725,7 +1781,7 @@ Required proof includes:
 - installed-wheel startup plus legacy initialize/list-tools/list-resources and
   modern discover/list-tools/list-resources exchanges through real stdio
   subprocesses with zero resident workspaces and byte-clean stdout
-- one firing contract test for each of the 20 tools in [MCP-5], including
+- one firing contract test for each of the 21 tools in [MCP-5], including
   state and empty/error semantics rather than registration alone
 - exact discovery proves the noun-first nested-operation identifiers and the
   absence of `show_channel`, `set_channel_topic`, `rename`, `show_message`,
@@ -1828,9 +1884,24 @@ Required proof includes:
 - `list(dms=true)` includes unread, caught-up, and empty valid DMs in core
   order, emits the existing thread schema, rejects `all=true` before child
   dispatch, and creates no state
-- the manifest remains 20 tools, `log` stays read-only annotated, and schema,
+- the manifest remains 21 tools, `log` stays read-only annotated, and schema,
   dispatch, instructions, cancellation recovery, SQLite, and PostgreSQL proofs
   move together
+- the `search` tool fires every default, scope selector, author/kind filter,
+  exclusive `before`, limit boundary, and `reindex` argument; freezes arrays
+  to immutable tuples before process transfer; accepts duplicates and combined
+  explicit/all-DM scope; rejects malformed/wrong-type/unknown fields before
+  dispatch; calls `TautClient.search` exactly once; emits the exact closed
+  `search_hit` facet union with canonical string `ts`; distinguishes empty,
+  inaccessible, provider-error, and cancellation outcomes; preserves cursor,
+  activity, membership, identity, notification, and chat rows; proves derived
+  reconciliation and rebuild; and satisfies the same shape/visibility
+  assertions through real SQLite and PostgreSQL without requiring identical
+  backend-native Unicode order or hit sets
+- one mutating command whose successful source write produces a best-effort
+  search warning returns notification warnings before search warnings, and a
+  following nonmutating command proves neither warning channel leaks across
+  calls
 - every successful nonempty `read` returns exactly one
   `read_cursor_advanced` guidance entry with [MCP-6]'s exact message and
   action; empty `message_delete` returns exactly the content-free
@@ -2111,6 +2182,9 @@ compatibility workflow.
 
 ## Related Plans
 
+- `docs/plans/2026-08-10-mcp-search-plan.md` — adds one explicit search tool,
+  immutable selector transport, exact search-hit results, and backend-real
+  conformance without changing core search semantics.
 - `docs/plans/2026-08-10-simplebroker-7-json-id-boundary-plan.md` — canonical
   MCP timestamp strings and the JavaScript-safe `log.since` integer guard.
 - `docs/plans/2026-07-28-taut-mcp-dual-era-sessionless-plan.md`

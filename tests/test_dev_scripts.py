@@ -310,6 +310,7 @@ def test_build_pg_test_uv_command_installs_extension(
     assert "--no-sync" not in command
     assert "--with-editable" in command
     assert "./extensions/taut_pg[dev]" in command
+    assert "./extensions/taut_mcp[dev]" in command
     assert command[-1] == "pytest"
 
 
@@ -456,6 +457,15 @@ def test_pytest_target_classification_handles_options_absolute_and_foreign_paths
     assert (
         scripts._classify_pytest_target(
             str(scripts.ROOT / "extensions/taut_pg/tests/test_pg.py::test_pg")
+        )
+        == "extension"
+    )
+    assert (
+        scripts._classify_pytest_target(
+            str(
+                scripts.ROOT
+                / "extensions/taut_mcp/tests/test_pg_conformance.py::test_pg"
+            )
         )
         == "extension"
     )

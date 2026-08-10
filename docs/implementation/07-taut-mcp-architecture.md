@@ -14,7 +14,10 @@ review record live in
 `docs/plans/2026-07-28-taut-mcp-dual-era-sessionless-plan.md`. This note owns
 implementation rationale and edit points, not protocol requirements.
 
-The current portable surface is 20 explicit tools plus
+The search adapter and its review record live in
+`docs/plans/2026-08-10-mcp-search-plan.md`.
+
+The current portable surface is 21 explicit tools plus
 `taut://notifications/current`. The optional Claude channel is a
 legacy-host-only best-effort wake hint. The package was first published as
 0.7.0 from commit `8dfed910d0429226f2faaab776166ad5fd261189`, with root Test
@@ -40,6 +43,9 @@ as historical release evidence.
 - `docs/specs/03-identity-addressing-notifications.md` [IAN-3] identity,
   [IAN-6.5] notification queues, and [IAN-7.4] consuming versus observational
   notification reads
+- `docs/specs/06-search.md` [SRCH-3] query grammar, [SRCH-4] visibility and
+  scope, [SRCH-5] public results, [SRCH-8] deferred warnings, [SRCH-11]
+  backend differences, and [SRCH-12] conformance
 
 ## Design Rationale
 
@@ -126,17 +132,36 @@ token-bearing client, identity cache, or transient command path.
 
 ### One manifest, validator, and thin dispatcher
 
-`_tools.py` owns the fixed 20-tool manifest and compiles one Draft 2020-12
+`_tools.py` owns the fixed 21-tool manifest and compiles one Draft 2020-12
 validator from each advertised input schema. The shared handler normalizes
 only omitted SDK arguments from `None` to `{}`, validates before charging the
 rate bucket, and returns one fixed content-free result for known-tool schema
 failure. Unknown tools remain protocol errors.
 
-`_commands.py` is the explicit allowlisted dispatcher for the 17 CLI-shaped
+`_commands.py` is the explicit allowlisted dispatcher for the 18 CLI-shaped
 tools. It calls public `TautClient` methods and serializes public value
 objects. It never launches the CLI, parses terminal output, reflects the
 command registry, or receives MCP identity fields. A startup assertion keeps
 the manifest's domain partition equal to this dispatcher.
+
+The `search` branch is intentionally an adapter, not a second search layer.
+The process copies its validated selector arrays to immutable tuples before
+the child queue boundary. The child supplies the documented defaults and
+calls `TautClient.search()` once. It performs no tokenization, filtering,
+ranking, retry, or backend branch. `SearchHit` receives its own explicit
+ten-field serializer and closed channel/subthread/DM result branches; all
+external timestamps remain 19-digit strings.
+
+Core domain and argument exceptions keep their existing MCP handling. A
+backend-native unexpected exception from the single search call is translated
+to one fixed content-free `TautError`, so provider failure is a tool error and
+does not retire the workspace. `EmptyResultError` still reaches the existing
+empty-result handler and returns an empty `search_hit` success envelope.
+
+Before each domain command, the child clears both notification and search
+warning lists. It returns notification warnings first, then search warnings.
+This preserves successful source results when derived-index enqueue fails and
+prevents warnings from leaking into the next command.
 
 That serializer applies `simplebroker.format_message_id` only to its explicit
 timestamp fields; `_process_reactor.py` does the same for the independently
@@ -248,7 +273,7 @@ Configuring this path is not evidence that a PyPI version has been published.
 - A workspace child owns exactly one persistent configured `TautClient` and
   every backend handle derived from it.
 - All cross-thread payloads use queues; wakes never carry shared mutable
-  command state.
+  command state. Validated JSON arrays are copied to tuples before enqueue.
 - Identity-using tool calls always carry workspace plus token. Detach alone
   is workspace-only because it removes process-local state.
 - Eager attach and lazy first use share one ensure lifecycle and one retained
@@ -256,7 +281,9 @@ Configuring this path is not evidence that a PyPI version has been published.
 - Application behavior does not branch by protocol era. Era checks stay at
   the SDK-owned error, envelope, and host-adapter boundary.
 - The aggregate resource is notification-only. Do not add unread-thread
-  inventory or consuming watch behavior without a new product contract.
+  inventory, search results, or consuming watch behavior without a new product
+  contract. Search retains only the ordinary post-command observational inbox
+  refresh.
 - Legacy updates, modern listen events, and Claude channel cues are redundant
   hints. Correctness depends only on Taut state and resource reread.
 - A live stuck child is never force-detached in-process. Restart is safer than
@@ -275,7 +302,9 @@ Configuring this path is not evidence that a PyPI version has been published.
 | `extensions/taut_mcp/tests/test_dual_era_contract.py` | focused manifest, application-validator, and per-tool lazy-first-use contract |
 | `extensions/taut_mcp/tests/test_process_reactor.py` | shared ensure, alias, lifecycle, cancellation, and process-reactor invariants |
 | `extensions/taut_mcp/tests/test_stdio_server.py` | legacy and modern discovery, schema, cache, subscription, rate, cancellation, and installed-wheel stdio behavior |
-| `extensions/taut_mcp/tests/` | real SQLite behavior and optional live PostgreSQL conformance |
+| `extensions/taut_mcp/tests/test_tools.py` | real SQLite behavior, search state neutrality, warnings, errors, projection, and cancellation |
+| `extensions/taut_mcp/tests/test_pg_conformance.py` | real PostgreSQL adapter conformance against direct `TautClient.search()` |
+| `taut/_scripts.py`, `tests/test_dev_scripts.py` | canonical PostgreSQL runner routing and MCP/PG dependency overlay |
 | `.github/workflows/test.yml` | sole MCP release-byte owner and same-run non-PG MCP coverage producer/aggregator |
 | `.github/workflows/test-mcp-extension.yml` | Ubuntu SQLite/PostgreSQL matrix, macOS/Windows non-PG lanes, and package-local quality gates |
 | `.github/workflows/release-gate-mcp.yml` | `taut_mcp/v*` exact-SHA observer, top-level `taut-mcp` Trusted Publisher, and immutable-release gate |
@@ -283,8 +312,9 @@ Configuring this path is not evidence that a PyPI version has been published.
 Verify changes at the owner boundary. Use real Taut clients, broker queues,
 child threads, and stdio for behavior. Fake only a notification sink or clock
 when isolating delivery or rate policy. PostgreSQL behavior requires
-`SIMPLEBROKER_PG_TEST_DSN`; a skipped live lane is a reported residual, not
-backend-conformance evidence.
+`SIMPLEBROKER_PG_TEST_DSN`; `bin/pytest-pg` recognizes explicit MCP test paths
+and installs both extension overlays. A skipped live lane is a reported
+residual, not backend-conformance evidence.
 
 ## Change Guidance
 
@@ -305,6 +335,7 @@ changelog, and plan evidence whenever ownership or rationale changes.
 
 ## Related Plans
 
+- `docs/plans/2026-08-10-mcp-search-plan.md`
 - `docs/plans/2026-07-29-taut-chat-pypi-publication-plan.md`
 - `docs/plans/2026-07-28-taut-mcp-dual-era-sessionless-plan.md`
 - `docs/plans/2026-07-28-channel-topics-plan.md`

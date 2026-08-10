@@ -34,8 +34,31 @@ EXTENSION_ROOT = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = EXTENSION_ROOT.parents[1]
 NOTIFICATIONS_URL = "taut://notifications/current"
 EXPECTED_INSTRUCTIONS_SHA256 = (
-    "c5e8b399e2950d0ead3a58ae2c519f39c17e179419249ef6f10ae4fe9c06128b"
+    "09ba153597e453bc4c816476a25200f6b3bf665b2be87acb576ef51e974a8867"
 )
+EXPECTED_TOOL_NAMES = {
+    "attach_workspace",
+    "channel_rename",
+    "channel_show",
+    "channel_topic",
+    "detach_workspace",
+    "inbox",
+    "join",
+    "leave",
+    "list",
+    "list_workspaces",
+    "log",
+    "message_delete",
+    "message_react",
+    "message_show",
+    "read",
+    "reply",
+    "say",
+    "search",
+    "set_name",
+    "who",
+    "whoami",
+}
 with (EXTENSION_ROOT / "pyproject.toml").open("rb") as _project_stream:
     EXPECTED_VERSION = str(tomllib.load(_project_stream)["project"]["version"])
 with (PROJECT_ROOT / "pyproject.toml").open("rb") as _project_stream:
@@ -160,6 +183,8 @@ async def _inspect_empty_server(
         "read with one explicit selector",
         "Use list(dms=true)",
         "A later log cannot prove",
+        "Use search to discover visible history without knowing a thread",
+        "Use reindex=true only for an explicit complete derived-index rebuild",
         "Use message_show only when the exact 19-digit id is known",
         "high-water cursor",
         "Returned 19-digit timestamps are already exact JSON strings",
@@ -171,6 +196,8 @@ async def _inspect_empty_server(
     ):
         assert required_rule in initialized.instructions
     assert tools.tools == list(TOOLS)
+    assert {tool.name for tool in tools.tools} == EXPECTED_TOOL_NAMES
+    assert len(tools.tools) == 21
     assert [
         (str(resource.uri), resource.mime_type) for resource in resources.resources
     ] == [("taut://notifications/current", "application/json")]
@@ -206,6 +233,8 @@ async def _inspect_modern_empty_server(
         tools = await client.list_tools()
         resources = await client.list_resources()
         assert tools.tools == list(TOOLS)
+        assert {tool.name for tool in tools.tools} == EXPECTED_TOOL_NAMES
+        assert len(tools.tools) == 21
         assert [(str(item.uri), item.mime_type) for item in resources.resources] == [
             (NOTIFICATIONS_URL, "application/json")
         ]
@@ -267,7 +296,14 @@ def test_modern_discovery_lazy_identity_and_subscription_share_one_server(
     selected.join("general")
     member = selected.last_created_member
     assert member is not None and member.token is not None
+    sent = selected.say("general", "modern stdio needle café")
+    other = TautClient(db_path=database, as_name="other")
+    other.join("general")
+    other_member = other.last_created_member
+    assert other_member is not None
+    direct = selected.say("@other", "modern stdio private needle")
     selected.close()
+    other.close()
 
     async def scenario() -> None:
         parameters = StdioServerParameters(
@@ -344,6 +380,119 @@ def test_modern_discovery_lazy_identity_and_subscription_share_one_server(
                 assert first.subscription_id != second.subscription_id
                 with pytest.raises(TimeoutError):
                     await asyncio.wait_for(anext(unmatched), timeout=0.1)
+
+            observer = TautClient(db_path=database, token=member.token)
+
+            def snapshot() -> tuple[object, object, object]:
+                return (
+                    observer._state.get_member(member.member_id),
+                    observer._state.list_memberships(member.member_id),
+                    observer.peek_inbox(limit=1000),
+                )
+
+            before_search = snapshot()
+            searched = await client.call_tool(
+                "search",
+                {
+                    "workspace": canonical,
+                    "token": member.token,
+                    "query": "needle",
+                    "channels": ["general"],
+                    "direct_messages": [direct.thread],
+                    "all_direct_messages": False,
+                    "from_member": "selected",
+                    "kinds": ["message"],
+                    "before": None,
+                    "limit": 50,
+                    "reindex": True,
+                },
+            )
+            assert_complete(searched)
+            assert searched.is_error is False
+            assert searched.structured_content is not None
+            assert searched.structured_content["record_type"] == "search_hit"
+            assert searched.structured_content["records"] == [
+                {
+                    "channel": None,
+                    "from": "selected",
+                    "from_id": member.member_id,
+                    "kind": "message",
+                    "members": sorted([member.member_id, other_member.member_id]),
+                    "parent": None,
+                    "text": "modern stdio private needle",
+                    "thread": direct.thread,
+                    "thread_kind": "dm",
+                    "ts": str(direct.ts),
+                },
+                {
+                    "channel": "general",
+                    "from": "selected",
+                    "from_id": member.member_id,
+                    "kind": "message",
+                    "members": None,
+                    "parent": None,
+                    "text": "modern stdio needle café",
+                    "thread": "general",
+                    "thread_kind": "channel",
+                    "ts": str(sent.ts),
+                },
+            ]
+            search_tool = next(tool for tool in TOOLS if tool.name == "search")
+            assert search_tool.output_schema is not None
+            validate(
+                instance=searched.structured_content,
+                schema=search_tool.output_schema,
+            )
+            assert isinstance(searched.content[0], types.TextContent)
+            assert searched.content[0].text == json.dumps(
+                searched.structured_content,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+
+            unicode_result = await client.call_tool(
+                "search",
+                {
+                    "workspace": canonical,
+                    "token": member.token,
+                    "query": "café",
+                    "channels": ["general"],
+                },
+            )
+            assert unicode_result.is_error is False
+            assert unicode_result.structured_content is not None
+            assert unicode_result.structured_content["records"] == [
+                searched.structured_content["records"][1]
+            ]
+            validate(
+                instance=unicode_result.structured_content,
+                schema=search_tool.output_schema,
+            )
+
+            empty_search = await client.call_tool(
+                "search",
+                {
+                    "workspace": canonical,
+                    "token": member.token,
+                    "query": "absentmodernstdio",
+                },
+            )
+            assert empty_search.is_error is False
+            assert empty_search.structured_content == {
+                "empty": True,
+                "guidance": [],
+                "record_type": "search_hit",
+                "records": [],
+                "warnings": [],
+                "workspace": canonical,
+            }
+            validate(
+                instance=empty_search.structured_content,
+                schema=search_tool.output_schema,
+            )
+            assert snapshot() == before_search
+            observer.close()
 
             detached = await client.call_tool(
                 "detach_workspace",

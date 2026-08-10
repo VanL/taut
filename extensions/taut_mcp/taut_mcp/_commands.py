@@ -1,4 +1,4 @@
-"""Explicit public-API dispatch for the seventeen CLI-shaped MCP tools."""
+"""Explicit public-API dispatch for the eighteen CLI-shaped MCP tools."""
 
 from __future__ import annotations
 
@@ -15,14 +15,16 @@ from taut import (
     MessageReaction,
     NotFoundError,
     Notification,
+    SearchHit,
     TautClient,
+    TautError,
     Thread,
     addressing,
 )
 
 _MAX_SAFE_JSON_INTEGER = (1 << 53) - 1
 
-CommandScalar: TypeAlias = str | int | bool | None
+CommandScalar: TypeAlias = str | int | bool | None | tuple[str, ...]
 CommandArguments: TypeAlias = tuple[tuple[str, CommandScalar], ...]
 CommandRecord: TypeAlias = (
     Channel
@@ -30,6 +32,7 @@ CommandRecord: TypeAlias = (
     | MessageDeletion
     | MessageReaction
     | Notification
+    | SearchHit
     | Member
     | Thread
 )
@@ -46,6 +49,7 @@ RECORD_TYPE_BY_TOOL = {
     "read": "message",
     "inbox": "notification",
     "log": "message",
+    "search": "search_hit",
     "list": "thread",
     "channel_show": "channel",
     "channel_topic": "channel",
@@ -79,6 +83,23 @@ def _integer(arguments: dict[str, CommandScalar], name: str, default: int) -> in
     value = arguments.get(name, default)
     if isinstance(value, bool) or not isinstance(value, int):
         raise TypeError(f"{name} must be an integer")
+    return value
+
+
+def _boolean(arguments: dict[str, CommandScalar], name: str, default: bool) -> bool:
+    value = arguments.get(name, default)
+    if not isinstance(value, bool):
+        raise TypeError(f"{name} must be a boolean")
+    return value
+
+
+def _string_tuple(
+    arguments: dict[str, CommandScalar],
+    name: str,
+) -> tuple[str, ...]:
+    value = arguments.get(name, ())
+    if not isinstance(value, tuple) or not all(isinstance(item, str) for item in value):
+        raise TypeError(f"{name} must be a string tuple")
     return value
 
 
@@ -167,6 +188,32 @@ def execute_command(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-011] exceptio
             if addressing.parse_dm_selector(thread) is None:
                 raise
             records = ()
+    elif name == "search":
+        try:
+            records = tuple(
+                client.search(
+                    _required_string(arguments, "query"),
+                    channels=_string_tuple(arguments, "channels"),
+                    direct_messages=_string_tuple(arguments, "direct_messages"),
+                    all_direct_messages=_boolean(
+                        arguments,
+                        "all_direct_messages",
+                        False,
+                    ),
+                    from_member=_optional_string(arguments, "from_member"),
+                    kinds=_string_tuple(arguments, "kinds"),
+                    before=_optional_string(arguments, "before"),
+                    limit=_integer(arguments, "limit", 50),
+                    reindex=_boolean(arguments, "reindex", False),
+                )
+            )
+        except (TautError, TypeError, ValueError):
+            raise
+        except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-083] exception
+            raise TautError(
+                "search provider or index unavailable; fix the workspace "
+                "search provider or index and retry"
+            ) from None
     elif name == "list":
         all_threads = arguments.get("all", False)
         if not isinstance(all_threads, bool):
@@ -267,6 +314,19 @@ def record_object(record: CommandRecord) -> dict[str, object]:  # noqa: C901 app
             "topic_updated_ts": _optional_message_id(record.topic_updated_ts),
             "topic_updated_by_id": record.topic_updated_by_id,
             "topic_updated_by_name": record.topic_updated_by_name,
+        }
+    if isinstance(record, SearchHit):
+        return {
+            "channel": record.channel,
+            "from": record.from_name,
+            "from_id": record.from_id,
+            "kind": record.kind,
+            "members": list(record.members) if record.members is not None else None,
+            "parent": record.parent,
+            "text": record.text,
+            "thread": record.thread,
+            "thread_kind": record.thread_kind,
+            "ts": format_message_id(record.ts),
         }
     thread: dict[str, object] = {
         "kind": record.kind,

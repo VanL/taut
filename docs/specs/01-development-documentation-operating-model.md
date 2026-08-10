@@ -466,8 +466,9 @@ replacement leaves the spec byte-for-byte unchanged.
 | `[RUFF-SUP-080]` | `LOG001` | `1` directive; raw: `LOG001=1` | Formatter-test logging remains isolated from the process-global logger registry and pre-existing handlers | Exact formatter and bootstrap test | `getLogger`, which adds global registry state to a unit test | Independent review passed; user-approved exact fields 2026-08-05. |
 | `[RUFF-SUP-081]` | `PYI041` | `1` directive; raw: `PYI041=1` | The live-harness helper explicitly mirrors the complete `JSONPrimitive` vocabulary, including both `int` and `float` | `SummonStatus` construction, live-harness tests, and static typing | Dropping `int` through numeric-tower compatibility, which makes the runtime data vocabulary less clear | Independent review passed; user-approved exact fields 2026-08-05. |
 | `[RUFF-SUP-082]` | `BLE001` | `2` directives; raw: `BLE001=2` | Search invalidation enqueue is auxiliary derived work and must not turn any backend or broker failure into a failed committed source mutation | Search source-success fault injection, CLI warning, and reconciliation tests | Guessing backend exception classes or allowing index availability to own chat-write success | Search plan independently reviewed; user-authorized implementation 2026-08-06. |
+| `[RUFF-SUP-083]` | `BLE001` | `1` directive; raw: `BLE001=1` | MCP search translates an unenumerable provider or index failure to its fixed no-detail public error while preserving established Taut and argument errors | Search provider exception-classification tests and real stdio search proof | Guessing provider exception classes, leaking backend details, or broadening translation to every MCP command | Search plan and implementation independently reviewed; user-authorized implementation 2026-08-10. |
 
-Global raw-`noqa` inventory: `BLE001=91`, `C901=38`, `DTZ006=1`, `F401=1`, `FLY002=16`, `FURB122=1`, `LOG001=1`, `N999=6`, `PYI041=1`, `RUF015=2`, `SIM115=3`, `SIM117=7`, `TRY004=15`
+Global raw-`noqa` inventory: `BLE001=92`, `C901=38`, `DTZ006=1`, `F401=1`, `FLY002=16`, `FURB122=1`, `LOG001=1`, `N999=6`, `PYI041=1`, `RUF015=2`, `SIM115=3`, `SIM117=7`, `TRY004=15`
 
 <!-- BEGIN GENERATED RUFF SUPPRESSION INDEX -->
 | Group | Locations | Directives | Raw diagnostics |
@@ -528,6 +529,7 @@ Global raw-`noqa` inventory: `BLE001=91`, `C901=38`, `DTZ006=1`, `F401=1`, `FLY0
 | `[RUFF-SUP-080]` | `extensions/taut_summon/tests/test_summon_cli.py::test_summon_logging_formatter_escapes_messages_and_bootstraps_safely` | 1 | `LOG001=1` |
 | `[RUFF-SUP-081]` | `extensions/taut_summon/tests/test_live_harness.py::_status_with_details` | 1 | `PYI041=1` |
 | `[RUFF-SUP-082]` | `taut/client/_base.py::_ClientBase._enqueue_search_message`; `taut/client/_base.py::_ClientBase._enqueue_search_thread_rename` | 2 | `BLE001=2` |
+| `[RUFF-SUP-083]` | `extensions/taut_mcp/taut_mcp/_commands.py::execute_command` | 1 | `BLE001=1` |
 <!-- END GENERATED RUFF SUPPRESSION INDEX -->
 
 ## 11. Independent Review Workflow [DOM-11]

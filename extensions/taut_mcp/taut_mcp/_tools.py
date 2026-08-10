@@ -15,6 +15,7 @@ CHAT_OR_DM_PATTERN = (
     r"|@[A-Za-z0-9][A-Za-z0-9_-]{0,63}"
     r"|dm\.d_[a-z2-7]{26})$"
 )
+DM_SELECTOR_PATTERN = r"^(?:@[A-Za-z0-9][A-Za-z0-9_-]{0,63}|dm\.d_[a-z2-7]{26})$"
 MEMBER_NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
 REACTION_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,31}$"
 MESSAGE_ID_PATTERN = r"^[0-9]{19}$"
@@ -85,6 +86,7 @@ RECORD_TYPE_BY_TOOL = {
     "read": "message",
     "inbox": "notification",
     "log": "message",
+    "search": "search_hit",
     "list": "thread",
     "channel_show": "channel",
     "channel_topic": "channel",
@@ -383,6 +385,95 @@ _RECORD_SCHEMAS["thread"] = {
 }
 
 
+def _search_hit_branch(thread_kind: str) -> dict[str, Any]:
+    channel: dict[str, Any]
+    parent: dict[str, Any]
+    members: dict[str, Any]
+    if thread_kind == "channel":
+        channel = {
+            "description": "Top-level channel containing the hit.",
+            "type": "string",
+        }
+        parent = {
+            "description": "Top-level channel name for sub-thread hits only.",
+            "type": "null",
+        }
+        members = {
+            "description": "Sorted stable member-id pair for direct-message hits only.",
+            "type": "null",
+        }
+    elif thread_kind == "subthread":
+        channel = {
+            "description": "Top-level channel containing the hit.",
+            "type": "string",
+        }
+        parent = {
+            "description": "Top-level channel name containing the sub-thread hit.",
+            "type": "string",
+        }
+        members = {
+            "description": "Sorted stable member-id pair for direct-message hits only.",
+            "type": "null",
+        }
+    else:
+        channel = {
+            "description": "Top-level channel containing channel or sub-thread hits only.",
+            "type": "null",
+        }
+        parent = {
+            "description": "Top-level channel name for sub-thread hits only.",
+            "type": "null",
+        }
+        members = {
+            "description": "Sorted stable member-id pair for this direct-message hit.",
+            "items": {"type": "string"},
+            "maxItems": 2,
+            "minItems": 2,
+            "type": "array",
+        }
+    properties: dict[str, Any] = {
+        "thread": {
+            "description": "Canonical Taut thread containing the hit.",
+            "type": "string",
+        },
+        "ts": _message_id("Taut message timestamp/id."),
+        "from_id": {
+            "description": "Immutable author member id when available.",
+            **_nullable("string"),
+        },
+        "from": {"description": "Write-time author display name.", "type": "string"},
+        "kind": {
+            "description": "Taut message kind.",
+            "enum": ["message", "notice", "foreign"],
+            "type": "string",
+        },
+        "text": {"description": "Exact hydrated message body.", "type": "string"},
+        "thread_kind": {
+            "const": thread_kind,
+            "description": "Taut thread facet for this hit.",
+            "type": "string",
+        },
+        "channel": channel,
+        "parent": parent,
+        "members": members,
+    }
+    return {
+        "additionalProperties": False,
+        "properties": properties,
+        "required": list(properties),
+        "type": "object",
+    }
+
+
+_RECORD_SCHEMAS["search_hit"] = {
+    "oneOf": [
+        _search_hit_branch("channel"),
+        _search_hit_branch("subthread"),
+        _search_hit_branch("dm"),
+    ]
+}
+
+
 def _result_schema(record_type: str) -> dict[str, Any]:
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -539,6 +630,13 @@ _LIMIT_100 = {
 _LIMIT_1000 = {
     "default": 1000,
     "description": LIMIT_DESCRIPTION + " Defaults to 1,000.",
+    "maximum": 1000,
+    "minimum": 1,
+    "type": "integer",
+}
+_LIMIT_50 = {
+    "default": 50,
+    "description": LIMIT_DESCRIPTION + " Defaults to 50.",
     "maximum": 1000,
     "minimum": 1,
     "type": "integer",
@@ -782,6 +880,64 @@ TOOL_DEFINITIONS = (
         ("workspace", "thread"),
         _annotations(
             read_only=True,
+            destructive=False,
+            idempotent=True,
+            open_world=True,
+        ),
+    ),
+    ToolDefinition(
+        "search",
+        "Search actor-visible Taut history without moving chat cursors, claiming notifications, or touching member activity. The call may reconcile disposable derived index state; reindex=true rebuilds it. Backend tokenization and ranking may differ.",
+        {
+            "workspace": _WORKSPACE,
+            "query": {
+                "description": "Required nonblank Unicode search query; core normalization, length, and token rules remain authoritative.",
+                "minLength": 1,
+                "type": "string",
+            },
+            "channels": {
+                "default": [],
+                "description": "Optional channel-name filters. Duplicates are accepted and collapse in core.",
+                "items": {"pattern": CHANNEL_PATTERN, "type": "string"},
+                "type": "array",
+            },
+            "direct_messages": {
+                "default": [],
+                "description": "Optional @name-or-alias or stable dm.d_* direct-message filters. Duplicates are accepted and collapse in core.",
+                "items": {"pattern": DM_SELECTOR_PATTERN, "type": "string"},
+                "type": "array",
+            },
+            "all_direct_messages": {
+                "default": False,
+                "description": "Select every actor-accessible direct message in addition to explicit selectors. Defaults to false.",
+                "type": "boolean",
+            },
+            "from_member": _nullable_string(
+                "Optional current member name or alias used as an author filter. Null means no author filter.",
+                pattern=MEMBER_NAME_PATTERN,
+            ),
+            "kinds": {
+                "default": [],
+                "description": "Optional message-kind filters. Duplicates are accepted and collapse in core.",
+                "items": {
+                    "enum": ["message", "notice", "foreign"],
+                    "type": "string",
+                },
+                "type": "array",
+            },
+            "before": _nullable_message_id(
+                "Optional exclusive upper message-id bound as a canonical 19-digit decimal string. Null means no upper bound."
+            ),
+            "limit": _LIMIT_50,
+            "reindex": {
+                "default": False,
+                "description": "Rebuild disposable search index state before querying. Defaults to false.",
+                "type": "boolean",
+            },
+        },
+        ("workspace", "query"),
+        _annotations(
+            read_only=False,
             destructive=False,
             idempotent=True,
             open_world=True,

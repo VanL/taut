@@ -1,14 +1,26 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
 import taut_mcp._process_reactor as process_reactor
 from taut import TautClient
+from taut.commands._builtins import BUILTIN_SPECS
+from taut.commands._protocol import CommandArgumentParser
+from taut.commands.channel import create_command as create_channel_command
+from taut.commands.message import create_command as create_message_command
+from taut.commands.set import create_command as create_set_command
 from taut_mcp._process_reactor import ProcessReactor
-from taut_mcp._tools import TOOLS, ToolValidationError, validate_tool_call
+from taut_mcp._tools import DOMAIN_TOOL_NAMES as MANIFEST_DOMAIN_TOOL_NAMES
+from taut_mcp._tools import (
+    TOOLS,
+    ToolValidationError,
+    validate_tool_call,
+)
 from taut_mcp._workspace_reactor import RunWorkspaceCommand, WorkspaceControl
 
 DOMAIN_TOOL_NAMES = {
@@ -26,6 +38,7 @@ DOMAIN_TOOL_NAMES = {
     "read",
     "reply",
     "say",
+    "search",
     "set_name",
     "who",
     "whoami",
@@ -61,10 +74,86 @@ DOMAIN_TOOL_ARGUMENTS: dict[str, dict[str, object]] = {
     "read": {"thread": "general", "limit": 1},
     "reply": {"thread": "general", "text": "lazy reply"},
     "say": {"target": "general", "text": "lazy say"},
+    "search": {
+        "query": "hello",
+        "channels": ["general"],
+        "direct_messages": [],
+        "all_direct_messages": False,
+        "from_member": None,
+        "kinds": [],
+        "before": None,
+        "limit": 50,
+        "reindex": False,
+    },
     "set_name": {"name": "renamed"},
     "who": {"thread": "general"},
     "whoami": {},
 }
+
+CLI_CAPABILITY_TO_MCP_TOOL = {
+    ("join",): "join",
+    ("leave",): "leave",
+    ("set", "name"): "set_name",
+    ("say",): "say",
+    ("reply",): "reply",
+    ("message", "show"): "message_show",
+    ("message", "delete"): "message_delete",
+    ("message", "react"): "message_react",
+    ("read",): "read",
+    ("inbox",): "inbox",
+    ("log",): "log",
+    ("search",): "search",
+    ("list",): "list",
+    ("channel", "show"): "channel_show",
+    ("channel", "topic"): "channel_topic",
+    ("channel", "rename"): "channel_rename",
+    ("who",): "who",
+    ("whoami",): "whoami",
+}
+INTENTIONALLY_UNEXPOSED_CLI_COMMANDS = {"init", "rejoin", "system", "watch"}
+
+
+def _nested_cli_capabilities(
+    root: str,
+    factory: Callable[[], Any],
+) -> set[tuple[str, ...]]:
+    parser = CommandArgumentParser(prog=f"taut {root}")
+    command = factory()
+    command.configure_parser(parser)
+    choices = next(
+        cast(dict[str, object], action.choices)
+        for action in parser._actions
+        if getattr(action, "choices", None) is not None
+    )
+    return {(root, str(operation)) for operation in choices}
+
+
+def test_every_supported_cli_capability_has_exactly_one_mcp_tool() -> None:
+    """[MCP-5] CLI/MCP parity is structural, not a brittle count."""
+
+    nested_factories = {
+        "set": create_set_command,
+        "message": create_message_command,
+        "channel": create_channel_command,
+    }
+    builtin_names = {spec.name for spec in BUILTIN_SPECS}
+    simple_names = {
+        capability[0]
+        for capability in CLI_CAPABILITY_TO_MCP_TOOL
+        if len(capability) == 1
+    }
+    assert builtin_names == (
+        simple_names | set(nested_factories) | INTENTIONALLY_UNEXPOSED_CLI_COMMANDS
+    )
+
+    discovered: set[tuple[str, ...]] = {(name,) for name in simple_names}
+    for root, factory in nested_factories.items():
+        discovered.update(_nested_cli_capabilities(root, factory))
+    assert discovered == set(CLI_CAPABILITY_TO_MCP_TOOL)
+
+    mapped_tools = set(CLI_CAPABILITY_TO_MCP_TOOL.values())
+    assert len(mapped_tools) == len(CLI_CAPABILITY_TO_MCP_TOOL)
+    assert mapped_tools == DOMAIN_TOOL_NAMES == MANIFEST_DOMAIN_TOOL_NAMES
 
 
 def _valid_rate_probe_arguments(
@@ -274,6 +363,74 @@ def test_domain_command_envelope_excludes_mcp_identity_fields(
             assert dict(commands[0].arguments) == {}
             assert "workspace" not in dict(commands[0].arguments)
             assert "token" not in dict(commands[0].arguments)
+        finally:
+            await reactor.aclose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(20)
+def test_search_selector_arrays_are_frozen_before_child_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[MCP-5]/[SRCH-5.4] Mutable JSON arrays never cross the owner boundary."""
+
+    workspace, token = _workspace(tmp_path)
+
+    async def scenario() -> None:
+        reactor = ProcessReactor(asyncio.get_running_loop())
+        commands: list[RunWorkspaceCommand] = []
+        try:
+            attached = await reactor.attach_workspace(str(workspace), token)
+            canonical = str(attached["workspace"])
+            real_send = process_reactor._Owner.send
+
+            def audited_send(
+                owner: process_reactor._Owner,
+                control: WorkspaceControl,
+            ) -> None:
+                if isinstance(control, RunWorkspaceCommand):
+                    commands.append(control)
+                    return
+                real_send(owner, control)
+
+            monkeypatch.setattr(process_reactor._Owner, "send", audited_send)
+            channels = ["general"]
+            direct_messages = ["@selected"]
+            kinds = ["message"]
+            pending = asyncio.create_task(
+                reactor._execute_ready_tool(
+                    canonical,
+                    "search",
+                    {
+                        "query": "hello",
+                        "channels": channels,
+                        "direct_messages": direct_messages,
+                        "kinds": kinds,
+                    },
+                )
+            )
+            for _ in range(100):
+                if commands:
+                    break
+                await asyncio.sleep(0.01)
+            assert len(commands) == 1
+            frozen = dict(commands[0].arguments)
+            assert frozen["channels"] == ("general",)
+            assert frozen["direct_messages"] == ("@selected",)
+            assert frozen["kinds"] == ("message",)
+            assert all(not isinstance(value, list) for value in frozen.values())
+
+            channels.append("other")
+            direct_messages.clear()
+            kinds.append("notice")
+            assert dict(commands[0].arguments) == frozen
+
+            pending.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await pending
         finally:
             await reactor.aclose()
 

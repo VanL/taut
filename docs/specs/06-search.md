@@ -21,13 +21,18 @@ This spec governs query semantics, visible scope, result data, derived index
 state, deferred indexing, crash recovery, reconciliation, backend interface
 parity, and verification.
 
+The optional `taut-mcp` extension exposes the same operation as its explicit
+`search` tool under [MCP-5]. That adapter delegates one `TautClient.search`
+call and inherits this specification's query, visibility, hydration,
+reconciliation, result, and backend-quality contracts. It adds no search
+language, ranking rule, or retry.
+
 Out of scope for the first version:
 
 - fuzzy, semantic, vector, regular-expression, prefix, and raw backend-query
   syntax
 - aggregate facet counts, saved searches, alerts, and search subscriptions
 - attachment or file indexing
-- an MCP search tool; adding one requires an explicit [MCP-*] spec revision
 - a resident search daemon or a required long-running service
 - authentication or a new authorization model
 
@@ -314,6 +319,16 @@ escaped thread/DM label, author, full message ID when `--timestamps` is set, and
 a bounded escaped excerpt around the first matched token. Excerpt generation
 uses the hydrated body and the public terminal-text policy. Human excerpt
 layout is not a stable contract.
+
+### [SRCH-5.4] MCP surface
+
+MCP accepts the [SRCH-5.2] arguments as named fields. JSON arrays are copied
+to immutable string tuples before process transfer. A successful call returns
+zero or more `search_hit` records whose fields are exactly [SRCH-5.3]'s JSON
+fields. `ts` is a canonical 19-digit decimal string. Empty search is ordinary
+success with no records. Search is cursor-, notification-, and member-activity
+neutral, but it may reconcile disposable index state and `reindex=true`
+rebuilds that state.
 
 ## 6. Projection and Physical Index [SRCH-6]
 
@@ -753,6 +768,13 @@ requires a firing test. At minimum, real SQLite and PostgreSQL tests prove:
 - PostgreSQL initialization issues no `CREATE EXTENSION` statement and works
   for a role that can create ordinary schema objects but cannot install server
   extensions
+- the [MCP-5] adapter accepts every public scope/filter argument, freezes
+  selector arrays before process transfer, delegates exactly one
+  `TautClient.search` call, emits [SRCH-5.3]'s exact external record fields and
+  string IDs, returns a typed empty success for no matches, preserves cursor,
+  activity, and notification state, and exercises reconciliation and rebuild
+  through real SQLite and PostgreSQL providers without requiring identical
+  backend-native Unicode hit sets
 
 Do not mock SimpleBroker move/delete/peek, the provider database, source
 hydration, process launch integration, or DM state in the tests that claim
@@ -773,6 +795,9 @@ Operational acceptance records, without turning host timing into CI truth:
 
 ## Related Plans
 
+- `docs/plans/2026-08-10-mcp-search-plan.md` — exposes this operation through
+  one explicit MCP tool while preserving core-owned semantics and backend-
+  native lexical quality.
 - `docs/plans/2026-08-10-simplebroker-7-json-id-boundary-plan.md` — formats
   public search hit ids while preserving numeric internal work items.
 - `docs/plans/2026-08-07-taut-dump-load-plan.md` defines search exclusion and

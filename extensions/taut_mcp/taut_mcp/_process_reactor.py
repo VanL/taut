@@ -20,6 +20,7 @@ from taut import Notification
 
 from ._commands import (
     RECORD_TYPE_BY_TOOL,
+    CommandArguments,
     CommandScalar,
     record_object,
 )
@@ -78,6 +79,19 @@ CLAUDE_CHANNEL_FAILURE = "taut-mcp: Claude channel wake failed; continuing"
 WORKSPACE_REACTOR_FAILURE_DIAGNOSTIC = (
     "taut-mcp: workspace reactor failed; detach and reattach"
 )
+
+
+def _freeze_command_arguments(arguments: dict[str, object]) -> CommandArguments:
+    frozen: list[tuple[str, CommandScalar]] = []
+    for key, value in arguments.items():
+        if isinstance(value, list):
+            if not all(isinstance(item, str) for item in value):
+                raise AssertionError("validated command arrays require strings")
+            command_value: CommandScalar = tuple(value)
+        else:
+            command_value = cast(CommandScalar, value)
+        frozen.append((key, command_value))
+    return tuple(frozen)
 
 
 class WorkspaceToolError(Exception):
@@ -585,9 +599,7 @@ class ProcessReactor:
         if entry.active_command_id is not None:
             raise WorkspaceToolError(WORKSPACE_BUSY)
 
-        frozen = tuple(
-            (key, cast(CommandScalar, value)) for key, value in arguments.items()
-        )
+        frozen = _freeze_command_arguments(arguments)
 
         command_id = self._next_command_id
         self._next_command_id += 1

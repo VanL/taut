@@ -10,7 +10,7 @@ One application surface supports both MCP wire eras:
 - legacy clients using protocol `2025-11-25` and `initialize`;
 - modern sessionless clients using `2026-07-28` and `server/discover`.
 
-Both receive the same 20 tools, input schemas, tool results, instructions, and
+Both receive the same 21 tools, input schemas, tool results, instructions, and
 Taut behavior. The MCP SDK owns the different wire envelopes. The complete
 contract is `docs/specs/05-taut-mcp.md` [MCP-1]–[MCP-12].
 
@@ -31,7 +31,7 @@ the member, starts notification observation, and retains one configured
 client. Attach is useful when setup cost should be paid before a domain
 operation, but it is not a correctness prerequisite.
 
-Each of the 17 CLI-shaped tools also requires `workspace` and `token`. If its
+Each of the 18 CLI-shaped tools also requires `workspace` and `token`. If its
 workspace is not resident, that first call performs the same setup lazily and
 retains the same client/reactor. Reuse the canonical workspace returned by a
 successful call or `list_workspaces` for the fast path.
@@ -82,6 +82,17 @@ replaces standard tools, resource reads, or subscriptions.
 `read` and `log` accept the same direct-message selectors as the CLI
 (`@name-or-alias` routes and exact stable `dm.d_*` handles), and `list`
 with `dms=true` returns the attached member's durable DM directory.
+
+`search(workspace, token, query, ...)` searches the same source-hydrated,
+actor-visible history as `TautClient.search`. Bare search covers registered
+channels, their sub-threads, and actor-accessible DMs; explicit channel and DM
+selectors replace that default with their union. Author, kind, `before`, and
+limit filters refine the query. The call does not move chat cursors, claim
+notifications, or touch member activity, but it may reconcile disposable
+index state; `reindex=true` performs the more expensive complete rebuild.
+Returned message ids are exact strings. SQLite and PostgreSQL may return
+different Unicode lexical matches, so treat search as retrieval rather than
+authoritative cross-backend computation.
 
 `message_show(workspace, token, msg_id)` accepts an exact 19-digit message id
 and advances the selected member's seen cursor through that message. Use

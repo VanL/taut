@@ -5,7 +5,8 @@
 This note explains why Taut search is a disposable, source-hydrated view and
 where its backend, queue, and freshness boundaries live. The intended behavior
 is governed by `docs/specs/06-search.md` [SRCH-1] through [SRCH-12]. The
-delivery record is `docs/plans/2026-08-06-taut-search-plan.md`.
+core delivery record is `docs/plans/2026-08-06-taut-search-plan.md`; the MCP
+adapter record is `docs/plans/2026-08-10-mcp-search-plan.md`.
 
 ## Ownership and Boundaries
 
@@ -15,6 +16,15 @@ claim timeout, reconciliation, and result facets. These rules live in
 `taut/client/_searching.py` and `taut/search/`. The CLI adapter in
 `taut/commands/search.py` parses and renders only; it delegates semantics to
 `TautClient.search()`.
+
+The optional MCP adapter follows the same boundary. Its manifest validates
+named JSON fields, the process reactor copies selector arrays to tuples, and
+the child dispatcher supplies defaults and calls `TautClient.search()` once.
+It adds no query grammar, post-filter, rank rule, retry, or provider branch.
+Its explicit `SearchHit` projection converts the domain timestamp to a
+19-digit string and emits the same ten public facets through closed channel,
+subthread, and DM result branches. An empty core result becomes an ordinary
+empty `search_hit` envelope.
 
 The SQLite physical provider lives in core at `taut/search/_sqlite.py` because
 FTS5 is part of the default runtime. PostgreSQL SQL lives only in
@@ -51,7 +61,10 @@ Every Taut-authored source write, delete, or completed channel rename enqueues
 one content-free invalidation in `taut.search_index`. Indexing never runs in
 the source mutation. Enqueue failure leaves the source result successful and
 adds a warning to `TautClient.last_search_warnings`; CLI source commands emit
-that warning on stderr unless quiet.
+that warning on stderr unless quiet. The MCP child clears notification and
+search warnings before every domain command, then returns notification
+warnings before search warnings. Warning delivery never changes the successful
+source result and cannot leak into a later operation.
 
 Workers claim one row by exact broker move into
 `taut.search_index.claimed`, then publish a unique lease in
@@ -97,6 +110,14 @@ Behavioral proof is split by owner:
   scope, hydration, filters, reconciliation, warnings, and rendering.
 - `extensions/taut_pg/tests/test_pg_search_provider.py` runs the corresponding
   physical provider proof against real PostgreSQL.
+- `extensions/taut_mcp/tests/test_tools.py` covers the adapter boundary against
+  real SQLite, including facets, state neutrality, warnings, provider errors,
+  empty success, reindex, and cancellation.
+- `extensions/taut_mcp/tests/test_stdio_server.py` covers canonical MCP framing
+  and exact discovery in both protocol eras.
+- `extensions/taut_mcp/tests/test_pg_conformance.py` compares the MCP result to
+  direct `TautClient.search()` over real PostgreSQL while leaving Unicode
+  lexical behavior backend-native.
 
 Operators should treat growing pending/claimed depth, a claimed row older than
 60 seconds, repeat failed envelopes for well-formed work, rebuild failure, or
@@ -110,3 +131,8 @@ completed rename-marker name reuse can transiently misdirect old work until
 reconciliation; and SQLite common-term lookup materializes each term's match
 set before intersection. These affect transient recall or memory, not source
 truth, access control, or stale-positive prevention.
+
+## Related Plans
+
+- `docs/plans/2026-08-10-mcp-search-plan.md`
+- `docs/plans/2026-08-06-taut-search-plan.md`

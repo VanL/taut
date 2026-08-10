@@ -441,6 +441,7 @@ class _WorkspaceReactor:
         if self.client is None:
             raise AssertionError("ready workspace requires a client")
         self.client.last_notification_warnings.clear()
+        self.client.last_search_warnings.clear()
         command_records: tuple[CommandRecord, ...] = ()
         command_error: str | None = None
         try:
@@ -475,7 +476,10 @@ class _WorkspaceReactor:
                 command.name,
                 command_record_type,
                 command_records,
-                tuple(self.client.last_notification_warnings),
+                (
+                    *self.client.last_notification_warnings,
+                    *self.client.last_search_warnings,
+                ),
                 self.previous_snapshot,
                 self.previous_truncated,
                 error=command_error,
