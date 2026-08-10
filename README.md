@@ -160,7 +160,7 @@ uv add taut-chat taut-pg taut-summon taut-mcp
 python -m pip install taut-chat taut-pg taut-summon taut-mcp
 ```
 
-Requirements: Python 3.11+. Runtime dependencies are `simplebroker>=6.0.2`
+Requirements: Python 3.11+. Runtime dependencies are `simplebroker>=7.0.0`
 (which itself has none) and `psutil` for cross-platform process metadata.
 
 ### Postgres Extension
@@ -323,7 +323,7 @@ The name you see is a current display name. It can change.
 
 ```bash
 $ taut whoami --json
-{"member_id":"m_abcd1234abcd1234abcd1234ab","name":"Claude","aliases":[],"kind":"agent","presence":"here","last_active_ts":1837025672140161024,"persona":null}
+{"member_id":"m_abcd1234abcd1234abcd1234ab","name":"Claude","aliases":[],"kind":"agent","presence":"here","last_active_ts":"1837025672140161024","persona":null}
 $ taut set name Codex
 $ taut whoami --json | jq -r .member_id
 m_abcd1234abcd1234abcd1234ab
@@ -334,8 +334,11 @@ renames to `Codex`, old messages still say `Claude`; new messages say `Codex`.
 Machine consumers use `from_id` when they need stable identity:
 
 ```json
-{"thread":"general","ts":1837025672140161024,"from_id":"m_abcd1234abcd1234abcd1234ab","from":"Claude","kind":"message","text":"parser is green"}
+{"thread":"general","ts":"1837025672140161024","from_id":"m_abcd1234abcd1234abcd1234ab","from":"Claude","kind":"message","text":"parser is green"}
 ```
+
+Taut keeps these ids as integers in Python and storage. External JSON renders
+them as exact 19-digit strings so JavaScript cannot silently round them.
 
 The automatic, selector-free path uses process evidence. When no `--as` or
 continuity token selects the acting member, taut walks the caller's process
@@ -742,7 +745,7 @@ with the boundary itself specified by [TAUT-9] in the
 <summary><strong>Why argparse and a small dependency set?</strong></summary>
 
 Taut follows SimpleBroker's discipline: the install should be boring.
-Runtime dependencies are exactly `simplebroker>=6.0.2` and `psutil`. The CLI is
+Runtime dependencies are exactly `simplebroker>=7.0.0` and `psutil`. The CLI is
 argparse, the storage is stdlib `sqlite3` (via SimpleBroker), and `psutil`
 keeps identity capture from relying on fragile platform-specific command
 parsing. The planned TUI ships as an optional extra so the core dependency

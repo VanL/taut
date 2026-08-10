@@ -17,6 +17,8 @@ CHAT_OR_DM_PATTERN = (
 )
 MEMBER_NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
 REACTION_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,31}$"
+MESSAGE_ID_PATTERN = r"^[0-9]{19}$"
+MAX_SAFE_JSON_INTEGER = (1 << 53) - 1
 
 ATTACH_WORKSPACE_DESCRIPTION = (
     "Absolute local directory containing an existing Taut project. The server "
@@ -101,6 +103,24 @@ def _nullable(kind: str) -> dict[str, Any]:
     return {"anyOf": [{"type": kind}, {"type": "null"}]}
 
 
+def _message_id(description: str) -> dict[str, Any]:
+    return {
+        "description": description,
+        "pattern": MESSAGE_ID_PATTERN,
+        "type": "string",
+    }
+
+
+def _nullable_message_id(description: str) -> dict[str, Any]:
+    return {
+        "anyOf": [
+            {"pattern": MESSAGE_ID_PATTERN, "type": "string"},
+            {"type": "null"},
+        ],
+        "description": description,
+    }
+
+
 _RECORD_SCHEMAS: dict[str, dict[str, Any]] = {
     "workspace": {
         "additionalProperties": False,
@@ -150,7 +170,7 @@ _RECORD_SCHEMAS: dict[str, dict[str, Any]] = {
                 "description": "Taut channel, sub-thread, or direct-message queue.",
                 "type": "string",
             },
-            "ts": {"description": "Taut message timestamp/id.", "type": "integer"},
+            "ts": _message_id("Taut message timestamp/id."),
         },
         "required": ["from", "from_id", "kind", "text", "thread", "ts"],
         "type": "object",
@@ -166,10 +186,7 @@ _RECORD_SCHEMAS: dict[str, dict[str, Any]] = {
                 "description": "Taut thread from which the message was deleted.",
                 "type": "string",
             },
-            "ts": {
-                "description": "Deleted Taut message timestamp/id.",
-                "type": "integer",
-            },
+            "ts": _message_id("Deleted Taut message timestamp/id."),
         },
         "required": ["thread", "ts", "deleted"],
         "type": "object",
@@ -185,10 +202,7 @@ _RECORD_SCHEMAS: dict[str, dict[str, Any]] = {
                 "minimum": 1,
                 "type": "integer",
             },
-            "message_ts": {
-                "description": "Reacted-to Taut message timestamp/id.",
-                "type": "integer",
-            },
+            "message_ts": _message_id("Reacted-to Taut message timestamp/id."),
             "reaction": {
                 "description": "Configured reaction slug sent by the actor.",
                 "type": "string",
@@ -220,10 +234,9 @@ _RECORD_SCHEMAS: dict[str, dict[str, Any]] = {
                 "description": "Reaction slug for a reaction notification.",
                 "type": "string",
             },
-            "message_ts": {
-                "description": "Related message timestamp/id when available.",
-                **_nullable("integer"),
-            },
+            "message_ts": _nullable_message_id(
+                "Related message timestamp/id when available."
+            ),
             "thread": {
                 "description": "Related Taut thread when available.",
                 **_nullable("string"),
@@ -253,10 +266,9 @@ _RECORD_SCHEMAS: dict[str, dict[str, Any]] = {
                 "type": "array",
             },
             "kind": {"description": "Taut member record kind.", "type": "string"},
-            "last_active_ts": {
-                "description": "Most recent recorded member activity timestamp.",
-                "type": "integer",
-            },
+            "last_active_ts": _message_id(
+                "Most recent recorded member activity timestamp."
+            ),
             "member_id": {
                 "description": "Immutable Taut member id.",
                 "type": "string",
@@ -293,10 +305,9 @@ _RECORD_SCHEMAS: dict[str, dict[str, Any]] = {
                 "description": "Current exact channel topic, or null.",
                 **_nullable("string"),
             },
-            "topic_updated_ts": {
-                "description": "Topic update timestamp/id, or null.",
-                **_nullable("integer"),
-            },
+            "topic_updated_ts": _nullable_message_id(
+                "Topic update timestamp/id, or null."
+            ),
             "topic_updated_by_id": {
                 "description": "Immutable topic author member id, or null.",
                 **_nullable("string"),
@@ -330,10 +341,7 @@ def _thread_branch(
             "description": "Taut thread kind.",
             "type": "string",
         },
-        "last_ts": {
-            "description": "Latest message timestamp/id when one exists.",
-            **_nullable("integer"),
-        },
+        "last_ts": _nullable_message_id("Latest message timestamp/id when one exists."),
         "parent": {
             "description": "Parent message id for a sub-thread, otherwise null.",
             **_nullable("string"),
@@ -519,7 +527,7 @@ _CHAT = _string(CHAT_DESCRIPTION, pattern=CHAT_PATTERN)
 _CHAT_OR_DM = _string(CHAT_OR_DM_DESCRIPTION, pattern=CHAT_OR_DM_PATTERN)
 _EXACT_MESSAGE_ID = _string(
     EXACT_MESSAGE_ID_DESCRIPTION,
-    pattern=r"^[0-9]{19}$",
+    pattern=MESSAGE_ID_PATTERN,
 )
 _LIMIT_100 = {
     "default": 100,
@@ -755,11 +763,15 @@ TOOL_DEFINITIONS = (
             "since": {
                 "anyOf": [
                     {"type": "string"},
-                    {"type": "integer"},
+                    {
+                        "maximum": MAX_SAFE_JSON_INTEGER,
+                        "minimum": -MAX_SAFE_JSON_INTEGER,
+                        "type": "integer",
+                    },
                     {"type": "null"},
                 ],
                 "default": None,
-                "description": "Exclusive history lower bound: ISO 8601, Unix seconds/milliseconds/nanoseconds, or a native 19-digit message id. Null means no lower bound; used only by log.",
+                "description": "Exclusive history lower bound: ISO 8601, Unix seconds/milliseconds/nanoseconds, or a native 19-digit message id. Values outside the JSON-safe integer range must be strings. Null means no lower bound; used only by log.",
             },
             "limit": {
                 **_LIMIT_100,

@@ -2441,8 +2441,8 @@ def test_registry_say_posts_json_through_real_client(tmp_path: Path) -> None:
     records = [json.loads(line) for line in stdout.getvalue().splitlines()]
     message_record = records[-1]
     timestamp = message_record.pop("ts")
-    assert isinstance(timestamp, int)
-    assert len(str(timestamp)) == 19
+    assert isinstance(timestamp, str)
+    assert len(timestamp) == 19
     assert message_record == {
         "thread": "general",
         "from_id": message_record["from_id"],
@@ -3819,7 +3819,7 @@ def test_registry_inbox_claims_pointers_keeps_source_and_renders_human_actions(
     assert result == 0, err
     notification = json.loads(out)
     assert notification["type"] == "mention"
-    assert notification["message_ts"] == first.ts
+    assert notification["message_ts"] == str(first.ts)
 
     result, out, err = _dispatch_static([*root, "--json"])
     assert result == 2

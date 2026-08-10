@@ -534,6 +534,11 @@ Notification queue bodies are JSON objects:
 }
 ```
 
+This is an internal stored broker body, so `message_ts` remains a JSON integer
+and decodes strictly to a Python integer. Rendering the same pointer through
+CLI or MCP output applies [TAUT-3.5] and emits a canonical 19-digit string.
+The stored body is never rewritten merely because it uses JSON syntax.
+
 Fields by notification type:
 
 | Field | Meaning |
@@ -686,11 +691,12 @@ normalized from `rename` without an alias.
 Taut must use a public SimpleBroker queue-rename API for broker queue renames.
 Taut must not update SimpleBroker-owned message tables directly.
 
-Taut requires `simplebroker>=6.0.2` and `taut-pg` requires
-`simplebroker-pg>=3.5.1`. This compatible pair preserves the atomic write ids,
+Taut requires `simplebroker>=7.0.0` and `taut-pg` requires
+`simplebroker-pg>=3.5.2`. This compatible pair preserves the atomic write ids,
 rename-capable backend handshake, persistent-reactor ownership, live
 activity-waiter replacement, interruptible watcher bootstrap, corrected
-runner cleanup, and timestamp-conflict metrics on which rename relies. The
+runner cleanup, timestamp-conflict metrics, and supported exact-id formatting
+contract on which rename relies. The
 6.0.0 command-layer binding change does not affect rename because Taut uses
 `simplebroker.open_broker(...).rename_queue(...)`, not
 `simplebroker.commands`. The implementation must use
@@ -865,6 +871,8 @@ Required proofs:
 
 ## Related Plans
 
+- `docs/plans/2026-08-10-simplebroker-7-json-id-boundary-plan.md` — separates
+  internal numeric notification bodies from exact-string public JSON output.
 - `docs/plans/2026-08-06-taut-search-plan.md` — search internal queues,
   actor-scoped DM visibility, and cursor-neutral candidate hydration.
 - `docs/plans/2026-07-31-simplebroker-6-reconciliation-plan.md` —

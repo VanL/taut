@@ -18,6 +18,7 @@ from simplebroker import (
     BrokerTarget,
     Queue,
     dump_lines,
+    format_message_id,
     load_lines,
     open_broker,
     resolve_broker_target,
@@ -30,7 +31,14 @@ from taut.client._models import DumpReport, LoadReport, PersistenceComponentRepo
 from taut.state import SqlSidecarTautState, dialect_for_taut_target
 
 from ._components import RegisteredPersistenceComponent, discover_components
-from ._format import FORMAT, VERSION, ParsedDump, _canonical, validate_dump
+from ._format import (
+    _CORE_TIMESTAMP_FIELDS,
+    FORMAT,
+    VERSION,
+    ParsedDump,
+    _canonical,
+    validate_dump,
+)
 
 
 def _resolve_source(
@@ -162,6 +170,32 @@ def _component(
 
 def _core_payload(records: list[dict[str, Any]]) -> Iterable[bytes]:
     for record in records:
+        external = dict(record)
+        kind = external.get("type")
+        if not isinstance(kind, str):
+            raise TautError(f"unsupported Taut core persistence record {kind!r}")
+        fields = _CORE_TIMESTAMP_FIELDS.get(kind)
+        if fields is None:
+            raise TautError(f"unsupported Taut core persistence record {kind!r}")
+        for field in fields:
+            value = external[field]
+            if value is not None:
+                external[field] = format_message_id(value)
+        if kind == "thread":
+            meta = external["meta"]
+            if isinstance(meta, dict) and isinstance(meta.get("topic"), dict):
+                external_meta = dict(meta)
+                topic = dict(meta["topic"])
+                updated_ts = topic.get("updated_ts")
+                if updated_ts is not None:
+                    topic["updated_ts"] = format_message_id(updated_ts)
+                external_meta["topic"] = topic
+                external["meta"] = external_meta
+        yield _canonical(external)
+
+
+def _extension_payload(records: list[dict[str, Any]]) -> Iterable[bytes]:
+    for record in records:
         yield _canonical(record)
 
 
@@ -289,7 +323,7 @@ def dump_workspace(
                     final_hasher,
                     name=item.spec.name,
                     version=item.spec.write_version,
-                    payload=_core_payload(extension_records[item.spec.name]),
+                    payload=_extension_payload(extension_records[item.spec.name]),
                 )
                 components.append(
                     PersistenceComponentReport(

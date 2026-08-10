@@ -793,7 +793,9 @@ durable conversation; the harness session is an optimization of it.
   [PIO-5.3]. Durable session continuity (`member_id`, token, provider, provider
   session id, wired, and updated timestamp) is exported. Bootstrap claims and
   driver pid/start-time evidence are transient and are never exported;
-  restored driver evidence is null.
+  restored driver evidence is null. The component writer represents
+  `updated_ts` as [TAUT-3.5]'s canonical string; accepted string or exact JSON
+  integer input is normalized to an integer before the Summon sidecar write.
 - **Single-driver guard:** `run` refuses when the ledger row shows a
   live driver (pid + start-time still alive, same evidence style as
   presence). Two drivers injecting into two harness sessions as one
@@ -862,15 +864,15 @@ durable conversation; the harness session is an optimization of it.
   thread own reap or join.
   The control reactor follows SimpleBroker 5.2.0's reference
   persistent-session and thread-local-core ownership model, with
-  `simplebroker>=6.0.2` required for the supported reactor lane. Version
+  `simplebroker>=7.0.0` required for the supported reactor lane. Version
   5.2.2 first proved persistent process visibility; 5.3.2 makes cancellation
   interrupt watcher bootstrap while PhaseLock or SQLite connection setup is
   blocked; and 5.3.3 removes unsafe path-name-based runner cleanup and
   initializes timestamp-conflict metrics before concurrent first writes.
   Version 5.6.1 supplies core reaction fanout's full-requested-set exact-name
-  broadcast; `simplebroker>=6.0.2` is the repository-wide supported floor,
+  broadcast; `simplebroker>=7.0.0` is the repository-wide supported floor,
   aligned with
-  `simplebroker-pg>=3.5.1`. Summon does not call the SimpleBroker command layer,
+  `simplebroker-pg>=3.5.2`. Summon does not call the SimpleBroker command layer,
   so 6.0.0's keyword-only command-option binding does not alter the control
   reactor path.
   Operation release ends only the active lease; the owner thread retains its
@@ -1179,7 +1181,7 @@ exits and preserve release-before-ACK ordering.
   old-backlog/exact-boundary rate audit, bare status success, dead-driver stop,
   unknown-verb reply, persona re-summon, unsupported attach, malformed
   ledger/configuration diagnostics, registry-wide session-event capability,
-  the 5.3.0 floor, and ordered release invocation with fresh built artifacts.
+  the 7.0.0 floor, and ordered release invocation with fresh built artifacts.
 
 Terminal-retirement conformance observes the child boundary, not only handle
 method counts. Stream and PTY tests prove `request_close()` is nonblocking,
@@ -1317,6 +1319,8 @@ thread do not satisfy this boundary by themselves.
 
 ## Related Plans
 
+- `docs/plans/2026-08-10-simplebroker-7-json-id-boundary-plan.md` — aligns the
+  Summon v1 persistence timestamp boundary with SimpleBroker 7.
 - `docs/plans/2026-08-07-taut-dump-load-plan.md` — durable Summon session
   export/import through the core persistence component seam.
 - `docs/plans/2026-08-01-summon-rich-host-global-state-plan.md` — makes

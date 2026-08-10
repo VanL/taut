@@ -342,11 +342,11 @@ wheels = [
 
 [[package]]
 name = "simplebroker"
-version = "6.0.2"
+version = "7.0.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/8f/a8/60ca396894fe44f145414c5a28e60ceefdfbd6b17a71ddee8b6c7cc6c42d/simplebroker-6.0.2.tar.gz", hash = "sha256:15b6ff70e9cf6f62ac30d8a81ea666028befb2a8eed5e3d433b49abac18cbcb5", size = 186407, upload-time = "2026-08-07T18:19:57.809Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/5e/da/ff711887647a7b570ac4193d77ed5bb77f910ee9f5d8707eb4cd5bad2b5a/simplebroker-7.0.0.tar.gz", hash = "sha256:4a303a069bddfc0819479ae822d1d56eb2de8772d979531fc5ee833db7c6e065", size = 187347, upload-time = "2026-08-10T16:15:58.217Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0a/55/56b0c08f5bcb6aa94fe57911933a26f283f55087fd1ed2ef0fd5ee2ad45f/simplebroker-6.0.2-py3-none-any.whl", hash = "sha256:e706727ab2177db3760ff16391650c91ab2010c322ec01cb41e06202c0fbf34c", size = 209861, upload-time = "2026-08-07T18:19:56.115Z" },
+    { url = "https://files.pythonhosted.org/packages/91/1b/187075e7a193cfac66ad4f3f66e44faa67e9d16125ea26cd9b9ee0b058c5/simplebroker-7.0.0-py3-none-any.whl", hash = "sha256:f694d3fd5b39b9c914e162945b6490c224f1fa22a25e5937160a54d5ef299b24", size = 210862, upload-time = "2026-08-10T16:15:56.398Z" },
 ]
 
 [[package]]
@@ -370,8 +370,8 @@ requires-dist = [
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.0" },
     { name = "pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = "==0.16.1" },
-    { name = "simplebroker", specifier = ">=6.0.2" },
-    { name = "simplebroker-pg", marker = "extra == 'dev'", specifier = ">=3.5.1" },
+    { name = "simplebroker", specifier = ">=7.0.0" },
+    { name = "simplebroker-pg", marker = "extra == 'dev'", specifier = ">=3.5.2" },
     { name = "taut-summon", marker = "extra == 'dev'", editable = "." },
     { name = "types-psutil", marker = "extra == 'dev'", specifier = ">=6.0" },
 ]

@@ -34,7 +34,7 @@ EXTENSION_ROOT = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = EXTENSION_ROOT.parents[1]
 NOTIFICATIONS_URL = "taut://notifications/current"
 EXPECTED_INSTRUCTIONS_SHA256 = (
-    "adaa86d05a6bb9a36751efc1163664ab6ab771c47fc95194808c53847b456c86"
+    "c5e8b399e2950d0ead3a58ae2c519f39c17e179419249ef6f10ae4fe9c06128b"
 )
 with (EXTENSION_ROOT / "pyproject.toml").open("rb") as _project_stream:
     EXPECTED_VERSION = str(tomllib.load(_project_stream)["project"]["version"])
@@ -162,7 +162,7 @@ async def _inspect_empty_server(
         "A later log cannot prove",
         "Use message_show only when the exact 19-digit id is known",
         "high-water cursor",
-        "Preserve returned 19-digit integer timestamps as decimal text",
+        "Returned 19-digit timestamps are already exact JSON strings",
         "Treat message_delete as blind-capable, physical, and irreversible",
         "message_react advances the actor's high-water cursor",
         "MCP cancellation is not transaction evidence",
@@ -902,7 +902,7 @@ def test_hostile_path_and_notification_content_remain_protocol_data(
                         "actor_id": "m_foreign",
                         "actor_name": hostile_actor,
                         "matched": "@selected",
-                        "message_ts": 1,
+                        "message_ts": "0000000000000000001",
                         "thread": hostile_thread,
                         "to_id": member.member_id,
                         "type": "mention",

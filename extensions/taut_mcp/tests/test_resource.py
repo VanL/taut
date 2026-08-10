@@ -83,7 +83,7 @@ def test_reaction_appears_in_recipient_resource_and_inbox_consumes_it(
             assert result["records"] == [
                 {
                     "audience_count": 1,
-                    "message_ts": source.ts,
+                    "message_ts": str(source.ts),
                     "reaction": "ack",
                     "thread": "general",
                 }
@@ -102,7 +102,7 @@ def test_reaction_appears_in_recipient_resource_and_inbox_consumes_it(
                         {
                             "actor_id": actor_member.member_id,
                             "actor_name": "actor",
-                            "message_ts": source.ts,
+                            "message_ts": str(source.ts),
                             "reaction": "ack",
                             "thread": "general",
                             "to_id": None,
@@ -122,7 +122,7 @@ def test_reaction_appears_in_recipient_resource_and_inbox_consumes_it(
                 {
                     "actor_id": actor_member.member_id,
                     "actor_name": "actor",
-                    "message_ts": source.ts,
+                    "message_ts": str(source.ts),
                     "reaction": "ack",
                     "thread": "general",
                     "to_id": None,

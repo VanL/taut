@@ -294,7 +294,7 @@ reimplement scope, tokenization, reconciliation, or filtering.
 `--json` emits one NDJSON object per hit with this exact fixed field set:
 
 ```json
-{"channel":"general","from":"van","from_id":"m_...","kind":"message","members":null,"parent":null,"text":"parser is green","thread":"general","thread_kind":"channel","ts":1786032926849409024}
+{"channel":"general","from":"van","from_id":"m_...","kind":"message","members":null,"parent":null,"text":"parser is green","thread":"general","thread_kind":"channel","ts":"1786032926849409024"}
 ```
 
 `channel` is the top-level channel for channel and sub-thread hits and null for
@@ -302,7 +302,8 @@ DMs. `parent` is non-null only for sub-threads. `members` is the sorted pair of
 stable member IDs only for DMs and null otherwise. `from` retains the message's
 write-time display-name snapshot; the Python field is named `from_name` because
 `from` is a keyword. JSON always returns the exact hydrated text, never only a
-snippet.
+snippet. `SearchHit.ts` remains an integer in Python; the external NDJSON
+adapter emits [TAUT-3.5]'s canonical 19-digit string.
 
 These fixed fields are the facet contract. Version 1 does not emit aggregate
 counts because counts over a limited page are misleading and counts over the
@@ -429,6 +430,10 @@ content:
 ```json
 {"entity":"message","message_ts":1786032926849409024,"thread":"general","v":1}
 ```
+
+This work item is an internal stored broker body. Its `message_ts` remains a
+JSON integer and decodes strictly to a Python integer; the external-output
+string rule does not rewrite durable search work.
 
 The closed version-1 entity set is:
 
@@ -768,6 +773,8 @@ Operational acceptance records, without turning host timing into CI truth:
 
 ## Related Plans
 
+- `docs/plans/2026-08-10-simplebroker-7-json-id-boundary-plan.md` — formats
+  public search hit ids while preserving numeric internal work items.
 - `docs/plans/2026-08-07-taut-dump-load-plan.md` defines search exclusion and
   post-load rebuild behavior.
 - `docs/plans/2026-08-06-taut-search-plan.md` defines the reviewed promotion,

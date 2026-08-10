@@ -102,8 +102,10 @@ metadata without activity or cursor effects. Use
 `channel_topic(workspace, token, channel, topic)` to set one single-line topic
 or clear it with JSON `null`; current channel membership is required.
 
-Keep returned 19-digit integer timestamps as decimal text before JavaScript
-reuse because they can exceed JavaScript's exact-number range.
+Returned 19-digit timestamps are already exact JSON strings and can be reused
+directly by JavaScript. For `log.since`, pass large Unix-nanosecond or native-id
+values as strings; bare JSON integers are accepted only in JavaScript's safe
+integer range.
 
 MCP cancellation is not transaction evidence. A canceled stdio request gets
 no JSON-RPC response in either era, but synchronous Taut work that already

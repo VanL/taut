@@ -359,7 +359,7 @@ an accident. Two consequences are binding:
   CLI/client work, persistent owned handles for long-lived actors, and
   `close()` at owned lifetime end.
 
-  The `simplebroker>=6.0.2` floor is load-bearing. Version 5.2.0 supplies the
+  The `simplebroker>=7.0.0` floor is load-bearing. Version 5.2.0 supplies the
   reference ownership model, 5.2.2 first passed Taut's persistent-owner
   process/control proof, 5.3.0 supplies the public live activity-waiter
   replacement contract, 5.3.1 makes `Queue.write()` return the exact committed
@@ -376,9 +376,12 @@ an accident. Two consequences are binding:
   uses that mode exactly once for reaction fanout. It does not preflight queue
   existence, treat the broker count as a delivery receipt, or access private
   broker state. Version 6.0.0 introduced the command-layer and extension-facade
-  compatibility line: its command-layer options are keyword-only, its
-  project-config discovery helpers are public through `simplebroker.ext`, and
-  `simplebroker-pg>=3.5.1` requires at least that core line. Taut uses neither
+  compatibility line: its command-layer options are keyword-only and its
+  project-config discovery helpers are public through `simplebroker.ext`.
+  Version 7.0.0 adds the public exact message-id formatter and makes
+  SimpleBroker-owned JSON ids and high-water values strings while keeping
+  Python and backend values integer; `simplebroker-pg>=3.5.2` requires that
+  core line. Taut uses neither
   the SimpleBroker command layer nor the newly
   re-exported project-config helpers; it continues to use the root queue/target
   API and the existing `simplebroker.ext` embedder surfaces. Persistent Queue
@@ -419,6 +422,17 @@ time-window policy may therefore derive one raw inclusive cutoff as
 `Queue.generate_timestamp() - window_nanoseconds` and compare stored hybrid
 timestamps directly. It must not import a private decoder or convert stored
 timestamps into a second persisted clock domain.
+
+Python values, sidecar/backend columns, broker message bodies, and internal
+work or process protocols keep this timestamp domain as integers. At an
+external JSON boundary, every non-null value from the domain is instead an
+exact 19-digit ASCII decimal string produced by the public package-root
+`simplebroker.format_message_id` helper. This rule covers `ts`, `message_ts`,
+`last_ts`, `last_active_ts`, `topic_updated_ts`, and Taut-owned persistence
+timestamp fields. Null stays null. Counts, versions, PIDs, Unix-clock
+measurements, and opaque payload JSON retain their owned types. Adapters
+format explicit owned fields; they do not walk arbitrary JSON by key name or
+install a generic encoder.
 
 Write path: every Taut-authored live chat write uses SimpleBroker's ordinary
 atomic `Queue.write()` path and receives that committed row's message id from
@@ -1079,6 +1093,9 @@ exit classes apply equally to built-in and extension command adapters.
   question).
 - `--json` emits one JSON object per line (ndjson), and **every verb has
   a defined JSON shape** — an agent must never have to guess:
+  Every non-null timestamp-domain field named below is the canonical 19-digit
+  string defined by [TAUT-3.5], not a JSON number. Nullable timestamp fields
+  remain null.
   - message objects (`message show`, `read`, `log`, `watch`): `thread`, `ts`, `from_id`,
     `from`, `kind`, `text`;
   - search hit objects: exactly `thread`, `ts`, `from_id`, `from`, `kind`,
@@ -1174,6 +1191,9 @@ exception hierarchy rooted at `TautError` including `BlankMessageError`,
 `TautClient.search(...) -> list[SearchHit]` signature are defined by
 [SRCH-5.2]. The CLI adapter owns only argument translation and rendering; the
 client owns query, scope, freshness, hydration, and filtering semantics.
+All timestamp and message-id attributes on these public Python value objects
+remain integers. [TAUT-3.5]'s string representation is an external JSON
+adapter contract, not an internal or Python-domain type change.
 
 `PersistenceComponentReport`, `DumpReport`, and `LoadReport` are frozen,
 slotted public values with the exact fields in [PIO-3.2]. The actor-free class
@@ -1249,8 +1269,8 @@ through read-only identity resolution. It does not update activity, record an
 identity claim, inspect unread state, or create membership. Long-lived
 extensions use it to reconcile their own thread-scoped resources.
 
-Core runtime dependencies: exactly `simplebroker>=6.0.2` and `psutil`. The
-optional `taut-pg` extension adds `simplebroker-pg>=3.5.1` and its driver
+Core runtime dependencies: exactly `simplebroker>=7.0.0` and `psutil`. The
+optional `taut-pg` extension adds `simplebroker-pg>=3.5.2` and its driver
 dependencies in the same environment as Taut. Python ≥ 3.11. The CLI uses
 argparse, not a CLI framework.
 
@@ -2308,14 +2328,14 @@ Workflow obligations:
 Core and `taut-summon` reactor changes ship as a paired release. The release
 helper synchronizes every extension's `taut-chat>=` floor to the exact new core
 version, refreshes every retained lock, and rejects any resolved
-`simplebroker<5.3.0` or `simplebroker-pg<3.2.0`. Release evidence includes an
+`simplebroker<7.0.0` or `simplebroker-pg<3.5.2`. Release evidence includes an
 installed-artifact canary built from the current paired wheels. Core may
 publish first only as the extensions' immediate dependency; the coordinated
 release is not announced until all four PyPI and GitHub publications pass.
 
 New core wheel metadata has normalized project name `taut-chat` and contains
 one unmarked
-`simplebroker>=X.Y.Z` requirement with `X.Y.Z >= 5.3.0`; other operators,
+`simplebroker>=X.Y.Z` requirement with `X.Y.Z >= 7.0.0`; other operators,
 compound specifiers, markers, and weaker floors fail closed. New Summon
 metadata contains exactly one unmarked
 `taut-chat>=<new-core-version>` requirement, so the supplied current core wheel
@@ -2358,6 +2378,9 @@ installing `taut-chat`.
 
 ## Related Plans
 
+- `docs/plans/2026-08-10-simplebroker-7-json-id-boundary-plan.md` — raises the
+  supported broker floor and makes external JSON timestamp fields exact
+  strings while preserving integer Python and storage domains.
 - `docs/plans/2026-08-07-taut-dump-load-plan.md` — composite persistence I/O,
   logical sidecar records, extension state, and cross-backend recovery.
 - `docs/plans/2026-08-06-taut-search-plan.md` — reviewed search spec promotion,

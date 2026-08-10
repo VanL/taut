@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TypeAlias
 
+from simplebroker import format_message_id
+
 from taut import (
     Channel,
     Member,
@@ -17,6 +19,8 @@ from taut import (
     Thread,
     addressing,
 )
+
+_MAX_SAFE_JSON_INTEGER = (1 << 53) - 1
 
 CommandScalar: TypeAlias = str | int | bool | None
 CommandArguments: TypeAlias = tuple[tuple[str, CommandScalar], ...]
@@ -144,6 +148,12 @@ def execute_command(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-011] exceptio
             isinstance(since, bool) or not isinstance(since, (str, int))
         ):
             raise TypeError("since must be a string, integer, or null")
+        if isinstance(since, int) and not (
+            -_MAX_SAFE_JSON_INTEGER <= since <= _MAX_SAFE_JSON_INTEGER
+        ):
+            raise ValueError(
+                "since integer must be JSON-safe; pass larger values as text"
+            )
         thread = _required_string(arguments, "thread")
         try:
             records = tuple(
@@ -211,18 +221,18 @@ def record_object(record: CommandRecord) -> dict[str, object]:  # noqa: C901 app
             "kind": record.kind,
             "text": record.text,
             "thread": record.thread,
-            "ts": record.ts,
+            "ts": format_message_id(record.ts),
         }
     if isinstance(record, MessageDeletion):
         return {
             "deleted": record.deleted,
             "thread": record.thread,
-            "ts": record.ts,
+            "ts": format_message_id(record.ts),
         }
     if isinstance(record, MessageReaction):
         return {
             "audience_count": record.audience_count,
-            "message_ts": record.message_ts,
+            "message_ts": format_message_id(record.message_ts),
             "reaction": record.reaction,
             "thread": record.thread,
         }
@@ -230,7 +240,7 @@ def record_object(record: CommandRecord) -> dict[str, object]:  # noqa: C901 app
         notification: dict[str, object] = {
             "actor_id": record.actor_id,
             "actor_name": record.actor_name,
-            "message_ts": record.message_ts,
+            "message_ts": _optional_message_id(record.message_ts),
             "thread": record.thread,
             "to_id": record.to_id,
             "type": record.type,
@@ -244,7 +254,7 @@ def record_object(record: CommandRecord) -> dict[str, object]:  # noqa: C901 app
         return {
             "aliases": list(record.aliases),
             "kind": record.kind,
-            "last_active_ts": record.last_active_ts,
+            "last_active_ts": format_message_id(record.last_active_ts),
             "member_id": record.member_id,
             "name": record.name,
             "persona": record.persona,
@@ -254,13 +264,13 @@ def record_object(record: CommandRecord) -> dict[str, object]:  # noqa: C901 app
         return {
             "channel": record.name,
             "topic": record.topic,
-            "topic_updated_ts": record.topic_updated_ts,
+            "topic_updated_ts": _optional_message_id(record.topic_updated_ts),
             "topic_updated_by_id": record.topic_updated_by_id,
             "topic_updated_by_name": record.topic_updated_by_name,
         }
     thread: dict[str, object] = {
         "kind": record.kind,
-        "last_ts": record.last_ts,
+        "last_ts": _optional_message_id(record.last_ts),
         "parent": record.parent,
         "thread": record.name,
         "unread": record.unread,
@@ -270,3 +280,7 @@ def record_object(record: CommandRecord) -> dict[str, object]:  # noqa: C901 app
     elif record.kind == "channel":
         thread["topic"] = record.topic
     return thread
+
+
+def _optional_message_id(value: int | None) -> str | None:
+    return None if value is None else format_message_id(value)

@@ -295,6 +295,14 @@ version, rejects alias and unknown nested record types, and verifies every
 message queue is present in the Taut core thread component. It supplies the
 retained lines unchanged to `load_lines()`.
 
+SimpleBroker dump v1 may represent `last_ts` and message `id` as either a JSON
+integer token or a canonical 19-digit string. Taut validates both forms with
+the supported public formatter and normalizes them to integers only for
+ordering and duplicate checks. The original nested payload lines remain
+byte-for-byte unchanged for `load_lines()`. Floats, exponent notation,
+booleans, malformed strings, and values outside the supported timestamp range
+are invalid.
+
 ### [PIO-4.4] Taut core component
 
 The `taut-core` component version is 1. Payload records appear in this order,
@@ -315,6 +323,16 @@ allowed unknown keys. `name_key` is recomputed from `display_name` and is not a
 wire field. Member `anchor_pid`, `anchor_start_time`, and `fingerprint` are
 current process-recognition evidence, not portable identity authority. They are
 omitted and load as null. Durable identity claims and continuity tokens remain.
+
+The version-1 writer emits every listed `*_ts` field and non-null `origin_ts`
+as [TAUT-3.5]'s canonical string. For `thread`, the owned nested
+`meta.topic.updated_ts` is formatted explicitly as well; other metadata remains
+opaque. The reader accepts either canonical strings or direct JSON integer
+tokens because Python preserves those integer tokens exactly, then normalizes
+them to integers before validation and again before sidecar insertion. It
+rejects floats, exponent notation, booleans, malformed strings, and
+out-of-range values. This is the initial, unreleased version-1 contract, not a
+legacy component-version branch or a reason to introduce version 2.
 
 Only completed channel-rename rows are legal. Dump refuses while any rename is
 incomplete, using the existing recovery diagnostic and command. Load rejects a
@@ -381,6 +399,10 @@ It does not export `taut_summon_claims`, `driver_pid`, or
 session member exists in `taut-core`, inserts the logical session, and leaves
 driver evidence null. Provider-session continuity and the durable wired flag
 survive; no restored row claims that an old process is live.
+The version-1 writer emits `updated_ts` as [TAUT-3.5]'s canonical string. Its
+reader accepts that string or an exact JSON integer token and normalizes either
+to an integer before the Summon sidecar write. The same invalid token forms as
+[PIO-4.4] are rejected.
 
 ### [PIO-5.4] Unknown durable extension state fails closed
 
@@ -451,6 +473,9 @@ Load makes no destination writes until it has read the full file and validated:
 - outer, nested SimpleBroker, core, and extension versions
 - exact field sets, types, identifier grammar, timestamp bounds, uniqueness,
   and current logical JSON shapes
+- tolerant timestamp fields only at their explicit owners: canonical strings
+  or exact JSON integer tokens normalized to integers before storage; no
+  float, exponent, boolean, malformed-string, or out-of-range substitute
 - core foreign-key and structural relations, without inventing a requirement
   that deleted historical messages still exist
 - every broker message queue against the core thread registry
@@ -656,6 +681,10 @@ state. They also prove member anchors and Summon driver leases are cleared.
 At minimum, firing tests cover:
 
 - every core logical record type and every fixed report field
+- raw token-type proof above `2**53`, adjacent-id stability, canonical string
+  output, accepted exact integer-token input, rejected float/exponent/boolean
+  and malformed forms, and integer backend values after load for core,
+  SimpleBroker, and Summon v1 components
 - exact registered-queue inclusion; empty registry threads; foreign queue,
   SimpleBroker alias, search, control, claim, and derived-table exclusion
 - claimed-row omission and count
@@ -697,5 +726,7 @@ run through a guard blocks release.
 
 ## Related Plans
 
+- `docs/plans/2026-08-10-simplebroker-7-json-id-boundary-plan.md` — defines
+  canonical timestamp writers, tolerant v1 readers, and integer restore state.
 - `docs/plans/2026-08-07-taut-dump-load-plan.md` defines promotion,
   implementation slices, hardening gates, and independent review.

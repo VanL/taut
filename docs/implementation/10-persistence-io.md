@@ -27,9 +27,12 @@ file before opening a load target, retains byte offsets rather than message
 bodies, and replays the nested broker section from disk. Framing records are
 canonical UTF-8 JSON; SimpleBroker payload lines remain owned by SimpleBroker.
 Taut still validates the exact nested version-1 header and message field sets.
-That is an intentional compatibility pin to the `simplebroker>=6.0.2` format
+That is an intentional compatibility pin to the `simplebroker>=7.0.0` format
 contract: a future nested field requires an explicit version decision when the
 dependency floor moves, rather than permissive acceptance and silent loss.
+Version 1 permits canonical strings or exact JSON integer tokens for nested
+`last_ts` and `id`. The validator normalizes only for bounds, ordering, and
+duplicate checks, then replays the original lines unchanged to SimpleBroker.
 
 ### Logical authority, not physical tables
 
@@ -51,6 +54,15 @@ Summon's contributor exports durable session continuity but excludes transient
 name claims and driver pid/start evidence. Its SQL stays in
 `extensions/taut_summon/taut_summon/_state.py`; the component adapter only
 translates and validates logical records.
+
+Taut-owned component writers explicitly project timestamp fields through the
+public formatter. Core includes its fixed per-record field inventory and the
+owned nested `thread.meta.topic.updated_ts`; Summon includes only
+`session.updated_ts`. Readers accept canonical strings or exact Python-parsed
+JSON integer tokens and normalize before every sidecar load. This corrects the
+unreleased version-1 contract in place. It adds neither a version-2 format nor
+a legacy component loader, and it never rewrites opaque metadata or stored
+broker bodies.
 
 ### Destructive maintenance boundary
 

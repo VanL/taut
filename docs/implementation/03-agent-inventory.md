@@ -33,7 +33,7 @@ step 6. Claude and Grok were refreshed through that workflow on this machine;
 the remaining statuses predate the skill's adoption and should be re-derived
 before use.
 
-Last refreshed: 2026-08-04
+Last refreshed: 2026-08-10
 
 | Agent family | Status | Notes |
 |--------------|--------|-------|
@@ -42,7 +42,7 @@ Last refreshed: 2026-08-04
 | Gemini | present | `/opt/homebrew/bin/gemini`, version 0.46.0. Version probe passed 2026-07-11; prior credential failure was not re-probed. |
 | Qwen | present | `/opt/homebrew/bin/qwen`, version 0.17.0. Version probe passed 2026-07-11; prior model-access failure was not re-probed. |
 | Kimi | present | `/Users/van/.kimi-code/bin/kimi`, version 0.23.5. Version probe passed 2026-07-11; prior credential failure was not re-probed. |
-| Grok | verified usable; review-eligible | `/Users/van/.local/bin/grok`, version 0.2.101. Two plan reviews completed with `EndTurn` on 2026-07-14 under the OS-enforced read-only sandbox; no sandbox fail-open warning or repository write was observed. Write-attempt containment was verified when the `call-agent` skill was adopted. |
+| Grok | verified usable; review-eligible; completion-signal drift observed | `/Users/van/.local/bin/grok`, version 0.2.101. A Class 5 plan review completed under the OS-enforced read-only sandbox on 2026-08-10 with no sandbox fail-open warning or repository write, but JSON reported lowercase `end_turn` rather than the `EndTurn` spelling currently documented by `skills/call-agent/SKILL.md`. The response itself contained the required explicit `BLOCKED` verdict and full findings. Do not use the lowercase signal as a passing gate until the invocation guidance is reconciled; select another review-eligible family for a required PASS. Write-attempt containment was verified when the skill was adopted. |
 
 ## Review Preference
 

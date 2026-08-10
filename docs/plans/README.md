@@ -117,6 +117,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 | `2026-08-07-information-architecture-plan.md` | completed | no | Class 5+P Diataxis cutover completed 2026-08-08: registry, [DOM-10.1] widening with red-first probes, equivalence + extraction ledgers, kernel/llms.txt/docs-README surfaces, rendered-link gate, codex completion review applied. |
 | `2026-08-07-taut-dump-load-plan.md` | completed | no | Class 5 composite persistence I/O; SQLite/PostgreSQL reciprocal round trips, destructive-failure guards, strict format tests, and final Opus review passed before owner-authorized close-out. |
 | `2026-08-07-taut-dump-load-spec-draft.md` | superseded | no | Historical reviewed [PIO-*] draft superseded by active `docs/specs/08-persistence-io.md`. |
+| `2026-08-10-simplebroker-7-json-id-boundary-plan.md` | completed | no | Class 5 SimpleBroker 7 floor and external JSON timestamp-string compatibility migration; implementation, local verification, and independent review passed before the owner-authorized close-out commit. |
 
 ## Retired Plans
 

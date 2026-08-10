@@ -64,6 +64,15 @@ def _probe_hit(*, text: str = "alpha beta") -> SearchHit:
     )
 
 
+def test_search_json_formats_id_while_python_hit_remains_integer() -> None:
+    from taut.commands._rendering import search_hit_object
+
+    hit = _probe_hit()
+
+    assert search_hit_object(hit)["ts"] == "1800000000000000001"
+    assert hit.ts == 1_800_000_000_000_000_001
+
+
 def _dispatch_search_probe(
     argv: list[str],
     *,
@@ -261,7 +270,7 @@ def test_cli_search_delegates_every_flag_once_with_interspersed_query_words() ->
         "text": "alpha beta",
         "thread": "general",
         "thread_kind": "channel",
-        "ts": 1_800_000_000_000_000_001,
+        "ts": "1800000000000000001",
     }
     assert err == ""
 

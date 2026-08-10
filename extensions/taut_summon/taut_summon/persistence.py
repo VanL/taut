@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-from simplebroker import Queue
+from simplebroker import Queue, format_message_id
 from simplebroker.ext import SidecarSession
 
 from taut_summon import _state
@@ -29,7 +29,10 @@ class SummonPersistenceComponent:
         _state.ensure_summon_schema(queue)
 
     def dump_records(self, queue: Queue) -> list[dict[str, Any]]:
-        return _state.persistence_records(queue)
+        return [
+            {**record, "updated_ts": format_message_id(record["updated_ts"])}
+            for record in _state.persistence_records(queue)
+        ]
 
     def validate_records(
         self,
@@ -61,9 +64,7 @@ class SummonPersistenceComponent:
                     and not isinstance(record["provider_session_id"], str)
                 )
                 or not isinstance(record["wired"], bool)
-                or not isinstance(record["updated_ts"], int)
-                or isinstance(record["updated_ts"], bool)
-                or record["updated_ts"] < 0
+                or not _valid_updated_ts(record["updated_ts"])
             ):
                 raise ValueError("invalid taut-summon session record")
             seen.add(member_id)
@@ -77,7 +78,28 @@ class SummonPersistenceComponent:
         session: SidecarSession,
         records: Iterable[dict[str, Any]],
     ) -> None:
-        _state.load_persistence_records(session, records)
+        _state.load_persistence_records(
+            session,
+            (
+                {**record, "updated_ts": _updated_ts_as_int(record["updated_ts"])}
+                for record in records
+            ),
+        )
+
+
+def _valid_updated_ts(value: Any) -> bool:
+    try:
+        _updated_ts_as_int(value)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _updated_ts_as_int(value: Any) -> int:
+    formatted = format_message_id(value)
+    if isinstance(value, str) and value != formatted:
+        raise ValueError("updated_ts string must use the canonical representation")
+    return int(formatted)
 
 
 def create_component() -> SummonPersistenceComponent:

@@ -757,7 +757,7 @@ include these descriptions, not only types and required-property lists.
 | exact-message `msg_id` | Exact native Taut message id as a 19-digit decimal string. Preserve it as text; suffixes, whitespace, signs, and numeric JSON values are invalid. | Used by `message_show`, `message_delete`, and `message_react`; all three schemas set `pattern: ^[0-9]{19}$`, and core additionally rejects values outside the public signed-64-bit native timestamp range before identity or lookup. |
 | `reaction` | Configured lowercase ASCII reaction slug matching `^[a-z0-9][a-z0-9_-]{0,31}$`. | Used only by `message_react`; the schema is not an enum because the attached workspace config remains authoritative. |
 | `limit` | Maximum records requested from one queue, from 1 through 1,000 inclusive. | `read` defaults to 100 per selected thread; `inbox` defaults to 1,000; `log` defaults to 100 most-recent matches. |
-| `since` | Exclusive history lower bound: ISO 8601, Unix seconds/milliseconds/nanoseconds, or a native 19-digit message id. | Null means no lower bound; used only by `log`. |
+| `since` | Exclusive history lower bound: ISO 8601, Unix seconds/milliseconds/nanoseconds, or a native 19-digit message id. | Null means no lower bound; used only by `log`. String forms preserve the existing core grammar. Bare JSON integers are accepted only in JavaScript's safe range `[-(2**53-1), 2**53-1]`; larger numeric values must be strings. |
 | `all` | When true, list every registered Taut thread. | Defaults to false; mutually exclusive with `dms`. |
 | `dms` | When true, list every valid actor-accessible DM, including read and empty conversations. | Defaults to false; mutually exclusive with `all`. |
 
@@ -932,6 +932,21 @@ requires `members` and forbids `topic`; and the `kind: "subthread"` branch
 forbids both. Schema snapshots prove both `list` and `channel_rename` channel
 records.
 
+Every non-null record field in [TAUT-3.5]'s timestamp domain is an exact
+19-digit ASCII decimal string in both `structuredContent` and canonical text.
+This includes `ts`, `message_ts`, `last_active_ts`, `topic_updated_ts`, and
+`last_ts`; the three nullable fields retain JSON null. Their output schemas use
+`type: "string"` with `pattern: ^[0-9]{19}$`. `audience_count` and unrelated
+counts remain integers. The command adapter applies the public
+`simplebroker.format_message_id` helper to explicit fields while the public
+Python objects and backend state stay integer-valued.
+
+`log.since` is a flexible cursor input, not a pure message-id field. Its schema
+keeps string, safe integer, and null branches. The dispatcher repeats the safe
+integer bound for non-schema callers, then passes accepted strings unchanged
+to `TautClient.log`; the existing core timestamp resolver performs the only
+normalization to an internal integer.
+
 `guidance` is an ordered array of objects with exactly `code`, `message`, and
 `action` string fields. Every successful nonempty `read` returns exactly this
 one entry:
@@ -980,16 +995,15 @@ phase and remains a string in that tombstone.
 The `deletion` record schema is closed:
 `{ "type": "object", "additionalProperties": false, "required":
 ["thread", "ts", "deleted"], "properties": { "thread": { "type":
-"string" }, "ts": { "type": "integer" }, "deleted": { "const": true } } }`.
-Its `ts` integer deliberately matches the existing message schema. Native
-19-digit ids exceed JavaScript's exact integer range, so JavaScript consumers
-must preserve returned `ts` values as decimal text before reuse as an
-exact-message string input.
+"string" }, "ts": { "type": "string", "pattern": "^[0-9]{19}$" },
+"deleted": { "const": true } } }`. Its `ts` string deliberately matches the
+existing message schema and is safe for exact JavaScript reuse.
 
 The `reaction` record schema is closed:
 `{ "type": "object", "additionalProperties": false, "required":
 ["thread", "message_ts", "reaction", "audience_count"], "properties": {
-"thread": { "type": "string" }, "message_ts": { "type": "integer" },
+"thread": { "type": "string" }, "message_ts": { "type": "string",
+"pattern": "^[0-9]{19}$" },
 "reaction": { "type": "string" }, "audience_count": { "type":
 "integer", "minimum": 1 } } }`. The count is the final authorized recipient-set
 size after actor exclusion and DM registry intersection. It equals the number
@@ -1384,8 +1398,8 @@ initialization and modern discovery. They require:
     `channel_topic`.
 11. Use `message_show` only when the exact 19-digit id is known and moving
     seen state is intended. It may mark unseen intervening history seen. Use
-    `log` for cursor-neutral inspection. Preserve returned 19-digit integer
-    timestamps as decimal text before JavaScript reuse.
+    `log` for cursor-neutral inspection. Returned 19-digit timestamps are
+    already exact JSON strings and may be reused directly by JavaScript.
 12. Treat `message_delete` as blind-capable, physical, and irreversible. It
     deletes only the selected member's own ordinary message, does not retract
     fetched output, and does not cascade. Do not infer prior success from an
@@ -1763,8 +1777,8 @@ Required proof includes:
   19-digit signed-64-bit overflow reaches core range validation and performs
   no identity/activity, enumeration, peek, cursor, or delete. Output snapshots
   prove the existing closed message schema and the closed `deletion` schema
-  with integer `ts` and `deleted: true`, both record-type maps and command
-  union agree, and instructions preserve ids as decimal text for JavaScript.
+  with canonical string `ts` and `deleted: true`, both record-type maps and
+  command union agree, and instructions identify returned ids as exact strings.
 - `message_react` schema rejects malformed ids and slugs before child
   dispatch without freezing workspace-defined values into an enum. Attached
   SQLite and PostgreSQL probes cover exact channel, child, and
@@ -2097,6 +2111,8 @@ compatibility workflow.
 
 ## Related Plans
 
+- `docs/plans/2026-08-10-simplebroker-7-json-id-boundary-plan.md` — canonical
+  MCP timestamp strings and the JavaScript-safe `log.since` integer guard.
 - `docs/plans/2026-07-28-taut-mcp-dual-era-sessionless-plan.md`
 - `docs/plans/2026-07-28-channel-topics-plan.md` — fixed channel metadata
   read/mutation tools, closed channel and thread records, uncertain-outcome

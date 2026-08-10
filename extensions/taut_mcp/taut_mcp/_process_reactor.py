@@ -14,6 +14,8 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, cast
 
+from simplebroker import format_message_id
+
 from taut import Notification
 
 from ._commands import (
@@ -260,7 +262,11 @@ def _notification_record(notification: Notification) -> dict[str, Any]:
     record: dict[str, Any] = {
         "actor_id": notification.actor_id,
         "actor_name": notification.actor_name,
-        "message_ts": notification.message_ts,
+        "message_ts": (
+            None
+            if notification.message_ts is None
+            else format_message_id(notification.message_ts)
+        ),
         "thread": notification.thread,
         "to_id": notification.to_id,
         "type": notification.type,

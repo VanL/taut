@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
+from simplebroker import format_message_id
+
 from taut._constants import (
     CHANNEL_NAME_RE,
     CLAIM_HASH_RE,
@@ -73,6 +75,14 @@ _CORE_FIELDS = {
     },
 }
 _CORE_ORDER = {name: index for index, name in enumerate(_CORE_FIELDS)}
+_CORE_TIMESTAMP_FIELDS = {
+    "member": ("created_ts", "last_active_ts"),
+    "member_alias": ("created_ts",),
+    "identity_claim": ("first_seen_ts", "last_seen_ts"),
+    "thread": ("origin_ts", "created_ts"),
+    "membership": ("joined_ts", "last_seen_ts"),
+    "channel_rename": ("started_ts", "updated_ts"),
+}
 _DM_QUEUE_RE = re.compile(r"dm\.d_[a-z2-7]{26}")
 
 
@@ -109,7 +119,10 @@ class ParsedDump:
     def core_records(self) -> list[dict[str, Any]]:
         """Decode the already validated, bounded-size core component."""
 
-        return [json.loads(line) for line in self.component_lines("taut-core")]
+        records = [json.loads(line) for line in self.component_lines("taut-core")]
+        for record in records:
+            _normalize_core_record(record)
+        return records
 
     def component_records(self, name: str):  # type: ignore[no-untyped-def]
         """Replay decoded records from one already framed component."""
@@ -152,6 +165,10 @@ class _CoreValidator:
                 f"invalid Taut dump at line {line_number}: unknown core record {kind!r}"
             )
         _exact_fields(record, _CORE_FIELDS[kind], line_number=line_number)
+        try:
+            _normalize_core_record(record)
+        except (TypeError, ValueError):
+            self._invalid(line_number, kind.replace("_", " "))
         key = validator(record, line_number)
         order_key = (_CORE_ORDER[kind], key)
         if self.last_key is not None and order_key <= self.last_key:
@@ -399,6 +416,45 @@ def _positive_int(value: Any) -> bool:
 
 def _nonnegative_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _message_id_as_int(value: Any) -> int:
+    formatted = format_message_id(value)
+    if isinstance(value, str) and value != formatted:
+        raise ValueError("message ID string must use the canonical representation")
+    return int(formatted)
+
+
+def _valid_external_message_id(value: Any) -> bool:
+    try:
+        _message_id_as_int(value)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _normalize_core_record(record: dict[str, Any]) -> None:
+    kind = record.get("type")
+    if not isinstance(kind, str):
+        return
+    fields = _CORE_TIMESTAMP_FIELDS.get(kind)
+    if fields is None:
+        return
+    for field in fields:
+        value = record[field]
+        if value is not None:
+            record[field] = _message_id_as_int(value)
+    if kind != "thread":
+        return
+    meta = record["meta"]
+    if not isinstance(meta, dict):
+        return
+    topic = meta.get("topic")
+    if not isinstance(topic, dict) or "updated_ts" not in topic:
+        return
+    updated_ts = topic["updated_ts"]
+    if updated_ts is not None:
+        topic["updated_ts"] = _message_id_as_int(updated_ts)
 
 
 def _valid_member_id(value: Any) -> bool:
@@ -727,7 +783,7 @@ class _DumpValidator:
             self._accept_simplebroker_header(record, line_number)
             return
         # This is an intentional compatibility pin to SimpleBroker dump format
-        # v1 as shipped by the runtime floor (>=6.0.2).  A future upstream
+        # v1 as shipped by the runtime floor (>=7.0.0). A future upstream
         # field is a format change that needs an explicit Taut load-version
         # decision, not something to accept and then silently discard.
         _exact_fields(
@@ -735,7 +791,12 @@ class _DumpValidator:
             {"body", "id", "queue", "type"},
             line_number=line_number,
         )
-        message_id = record["id"]
+        try:
+            message_id = _message_id_as_int(record["id"])
+        except (TypeError, ValueError):
+            raise TautError(
+                f"invalid Taut dump at line {line_number}: invalid SimpleBroker message"
+            ) from None
         queue = record["queue"]
         valid = (
             record["type"] == "message"
@@ -774,7 +835,7 @@ class _DumpValidator:
             or record["format"] != "simplebroker-dump"
             or record["version"] != 1
             or not isinstance(record["backend"], str)
-            or not _nonnegative_int(record["last_ts"])
+            or not _valid_external_message_id(record["last_ts"])
         ):
             raise TautError(
                 f"invalid Taut dump at line {line_number}: invalid SimpleBroker header"

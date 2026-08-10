@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -12,6 +14,39 @@ from taut import TautClient
 from taut._exceptions import TautError
 
 pytestmark = pytest.mark.sqlite_only
+
+
+def _line(record: dict[str, object]) -> bytes:
+    return (
+        json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        + b"\n"
+    )
+
+
+def _summon_updated_ts_as_integer(raw: bytes) -> bytes:
+    lines = raw.splitlines(keepends=True)
+    active: str | None = None
+    payload_start: int | None = None
+    for index, line in enumerate(lines):
+        record = json.loads(line)
+        if active is None and record.get("type") == "component_start":
+            active = record["name"]
+            payload_start = index + 1
+        elif active is not None and record.get("type") == "component_end":
+            assert payload_start is not None
+            record["sha256"] = hashlib.sha256(
+                b"".join(lines[payload_start:index])
+            ).hexdigest()
+            lines[index] = _line(record)
+            active = None
+            payload_start = None
+        elif active == "taut-summon" and record.get("type") == "session":
+            record["updated_ts"] = int(record["updated_ts"])
+            lines[index] = _line(record)
+        elif active is None and record.get("type") == "end":
+            record["sha256"] = hashlib.sha256(b"".join(lines[:index])).hexdigest()
+            lines[index] = _line(record)
+    return b"".join(lines)
 
 
 def test_summon_round_trip_keeps_continuity_and_clears_live_state(
@@ -64,6 +99,12 @@ def test_summon_round_trip_keeps_continuity_and_clears_live_state(
         "taut-summon",
     ]
     assert report.components[-1].records == 1
+    session_record = next(
+        record
+        for record in map(json.loads, dump_path.read_text().splitlines())
+        if record.get("type") == "session"
+    )
+    assert session_record["updated_ts"] == "0000000000000000100"
 
     destination = tmp_path / "destination.db"
     TautClient.load(input_path=dump_path, db_path=destination)
@@ -87,6 +128,67 @@ def test_summon_round_trip_keeps_continuity_and_clears_live_state(
         )
     finally:
         restored_queue.close()
+
+    integer_dump = tmp_path / "integer-token-backup.taut.jsonl"
+    integer_dump.write_bytes(_summon_updated_ts_as_integer(dump_path.read_bytes()))
+    integer_destination = tmp_path / "integer-destination.db"
+    TautClient.load(input_path=integer_dump, db_path=integer_destination)
+    integer_queue = Queue(
+        _state.LEDGER_QUEUE_NAME,
+        db_path=str(integer_destination),
+    )
+    try:
+        integer_restored = _state.get_session(integer_queue, member.member_id)
+        assert integer_restored is not None
+        assert integer_restored["updated_ts"] == 100
+        assert isinstance(integer_restored["updated_ts"], int)
+    finally:
+        integer_queue.close()
+
+
+@pytest.mark.parametrize(
+    "updated_ts",
+    [
+        True,
+        1.5,
+        1e18,
+        "100",
+        " 0000000000000000100",
+        "٠" * 16 + "١٠٠",
+        -1,
+    ],
+    ids=[
+        "boolean",
+        "float",
+        "exponent",
+        "malformed-string",
+        "whitespace-string",
+        "non-ascii-digits",
+        "out-of-range",
+    ],
+)
+def test_summon_persistence_rejects_non_exact_timestamp_representations(
+    updated_ts: object,
+) -> None:
+    from taut_summon.persistence import create_component
+
+    member_id = "m_fixture"
+    record = {
+        "type": "session",
+        "member_id": member_id,
+        "token": "token",
+        "provider": "claude",
+        "provider_session_id": None,
+        "wired": False,
+        "updated_ts": updated_ts,
+    }
+
+    with pytest.raises(ValueError, match="invalid taut-summon session record"):
+        create_component().validate_records(
+            1,
+            [record],
+            core_member_ids=frozenset({member_id}),
+        )
 
 
 def test_existing_empty_summon_schema_emits_zero_record_component(

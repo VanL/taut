@@ -61,10 +61,10 @@ def test_package_versions_and_derived_metadata_match_their_owners() -> None:
     assert summon["name"] == "taut-summon"
     assert mcp["name"] == "taut-mcp"
     simplebroker_floor = _dependency_floor(root, "simplebroker")
-    assert _version_tuple(simplebroker_floor) >= (5, 3, 2)
+    assert simplebroker_floor == "7.0.0"
     assert _dependency_floor(pg, "taut-chat") == root_version
     simplebroker_pg_floor = _dependency_floor(pg, "simplebroker-pg")
-    assert _version_tuple(simplebroker_pg_floor) >= (3, 2, 1)
+    assert simplebroker_pg_floor == "3.5.2"
     assert _dependency_floor(summon, "taut-chat") == root_version
     assert _dependency_floor(mcp, "taut-chat") == root_version
     for manifest in (pg_manifest, summon_manifest, mcp_manifest):
@@ -161,6 +161,35 @@ def test_package_versions_and_derived_metadata_match_their_owners() -> None:
         "name": "taut-chat",
         "editable": "../../",
     } in requirements
+
+
+def test_retained_locks_resolve_the_supported_simplebroker_pair() -> None:
+    expected_by_lock = {
+        "uv.lock": {
+            "simplebroker": "7.0.0",
+            "simplebroker-pg": "3.5.2",
+        },
+        "extensions/taut_summon/uv.lock": {
+            "simplebroker": "7.0.0",
+        },
+        "extensions/taut_mcp/uv.lock": {
+            "simplebroker": "7.0.0",
+            "simplebroker-pg": "3.5.2",
+        },
+    }
+
+    for path, expected in expected_by_lock.items():
+        lock = _manifest(path)
+        packages = lock["package"]
+        assert isinstance(packages, list)
+        resolved = {
+            str(package["name"]): str(package["version"])
+            for package in packages
+            if isinstance(package, dict)
+            and package.get("name") in expected
+            and "version" in package
+        }
+        assert resolved == expected
 
 
 def test_readme_install_examples_use_public_distribution_names() -> None:

@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -90,6 +92,41 @@ def _empty_dump_bytes() -> bytes:
             "type": "end",
         }
     )
+
+
+def _rewrite_component_payloads(
+    raw: bytes,
+    transform: Callable[[str, dict[str, object]], dict[str, object]],
+) -> bytes:
+    """Rewrite logical payloads and repair both checksum layers."""
+
+    lines = raw.splitlines(keepends=True)
+    active: str | None = None
+    payload_start: int | None = None
+    final_index: int | None = None
+    for index, line in enumerate(lines):
+        record = json.loads(line)
+        assert isinstance(record, dict)
+        if active is None and record.get("type") == "component_start":
+            active = record["name"]
+            assert isinstance(active, str)
+            payload_start = index + 1
+        elif active is not None and record.get("type") == "component_end":
+            assert payload_start is not None
+            record["sha256"] = hashlib.sha256(
+                b"".join(lines[payload_start:index])
+            ).hexdigest()
+            lines[index] = _line(record)
+            active = None
+            payload_start = None
+        elif active is not None:
+            lines[index] = _line(transform(active, record))
+        elif record.get("type") == "end":
+            final_index = index
+            record["sha256"] = hashlib.sha256(b"".join(lines[:index])).hexdigest()
+            lines[index] = _line(record)
+    assert final_index == len(lines) - 1
+    return b"".join(lines)
 
 
 def test_load_dry_run_validates_an_empty_dump_without_opening_destination(
@@ -275,7 +312,7 @@ def test_dump_selects_only_registered_pending_messages_and_counts_claimed(
     records = [json.loads(line) for line in dump_path.read_text().splitlines()]
     messages = [record for record in records if record.get("type") == "message"]
     assert len(messages) == 1
-    assert messages[0]["id"] == pending.ts
+    assert messages[0]["id"] == str(pending.ts)
     assert messages[0]["queue"] == "general"
     assert json.loads(messages[0]["body"])["text"] == "pending and retained"
     assert not any(record.get("type") == "alias" for record in records)
@@ -324,6 +361,8 @@ def test_round_trip_fires_every_core_logical_record_type(tmp_path: Path) -> None
     member = client.last_created_member
     assert member is not None
     message = client.say("before", "rename fixture")
+    client.reply("before", str(message.ts), "subthread fixture")
+    client.set_channel_topic("before", "persistence topic")
     client._state.add_member_alias(
         member_id=member.member_id,
         alias="operator",
@@ -352,13 +391,211 @@ def test_round_trip_fires_every_core_logical_record_type(tmp_path: Path) -> None
         "membership",
         "channel_rename",
     }.issubset({record.get("type") for record in records})
+    core_timestamp_fields = {
+        "member": ("created_ts", "last_active_ts"),
+        "member_alias": ("created_ts",),
+        "identity_claim": ("first_seen_ts", "last_seen_ts"),
+        "thread": ("origin_ts", "created_ts"),
+        "membership": ("joined_ts", "last_seen_ts"),
+        "channel_rename": ("started_ts", "updated_ts"),
+    }
+    core_records = [
+        record for record in records if record.get("type") in core_timestamp_fields
+    ]
+    for record in core_records:
+        kind = record["type"]
+        assert isinstance(kind, str)
+        for field in core_timestamp_fields[kind]:
+            value = record[field]
+            if value is not None:
+                assert isinstance(value, str)
+                assert len(value) == 19
+                assert value.isascii() and value.isdecimal()
+        if kind == "thread":
+            meta = record["meta"]
+            if isinstance(meta, dict) and isinstance(meta.get("topic"), dict):
+                updated_ts = meta["topic"]["updated_ts"]
+                assert isinstance(updated_ts, str)
+                assert len(updated_ts) == 19
 
     destination = tmp_path / "restored.db"
     TautClient.load(input_path=dump_path, db_path=destination)
     restored = TautClient(db_path=destination, as_name="operator")
     assert restored.whoami().member_id == member.member_id
     assert restored.log("after")[-1].text == "rename fixture"
+    for record in cast(Any, restored._state).persistence_records():
+        kind = record["type"]
+        for field in core_timestamp_fields[kind]:
+            value = record[field]
+            assert value is None or (
+                isinstance(value, int) and not isinstance(value, bool)
+            )
+        if kind == "thread":
+            meta = record["meta"]
+            if isinstance(meta, dict) and isinstance(meta.get("topic"), dict):
+                assert isinstance(meta["topic"]["updated_ts"], int)
     restored.close()
+
+
+def test_load_accepts_exact_integer_tokens_and_normalizes_storage(
+    tmp_path: Path,
+) -> None:
+    from taut import TautClient
+
+    source = tmp_path / "source.db"
+    TautClient.init(db_path=source)
+    client = TautClient(db_path=source, as_name="van")
+    client.join("general")
+    client.set_channel_topic("general", "integer-token fixture")
+    client.say("general", "payload")
+    client.close()
+    canonical = tmp_path / "canonical.taut.jsonl"
+    TautClient.dump(output=canonical, db_path=source)
+
+    timestamp_fields = {
+        "member": ("created_ts", "last_active_ts"),
+        "member_alias": ("created_ts",),
+        "identity_claim": ("first_seen_ts", "last_seen_ts"),
+        "thread": ("origin_ts", "created_ts"),
+        "membership": ("joined_ts", "last_seen_ts"),
+        "channel_rename": ("started_ts", "updated_ts"),
+    }
+
+    def integers(component: str, record: dict[str, object]) -> dict[str, object]:
+        if component == "simplebroker":
+            for field in ("last_ts", "id"):
+                value = record.get(field)
+                if isinstance(value, str):
+                    record[field] = int(value)
+        elif component == "taut-core" and record.get("type") in timestamp_fields:
+            kind = record["type"]
+            assert isinstance(kind, str)
+            for field in timestamp_fields[kind]:
+                value = record.get(field)
+                if isinstance(value, str):
+                    record[field] = int(value)
+            meta = record.get("meta")
+            if isinstance(meta, dict) and isinstance(meta.get("topic"), dict):
+                topic = meta["topic"]
+                updated_ts = topic.get("updated_ts")
+                if isinstance(updated_ts, str):
+                    topic["updated_ts"] = int(updated_ts)
+        return record
+
+    integer_dump = tmp_path / "integer-tokens.taut.jsonl"
+    integer_dump.write_bytes(
+        _rewrite_component_payloads(canonical.read_bytes(), integers)
+    )
+    destination = tmp_path / "restored.db"
+    TautClient.load(input_path=integer_dump, db_path=destination)
+    restored = TautClient(db_path=destination, as_name="van")
+    assert restored.get_channel("general").topic == "integer-token fixture"
+    assert all(isinstance(message.ts, int) for message in restored.log("general"))
+    assert all(
+        value is None or (isinstance(value, int) and not isinstance(value, bool))
+        for record in cast(Any, restored._state).persistence_records()
+        for field in timestamp_fields[record["type"]]
+        for value in (record[field],)
+    )
+    restored.close()
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        pytest.param(True, id="boolean"),
+        pytest.param(1.5, id="float"),
+        pytest.param(1e18, id="exponent"),
+        pytest.param("123", id="malformed-string"),
+        pytest.param(" 0000000000000000100", id="whitespace-string"),
+        pytest.param("٠" * 16 + "١٠٠", id="non-ascii-digits"),
+        pytest.param(-1, id="out-of-range"),
+    ],
+)
+def test_load_rejects_non_exact_core_timestamp_representations(
+    tmp_path: Path,
+    invalid: object,
+) -> None:
+    from taut import TautClient, TautError
+
+    source = tmp_path / "source.db"
+    TautClient.init(db_path=source)
+    client = TautClient(db_path=source, as_name="van")
+    client.join("general")
+    client.close()
+    canonical = tmp_path / "canonical.taut.jsonl"
+    TautClient.dump(output=canonical, db_path=source)
+    replaced = False
+
+    def corrupt(component: str, record: dict[str, object]) -> dict[str, object]:
+        nonlocal replaced
+        if component == "taut-core" and record.get("type") == "member" and not replaced:
+            record["created_ts"] = invalid
+            replaced = True
+        return record
+
+    malformed = tmp_path / "malformed.taut.jsonl"
+    malformed.write_bytes(_rewrite_component_payloads(canonical.read_bytes(), corrupt))
+    assert replaced
+
+    with pytest.raises(TautError, match="invalid .*member record"):
+        TautClient.load(input_path=malformed, db_path=tmp_path / "destination.db")
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        pytest.param(True, id="boolean"),
+        pytest.param(1.5, id="float"),
+        pytest.param(1e18, id="exponent"),
+        pytest.param("123", id="malformed-string"),
+        pytest.param(" 0000000000000000100", id="whitespace-string"),
+        pytest.param("٠" * 16 + "١٠٠", id="non-ascii-digits"),
+        pytest.param(-1, id="out-of-range"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("record_type", "field", "error"),
+    [
+        pytest.param("header", "last_ts", "invalid SimpleBroker header", id="header"),
+        pytest.param("message", "id", "invalid SimpleBroker message", id="message"),
+    ],
+)
+def test_load_rejects_non_exact_nested_broker_timestamp_representations(
+    tmp_path: Path,
+    invalid: object,
+    record_type: str,
+    field: str,
+    error: str,
+) -> None:
+    from taut import TautClient, TautError
+
+    source = tmp_path / "source.db"
+    TautClient.init(db_path=source)
+    client = TautClient(db_path=source, as_name="van")
+    client.join("general")
+    client.close()
+    canonical = tmp_path / "canonical.taut.jsonl"
+    TautClient.dump(output=canonical, db_path=source)
+    replaced = False
+
+    def corrupt(component: str, record: dict[str, object]) -> dict[str, object]:
+        nonlocal replaced
+        if (
+            component == "simplebroker"
+            and record.get("type") == record_type
+            and not replaced
+        ):
+            record[field] = invalid
+            replaced = True
+        return record
+
+    malformed = tmp_path / "malformed.taut.jsonl"
+    malformed.write_bytes(_rewrite_component_payloads(canonical.read_bytes(), corrupt))
+    assert replaced
+
+    with pytest.raises(TautError, match=error):
+        TautClient.load(input_path=malformed, db_path=tmp_path / "destination.db")
 
 
 @pytest.mark.parametrize("failure", ["unknown-meta", "incomplete-rename"])

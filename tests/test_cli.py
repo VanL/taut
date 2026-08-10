@@ -104,6 +104,75 @@ def test_cli_human_glyphs_fall_back_for_legacy_stdout_encoding() -> None:
     )
 
 
+def test_cli_json_renderers_format_timestamp_domain_only_at_external_boundary() -> None:
+    from taut.client import (
+        Channel,
+        Member,
+        MessageDeletion,
+        MessageReaction,
+        Notification,
+        Thread,
+    )
+    from taut.commands._rendering import (
+        channel_object,
+        deletion_object,
+        member_object,
+        message_object,
+        notification_object,
+        reaction_object,
+        thread_object,
+    )
+
+    first = 1_800_000_000_000_000_001
+    second = 1_800_000_000_000_000_002
+    message = Message("general", first, "m_sender", "alice", "message", "one")
+    adjacent = Message("general", second, "m_sender", "alice", "message", "two")
+    member = Member("m_sender", "alice", (), "human", "online", second)
+    thread = Thread("general", None, True, second)
+    channel = Channel("general", "topic", second, "m_sender", "alice")
+    deletion = MessageDeletion("general", first)
+    reaction = MessageReaction("general", second, "ack", 3)
+    notification = Notification(
+        "reaction", "m_recipient", "m_sender", "alice", "general", first
+    )
+
+    assert message_object(message)["ts"] == "1800000000000000001"
+    assert message_object(adjacent)["ts"] == "1800000000000000002"
+    assert deletion_object(deletion)["ts"] == "1800000000000000001"
+    assert reaction_object(reaction) == {
+        "thread": "general",
+        "message_ts": "1800000000000000002",
+        "reaction": "ack",
+        "audience_count": 3,
+    }
+    assert member_object(member, include_token=False)["last_active_ts"] == (
+        "1800000000000000002"
+    )
+    assert thread_object(thread)["last_ts"] == "1800000000000000002"
+    assert channel_object(channel)["topic_updated_ts"] == "1800000000000000002"
+    assert notification_object(notification)["message_ts"] == ("1800000000000000001")
+    assert thread_object(Thread("empty", None, False, None))["last_ts"] is None
+    assert (
+        channel_object(Channel("empty", None, None, None, None))["topic_updated_ts"]
+        is None
+    )
+    assert (
+        notification_object(Notification("foreign", None, None, None, None, None))[
+            "message_ts"
+        ]
+        is None
+    )
+
+    assert message.ts == first
+    assert adjacent.ts == second
+    assert member.last_active_ts == second
+    assert thread.last_ts == second
+    assert channel.topic_updated_ts == second
+    assert deletion.ts == first
+    assert reaction.message_ts == second
+    assert notification.message_ts == first
+
+
 def test_cli_json_join_say_log(tmp_path: Path) -> None:
     assert run_cli("init", "--json", cwd=tmp_path)[0] == 0
     rc, out, _ = run_cli("--as", "van", "join", "general", "--json", cwd=tmp_path)
@@ -201,7 +270,7 @@ def test_cli_message_react_returns_exact_receipt_json(tmp_path: Path) -> None:
     assert rc == 0, err
     assert json.loads(out) == {
         "thread": "general",
-        "message_ts": target,
+        "message_ts": str(target),
         "reaction": "ack",
         "audience_count": 2,
     }
@@ -645,9 +714,9 @@ def test_cli_message_operations_ignore_stdin(tmp_path: Path) -> None:
     )
 
     assert shown[0] == 0
-    assert json.loads(shown[1])["ts"] == shown_target
+    assert json.loads(shown[1])["ts"] == str(shown_target)
     assert deleted[0] == 0
-    assert json.loads(deleted[1])["ts"] == deleted_target
+    assert json.loads(deleted[1])["ts"] == str(deleted_target)
 
 
 def test_cli_as_creation_is_command_gated(tmp_path: Path) -> None:
@@ -1299,7 +1368,7 @@ def test_reaction_notification_has_pointer_human_and_json_rendering() -> None:
         "actor_id": "m_" + "a" * 26,
         "actor_name": "alice",
         "thread": "general",
-        "message_ts": 1_800_000_000_000_000_001,
+        "message_ts": "1800000000000000001",
         "reaction": "ack",
     }
 
@@ -1382,7 +1451,7 @@ def test_message_reaction_receipt_renders_warning_and_quiet_suppresses_both() ->
 
     assert json.loads(stdout.getvalue()) == {
         "thread": "general",
-        "message_ts": 1_800_000_000_000_000_001,
+        "message_ts": "1800000000000000001",
         "reaction": "ack",
         "audience_count": 2,
     }
@@ -2277,7 +2346,8 @@ def test_cli_channel_topic_show_list_and_clear_round_trip(tmp_path: Path) -> Non
     }
     assert topic["channel"] == "general"
     assert topic["topic"] == "Current implementation and review coordination"
-    assert isinstance(topic["topic_updated_ts"], int)
+    assert topic["topic_updated_ts"] == str(int(topic["topic_updated_ts"]))
+    assert len(topic["topic_updated_ts"]) == 19
     assert isinstance(topic["topic_updated_by_id"], str)
     assert topic["topic_updated_by_name"] == "van"
 
@@ -2615,14 +2685,16 @@ def _log_texts(tmp_path: Path, thread: str) -> list[str]:
 def _log_ts_values(tmp_path: Path, thread: str) -> list[int]:
     rc, out, err = run_cli("log", thread, "--json", cwd=tmp_path)
     assert rc == 0, err
-    return [json.loads(line)["ts"] for line in out.splitlines()]
+    return [int(json.loads(line)["ts"]) for line in out.splitlines()]
 
 
 def _say_ts(tmp_path: Path, name: str, thread: str, text: str) -> int:
     rc, out, err = run_cli("--as", name, "say", thread, text, "--json", cwd=tmp_path)
     assert rc == 0, err
     return next(
-        cast(int, obj["ts"]) for obj in map(json.loads, out.splitlines()) if "ts" in obj
+        int(cast(str, obj["ts"]))
+        for obj in map(json.loads, out.splitlines())
+        if "ts" in obj
     )
 
 

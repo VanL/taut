@@ -289,6 +289,62 @@ def test_read_and_log_schemas_accept_chat_or_dm_selectors(
     )
 
 
+@pytest.mark.parametrize(
+    "since",
+    [
+        None,
+        9_007_199_254_740_991,
+        "2026-08-10T12:34:56Z",
+        "1800000000000000001",
+        "1800000000",
+    ],
+)
+def test_log_since_schema_preserves_strings_and_safe_json_integers(
+    since: object,
+) -> None:
+    tool = next(tool for tool in TOOLS if tool.name == "log")
+
+    validate(
+        instance={
+            "workspace": "/workspace",
+            "token": "secret",
+            "thread": "general",
+            "since": since,
+        },
+        schema=tool.input_schema,
+    )
+
+
+@pytest.mark.parametrize(
+    "since",
+    [9_007_199_254_740_992, -9_007_199_254_740_992],
+)
+def test_log_since_rejects_unsafe_bare_json_integer_before_dispatch(
+    since: int,
+) -> None:
+    tool = next(tool for tool in TOOLS if tool.name == "log")
+    arguments = {
+        "workspace": "/workspace",
+        "token": "secret",
+        "thread": "general",
+        "since": since,
+    }
+
+    with pytest.raises(ValidationError):
+        validate(instance=arguments, schema=tool.input_schema)
+
+    class PublicClientSpy:
+        def __getattr__(self, name: str) -> object:
+            raise AssertionError(f"unexpected client dispatch: {name}")
+
+    with pytest.raises(ValueError, match="since integer must be JSON-safe"):
+        execute_command(
+            cast(TautClient, PublicClientSpy()),
+            "log",
+            (("thread", "general"), ("since", since)),
+        )
+
+
 @pytest.mark.parametrize("tool_name", ["read", "log"])
 @pytest.mark.parametrize(
     "selector",
@@ -354,8 +410,37 @@ def test_message_deletion_record_encoding_is_closed_and_content_free() -> None:
     assert record_object(deletion) == {
         "deleted": True,
         "thread": "general",
-        "ts": 1_234_567_890_123_456_789,
+        "ts": "1234567890123456789",
     }
+
+
+def test_record_encoding_formats_all_external_timestamp_fields_only() -> None:
+    from taut import Channel, Member, Message, Thread
+
+    first = 1_800_000_000_000_000_001
+    second = 1_800_000_000_000_000_002
+    message = Message("general", first, "m_sender", "alice", "message", "one")
+    adjacent = Message("general", second, "m_sender", "alice", "message", "two")
+    member = Member("m_sender", "alice", (), "human", "online", second)
+    channel = Channel("general", "topic", second, "m_sender", "alice")
+    thread = Thread("general", None, True, second)
+
+    assert record_object(message)["ts"] == "1800000000000000001"
+    assert record_object(adjacent)["ts"] == "1800000000000000002"
+    assert record_object(member)["last_active_ts"] == "1800000000000000002"
+    assert record_object(channel)["topic_updated_ts"] == "1800000000000000002"
+    assert record_object(thread)["last_ts"] == "1800000000000000002"
+    assert (
+        record_object(Channel("empty", None, None, None, None))["topic_updated_ts"]
+        is None
+    )
+    assert record_object(Thread("empty", None, False, None))["last_ts"] is None
+
+    assert message.ts == first
+    assert adjacent.ts == second
+    assert member.last_active_ts == second
+    assert channel.topic_updated_ts == second
+    assert thread.last_ts == second
 
 
 def test_message_reaction_and_notification_encodings_are_closed() -> None:
@@ -379,14 +464,14 @@ def test_message_reaction_and_notification_encodings_are_closed() -> None:
 
     assert record_object(reaction) == {
         "audience_count": 2,
-        "message_ts": 1_234_567_890_123_456_789,
+        "message_ts": "1234567890123456789",
         "reaction": "ack",
         "thread": "general",
     }
     assert record_object(notification) == {
         "actor_id": "m_actor",
         "actor_name": "actor",
-        "message_ts": 1_234_567_890_123_456_789,
+        "message_ts": "1234567890123456789",
         "reaction": "ack",
         "thread": "general",
         "to_id": None,
@@ -585,7 +670,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
                 guidance=READ_GUIDANCE,
             )
             assert len(unread["records"]) == 1
-            assert unread["records"][0]["ts"] == unread_after_reaction.ts
+            assert unread["records"][0]["ts"] == str(unread_after_reaction.ts)
             assert unread["records"][0]["text"] == "after reaction unread"
 
             shown = await reactor._execute_ready_tool(
@@ -651,7 +736,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
             assert topic["records"][0]["channel"] == "general"
             assert topic["records"][0]["topic"] == "Current work"
             assert topic["records"][0]["topic_updated_by_name"] == "renamed"
-            assert isinstance(topic["records"][0]["topic_updated_ts"], int)
+            assert isinstance(topic["records"][0]["topic_updated_ts"], str)
             assert tuple(other.log("general", limit=1000)) == history_before_topic
             assert tuple(other.peek_inbox()) == notifications_before_topic
 
@@ -1148,7 +1233,7 @@ def test_show_message_advances_exact_thread_high_water_without_show_guidance(
                 "read",
                 {"thread": "general", "limit": 100},
             )
-            assert [record["ts"] for record in unread["records"]] == [later.ts]
+            assert [record["ts"] for record in unread["records"]] == [str(later.ts)]
             assert older.ts < target.ts < later.ts
         finally:
             observer.close()
@@ -1921,7 +2006,7 @@ def test_explicit_dm_read_log_and_directory_use_public_core_contract(
             assert directory["records"] == [
                 {
                     "kind": "dm",
-                    "last_ts": sent.ts,
+                    "last_ts": str(sent.ts),
                     "members": list(
                         next(
                             item
@@ -2205,7 +2290,8 @@ def test_every_tool_declares_a_closed_common_output_schema() -> None:
             },
             "ts": {
                 "description": "Deleted Taut message timestamp/id.",
-                "type": "integer",
+                "pattern": r"^[0-9]{19}$",
+                "type": "string",
             },
         },
         "required": ["thread", "ts", "deleted"],
@@ -2228,7 +2314,8 @@ def test_every_tool_declares_a_closed_common_output_schema() -> None:
             },
             "message_ts": {
                 "description": "Reacted-to Taut message timestamp/id.",
-                "type": "integer",
+                "pattern": r"^[0-9]{19}$",
+                "type": "string",
             },
             "reaction": {
                 "description": "Configured reaction slug sent by the actor.",
@@ -2252,6 +2339,40 @@ def test_every_tool_declares_a_closed_common_output_schema() -> None:
         "description": "Reaction slug for a reaction notification.",
         "type": "string",
     }
+
+
+def test_output_schemas_require_canonical_string_timestamps() -> None:
+    schemas = {
+        tool.name: tool.output_schema["properties"]["records"]["items"]
+        for tool in TOOLS
+        if tool.output_schema is not None
+    }
+    canonical = {"pattern": r"^[0-9]{19}$", "type": "string"}
+
+    for tool_name, field in (
+        ("say", "ts"),
+        ("message_delete", "ts"),
+        ("message_react", "message_ts"),
+        ("who", "last_active_ts"),
+    ):
+        field_schema = schemas[tool_name]["properties"][field]
+        assert field_schema["pattern"] == canonical["pattern"]
+        assert field_schema["type"] == canonical["type"]
+
+    for tool_name, field in (
+        ("inbox", "message_ts"),
+        ("channel_show", "topic_updated_ts"),
+    ):
+        assert schemas[tool_name]["properties"][field]["anyOf"] == [
+            canonical,
+            {"type": "null"},
+        ]
+
+    thread_schema = schemas["list"]
+    assert all(
+        branch["properties"]["last_ts"]["anyOf"] == [canonical, {"type": "null"}]
+        for branch in thread_schema["oneOf"]
+    )
 
 
 @pytest.mark.parametrize(
@@ -2413,7 +2534,7 @@ def test_exact_tool_manifest_snapshot() -> None:
         separators=(",", ":"),
     ).encode()
     assert hashlib.sha256(encoded).hexdigest() == (
-        "57ee763c236a8765098ed061019306c7a9ce208e9b38efc3695d688fa22c3624"
+        "e648b5e3f1498454442d69c66d6e625e5f3656b8f60a290e90d76e4ba3980a1f"
     )
 
     def assert_property_descriptions(schema: dict[str, object]) -> None:

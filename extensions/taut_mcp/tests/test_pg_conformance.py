@@ -289,7 +289,7 @@ def test_postgres_exact_message_tools_use_public_core_contract(
             assert changed_member is not None
             assert changed_member["last_active_ts"] > before_member["last_active_ts"]
             assert (
-                changed_member["last_active_ts"]
+                str(changed_member["last_active_ts"])
                 == topic["records"][0]["topic_updated_ts"]
             )
             same_topic = await reactor._execute_ready_tool(
@@ -337,7 +337,7 @@ def test_postgres_exact_message_tools_use_public_core_contract(
             assert reacted["records"] == [
                 {
                     "audience_count": 1,
-                    "message_ts": shown_target.ts,
+                    "message_ts": str(shown_target.ts),
                     "reaction": "ack",
                     "thread": "general",
                 }
@@ -352,7 +352,7 @@ def test_postgres_exact_message_tools_use_public_core_contract(
                 {
                     "deleted": True,
                     "thread": "general",
-                    "ts": deletion_target.ts,
+                    "ts": str(deletion_target.ts),
                 }
             ]
             renamed = await reactor._execute_ready_tool(

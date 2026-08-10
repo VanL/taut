@@ -25,7 +25,7 @@ from typing import NoReturn
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_HISTORICAL_SUMMON_COMMIT = "b03709452cf4d5962b0d7204b0dab78b9bafd524"
 EXPECTED_HISTORICAL_SUMMON_VERSION = "0.5.4"
-MINIMUM_SIMPLEBROKER_VERSION = "5.3.0"
+MINIMUM_SIMPLEBROKER_VERSION = "7.0.0"
 COMMAND_TIMEOUT_SECONDS = 180.0
 CONTROL_SMOKE_TIMEOUT_SECONDS = 180.0
 EXPECTED_HISTORICAL_SUMMON_REF = "taut_summon/v0.5.4"
@@ -190,11 +190,11 @@ def _require_simplebroker_floor(metadata: WheelMetadata) -> None:
         if len(project_requirements) == 1
         else None
     )
-    if match is None or tuple(int(part) for part in match.groups()) < (5, 3, 0):
+    if match is None or tuple(int(part) for part in match.groups()) < (7, 0, 0):
         rendered = ", ".join(metadata.requirements) or "<none>"
         _fail(
             f"{metadata.name} {metadata.version} METADATA must contain exactly one "
-            "unmarked simplebroker>=X.Y.Z requirement with X.Y.Z >= 5.3.0; "
+            "unmarked simplebroker>=X.Y.Z requirement with X.Y.Z >= 7.0.0; "
             f"found: {rendered}"
         )
 
@@ -607,8 +607,8 @@ def release_tuple(version):
     return tuple(int(part) for part in match.groups())
 
 simplebroker_version = importlib.metadata.version("simplebroker")
-if release_tuple(simplebroker_version) < (5, 3, 0):
-    raise SystemExit(f"SimpleBroker below 5.3.0 resolved: {simplebroker_version}")
+if release_tuple(simplebroker_version) < (7, 0, 0):
+    raise SystemExit(f"SimpleBroker below 7.0.0 resolved: {simplebroker_version}")
 """
 
 

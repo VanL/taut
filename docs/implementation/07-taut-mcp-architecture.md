@@ -138,6 +138,14 @@ objects. It never launches the CLI, parses terminal output, reflects the
 command registry, or receives MCP identity fields. A startup assertion keeps
 the manifest's domain partition equal to this dispatcher.
 
+That serializer applies `simplebroker.format_message_id` only to its explicit
+timestamp fields; `_process_reactor.py` does the same for the independently
+constructed notification resource. Closed output schemas require 19-digit
+strings, while the domain objects and parent/child IPC remain integer-valued.
+`log.since` preserves the core ISO-8601/Unix/native-id string grammar and null,
+but schema and dispatch reject bare integers outside JavaScript's safe range.
+Accepted strings pass to the existing core resolver without a second parser.
+
 Each ready workspace has one no-wait parent command slot. A second command for
 that workspace returns busy instead of growing a queue; another workspace can
 still proceed. Child completion carries the domain outcome and selected

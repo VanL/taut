@@ -556,7 +556,7 @@ def emit_channel(
 def message_object(message: Message) -> dict[str, Any]:
     return {
         "thread": message.thread,
-        "ts": message.ts,
+        "ts": _format_message_id(message.ts),
         "from_id": message.from_id,
         "from": message.from_name,
         "kind": message.kind,
@@ -577,7 +577,7 @@ def search_hit_object(hit: SearchHit) -> dict[str, Any]:
         "text": hit.text,
         "thread": hit.thread,
         "thread_kind": hit.thread_kind,
-        "ts": hit.ts,
+        "ts": _format_message_id(hit.ts),
     }
 
 
@@ -602,7 +602,7 @@ def channel_object(channel: Channel) -> dict[str, Any]:
     return {
         "channel": channel.name,
         "topic": channel.topic,
-        "topic_updated_ts": channel.topic_updated_ts,
+        "topic_updated_ts": _optional_message_id(channel.topic_updated_ts),
         "topic_updated_by_id": channel.topic_updated_by_id,
         "topic_updated_by_name": channel.topic_updated_by_name,
     }
@@ -611,7 +611,7 @@ def channel_object(channel: Channel) -> dict[str, Any]:
 def deletion_object(deletion: MessageDeletion) -> dict[str, Any]:
     return {
         "thread": deletion.thread,
-        "ts": deletion.ts,
+        "ts": _format_message_id(deletion.ts),
         "deleted": deletion.deleted,
     }
 
@@ -619,7 +619,7 @@ def deletion_object(deletion: MessageDeletion) -> dict[str, Any]:
 def reaction_object(reaction: MessageReaction) -> dict[str, Any]:
     return {
         "thread": reaction.thread,
-        "message_ts": reaction.message_ts,
+        "message_ts": _format_message_id(reaction.message_ts),
         "reaction": reaction.reaction,
         "audience_count": reaction.audience_count,
     }
@@ -632,7 +632,7 @@ def member_object(member: Member, *, include_token: bool) -> dict[str, Any]:
         "aliases": list(member.aliases),
         "kind": member.kind,
         "presence": member.presence,
-        "last_active_ts": member.last_active_ts,
+        "last_active_ts": _format_message_id(member.last_active_ts),
         "persona": member.persona,
     }
     if include_token and member.token is not None:
@@ -648,7 +648,7 @@ def thread_object(thread: Thread) -> dict[str, Any]:
         "kind": thread.kind,
         "parent": thread.parent,
         "unread": thread.unread,
-        "last_ts": thread.last_ts,
+        "last_ts": _optional_message_id(thread.last_ts),
     }
     if thread.kind == "dm":
         obj["members"] = list(thread.members)
@@ -664,7 +664,7 @@ def notification_object(notification: Notification) -> dict[str, Any]:
         "actor_id": notification.actor_id,
         "actor_name": notification.actor_name,
         "thread": notification.thread,
-        "message_ts": notification.message_ts,
+        "message_ts": _optional_message_id(notification.message_ts),
     }
     if notification.matched is not None:
         obj["matched"] = notification.matched
@@ -675,6 +675,17 @@ def notification_object(notification: Notification) -> dict[str, Any]:
     if notification.raw is not None and notification.type == "foreign":
         obj["raw"] = notification.raw
     return obj
+
+
+def _optional_message_id(value: int | None) -> str | None:
+    return None if value is None else _format_message_id(value)
+
+
+def _format_message_id(value: int) -> str:
+    # Keep the core CLI's help/import path independent from runtime backends.
+    from simplebroker import format_message_id
+
+    return format_message_id(value)
 
 
 def write_json(stream: TextIO, obj: dict[str, Any]) -> None:

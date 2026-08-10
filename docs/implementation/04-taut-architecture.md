@@ -69,9 +69,11 @@ filesystem error surfaces. Core rejects those paths before constructing
 `Queue`; it does not broaden this into a portable filename policy, so POSIX
 acceptance and non-SQLite targets remain unchanged.
 
-The load-bearing supported SimpleBroker floor is `simplebroker>=6.0.2`, aligned
+The load-bearing supported SimpleBroker floor is `simplebroker>=7.0.0`, aligned
 with
-`simplebroker-pg>=3.5.1`. Version 5.6.1 remains the origin of atomic exact-name
+`simplebroker-pg>=3.5.2`. Version 7.0.0 supplies the public message-id formatter
+and the exact-string JSON boundary while leaving Python and backend values as
+integers. Version 5.6.1 remains the origin of atomic exact-name
 `broadcast(..., queue_names=..., create_missing=True)`, in addition to the
 earlier interruptible watcher bootstrap, corrected runner cleanup, and
 initialized timestamp-conflict metrics. Taut does not use
@@ -83,6 +85,12 @@ visible. The other core runtime dependency is `psutil`.
 SimpleBroker owns the storage and queue substrate; `psutil` is scoped to
 cross-platform process metadata for identity capture so taut does not rely on
 fragile platform-specific argv parsing for the core recognition path.
+CLI JSON rendering uses the package-root `simplebroker.format_message_id`
+helper at each owned timestamp field. The import stays lazy so root help and
+unrelated extension help retain their no-backend-import startup contract.
+Public value objects, state methods, SQL rows, notification bodies, and search
+work items remain integer-valued; the string is an output representation only.
+
 `taut-pg` is a separate project under `extensions/taut_pg`; it installs
 `simplebroker-pg` beside Taut but does not add a root runtime dependency.
 The private `taut._broker_retry` module remains only as an import-compatible,

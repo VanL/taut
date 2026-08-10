@@ -168,7 +168,7 @@ class _RuntimeImportVisitor(ast.NodeVisitor):
         (
             Path("taut/commands/_rendering.py"),
             {"taut", "taut._exceptions"},
-            {"taut.client", "taut.search"},
+            {"simplebroker", "taut.client", "taut.search"},
         ),
         (
             Path("taut/commands/_protocol.py"),

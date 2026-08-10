@@ -262,7 +262,7 @@ def test_channel_and_thread_records_have_exact_kind_specific_shapes() -> None:
     assert record_object(channel) == {
         "channel": "general",
         "topic": "Current work",
-        "topic_updated_ts": 123,
+        "topic_updated_ts": "0000000000000000123",
         "topic_updated_by_id": "m_author",
         "topic_updated_by_name": "Author",
     }
