@@ -679,6 +679,12 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   timestamps; runner descheduling can delay observation without violating the
   producer's pacing contract.
 
+- 2026-08-10: Stream write boundaries are not stream read boundaries. A pipe
+  or PTY consumer may coalesce two correctly serialized writes into one read,
+  or split one write across reads. Serialization tests should control the
+  producer-side contest, then compare the reconstructed byte stream and its
+  order. They must not require the consumer's event chunks to mirror writes.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

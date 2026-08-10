@@ -1964,7 +1964,8 @@ def test_attach_forwarding_serializes_with_injection(
     assert b"\x1b[?2004l" in reset
     assert failures == []
     inputs = [entry["raw"] for entry in _entries(_log) if entry["event"] == "input"]
-    assert inputs[:2] == ["human\r", "agent\r"]
+    input_stream = "".join(inputs).split("\x03", 1)[0]
+    assert input_stream == "human\ragent\r"
 
 
 def test_attach_shutdown_wake_exits_bridge(
