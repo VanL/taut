@@ -214,9 +214,59 @@ def test_resource_sorts_workspaces_and_bounds_each_notification_snapshot(
         selected_name="earlier_selected",
         other_name="earlier_other",
     )
-    for index in range(101):
+    later_actor = later_other.whoami()
+    earlier_actor = earlier_other.whoami()
+    later_selected = TautClient(db_path=later / ".taut.db", token=later_token)
+    earlier_selected = TautClient(db_path=earlier / ".taut.db", token=earlier_token)
+    try:
+        later_selected_id = later_selected.whoami().member_id
+        earlier_selected_id = earlier_selected.whoami().member_id
+    finally:
+        later_selected.close()
+        earlier_selected.close()
+    later_messages = [
         later_other.say("general", f"pointer-{index:03d} @later_selected")
-    earlier_other.say("general", "one @earlier_selected")
+        for index in range(101)
+    ]
+    earlier_message = earlier_other.say("general", "one @earlier_selected")
+
+    def expected_notification(
+        message_ts: int,
+        *,
+        actor_id: str,
+        actor_name: str,
+        matched: str,
+        to_id: str,
+    ) -> dict[str, object]:
+        return {
+            "actor_id": actor_id,
+            "actor_name": actor_name,
+            "matched": matched,
+            "message_ts": str(message_ts),
+            "thread": "general",
+            "to_id": to_id,
+            "type": "mention",
+        }
+
+    expected_later = [
+        expected_notification(
+            message.ts,
+            actor_id=later_actor.member_id,
+            actor_name="later_other",
+            matched="@later_selected",
+            to_id=later_selected_id,
+        )
+        for message in later_messages
+    ]
+    expected_earlier = [
+        expected_notification(
+            earlier_message.ts,
+            actor_id=earlier_actor.member_id,
+            actor_name="earlier_other",
+            matched="@earlier_selected",
+            to_id=earlier_selected_id,
+        )
+    ]
 
     async def scenario() -> None:
         reactor = ProcessReactor(asyncio.get_running_loop())
@@ -230,13 +280,10 @@ def test_resource_sorts_workspaces_and_bounds_each_notification_snapshot(
             )
             by_workspace = {entry["workspace"]: entry for entry in entries}
             later_entry = by_workspace[later_result["workspace"]]
-            assert len(later_entry["notifications"]) == 100
+            assert later_entry["notifications"] == expected_later[:100]
             assert later_entry["truncated"] is True
-            assert [
-                item["message_ts"] for item in later_entry["notifications"]
-            ] == sorted(item["message_ts"] for item in later_entry["notifications"])
             earlier_entry = by_workspace[earlier_result["workspace"]]
-            assert len(earlier_entry["notifications"]) == 1
+            assert earlier_entry["notifications"] == expected_earlier
             assert earlier_entry["truncated"] is False
 
             claimed = await reactor._execute_ready_tool(
@@ -244,12 +291,15 @@ def test_resource_sorts_workspaces_and_bounds_each_notification_snapshot(
                 "inbox",
                 {"limit": 1},
             )
-            assert len(claimed["records"]) == 1
+            assert claimed["records"] == expected_later[:1]
             refreshed = {
                 entry["workspace"]: entry
                 for entry in json.loads(reactor.current_text)["workspaces"]
             }
-            assert len(refreshed[later_result["workspace"]]["notifications"]) == 100
+            assert (
+                refreshed[later_result["workspace"]]["notifications"]
+                == expected_later[1:]
+            )
             assert refreshed[later_result["workspace"]]["truncated"] is False
             assert refreshed[earlier_result["workspace"]] == earlier_entry
         finally:

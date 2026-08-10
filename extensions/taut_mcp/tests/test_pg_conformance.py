@@ -11,6 +11,7 @@ import pytest
 
 import taut_mcp._workspace_reactor as workspace_reactor
 from taut import TautClient, identity
+from taut.envelope import encode_envelope
 from taut_mcp._commands import record_object
 from taut_mcp._process_reactor import ProcessReactor
 
@@ -118,12 +119,22 @@ def test_postgres_read_limit_pages_without_cursor_gaps(
     assert member.token is not None
     other = TautClient(as_name="other")
     other.join("general")
+    other_member = other.last_created_member
+    assert other_member is not None
     selected.read("general", limit=1000)
+    channel = other.queue("general")
     expected: list[str] = []
     for index in range(250):
         text = f"pg-page-{index:03d}"
         expected.append(text)
-        other.say("general", text)
+        channel.write(
+            encode_envelope(
+                from_id=other_member.member_id,
+                from_name=other_member.name,
+                kind="message",
+                text=text,
+            )
+        )
     selected.close()
     other.close()
 
@@ -326,7 +337,22 @@ def test_postgres_search_matches_direct_client_and_preserves_state(
                     "limit": 50,
                 },
             )
-            assert unicode_mcp["records"] == unicode_direct
+            known_unicode_result = [
+                {
+                    "channel": "general",
+                    "from": "selected",
+                    "from_id": member.member_id,
+                    "kind": "message",
+                    "members": None,
+                    "parent": None,
+                    "text": "pgsearchneedle café channel",
+                    "thread": "general",
+                    "thread_kind": "channel",
+                    "ts": str(channel.ts),
+                }
+            ]
+            assert unicode_direct == known_unicode_result
+            assert unicode_mcp["records"] == known_unicode_result
 
             empty = await reactor._execute_ready_tool(
                 canonical,

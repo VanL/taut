@@ -298,24 +298,30 @@ class _EntryPoint:
         return self.loaded
 
 
-def test_command_author_surface_is_public() -> None:
-    from taut.commands import (
-        Command,
-        CommandArgumentParser,
-        CommandContext,
-        CommandError,
-        CommandFactory,
-        CommandSpec,
-        GlobalOption,
-    )
+def _assert_fragments_in_order(value: str, fragments: tuple[str, ...]) -> None:
+    cursor = 0
+    for fragment in fragments:
+        position = value.find(fragment, cursor)
+        assert position >= cursor, (fragment, value)
+        cursor = position + len(fragment)
 
-    assert Command is not None
-    assert CommandArgumentParser is not None
-    assert CommandContext is not None
-    assert CommandError is not None
-    assert CommandFactory is not None
-    assert CommandSpec is not None
-    assert {option.name for option in GlobalOption} == {
+
+def test_command_author_surface_is_public() -> None:
+    from taut import commands
+
+    expected = {
+        "Command",
+        "CommandArgumentParser",
+        "CommandContext",
+        "CommandError",
+        "CommandFactory",
+        "CommandSpec",
+        "GlobalOption",
+    }
+    assert set(commands.__all__) == expected
+    assert len(commands.__all__) == len(expected)
+    assert {name for name in expected if hasattr(commands, name)} == expected
+    assert {option.name for option in commands.GlobalOption} == {
         "DB",
         "AS",
         "TOKEN",
@@ -423,13 +429,22 @@ def test_unofficial_claim_cannot_override_reserved_summon_slot() -> None:
         )
     )
 
-    assert registry.get("summon").spec is not None
-    assert registry.get("summon").verbatim_tail is True
-    assert registry.diagnostics() == (
+    selected = registry.get("summon")
+    assert selected.spec is not None
+    assert selected.spec.implementation == (
+        "taut.commands._summon_compat:create_summon_command"
+    )
+    assert selected.verbatim_tail is True
+    diagnostics = registry.diagnostics()
+    assert len(diagnostics) == 1
+    _assert_fragments_in_order(
+        diagnostics[0],
         (
-            "installed command 'summon' from counterfeit-owner 1.0.0 "
-            "(counterfeit.manifest:summon) cannot own the reserved first-party slot; "
-            "the official owner is taut-summon"
+            "summon",
+            "counterfeit-owner 1.0.0",
+            "counterfeit.manifest:summon",
+            "reserved first-party slot",
+            "taut-summon",
         ),
     )
 
@@ -541,16 +556,18 @@ def test_official_claim_wins_reserved_slot_with_unofficial_diagnostic() -> None:
 
     assert forward.get("summon").spec is official
     assert reverse.get("summon").spec is official
-    assert (
-        forward.diagnostics()
-        == reverse.diagnostics()
-        == (
-            (
-                "installed command 'summon' from counterfeit-owner 1.0.0 "
-                "(counterfeit.manifest:summon) cannot own the reserved first-party slot; "
-                "the official owner is taut-summon"
-            ),
-        )
+    diagnostics = forward.diagnostics()
+    assert diagnostics == reverse.diagnostics()
+    assert len(diagnostics) == 1
+    _assert_fragments_in_order(
+        diagnostics[0],
+        (
+            "summon",
+            "counterfeit-owner 1.0.0",
+            "counterfeit.manifest:summon",
+            "reserved first-party slot",
+            "taut-summon",
+        ),
     )
 
 
@@ -892,11 +909,19 @@ def test_conflicts_are_deterministic_and_cannot_override_builtins() -> None:
     assert forward.get("message").builtin is True
     assert reverse.get("message").builtin is True
     assert forward.get("fixture").spec is None
-    assert forward.get("fixture").error == reverse.get("fixture").error
-    assert forward.get("fixture").error == (
-        "command 'fixture' is unavailable because multiple distributions claim it: "
-        "alpha-owner 1.0.0 (alpha.manifest:fixture), "
-        "zeta-owner 1.0.0 (zeta.manifest:fixture)"
+    conflict = forward.get("fixture").error
+    assert conflict == reverse.get("fixture").error
+    assert conflict is not None
+    _assert_fragments_in_order(
+        conflict,
+        (
+            "fixture",
+            "multiple distributions",
+            "alpha-owner 1.0.0",
+            "alpha.manifest:fixture",
+            "zeta-owner 1.0.0",
+            "zeta.manifest:fixture",
+        ),
     )
 
 
@@ -1952,11 +1977,17 @@ def test_invalid_entry_point_name_is_diagnostic_not_a_help_command() -> None:
     )
 
     assert "Bad_Name" not in registry.names()
-    assert registry.diagnostics() == (
+    diagnostics = registry.diagnostics()
+    assert len(diagnostics) == 1
+    _assert_fragments_in_order(
+        diagnostics[0],
         (
-            "command 'Bad_Name' from invalid-owner 1.0.0 "
-            "(invalid.manifest:command) is unavailable: command name must match "
-            "[a-z][a-z0-9-]*"
+            "Bad_Name",
+            "invalid-owner 1.0.0",
+            "invalid.manifest:command",
+            "unavailable",
+            "command name",
+            "[a-z][a-z0-9-]*",
         ),
     )
 

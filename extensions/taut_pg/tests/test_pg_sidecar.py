@@ -366,14 +366,30 @@ def test_postgres_concurrent_empty_schema_initializers_converge(
         with raw_pg_conn.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT COUNT(*)
+                SELECT table_name
                 FROM information_schema.tables
                 WHERE table_schema = %s
                   AND table_name LIKE 'taut_%%'
+                ORDER BY table_name
                 """,
                 (pg_schema,),
             )
-            assert cursor.fetchone() == (7,)
+            assert [row[0] for row in cursor.fetchall()] == [
+                "taut_channel_renames",
+                "taut_identity_claims",
+                "taut_member_aliases",
+                "taut_members",
+                "taut_membership",
+                "taut_meta",
+                "taut_threads",
+            ]
+        client = TautClient(as_name="post_init")
+        try:
+            client.join("general")
+            written = client.say("general", "schema is usable after convergence")
+            assert client.log("general")[-1] == written
+        finally:
+            client.close()
     finally:
         for queue in queues:
             queue.close()

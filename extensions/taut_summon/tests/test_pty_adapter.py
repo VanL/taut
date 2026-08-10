@@ -21,7 +21,7 @@ import threading
 import time
 import types
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Self, cast
 
 import pytest
 from taut_summon._adapter import (
@@ -68,9 +68,16 @@ pytestmark = [pytest.mark.xdist_group("process"), pytest.mark.sqlite_only]
 
 
 class EventPump:
-    def __init__(self, handle: AdapterHandle) -> None:
+    def __init__(
+        self, handle: AdapterHandle, *, thread_name: str | None = None
+    ) -> None:
         self._items: queue.Queue[AdapterEvent | Exception] = queue.Queue()
-        self._thread = threading.Thread(target=self._run, args=(handle,), daemon=True)
+        self._thread = threading.Thread(
+            target=self._run,
+            args=(handle,),
+            daemon=True,
+            name=thread_name,
+        )
         self._thread.start()
 
     def _run(self, handle: AdapterHandle) -> None:
@@ -158,6 +165,30 @@ class _TrackingWriterLock:
 
     def __exit__(self, *_args: object) -> None:
         self._lock.release()
+
+
+class _TrackingCondition:
+    """Expose when one named non-owner waits for lifecycle completion."""
+
+    def __init__(self, lock: threading.RLock, *, tracked_thread: str) -> None:
+        self._condition = threading.Condition(lock)
+        self._tracked_thread = tracked_thread
+        self.wait_entered = threading.Event()
+
+    def __enter__(self) -> Self:
+        self._condition.__enter__()
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self._condition.__exit__(*args)
+
+    def wait_for(self, predicate: Any, timeout: float | None = None) -> bool:
+        if threading.current_thread().name == self._tracked_thread:
+            self.wait_entered.set()
+        return self._condition.wait_for(predicate, timeout)
+
+    def notify_all(self) -> None:
+        self._condition.notify_all()
 
 
 def _boundary_pty_handle(proc: Any, master_fd: int) -> PtyHandle:
@@ -315,29 +346,43 @@ def test_fake_tui_preserves_input_that_arrives_before_query_reply() -> None:
     )
 
 
-def test_wait_until_quiet_waits_for_first_output() -> None:
+def test_wait_until_quiet_waits_for_first_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     handle = object.__new__(PtyHandle)
     handle._reader_started_event = threading.Event()
     handle._reader_started_event.set()
     handle._seen_output = threading.Event()
-    handle._last_output_ts = time.monotonic() - 10.0
-    handle._quiet_s = 0.01
+    handle._last_output_ts = 0.0
+    handle._quiet_s = 0.1
     handle._max_settle_s = 1.0
-    returned = threading.Event()
+    now = 100.0
+    sleeps: list[float] = []
+    first_output_at: float | None = None
 
-    def wait_and_mark_returned() -> None:
-        handle.wait_until_quiet()
-        returned.set()
+    def monotonic() -> float:
+        return now
 
-    thread = threading.Thread(target=wait_and_mark_returned, daemon=True)
-    thread.start()
-    time.sleep(0.1)
-    assert not returned.is_set()
+    def sleep(seconds: float) -> None:
+        nonlocal first_output_at, now
+        sleeps.append(seconds)
+        now += seconds
+        if first_output_at is None:
+            first_output_at = now
+            handle._last_output_ts = now
+            handle._seen_output.set()
 
-    handle._last_output_ts = time.monotonic() - 10.0
-    handle._seen_output.set()
-    thread.join(timeout=1.0)
-    assert returned.is_set()
+    monkeypatch.setattr(
+        _pty_module,
+        "time",
+        types.SimpleNamespace(monotonic=monotonic, sleep=sleep),
+    )
+
+    handle.wait_until_quiet()
+
+    assert first_output_at is not None
+    assert sleeps
+    assert now - first_output_at >= handle._quiet_s
 
 
 def test_master_is_published_nonblocking_once_without_losing_flags(
@@ -504,6 +549,18 @@ def test_failed_best_effort_query_reply_does_not_kill_event_pump(
 def test_pty_responder_answers_startup_queries_and_clamps_size(
     tmp_path: Path,
 ) -> None:
+    expected_names = {
+        "absolute-size",
+        "relative-size",
+        "dsr-status",
+        "primary-da",
+        "secondary-da",
+        "decrqm",
+        "xtversion",
+        "osc-fg",
+        "osc-bg",
+        "kitty-keyboard",
+    }
     handle, log = _spawn_fake(
         tmp_path, {"queries": True, "modes": False}, rows=31, cols=97
     )
@@ -513,13 +570,15 @@ def test_pty_responder_answers_startup_queries_and_clamps_size(
         deadline = time.monotonic() + 10.0
         while time.monotonic() < deadline:
             queries = [entry for entry in _entries(log) if entry["event"] == "query"]
-            if len(queries) >= 10:
+            if len(queries) >= len(expected_names):
                 break
             time.sleep(0.05)
         else:
             raise AssertionError(f"missing query records: {_entries(log)!r}")
 
         by_name = {entry["name"]: entry for entry in queries}
+        assert len(queries) == len(expected_names)
+        assert set(by_name) == expected_names
         assert all(entry["ok"] for entry in queries)
         assert by_name["absolute-size"]["expected"] == "\x1b[31;97R"
         assert by_name["relative-size"]["expected"] == "\x1b[31;97R"
@@ -538,22 +597,20 @@ def test_query_reply_waits_for_partial_injection_writer(
         {"queries": True, "modes": False, "redraw": False},
     )
     real_write = os.write
+    writer_lock = _TrackingWriterLock(tracked_thread="query-reply-pump")
+    handle._normal_writer_lock = cast(Any, writer_lock)
     injection_started = threading.Event()
     release_injection = threading.Event()
-    reply_reached_write = threading.Event()
     first_injection_write = True
 
     def controlled_write(fd: int, data: bytes) -> int:
         nonlocal first_injection_write
-        if data.startswith(b"serialize-me"):
-            if first_injection_write:
-                first_injection_write = False
-                written = real_write(fd, data[:1])
-                injection_started.set()
-                assert release_injection.wait(timeout=2.0)
-                return written
-        elif data.startswith(b"\x1b"):
-            reply_reached_write.set()
+        if data.startswith(b"serialize-me") and first_injection_write:
+            first_injection_write = False
+            written = real_write(fd, data[:1])
+            injection_started.set()
+            assert release_injection.wait(timeout=2.0)
+            return written
         return real_write(fd, data)
 
     monkeypatch.setattr(_pty_module.os, "write", controlled_write)
@@ -567,20 +624,24 @@ def test_query_reply_waits_for_partial_injection_writer(
 
     injector = threading.Thread(target=inject)
     injector.start()
-    assert injection_started.wait(timeout=1.0)
-    pump = EventPump(handle)
-    reply_interleaved = reply_reached_write.wait(timeout=0.2)
-    release_injection.set()
-    injector.join(timeout=2.0)
+    pump: EventPump | None = None
     try:
+        assert injection_started.wait(timeout=1.0)
+        pump = EventPump(handle, thread_name="query-reply-pump")
+        assert writer_lock.tracked_acquire.wait(timeout=2.0)
+        assert injector.is_alive()
+        release_injection.set()
+        injector.join(timeout=2.0)
         _wait_for(log, "query")
     finally:
+        release_injection.set()
         handle.close()
-        pump.drain_until_exit(timeout=5.0)
+        injector.join(timeout=2.0)
+        if pump is not None:
+            pump.drain_until_exit(timeout=5.0)
 
     assert not injector.is_alive()
     assert failures == []
-    assert not reply_interleaved, "terminal reply interleaved with partial injection"
 
 
 def test_pty_responder_handles_live_observed_parameterized_queries() -> None:
@@ -799,6 +860,11 @@ def test_concurrent_close_has_one_reap_and_fd_owner() -> None:
     master_fd, writer_fd = os.pipe()
     proc = _ScheduledPtyProcess()
     handle = _boundary_pty_handle(proc, master_fd)
+    close_condition = _TrackingCondition(
+        handle._lifecycle_lock,
+        tracked_thread="second-pty-closer",
+    )
+    handle._close_condition = cast(Any, close_condition)
     failures: list[BaseException] = []
 
     def close() -> None:
@@ -807,15 +873,18 @@ def test_concurrent_close_has_one_reap_and_fd_owner() -> None:
         except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
             failures.append(exc)
 
-    first = threading.Thread(target=close)
-    second = threading.Thread(target=close)
+    first = threading.Thread(target=close, name="first-pty-closer")
+    second = threading.Thread(target=close, name="second-pty-closer")
     first.start()
-    assert proc.wait_entered.wait(timeout=1.0)
-    second.start()
-    time.sleep(0.1)
-    proc.release_wait.set()
-    first.join(timeout=2.0)
-    second.join(timeout=2.0)
+    try:
+        assert proc.wait_entered.wait(timeout=1.0)
+        second.start()
+        assert close_condition.wait_entered.wait(timeout=1.0)
+    finally:
+        proc.release_wait.set()
+        first.join(timeout=2.0)
+        if second.ident is not None:
+            second.join(timeout=2.0)
     os.close(writer_fd)
 
     assert not first.is_alive()
@@ -1636,21 +1705,74 @@ def test_interrupt_cancels_active_and_queued_writes_then_rearms(
     assert not old_queued_write.is_set()
 
 
-def test_activity_is_coarse_not_per_redraw(tmp_path: Path) -> None:
-    handle, _log = _spawn_fake(tmp_path, {"queries": False, "modes": False})
-    pump = EventPump(handle)
+def test_activity_is_coarse_not_per_redraw(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    master_fd, writer_fd = os.pipe()
+    proc = _ScheduledPtyProcess()
+    handle = _boundary_pty_handle(proc, master_fd)
+    chunks = [b"redraw-1", b"redraw-2", b"redraw-3", b"redraw-next-window"]
+    read_times = [100.0, 105.0, 109.0, 111.0]
+    now = 100.0
+    real_read = os.read
+    real_select = select.select
+
+    def monotonic() -> float:
+        return now
+
+    def controlled_select(
+        readers: list[int], writers: list[int], errors: list[int], timeout: float
+    ) -> tuple[list[int], list[int], list[int]]:
+        if readers == [master_fd]:
+            if chunks:
+                return [master_fd], [], []
+            proc.returncode = 0
+            return [], [], []
+        return real_select(readers, writers, errors, timeout)
+
+    def controlled_read(fd: int, size: int) -> bytes:
+        nonlocal now
+        if fd == master_fd:
+            now = read_times.pop(0)
+            return chunks.pop(0)
+        return real_read(fd, size)
+
+    monkeypatch.setattr(
+        _pty_module,
+        "time",
+        types.SimpleNamespace(monotonic=monotonic, sleep=lambda _seconds: None),
+    )
+    monkeypatch.setattr(_pty_module.select, "select", controlled_select)
+    monkeypatch.setattr(_pty_module.os, "read", controlled_read)
+
+    events = handle.events()
     try:
-        seen = [pump.next(timeout=3.0) for _ in range(2)]
-        assert sum(isinstance(event, ActivityEvent) for event in seen) <= 2
-        with pytest.raises(AssertionError, match="timed out"):
-            pump.next(timeout=0.4)
+        spawn = next(events)
+        first_output = next(events)
+        first_output_at = now
+        second_output = next(events)
+        second_output_at = now
+        exit_event = next(events)
+        with pytest.raises(StopIteration):
+            next(events)
+
+        assert isinstance(spawn, ActivityEvent) and spawn.description == "spawn"
+        assert isinstance(first_output, ActivityEvent)
+        assert first_output.description == "output"
+        assert first_output_at == 100.0
+        assert isinstance(second_output, ActivityEvent)
+        assert second_output.description == "output"
+        assert second_output_at == 111.0
+        assert isinstance(exit_event, ExitEvent)
     finally:
+        proc.returncode = 0
         handle.close()
-    assert isinstance(pump.drain_until_exit(), ExitEvent)
+        os.close(writer_fd)
 
 
 def test_attach_bridges_and_split_chord_detaches_with_reset(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     handle, log = _spawn_fake(
         tmp_path, {"queries": False, "modes": False, "redraw": False}
@@ -1660,6 +1782,26 @@ def test_attach_bridges_and_split_chord_detaches_with_reset(
     wake = threading.Event()
     shutdown = threading.Event()
     result: list[str] = []
+    first_chord_processed = threading.Event()
+    first_chord_result: list[tuple[bytes, bool]] = []
+    real_matcher = _pty_module._DetachChordMatcher
+
+    class ObservedMatcher:
+        def __init__(self, chord: bytes) -> None:
+            self._delegate = real_matcher(chord)
+
+        def feed(self, data: bytes) -> tuple[bytes, bool]:
+            matched = self._delegate.feed(data)
+            if (
+                data == b"\x1c"
+                and threading.current_thread().name == "split-chord-attach"
+                and not first_chord_processed.is_set()
+            ):
+                first_chord_result.append(matched)
+                first_chord_processed.set()
+            return matched
+
+    monkeypatch.setattr(_pty_module, "_DetachChordMatcher", ObservedMatcher)
     thread = threading.Thread(
         target=lambda: result.append(
             handle.attach(
@@ -1667,6 +1809,7 @@ def test_attach_bridges_and_split_chord_detaches_with_reset(
             )
         ),
         daemon=True,
+        name="split-chord-attach",
     )
     thread.start()
     try:
@@ -1683,7 +1826,8 @@ def test_attach_bridges_and_split_chord_detaches_with_reset(
             raise AssertionError(f"no bridged input: {_entries(log)!r}")
 
         os.write(user_master, b"\x1c")
-        time.sleep(0.1)
+        assert first_chord_processed.wait(timeout=2.0)
+        assert first_chord_result == [(b"", False)]
         assert thread.is_alive()
         os.write(user_master, b"\x1c")
         reset = _read_fd_until(user_master, b"\x1b[?2004l", timeout=1.0)
@@ -1762,24 +1906,24 @@ def test_attach_forwarding_serializes_with_injection(
     assert b"ready" in _read_fd_until(user_master, b"ready")
 
     real_write = os.write
+    writer_lock = _TrackingWriterLock(tracked_thread="agent-injector")
+    handle._normal_writer_lock = cast(Any, writer_lock)
     forwarding_started = threading.Event()
     release_forwarding = threading.Event()
-    injection_reached_write = threading.Event()
     first_forwarding_write = True
 
     def controlled_write(fd: int, data: bytes) -> int:
         nonlocal first_forwarding_write
-        if threading.current_thread().name == "attach-bridge" and data.startswith(
-            b"human"
+        if (
+            threading.current_thread().name == "attach-bridge"
+            and data.startswith(b"human")
+            and first_forwarding_write
         ):
-            if first_forwarding_write:
-                first_forwarding_write = False
-                written = real_write(fd, data[:1])
-                forwarding_started.set()
-                assert release_forwarding.wait(timeout=2.0)
-                return written
-        elif data.startswith(b"agent"):
-            injection_reached_write.set()
+            first_forwarding_write = False
+            written = real_write(fd, data[:1])
+            forwarding_started.set()
+            assert release_forwarding.wait(timeout=2.0)
+            return written
         return real_write(fd, data)
 
     monkeypatch.setattr(_pty_module.os, "write", controlled_write)
@@ -1791,12 +1935,13 @@ def test_attach_forwarding_serializes_with_injection(
         except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
             failures.append(exc)
 
-    injector = threading.Thread(target=inject)
+    injector = threading.Thread(target=inject, name="agent-injector")
     try:
         os.write(user_master, b"human\r")
         assert forwarding_started.wait(timeout=1.0)
         injector.start()
-        injection_interleaved = injection_reached_write.wait(timeout=0.2)
+        assert writer_lock.tracked_acquire.wait(timeout=2.0)
+        assert injector.is_alive()
         release_forwarding.set()
         injector.join(timeout=2.0)
         os.write(user_master, b"\x1c\x1c")
@@ -1813,7 +1958,8 @@ def test_attach_forwarding_serializes_with_injection(
     assert attach_result == ["detached"]
     assert b"\x1b[?2004l" in reset
     assert failures == []
-    assert not injection_interleaved
+    inputs = [entry["raw"] for entry in _entries(_log) if entry["event"] == "input"]
+    assert inputs[:2] == ["human\r", "agent\r"]
 
 
 def test_attach_shutdown_wake_exits_bridge(

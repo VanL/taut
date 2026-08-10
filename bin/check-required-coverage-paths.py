@@ -40,6 +40,14 @@ def _marker_line(path: Path, marker: str) -> int:
     return matches[0]
 
 
+def _has_relative_suffix(candidate: str, relative_path: Path) -> bool:
+    candidate_parts = tuple(
+        part for part in candidate.replace("\\", "/").split("/") if part
+    )
+    relative_parts = relative_path.parts
+    return candidate_parts[-len(relative_parts) :] == relative_parts
+
+
 def missing_required_paths(
     data_file: Path,
     *,
@@ -48,15 +56,27 @@ def missing_required_paths(
     data = CoverageData(basename=str(data_file))
     data.read()
     measured = {
-        str(Path(candidate).resolve()): data.lines(candidate) or []
-        for candidate in data.measured_files()
+        candidate: data.lines(candidate) or [] for candidate in data.measured_files()
     }
     missing: list[str] = []
     for relative_path, marker in REQUIRED_MARKERS.items():
         source = (project_root / relative_path).resolve()
         line = _marker_line(source, marker)
-        if line not in measured.get(str(source), []):
-            missing.append(f"{relative_path.as_posix()}:{line} ({marker})")
+        matching_files = [
+            (candidate, lines)
+            for candidate, lines in measured.items()
+            if _has_relative_suffix(candidate, relative_path)
+        ]
+        description = f"{relative_path.as_posix()}:{line} ({marker})"
+        if len(matching_files) > 1:
+            missing.append(
+                f"{description} [ambiguous coverage data: "
+                f"{len(matching_files)} files match]"
+            )
+            continue
+        covered_lines = matching_files[0][1] if matching_files else []
+        if line not in covered_lines:
+            missing.append(description)
     return missing
 
 

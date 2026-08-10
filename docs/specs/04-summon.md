@@ -1319,6 +1319,9 @@ thread do not satisfy this boundary by themselves.
 
 ## Related Plans
 
+- `docs/plans/2026-08-10-test-quality-remediation-plan.md` — replaces
+  scheduler-sensitive and fail-open Summon tests with deterministic lifecycle,
+  process, PTY, observation, and coverage-preserving proof.
 - `docs/plans/2026-08-10-simplebroker-7-json-id-boundary-plan.md` — aligns the
   Summon v1 persistence timestamp boundary with SimpleBroker 7.
 - `docs/plans/2026-08-07-taut-dump-load-plan.md` — durable Summon session

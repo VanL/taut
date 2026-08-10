@@ -61,6 +61,23 @@ def _write_reaction_project_config(path: Path, reaction_lines: list[str]) -> Non
     )
 
 
+def _reaction_target(actor: TautClient, author: TautClient) -> str:
+    actor.join("general")
+    author.join("general")
+    return str(author.say("general", "reaction policy target").ts)
+
+
+def _assert_reaction_allowed(
+    actor: TautClient,
+    target: str,
+    reaction: str,
+) -> None:
+    receipt = actor.react_to_message(target, reaction)
+
+    assert receipt.message_ts == int(target)
+    assert receipt.reaction == reaction
+
+
 def test_packaged_reaction_defaults_are_ordered() -> None:
     with resources.files("taut").joinpath("defaults.toml").open("rb") as stream:
         document = tomllib.load(stream)
@@ -94,14 +111,19 @@ def test_invalid_packaged_reaction_defaults_use_fixed_error(
 
 
 @pytest.mark.parametrize(
-    ("reaction_lines", "expected"),
+    ("reaction_lines", "accepted", "rejected"),
     [
-        (["[reactions]", "future_key = true"], ("ack", "blocked")),
+        (
+            ["[reactions]", "future_key = true"],
+            ("ack", "blocked"),
+            "project-only",
+        ),
         (
             ["[reactions]", 'values = ["ack", "done", "blocked"]'],
             ("ack", "done", "blocked"),
+            "project-only",
         ),
-        (["[reactions]", "values = []"], ()),
+        (["[reactions]", "values = []"], (), "ack"),
     ],
 )
 def test_project_reaction_values_inherit_replace_or_disable(
@@ -109,7 +131,8 @@ def test_project_reaction_values_inherit_replace_or_disable(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     reaction_lines: list[str],
-    expected: tuple[str, ...],
+    accepted: tuple[str, ...],
+    rejected: str,
 ) -> None:
     _write_reaction_project_config(
         tmp_path / PROJECT_CONFIG_NAME,
@@ -118,11 +141,22 @@ def test_project_reaction_values_inherit_replace_or_disable(
     monkeypatch.chdir(tmp_path)
     TautClient.init()
 
-    client = TautClient(as_name="van")
+    actor = TautClient(as_name="van")
+    author = TautClient(as_name="author")
     try:
-        assert client._reaction_values == expected
+        target = _reaction_target(actor, author)
+        for reaction in accepted:
+            _assert_reaction_allowed(actor, target, reaction)
+        expected_error = (
+            "message reactions are disabled by project configuration"
+            if not accepted
+            else "reaction must be one of"
+        )
+        with pytest.raises(ValueError, match=expected_error):
+            actor.react_to_message(target, rejected)
     finally:
-        client.close()
+        actor.close()
+        author.close()
 
 
 @pytest.mark.parametrize(
@@ -178,10 +212,15 @@ def test_reaction_values_are_frozen_per_client_construction(
         config_path,
         ["[reactions]", 'values = ["second"]'],
     )
-    second = TautClient(as_name="van")
+    second = TautClient(as_name="second")
     try:
-        assert first._reaction_values == ("first",)
-        assert second._reaction_values == ("second",)
+        target = _reaction_target(first, second)
+        _assert_reaction_allowed(first, target, "first")
+        _assert_reaction_allowed(second, target, "second")
+        with pytest.raises(ValueError, match="reaction must be one of: first"):
+            first.react_to_message(target, "second")
+        with pytest.raises(ValueError, match="reaction must be one of: second"):
+            second.react_to_message(target, "first")
     finally:
         first.close()
         second.close()
@@ -203,6 +242,9 @@ def test_handed_off_target_uses_its_own_reaction_config(
     config = load_config()
     target = resolve_broker_target(project, config=config)
     assert target is not None
+    actor = TautClient(as_name="van")
+    author = TautClient(as_name="author")
+    reaction_target = _reaction_target(actor, author)
 
     unrelated = tmp_path / "unrelated"
     unrelated.mkdir()
@@ -217,9 +259,13 @@ def test_handed_off_target_uses_its_own_reaction_config(
         as_name="van",
     )
     try:
-        assert client._reaction_values == ("project-only",)
+        _assert_reaction_allowed(client, reaction_target, "project-only")
+        with pytest.raises(ValueError, match="reaction must be one of: project-only"):
+            client.react_to_message(reaction_target, "wrong-project")
     finally:
         client.close()
+        actor.close()
+        author.close()
 
 
 @pytest.mark.parametrize("selector", ["db_path", "TAUT_DB"])
@@ -238,13 +284,19 @@ def test_explicit_path_selectors_use_packaged_reaction_defaults(
     monkeypatch.chdir(tmp_path)
     if selector == "TAUT_DB":
         monkeypatch.setenv("TAUT_DB", str(database))
-        client = TautClient(as_name="van")
+        actor = TautClient(as_name="van")
+        author = TautClient(as_name="author")
     else:
-        client = TautClient(db_path=database, as_name="van")
+        actor = TautClient(db_path=database, as_name="van")
+        author = TautClient(db_path=database, as_name="author")
     try:
-        assert client._reaction_values == ("ack", "blocked")
+        target = _reaction_target(actor, author)
+        _assert_reaction_allowed(actor, target, "ack")
+        with pytest.raises(ValueError, match="reaction must be one of: ack, blocked"):
+            actor.react_to_message(target, "cwd-only")
     finally:
-        client.close()
+        actor.close()
+        author.close()
 
 
 @pytest.mark.parametrize("alternate_name", [".broker.toml", "pyproject.toml"])
@@ -262,11 +314,16 @@ def test_alternate_config_files_do_not_supply_reaction_values(
     )
     monkeypatch.chdir(tmp_path)
 
-    client = TautClient(db_path=database, as_name="van")
+    actor = TautClient(as_name="van")
+    author = TautClient(as_name="author")
     try:
-        assert client._reaction_values == ("ack", "blocked")
+        target = _reaction_target(actor, author)
+        _assert_reaction_allowed(actor, target, "ack")
+        with pytest.raises(ValueError, match="reaction must be one of: ack, blocked"):
+            actor.react_to_message(target, "alternate-only")
     finally:
-        client.close()
+        actor.close()
+        author.close()
 
 
 def test_load_config_pins_ambient_broker_backend_to_sqlite(

@@ -9,12 +9,14 @@ pytestmark = pytest.mark.sqlite_only
 
 
 def test_parse_channel_targets() -> None:
-    bare = addressing.parse_target("general")
-    hashed = addressing.parse_target("#general")
+    expected = addressing.TargetAddress(
+        kind="channel",
+        thread="general",
+        channel="general",
+    )
 
-    assert bare.kind == "channel"
-    assert bare.thread == "general"
-    assert hashed.thread == "general"
+    assert addressing.parse_target("general") == expected
+    assert addressing.parse_target("#general") == expected
 
 
 def test_parse_direct_message_target() -> None:
@@ -68,14 +70,19 @@ def test_validate_chat_thread_name_rejects_subthreads_when_channel_required() ->
         )
 
 
-def test_classify_registered_queue_names() -> None:
-    assert addressing.classify_registered_queue("dm.d_abcdef") == "dm"
-    assert addressing.classify_registered_queue("notify.m_member") == "notification"
-    assert addressing.classify_registered_queue("sys.events") == "system"
-    assert addressing.classify_registered_queue("general.1837025672140161024") == (
-        "subthread"
-    )
-    assert addressing.classify_registered_queue("general") == "channel"
+@pytest.mark.parametrize(
+    ("queue_name", "expected"),
+    [
+        ("dm.d_" + "a" * 26, "dm"),
+        ("notify.m_" + "b" * 26, "notification"),
+        ("sys.events", "system"),
+        ("taut.search_index", "system"),
+        ("general.1837025672140161024", "subthread"),
+        ("general", "channel"),
+    ],
+)
+def test_classify_registered_queue_names(queue_name: str, expected: str) -> None:
+    assert addressing.classify_registered_queue(queue_name) == expected
 
 
 def test_dm_queue_name_is_unordered_pair() -> None:
@@ -146,6 +153,26 @@ def test_mentioned_route_keys_are_unique_and_boundary_aware() -> None:
     ]
 
 
-def test_special_queue_names_are_reserved_by_prefix() -> None:
-    assert addressing.is_special_queue_name("notify.m_abc") is True
-    assert addressing.is_special_queue_name("general") is False
+@pytest.mark.parametrize(
+    "queue_name",
+    [
+        "dm",
+        "dm.d_" + "a" * 26,
+        "notify",
+        "notify.m_" + "b" * 26,
+        "sys",
+        "sys.events",
+        "taut",
+        "taut.search_index",
+    ],
+)
+def test_special_queue_names_are_reserved_by_prefix(queue_name: str) -> None:
+    assert addressing.is_special_queue_name(queue_name) is True
+
+
+@pytest.mark.parametrize(
+    "queue_name",
+    ["general", "general.1837025672140161024", "database.events"],
+)
+def test_ordinary_queue_names_do_not_use_reserved_prefixes(queue_name: str) -> None:
+    assert addressing.is_special_queue_name(queue_name) is False

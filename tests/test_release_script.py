@@ -6,6 +6,7 @@ import json
 import subprocess
 import sys
 import urllib.error
+from collections import Counter
 from email.message import Message
 from pathlib import Path
 from typing import Any, ClassVar, Self
@@ -929,14 +930,16 @@ def test_release_sync_updates_all_first_party_dependency_directions(
 
     release._sync_root_release_dependencies()
 
-    assert calls == [
-        "root-to-summon",
-        "pg-runtime-to-root-dev",
-        "pg-to-root",
-        "summon-to-root",
-        "mcp-to-root",
-        "pg-to-mcp-dev",
-    ]
+    assert Counter(calls) == Counter(
+        {
+            "root-to-summon": 1,
+            "pg-runtime-to-root-dev": 1,
+            "pg-to-root": 1,
+            "summon-to-root": 1,
+            "mcp-to-root": 1,
+            "pg-to-mcp-dev": 1,
+        }
+    )
 
 
 def test_root_target_uses_v_prefixed_github_tag() -> None:
@@ -945,8 +948,6 @@ def test_root_target_uses_v_prefixed_github_tag() -> None:
     assert release.ROOT_TARGET.package_name == "taut-chat"
     assert release.ROOT_TARGET.tag_for_version("0.1.1") == "v0.1.1"
     assert release.ROOT_TARGET.package_dir == Path(".")
-    assert not hasattr(release.ROOT_TARGET, "github_release")
-    assert not hasattr(release.ROOT_TARGET, "pypi_publish")
 
 
 def test_pg_target_uses_namespaced_github_tag() -> None:
@@ -1052,12 +1053,6 @@ def test_mcp_precheck_lock_build_and_quality_are_package_local() -> None:
         "extensions/taut_mcp/dist",
         "extensions/taut_mcp",
     )
-
-
-def test_target_version_files_helper_is_removed() -> None:
-    release = _load_release_module()
-
-    assert not hasattr(release, "target_version_files")
 
 
 def test_inspect_release_state_checks_github_and_pypi(
@@ -1296,8 +1291,17 @@ def test_repository_settings_report_unverifiable_endpoint(
 
     issues = release.repository_settings_issues("VanL/taut", "token")
 
-    assert len(issues) == 3
-    assert all("could not be verified" in issue for issue in issues)
+    labels = Counter(issue.partition(" could not be verified:")[0] for issue in issues)
+    assert labels == Counter(
+        {
+            "immutable releases": 1,
+            "pypi environment policy": 1,
+            "pypi environment tag policies": 1,
+        }
+    )
+    assert all(
+        "could not be verified" in issue and "HTTP 403" in issue for issue in issues
+    )
 
 
 def test_check_repository_settings_mode_runs_without_release_branch_gate(

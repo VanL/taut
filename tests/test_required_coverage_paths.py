@@ -64,6 +64,55 @@ def test_required_coverage_paths_accepts_all_markers(tmp_path: Path) -> None:
     assert module.missing_required_paths(data_file) == []
 
 
+def test_required_coverage_paths_accepts_markers_from_another_checkout(
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    data_file = tmp_path / ".coverage"
+    foreign_root = tmp_path / "hosted-runner" / "taut"
+    data = CoverageData(basename=str(data_file))
+    data.add_lines(
+        {
+            str(foreign_root / relative): lines
+            for relative, lines in (
+                (Path(path).relative_to(PROJECT_ROOT), marker_lines)
+                for path, marker_lines in _marker_lines(module).items()
+            )
+        }
+    )
+    data.write()
+
+    assert module.missing_required_paths(data_file) == []
+
+
+def test_required_coverage_paths_rejects_ambiguous_checkout_suffixes(
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    data_file = tmp_path / ".coverage"
+    lines = _marker_lines(module)
+    first_root = tmp_path / "first" / "taut"
+    second_root = tmp_path / "second" / "taut"
+    relative = Path("taut/__main__.py")
+    data = CoverageData(basename=str(data_file))
+    data.add_lines(
+        {
+            str(first_root / Path(path).relative_to(PROJECT_ROOT)): marker_lines
+            for path, marker_lines in lines.items()
+        }
+        | {
+            str(second_root / relative): lines[str(PROJECT_ROOT / relative)],
+        }
+    )
+    data.write()
+
+    missing = module.missing_required_paths(data_file)
+
+    assert len(missing) == 1
+    assert relative.as_posix() in missing[0]
+    assert "ambiguous coverage data: 2 files match" in missing[0]
+
+
 def test_required_coverage_paths_includes_unique_mcp_rate_debit() -> None:
     module = _load_module()
     path = "extensions/taut_mcp/taut_mcp/_process_reactor.py"

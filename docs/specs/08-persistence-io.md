@@ -726,6 +726,9 @@ run through a guard blocks release.
 
 ## Related Plans
 
+- `docs/plans/2026-08-10-test-quality-remediation-plan.md` — replaces
+  batch-size and positional assertions with report-contract, partial-batch,
+  component-identity, and coverage-preserving proof.
 - `docs/plans/2026-08-10-simplebroker-7-json-id-boundary-plan.md` — defines
   canonical timestamp writers, tolerant v1 readers, and integer restore state.
 - `docs/plans/2026-08-07-taut-dump-load-plan.md` defines promotion,

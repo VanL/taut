@@ -871,6 +871,9 @@ Required proofs:
 
 ## Related Plans
 
+- `docs/plans/2026-08-10-test-quality-remediation-plan.md` — completes exact
+  addressing, reserved-prefix, identity, and direct-message participant proof
+  without substituting totals for named contract elements.
 - `docs/plans/2026-08-10-simplebroker-7-json-id-boundary-plan.md` — separates
   internal numeric notification bodies from exact-string public JSON output.
 - `docs/plans/2026-08-06-taut-search-plan.md` — search internal queues,

@@ -14,26 +14,6 @@ def _tool(name: str) -> Any:
     return next(tool for tool in TOOLS if tool.name == name)
 
 
-def test_manifest_uses_noun_first_channel_and_message_names_only() -> None:
-    names = {tool.name for tool in TOOLS}
-    assert {
-        "channel_show",
-        "channel_topic",
-        "channel_rename",
-        "message_show",
-        "message_delete",
-        "message_react",
-    } <= names
-    assert {
-        "show_channel",
-        "set_channel_topic",
-        "rename",
-        "show_message",
-        "delete_message",
-        "react_to_message",
-    }.isdisjoint(names)
-
-
 @pytest.mark.parametrize(
     ("tool_name", "read_only", "destructive", "idempotent", "open_world"),
     [
@@ -129,34 +109,6 @@ def test_channel_topic_schema_accepts_clear_and_exact_one_line_text(
         },
         schema=_tool("channel_topic").input_schema,
     )
-
-
-def test_channel_tools_dispatch_to_public_client_methods() -> None:
-    calls: list[tuple[str, tuple[object, ...]]] = []
-
-    class PublicClientSpy:
-        def get_channel(self, channel: str) -> object:
-            calls.append(("get_channel", (channel,)))
-            return object()
-
-        def set_channel_topic(self, channel: str, topic: str | None) -> object:
-            calls.append(("set_channel_topic", (channel, topic)))
-            return object()
-
-    client = cast(TautClient, PublicClientSpy())
-    shown = execute_command(client, "channel_show", (("channel", "general"),))
-    changed = execute_command(
-        client,
-        "channel_topic",
-        (("channel", "general"), ("topic", None)),
-    )
-
-    assert shown.record_type == "channel"
-    assert changed.record_type == "channel"
-    assert calls == [
-        ("get_channel", ("general",)),
-        ("set_channel_topic", ("general", None)),
-    ]
 
 
 @pytest.mark.parametrize("tool_name", ["channel_show", "channel_topic"])

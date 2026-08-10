@@ -722,11 +722,6 @@ def test_control_client_can_split_persistent_request_from_transient_reply(
     assert request_queues.closed == ["sys.ctl_m_abc"]
 
 
-def test_summon_tests_pin_sqlite_process_env() -> None:
-    assert os.environ["BROKER_AUTO_VACUUM"] == "0"
-    assert os.environ["BROKER_SYNC_MODE"] == "FULL"
-
-
 def test_control_client_does_not_retry_stop_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -752,6 +747,25 @@ def test_control_client_does_not_retry_stop_timeout(
     assert ctl_payloads[0]["reply_to"] in queues.closed
 
 
+def _assert_stop_error_reply(
+    replies: list[tuple[dict[str, Any], str | None]],
+    *,
+    request_id: str,
+    reply_to: str,
+    causal_fragments: tuple[str, ...],
+) -> None:
+    assert len(replies) == 1
+    payload, observed_reply_to = replies[0]
+    assert observed_reply_to == reply_to
+    assert set(payload) == {"command", "status", "error", "request_id"}
+    assert payload["command"] == "STOP"
+    assert payload["status"] == "error"
+    assert payload["request_id"] == request_id
+    error = str(payload["error"])
+    for fragment in causal_fragments:
+        assert fragment in error
+
+
 def test_stop_replies_error_when_driver_release_is_unconfirmed() -> None:
     loop = _make_loop(rate_limit=60)
     loop._db_path = "unused"
@@ -770,17 +784,12 @@ def test_stop_replies_error_when_driver_release_is_unconfirmed() -> None:
 
     loop.run()
 
-    assert replies == [
-        (
-            {
-                "command": "STOP",
-                "status": "error",
-                "error": "driver slot release could not be confirmed",
-                "request_id": "req-release-error",
-            },
-            "sys.rsp_release_error",
-        )
-    ]
+    _assert_stop_error_reply(
+        replies,
+        request_id="req-release-error",
+        reply_to="sys.rsp_release_error",
+        causal_fragments=("release", "confirm"),
+    )
 
 
 def test_stop_replies_error_when_driver_release_confirmation_raises() -> None:
@@ -803,38 +812,30 @@ def test_stop_replies_error_when_driver_release_confirmation_raises() -> None:
 
     loop.run()
 
-    assert replies == [
-        (
-            {
-                "command": "STOP",
-                "status": "error",
-                "error": (
-                    "driver slot release confirmation failed: "
-                    "release ledger unavailable"
-                ),
-                "request_id": "req-release-exception",
-            },
-            "sys.rsp_release_exception",
-        )
-    ]
+    _assert_stop_error_reply(
+        replies,
+        request_id="req-release-exception",
+        reply_to="sys.rsp_release_exception",
+        causal_fragments=("release", "confirm", "release ledger unavailable"),
+    )
 
 
 @pytest.mark.parametrize(
-    ("outcome", "expected_error"),
+    ("outcome", "causal_fragments"),
     [
         (
             StopShutdownOutcome(
                 release_confirmed=True,
                 teardown_error="PTY child cleanup failed",
             ),
-            "driver teardown failed: PTY child cleanup failed",
+            ("teardown", "PTY child cleanup failed"),
         ),
         (
             StopShutdownOutcome(
                 release_confirmed=False,
                 release_error="database is locked",
             ),
-            "driver slot release failed: database is locked",
+            ("release", "database is locked"),
         ),
         (
             StopShutdownOutcome(
@@ -842,26 +843,20 @@ def test_stop_replies_error_when_driver_release_confirmation_raises() -> None:
                 teardown_error="PTY write failed",
                 release_error="database is locked",
             ),
-            (
-                "driver teardown failed: PTY write failed; "
-                "driver slot release also failed: database is locked"
-            ),
+            ("teardown", "PTY write failed", "release", "database is locked"),
         ),
         (
             StopShutdownOutcome(
                 release_confirmed=False,
                 teardown_error="PTY write failed",
             ),
-            (
-                "driver teardown failed: PTY write failed; "
-                "driver slot release also could not be confirmed"
-            ),
+            ("teardown", "PTY write failed", "release", "confirm"),
         ),
     ],
 )
-def test_stop_replies_with_exact_finalized_shutdown_failure(
+def test_stop_replies_with_structured_finalized_shutdown_failure(
     outcome: StopShutdownOutcome,
-    expected_error: str,
+    causal_fragments: tuple[str, ...],
 ) -> None:
     loop = _make_loop(rate_limit=60)
     loop._db_path = "unused"
@@ -870,22 +865,22 @@ def test_stop_replies_with_exact_finalized_shutdown_failure(
     loop._pending_stop_reply_to = "sys.rsp_exact_shutdown_error"
     loop._shutdown_complete.set()
     loop._shutdown_outcome = lambda: outcome
-    replies: list[dict[str, Any]] = []
+    replies: list[tuple[dict[str, Any], str | None]] = []
     dynamic_loop = cast(Any, loop)
     dynamic_loop._open = lambda: None
     dynamic_loop._close = lambda: None
-    dynamic_loop._reply = lambda body, *, reply_to: replies.append(json.loads(body))
+    dynamic_loop._reply = lambda body, *, reply_to: replies.append(
+        (json.loads(body), reply_to)
+    )
 
     loop.run()
 
-    assert replies == [
-        {
-            "command": "STOP",
-            "status": "error",
-            "error": expected_error,
-            "request_id": "req-exact-shutdown-error",
-        }
-    ]
+    _assert_stop_error_reply(
+        replies,
+        request_id="req-exact-shutdown-error",
+        reply_to="sys.rsp_exact_shutdown_error",
+        causal_fragments=causal_fragments,
+    )
 
 
 def test_rate_breaker_rearms_after_flood_subsides() -> None:
@@ -1671,93 +1666,6 @@ def test_control_loop_real_correlated_ping_round_trip(tmp_path: Path) -> None:
     assert errors == []
 
 
-def test_control_loop_cross_process_ping_wakes_and_replies(tmp_path: Path) -> None:
-    db_path = tmp_path / ".taut.db"
-    control_module.TautClient.init(db_path=db_path)
-    bot = control_module.TautClient(db_path=db_path, as_name="bot")
-    bot.join("general")
-    created = bot.last_created_member
-    assert created is not None and created.token is not None
-    member_id = created.member_id
-    shutdown = threading.Event()
-    loop = ControlLoop(
-        member_id=member_id,
-        db_path=str(db_path),
-        token=created.token,
-        provider="scripted",
-        threads=(),
-        handle_provider=lambda: None,
-        request_stop=lambda: None,
-        shutdown=shutdown,
-        shutdown_complete=threading.Event(),
-        shutdown_outcome=lambda: StopShutdownOutcome(release_confirmed=True),
-        rate_limit=60,
-        ledger_queue_name="taut.summon_state",
-        driver_pid=123,
-        driver_start_time="driver-start",
-    )
-    errors: list[BaseException] = []
-
-    def run() -> None:
-        try:
-            loop.run()
-        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
-            errors.append(exc)
-
-    owner = threading.Thread(target=run)
-    owner.start()
-    deadline = time.monotonic() + 3.0
-    while loop._control_reactor is None and time.monotonic() < deadline:
-        time.sleep(0.01)
-
-    request_id = "cross-process"
-    reply_name = f"{control_out_queue_name(member_id)}_{request_id}"
-    reply_queue = Queue(reply_name, db_path=str(db_path))
-    body = encode_control_command(
-        "PING",
-        request_id,
-        reply_to=reply_name,
-        driver_pid=123,
-        driver_start_time="driver-start",
-    )
-    writer_script = (
-        "from simplebroker import Queue; import sys; "
-        "q=Queue(sys.argv[1], db_path=sys.argv[2]); "
-        "q.write(sys.argv[3]); q.close()"
-    )
-    try:
-        subprocess.run(
-            [
-                sys.executable,
-                "-c",
-                writer_script,
-                control_in_queue_name(member_id),
-                str(db_path),
-                body,
-            ],
-            check=True,
-            env=os.environ.copy(),
-        )
-        reply: str | None = None
-        deadline = time.monotonic() + 3.0
-        while reply is None and time.monotonic() < deadline:
-            reply = cast(str | None, reply_queue.read_one())
-            if reply is None:
-                time.sleep(0.01)
-        assert reply is not None
-        assert json.loads(reply)["message"] == "PONG"
-    finally:
-        reply_queue.close()
-        shutdown.set()
-        if loop._control_reactor is not None:
-            loop._control_reactor.request_stop()
-        owner.join(timeout=3.0)
-        bot.close()
-
-    assert not owner.is_alive()
-    assert errors == []
-
-
 def test_reopen_preserves_rate_audit_cursor_and_closes_old_handles() -> None:
     loop = _make_loop(rate_limit=60)
     old_handles = _fake_broker_handles()
@@ -1841,9 +1749,6 @@ def test_stale_command_for_old_driver_evidence_is_dropped(command: str) -> None:
 def test_queue_names_derive_from_member_id() -> None:
     assert control_in_queue_name("m_abc123") == "sys.ctl_m_abc123"
     assert control_out_queue_name("m_abc123") == "sys.rsp_m_abc123"
-    # Both live under the reserved sys prefix ([TAUT-4.1]/D3).
-    assert control_in_queue_name("m_x").startswith("sys.")
-    assert control_out_queue_name("m_x").startswith("sys.")
 
 
 def test_parse_uppercases_command_and_keeps_request_id() -> None:

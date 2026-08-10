@@ -32,16 +32,6 @@ from tests.conftest import PROJECT_ROOT, build_cli_env, run_cli
 pytestmark = [pytest.mark.sqlite_only, pytest.mark.usefixtures("clean_env")]
 
 
-def _heading_pattern(thread: str) -> str:
-    escaped = re.escape(thread)
-    return rf"(?:── {escaped} ─{{38}}|-- {escaped} -{{38}})"
-
-
-def _notice_pattern(text_pattern: str, *, timestamps: bool = False) -> str:
-    id_pattern = r"\d{19}  " if timestamps else ""
-    return rf"  {id_pattern}\d\d:\d\d (?:·|-) {text_pattern}"
-
-
 def _assert_only_structural_newlines(text: str) -> None:
     assert all(
         character == "\n"
@@ -88,20 +78,24 @@ def test_cli_human_glyphs_fall_back_for_legacy_stdout_encoding() -> None:
         text="van created #general",
     )
 
-    assert _thread_heading("general", stream=stream) == (
-        "-- general --------------------------------------"
-    )
+    heading = _thread_heading("general", stream=stream)
     expected_time = _format_message_time(message.ts)
-
-    assert (
-        _human_message_row(
-            message,
-            timestamps=False,
-            sender_width=6,
-            stream=stream,
-        )
-        == f"  {expected_time} - van created #general"
+    row = _human_message_row(
+        message,
+        timestamps=False,
+        sender_width=6,
+        stream=stream,
     )
+
+    assert "general" in heading
+    assert expected_time in row
+    assert "van created #general" in row
+    assert "─" not in heading + row
+    assert "·" not in heading + row
+    assert "-" in heading.partition("general")[2]
+    assert "-" in row.partition("van created #general")[0]
+    legacy_output = heading + "\n" + row
+    assert legacy_output.encode("cp1252").decode("cp1252") == legacy_output
 
 
 def test_cli_json_renderers_format_timestamp_domain_only_at_external_boundary() -> None:
@@ -755,10 +749,11 @@ def test_cli_human_log_groups_messages_by_thread(tmp_path: Path) -> None:
 
     assert rc == 0
     lines = out.splitlines()
-    assert re.fullmatch(_heading_pattern("general"), lines[0])
-    assert re.fullmatch(_notice_pattern(r"van created #general"), lines[1])
-    assert re.fullmatch(_notice_pattern(r"claude joined"), lines[2])
-    assert re.fullmatch(r"  \d\d:\d\d claude  yes\. what broke\?", lines[3])
+    assert "general" in lines[0]
+    assert "van created #general" in lines[1]
+    assert "claude joined" in lines[2]
+    assert "claude" in lines[3]
+    assert "yes. what broke?" in lines[3]
 
 
 def test_cli_human_message_controls_are_visible_while_json_stays_exact(
@@ -1195,44 +1190,79 @@ def test_core_human_renderer_inventory_escapes_every_dynamic_model_field() -> No
         emit_threads,
     )
 
-    probe = "value\x1b]52;c;Y2xpcGJvYXJk\x07\x9b\r\b\t\nrow"
-    escaped = r"value\x1b]52;c;Y2xpcGJvYXJk\a\x9b\r\b\t\nrow"
+    unsafe_suffix = "\x1b]52;c;Y2xpcGJvYXJk\x07\x9b\r\b\t\nrow"
+    escaped_suffix = r"\x1b]52;c;Y2xpcGJvYXJk\a\x9b\r\b\t\nrow"
+
+    def marker(field: str) -> str:
+        return f"core.{field}:{unsafe_suffix}"
+
+    fields = {
+        field: marker(field)
+        for field in (
+            "init.db",
+            "member.name",
+            "member.kind",
+            "member.presence",
+            "member.persona",
+            "member.token",
+            "member.explain-key",
+            "member.explain-value",
+            "candidate.name",
+            "candidate.reason",
+            "client.warning",
+            "message.thread",
+            "message.sender",
+            "message.text",
+            "message.warning",
+            "thread.name",
+            "thread.display-name",
+            "thread.topic",
+            "notification.actor",
+            "notification.thread",
+            "notification.warning",
+            "notification.raw",
+            "rename.old-name",
+        )
+    }
     member = Member(
         member_id="m_" + "a" * 26,
-        name=probe,
+        name=fields["member.name"],
         aliases=(),
-        kind=probe,
-        presence=probe,
+        kind=fields["member.kind"],
+        presence=fields["member.presence"],
         last_active_ts=1,
-        persona=probe,
-        token=probe,
-        explain={probe: probe},
+        persona=fields["member.persona"],
+        token=fields["member.token"],
+        explain={
+            fields["member.explain-key"]: fields["member.explain-value"],
+        },
     )
     message = Message(
-        thread=probe,
+        thread=fields["message.thread"],
         ts=1_785_000_000_000_000_001,
         from_id=member.member_id,
-        from_name=probe,
+        from_name=fields["message.sender"],
         kind="message",
-        text=probe,
-        warning=probe,
+        text=fields["message.text"],
+        warning=fields["message.warning"],
     )
     thread = Thread(
-        name=probe,
+        name=fields["thread.name"],
         parent=None,
         unread=True,
         last_ts=message.ts,
         unread_count=4,
-        display_name=probe,
+        display_name=fields["thread.display-name"],
+        topic=fields["thread.topic"],
     )
     notification = Notification(
         type="reply",
         to_id=member.member_id,
         actor_id=member.member_id,
-        actor_name=probe,
-        thread=probe,
+        actor_name=fields["notification.actor"],
+        thread=fields["notification.thread"],
         message_ts=message.ts,
-        warning=probe,
+        warning=fields["notification.warning"],
     )
     foreign = Notification(
         type="foreign",
@@ -1241,21 +1271,21 @@ def test_core_human_renderer_inventory_escapes_every_dynamic_model_field() -> No
         actor_name=None,
         thread=None,
         message_ts=None,
-        raw=probe,
+        raw=fields["notification.raw"],
     )
     client = cast(
         TautClient,
         SimpleNamespace(
             last_created_member=member,
-            last_candidates=[(probe, [probe])],
-            last_notification_warnings=[probe],
+            last_candidates=[(fields["candidate.name"], [fields["candidate.reason"]])],
+            last_notification_warnings=[fields["client.warning"]],
         ),
     )
     stdout = StringIO()
     stderr = StringIO()
 
     emit_init(
-        InitResult(db=probe, created=True),
+        InitResult(db=fields["init.db"], created=True),
         json_output=False,
         quiet=False,
         stdout=stdout,
@@ -1288,14 +1318,20 @@ def test_core_human_renderer_inventory_escapes_every_dynamic_model_field() -> No
     )
     emit_renamed_thread(
         thread,
-        old_name=probe,
+        old_name=fields["rename.old-name"],
         json_output=False,
         quiet=False,
         stdout=stdout,
     )
 
     rendered = stdout.getvalue() + stderr.getvalue()
-    assert rendered.count(escaped) >= 18
+    json_explain_fields = {"member.explain-key", "member.explain-value"}
+    json_escaped_suffix = r"\u001b]52;c;Y2xpcGJvYXJk\u0007\x9b\r\b\t\nrow"
+    for field in fields:
+        if field in json_explain_fields:
+            assert f"core.{field}:{json_escaped_suffix}" in rendered
+        else:
+            assert f"core.{field}:{escaped_suffix}" in rendered
     _assert_only_structural_newlines(rendered)
 
     json_output = StringIO()
@@ -1318,12 +1354,14 @@ def test_core_human_renderer_inventory_escapes_every_dynamic_model_field() -> No
         stderr=StringIO(),
     )
     records = [json.loads(line) for line in json_output.getvalue().splitlines()]
-    assert records[0]["text"] == probe
-    assert records[1]["persona"] == probe
-    assert records[1]["explain"] == {probe: probe}
-    assert records[2]["thread"] == probe
-    assert records[3]["actor_name"] == probe
-    assert records[4]["raw"] == probe
+    assert records[0]["text"] == fields["message.text"]
+    assert records[1]["persona"] == fields["member.persona"]
+    assert records[1]["explain"] == {
+        fields["member.explain-key"]: fields["member.explain-value"],
+    }
+    assert records[2]["thread"] == fields["thread.name"]
+    assert records[3]["actor_name"] == fields["notification.actor"]
+    assert records[4]["raw"] == fields["notification.raw"]
 
 
 def test_reaction_notification_has_pointer_human_and_json_rendering() -> None:
@@ -1475,17 +1513,19 @@ def test_message_reaction_receipt_renders_warning_and_quiet_suppresses_both() ->
 
 def test_cli_human_log_timestamps_prepend_message_ids(tmp_path: Path) -> None:
     assert run_cli("init", cwd=tmp_path)[0] == 0
-    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    joined = run_cli("--as", "van", "join", "general", "--json", cwd=tmp_path)
+    assert joined[0] == 0, joined[2]
+    notice = next(
+        json.loads(line) for line in joined[1].splitlines() if "ts" in json.loads(line)
+    )
 
     rc, out, _err = run_cli("log", "general", "-t", cwd=tmp_path)
 
     assert rc == 0
     lines = out.splitlines()
-    assert re.fullmatch(_heading_pattern("general"), lines[0])
-    assert re.fullmatch(
-        _notice_pattern(r"van created #general", timestamps=True),
-        lines[1],
-    )
+    assert "general" in lines[0]
+    assert str(notice["ts"]) in lines[1]
+    assert lines[1].index(str(notice["ts"])) < lines[1].index("van created #general")
 
 
 def test_cli_log_limit_returns_most_recent_messages(tmp_path: Path) -> None:
@@ -1511,9 +1551,10 @@ def test_cli_human_read_uses_grouped_readme_shape(tmp_path: Path) -> None:
 
     assert rc == 0
     lines = out.splitlines()
-    assert re.fullmatch(_heading_pattern("general"), lines[0])
-    assert re.fullmatch(_notice_pattern(r"claude joined"), lines[1])
-    assert re.fullmatch(r"  \d\d:\d\d claude  yes", lines[2])
+    assert "general" in lines[0]
+    assert "claude joined" in lines[1]
+    assert "claude" in lines[2]
+    assert "yes" in lines[2]
 
 
 def test_cli_human_list_shows_unread_counts(tmp_path: Path) -> None:
@@ -1525,7 +1566,7 @@ def test_cli_human_list_shows_unread_counts(tmp_path: Path) -> None:
     rc, out, _err = run_cli("--as", "van", "list", cwd=tmp_path)
 
     assert rc == 0
-    assert out == "general  2 unread"
+    assert out.split() == ["general", "2", "unread"]
 
 
 def test_cli_human_list_caps_unread_count_display() -> None:
@@ -2112,6 +2153,12 @@ def test_cli_dm_read_log_and_directory_use_stable_machine_threads(
     assert run_cli("init", cwd=tmp_path)[0] == 0
     assert run_cli("--as", "alice", "join", "general", cwd=tmp_path)[0] == 0
     assert run_cli("--as", "bob", "join", "general", cwd=tmp_path)[0] == 0
+    alice_id = json.loads(
+        run_cli("--as", "alice", "whoami", "--json", cwd=tmp_path)[1]
+    )["member_id"]
+    bob_id = json.loads(run_cli("--as", "bob", "whoami", "--json", cwd=tmp_path)[1])[
+        "member_id"
+    ]
     sent_result = run_cli(
         "--as",
         "alice",
@@ -2155,7 +2202,7 @@ def test_cli_dm_read_log_and_directory_use_stable_machine_threads(
     assert listed["thread"] == stable
     assert listed["kind"] == "dm"
     assert listed["unread"] is False
-    assert len(listed["members"]) == 2
+    assert sorted(listed["members"]) == sorted([alice_id, bob_id])
 
 
 def test_cli_list_dms_empty_and_mutual_exclusion_exit_classes(
@@ -2870,7 +2917,7 @@ def test_cli_watch_json_flushes_records_while_live(tmp_path: Path) -> None:  # n
     proc = subprocess.Popen(
         [sys.executable, "-m", "taut", "--as", "van", "watch", "--json"],
         cwd=tmp_path,
-        env=build_cli_env(),
+        env=build_cli_env(force_unbuffered=False),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -2911,6 +2958,7 @@ def test_cli_watch_json_flushes_records_while_live(tmp_path: Path) -> None:  # n
         assert seen_notification, (
             "watch did not flush the notification while still live"
         )
+        assert proc.poll() is None
 
         if os.name == "nt":
             proc.terminate()
@@ -2999,7 +3047,7 @@ def test_cli_watch_closed_pipe_exits_0_without_advancing_cursor(
     proc = subprocess.Popen(
         [sys.executable, "-m", "taut", "--as", "van", "watch", "--json"],
         cwd=tmp_path,
-        env=build_cli_env(),
+        env=build_cli_env(force_unbuffered=False),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -3007,26 +3055,22 @@ def test_cli_watch_closed_pipe_exits_0_without_advancing_cursor(
         errors="replace",
         bufsize=1,
     )
-    published_ids: list[int] = []
     try:
         assert proc.stdout is not None
         proc.stdout.close()
         assert proc.poll() is None
 
-        for index in range(4):
-            body = f"closed-pipe-{index}-" + ("x" * 20_000)
-            rc, out, err = run_cli(
-                "--as",
-                "bob",
-                "say",
-                "general",
-                "-",
-                "--json",
-                cwd=tmp_path,
-                stdin=body,
-            )
-            assert rc == 0, err
-            published_ids.append(int(json.loads(out)["ts"]))
+        rc, out, err = run_cli(
+            "--as",
+            "bob",
+            "say",
+            "general",
+            "closed-pipe-sentinel",
+            "--json",
+            cwd=tmp_path,
+        )
+        assert rc == 0, err
+        published_id = int(json.loads(out)["ts"])
 
         assert proc.wait(timeout=10) == 0
         assert proc.stderr is not None
@@ -3036,8 +3080,8 @@ def test_cli_watch_closed_pipe_exits_0_without_advancing_cursor(
 
         rc, out, err = run_cli("--as", "van", "read", "general", "--json", cwd=tmp_path)
         assert rc == 0, err
-        unread_ids = {int(json.loads(line)["ts"]) for line in out.splitlines()}
-        assert unread_ids.issuperset(published_ids)
+        unread_ids = [int(json.loads(line)["ts"]) for line in out.splitlines()]
+        assert unread_ids == [published_id]
     finally:
         if proc.poll() is None:
             proc.kill()

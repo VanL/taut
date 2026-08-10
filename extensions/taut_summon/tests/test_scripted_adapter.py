@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import select
 import signal
 import subprocess
 import sys
@@ -24,7 +25,7 @@ import types
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Self, cast
 
 import psutil
 import pytest
@@ -128,6 +129,74 @@ class _BlockingInjectLock:
 
     def __exit__(self, *_args: object) -> None:
         return None
+
+
+class _TrackingCondition:
+    """Expose when one named non-owner waits for lifecycle completion."""
+
+    def __init__(self, lock: threading.RLock, *, tracked_thread: str) -> None:
+        self._condition = threading.Condition(lock)
+        self._tracked_thread = tracked_thread
+        self.wait_entered = threading.Event()
+
+    def __enter__(self) -> Self:
+        self._condition.__enter__()
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self._condition.__exit__(*args)
+
+    def wait_for(self, predicate: Any, timeout: float | None = None) -> bool:
+        if threading.current_thread().name == self._tracked_thread:
+            self.wait_entered.set()
+        return self._condition.wait_for(predicate, timeout)
+
+    def notify_all(self) -> None:
+        self._condition.notify_all()
+
+
+class _ObservedStdin:
+    """Signal the write attempt before delegating to the real pipe stream."""
+
+    def __init__(self, stream: Any) -> None:
+        self._stream = stream
+        self.write_attempted = threading.Event()
+
+    def write(self, value: str) -> int:
+        self.write_attempted.set()
+        return int(self._stream.write(value))
+
+    def flush(self) -> None:
+        self._stream.flush()
+
+    def close(self) -> None:
+        self._stream.close()
+
+
+class _SignalReleasedBlockingStream(_CountingStream):
+    """Stay inside write until the process receives its terminal signal."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.write_entered = threading.Event()
+        self.signal_received = threading.Event()
+
+    def write(self, value: str) -> int:
+        self.writes.append(value)
+        self.write_entered.set()
+        assert self.signal_received.wait(timeout=2.0)
+        raise BrokenPipeError("sentinel signal broke blocked write")
+
+
+class _SignalReleasesWriteProcess(_ReentrantInterruptProcess):
+    def __init__(self) -> None:
+        super().__init__()
+        self.stdin = _SignalReleasedBlockingStream()
+
+    def send_signal(self, _signum: int) -> None:
+        self.signal_calls += 1
+        self.returncode = 0
+        self.stdin.signal_received.set()
 
 
 class _NeverReapsProcess(_ReentrantInterruptProcess):
@@ -236,6 +305,30 @@ def _process_exists(pid: int) -> bool:
     except ProcessLookupError:
         return False
     return True
+
+
+def _fill_real_stdin_pipe(handle: ScriptedHandle) -> _ObservedStdin:
+    """Fill the shipped provider's real pipe and expose inject arrival."""
+
+    stdin = handle._proc.stdin
+    assert stdin is not None
+    fd = stdin.fileno()
+    was_blocking = os.get_blocking(fd)
+    filled = 0
+    os.set_blocking(fd, False)
+    try:
+        while True:
+            try:
+                filled += os.write(fd, b"x" * 65_536)
+            except BlockingIOError:
+                break
+    finally:
+        os.set_blocking(fd, was_blocking)
+    assert filled > 0
+    assert select.select([], [fd], [], 0)[1] == []
+    observed = _ObservedStdin(stdin)
+    handle._proc.stdin = cast(Any, observed)
+    return observed
 
 
 def test_registry_knows_scripted_and_rejects_unknown_names() -> None:
@@ -413,10 +506,39 @@ def test_flood_drains_without_deadlock_while_nothing_injects(
             if isinstance(event, ActivityEvent):
                 seen += 1
 
-        assert seen == flood_size
+
+@pytest.mark.parametrize("terminal_action", ["interrupt", "request_close"])
+def test_terminal_action_unblocks_write_after_stream_entry(
+    terminal_action: str,
+) -> None:
+    proc = _SignalReleasesWriteProcess()
+    handle = ScriptedHandle(cast(Any, proc), session_id=None)
+    failures: list[Exception] = []
+
+    def blocked_inject() -> None:
+        try:
+            handle.inject("blocked after stream entry")
+        except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
+            failures.append(exc)
+
+    injector = threading.Thread(target=blocked_inject)
+    injector.start()
+    assert proc.stdin.write_entered.wait(timeout=1.0)
+
+    getattr(handle, terminal_action)()
+
+    injector.join(timeout=2.0)
+    assert not injector.is_alive()
+    assert proc.signal_calls == 1
+    assert len(failures) == 1
+    assert isinstance(failures[0], AdapterError)
+    if terminal_action == "request_close":
+        with pytest.raises(AdapterError, match="close_requested"):
+            handle.inject("must stay retired")
+    handle.close()
 
 
-def test_interrupt_unblocks_blocked_inject(tmp_path: Path) -> None:
+def test_interrupt_retires_inject_at_real_full_pipe_boundary(tmp_path: Path) -> None:
     # The provider announces its session and then stops reading stdin, so
     # a large inject fills the real pipe and blocks; interrupt() must
     # unblock it ([SUM-7.1], the [SUM-9] stuck-harness dependency).
@@ -426,10 +548,9 @@ def test_interrupt_unblocks_blocked_inject(tmp_path: Path) -> None:
         pump.next_of(SessionEvent)
 
         failures: list[Exception] = []
-        blocked = threading.Event()
+        stdin = _fill_real_stdin_pipe(handle)
 
         def blocked_inject() -> None:
-            blocked.set()
             try:
                 handle.inject("x" * 8_000_000)
             except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
@@ -437,9 +558,7 @@ def test_interrupt_unblocks_blocked_inject(tmp_path: Path) -> None:
 
         injector = threading.Thread(target=blocked_inject, daemon=True)
         injector.start()
-        assert blocked.wait(timeout=5.0)
-        time.sleep(0.5)  # let the write reach the full-pipe block
-        assert injector.is_alive(), "inject did not block on the stalled harness"
+        assert stdin.write_attempted.wait(timeout=5.0)
 
         handle.interrupt()
 
@@ -452,7 +571,7 @@ def test_interrupt_unblocks_blocked_inject(tmp_path: Path) -> None:
         assert isinstance(exit_event, ExitEvent)
 
 
-def test_request_close_unblocks_blocked_inject_and_rejects_later_inject(
+def test_request_close_retires_inject_at_real_full_pipe_boundary(
     tmp_path: Path,
 ) -> None:
     scenario = {"on_start": [{"stall": True}]}
@@ -460,10 +579,9 @@ def test_request_close_unblocks_blocked_inject_and_rejects_later_inject(
         pump = EventPump(handle)
         pump.next_of(SessionEvent)
         failures: list[Exception] = []
-        blocked = threading.Event()
+        stdin = _fill_real_stdin_pipe(handle)
 
         def blocked_inject() -> None:
-            blocked.set()
             try:
                 handle.inject("x" * 8_000_000)
             except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
@@ -471,9 +589,7 @@ def test_request_close_unblocks_blocked_inject_and_rejects_later_inject(
 
         injector = threading.Thread(target=blocked_inject, daemon=True)
         injector.start()
-        assert blocked.wait(timeout=5.0)
-        time.sleep(0.5)
-        assert injector.is_alive(), "inject did not block on the stalled harness"
+        assert stdin.write_attempted.wait(timeout=5.0)
 
         handle.request_close()
 
@@ -625,14 +741,13 @@ import signal
 import subprocess
 import sys
 import threading
-import time
 from taut_summon._scripted import ScriptedHandle
 
 provider = subprocess.Popen(
     [
         sys.executable,
         "-c",
-        "import signal,time; signal.signal(signal.SIGINT, signal.SIG_IGN); print('ready', flush=True); time.sleep(0.5)",
+        "import signal,time; signal.signal(signal.SIGINT, signal.SIG_IGN); print('ready', flush=True); time.sleep(60)",
     ],
     stdin=subprocess.PIPE,
     stdout=subprocess.PIPE,
@@ -640,14 +755,49 @@ provider = subprocess.Popen(
 )
 assert provider.stdout is not None
 assert provider.stdout.readline().strip() == "ready"
-handle = ScriptedHandle(provider, session_id=None)
-signal.signal(signal.SIGINT, lambda _signum, _frame: handle.interrupt())
+wait_entered = threading.Event()
+second_handled = threading.Event()
+second_sent = threading.Event()
+sender_joined = threading.Event()
+
+class ObservedProcess:
+    def __getattr__(self, name):
+        return getattr(provider, name)
+
+    def wait(self, timeout=None):
+        wait_entered.set()
+        return provider.wait(timeout=timeout)
+
+handle = ScriptedHandle(ObservedProcess(), session_id=None)
+signal_count = 0
+
+def interrupt_handle(_signum, _frame):
+    global signal_count
+    signal_count += 1
+    handle.interrupt()
+    if signal_count == 2:
+        second_handled.set()
+
+signal.signal(signal.SIGINT, interrupt_handle)
 os.kill(os.getpid(), signal.SIGINT)
-threading.Thread(
-    target=lambda: (time.sleep(0.1), os.kill(os.getpid(), signal.SIGINT)),
-    daemon=True,
-).start()
+
+def send_second_sigint():
+    assert wait_entered.wait(timeout=1.0)
+    os.kill(os.getpid(), signal.SIGINT)
+    second_sent.set()
+    assert second_handled.wait(timeout=1.0)
+    provider.terminate()
+    sender_joined.set()
+
+sender = threading.Thread(target=send_second_sigint, daemon=True)
+sender.start()
 handle.close()
+sender.join(timeout=1.0)
+assert wait_entered.is_set()
+assert second_sent.is_set()
+assert second_handled.is_set()
+assert sender_joined.is_set()
+assert not sender.is_alive()
 print("closed", flush=True)
 """
 
@@ -666,6 +816,11 @@ print("closed", flush=True)
 def test_concurrent_close_has_one_escalation_and_stream_closer() -> None:
     proc = _BlockingCloseProcess()
     handle = ScriptedHandle(cast(Any, proc), session_id=None)
+    close_condition = _TrackingCondition(
+        handle._lifecycle_lock,
+        tracked_thread="second-stream-closer",
+    )
+    handle._close_condition = cast(Any, close_condition)
     failures: list[BaseException] = []
 
     def close() -> None:
@@ -674,14 +829,18 @@ def test_concurrent_close_has_one_escalation_and_stream_closer() -> None:
         except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
             failures.append(exc)
 
-    first = threading.Thread(target=close)
-    second = threading.Thread(target=close)
+    first = threading.Thread(target=close, name="first-stream-closer")
+    second = threading.Thread(target=close, name="second-stream-closer")
     first.start()
-    assert proc.wait_entered.wait(timeout=1.0)
-    second.start()
-    proc.release_wait.set()
-    first.join(timeout=2.0)
-    second.join(timeout=2.0)
+    try:
+        assert proc.wait_entered.wait(timeout=1.0)
+        second.start()
+        assert close_condition.wait_entered.wait(timeout=1.0)
+    finally:
+        proc.release_wait.set()
+        first.join(timeout=2.0)
+        if second.ident is not None:
+            second.join(timeout=2.0)
 
     assert not first.is_alive()
     assert not second.is_alive()

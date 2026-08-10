@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+from collections import Counter
 from pathlib import Path
 from types import TracebackType
 from typing import Any, Self
@@ -645,7 +646,32 @@ def test_pg_runner_command_uses_bounded_xdist_defaults(
     assert scripts.pytest_pg_main(["--fast"]) == 0
 
     pytest_commands = [command for command in commands if "pytest" in command]
-    assert pytest_commands
-    for command in pytest_commands:
-        assert command[command.index("-n") + 1] == "4"
-        assert command[command.index("--dist") + 1] == "loadgroup"
+    observed = Counter(
+        (
+            command[command.index("-m") + 1],
+            next(
+                argument
+                for argument in command
+                if argument in {"tests", "extensions/taut_pg/tests"}
+            ),
+            command[command.index("-n") + 1],
+            command[command.index("--dist") + 1],
+        )
+        for command in pytest_commands
+    )
+    assert observed == Counter(
+        {
+            (
+                "shared and not slow",
+                "tests",
+                scripts.PG_TEST_DEFAULT_WORKERS,
+                "loadgroup",
+            ): 1,
+            (
+                "pg_only",
+                "extensions/taut_pg/tests",
+                scripts.PG_TEST_DEFAULT_WORKERS,
+                "loadgroup",
+            ): 1,
+        }
+    )

@@ -86,25 +86,6 @@ def test_exception_leaves_are_public_exports() -> None:
     assert len(taut.__all__) == len(set(taut.__all__)) == len(EXPECTED_PUBLIC_EXPORTS)
     assert set(taut.__all__) == set(EXPECTED_PUBLIC_EXPORTS)
     assert issubclass(taut.BlankMessageError, taut.EmptyResultError)
-    assert taut.NotFoundError.__name__ == "NotFoundError"
-    assert taut.TokenError.__name__ == "TokenError"
-    assert taut.TautWatcher.__name__ == "TautWatcher"
-    assert "NotFoundError" in taut.__all__
-    assert "TokenError" in taut.__all__
-    assert "TautWatcher" in taut.__all__
-    assert taut.Notification.__name__ == "Notification"
-    assert "Notification" in taut.__all__
-    assert taut.MessageDeletion.__name__ == "MessageDeletion"
-    assert "MessageDeletion" in taut.__all__
-    assert taut.MessageReaction.__name__ == "MessageReaction"
-    assert "MessageReaction" in taut.__all__
-    assert taut.Channel.__name__ == "Channel"
-    assert "Channel" in taut.__all__
-    assert taut.SearchHit.__name__ == "SearchHit"
-    assert "SearchHit" in taut.__all__
-    assert taut.DumpReport.__name__ == "DumpReport"
-    assert taut.LoadReport.__name__ == "LoadReport"
-    assert taut.PersistenceComponentReport.__name__ == "PersistenceComponentReport"
 
 
 def test_persistence_reports_are_exact_frozen_slotted_public_values() -> None:
@@ -140,6 +121,36 @@ def test_persistence_reports_are_exact_frozen_slotted_public_values() -> None:
         "destination_checked",
         "applied",
     ]
+    component = PersistenceComponentReport(name="core", version=1, records=3)
+    dump = DumpReport(
+        path="workspace.taut.jsonl",
+        format="taut-workspace",
+        version=1,
+        components=(component,),
+        queues=2,
+        messages=3,
+        omitted_claimed_messages=0,
+    )
+    load = LoadReport(
+        path="workspace.taut.jsonl",
+        format="taut-workspace",
+        version=1,
+        components=(component,),
+        queues=2,
+        messages=3,
+        dry_run=False,
+        destination_checked=True,
+        applied=True,
+    )
+
+    for report in (component, dump, load):
+        assert not hasattr(report, "__dict__")
+    with pytest.raises(FrozenInstanceError):
+        component.name = "changed"  # type: ignore[misc]
+    with pytest.raises(FrozenInstanceError):
+        dump.path = "changed"  # type: ignore[misc]
+    with pytest.raises(FrozenInstanceError):
+        load.path = "changed"  # type: ignore[misc]
 
 
 def test_search_hit_is_exact_frozen_slotted_public_value() -> None:
@@ -179,10 +190,7 @@ def test_search_hit_is_exact_frozen_slotted_public_value() -> None:
         hit.text = "changed"  # type: ignore[misc]
 
 
-def test_lazy_public_exports_cache_and_unknown_names_fail_normally() -> None:
-    client_type = taut.TautClient
-
-    assert vars(taut)["TautClient"] is client_type
+def test_unknown_public_names_fail_normally() -> None:
     missing_name = "missing_public_name"
     with pytest.raises(AttributeError, match="missing_public_name"):
         getattr(taut, missing_name)

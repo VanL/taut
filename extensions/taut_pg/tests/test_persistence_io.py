@@ -10,9 +10,10 @@ import json
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
+from typing import cast
 
 import pytest
-from simplebroker import Queue, open_broker, target_for_directory
+from simplebroker import Queue, target_for_directory
 from simplebroker.ext import get_backend_plugin
 
 from taut._constants import META_QUEUE_NAME, load_config
@@ -291,30 +292,53 @@ def test_postgres_partial_broker_batch_failure_leaves_target_guarded(
         client.close()
     source_queue = Queue("general", db_path=str(sqlite_source))
     try:
+        # This bounds the probe only. The fault below is triggered by an observed
+        # PostgreSQL commit, not by an expected SimpleBroker batch size.
         source_queue.insert_messages(
             (f"bulk-{index}", 3_000_000_000_000_000_000 + index)
-            for index in range(1001)
+            for index in range(10_000)
         )
+        source_records = list(source_queue.peek_generator(with_timestamps=True))
     finally:
         source_queue.close()
     dump_path = taut_pg_project / "partial-source.taut.jsonl"
     dumped = TautClient.dump(output=dump_path, db_path=sqlite_source)
-    assert dumped.messages > 1000
+    assert dumped.messages == len(source_records)
 
     original_component_lines = ParsedDump.component_lines
+    monkeypatch.chdir(taut_pg_project)
+    config = load_config()
+    target = target_for_directory(taut_pg_project, config=config)
+    observed_prefix: list[tuple[str, int]] = []
 
     def faulting_component_lines(self: ParsedDump, name: str):  # type: ignore[no-untyped-def]
         lines = original_component_lines(self, name)
+        observer: Queue | None = None
         try:
-            for index, line in enumerate(lines):
-                if name == "simplebroker" and index == 1001:
-                    raise RuntimeError("fault after first PostgreSQL broker batch")
+            for line in lines:
                 yield line
+                if name != "simplebroker":
+                    continue
+                if observer is None:
+                    observer = Queue(
+                        "general",
+                        db_path=target,
+                        persistent=True,
+                        config=config,
+                    )
+                committed = cast(
+                    list[tuple[str, int]],
+                    list(observer.peek_generator(with_timestamps=True)),
+                )
+                if committed:
+                    observed_prefix.extend(committed)
+                    raise RuntimeError("fault after first PostgreSQL broker batch")
         finally:
             lines.close()
+            if observer is not None:
+                observer.close()
 
     monkeypatch.setattr(ParsedDump, "component_lines", faulting_component_lines)
-    monkeypatch.chdir(taut_pg_project)
 
     with pytest.raises(
         RuntimeError,
@@ -322,11 +346,14 @@ def test_postgres_partial_broker_batch_failure_leaves_target_guarded(
     ):
         TautClient.load(input_path=dump_path)
 
-    config = load_config()
-    target = target_for_directory(taut_pg_project, config=config)
-    with open_broker(target, config=config) as broker:
-        stats = {item.queue: item for item in broker.list_queue_stats()}
-    assert stats["general"].pending == 1000
+    restored_queue = Queue("general", db_path=target, config=config)
+    try:
+        restored_records = list(restored_queue.peek_generator(with_timestamps=True))
+    finally:
+        restored_queue.close()
+    assert 0 < len(restored_records) < len(source_records)
+    assert observed_prefix == restored_records
+    assert restored_records == source_records[: len(restored_records)]
 
     guard_queue = Queue(META_QUEUE_NAME, db_path=target, config=config)
     try:

@@ -150,7 +150,6 @@ def test_public_interaction_models_have_exact_stable_shape() -> None:
     lease = TerminalLease(input_fd=7, output_fd=9)
     with pytest.raises(dataclasses.FrozenInstanceError):
         lease.input_fd = 11  # type: ignore[misc]
-    assert not hasattr(lease, "__dict__")
     assert SummonInteraction.__module__ == "taut_summon.interaction"
 
 

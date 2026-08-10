@@ -197,7 +197,6 @@ async def _inspect_empty_server(
         assert required_rule in initialized.instructions
     assert tools.tools == list(TOOLS)
     assert {tool.name for tool in tools.tools} == EXPECTED_TOOL_NAMES
-    assert len(tools.tools) == 21
     assert [
         (str(resource.uri), resource.mime_type) for resource in resources.resources
     ] == [("taut://notifications/current", "application/json")]
@@ -234,7 +233,6 @@ async def _inspect_modern_empty_server(
         resources = await client.list_resources()
         assert tools.tools == list(TOOLS)
         assert {tool.name for tool in tools.tools} == EXPECTED_TOOL_NAMES
-        assert len(tools.tools) == 21
         assert [(str(item.uri), item.mime_type) for item in resources.resources] == [
             (NOTIFICATIONS_URL, "application/json")
         ]
@@ -595,10 +593,11 @@ def test_startup_argument_failure_is_one_line_exit_one() -> None:
 def test_malformed_frame_stays_protocol_clean_and_does_not_traceback() -> None:
     """[MCP-3]/[MCP-12] A recoverable malformed request stays framed."""
 
+    sentinel = "mcp-frame-sentinel-8d1d7b2f"
     completed = subprocess.run(
         [sys.executable, "-m", "taut_mcp"],
         cwd=EXTENSION_ROOT,
-        input="{not-json}\n",
+        input=f'{{malformed:"{sentinel}"}}\n',
         capture_output=True,
         text=True,
         timeout=5,
@@ -607,7 +606,8 @@ def test_malformed_frame_stays_protocol_clean_and_does_not_traceback() -> None:
     assert completed.returncode == 0
     assert completed.stdout == ""
     assert "Traceback" not in completed.stderr
-    assert "sensitive" not in completed.stderr
+    assert sentinel not in completed.stdout
+    assert sentinel not in completed.stderr
 
 
 @pytest.mark.timeout(10)
@@ -1088,6 +1088,8 @@ def test_stdio_resource_subscription_is_edge_only_and_recovers_latest_state(
     selected.close()
     other = TautClient(db_path=db, as_name="other")
     other.join("general")
+    other_member = other.last_created_member
+    assert other_member is not None
 
     async def scenario() -> None:
         updates: asyncio.Queue[str] = asyncio.Queue()
@@ -1140,26 +1142,40 @@ def test_stdio_resource_subscription_is_edge_only_and_recovers_latest_state(
             await asyncio.sleep(0.1)
             assert updates.empty()
 
-            other.say("general", "first @selected")
+            first = other.say("general", "first @selected")
             assert await asyncio.wait_for(updates.get(), timeout=1.5) == str(
                 NOTIFICATIONS_URL
             )
             await legacy_unsubscribe(NOTIFICATIONS_URL)
             await legacy_unsubscribe(NOTIFICATIONS_URL)
-            other.say("general", "second @selected")
+            second = other.say("general", "second @selected")
             await asyncio.sleep(0.7)
             assert updates.empty()
 
             current = await session.read_resource(NOTIFICATIONS_URL)
             assert isinstance(current.contents[0], types.TextResourceContents)
-            assert (
-                len(
-                    json.loads(current.contents[0].text)["workspaces"][0][
-                        "notifications"
-                    ]
-                )
-                == 2
-            )
+            assert json.loads(current.contents[0].text)["workspaces"][0][
+                "notifications"
+            ] == [
+                {
+                    "actor_id": other_member.member_id,
+                    "actor_name": "other",
+                    "matched": "@selected",
+                    "message_ts": str(first.ts),
+                    "thread": "general",
+                    "to_id": member.member_id,
+                    "type": "mention",
+                },
+                {
+                    "actor_id": other_member.member_id,
+                    "actor_name": "other",
+                    "matched": "@selected",
+                    "message_ts": str(second.ts),
+                    "thread": "general",
+                    "to_id": member.member_id,
+                    "type": "mention",
+                },
+            ]
 
             await legacy_subscribe(NOTIFICATIONS_URL)
             assert await asyncio.wait_for(updates.get(), timeout=1) == str(
@@ -1204,6 +1220,8 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
     selected.close()
     other = TautClient(db_path=db, as_name="other")
     other.join("general")
+    other_member = other.last_created_member
+    assert other_member is not None
     other.say("general", "hello @selected")
 
     async def scenario() -> None:
@@ -1531,7 +1549,13 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
             assert renamed["records"][0]["thread"] == "main"  # type: ignore[index]
             assert renamed["records"][0]["topic"] == "stdio topic"  # type: ignore[index]
             members = await call("who", {"thread": "main"})
-            assert len(members["records"]) == 2  # type: ignore[arg-type]
+            member_records = cast(list[dict[str, object]], members["records"])
+            assert sorted(
+                (record["name"], record["member_id"]) for record in member_records
+            ) == [
+                ("other", other_member.member_id),
+                ("renamed", member.member_id),
+            ]
             identity = await call("whoami", {})
             assert identity["records"][0]["name"] == "renamed"  # type: ignore[index]
 
@@ -1564,8 +1588,6 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
             ):
                 with pytest.raises(MCPError):
                     await session.call_tool(unknown_tool, {})
-
-        assert schemas["whoami"] is not None
 
     try:
         asyncio.run(scenario())

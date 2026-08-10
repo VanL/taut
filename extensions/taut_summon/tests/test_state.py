@@ -158,10 +158,57 @@ def test_version_gate_refuses_newer_schema(state_queue: Queue) -> None:
 
 def test_version_gate_refuses_older_schema(state_queue: Queue) -> None:
     ensure_summon_schema(state_queue)
+    ts = state_queue.generate_timestamp()
+    pid, start = capture_driver_evidence()
+    claim_name(
+        state_queue,
+        name="reviewer",
+        provider="scripted",
+        driver_pid=pid,
+        driver_start_time=start,
+        claimed_ts=ts,
+    )
+    record_session(
+        state_queue,
+        member_id="m_refusal_probe",
+        token="taut-refusal-token",
+        provider="scripted",
+        provider_session_id="session-before-refusal",
+        updated_ts=ts,
+    )
     _set_meta_value(state_queue, SUMMON_SCHEMA_VERSION_KEY, "1")
 
+    def schema_snapshot() -> tuple[object, ...]:
+        with state_queue.sidecar() as session:
+            schema = tuple(
+                session.run(
+                    """
+                    SELECT type, name, tbl_name, sql
+                    FROM sqlite_master
+                    WHERE name LIKE 'taut_summon_%'
+                    ORDER BY type, name
+                    """,
+                    fetch=True,
+                )
+            )
+            claims = tuple(
+                session.run(
+                    "SELECT * FROM taut_summon_claims ORDER BY name, provider",
+                    fetch=True,
+                )
+            )
+            sessions = tuple(
+                session.run(
+                    "SELECT * FROM taut_summon_sessions ORDER BY member_id",
+                    fetch=True,
+                )
+            )
+        return get_summon_schema_version(state_queue), schema, claims, sessions
+
+    before = schema_snapshot()
     with pytest.raises(SummonSchemaVersionError):
         ensure_summon_schema(state_queue)
+    assert schema_snapshot() == before
 
 
 def test_version_two_migrates_claim_names_to_lowercase_route_keys(

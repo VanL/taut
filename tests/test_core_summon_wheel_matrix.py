@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import zipfile
+from collections import Counter
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -665,7 +666,17 @@ def test_release_wheel_checker_reuses_explicit_current_wheels_without_building(
 
     builder.build_and_check(core_wheel=core, summon_wheel=summon)
 
-    assert len(commands) == 2
+    roles = Counter(
+        "build"
+        if command[:2] == ("uv", "build")
+        else "pg-resolution"
+        if command[:3] == ("uv", "pip", "compile")
+        else "wheel-matrix"
+        if command[1] == str(builder.WHEEL_MATRIX_CHECKER)
+        else "unexpected"
+        for command in commands
+    )
+    assert roles == Counter({"pg-resolution": 1, "wheel-matrix": 1})
 
 
 def test_release_wheel_checker_rejects_partial_explicit_pair(

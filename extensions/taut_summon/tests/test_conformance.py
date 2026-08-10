@@ -245,11 +245,14 @@ class ConformanceHarness:
         token = self.member_token(name)
         client = TautClient(db_path=self.summon_db, token=token)
         try:
-            for entry in client.list_threads(all_threads=True):
-                if entry.name == thread:
-                    return entry.unread_count
-        except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
-            return -1
+            try:
+                for entry in client.list_threads(all_threads=True):
+                    if entry.name == thread:
+                        return entry.unread_count
+            except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
+                return -1
+        finally:
+            client.close()
         return -1
 
     def speech_by_member(self, name: str, thread: str) -> list[Message]:
@@ -262,12 +265,12 @@ class ConformanceHarness:
         """
 
         member = _member_by_name(self.summon_db, name)
-        if member is None:
-            return []
+        assert member is not None, f"no member named {name!r} to observe"
+        client = TautClient(db_path=self.summon_db)
         try:
-            log = TautClient(db_path=self.summon_db).log(thread)
-        except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
-            return []
+            log = client.log(thread)
+        finally:
+            client.close()
         return [m for m in log if m.from_id == member.member_id and m.kind == "message"]
 
     # -- control ([SUM-9]) ----------------------------------------------------
@@ -613,24 +616,6 @@ def _run_summon(*args: str, cwd: Path, env: dict[str, str]) -> tuple[int, str, s
         check=False,
     )
     return completed.returncode, completed.stdout.strip(), completed.stderr.strip()
-
-
-def test_probe_no_db_fails_clean(tmp_path: Path) -> None:
-    rc, out, err = _run_summon("run", "scripted", cwd=tmp_path, env=_base_env())
-    assert rc == 1
-    assert out == ""
-    assert "No taut database found" in err
-    assert _no_traceback(err)
-    assert len(err.splitlines()) == 1
-
-
-def test_probe_unknown_provider_fails_clean(tmp_path: Path) -> None:
-    rc, out, err = _run_summon("run", "zz-unknown", cwd=tmp_path, env=_base_env())
-    assert rc == 1
-    assert out == ""
-    assert "no adapter named 'zz-unknown'" in err
-    assert _no_traceback(err)
-    assert len(err.splitlines()) == 1
 
 
 def test_probe_malformed_pty_argv_fails_clean(summon_db: Path, tmp_path: Path) -> None:

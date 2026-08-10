@@ -7,9 +7,9 @@ from typing import Any
 
 import psycopg
 import pytest
+from psycopg import sql
 from simplebroker.ext import get_backend_plugin
 
-from taut._constants import PROJECT_CONFIG_NAME
 from taut.client import TautClient
 
 pytestmark = pytest.mark.pg_only
@@ -102,15 +102,6 @@ def test_taut_cli_uses_postgres_project_config(
     ]
 
 
-def test_taut_project_config_file_selects_postgres(
-    taut_pg_project: Path,
-) -> None:
-    config = (taut_pg_project / PROJECT_CONFIG_NAME).read_text(encoding="utf-8")
-
-    assert 'backend = "postgres"' in config
-    assert "[backend_options]" in config
-
-
 def test_postgres_cleanup_drops_only_created_schema(
     pg_dsn: str,
     pg_schema: str,
@@ -118,19 +109,51 @@ def test_postgres_cleanup_drops_only_created_schema(
 ) -> None:
     plugin = get_backend_plugin("postgres")
     plugin.initialize_target(pg_dsn, backend_options={"schema": pg_schema})
+    sentinel_schema = f"{pg_schema}_sentinel"
+    try:
+        with raw_pg_conn.cursor() as cursor:
+            cursor.execute(
+                sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(sentinel_schema))
+            )
+            cursor.execute(
+                sql.SQL("CREATE TABLE {}.sentinel (value TEXT NOT NULL)").format(
+                    sql.Identifier(sentinel_schema)
+                )
+            )
+            cursor.execute(
+                sql.SQL("INSERT INTO {}.sentinel (value) VALUES (%s)").format(
+                    sql.Identifier(sentinel_schema)
+                ),
+                ("unrelated-schema-survives",),
+            )
+            cursor.execute(
+                "SELECT schema_name FROM information_schema.schemata "
+                "WHERE schema_name = %s",
+                (pg_schema,),
+            )
+            assert cursor.fetchone() == (pg_schema,)
 
-    with raw_pg_conn.cursor() as cursor:
-        cursor.execute(
-            "SELECT schema_name FROM information_schema.schemata WHERE schema_name = %s",
-            (pg_schema,),
+        assert (
+            plugin.cleanup_target(pg_dsn, backend_options={"schema": pg_schema}) is True
         )
-        assert cursor.fetchone() == (pg_schema,)
 
-    assert plugin.cleanup_target(pg_dsn, backend_options={"schema": pg_schema}) is True
-
-    with raw_pg_conn.cursor() as cursor:
-        cursor.execute(
-            "SELECT schema_name FROM information_schema.schemata WHERE schema_name = %s",
-            (pg_schema,),
-        )
-        assert cursor.fetchone() is None
+        with raw_pg_conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT schema_name FROM information_schema.schemata "
+                "WHERE schema_name = %s",
+                (pg_schema,),
+            )
+            assert cursor.fetchone() is None
+            cursor.execute(
+                sql.SQL("SELECT value FROM {}.sentinel").format(
+                    sql.Identifier(sentinel_schema)
+                )
+            )
+            assert cursor.fetchall() == [("unrelated-schema-survives",)]
+    finally:
+        with raw_pg_conn.cursor() as cursor:
+            cursor.execute(
+                sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(
+                    sql.Identifier(sentinel_schema)
+                )
+            )

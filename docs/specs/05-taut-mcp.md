@@ -2182,6 +2182,9 @@ compatibility workflow.
 
 ## Related Plans
 
+- `docs/plans/2026-08-10-test-quality-remediation-plan.md` — consolidates MCP
+  inventory ownership under exact mappings and strengthens page, resource,
+  cancellation, and backend-conformance oracles.
 - `docs/plans/2026-08-10-mcp-search-plan.md` — adds one explicit search tool,
   immutable selector transport, exact search-hit results, and backend-real
   conformance without changing core search semantics.

@@ -161,48 +161,50 @@ def test_cli_bundle_output_is_accepted_by_publication_gate(tmp_path: Path) -> No
     assert set(expected.files) == {path.name for path in publish.iterdir()}
 
 
-def test_verify_bundle_accepts_only_mcp_tag_family(tmp_path: Path) -> None:
-    module = _load_module()
-    package = _package(tmp_path, name="taut-mcp")
-    dist = _distributions(tmp_path, name="taut-mcp")
-    bundle = tmp_path / "bundle"
-    commit = "a" * 40
-    module.create_bundle(
-        package_dir=package,
-        dist_dir=dist,
-        output_dir=bundle,
-        commit=commit,
-    )
-
-    module.verify_bundle(
-        package_dir=package,
-        bundle_dir=bundle,
-        expected_commit=commit,
-        expected_tag_name="taut_mcp/v1.2.3",
-        output_dir=None,
-    )
-    for invalid_tag in (
-        "v1.2.3",
-        "taut_mcp/1.2.3",
-        "taut_mcp/v1.2.4",
-        "taut_pg/v1.2.3",
-    ):
-        with pytest.raises(module.ReleaseArtifactError, match="release tag"):
-            module.verify_bundle(
-                package_dir=package,
-                bundle_dir=bundle,
-                expected_commit=commit,
-                expected_tag_name=invalid_tag,
-                output_dir=None,
-            )
-
-
-def test_verify_bundle_accepts_taut_chat_on_unchanged_core_tag_family(
+@pytest.mark.parametrize(
+    ("package_name", "valid_tag", "invalid_tags"),
+    (
+        (
+            "taut-chat",
+            "v1.2.3",
+            ("taut_chat/v1.2.3", "taut/v1.2.3", "v1.2.4"),
+        ),
+        (
+            "taut-pg",
+            "taut_pg/v1.2.3",
+            ("v1.2.3", "taut_pg/1.2.3", "taut_pg/v1.2.4"),
+        ),
+        (
+            "taut-summon",
+            "taut_summon/v1.2.3",
+            (
+                "v1.2.3",
+                "taut_summon/1.2.3",
+                "taut_summon/v1.2.4",
+                "taut_mcp/v1.2.3",
+            ),
+        ),
+        (
+            "taut-mcp",
+            "taut_mcp/v1.2.3",
+            (
+                "v1.2.3",
+                "taut_mcp/1.2.3",
+                "taut_mcp/v1.2.4",
+                "taut_pg/v1.2.3",
+            ),
+        ),
+    ),
+)
+def test_verify_bundle_fires_every_release_tag_family(
     tmp_path: Path,
+    package_name: str,
+    valid_tag: str,
+    invalid_tags: tuple[str, ...],
 ) -> None:
     module = _load_module()
-    package = _package(tmp_path, name="taut-chat")
-    dist = _distributions(tmp_path, name="taut-chat")
+    package = _package(tmp_path, name=package_name)
+    dist = _distributions(tmp_path, name=package_name)
     bundle = tmp_path / "bundle"
     commit = "a" * 40
     module.create_bundle(
@@ -216,14 +218,10 @@ def test_verify_bundle_accepts_taut_chat_on_unchanged_core_tag_family(
         package_dir=package,
         bundle_dir=bundle,
         expected_commit=commit,
-        expected_tag_name="v1.2.3",
+        expected_tag_name=valid_tag,
         output_dir=None,
     )
-    for invalid_tag in (
-        "taut_chat/v1.2.3",
-        "taut/v1.2.3",
-        "v1.2.4",
-    ):
+    for invalid_tag in invalid_tags:
         with pytest.raises(module.ReleaseArtifactError, match="release tag"):
             module.verify_bundle(
                 package_dir=package,

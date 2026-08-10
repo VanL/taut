@@ -564,13 +564,25 @@ def driver_factory(
         proc.cleanup()
 
 
-def _client(db: Path) -> TautClient:
-    return TautClient(db_path=db)
+def _who(db: Path, thread: str | None = None) -> list[Any]:
+    client = TautClient(db_path=db)
+    try:
+        return list(client.who(thread))
+    finally:
+        client.close()
+
+
+def _log(db: Path, thread: str) -> list[Any]:
+    client = TautClient(db_path=db)
+    try:
+        return list(client.log(thread))
+    finally:
+        client.close()
 
 
 def _member_by_name(db: Path, name: str) -> Any | None:
     key = route_key(name)
-    for member in _client(db).who():
+    for member in _who(db):
         if route_key(member.name) == key or key in map(route_key, member.aliases):
             return member
     return None

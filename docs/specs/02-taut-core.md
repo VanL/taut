@@ -2378,6 +2378,9 @@ installing `taut-chat`.
 
 ## Related Plans
 
+- `docs/plans/2026-08-10-test-quality-remediation-plan.md` — strengthens core
+  behavioral oracles, removes redundant implementation pins, and preserves
+  aggregate, per-package, required-path, and line-level coverage evidence.
 - `docs/plans/2026-08-10-simplebroker-7-json-id-boundary-plan.md` — raises the
   supported broker floor and makes external JSON timestamp fields exact
   strings while preserving integer Python and storage domains.

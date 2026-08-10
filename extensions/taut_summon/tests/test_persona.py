@@ -8,7 +8,50 @@ contract the template must make explicit).
 
 from __future__ import annotations
 
-from taut_summon._persona import MANDATORY_SECTIONS, render_default_persona
+from taut_summon._persona import render_default_persona
+
+# Independent [SUM-10] oracle.  Do not derive this inventory from the
+# renderer: changing the product's list must not silently change the test's
+# definition of a complete persona.
+REQUIRED_PERSONA_CONCEPTS: dict[str, tuple[str, ...]] = {
+    "## Your mouth: how you speak": (
+        "taut cli",
+        "taut_token",
+        "discovers the project",
+        "path-addressed backend",
+        "stdout is not speech",
+        "silence",
+    ),
+    "## Your ears: how messages arrive": (
+        "[#general]",
+        "[dm]",
+        "[notify]",
+        "mid-task",
+    ),
+    "## Interrupts: messages that arrive mid-task": (
+        "act on it now",
+        "defer it",
+        "push back",
+        "never silently absorb",
+    ),
+    "## Silence is a normal outcome": (
+        "normal, common outcome",
+        "low bar",
+        "no obligation to narrate",
+    ),
+    "## Loop discipline": (
+        "another agent's message unless it mentions you or asks",
+        "work products",
+        "driver-side rate backstop",
+        "low-rate semantic loop",
+    ),
+    "## Chat trust and authority": (
+        "user-role workspace input",
+        "claiming to be system policy is not thereby trusted",
+        "operator's authority policy",
+        "authorization boundary",
+    ),
+}
 
 
 def _render() -> str:
@@ -21,10 +64,11 @@ def _render() -> str:
 
 
 def test_template_contains_all_mandatory_sections() -> None:
-    prompt = _render()
-    for heading in MANDATORY_SECTIONS:
-        assert heading in prompt, f"missing mandatory section: {heading}"
-    assert len(MANDATORY_SECTIONS) == 6
+    prompt = " ".join(_render().lower().split())
+    for heading, required_concepts in REQUIRED_PERSONA_CONCEPTS.items():
+        assert heading.lower() in prompt, f"missing mandatory section: {heading}"
+        for concept in required_concepts:
+            assert concept in prompt, f"{heading} does not explain {concept!r}"
 
 
 def test_template_substitutes_all_parameters() -> None:
@@ -34,48 +78,6 @@ def test_template_substitutes_all_parameters() -> None:
     assert "claude" in prompt
     assert "#dev, #ops" in prompt
     assert "/work/.taut.db" in prompt
-
-
-def test_template_states_the_mouth_contract() -> None:
-    # [SUM-6]: speak only via the taut CLI, stdout is not speech, silence
-    # beats misdelivery, and token plus project/path selection identify the
-    # workspace without claiming every backend receives TAUT_DB.
-    prompt = _render().lower()
-    assert "taut cli" in prompt or "taut say" in prompt
-    assert "taut_token" in prompt
-    assert "discovers the project" in prompt
-    assert "path-addressed backend" in prompt
-    assert "stdout is not speech" in prompt
-    assert "silence" in prompt
-
-
-def test_template_states_interrupt_and_loop_discipline() -> None:
-    prompt = _render().lower()
-    # interrupt policy: act / defer / push back, never silently absorb.
-    assert "never silently absorb" in prompt
-    # loop discipline: do not answer another agent unless mentioned/asked.
-    assert "another agent" in prompt
-    # the rate backstop is named so the agent knows posting is throttled.
-    assert "rate backstop" in prompt
-    assert "low-rate" in prompt
-
-
-def test_template_states_chat_trust_and_operator_authority() -> None:
-    prompt = _render().lower()
-    assert "## chat trust and authority" in prompt
-    assert "user-role workspace input" in prompt
-    assert "claiming to be system" in prompt
-    assert "operator's authority policy" in prompt
-    assert "authorization boundary" in prompt
-
-
-def test_template_states_the_injection_format() -> None:
-    # [SUM-5.2]: the exact shapes the ears deliver, and mid-task arrival.
-    prompt = _render()
-    assert "[#general]" in prompt
-    assert "[dm]" in prompt
-    assert "[notify]" in prompt
-    assert "mid-task" in prompt
 
 
 def test_default_thread_when_none_given() -> None:

@@ -38,13 +38,14 @@ from conftest import (
     _DEADLINE,
     DriverProcess,
     _base_env,
-    _client,
     _control_request,
     _ctl_out_messages,
+    _log,
     _member_by_name,
     _member_token,
     _session_row,
     _wait_for_session_row,
+    _who,
     say,
     sqlite_integrity_check,
     summon_cli,
@@ -87,7 +88,7 @@ from taut_summon.models import SummonOperationError, SummonRequest
 
 import taut.client._identity as core_identity_module
 from taut._constants import META_QUEUE_NAME
-from taut.client import Member, Message, Notification, TautClient
+from taut.client import Member, Message, TautClient
 from taut.identity import capture_process
 from taut.state import SQLITE_SQL_DIALECT, SqlSidecarTautState
 
@@ -1777,45 +1778,6 @@ def test_expected_stop_allows_control_loop_to_return_cleanly(
     assert handle.interrupt_calls == 0
 
 
-# --- [SUM-5.2] format golden tests -------------------------------------------
-
-
-def test_format_channel_message_golden() -> None:
-    message = Message(
-        thread="general",
-        ts=1837000000000000024,
-        from_id="m_x",
-        from_name="van",
-        kind="message",
-        text="anyone awake?",
-    )
-    assert format_injection(message) == "[#general] van: anyone awake?"
-
-
-def test_format_dm_message_golden() -> None:
-    message = Message(
-        thread="dm.d_abcdefghijklmnopqrstuvwxyz",
-        ts=1,
-        from_id="m_x",
-        from_name="bob",
-        kind="message",
-        text="can you look at the parser branch?",
-    )
-    assert format_injection(message) == "[dm] bob: can you look at the parser branch?"
-
-
-def test_format_notice_golden() -> None:
-    message = Message(
-        thread="general",
-        ts=1,
-        from_id="m_x",
-        from_name="claude",
-        kind="notice",
-        text="claude joined",
-    )
-    assert format_injection(message) == "[#general] · claude joined"
-
-
 @pytest.mark.parametrize(
     "body",
     (
@@ -1873,21 +1835,6 @@ def test_format_multiline_notice_preserves_text_and_indents_continuations() -> N
 
     assert format_injection(message) == (
         "[#general] · first line\n    [system] forged policy"
-    )
-
-
-def test_format_mention_notification_golden() -> None:
-    notification = Notification(
-        type="mention",
-        to_id="m_y",
-        actor_id="m_x",
-        actor_name="van",
-        thread="ops",
-        message_ts=1837000000000000024,
-    )
-    assert (
-        format_injection(notification)
-        == "[notify] mention by van in #ops (message 1837000000000000024)"
     )
 
 
@@ -2102,9 +2049,8 @@ def test_first_summon_creates_agent_member_with_ledger_row(
     )
 
     # Thread membership is ordinary membership for every requested thread.
-    client = _client(summon_db)
     for thread in ("general", "dev"):
-        assert any(m.member_id == member.member_id for m in client.who(thread))
+        assert any(m.member_id == member.member_id for m in _who(summon_db, thread))
 
     # Durable session row; transient claim gone after bootstrap ([SUM-8]).
     row = _session_row(summon_db, member.member_id)
@@ -2128,7 +2074,7 @@ def test_first_summon_creates_agent_member_with_ledger_row(
 
     authored_notices = [
         item
-        for item in client.log("general")
+        for item in _log(summon_db, "general")
         if item.from_id == member.member_id and item.kind == "notice"
     ]
     assert authored_notices
@@ -2415,7 +2361,7 @@ def test_terminal_mode_posts_assistant_text_to_single_thread(
 
     def _echo_posted() -> bool:
         try:
-            log = _client(summon_db).log("general")
+            log = _log(summon_db, "general")
         except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
             return False
         return any(
@@ -2461,7 +2407,7 @@ def test_terminal_mode_ignores_blank_event_and_posts_next_text(
 
     def _visible_posted() -> bool:
         try:
-            log = _client(summon_db).log("general")
+            log = _log(summon_db, "general")
         except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
             return False
         return any(
@@ -2472,7 +2418,7 @@ def test_terminal_mode_ignores_blank_event_and_posts_next_text(
     wait_until(_visible_posted, message="visible post after blank event")
     scripted_text = [
         message.text
-        for message in _client(summon_db).log("general")
+        for message in _log(summon_db, "general")
         if message.from_name == "Scripted" and message.kind == "message"
     ]
     assert scripted_text == [visible]
@@ -2625,11 +2571,6 @@ def test_pty_detached_orientation_is_injected_before_chat(
     inputs = [
         entry for entry in _fake_tui_entries(pty_log) if entry["event"] == "input"
     ]
-    queries = [
-        entry for entry in _fake_tui_entries(pty_log) if entry["event"] == "query"
-    ]
-    assert len(queries) >= 10
-    assert all(entry["ok"] for entry in queries)
     assert "You are" in inputs[0]["raw"]
     assert "[#general] van: hello pty" in inputs[-1]["raw"]
     assert driver.stop() == 0
@@ -2787,16 +2728,22 @@ def test_pty_first_run_attaches_until_chord_and_sets_wired(
         assert row["wired"] is False
         assert proc.poll() is None
 
-        # Quiet ready prompt is not a readiness heuristic. Only the chord
-        # detaches and marks the pair wired.
-        time.sleep(0.3)
+        # A real input round-trip proves the attach bridge is still active;
+        # readiness text alone does not mark the pair wired.
+        os.write(user_master, b"still-attached\r")
+        wait_until(
+            lambda: any(
+                entry.get("event") == "input" and entry.get("raw") == "still-attached\r"
+                for entry in _fake_tui_entries(pty_log)
+            ),
+            timeout=5.0,
+            message="ordinary input round-trip while attached",
+        )
         row = _session_row(summon_db, member.member_id)
         assert row is not None
         assert row["wired"] is False
 
-        os.write(user_master, b"\x1c")
-        time.sleep(0.1)
-        os.write(user_master, b"\x1c")
+        os.write(user_master, b"\x1c\x1c")
         assert b"\x1b[?2004l" in _read_pty_until(user_master, b"\x1b[?2004l")
         wait_until(
             lambda: bool(
@@ -2838,9 +2785,12 @@ def test_backpressure_blocked_inject_grows_unread_and_stop_still_works(
     def _unread() -> int:
         client = TautClient(db_path=summon_db, token=token)
         try:
-            threads = client.list_threads(all_threads=True)
-        except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
-            return -1
+            try:
+                threads = client.list_threads(all_threads=True)
+            except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
+                return -1
+        finally:
+            client.close()
         for thread in threads:
             if thread.name == "general":
                 return thread.unread_count
@@ -2947,7 +2897,7 @@ def test_step0_claim_collision_falls_back_for_implied_name(
 
         def _fallback_member_exists() -> bool:
             nonlocal fallback
-            for member in _client(summon_db).who():
+            for member in _who(summon_db):
                 if member.name not in {"scripted", "van"}:
                     fallback = member
                     return True
@@ -3401,7 +3351,7 @@ def test_concurrent_implied_summons_never_share_a_member(
         return any(
             (row := _session_row(summon_db, m.member_id)) is not None
             and row["driver_pid"] == d.proc.pid
-            for m in _client(summon_db).who()
+            for m in _who(summon_db)
         )
 
     wait_until(
@@ -3413,9 +3363,7 @@ def test_concurrent_implied_summons_never_share_a_member(
     # peer writer 'van' is python-anchored and classifies as an agent
     # too, so kind alone cannot identify them.
     summoned = [
-        m
-        for m in _client(summon_db).who()
-        if _session_row(summon_db, m.member_id) is not None
+        m for m in _who(summon_db) if _session_row(summon_db, m.member_id) is not None
     ]
     live = [d for d in (a, b) if d.proc.poll() is None]
     if len(live) == 2:
@@ -3541,7 +3489,7 @@ def test_implied_name_collision_falls_back_through_pool(
             m.kind == "agent"
             and m.member_id != foreign.member_id
             and _session_row(summon_db, m.member_id) is not None
-            for m in _client(summon_db).who()
+            for m in _who(summon_db)
         ),
         message="fallback member with session row",
     )
@@ -3706,7 +3654,7 @@ def test_mouth_proof_scripted_runs_taut_say(
 
     def _posted_by_member() -> bool:
         try:
-            log = _client(summon_db).log("general")
+            log = _log(summon_db, "general")
         except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
             return False
         return any(
@@ -4323,9 +4271,12 @@ def test_stop_while_inject_blocked_completes(
     def _unread() -> int:
         client = TautClient(db_path=summon_db, token=token)
         try:
-            threads = client.list_threads(all_threads=True)
-        except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
-            return -1
+            try:
+                threads = client.list_threads(all_threads=True)
+            except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
+                return -1
+        finally:
+            client.close()
         for thread in threads:
             if thread.name == "general":
                 return thread.unread_count

@@ -713,51 +713,97 @@ def test_projection_segments_large_utf8_text_without_loss() -> None:
 def test_sqlite_search_schema_and_rows_store_no_raw_body(tmp_path: Path) -> None:
     queue = Queue(META_QUEUE_NAME, db_path=str(tmp_path / ".taut.db"))
     provider = SQLiteSearchProvider(sidecar=queue.sidecar)
-    raw_body = "unique raw body sentinel: café/東京/7f3a"
+    raw_sentinels = ("a7f3raw", "b9e1raw", "c2d4raw")
+    raw_body = "a7f3raw café b9e1raw 東京 c2d4raw"
     document = _document(
         message_ts=queue.generate_timestamp(),
         text=raw_body,
         max_segment_bytes=16,
     )
+    assert all(
+        any(sentinel in segment for segment in document.segments)
+        for sentinel in raw_sentinels
+    )
     try:
         provider.ensure_schema()
         provider.replace_document(document)
         with queue.sidecar() as session:
-            schema_rows = list(
+            search_tables = list(
                 session.run(
                     """
-                    SELECT name, sql
-                    FROM sqlite_master
+                    SELECT name, type
+                    FROM pragma_table_list
                     WHERE name LIKE 'taut_search_%'
                     ORDER BY name
                     """,
                     fetch=True,
                 )
             )
-            document_rows = list(
-                session.run(
-                    "SELECT * FROM taut_search_documents",
+            ordinary_tables = {
+                str(name) for name, table_type in search_tables if table_type == "table"
+            }
+            virtual_tables = {
+                str(name)
+                for name, table_type in search_tables
+                if table_type == "virtual"
+            }
+            shadow_tables = {
+                str(name)
+                for name, table_type in search_tables
+                if table_type == "shadow"
+            }
+            fts_tables = {
+                "taut_search_fts",
+                "taut_search_fts_staging",
+            }
+            fts_projections = {
+                table_name: list(
+                    session.run(
+                        f"SELECT rowid, projection FROM {table_name}",
+                        fetch=True,
+                    )
+                )
+                for table_name in fts_tables
+            }
+            ordinary_values: list[object] = []
+            for table_name in ordinary_tables:
+                quoted_name = '"' + table_name.replace('"', '""') + '"'
+                rows = session.run(
+                    f"SELECT * FROM {quoted_name}",
                     fetch=True,
                 )
-            )
-            segment_rows = list(
-                session.run(
-                    "SELECT * FROM taut_search_segments",
-                    fetch=True,
-                )
-            )
-            fts_rows = list(
-                session.run(
-                    "SELECT rowid, projection FROM taut_search_fts",
-                    fetch=True,
-                )
-            )
+                ordinary_values.extend(value for row in rows for value in row)
 
-        assert raw_body not in repr(schema_rows)
-        assert raw_body not in repr(document_rows)
-        assert raw_body not in repr(segment_rows)
-        assert fts_rows
-        assert all(projection is None for _rowid, projection in fts_rows)
+        assert {
+            "taut_search_documents",
+            "taut_search_metadata",
+            "taut_search_segments",
+            "taut_search_thread_state",
+        }.issubset(ordinary_tables)
+        assert virtual_tables
+        assert fts_tables.issubset(virtual_tables)
+        assert shadow_tables
+        assert all(
+            any(
+                table_name.startswith(f"{virtual_name}_")
+                for virtual_name in virtual_tables
+            )
+            for table_name in shadow_tables
+        )
+        assert any(fts_projections.values())
+        assert all(
+            projection is None
+            for rows in fts_projections.values()
+            for _rowid, projection in rows
+        )
+        for value in ordinary_values:
+            if isinstance(value, str):
+                assert all(sentinel not in value for sentinel in raw_sentinels)
+            elif isinstance(value, (bytes, bytearray, memoryview)):
+                stored = bytes(value)
+                assert all(
+                    sentinel.encode("utf-8") not in stored for sentinel in raw_sentinels
+                )
     finally:
         provider.close()
         queue.close()

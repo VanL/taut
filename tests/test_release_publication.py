@@ -693,23 +693,101 @@ def test_wrong_tag_sha_and_duplicate_release_state_fail_closed(
         )
 
 
+@pytest.mark.parametrize(
+    ("observed_sha", "expected_exit"),
+    (("a" * 40, 0), ("b" * 40, 1)),
+)
 def test_verify_tag_rechecks_remote_commit_without_token_argument(
     monkeypatch: pytest.MonkeyPatch,
+    observed_sha: str,
+    expected_exit: int,
 ) -> None:
-    monkeypatch.setattr(publication, "resolve_tag_commit", lambda repo, tag: "a" * 40)
+    lookups: list[tuple[str, str]] = []
 
-    publication.verify_tag(
-        repo="VanL/taut",
-        tag="v1.2.3",
-        expected_sha="a" * 40,
+    def resolve(repo: str, tag: str) -> str:
+        lookups.append((repo, tag))
+        return observed_sha
+
+    monkeypatch.setattr(publication, "resolve_tag_commit", resolve)
+
+    exit_code = publication.main(
+        [
+            "verify-tag",
+            "--repo",
+            "VanL/taut",
+            "--tag",
+            "v1.2.3",
+            "--expected-sha",
+            "a" * 40,
+        ]
     )
 
+    assert exit_code == expected_exit
+    assert lookups == [("VanL/taut", "v1.2.3")]
 
-def test_cli_has_no_token_argument() -> None:
-    source = (
-        Path(__file__).resolve().parents[1]
-        / ".github"
-        / "scripts"
-        / "release_publication.py"
-    ).read_text("utf-8")
-    assert 'add_argument("--token"' not in source
+
+@pytest.mark.parametrize(
+    ("command", "required_arguments"),
+    (
+        (
+            "stage-draft",
+            (
+                "--repo",
+                "VanL/taut",
+                "--tag",
+                "v1.2.3",
+                "--expected-sha",
+                "a" * 40,
+                "--manifest",
+                "manifest.json",
+                "--dist-dir",
+                "dist",
+            ),
+        ),
+        ("plan-pypi", ("--manifest", "manifest.json", "--dist-dir", "dist")),
+        ("verify-pypi", ("--manifest", "manifest.json", "--dist-dir", "dist")),
+        (
+            "verify-tag",
+            (
+                "--repo",
+                "VanL/taut",
+                "--tag",
+                "v1.2.3",
+                "--expected-sha",
+                "a" * 40,
+            ),
+        ),
+        (
+            "finalize",
+            (
+                "--repo",
+                "VanL/taut",
+                "--tag",
+                "v1.2.3",
+                "--expected-sha",
+                "a" * 40,
+                "--manifest",
+                "manifest.json",
+                "--dist-dir",
+                "dist",
+            ),
+        ),
+    ),
+)
+@pytest.mark.parametrize("token_position", ("before-command", "after-command"))
+def test_cli_has_no_token_argument(
+    command: str,
+    required_arguments: tuple[str, ...],
+    token_position: str,
+) -> None:
+    parser = publication.build_parser()
+    arguments = (
+        ["--token", "secret", command, *required_arguments]
+        if token_position == "before-command"
+        else [command, *required_arguments, "--token", "secret"]
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        parser.parse_args(arguments)
+
+    assert exc_info.value.code == 2

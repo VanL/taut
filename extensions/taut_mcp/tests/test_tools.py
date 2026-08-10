@@ -227,6 +227,20 @@ def _assert_result(
             {"all_threads": True},
         ),
         (
+            "channel_show",
+            {"channel": "general"},
+            "get_channel",
+            ("general",),
+            {},
+        ),
+        (
+            "channel_topic",
+            {"channel": "general", "topic": None},
+            "set_channel_topic",
+            ("general", None),
+            {},
+        ),
+        (
             "channel_rename",
             {"old_name": "general", "new_name": "main"},
             "rename_channel",
@@ -2109,16 +2123,39 @@ def test_bare_read_forwards_per_thread_limit_and_includes_direct_messages(
     assert member is not None
     assert member.token is not None
     selected.join("alpha")
-    selected.close()
     other = TautClient(db_path=db, as_name="other")
     other.join("general")
+    other_member = other.last_created_member
+    assert other_member is not None
     other.join("alpha")
-    other.say("general", "general one")
-    other.say("general", "general two")
-    other.say("alpha", "alpha one")
-    other.say("alpha", "alpha two")
+    selected.read(limit=1000)
+    general_one = other.say("general", "general one")
+    general_two = other.say("general", "general two")
+    alpha_one = other.say("alpha", "alpha one")
+    alpha_two = other.say("alpha", "alpha two")
     private = other.say("@selected", "private one")
+    selected.close()
     other.close()
+
+    def expected_record(message: Any, *, thread: str, text: str) -> dict[str, object]:
+        return {
+            "thread": thread,
+            "ts": str(message.ts),
+            "from_id": other_member.member_id,
+            "from": "other",
+            "kind": "message",
+            "text": text,
+        }
+
+    expected_first = [
+        expected_record(alpha_one, thread="alpha", text="alpha one"),
+        expected_record(private, thread=private.thread, text="private one"),
+        expected_record(general_one, thread="general", text="general one"),
+    ]
+    expected_second = [
+        expected_record(alpha_two, thread="alpha", text="alpha two"),
+        expected_record(general_two, thread="general", text="general two"),
+    ]
 
     async def scenario() -> None:
         reactor = ProcessReactor(asyncio.get_running_loop())
@@ -2142,21 +2179,28 @@ def test_bare_read_forwards_per_thread_limit_and_includes_direct_messages(
                 workspace=canonical,
                 guidance=READ_GUIDANCE,
             )
-            assert len(first["records"]) == 3
-            assert len({record["thread"] for record in first["records"]}) == 3
-            assert any(
-                record["thread"] == private.thread for record in first["records"]
-            )
+            assert first["records"] == expected_first
 
             second = await reactor._execute_ready_tool(
                 canonical,
                 "read",
                 {"thread": None, "limit": 1},
             )
-            assert len(second["records"]) <= 2
-            assert len({record["thread"] for record in second["records"]}) == len(
-                second["records"]
+            _assert_result(
+                second,
+                record_type="message",
+                workspace=canonical,
+                guidance=READ_GUIDANCE,
             )
+            assert second["records"] == expected_second
+
+            terminal = await reactor._execute_ready_tool(
+                canonical,
+                "read",
+                {"thread": None, "limit": 1},
+            )
+            _assert_result(terminal, record_type="message", workspace=canonical)
+            assert terminal["records"] == []
 
             history = await reactor._execute_ready_tool(
                 canonical,
@@ -2337,6 +2381,7 @@ def test_search_returns_all_facets_and_preserves_authoritative_state(
     db = workspace / ".taut.db"
     selected = TautClient(db_path=db, token=token)
     identity_record = selected.whoami(explain=False)
+    other_identity = next(record for record in selected.who() if record.name == "other")
     channel = selected.say("general", "verticalneedle channel")
     parent = selected.say("general", "parent without marker")
     subthread = selected.reply(
@@ -2397,7 +2442,9 @@ def test_search_returns_all_facets_and_preserves_authoritative_state(
             assert by_text["verticalneedle direct"]["thread_kind"] == "dm"
             assert by_text["verticalneedle direct"]["channel"] is None
             assert by_text["verticalneedle direct"]["parent"] is None
-            assert len(by_text["verticalneedle direct"]["members"]) == 2
+            assert by_text["verticalneedle direct"]["members"] == sorted(
+                (identity_record.member_id, other_identity.member_id)
+            )
             assert all(
                 isinstance(record["ts"], str) and len(record["ts"]) == 19
                 for record in result["records"]

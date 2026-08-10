@@ -362,14 +362,21 @@ def taut_project(
                 cleanup_postgres_schema(dsn, pg_worker_schema)
 
 
-def build_cli_env(env: dict[str, str] | None = None) -> dict[str, str]:
+def build_cli_env(
+    env: dict[str, str] | None = None,
+    *,
+    force_unbuffered: bool = True,
+) -> dict[str, str]:
     """Build a subprocess environment for invoking the in-repo CLI."""
 
     full_env = os.environ.copy()
     if env:
         full_env.update(env)
     full_env["PYTHONIOENCODING"] = "utf-8"
-    full_env["PYTHONUNBUFFERED"] = "1"
+    if force_unbuffered:
+        full_env["PYTHONUNBUFFERED"] = "1"
+    else:
+        full_env.pop("PYTHONUNBUFFERED", None)
     project_paths = [str(PROJECT_ROOT)]
     existing_pythonpath = full_env.get("PYTHONPATH")
     if existing_pythonpath:

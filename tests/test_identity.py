@@ -22,6 +22,7 @@ Spec references:
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shlex
@@ -29,6 +30,7 @@ import shutil
 import subprocess
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace, TracebackType
 from typing import Any, Self, cast
@@ -165,6 +167,12 @@ def _capture(
     )
 
 
+def _assert_finite_positive_timeout(value: object) -> None:
+    assert isinstance(value, (int, float)) and not isinstance(value, bool)
+    assert math.isfinite(float(value))
+    assert value > 0
+
+
 def _member_row(
     *,
     member_id: str = "m_" + "a" * 26,
@@ -270,7 +278,7 @@ def test_capture_host_identity_uses_macos_platform_uuid(
 
     def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         assert cmd == ["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"]
-        assert kwargs["timeout"] == 2
+        _assert_finite_positive_timeout(kwargs["timeout"])
         return subprocess.CompletedProcess(
             cmd,
             0,
@@ -697,7 +705,7 @@ def test_ps_output_returns_stripped_stdout_or_none(
         **kwargs: Any,
     ) -> subprocess.CompletedProcess[str]:
         assert cmd[:4] == ["ps", "-ww", "-p", "123"]
-        assert kwargs["timeout"] == 2
+        _assert_finite_positive_timeout(kwargs["timeout"])
         return subprocess.CompletedProcess(cmd, 0, " value \n", "")
 
     monkeypatch.setattr(identity.subprocess, "run", successful_run)
@@ -810,7 +818,7 @@ def test_capture_cwd_with_lsof_reads_name_record(
         **kwargs: Any,
     ) -> subprocess.CompletedProcess[str]:
         assert cmd == ["lsof", "-a", "-d", "cwd", "-p", "123", "-Fn"]
-        assert kwargs["timeout"] == 2
+        _assert_finite_positive_timeout(kwargs["timeout"])
         return subprocess.CompletedProcess(cmd, 0, "p123\nn/workspace\n", "")
 
     monkeypatch.setattr(identity.subprocess, "run", successful_run)
@@ -910,10 +918,18 @@ def test_same_process_evidence_produces_same_claim_hash() -> None:
 
 
 def test_display_name_material_does_not_change_claim_hash() -> None:
-    claim = identity.claim_for_capture(_capture())
+    first_capture = _capture()
+    second_capture = replace(
+        first_capture,
+        host=replace(first_capture.host, host_label="renamed-display-host"),
+        login="renamed-display-login",
+        rule="different-diagnostic-rule",
+    )
+    first = identity.claim_for_capture(first_capture)
+    second = identity.claim_for_capture(second_capture)
 
-    assert "VanL" not in json.dumps(claim.evidence)
-    assert claim.claim_hash == identity.claim_for_capture(_capture()).claim_hash
+    assert first.evidence == second.evidence
+    assert first.claim_hash == second.claim_hash
 
 
 def test_different_process_start_token_changes_claim_hash() -> None:

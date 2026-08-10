@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import queue
@@ -67,6 +68,50 @@ async def _wait_until(
         if asyncio.get_running_loop().time() >= deadline:
             raise AssertionError("condition did not become true")
         await asyncio.sleep(0.01)
+
+
+def _assert_frame_excludes_request_values(
+    frame: Any,
+    *,
+    token: str,
+) -> None:
+    """Reject token/fingerprint values without making local names contractual."""
+
+    assert frame is not None
+    fingerprint = hashlib.sha256(token.encode("utf-8")).digest()
+    values = tuple(frame.f_locals.values())
+    assert not any(type(value) is str and value == token for value in values)
+    assert not any(type(value) is bytes and value == fingerprint for value in values)
+
+
+def _assert_coroutine_excludes_request_values(
+    coroutine: Any,
+    *,
+    token: str,
+) -> bool:
+    """Inspect each exposed coroutine in the live await chain."""
+
+    current = coroutine
+    observed_frame = False
+    while current is not None:
+        frame = getattr(current, "cr_frame", None)
+        if frame is not None:
+            observed_frame = True
+            _assert_frame_excludes_request_values(frame, token=token)
+        awaited = getattr(current, "cr_await", None)
+        current = awaited if getattr(awaited, "cr_frame", None) is not None else None
+    assert observed_frame or sys.implementation.name != "cpython", (
+        "CPython must expose coroutine frames for the MCP live-state cleanup assertion"
+    )
+    return observed_frame
+
+
+def _skip_if_coroutine_frames_are_unavailable(*, inspected: bool) -> None:
+    if not inspected:
+        pytest.skip(
+            f"{sys.implementation.name} does not expose coroutine frames; "
+            "observable lifecycle assertions passed"
+        )
 
 
 @pytest.mark.sqlite_only
@@ -155,6 +200,8 @@ def test_thread_start_failure_clears_hidden_candidate_fingerprint(
 ) -> None:
     """[MCP-4] Removing an unstarted hidden seat clears its digest first."""
 
+    workspace, token, _ = _create_workspace(tmp_path, "selected")
+
     class StartFailThread:
         def start(self) -> None:
             raise RuntimeError("synthetic start failure")
@@ -164,6 +211,7 @@ def test_thread_start_failure_clears_hidden_candidate_fingerprint(
 
     async def scenario() -> None:
         reactor = ProcessReactor(asyncio.get_running_loop())
+        real_new_owner = reactor._new_owner
         audited = _FingerprintAuditedCandidates()
         reactor._candidates = audited
         inbound: queue.Queue[workspace_reactor.WorkspaceControl] = queue.Queue()
@@ -186,9 +234,7 @@ def test_thread_start_failure_clears_hidden_candidate_fingerprint(
         monkeypatch.setattr(reactor, "_new_owner", failed_owner)
         try:
             with pytest.raises(WorkspaceToolError) as raised:
-                await reactor.attach_workspace(
-                    str(tmp_path / "workspace"), "secret-token"
-                )
+                await reactor.attach_workspace(str(workspace), token)
             assert str(raised.value) == (
                 "workspace attachment failed; use list_workspaces before retrying"
             )
@@ -204,8 +250,14 @@ def test_thread_start_failure_clears_hidden_candidate_fingerprint(
             ):
                 traceback = traceback.tb_next
             assert traceback is not None
-            for local in ("owner", "candidate", "bootstrap"):
-                assert traceback.tb_frame.f_locals[local] is None
+            _assert_frame_excludes_request_values(
+                traceback.tb_frame,
+                token=token,
+            )
+            assert reactor.list_workspaces()["records"] == []
+            monkeypatch.setattr(reactor, "_new_owner", real_new_owner)
+            retried = await reactor.attach_workspace(str(workspace), token)
+            assert retried["records"][0]["status"] == "ready"
         finally:
             await reactor.aclose()
 
@@ -978,10 +1030,10 @@ def test_canceled_attach_waiter_does_not_cancel_started_child_lifecycle(
         reactor = ProcessReactor(asyncio.get_running_loop())
         attach = asyncio.create_task(reactor.attach_workspace(str(workspace), token))
         assert await asyncio.to_thread(validation_started.wait, 5)
-        frame = getattr(attach.get_coro(), "cr_frame", None)
-        assert frame is not None
-        assert frame.f_locals["token"] == ""
-        assert frame.f_locals["fingerprint"] == b""
+        frame_inspected = _assert_coroutine_excludes_request_values(
+            attach.get_coro(),
+            token=token,
+        )
         busy_token = "busy-token"
         with pytest.raises(WorkspaceToolError) as busy:
             await reactor.attach_workspace(str(workspace), busy_token)
@@ -992,8 +1044,17 @@ def test_canceled_attach_waiter_does_not_cancel_started_child_lifecycle(
 
         release_validation.set()
         await _wait_until(lambda: bool(reactor.list_workspaces()["records"]))
-        assert reactor.list_workspaces()["records"][0]["status"] == "ready"
+        [record] = reactor.list_workspaces()["records"]
+        assert record["status"] == "ready"
+        identity_result = await reactor.execute_tool(
+            str(record["workspace"]),
+            token,
+            "whoami",
+            {},
+        )
+        assert identity_result["records"][0]["name"] == "selected"
         await reactor.aclose()
+        _skip_if_coroutine_frames_are_unavailable(inspected=frame_inspected)
 
     asyncio.run(scenario())
 
@@ -1031,20 +1092,20 @@ def test_canceled_lazy_ensure_publishes_without_admitting_domain_command(
             )
         )
         assert await asyncio.to_thread(validation_started.wait, 5)
-        frame = getattr(call.get_coro(), "cr_frame", None)
-        assert frame is not None
-        assert frame.f_locals["token"] == ""
+        frame_inspected = _assert_coroutine_excludes_request_values(
+            call.get_coro(),
+            token=token,
+        )
         call.cancel()
         with pytest.raises(asyncio.CancelledError):
             await call
-        assert reactor._next_command_id == 1
 
         release_validation.set()
         await _wait_until(lambda: bool(reactor.list_workspaces()["records"]))
         canonical = str(reactor.list_workspaces()["records"][0]["workspace"])
-        assert reactor._next_command_id == 1
-        history = await reactor._execute_ready_tool(
+        history = await reactor.execute_tool(
             canonical,
+            token,
             "log",
             {"thread": "general", "since": None, "limit": 100},
         )
@@ -1052,6 +1113,7 @@ def test_canceled_lazy_ensure_publishes_without_admitting_domain_command(
             record["text"] != "must not be sent" for record in history["records"]
         )
         await reactor.aclose()
+        _skip_if_coroutine_frames_are_unavailable(inspected=frame_inspected)
 
     asyncio.run(scenario())
 

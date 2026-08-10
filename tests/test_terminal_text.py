@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from io import StringIO
 from pathlib import Path
 
@@ -627,7 +628,8 @@ def test_json_watch_skips_human_policy_preflight(
 
         def stop(self, *, join: bool, timeout: float) -> None:
             assert join is True
-            assert timeout == 5.0
+            assert math.isfinite(timeout)
+            assert timeout > 0
 
     class Client:
         def watch(self, _handler: object, *, threads: object) -> Watcher:

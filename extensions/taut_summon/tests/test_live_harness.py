@@ -141,27 +141,33 @@ def _prewire_live_harness(db: Path, provider: str) -> None:
         as_name=provider,
         identity_capture=_harness_capture(provider),
     )
-    client.join("general")
-    member = client.last_created_member or client.whoami()
-    assert member.token is not None
-    queue = Queue("taut.summon_state", db_path=str(db))
-    ensure_summon_schema(queue)
-    record_session(
-        queue,
-        member_id=member.member_id,
-        token=member.token,
-        provider=provider,
-        provider_session_id=None,
-        driver_pid=None,
-        driver_start_time=None,
-        updated_ts=queue.generate_timestamp(),
-    )
-    set_wired(
-        queue,
-        member_id=member.member_id,
-        value=True,
-        updated_ts=queue.generate_timestamp(),
-    )
+    try:
+        client.join("general")
+        member = client.last_created_member or client.whoami()
+        assert member.token is not None
+        queue = Queue("taut.summon_state", db_path=str(db))
+        try:
+            ensure_summon_schema(queue)
+            record_session(
+                queue,
+                member_id=member.member_id,
+                token=member.token,
+                provider=provider,
+                provider_session_id=None,
+                driver_pid=None,
+                driver_start_time=None,
+                updated_ts=queue.generate_timestamp(),
+            )
+            set_wired(
+                queue,
+                member_id=member.member_id,
+                value=True,
+                updated_ts=queue.generate_timestamp(),
+            )
+        finally:
+            queue.close()
+    finally:
+        client.close()
 
 
 def _finished_stderr_tail(proc: subprocess.Popen[str], *, limit: int = 500) -> str:

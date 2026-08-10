@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
@@ -159,7 +160,7 @@ def test_load_dry_run_validates_an_empty_dump_without_opening_destination(
     assert not destination.exists()
 
 
-def test_dump_writes_an_owner_only_empty_composite_that_preflights(
+def test_dump_writes_empty_composite_that_preflights_and_is_owner_only_on_posix(
     tmp_path: Path,
 ) -> None:
     from taut import TautClient
@@ -182,7 +183,8 @@ def test_dump_writes_an_owner_only_empty_composite_that_preflights(
     assert dumped.queues == checked.queues == 0
     assert dumped.messages == checked.messages == 0
     assert dumped.omitted_claimed_messages == 0
-    assert output.stat().st_mode & 0o777 == 0o600
+    if os.name == "posix":
+        assert output.stat().st_mode & 0o777 == 0o600
 
 
 def test_sqlite_round_trip_preserves_core_state_and_exact_message_ids(

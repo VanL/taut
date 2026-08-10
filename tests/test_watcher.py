@@ -1038,7 +1038,6 @@ def test_base_reactor_defers_reentrant_sigint_until_waiter_replacement_commits()
 
 @_BASE_REACTOR_SIGINT_PROBE_GROUP
 def test_base_reactor_sigint_probe_watchdog_reports_hung_child_as_failure() -> None:
-    assert _BASE_REACTOR_SIGINT_PROBE_TIMEOUT == 3.0
     with pytest.raises(AssertionError, match="timed out.*was killed") as exc_info:
         _run_base_reactor_sigint_probe(mode="hang", timeout=1.0)
 
@@ -1067,12 +1066,6 @@ def test_base_reactor_sigint_probe_rejects_invalid_startup_json() -> None:
 def test_base_reactor_sigint_probe_rejects_unexpected_startup_status() -> None:
     with pytest.raises(AssertionError, match="emitted unexpected startup status"):
         _run_base_reactor_sigint_probe(mode="unexpected-startup")
-
-
-@_BASE_REACTOR_SIGINT_PROBE_GROUP
-def test_base_reactor_sigint_probe_watchdog_same_worker_sentinel() -> None:
-    assert _BASE_REACTOR_SIGINT_PROBE_STARTUP_TIMEOUT == 15.0
-    assert _BASE_REACTOR_SIGINT_PROBE_TIMEOUT == 3.0
 
 
 def test_base_reactor_sigint_defers_cleanup_outside_signal_handler(
@@ -1499,32 +1492,32 @@ def _white_box_watcher(
     )
 
 
-def test_taut_watcher_uses_persistent_queue_handles(tmp_path: Path) -> None:
-    TautClient.init(db_path=tmp_path / ".taut.db")
-    van = TautClient(db_path=tmp_path / ".taut.db", as_name="van")
-    van.join("foo")
-
-    watcher = _white_box_watcher(van, lambda _item: None, threads=["foo"])
-    try:
-        queue = watcher.get_queue("foo")
-        assert queue is not None
-        assert watcher._persistent is True
-    finally:
-        watcher.stop()
-
-
 def test_client_watch_can_use_nonpersistent_queue_handles(tmp_path: Path) -> None:
     TautClient.init(db_path=tmp_path / ".taut.db")
     van = TautClient(db_path=tmp_path / ".taut.db", as_name="van")
+    bob = TautClient(db_path=tmp_path / ".taut.db", as_name="bob")
     van.join("foo")
+    bob.join("foo")
+    _drain_unread(van, "foo")
+    seen: list[str] = []
 
-    watcher = van.watch(lambda _item: None, threads=["foo"], persistent=False)
+    watcher = van.watch(
+        _record_message_texts(seen),
+        threads=["foo"],
+        persistent=False,
+    )
     try:
-        queue = watcher.get_queue("foo")
-        assert queue is not None
-        assert watcher._persistent is False
+        bob.say("foo", "transient delivery")
+
+        watcher.process_once()
+
+        assert seen == ["transient delivery"]
+        with pytest.raises(RuntimeError, match="persistent=True"):
+            watcher.start()
     finally:
-        watcher.stop()
+        watcher.stop(join=False)
+        van.close()
+        bob.close()
 
 
 def test_client_watch_rejects_missing_filters_before_runtime_construction(
@@ -1605,7 +1598,6 @@ def test_taut_watcher_start_drives_the_same_persistent_instance(tmp_path: Path) 
     thread = watcher.start()
     try:
         _wait_until(lambda: watcher._drive_thread is thread)
-        assert watcher._persistent is True
         assert not hasattr(watcher, "_thread_watcher")
         assert watcher.is_running()
     finally:
@@ -2563,7 +2555,6 @@ def test_taut_watcher_membership_churn_closes_removed_queues(
             name = f"churn{cycle}"
             van.join(name)
             _wait_until(partial(queue_listed, name))
-            assert watcher._persistent is True
             van.leave(name)
             _wait_until(partial(queue_removed_and_closed, name))
             assert (name, thread) in closed_queues

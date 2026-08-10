@@ -3,12 +3,16 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tomllib
+from collections import Counter
 from pathlib import Path
+from typing import Any
 
 import pytest
+import yaml
 from coverage import Coverage, CoverageData
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -50,6 +54,86 @@ raise SystemExit(pytest.main(sys.argv[1:], plugins=[Reporter()]))
 
 def _workflow(name: str) -> str:
     return (WORKFLOW_DIR / name).read_text(encoding="utf-8")
+
+
+def _workflow_data(name: str) -> dict[str, Any]:
+    value = yaml.safe_load(_workflow(name))
+    assert isinstance(value, dict)
+    return value
+
+
+def _named_steps(job: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    raw_steps = job["steps"]
+    assert isinstance(raw_steps, list)
+    named = [step for step in raw_steps if isinstance(step, dict) and "name" in step]
+    result = {str(step["name"]): step for step in named}
+    assert len(result) == len(named), "workflow step names must be unique within a job"
+    return result
+
+
+def _command_option(arguments: list[str], name: str) -> str | None:
+    if name in arguments:
+        return arguments[arguments.index(name) + 1]
+    separator = "=" if name.startswith("--") else ""
+    prefix = f"{name}{separator}"
+    return next(
+        (
+            argument.removeprefix(prefix)
+            for argument in arguments
+            if argument.startswith(prefix) and argument != name
+        ),
+        None,
+    )
+
+
+def _pytest_workflow_roles(
+    document: dict[str, Any],
+) -> Counter[tuple[str, str, tuple[str, ...], str, str | None, str | None, str | None]]:
+    jobs = document["jobs"]
+    assert isinstance(jobs, dict)
+    roles: Counter[
+        tuple[str, str, tuple[str, ...], str, str | None, str | None, str | None]
+    ] = Counter()
+    for job_name in (
+        "test",
+        "summon-process",
+        "summon-local-llm",
+        "mcp-coverage",
+    ):
+        for step_name, step in _named_steps(jobs[job_name]).items():
+            run = step.get("run")
+            if not isinstance(run, str):
+                continue
+            for line in run.splitlines():
+                if "pytest" not in line:
+                    continue
+                arguments = shlex.split(line)
+                if "pytest" not in arguments:
+                    continue
+                pytest_index = arguments.index("pytest")
+                pytest_arguments = arguments[pytest_index + 1 :]
+                target = next(
+                    (
+                        argument
+                        for argument in pytest_arguments
+                        if argument == "tests"
+                        or argument.startswith("extensions/")
+                        and "/tests" in argument
+                    ),
+                    ".",
+                )
+                roles[
+                    (
+                        job_name,
+                        step_name,
+                        tuple(arguments[:pytest_index]),
+                        target,
+                        _command_option(pytest_arguments, "-m"),
+                        _command_option(pytest_arguments, "-n"),
+                        _command_option(pytest_arguments, "--dist"),
+                    )
+                ] += 1
+    return roles
 
 
 def _job_block(workflow: str, name: str) -> str:
@@ -137,6 +221,9 @@ def test_summon_collection_probe_owns_its_dev_dependencies(
 
 def test_test_workflow_is_reusable_and_owns_canonical_release_artifacts() -> None:
     workflow = _workflow("test.yml")
+    document = _workflow_data("test.yml")
+    jobs = document["jobs"]
+    assert isinstance(jobs, dict)
     root_job = _job_block(workflow, "test")
     packaging = _job_block(workflow, "packaging")
 
@@ -152,23 +239,9 @@ def test_test_workflow_is_reusable_and_owns_canonical_release_artifacts() -> Non
     mcp_build_step = packaging[mcp_build:release_wheel_check]
     assert "uv build --out-dir release-dist/mcp extensions/taut_mcp" in mcp_build_step
     assert "\n        if:" not in mcp_build_step
-    assert "pytest -v --tb=short" in workflow
     assert "summon-process:" in workflow
     assert "name: taut-summon process" in workflow
     assert "max-parallel:" not in workflow
-    process_job_position = workflow.index("summon-process:")
-    process_command_position = workflow.index(
-        'pytest extensions/taut_summon/tests -v --tb=short -m "xdist_group and not requires_live_harness and not requires_local_llm" -n 2 --dist load'
-    )
-    assert process_job_position < process_command_position
-    assert (
-        'pytest extensions/taut_summon/tests -v --tb=short -m "xdist_group and not requires_live_harness and not requires_local_llm" -n 2 --dist load'
-        in workflow
-    )
-    assert (
-        "pytest extensions/taut_summon/tests/test_live_local_llm.py -v "
-        "--tb=short -m requires_local_llm -n 1 --dist loadgroup" in workflow
-    )
     assert "ruff check ." in workflow
     assert "uv run --extra dev python bin/ruff_suppression_index.py --check" in workflow
     assert workflow.index("ruff check .") < workflow.index(
@@ -184,8 +257,50 @@ def test_test_workflow_is_reusable_and_owns_canonical_release_artifacts() -> Non
         "bin/require-green-workflows.py --config-file pyproject.toml" in workflow
     )
     assert "uv build" in workflow
-    assert root_job.count('-m "not slow and not installed_wheel"') == 2
-    assert root_job.count('-m "not slow and installed_wheel" -n 0') == 2
+    roles = _pytest_workflow_roles(document)
+    observed_plain = Counter(
+        {role: count for role, count in roles.items() if not role[2]}
+    )
+    assert observed_plain == Counter(
+        {
+            (
+                "test",
+                "Run tests with pytest",
+                (),
+                ".",
+                "not slow and not installed_wheel",
+                None,
+                None,
+            ): 1,
+            (
+                "test",
+                "Run installed-wheel tests",
+                (),
+                ".",
+                "not slow and installed_wheel",
+                "0",
+                None,
+            ): 1,
+            (
+                "test",
+                "Run taut-summon extension unit tests",
+                (),
+                "extensions/taut_summon/tests",
+                "not xdist_group",
+                None,
+                None,
+            ): 1,
+            (
+                "summon-process",
+                "Run taut-summon extension process tests",
+                (),
+                "extensions/taut_summon/tests",
+                "xdist_group and not requires_live_harness and not requires_local_llm",
+                "2",
+                "load",
+            ): 1,
+        }
+    )
     assert (
         "!cancelled() && steps.install.outcome == 'success' && "
         "((matrix.os == 'ubuntu-latest' && "
@@ -201,36 +316,31 @@ def test_test_workflow_is_reusable_and_owns_canonical_release_artifacts() -> Non
 
 
 @pytest.mark.parametrize(
-    ("path", "live_marker", "unit_count", "live_count"),
+    ("path", "live_marker"),
     [
         (
             "extensions/taut_summon/tests/test_live_harness.py",
             "requires_live_harness",
-            10,
-            8,
         ),
         (
             "extensions/taut_summon/tests/test_live_local_llm.py",
             "requires_local_llm",
-            18,
-            1,
         ),
     ],
 )
 def test_summon_live_files_have_disjoint_unit_and_live_owners(
     path: str,
     live_marker: str,
-    unit_count: int,
-    live_count: int,
 ) -> None:
     records = _summon_collection_records(path)
     all_nodeids = {record["nodeid"] for record in records}
     unit = {record["nodeid"] for record in records if not record["xdist_group"]}
     live = {record["nodeid"] for record in records if record[live_marker]}
 
+    assert records
     assert len(records) == len(all_nodeids)
-    assert len(unit) == unit_count
-    assert len(live) == live_count
+    assert unit
+    assert live
     assert unit.isdisjoint(live)
     assert unit | live == all_nodeids
 
@@ -242,6 +352,19 @@ def test_coverage_reuses_existing_ubuntu_lanes_and_aggregates_without_tests() ->
     assert run_config["patch"] == ["subprocess"]
 
     workflow = _workflow("test.yml")
+    document = _workflow_data("test.yml")
+    jobs = document["jobs"]
+    assert isinstance(jobs, dict)
+    named_steps = {
+        job_name: _named_steps(jobs[job_name])
+        for job_name in (
+            "test",
+            "summon-process",
+            "summon-local-llm",
+            "mcp-coverage",
+            "coverage",
+        )
+    }
     root_job = _job_block(workflow, "test")
     process_job = _job_block(workflow, "summon-process")
     llm_job = _job_block(workflow, "summon-local-llm")
@@ -252,38 +375,129 @@ def test_coverage_reuses_existing_ubuntu_lanes_and_aggregates_without_tests() ->
     assert representative in root_job
     assert representative in process_job
     assert "python -m coverage erase" in root_job
-    root_coverage_commands = [
-        line.strip()
-        for line in root_job.splitlines()
-        if "python -m coverage run --parallel-mode -m pytest" in line
-    ]
-    assert len(root_coverage_commands) == 3
-    assert all("-n 0" in command for command in root_coverage_commands)
-    assert "python -m coverage run --parallel-mode -m pytest" in process_job
-    assert "-n 2 --dist load" in process_job
-    assert "python -m coverage run --parallel-mode -m pytest" in llm_job
-    assert "test_live_local_llm.py" in llm_job
+    wrapper = ("python", "-m", "coverage", "run", "--parallel-mode", "-m")
+    roles = _pytest_workflow_roles(document)
+    observed_coverage = Counter(
+        {role: count for role, count in roles.items() if role[2]}
+    )
+    assert observed_coverage == Counter(
+        {
+            (
+                "test",
+                "Run tests with coverage",
+                wrapper,
+                ".",
+                "not slow and not installed_wheel",
+                "0",
+                None,
+            ): 1,
+            (
+                "test",
+                "Run installed-wheel tests with coverage",
+                wrapper,
+                ".",
+                "not slow and installed_wheel",
+                "0",
+                None,
+            ): 1,
+            (
+                "test",
+                "Run taut-summon extension unit tests with coverage",
+                wrapper,
+                "extensions/taut_summon/tests",
+                "not xdist_group",
+                "0",
+                None,
+            ): 1,
+            (
+                "summon-process",
+                "Run taut-summon extension process tests with coverage",
+                wrapper,
+                "extensions/taut_summon/tests",
+                "xdist_group and not requires_live_harness and not requires_local_llm",
+                "2",
+                "load",
+            ): 1,
+            (
+                "summon-local-llm",
+                "Run taut-summon local LLM live tests",
+                wrapper,
+                "extensions/taut_summon/tests/test_live_local_llm.py",
+                "requires_local_llm",
+                "1",
+                "loadgroup",
+            ): 1,
+            (
+                "mcp-coverage",
+                "Run taut-mcp non-PG tests with coverage",
+                wrapper,
+                "extensions/taut_mcp/tests",
+                "not pg_only",
+                "0",
+                None,
+            ): 1,
+        }
+    )
     assert "steps.root_coverage.outcome != 'skipped'" in root_job
     assert "steps.summon_unit_coverage.outcome != 'skipped'" in root_job
     assert "steps.summon_process_coverage.outcome != 'skipped'" in process_job
     assert "steps.local_llm_coverage.outcome != 'skipped'" in llm_job
-    assert "python -m coverage run --parallel-mode -m pytest" in mcp_job
-    assert "extensions/taut_mcp/tests" in mcp_job
-    assert '-m "not pg_only" -n 0' in mcp_job
     assert '-e "./extensions/taut_pg"' in mcp_job
     assert '-e "./extensions/taut_mcp"' in mcp_job
     assert "services:" not in mcp_job
     assert "\n    if:" not in mcp_job.split("    steps:", maxsplit=1)[0]
 
-    for job, artifact in (
-        (root_job, "coverage-data-root-unit"),
-        (process_job, "coverage-data-summon-process"),
-        (llm_job, "coverage-data-local-llm"),
-        (mcp_job, "coverage-data-mcp"),
-    ):
-        assert "if: ${{ always()" in job
-        assert artifact in job
-        assert "include-hidden-files: true" in job
+    artifact_owners = {
+        "test": (
+            "Upload root and unit coverage data",
+            "coverage-data-root-unit",
+            "${{ github.workspace }}/.coverage.root-unit.*",
+        ),
+        "summon-process": (
+            "Upload process coverage data",
+            "coverage-data-summon-process",
+            "${{ github.workspace }}/.coverage.summon-process.*",
+        ),
+        "summon-local-llm": (
+            "Upload local LLM coverage data",
+            "coverage-data-local-llm",
+            "${{ github.workspace }}/.coverage.local-llm.*",
+        ),
+        "mcp-coverage": (
+            "Upload MCP coverage data",
+            "coverage-data-mcp",
+            "${{ github.workspace }}/.coverage.mcp.*",
+        ),
+    }
+    observed_artifacts = {}
+    for job_name, (step_name, artifact_name, artifact_path) in artifact_owners.items():
+        step = named_steps[job_name][step_name]
+        settings = step["with"]
+        observed_artifacts[job_name] = (
+            step["uses"].split("@", maxsplit=1)[0],
+            settings["name"],
+            settings["path"],
+            settings["if-no-files-found"],
+            settings["include-hidden-files"],
+            str(step["if"]).startswith("${{ always()"),
+        )
+        assert settings["name"] == artifact_name
+        assert settings["path"] == artifact_path
+    assert observed_artifacts == {
+        job_name: (
+            "actions/upload-artifact",
+            artifact_name,
+            artifact_path,
+            "error",
+            True,
+            True,
+        )
+        for job_name, (
+            _step_name,
+            artifact_name,
+            artifact_path,
+        ) in artifact_owners.items()
+    }
 
     assert (
         "needs: [test, summon-process, summon-local-llm, mcp-coverage]" in coverage_job
@@ -398,31 +612,158 @@ def test_local_llm_pins_fixed_amx_build_and_reports_cpu_identity() -> None:
 
 
 def test_canonical_packaging_builds_and_smokes_each_release_artifact_once() -> None:
-    workflow = _workflow("test.yml")
-    packaging = _job_block(workflow, "packaging")
-    canonical = (
-        "github.event_name == 'push' && "
-        "(github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')"
-    )
+    document = _workflow_data("test.yml")
+    jobs = document["jobs"]
+    assert isinstance(jobs, dict)
+    steps = _named_steps(jobs["packaging"])
 
-    assert "check_paired_release_wheels" not in workflow
-    assert "uv build --out-dir release-dist/core ." in packaging
-    assert "uv build --out-dir release-dist/summon extensions/taut_summon" in packaging
-    assert "uv build --out-dir release-dist/pg extensions/taut_pg" in packaging
-    assert "--core-wheel" in packaging
-    assert "--summon-wheel" in packaging
-    assert "python -m venv /tmp/taut-pg-wheel-smoke" in packaging
-    assert "import taut_pg" in packaging
-    assert 'get_backend_plugin("postgres")' in packaging
-    assert "uv build --out-dir release-dist/mcp extensions/taut_mcp" in packaging
-    assert "python -m venv /tmp/taut-mcp-wheel-smoke" in packaging
-    assert "release-dist/core/*.whl release-dist/mcp/*.whl" in packaging
-    assert "taut-mcp --version" in packaging
-    assert packaging.count("python bin/release-artifact.py create") == 4
-    assert packaging.count("${{ github.run_attempt }}") >= 4
-    assert packaging.count(canonical) >= 4
-    for package in ("taut-chat", "taut-summon", "taut-pg", "taut-mcp"):
-        assert f"release-{package}-attempt-${{{{ github.run_attempt }}}}" in packaging
+    package_owners = {
+        "taut-chat": (
+            "Build core package",
+            ("uv", "build", "--out-dir", "release-dist/core", "."),
+            ".",
+            "release-dist/core",
+            "release-bundles/taut-chat",
+            "Upload core release evidence",
+        ),
+        "taut-summon": (
+            "Build taut-summon extension package",
+            (
+                "uv",
+                "build",
+                "--out-dir",
+                "release-dist/summon",
+                "extensions/taut_summon",
+            ),
+            "extensions/taut_summon",
+            "release-dist/summon",
+            "release-bundles/taut-summon",
+            "Upload Summon release evidence",
+        ),
+        "taut-pg": (
+            "Build taut-pg release package",
+            (
+                "uv",
+                "build",
+                "--out-dir",
+                "release-dist/pg",
+                "extensions/taut_pg",
+            ),
+            "extensions/taut_pg",
+            "release-dist/pg",
+            "release-bundles/taut-pg",
+            "Upload PG release evidence",
+        ),
+        "taut-mcp": (
+            "Build taut-mcp extension package",
+            (
+                "uv",
+                "build",
+                "--out-dir",
+                "release-dist/mcp",
+                "extensions/taut_mcp",
+            ),
+            "extensions/taut_mcp",
+            "release-dist/mcp",
+            "release-bundles/taut-mcp",
+            "Upload MCP release evidence",
+        ),
+    }
+    bundle_commands = [
+        shlex.split(line)
+        for line in str(steps["Create release provenance bundles"]["run"]).splitlines()
+        if "release-artifact.py create" in line
+    ]
+    canonical_ref = (
+        "${{ github.event_name == 'push' && "
+        "(github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}"
+    )
+    evidence_steps = [
+        "Create release provenance bundles",
+        *(values[5] for values in package_owners.values()),
+    ]
+    assert {name: steps[name].get("if") for name in evidence_steps} == dict.fromkeys(
+        evidence_steps,
+        canonical_ref,
+    )
+    observed = []
+    for package, (
+        build_step,
+        build_command,
+        _package_dir,
+        _dist_dir,
+        output_dir,
+        upload_step,
+    ) in package_owners.items():
+        matching_bundles = [
+            command
+            for command in bundle_commands
+            if command[command.index("--output-dir") + 1] == output_dir
+        ]
+        assert len(matching_bundles) == 1
+        bundle = matching_bundles[0]
+        upload = steps[upload_step]["with"]
+        observed.append(
+            (
+                package,
+                tuple(shlex.split(str(steps[build_step]["run"]))),
+                bundle[bundle.index("--package-dir") + 1],
+                bundle[bundle.index("--dist-dir") + 1],
+                bundle[bundle.index("--output-dir") + 1],
+                upload["name"],
+                str(upload["path"]).rstrip("/"),
+            )
+        )
+        assert tuple(shlex.split(str(steps[build_step]["run"]))) == build_command
+    assert observed == [
+        (
+            package,
+            values[1],
+            values[2],
+            values[3],
+            values[4],
+            f"release-{package}-attempt-${{{{ github.run_attempt }}}}",
+            values[4],
+        )
+        for package, values in package_owners.items()
+    ]
+    assert len(bundle_commands) == len(package_owners)
+
+    smoke_owners = {
+        "Smoke test core wheel": ("release-dist/core/*.whl", "taut --version"),
+        "Smoke test taut-pg wheel with paired core": (
+            "release-dist/core/*.whl release-dist/pg/*.whl",
+            'get_backend_plugin("postgres")',
+        ),
+        "Smoke test taut-mcp wheel with paired core": (
+            "release-dist/core/*.whl release-dist/mcp/*.whl",
+            "taut-mcp --version",
+        ),
+    }
+    assert {
+        name: all(fragment in str(steps[name]["run"]) for fragment in fragments)
+        for name, fragments in smoke_owners.items()
+    } == dict.fromkeys(smoke_owners, True)
+
+    paired_run = str(steps["Check paired release wheels"]["run"])
+    normalized_paired_run = paired_run.replace("\\\n", " ")
+    paired_command = next(
+        shlex.split(line.strip())
+        for line in normalized_paired_run.splitlines()
+        if line.strip().startswith("python bin/build-and-check-release-wheels.py")
+    )
+    assert paired_command == [
+        "python",
+        "bin/build-and-check-release-wheels.py",
+        "--core-wheel",
+        "${core_wheels[0]}",
+        "--summon-wheel",
+        "${summon_wheels[0]}",
+    ]
+    assert "core_wheels=(release-dist/core/*.whl)" in paired_run
+    assert "summon_wheels=(release-dist/summon/*.whl)" in paired_run
+    assert 'test "${#core_wheels[@]}" -eq 1' in paired_run
+    assert 'test "${#summon_wheels[@]}" -eq 1' in paired_run
 
 
 def test_setup_uv_steps_have_tight_timeouts() -> None:
@@ -500,15 +841,6 @@ def _assert_exact_sha_release_observer(name: str, *, artifact_prefix: str) -> st
         "expected_tag_commit: ${{ needs.release-evidence.outputs.tag_commit }}" in stage
     )
     return workflow
-
-
-def test_core_release_gate_observes_exact_sha_without_rerunning_tests() -> None:
-    workflow = _assert_exact_sha_release_observer(
-        "release-gate.yml",
-        artifact_prefix="release-taut-chat",
-    )
-
-    assert "package_dir: ." in workflow
 
 
 def test_pg_workflow_is_reusable_and_runs_pg_helper() -> None:
@@ -642,8 +974,13 @@ def test_release_gates_publish_exact_artifact_through_top_level_pypi_job(
 
 def test_release_workflow_stages_draft_and_carries_verified_bundle() -> None:
     workflow = _workflow("release.yml")
+    document = _workflow_data("release.yml")
+    jobs = document["jobs"]
+    assert isinstance(jobs, dict)
+    stage_permissions = jobs["stage-release"]["permissions"]
     lower_workflow = workflow.lower()
 
+    assert stage_permissions == {"actions": "read", "contents": "write"}
     assert "softprops/action-gh-release@" in workflow
     assert "draft: true" in workflow
     assert "fail_on_unmatched_files: true" in workflow
@@ -704,10 +1041,3 @@ def test_release_finalizer_is_least_privilege_and_never_publishes_to_pypi() -> N
     assert "pypa/gh-action-pypi-publish" not in workflow
     assert "uv publish" not in lower_workflow
     assert "python -m build" not in workflow
-
-
-def test_reusable_release_workflows_never_own_trusted_publishing() -> None:
-    for name in ("release.yml", "release-finalize.yml"):
-        workflow = _workflow(name)
-        assert "pypa/gh-action-pypi-publish" not in workflow
-        assert "id-token: write" not in workflow

@@ -795,6 +795,9 @@ Operational acceptance records, without turning host timing into CI truth:
 
 ## Related Plans
 
+- `docs/plans/2026-08-10-test-quality-remediation-plan.md` — strengthens
+  backend known-answer conformance and dynamically proves the no-raw-body
+  invariant across every search-owned ordinary table.
 - `docs/plans/2026-08-10-mcp-search-plan.md` — exposes this operation through
   one explicit MCP tool while preserving core-owned semantics and backend-
   native lexical quality.

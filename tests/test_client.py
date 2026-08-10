@@ -3502,10 +3502,6 @@ def test_channel_topic_round_trip_populates_public_channel_and_thread_values(
         ("general", updated.topic)
     ]
 
-    from taut import Channel as LazyChannel
-
-    assert LazyChannel is Channel
-
 
 def test_channel_topic_merge_preserves_reserved_and_unknown_meta_and_noops(
     tmp_path: Path,

@@ -207,8 +207,11 @@ def test_existing_empty_summon_schema_emits_zero_record_component(
         db_path=source,
     )
 
-    assert report.components[-1].name == "taut-summon"
-    assert report.components[-1].records == 0
+    summon_components = [
+        component for component in report.components if component.name == "taut-summon"
+    ]
+    assert len(summon_components) == 1
+    assert summon_components[0].records == 0
 
 
 def test_transient_summon_claim_makes_load_destination_nonfresh(

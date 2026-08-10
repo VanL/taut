@@ -286,10 +286,23 @@ def _entries(path: Path) -> list[dict[str, object]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
+def _single_lifecycle_events(
+    entries: list[dict[str, object]],
+) -> dict[str, dict[str, object]]:
+    events: dict[str, dict[str, object]] = {}
+    for event in ("start", "orientation", "llm_response", "taut_say"):
+        observed = [entry for entry in entries if entry.get("event") == event]
+        assert len(observed) == 1, f"expected one {event}, got {observed!r}"
+        events[event] = observed[0]
+    return events
+
+
 def _sentinel_posted(db: Path, sentinel: str) -> bool:
-    return any(
-        message.text == sentinel for message in TautClient(db_path=db).log("general")
-    )
+    client = TautClient(db_path=db)
+    try:
+        return any(message.text == sentinel for message in client.log("general"))
+    finally:
+        client.close()
 
 
 def _tail(path: Path, *, limit: int = 4000) -> str:
@@ -334,16 +347,6 @@ def _fail_local_llm_smoke(
             tui_log=tui_log,
             proxy_request_count=proxy_request_count,
             detail=detail,
-        )
-    )
-
-
-def _driver_used_harness_recovery(stderr: str) -> bool:
-    return any(
-        marker in stderr
-        for marker in (
-            "harness exited",
-            "resuming in ",
         )
     )
 
@@ -445,30 +448,33 @@ def _prewire_local_llm(db: Path) -> None:
         as_name="local-llm",
         identity_capture=_local_llm_capture(),
     )
-    client.join("general")
-    member = client.last_created_member or client.whoami()
-    assert member.token is not None
-    queue = Queue("taut.summon_state", db_path=str(db))
     try:
-        ensure_summon_schema(queue)
-        record_session(
-            queue,
-            member_id=member.member_id,
-            token=member.token,
-            provider="pty",
-            provider_session_id=None,
-            driver_pid=None,
-            driver_start_time=None,
-            updated_ts=queue.generate_timestamp(),
-        )
-        set_wired(
-            queue,
-            member_id=member.member_id,
-            value=True,
-            updated_ts=queue.generate_timestamp(),
-        )
+        client.join("general")
+        member = client.last_created_member or client.whoami()
+        assert member.token is not None
+        queue = Queue("taut.summon_state", db_path=str(db))
+        try:
+            ensure_summon_schema(queue)
+            record_session(
+                queue,
+                member_id=member.member_id,
+                token=member.token,
+                provider="pty",
+                provider_session_id=None,
+                driver_pid=None,
+                driver_start_time=None,
+                updated_ts=queue.generate_timestamp(),
+            )
+            set_wired(
+                queue,
+                member_id=member.member_id,
+                value=True,
+                updated_ts=queue.generate_timestamp(),
+            )
+        finally:
+            queue.close()
     finally:
-        queue.close()
+        client.close()
 
 
 def test_local_llm_runs_locally_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -613,18 +619,6 @@ def test_local_llm_sentinel_timeout_diagnostic_retains_evidence(
     assert "status_out='RUNNING'" in message
 
 
-@pytest.mark.parametrize(
-    "line",
-    [
-        "harness exited with code 1",
-        "harness exited (code 1); resuming in 1.0s",
-    ],
-)
-def test_local_llm_lifecycle_evidence_detects_harness_recovery(line: str) -> None:
-    assert _driver_used_harness_recovery(f"INFO {line}\n")
-    assert not _driver_used_harness_recovery("INFO summoned 'local-llm'\n")
-
-
 def test_local_llm_prewire_marks_pty_member_wired(tmp_path: Path) -> None:
     db = tmp_path / ".taut.db"
     TautClient.init(db_path=db)
@@ -632,9 +626,11 @@ def test_local_llm_prewire_marks_pty_member_wired(tmp_path: Path) -> None:
 
     _prewire_local_llm(db)
 
-    member = next(
-        member for member in TautClient(db_path=db).who() if member.name == "local-llm"
-    )
+    client = TautClient(db_path=db)
+    try:
+        member = next(member for member in client.who() if member.name == "local-llm")
+    finally:
+        client.close()
     queue = Queue("taut.summon_state", db_path=str(db))
     try:
         row = get_session(queue, member.member_id)
@@ -647,7 +643,7 @@ def test_local_llm_prewire_marks_pty_member_wired(tmp_path: Path) -> None:
 
 @pytest.mark.requires_local_llm
 @pytest.mark.xdist_group("process")
-def test_local_llm_pty_harness_posts_sentinel(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-043] exception
+def test_local_llm_pty_harness_posts_sentinel(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -723,19 +719,12 @@ def test_local_llm_pty_harness_posts_sentinel(  # noqa: C901 approved [DOM-10.2.
             stderr=stderr_handle,
             text=True,
         )
+        driver_alive_at_success = False
         try:
             deadline = time.monotonic() + LOCAL_SENTINEL_TIMEOUT_SECONDS
             while time.monotonic() < deadline:
                 if _sentinel_posted(db, sentinel):
-                    lifecycle_stderr = _tail(driver_stderr)
-                    if _driver_used_harness_recovery(lifecycle_stderr):
-                        _fail_local_llm_smoke(
-                            "local LLM harness exited or resumed before "
-                            "sentinel success",
-                            driver_stderr=driver_stderr,
-                            tui_log=tui_log,
-                            proxy_request_count=len(proxy.request_bodies),
-                        )
+                    driver_alive_at_success = proc.poll() is None
                     break
                 if proc.poll() is not None:
                     _fail_local_llm_smoke(
@@ -777,9 +766,11 @@ def test_local_llm_pty_harness_posts_sentinel(  # noqa: C901 approved [DOM-10.2.
             tui_log=tui_log,
             proxy_request_count=len(proxy.request_bodies),
         )
-    bodies = [json.loads(body) for body in proxy.request_bodies]
-    assert all(body.get("model") == model for body in bodies)
-    entries = _entries(tui_log)
-    assert any(entry.get("event") == "orientation" for entry in entries)
-    assert any(entry.get("event") == "llm_response" for entry in entries)
-    assert any(entry.get("event") == "taut_say" for entry in entries)
+    assert driver_alive_at_success
+    body = json.loads(proxy.request_bodies[0])
+    assert body.get("model") == model
+    events = _single_lifecycle_events(_entries(tui_log))
+    assert isinstance(events["start"].get("pid"), int)
+    assert int(events["start"]["pid"]) > 0
+    assert sentinel in str(events["orientation"].get("text"))
+    assert events["taut_say"].get("returncode") == 0

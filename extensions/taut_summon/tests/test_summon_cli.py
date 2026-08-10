@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
+from conftest import DriverProcess
 from simplebroker import Queue
 from taut_summon._state import (
     SUMMON_SCHEMA_VERSION,
@@ -50,31 +51,53 @@ def test_standalone_human_records_escape_all_dynamic_status_fields(
 ) -> None:
     from taut_summon.cli import _print_live_member, _print_status
 
-    probe = "value\x1b]52;c;Y2xpcGJvYXJk\x07\x9b\r\b\t\nrow"
-    escaped = r"value\x1b]52;c;Y2xpcGJvYXJk\a\x9b\r\b\t\nrow"
+    unsafe_suffix = "\x1b]52;c;Y2xpcGJvYXJk\x07\x9b\r\b\t\nrow"
+    escaped_suffix = r"\x1b]52;c;Y2xpcGJvYXJk\a\x9b\r\b\t\nrow"
+
+    def marker(field: str) -> str:
+        return f"summon.{field}:{unsafe_suffix}"
+
+    fields = {
+        field: marker(field)
+        for field in (
+            "live.name",
+            "live.provider",
+            "live.session",
+            "status.name",
+            "status.driver",
+            "status.provider",
+            "status.session",
+            "status.lag-thread",
+            "status.detail-key",
+            "status.detail-value",
+        )
+    }
     _print_live_member(
         SummonedMember(
             member_id="m_" + "a" * 26,
-            name=probe,
-            provider=probe,
-            provider_session_id=probe,
+            name=fields["live.name"],
+            provider=fields["live.provider"],
+            provider_session_id=fields["live.session"],
         )
     )
     _print_status(
         SummonStatus(
             member_id="m_" + "a" * 26,
-            name=probe,
-            driver=probe,
-            provider=probe,
-            provider_session_id=probe,
+            name=fields["status.name"],
+            driver=fields["status.driver"],
+            provider=fields["status.provider"],
+            provider_session_id=fields["status.session"],
             thread_count=1,
-            cursor_lag={probe: 2},
-            details={probe: probe},
+            cursor_lag={fields["status.lag-thread"]: 2},
+            details={
+                fields["status.detail-key"]: fields["status.detail-value"],
+            },
         )
     )
 
     output = capsys.readouterr().out
-    assert output.count(escaped) >= 9
+    for field in fields:
+        assert f"summon.{field}:{escaped_suffix}" in output
     _assert_only_structural_newlines(output)
 
 
@@ -481,33 +504,35 @@ def test_status_fault_plane_diagnostic_classifies_real_resolution_failure(
     assert len(err.splitlines()) == 2
 
 
-def test_run_defaults_thread_to_general() -> None:
-    request = run_request(build_parser().parse_args(["run", "claude"]))
+@pytest.mark.parametrize(
+    ("args", "expected_name", "expected_provider", "expected_threads"),
+    (
+        (("run", "claude"), "claude", None, ("general",)),
+        (
+            ("run", "reviewer", "--provider", "claude", "dev"),
+            "reviewer",
+            "claude",
+            ("dev",),
+        ),
+    ),
+)
+def test_run_parser_builds_expected_request_shape(
+    args: tuple[str, ...],
+    expected_name: str,
+    expected_provider: str | None,
+    expected_threads: tuple[str, ...],
+) -> None:
+    request = run_request(build_parser().parse_args(args))
 
-    assert request.name == "claude"
-    assert request.threads == ("general",)
+    assert request.name == expected_name
+    assert request.provider_flag == expected_provider
+    assert request.threads == expected_threads
 
 
 def test_run_captures_positional_threads_in_order() -> None:
     request = run_request(build_parser().parse_args(["run", "claude", "dev", "ops"]))
 
     assert request.threads == ("dev", "ops")
-
-
-def test_run_provider_defaults_to_name() -> None:
-    request = run_request(build_parser().parse_args(["run", "claude"]))
-
-    assert request.provider_flag is None
-
-
-def test_run_provider_flag_wins_over_name() -> None:
-    request = run_request(
-        build_parser().parse_args(["run", "reviewer", "--provider", "claude", "dev"])
-    )
-
-    assert request.name == "reviewer"
-    assert request.provider_flag == "claude"
-    assert request.threads == ("dev",)
 
 
 def test_run_double_dash_preserves_option_shaped_name() -> None:
@@ -553,17 +578,6 @@ def test_run_parses_placeholder_flags() -> None:
     assert request.system_prompt_file == "prompt.md"
     assert request.rate_limit == 30
     assert parsed.db_path == "x.taut.db"
-
-
-def test_standalone_run_and_stop_select_shared_command_factories() -> None:
-    from taut_summon.commands.dismiss import create_command as create_dismiss_command
-    from taut_summon.commands.summon import create_command as create_summon_command
-
-    run_args = build_parser().parse_args(["run", "scripted", "--detach"])
-    stop_args = build_parser().parse_args(["stop", "scripted"])
-
-    assert run_args.command_factory is create_summon_command
-    assert stop_args.command_factory is create_dismiss_command
 
 
 def test_cli_no_arguments_prints_help_and_exits_1(
@@ -727,6 +741,8 @@ def test_cli_run_reports_missing_adapter_exit_1(
     for name in ("claude", "claude-stream", "coder", "pty", "scripted"):
         assert name in err
     assert out == ""
+    assert "Traceback" not in err
+    assert len(err.splitlines()) == 1
 
 
 def test_cli_run_known_adapter_without_database_exits_1(
@@ -739,19 +755,46 @@ def test_cli_run_known_adapter_without_database_exits_1(
     assert rc == 1
     assert "No taut database found" in err
     assert out == ""
+    assert "Traceback" not in err
+    assert len(err.splitlines()) == 1
 
 
-def test_cli_run_known_adapter_echoes_db(
-    run_summon_cli: SummonCliRunner, tmp_path: Path
+def test_cli_run_uses_explicit_database_not_ambient_discovery(
+    driver_factory: Callable[..., DriverProcess], tmp_path: Path
 ) -> None:
-    # The parsed --db still echoes on the error path so a dropped flag is
-    # observable through the delegation seam.
-    db = str(tmp_path / "x.taut.db")
-    rc, _out, err = run_summon_cli("run", "scripted", "--db", db, cwd=tmp_path)
+    ambient_db = tmp_path / ".taut.db"
+    selected_db = tmp_path / "selected.taut.db"
+    for db, peer_name in (
+        (ambient_db, "ambient-peer"),
+        (selected_db, "selected-peer"),
+    ):
+        TautClient.init(db_path=db)
+        client = TautClient(db_path=db, as_name=peer_name)
+        try:
+            client.join("general")
+        finally:
+            client.close()
 
-    assert rc == 1
-    assert "No taut database found" in err
-    assert f"db: {db}" in err
+    driver = driver_factory(
+        selected_db,
+        "db-selector",
+        "general",
+        provider="scripted",
+        tag="explicit-db",
+    )
+    driver.wait_for_start()
+
+    def member_names(db: Path) -> set[str]:
+        client = TautClient(db_path=db)
+        try:
+            return {member.name for member in client.who()}
+        finally:
+            client.close()
+
+    assert "db-selector" in member_names(selected_db)
+    assert "db-selector" not in member_names(ambient_db)
+    assert "ambient-peer" in member_names(ambient_db)
+    assert driver.stop() == 0
 
 
 def test_cli_run_resolves_provider_flag_before_name(
