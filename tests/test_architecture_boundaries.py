@@ -37,7 +37,7 @@ class _SimpleBrokerPrivateVisitor(ast.NodeVisitor):
         return self._broker_scopes[-1]
 
     def _record(self, node: ast.AST, description: str) -> None:
-        self.offenses.append((node.lineno, description))
+        self.offenses.append((getattr(node, "lineno", 0), description))
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
@@ -120,7 +120,7 @@ class _SimpleBrokerPrivateVisitor(ast.NodeVisitor):
             self._forget_target(node.target)
         self.generic_visit(node)
 
-    def visit_With(self, node: ast.With) -> None:
+    def _visit_with(self, node: ast.With | ast.AsyncWith) -> None:
         for item in node.items:
             if item.optional_vars is None:
                 continue
@@ -132,9 +132,13 @@ class _SimpleBrokerPrivateVisitor(ast.NodeVisitor):
                 self._forget_target(item.optional_vars)
         self.generic_visit(node)
 
-    visit_AsyncWith = visit_With
+    def visit_With(self, node: ast.With) -> None:
+        self._visit_with(node)
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+    def visit_AsyncWith(self, node: ast.AsyncWith) -> None:
+        self._visit_with(node)
+
+    def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         for decorator in node.decorator_list:
             self.visit(decorator)
         for default in (*node.args.defaults, *node.args.kw_defaults):
@@ -152,19 +156,23 @@ class _SimpleBrokerPrivateVisitor(ast.NodeVisitor):
                     argument.annotation
                 ):
                     self.broker_instances.add(argument.arg)
-            for argument in (node.args.vararg, node.args.kwarg):
+            for optional_argument in (node.args.vararg, node.args.kwarg):
                 if (
-                    argument is not None
-                    and argument.annotation is not None
-                    and self._is_broker_annotation(argument.annotation)
+                    optional_argument is not None
+                    and optional_argument.annotation is not None
+                    and self._is_broker_annotation(optional_argument.annotation)
                 ):
-                    self.broker_instances.add(argument.arg)
+                    self.broker_instances.add(optional_argument.arg)
             for statement in node.body:
                 self.visit(statement)
         finally:
             self._broker_scopes.pop()
 
-    visit_AsyncFunctionDef = visit_FunctionDef
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._visit_function(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._visit_function(node)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         for expression in (*node.decorator_list, *node.bases):

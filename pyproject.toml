@@ -49,6 +49,7 @@ dev = [
     "simplebroker-pg>=3.5.2",
     "taut-summon>=0.8.2",
     "types-psutil>=6.0",
+    "types-PyYAML>=6.0",
 ]
 
 [project.scripts]

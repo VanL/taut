@@ -770,7 +770,8 @@ def test_local_llm_pty_harness_posts_sentinel(
     body = json.loads(proxy.request_bodies[0])
     assert body.get("model") == model
     events = _single_lifecycle_events(_entries(tui_log))
-    assert isinstance(events["start"].get("pid"), int)
-    assert int(events["start"]["pid"]) > 0
+    start_pid = events["start"].get("pid")
+    assert isinstance(start_pid, int)
+    assert start_pid > 0
     assert sentinel in str(events["orientation"].get("text"))
     assert events["taut_say"].get("returncode") == 0

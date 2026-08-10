@@ -179,13 +179,18 @@ class _TrackingCondition:
         self._condition.__enter__()
         return self
 
-    def __exit__(self, *args: object) -> None:
-        self._condition.__exit__(*args)
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: types.TracebackType | None,
+    ) -> None:
+        self._condition.__exit__(exc_type, exc_value, traceback)
 
     def wait_for(self, predicate: Any, timeout: float | None = None) -> bool:
         if threading.current_thread().name == self._tracked_thread:
             self.wait_entered.set()
-        return self._condition.wait_for(predicate, timeout)
+        return bool(self._condition.wait_for(predicate, timeout))
 
     def notify_all(self) -> None:
         self._condition.notify_all()
