@@ -685,6 +685,13 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   producer-side contest, then compare the reconstructed byte stream and its
   order. They must not require the consumer's event chunks to mirror writes.
 
+- 2026-08-10: Windows `select()` accepts sockets, not anonymous pipe file
+  descriptors. Where Python exposes public nonblocking pipe controls, prove a
+  pipe is full by writing until `BlockingIOError`, then restore blocking mode.
+  A second `select()` check is redundant on POSIX and invalid on Windows. Older
+  Python/Windows combinations without those controls need an explicit
+  capability skip plus a deterministic blocking-stream behavior owner.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

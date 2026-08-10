@@ -282,6 +282,32 @@ uv run --no-sync --extra dev python bin/combine-coverage.py \
   "$TAUT_TQ_HOSTED_DIR/shards" --output "$TAUT_TQ_HOSTED_DIR/.coverage"
 uv run --no-sync --extra dev python bin/check-required-coverage-paths.py \
   --data-file "$TAUT_TQ_HOSTED_DIR/.coverage"
+
+# Hosted data records /home/runner paths. Re-combine the same validated raw
+# shards through one explicit local-root mapping before generating reports.
+uv run --no-sync --extra dev python - \
+  "$TAUT_TQ_HOSTED_DIR/coverage-remap.toml" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+destination = Path(sys.argv[1])
+destination.write_text(
+    "[tool.coverage.paths]\nsource = [\n"
+    f"    {json.dumps(str(Path.cwd()))},\n"
+    '    "/home/runner/work/taut/taut",\n'
+    "]\n",
+    encoding="utf-8",
+)
+PY
+mkdir -p "$TAUT_TQ_HOSTED_DIR/normalized"
+uv run --no-sync --extra dev python -m coverage combine --keep \
+  --data-file="$TAUT_TQ_HOSTED_DIR/normalized/.coverage" \
+  --rcfile="$TAUT_TQ_HOSTED_DIR/coverage-remap.toml" \
+  "$TAUT_TQ_HOSTED_DIR"/shards/coverage-data-*
+TAUT_TQ_REPORT_DATA="$TAUT_TQ_HOSTED_DIR/normalized/.coverage"
 ```
 
 Record in the execution log:
@@ -298,17 +324,17 @@ Record in the execution log:
 Generate aggregate and configured-package reports from the combined data:
 
 ```bash
-COVERAGE_FILE="$TAUT_TQ_HOSTED_DIR/.coverage" \
+COVERAGE_FILE="$TAUT_TQ_REPORT_DATA" \
   uv run --no-sync --extra dev python -m coverage json \
   -o "$TAUT_TQ_HOSTED_DIR/coverage.json"
-COVERAGE_FILE="$TAUT_TQ_HOSTED_DIR/.coverage" \
-  uv run --no-sync --extra dev python -m coverage json --include='*/taut/*' \
+COVERAGE_FILE="$TAUT_TQ_REPORT_DATA" \
+  uv run --no-sync --extra dev python -m coverage json --include='taut/*' \
   -o "$TAUT_TQ_HOSTED_DIR/coverage-taut.json"
-COVERAGE_FILE="$TAUT_TQ_HOSTED_DIR/.coverage" \
+COVERAGE_FILE="$TAUT_TQ_REPORT_DATA" \
   uv run --no-sync --extra dev python -m coverage json \
   --include='*/taut_summon/*' \
   -o "$TAUT_TQ_HOSTED_DIR/coverage-taut-summon.json"
-COVERAGE_FILE="$TAUT_TQ_HOSTED_DIR/.coverage" \
+COVERAGE_FILE="$TAUT_TQ_REPORT_DATA" \
   uv run --no-sync --extra dev python -m coverage json \
   --include='*/taut_mcp/*' \
   -o "$TAUT_TQ_HOSTED_DIR/coverage-taut-mcp.json"
@@ -1070,6 +1096,7 @@ coverage-preservation ambiguity blocks implementation.
 | TQ-24 / S0 | Validate downloaded hosted coverage with the required-path checker. | Coverage data stores the runner's absolute checkout root, so the local checker reported all six required files missing even though suffix inspection proved every marker was executed. | Match a unique repository-relative file suffix and reject ambiguity. This changes coverage evidence validation only and executes no production source. | None. |
 | TQ-25 / S0 | Use a successful whole-workflow exact-SHA baseline. | Run `31433434641` produced all four valid coverage artifacts, but every Windows matrix job failed only on a pre-existing `st_mode & 0o777 == 0o600` assertion after 1,700 tests passed. Windows does not expose POSIX permission semantics through those bits. | Accept the complete Ubuntu-hosted coverage snapshot as the production baseline, retain the cross-platform dump/preflight assertions, and restrict the mode-bit oracle to POSIX before the final whole-workflow run. The conditional changes no Linux baseline production coverage. | None. [PIO-7.1] requires owner-only files where supported; it does not redefine Windows ACLs as POSIX bits. |
 | TQ-26 / S7 | Run the real MCP PostgreSQL paging proof through 250 public `say` calls. | Isolated runs took 29.9 to 53.9 seconds and the slower run produced 14,571 database commits; the failure blocked in PostgreSQL `WalSync` during setup, before paging. Each `say` needlessly crossed membership, sender-cursor, search-job, and notification analysis paths for this contract. | Seed 250 valid envelopes with the public codec through the real PostgreSQL channel queue, then retain the same MCP child, exact pages, content order, and 60-second deadlock guard. | None. [MCP-12] requires real broker/client/state pagination on PostgreSQL, not repeated end-to-end send behavior already owned elsewhere. |
+| TQ-24 / S7 | Re-run the documented `--include='*/taut/*'` core-package coverage filter after mapping hosted paths to the local checkout. | Because the repository directory itself is named `taut`, the leading wildcard matched all 100 measured files and made the core report equal the aggregate report. The saved baseline core report was correctly scoped, but the documented command was not reproducible on an absolute local path. | Use the repository-relative `--include='taut/*'` filter for both baseline and final data; it selects the same 68 core files and 7,130 statements in each capture. | None. This repairs evidence selection only and changes no measured execution. |
 
 ## Execution Log
 
@@ -1091,6 +1118,8 @@ Append implementation evidence here. Do not record transient worktree state.
 | 2026-08-10 | S7 local integration | Root `not slow`, full non-PG MCP, both Summon marker partitions, real PostgreSQL shared/extension suites, docs references, plan index, doc paths, Ruff suppression index, changed-file formatting, and per-project mypy all passed. | Local gates are green; hosted exact-SHA coverage comparison and final completed-work review remain. |
 | 2026-08-10 | S7 integration / TQ-26 | The real MCP PostgreSQL paging node passed alone in 29.9 seconds, later passed alone in 53.9 seconds, and timed out under the unchanged 60-second guard in the full conformance lane. PostgreSQL inspection showed `COMMIT` waiting on `IO/WalSync`; the 53.9-second isolated run recorded 14,571 commits for 250 setup sends. | Root cause was transaction-amplifying setup across unrelated behaviors. Public-envelope/real-queue seeding retained the same 250 rows, MCP child, and exact 100/100/50 page/content oracle while reducing the isolated node to 4.43 seconds and 1,572 commits; the four-worker file then passed 7/7 in 6.07 seconds with the original 60-second guard. |
 | 2026-08-10 | S7 hosted portability | Exact-SHA run `31439636701` failed only `test_attach_forwarding_serializes_with_injection` on macOS 3.13: the fake TUI observed `human\ragent\r` in one PTY read instead of two input events. | The writer contest and exact byte order were correct; the oracle had pinned consumer read chunks to producer writes. The replacement reconstructs and compares the exact pre-detach byte stream, passed 20/20 local repetitions, and retains every original deadline. |
+| 2026-08-10 | S7 coverage reconciliation | Exact-SHA run `31440063336` passed the required-path gate. Against the baseline, aggregate coverage declined 0.016 percentage point, Summon 0.052, and core/MCP were unchanged; the comparator identified `_driver.py:768,956` and `watcher.py:963` as the only lost lines. Baseline coverage carried no dynamic test contexts, so their prior exact owners could not be recovered. | Restored the watcher line with a deterministic public manual-turn cleanup owner; removing deferred finalization fails it. A proposed driver no-respawn owner false-greened when both short-circuits were deleted because a replacement can close before publishing evidence, so it was deleted and the two internal lines were explicitly dispositioned. Final exact-SHA comparison remains required. |
+| 2026-08-10 | S7 hosted pipe portability | Exact-SHA run `31440063336` filled the real scripted-provider stdin pipe to `BlockingIOError`, then both full-pipe tests failed on Windows 3.12–3.14 when the helper passed that anonymous pipe descriptor to `select()`; Windows 3.11 lacks `os.get_blocking` for the setup. | Removed the redundant socket-only readiness query and capability-skip only runtimes without public nonblocking pipe controls. The deterministic entered-write terminal-action owner remains cross-platform; the real child/full-pipe smoke still runs on POSIX and supported Windows versions with its original join deadlines. |
 
 ## Review Log
 

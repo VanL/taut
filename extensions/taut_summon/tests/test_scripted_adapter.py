@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 import os
 import queue
-import select
 import signal
 import subprocess
 import sys
@@ -331,10 +330,15 @@ def _fill_real_stdin_pipe(handle: ScriptedHandle) -> _ObservedStdin:
     finally:
         os.set_blocking(fd, was_blocking)
     assert filled > 0
-    assert select.select([], [fd], [], 0)[1] == []
     observed = _ObservedStdin(stdin)
     handle._proc.stdin = cast(Any, observed)
     return observed
+
+
+_REAL_PIPE_NONBLOCKING = pytest.mark.skipif(
+    not hasattr(os, "get_blocking") or not hasattr(os, "set_blocking"),
+    reason="real pipe-full proof requires public nonblocking pipe controls",
+)
 
 
 def test_registry_knows_scripted_and_rejects_unknown_names() -> None:
@@ -545,6 +549,7 @@ def test_terminal_action_unblocks_write_after_stream_entry(
     handle.close()
 
 
+@_REAL_PIPE_NONBLOCKING
 def test_interrupt_retires_inject_at_real_full_pipe_boundary(tmp_path: Path) -> None:
     # The provider announces its session and then stops reading stdin, so
     # a large inject fills the real pipe and blocks; interrupt() must
@@ -578,6 +583,7 @@ def test_interrupt_retires_inject_at_real_full_pipe_boundary(tmp_path: Path) -> 
         assert isinstance(exit_event, ExitEvent)
 
 
+@_REAL_PIPE_NONBLOCKING
 def test_request_close_retires_inject_at_real_full_pipe_boundary(
     tmp_path: Path,
 ) -> None:

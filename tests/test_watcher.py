@@ -462,6 +462,45 @@ def test_base_reactor_stop_join_false_does_not_close_active_turn(
     assert close_threads == [thread]
 
 
+def test_base_reactor_manual_turn_defers_stop_cleanup_until_handler_returns(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    close_threads: list[threading.Thread] = []
+    cleanup_deferred: list[bool] = []
+
+    def handler(
+        _body: str,
+        _timestamp: int,
+        _context: QueueMessageContext,
+    ) -> None:
+        watcher.stop(join=False)
+        cleanup_deferred.append(close_threads == [])
+
+    watcher = BaseReactor(
+        queue_configs={"manual-stop.input": {"handler": handler}},
+        db=tmp_path / ".taut.db",
+    )
+    managed_queue = watcher.get_queue("manual-stop.input")
+    assert managed_queue is not None
+    with Queue("manual-stop.input", db_path=str(tmp_path / ".taut.db")) as writer:
+        writer.write("stop after this handler")
+
+    real_close = Queue.close
+
+    def close_spy(queue: Queue) -> None:
+        if queue is managed_queue:
+            close_threads.append(threading.current_thread())
+        real_close(queue)
+
+    monkeypatch.setattr(Queue, "close", close_spy)
+
+    watcher.process_once()
+
+    assert cleanup_deferred == [True]
+    assert close_threads == [threading.current_thread()]
+
+
 def test_base_reactor_exception_finalizes_and_reraises(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
