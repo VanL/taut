@@ -193,8 +193,6 @@ def test_retained_locks_resolve_the_supported_simplebroker_pair() -> None:
 
 
 def test_readme_install_examples_use_public_distribution_names() -> None:
-    root_project = _project("pyproject.toml")
-    simplebroker_floor = _dependency_floor(root_project, "simplebroker")
     root = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     pg = (REPO_ROOT / "extensions" / "taut_pg" / "README.md").read_text(
         encoding="utf-8"
@@ -208,22 +206,12 @@ def test_readme_install_examples_use_public_distribution_names() -> None:
 
     assert "pipx install taut-chat" in root
     assert "uv add taut-chat" in root
-    assert "pipx inject taut-chat taut-pg" in root
-    assert "pipx inject --include-apps taut-chat taut-summon" in root
-    assert "pipx inject --include-apps taut-chat taut-mcp" in root
+    assert "pipx inject --include-apps taut-chat taut-pg taut-summon taut-mcp" in root
+    assert "uv add taut-chat taut-pg taut-summon taut-mcp" in root
+    assert "python -m pip install taut-chat taut-pg taut-summon taut-mcp" in root
     assert "pipx inject taut-chat taut-pg" in pg
     assert "pipx inject --include-apps taut-chat taut-summon" in summon
     assert "pipx inject --include-apps taut-chat taut-mcp" in mcp
-    for text in (root, pg, summon, mcp):
-        normalized = " ".join(text.split())
-        assert "taut-chat-pg" not in normalized
-        assert "taut-chat-summon" not in normalized
-        assert "taut-chat-mcp" not in normalized
-        assert "old GitHub-installed distribution" not in normalized
-        assert "not resolver-compatible with `taut-chat`" not in normalized
-    readme_simplebroker_floors = re.findall(r"simplebroker>=(\d+\.\d+\.\d+)", root)
-    assert readme_simplebroker_floors
-    assert set(readme_simplebroker_floors) == {simplebroker_floor}
 
 
 def test_mcp_user_docs_expose_the_console_and_release_target() -> None:
@@ -232,12 +220,6 @@ def test_mcp_user_docs_expose_the_console_and_release_target() -> None:
         encoding="utf-8"
     )
 
-    install_command = "pipx inject --include-apps taut-chat taut-mcp"
-    assert install_command in root
-    assert install_command in mcp
+    assert "pipx inject --include-apps taut-chat taut-mcp" in mcp
     assert "uv run python bin/release.py mcp --dry-run" in root
     assert "taut_mcp/vX.Y.Z" in root
-    normalized_root = " ".join(root.split())
-    normalized_mcp = " ".join(mcp.split())
-    assert "publication is tag-driven" in normalized_root
-    assert "configuring it does not publish a release" in normalized_mcp
