@@ -15,7 +15,10 @@ from simplebroker import BrokerTarget, Queue
 
 import taut_mcp._workspace_reactor as workspace_reactor
 from taut import (
+    EmptyResultError,
+    Message,
     MessageDeletion,
+    NotFoundError,
     Notification,
     SearchHit,
     TautClient,
@@ -282,6 +285,35 @@ def test_each_ordinary_tool_is_a_thin_public_client_proxy(
     assert calls == [(method, positional, keywords)]
 
 
+def test_say_normalizes_only_exact_stable_dm_not_found() -> None:
+    failure = NotFoundError("direct message not found or inaccessible")
+    calls: list[tuple[str, str]] = []
+
+    class PublicClientSpy:
+        def say(self, target: str, text: str) -> Message:
+            calls.append((target, text))
+            raise failure
+
+    stable = "dm.d_" + "a" * 26
+    result = execute_command(
+        cast(TautClient, PublicClientSpy()),
+        "say",
+        (("target", stable), ("text", "hello")),
+    )
+
+    assert result.record_type == "message"
+    assert result.records == ()
+    assert calls == [(stable, "hello")]
+    for target in ("@missing", "general", "general.1234567890123456789"):
+        with pytest.raises(NotFoundError) as raised:
+            execute_command(
+                cast(TautClient, PublicClientSpy()),
+                "say",
+                (("target", target), ("text", "hello")),
+            )
+        assert raised.value is failure
+
+
 def test_search_command_layer_supplies_every_omitted_default_once() -> None:
     calls: list[tuple[str, dict[str, object]]] = []
 
@@ -490,6 +522,33 @@ def test_log_since_rejects_unsafe_bare_json_integer_before_dispatch(
             "log",
             (("thread", "general"), ("since", since)),
         )
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "general",
+        "#general",
+        "general.1234567890123456789",
+        "#general.1234567890123456789",
+        "@Claude",
+        "dm.d_" + "a" * 26,
+    ],
+)
+def test_say_schema_remains_shape_only_for_every_core_target(target: str) -> None:
+    tool = next(tool for tool in TOOLS if tool.name == "say")
+
+    validate(
+        instance={
+            "workspace": "/workspace",
+            "token": "secret",
+            "target": target,
+            "text": "hello",
+        },
+        schema=tool.input_schema,
+    )
+    target_schema = tool.input_schema["properties"]["target"]
+    assert "pattern" not in target_schema
 
 
 @pytest.mark.parametrize("tool_name", ["read", "log"])
@@ -2233,9 +2292,12 @@ def test_explicit_dm_read_log_and_directory_use_public_core_contract(
     selected_id = member.member_id
     other = TautClient(db_path=db, as_name="other")
     other.join("general")
+    third = TautClient(db_path=db, as_name="third")
+    third.join("general")
     sent = other.say("@selected", "private history")
     selected.close()
     other.close()
+    third.close()
 
     async def scenario() -> None:
         reactor = ProcessReactor(asyncio.get_running_loop())
@@ -2275,6 +2337,36 @@ def test_explicit_dm_read_log_and_directory_use_public_core_contract(
             )
             assert unread["records"][0]["thread"] == sent.thread
 
+            stable_write = await reactor._execute_ready_tool(
+                canonical,
+                "say",
+                {
+                    "target": sent.thread,
+                    "text": "stable reply @other and private @third",
+                },
+            )
+            _assert_result(
+                stable_write,
+                record_type="message",
+                workspace=canonical,
+            )
+            assert stable_write["records"][0]["thread"] == sent.thread
+            assert len(stable_write["records"][0]["ts"]) == 19
+            other_observer = TautClient(db_path=db, as_name="other")
+            try:
+                assert [
+                    (item.type, item.thread, item.message_ts)
+                    for item in other_observer.inbox()
+                ] == [("mention", sent.thread, int(stable_write["records"][0]["ts"]))]
+            finally:
+                other_observer.close()
+            third_observer = TautClient(db_path=db, as_name="third")
+            try:
+                with pytest.raises(EmptyResultError):
+                    third_observer.inbox()
+            finally:
+                third_observer.close()
+
             directory = await reactor._execute_ready_tool(
                 canonical,
                 "list",
@@ -2284,7 +2376,7 @@ def test_explicit_dm_read_log_and_directory_use_public_core_contract(
             assert directory["records"] == [
                 {
                     "kind": "dm",
-                    "last_ts": str(sent.ts),
+                    "last_ts": stable_write["records"][0]["ts"],
                     "members": list(
                         next(
                             item
@@ -2321,9 +2413,15 @@ def test_well_formed_absent_and_inaccessible_dms_are_content_free_empty_results(
     other.join("general")
     outsider = TautClient(db_path=db, as_name="outsider")
     outsider.join("general")
+    inaccessible = other.say("@outsider", "not selected").thread
+    missing_membership = selected.say("@other", "selected pair").thread
+    other_id = other.whoami().member_id
+    assert selected._state.remove_membership(
+        thread=missing_membership,
+        member_id=other_id,
+    )
     selected.close()
     outsider.close()
-    inaccessible = other.say("@outsider", "not selected").thread
     other.close()
 
     async def scenario() -> None:
@@ -2364,6 +2462,43 @@ def test_well_formed_absent_and_inaccessible_dms_are_content_free_empty_results(
                         )
                     )
                 assert encoded_results[0] == encoded_results[1]
+
+            encoded_say_results: list[str] = []
+            absent = "dm.d_" + "a" * 26
+            for selector in (absent, inaccessible, missing_membership):
+                result = await reactor._execute_ready_tool(
+                    canonical,
+                    "say",
+                    {"target": selector, "text": "must not repair"},
+                )
+                _assert_result(
+                    result,
+                    record_type="message",
+                    workspace=canonical,
+                )
+                assert result["records"] == []
+                encoded_say_results.append(
+                    json.dumps(
+                        result,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                )
+            assert len(set(encoded_say_results)) == 1
+
+            observer = TautClient(db_path=db, token=member.token)
+            try:
+                assert observer._state.get_thread(absent) is None
+                assert (
+                    observer._state.get_membership(
+                        thread=missing_membership,
+                        member_id=other_id,
+                    )
+                    is None
+                )
+            finally:
+                observer.close()
         finally:
             await reactor.aclose()
 
@@ -3217,7 +3352,7 @@ def test_exact_tool_manifest_snapshot() -> None:
         separators=(",", ":"),
     ).encode()
     assert hashlib.sha256(encoded).hexdigest() == (
-        "60e4d48d629cc5628c1624603fb839a45ed64d65236aa0a170308cb4e4533500"
+        "4373c0ed43b10dcae1093e5185e8dcb19644360922f698a313daf3ac8a321e9e"
     )
 
     def assert_property_descriptions(schema: dict[str, object]) -> None:

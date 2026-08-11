@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 import taut_mcp._workspace_reactor as workspace_reactor
-from taut import TautClient, identity
+from taut import EmptyResultError, TautClient, identity
 from taut.envelope import encode_envelope
 from taut_mcp._commands import record_object
 from taut_mcp._process_reactor import ProcessReactor
@@ -180,9 +180,20 @@ def test_postgres_explicit_dm_navigation_and_directory(
     assert member is not None and member.token is not None
     other = TautClient(as_name="other")
     other.join("general")
+    other_id = other.whoami().member_id
+    third = TautClient(as_name="third")
+    third.join("general")
+    outsider = TautClient(as_name="outsider")
+    outsider.join("general")
+    dave = TautClient(as_name="dave")
+    dave.join("general")
     sent = other.say("@selected", "pg private history")
+    inaccessible = outsider.say("@dave", "foreign pg pair").thread
     selected.close()
     other.close()
+    third.close()
+    outsider.close()
+    dave.close()
 
     async def scenario() -> None:
         reactor = ProcessReactor(asyncio.get_running_loop())
@@ -214,6 +225,70 @@ def test_postgres_explicit_dm_navigation_and_directory(
                 sent.thread
             ]
             assert directory["records"][0]["unread"] is False
+
+            stable = await reactor._execute_ready_tool(
+                canonical,
+                "say",
+                {
+                    "target": sent.thread,
+                    "text": "pg stable @other and private @third",
+                },
+            )
+            assert stable["records"][0]["thread"] == sent.thread
+            assert len(stable["records"][0]["ts"]) == 19
+            other_observer = TautClient(as_name="other")
+            third_observer = TautClient(as_name="third")
+            try:
+                assert [item.type for item in other_observer.inbox()] == ["mention"]
+                with pytest.raises(EmptyResultError):
+                    third_observer.inbox()
+            finally:
+                other_observer.close()
+                third_observer.close()
+
+            expected_empty = {
+                "empty": True,
+                "guidance": [],
+                "record_type": "message",
+                "records": [],
+                "warnings": [],
+                "workspace": canonical,
+            }
+            absent = "dm.d_" + "a" * 26
+            for target in (absent, inaccessible):
+                result = await reactor._execute_ready_tool(
+                    canonical,
+                    "say",
+                    {"target": target, "text": "must not create"},
+                )
+                assert result == expected_empty
+
+            observer = TautClient(token=member.token)
+            try:
+                assert observer._state.remove_membership(
+                    thread=sent.thread,
+                    member_id=other_id,
+                )
+            finally:
+                observer.close()
+            missing_membership = await reactor._execute_ready_tool(
+                canonical,
+                "say",
+                {"target": sent.thread, "text": "must not repair"},
+            )
+            assert missing_membership == expected_empty
+            verify = TautClient(token=member.token)
+            try:
+                assert (
+                    verify._state.get_membership(
+                        thread=sent.thread,
+                        member_id=other_id,
+                    )
+                    is None
+                )
+                assert verify._state.get_thread(absent) is None
+            finally:
+                verify.close()
         finally:
             await reactor.aclose()
 

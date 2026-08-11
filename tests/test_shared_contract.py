@@ -8,10 +8,10 @@ import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
-from simplebroker import Queue, open_broker, resolve_broker_target
+from simplebroker import Queue, dump_lines, open_broker, resolve_broker_target
 from simplebroker.ext import IntegrityError, SidecarSession
 from taut_summon._state import (
     LEDGER_QUEUE_NAME,
@@ -776,6 +776,315 @@ def test_project_dm_queue_stable_across_name_change_contract(
     )
     assert listed.kind == "dm"
     assert set(listed.members) == {van.whoami().member_id, bob.whoami().member_id}
+
+
+def test_project_stable_dm_say_survives_name_reassignment_contract(
+    taut_project: Path,
+) -> None:
+    """[IAN-5.1] Stable handles stay with the pair while routes move."""
+
+    TautClient.init()
+    alice = TautClient(as_name="alice")
+    original_bob = TautClient(as_name="bob")
+    alice.join("general")
+    original_bob.join("general")
+    stable = alice.say("@bob", "old route owner").thread
+
+    original_bob.set_name("robert")
+    replacement_bob = TautClient(as_name="bob")
+    replacement_bob.join("general")
+    stable_message = alice.say(stable, "stable old pair")
+    routed_message = alice.say("@bob", "current route owner")
+
+    assert stable_message.thread == stable
+    assert routed_message.thread != stable
+    assert [item.text for item in alice.log(stable)] == [
+        "old route owner",
+        "stable old pair",
+    ]
+    assert [item.text for item in alice.log("@bob")] == ["current route owner"]
+    assert [item.text for item in original_bob.log(stable)] == [
+        "old route owner",
+        "stable old pair",
+    ]
+    with pytest.raises(NotFoundError, match="direct message not found or inaccessible"):
+        replacement_bob.log(stable)
+
+
+def _stable_dm_state_snapshot(
+    client: TautClient,
+    *,
+    actor_id: str,
+) -> dict[str, object]:
+    """Capture durable shared-backend state, permitting only actor activity."""
+
+    state = cast(sql_state.SqlSidecarTautState, client._state)
+
+    def normalized(record: dict[str, Any]) -> dict[str, Any]:
+        result = dict(record)
+        if result.get("member_id") == actor_id and "last_active_ts" in result:
+            result["last_active_ts"] = "<permitted actor activity>"
+        if result.get("type") == "header" and "last_ts" in result:
+            result["last_ts"] = "<permitted actor activity allocator>"
+        return result
+
+    core_records = tuple(
+        json.dumps(
+            normalized(record),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        for record in state.persistence_records()
+    )
+    members = tuple(
+        json.dumps(
+            normalized(dict(member)),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        for member in client._state.list_members()
+    )
+    with open_broker(client.target, config=client.config) as broker:
+        broker_records = tuple(
+            sorted(
+                json.dumps(
+                    normalized(json.loads(line)),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                for line in dump_lines(broker)
+            )
+        )
+        queue_stats = tuple(
+            sorted(
+                (item.queue, item.pending, item.claimed, item.total)
+                for item in broker.list_queue_stats()
+            )
+        )
+        raw_broker_meta = broker.get_meta()
+        broker_meta = tuple(
+            sorted(
+                (
+                    key,
+                    "<permitted actor activity allocator>"
+                    if key == "last_ts"
+                    else value,
+                )
+                for key, value in raw_broker_meta.items()
+            )
+        )
+    return {
+        "persistence_meta": state.persistence_meta(),
+        "core_records": core_records,
+        "members": members,
+        "broker_meta": broker_meta,
+        "broker_records": broker_records,
+        "queue_stats": queue_stats,
+    }
+
+
+def _corrupt_shared_direct_message(
+    alice: TautClient,
+    *,
+    stable: str,
+    corruption: str,
+    alice_id: str,
+    bob_id: str,
+    carol_id: str,
+) -> None:
+    if corruption == "missing-actor-membership":
+        assert alice._state.remove_membership(thread=stable, member_id=alice_id)
+        return
+    if corruption == "missing-peer-membership":
+        assert alice._state.remove_membership(thread=stable, member_id=bob_id)
+        return
+    if corruption == "missing-member":
+        with alice._meta_queue.sidecar(transaction=True) as session:
+            session.run(
+                "DELETE FROM taut_membership WHERE member_id = ?",
+                (bob_id,),
+            )
+            session.run(
+                "DELETE FROM taut_identity_claims WHERE member_id = ?",
+                (bob_id,),
+            )
+            session.run(
+                "DELETE FROM taut_member_aliases WHERE member_id = ?",
+                (bob_id,),
+            )
+            session.run("DELETE FROM taut_members WHERE member_id = ?", (bob_id,))
+        return
+
+    metadata: dict[str, dict[str, object]] = {
+        "missing-members-meta": {},
+        "members-not-list": {"members": "not-a-list"},
+        "member-not-string": {"members": [alice_id, 7]},
+        "wrong-cardinality-one": {"members": [alice_id]},
+        "wrong-cardinality-three": {"members": [alice_id, bob_id, carol_id]},
+        "duplicate-member-ids": {"members": [alice_id, alice_id]},
+        "invalid-member-id": {"members": [alice_id, "invalid-id"]},
+        "deterministic-name-mismatch": {"members": [alice_id, carol_id]},
+        "actor-absent-metadata": {"members": [bob_id, carol_id]},
+        "wrong-kind": {"members": [alice_id, bob_id]},
+    }
+    if corruption == "deterministic-name-mismatch":
+        alice._state.add_membership(
+            thread=stable,
+            member_id=carol_id,
+            joined_ts=alice._meta_queue.generate_timestamp(),
+            last_seen_ts=0,
+        )
+    kind = "channel" if corruption == "wrong-kind" else "dm"
+    with alice._meta_queue.sidecar(transaction=True) as session:
+        session.run(
+            "UPDATE taut_threads SET kind = ?, meta = ? WHERE name = ?",
+            (kind, json.dumps(metadata[corruption]), stable),
+        )
+
+
+def test_project_stable_dm_say_existing_conversation_contract(
+    taut_project: Path,
+) -> None:
+    """[TAUT-8.1]/[IAN-5.3] Stable say reuses one valid existing DM."""
+
+    TautClient.init()
+    alice = TautClient(as_name="alice")
+    bob = TautClient(as_name="bob")
+    carol = TautClient(as_name="carol")
+    for member in (alice, bob, carol):
+        member.join("general")
+    alice_id = alice.whoami().member_id
+    bob_id = bob.whoami().member_id
+    state = cast(sql_state.SqlSidecarTautState, alice._state)
+    first = alice.say("@bob", "created through the person route")
+    stable = first.thread
+    started = bob.inbox()
+    assert [(item.type, item.thread) for item in started] == [("dm_started", stable)]
+    thread_before = alice._state.get_thread(stable)
+    actor_before = alice._state.get_member(alice_id)
+    actor_membership_before = alice._state.get_membership(
+        thread=stable,
+        member_id=alice_id,
+    )
+    peer_membership_before = alice._state.get_membership(
+        thread=stable,
+        member_id=bob_id,
+    )
+    registry_before = {
+        (record["thread"], record["member_id"])
+        for record in state.persistence_records()
+        if record["type"] == "membership"
+    }
+    assert thread_before is not None
+    assert actor_before is not None
+    assert actor_membership_before is not None
+    assert peer_membership_before is not None
+
+    written = alice.say(stable, "stable hello @bob and private @carol")
+    actor_after = alice._state.get_member(alice_id)
+    actor_membership_after = alice._state.get_membership(
+        thread=stable,
+        member_id=alice_id,
+    )
+
+    assert written.thread == stable
+    assert isinstance(written.ts, int)
+    assert [message.text for message in alice.log(stable)] == [
+        "created through the person route",
+        "stable hello @bob and private @carol",
+    ]
+    assert alice._state.get_thread(stable) == thread_before
+    assert {
+        (record["thread"], record["member_id"])
+        for record in state.persistence_records()
+        if record["type"] == "membership"
+    } == registry_before
+    assert actor_after is not None
+    assert actor_after["last_active_ts"] > actor_before["last_active_ts"]
+    assert actor_membership_after is not None
+    assert actor_membership_after["last_seen_ts"] == written.ts
+    assert (
+        alice._state.get_membership(
+            thread=stable,
+            member_id=bob_id,
+        )
+        == peer_membership_before
+    )
+    assert [(item.type, item.thread, item.message_ts) for item in bob.inbox()] == [
+        ("mention", stable, written.ts)
+    ]
+    with pytest.raises(EmptyResultError):
+        carol.inbox()
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "absent",
+        "wrong-kind",
+        "missing-members-meta",
+        "members-not-list",
+        "member-not-string",
+        "wrong-cardinality-one",
+        "wrong-cardinality-three",
+        "duplicate-member-ids",
+        "invalid-member-id",
+        "deterministic-name-mismatch",
+        "actor-absent-metadata",
+        "nonparticipant",
+        "missing-member",
+        "missing-actor-membership",
+        "missing-peer-membership",
+    ],
+)
+def test_project_stable_dm_say_misses_are_uniform_and_noncreating(
+    taut_project: Path,
+    failure: str,
+) -> None:
+    """[IAN-5.3]/[IAN-10] Every stable-send miss fails closed on real state."""
+
+    TautClient.init()
+    alice = TautClient(as_name="alice")
+    bob = TautClient(as_name="bob")
+    carol = TautClient(as_name="carol")
+    dave = TautClient(as_name="dave")
+    for member in (alice, bob, carol, dave):
+        member.join("general")
+    alice_id = alice.whoami().member_id
+    bob_id = bob.whoami().member_id
+    carol_id = carol.whoami().member_id
+
+    if failure == "absent":
+        stable = "dm.d_" + "a" * 26
+        assert alice._state.get_thread(stable) is None
+    elif failure == "nonparticipant":
+        stable = carol.say("@dave", "private to another pair").thread
+    else:
+        stable = alice.say("@bob", "existing conversation").thread
+        _corrupt_shared_direct_message(
+            alice,
+            stable=stable,
+            corruption=failure,
+            alice_id=alice_id,
+            bob_id=bob_id,
+            carol_id=carol_id,
+        )
+    actor_before = alice._state.get_member(alice_id)
+    assert actor_before is not None
+    before = _stable_dm_state_snapshot(alice, actor_id=alice_id)
+
+    with pytest.raises(NotFoundError) as caught:
+        alice.say(stable, "must not create or repair state")
+
+    assert type(caught.value) is NotFoundError
+    assert str(caught.value) == "direct message not found or inaccessible"
+    actor_after = alice._state.get_member(alice_id)
+    assert actor_after is not None
+    assert actor_after["last_active_ts"] >= actor_before["last_active_ts"]
+    assert _stable_dm_state_snapshot(alice, actor_id=alice_id) == before
 
 
 def test_project_dm_navigation_and_directory_contract(taut_project: Path) -> None:

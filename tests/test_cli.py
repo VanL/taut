@@ -1763,7 +1763,15 @@ def test_every_cli_parser_action_has_useful_help() -> None:
         ),
         (
             ("say", "--help"),
-            ("stdin", "TEXT", "-", "Blank", "silent exit 2"),
+            (
+                "stdin",
+                "TEXT",
+                "-",
+                "Blank",
+                "silent exit 2",
+                "stable direct-message handle",
+                "existing conversation",
+            ),
         ),
         (
             ("reply", "--help"),
@@ -1980,6 +1988,138 @@ def test_cli_say_dm_and_list_json_members(tmp_path: Path) -> None:
             "member_id"
         ],
     }
+
+
+def test_cli_say_reuses_stable_dm_handle_with_canonical_receipts(
+    tmp_path: Path,
+) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "bob", "join", "general", cwd=tmp_path)[0] == 0
+    first = run_cli("--as", "van", "say", "@bob", "first", "--json", cwd=tmp_path)
+    assert first[0] == 0, first[2]
+    stable = json.loads(first[1])["thread"]
+
+    second = run_cli("--as", "van", "say", stable, "second", "--json", cwd=tmp_path)
+    assert second[0] == 0, second[2]
+    receipt = json.loads(second[1])
+    assert receipt["thread"] == stable
+    assert re.fullmatch(r"[0-9]{19}", receipt["ts"])
+
+    timestamped = run_cli(
+        "--as", "van", "-t", "say", stable, "--", "--json", cwd=tmp_path
+    )
+    assert timestamped[0] == 0, timestamped[2]
+    assert re.fullmatch(r"[0-9]{19}", timestamped[1])
+    quiet = run_cli("--as", "van", "-q", "say", stable, "quiet", cwd=tmp_path)
+    assert quiet == (0, "", "")
+
+    history = run_cli("--as", "bob", "log", stable, "--json", cwd=tmp_path)
+    assert history[0] == 0, history[2]
+    assert [json.loads(line)["text"] for line in history[1].splitlines()] == [
+        "first",
+        "second",
+        "--json",
+        "quiet",
+    ]
+
+
+def test_cli_stable_dm_say_misses_are_uniform_and_do_not_repair(
+    tmp_path: Path,
+) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    for name in ("alice", "bob", "carol", "dave"):
+        assert run_cli("--as", name, "join", "general", cwd=tmp_path)[0] == 0
+    own = json.loads(
+        run_cli("--as", "alice", "say", "@bob", "own", "--json", cwd=tmp_path)[1]
+    )["thread"]
+    foreign = json.loads(
+        run_cli("--as", "carol", "say", "@dave", "foreign", "--json", cwd=tmp_path)[1]
+    )["thread"]
+
+    blank = run_cli("--as", "alice", "say", own, "-", cwd=tmp_path, stdin="\ufeff")
+    assert blank == (2, "", "")
+    absent = "dm.d_" + "a" * 26
+    misses = [
+        run_cli("--as", "alice", "say", absent, "miss", cwd=tmp_path),
+        run_cli("--as", "alice", "say", foreign, "miss", cwd=tmp_path),
+    ]
+
+    bob_id = json.loads(run_cli("--as", "bob", "whoami", "--json", cwd=tmp_path)[1])[
+        "member_id"
+    ]
+    meta = Queue(META_QUEUE_NAME, db_path=str(tmp_path / ".taut.db"))
+    try:
+        state = SqlSidecarTautState(meta, SQLITE_SQL_DIALECT)
+        assert state.remove_membership(thread=own, member_id=bob_id)
+    finally:
+        meta.close()
+    misses.append(run_cli("--as", "alice", "say", own, "miss", cwd=tmp_path))
+
+    assert (
+        misses
+        == [
+            (2, "", "direct message not found or inaccessible"),
+        ]
+        * 3
+    )
+    verify = Queue(META_QUEUE_NAME, db_path=str(tmp_path / ".taut.db"))
+    try:
+        state = SqlSidecarTautState(verify, SQLITE_SQL_DIALECT)
+        assert state.get_membership(thread=own, member_id=bob_id) is None
+    finally:
+        verify.close()
+
+    malformed = run_cli("--as", "alice", "say", "dm.d_short", "miss", cwd=tmp_path)
+    assert malformed[0] == 1
+    assert malformed[1] == ""
+    assert malformed[2] == "invalid direct-message selector: dm.d_short"
+    assert "Traceback" not in malformed[2]
+
+    unicode_target = "dm.d_" + "é" * 26
+    malformed_unicode = run_cli(
+        "--as",
+        "alice",
+        "say",
+        unicode_target,
+        "miss",
+        cwd=tmp_path,
+    )
+    assert malformed_unicode == (
+        1,
+        "",
+        f"invalid direct-message selector: {unicode_target}",
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission probe")
+def test_cli_stable_dm_say_read_only_storage_is_concise_and_nonwriting(
+    tmp_path: Path,
+) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "alice", "join", "general", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "bob", "join", "general", cwd=tmp_path)[0] == 0
+    created = run_cli("--as", "alice", "say", "@bob", "seed", "--json", cwd=tmp_path)
+    assert created[0] == 0, created[2]
+    stable = json.loads(created[1])["thread"]
+    before = run_cli("--as", "bob", "log", stable, "--json", cwd=tmp_path)
+    assert before[0] == 0, before[2]
+    database = tmp_path / ".taut.db"
+
+    database.chmod(0o400)
+    tmp_path.chmod(0o500)
+    try:
+        result = run_cli("--as", "alice", "say", stable, "must not write", cwd=tmp_path)
+    finally:
+        tmp_path.chmod(0o700)
+        database.chmod(0o600)
+
+    assert result[0] == 1
+    assert result[1] == ""
+    assert result[2] == "No taut database found. Run 'taut init' to create one."
+    assert "Traceback" not in result[2]
+    after = run_cli("--as", "bob", "log", stable, "--json", cwd=tmp_path)
+    assert after == before
 
 
 def test_cli_human_list_labels_dm_by_other_current_name(tmp_path: Path) -> None:

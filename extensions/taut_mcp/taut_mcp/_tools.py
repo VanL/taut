@@ -732,11 +732,11 @@ TOOL_DEFINITIONS = (
     ),
     ToolDefinition(
         "say",
-        "Post a new Taut message to a channel, sub-thread, or direct-message target.",
+        "Post a new Taut message to a channel, sub-thread, person-addressed direct message, or an existing direct-message conversation. @name-or-alias may create a DM; exact dm.d_* requires an existing actor-accessible conversation and never creates or heals one.",
         {
             "workspace": _WORKSPACE,
             "target": _string(
-                "Message destination: a channel such as general, a sub-thread such as general.<19-digit-parent-message-id>, or a direct message such as @claude. Used only by say; no stdin sentinel."
+                "Message destination: a channel such as general, a sub-thread such as general.<19-digit-parent-message-id>, a person-addressed direct message such as @claude, or an exact stable handle dm.d_<26-lowercase-base32-chars>. @name-or-alias may create a DM; an exact stable handle requires an existing actor-accessible conversation and never creates or heals one. Used only by say; no stdin sentinel."
             ),
             "text": _string(
                 "Nonblank message text written as participant content under Taut's core size and validation rules. Used by say and reply."

@@ -27,9 +27,35 @@ def test_parse_direct_message_target() -> None:
     assert target.raw_route == "Claude"
 
 
+def test_parse_stable_direct_message_write_target() -> None:
+    stable_name = "dm.d_" + "a" * 26
+
+    target = addressing.parse_target(stable_name)
+
+    assert target == addressing.TargetAddress(kind="dm", thread=stable_name)
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "dm.d_short",
+        "dm.d_" + "A" * 26,
+        "dm.d_" + "0" * 26,
+        "dm.other",
+    ],
+)
+def test_parse_target_rejects_malformed_stable_dm_shapes(target: str) -> None:
+    with pytest.raises(ThreadNameError) as caught:
+        addressing.parse_target(target)
+    assert str(caught.value) == f"invalid direct-message selector: {target}"
+
+
 def test_direct_message_targets_can_be_disallowed() -> None:
     with pytest.raises(ThreadNameError, match="direct-message targets"):
         addressing.parse_target("@Claude", allow_dm=False)
+
+    with pytest.raises(ThreadNameError, match="direct-message targets"):
+        addressing.parse_target("dm.d_" + "a" * 26, allow_dm=False)
 
 
 def test_direct_message_target_must_be_routable_member_name() -> None:

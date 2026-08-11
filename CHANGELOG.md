@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Added exact stable `dm.d_*` targets to `TautClient.say`, the CLI, and MCP so
+  handles returned by DM list/history records can write back to that same
+  existing conversation. Person-addressed `@name-or-alias` remains the sole DM
+  creator; stable send fully validates actor access, creates or repairs no
+  state on a miss, emits no `dm_started`, and retains the ordinary two-person
+  mention audience.
 - Added actor-free `taut system dump` and `taut system load` maintenance
   commands plus matching `TautClient` class methods. The portable logical
   format reuses SimpleBroker's exact-id message stream, includes core sidecar

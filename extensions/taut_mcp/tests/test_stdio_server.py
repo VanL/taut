@@ -34,7 +34,7 @@ EXTENSION_ROOT = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = EXTENSION_ROOT.parents[1]
 NOTIFICATIONS_URL = "taut://notifications/current"
 EXPECTED_INSTRUCTIONS_SHA256 = (
-    "09ba153597e453bc4c816476a25200f6b3bf665b2be87acb576ef51e974a8867"
+    "961252926a99b3766475c8541134b9385d686e54493296e3d2aed319008c8144"
 )
 EXPECTED_TOOL_NAMES = {
     "attach_workspace",
@@ -182,6 +182,8 @@ async def _inspect_empty_server(
         "Do not timer-poll list, who, or whoami",
         "read with one explicit selector",
         "Use list(dms=true)",
+        "Use say with a returned stable handle",
+        "only @name-or-alias may create a DM",
         "A later log cannot prove",
         "Use search to discover visible history without knowing a thread",
         "Use reindex=true only for an explicit complete derived-index rebuild",
@@ -1421,11 +1423,50 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
             )
             assert direct["records"][0]["thread"].startswith("dm.")  # type: ignore[index]
             dm_thread = direct["records"][0]["thread"]  # type: ignore[index]
+            stable_direct = await call(
+                "say",
+                {"target": dm_thread, "text": "stdio stable direct"},
+            )
+            assert stable_direct["records"][0]["thread"] == dm_thread  # type: ignore[index]
+            stable_missing = await call(
+                "say",
+                {
+                    "target": "dm.d_" + "a" * 26,
+                    "text": "must stay empty",
+                },
+            )
+            assert stable_missing == {
+                "empty": True,
+                "guidance": [],
+                "record_type": "message",
+                "records": [],
+                "warnings": [],
+                "workspace": canonical,
+            }
+            malformed_stable = await session.call_tool(
+                "say",
+                {
+                    "workspace": canonical,
+                    "token": member.token,
+                    "target": "dm.d_short",
+                    "text": "must fail",
+                },
+            )
+            assert malformed_stable.is_error is True
+            assert malformed_stable.structured_content is None
+            assert isinstance(malformed_stable.content[0], types.TextContent)
+            assert malformed_stable.content[0].text == (
+                "invalid direct-message selector: dm.d_short"
+            )
             dm_history = await call(
                 "log",
                 {"thread": "@other", "since": None, "limit": 100},
             )
-            assert dm_history["records"] == direct["records"]
+            direct_records = direct["records"]
+            stable_records = stable_direct["records"]
+            assert isinstance(direct_records, list)
+            assert isinstance(stable_records, list)
+            assert dm_history["records"] == direct_records + stable_records
             dm_directory = await call("list", {"dms": True})
             dm_records = dm_directory["records"]
             assert isinstance(dm_records, list)

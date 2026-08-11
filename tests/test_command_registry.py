@@ -2691,6 +2691,101 @@ def test_registry_say_routes_to_real_direct_message(tmp_path: Path) -> None:
         bob.close()
 
 
+def test_registry_say_routes_to_existing_stable_direct_message(
+    tmp_path: Path,
+) -> None:
+    from taut.client import TautClient
+    from taut.commands._dispatch import dispatch
+    from taut.commands._registry import CommandRegistry
+
+    db_path = tmp_path / "chat.db"
+    _seed_channel(db_path, "van", "bob")
+    setup = TautClient(db_path=str(db_path), as_name="van")
+    try:
+        stable = setup.say("@bob", "first").thread
+    finally:
+        setup.close()
+    stdout = StringIO()
+    stderr = StringIO()
+
+    result = dispatch(
+        [
+            "--db",
+            str(db_path),
+            "--as",
+            "van",
+            "say",
+            stable,
+            "stable",
+            "--json",
+        ],
+        registry=CommandRegistry(entry_points=()),
+        stdin=StringIO(),
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+    assert result == 0, stderr.getvalue()
+    receipt = json.loads(stdout.getvalue())
+    assert receipt["thread"] == stable
+    assert re.fullmatch(r"[0-9]{19}", receipt["ts"])
+    bob = TautClient(db_path=str(db_path), as_name="bob")
+    try:
+        assert [message.text for message in bob.log(stable)] == ["first", "stable"]
+    finally:
+        bob.close()
+
+
+def test_registry_stable_dm_say_commits_before_broken_receipt(
+    tmp_path: Path,
+) -> None:
+    from taut.client import TautClient
+    from taut.commands._dispatch import dispatch
+    from taut.commands._registry import CommandRegistry
+
+    class BrokenOutput(StringIO):
+        def write(self, text: str) -> int:
+            del text
+            raise BrokenPipeError("downstream closed")
+
+    db_path = tmp_path / "chat.db"
+    _seed_channel(db_path, "van", "bob")
+    setup = TautClient(db_path=str(db_path), as_name="van")
+    try:
+        stable = setup.say("@bob", "first").thread
+    finally:
+        setup.close()
+    stderr = StringIO()
+
+    result = dispatch(
+        [
+            "--db",
+            str(db_path),
+            "--as",
+            "van",
+            "--json",
+            "say",
+            stable,
+            "committed",
+        ],
+        registry=CommandRegistry(entry_points=()),
+        stdin=StringIO(),
+        stdout=BrokenOutput(),
+        stderr=stderr,
+    )
+
+    assert result == 1
+    assert stderr.getvalue() == "downstream closed\n"
+    bob = TautClient(db_path=str(db_path), as_name="bob")
+    try:
+        assert [message.text for message in bob.log(stable)] == [
+            "first",
+            "committed",
+        ]
+    finally:
+        bob.close()
+
+
 def test_registry_say_notification_warning_stays_on_stderr(tmp_path: Path) -> None:
     from simplebroker import Queue
 

@@ -24,7 +24,7 @@ from taut._message_text import is_blank_message_text
 from taut.envelope import encode_envelope
 from taut.state import MemberRow, MembershipRow, ThreadRow
 
-from ._base import _ClientBase, _json_dumps
+from ._base import _ClientBase, _DirectMessageContext, _json_dumps
 from ._codec import message_from_body
 from ._models import Message, MessageDeletion, MessageReaction
 
@@ -171,6 +171,14 @@ class MessagingMixin(_ClientBase):
         address = addressing.parse_target(target, allow_dm=True)
         self._ensure_no_incomplete_channel_rename()
         if address.kind == "dm":
+            if address.thread is not None:
+                resolved = self._resolve_member(
+                    create=False,
+                    _heal_claim=False,
+                )
+                member = self._require_member(resolved)
+                context = self._resolve_direct_message(address.thread, member)
+                return self._say_existing_dm(context, text)
             if address.route_key is None:
                 raise ThreadNameError("direct message target missing route")
             if self._state.get_member_by_route_key(address.route_key) is None:
@@ -446,6 +454,31 @@ class MessagingMixin(_ClientBase):
             thread=thread,
             member_id=member["member_id"],
             prior_cursor=prior_cursor,
+            own_message_ts=message.ts,
+        )
+        return message
+
+    def _say_existing_dm(
+        self,
+        context: _DirectMessageContext,
+        text: str,
+    ) -> Message:
+        thread = context.thread["name"]
+        queue = self.queue(thread)
+        message = self._write_message(
+            queue=queue,
+            thread=thread,
+            from_id=context.actor["member_id"],
+            from_name=context.actor["display_name"],
+            kind="message",
+            text=text,
+            notify_mentions=True,
+        )
+        self._advance_sender_if_no_intervening(
+            queue=queue,
+            thread=thread,
+            member_id=context.actor["member_id"],
+            prior_cursor=context.actor_membership["last_seen_ts"],
             own_message_ts=message.ts,
         )
         return message

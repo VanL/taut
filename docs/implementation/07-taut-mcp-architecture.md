@@ -37,10 +37,11 @@ as historical release evidence.
   host adapters, [MCP-10] trust and rate limits, [MCP-11] failures, and
   [MCP-12] proof
 - `docs/specs/02-taut-core.md` [TAUT-3.2] project configuration, [TAUT-4.4]
-  channel topics, [TAUT-8.2] public records, [TAUT-8.3] Python client and
-  observational inbox peek, [TAUT-9] trust boundary, and [TAUT-11] backend
-  conformance
+  channel topics, [TAUT-8.1] CLI-shaped command behavior, [TAUT-8.2] public
+  records, [TAUT-8.3] Python client and observational inbox peek, [TAUT-9]
+  trust boundary, and [TAUT-11] backend conformance
 - `docs/specs/03-identity-addressing-notifications.md` [IAN-3] identity,
+  [IAN-5.1]/[IAN-5.3] asymmetric DM creation and existing-handle validation,
   [IAN-6.5] notification queues, and [IAN-7.4] consuming versus observational
   notification reads
 - `docs/specs/06-search.md` [SRCH-3] query grammar, [SRCH-4] visibility and
@@ -143,6 +144,14 @@ tools. It calls public `TautClient` methods and serializes public value
 objects. It never launches the CLI, parses terminal output, reflects the
 command registry, or receives MCP identity fields. A startup assertion keeps
 the manifest's domain partition equal to this dispatcher.
+
+`say.target` intentionally remains a shape-only string in the manifest.
+Core accepts bare and quoted-`#` channel/sub-thread forms as well as route and
+stable-DM targets, and the selector pattern used by `read`/`log` would narrow
+that grammar. Core therefore owns semantic parsing. The command adapter has
+one result-only exception: `NotFoundError` from an exact stable `dm.d_*` send
+becomes the ordinary empty `message` envelope. Route, channel, sub-thread, and
+malformed-target failures retain their existing tool-error behavior.
 
 The `search` branch is intentionally an adapter, not a second search layer.
 The process copies its validated selector arrays to immutable tuples before
@@ -301,9 +310,9 @@ Configuring this path is not evidence that a PyPI version has been published.
 | `extensions/taut_mcp/taut_mcp/_claude_channel.py` | isolated legacy-host fixed-payload experimental notification |
 | `extensions/taut_mcp/tests/test_dual_era_contract.py` | focused manifest, application-validator, and per-tool lazy-first-use contract |
 | `extensions/taut_mcp/tests/test_process_reactor.py` | shared ensure, alias, lifecycle, cancellation, and process-reactor invariants |
-| `extensions/taut_mcp/tests/test_stdio_server.py` | legacy and modern discovery, schema, cache, subscription, rate, cancellation, and installed-wheel stdio behavior |
-| `extensions/taut_mcp/tests/test_tools.py` | real SQLite behavior, search state neutrality, warnings, errors, projection, and cancellation |
-| `extensions/taut_mcp/tests/test_pg_conformance.py` | real PostgreSQL adapter conformance against direct `TautClient.search()` |
+| `extensions/taut_mcp/tests/test_stdio_server.py` | legacy and modern discovery, exact instructions/manifest, stable-DM send/miss framing, schema, cache, subscription, rate, cancellation, and installed-wheel stdio behavior |
+| `extensions/taut_mcp/tests/test_tools.py` | exact stable-only miss normalization, shape-only target grammar, real SQLite stable send/effects, search state neutrality, warnings, errors, projection, and cancellation |
+| `extensions/taut_mcp/tests/test_pg_conformance.py` | real PostgreSQL stable-DM and search adapter conformance |
 | `taut/_scripts.py`, `tests/test_dev_scripts.py` | canonical PostgreSQL runner routing and MCP/PG dependency overlay |
 | `.github/workflows/test.yml` | sole MCP release-byte owner and same-run non-PG MCP coverage producer/aggregator |
 | `.github/workflows/test-mcp-extension.yml` | Ubuntu SQLite/PostgreSQL matrix, macOS/Windows non-PG lanes, and package-local quality gates |
@@ -335,6 +344,7 @@ changelog, and plan evidence whenever ownership or rationale changes.
 
 ## Related Plans
 
+- `docs/plans/2026-08-10-stable-dm-send-plan.md`
 - `docs/plans/2026-08-10-mcp-search-plan.md`
 - `docs/plans/2026-07-29-taut-chat-pypi-publication-plan.md`
 - `docs/plans/2026-07-28-taut-mcp-dual-era-sessionless-plan.md`

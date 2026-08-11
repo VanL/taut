@@ -58,14 +58,15 @@ TAUT_TOKEN=taut-7f3k9q2m taut say dev "same member from anywhere"
 taut say @van "build finished: 312 passed"
 taut read dm.d_aaaaaaaaaaaaaaaaaaaaaaaaaa
 taut list --dms
+taut say dm.d_aaaaaaaaaaaaaaaaaaaaaaaaaa "follow-up in the same conversation"
 ```
 
 - `@name` routes through the member's *current* name each time. The
   `dm.d_*` value shown by `--json` or `taut list --dms` is the stable
   conversation handle and reopens the same pair after either
   participant renames.
-- Navigation never creates a conversation; only `say @name` can start
-  one.
+- Stable-handle navigation and send require the existing fully valid
+  conversation and never create or repair it. Only `say @name` can start one.
 
 ## Hazards
 

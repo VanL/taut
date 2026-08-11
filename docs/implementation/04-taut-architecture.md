@@ -318,15 +318,26 @@ timestamp; a decoder failure leaves the page cursor unchanged. `read` is a
 thin delegating alias, and the CLI omits the keyword to preserve its
 1,000-per-thread default.
 
-Direct-message navigation has one actor-aware boundary in the client. The
-operation-specific address parser recognizes current `@name-or-alias` routes
-and exact stable `dm.d_*` handles without broadening channel-only commands.
-The shared resolver validates the registered DM kind, exact two-member
-metadata, deterministic pair/name relation, actor participation, both member
-rows, and both memberships before any queue access. It fails closed with one
-content-free miss for absent, corrupt, or cross-pair state. Navigation never
-calls the first-contact send path and never creates or heals identity,
-registry, membership, notification, or queue state.
+Direct-message selection has one actor-aware boundary in the client. The
+operation-specific selector parser recognizes current `@name-or-alias` routes
+and exact stable `dm.d_*` handles without broadening channel-only commands;
+the `say` target parser recognizes the stable form before its dotted
+sub-thread branch. The shared resolver validates the registered DM kind,
+exact two-member metadata, deterministic pair/name relation, actor
+participation, both member rows, and both memberships before any queue access.
+It fails closed with one content-free miss for absent, corrupt, or cross-pair
+state.
+
+Stable-handle `say` resolves the actor with creation and claim healing both
+disabled, then uses that same validated context. Its dedicated existing-DM
+writer takes the context's actor, canonical thread, and prior cursor directly;
+it publishes through the ordinary message writer and sender-cursor guard. It
+does not re-resolve general membership and never enters `_say_dm`, which
+remains the sole owner of pair/membership creation and `dm_started`. Ordinary
+mention delivery is therefore still constrained by the validated two-person
+DM audience. A failed stable send may touch only an already existing actor's
+ordinary activity timestamp; it creates or repairs no identity, registry,
+membership, notification, message, or queue state.
 
 `read` uses that canonical queue and advances only its existing cursor.
 `log` uses non-healing, activity-neutral actor resolution and moves no cursor.
@@ -785,7 +796,7 @@ requirement or auditing implementation coverage.
 | [TAUT-8.3], Python API objects, `Channel`, `MessageDeletion`, `MessageReaction`, notification peek, and verb semantics | `taut/client/__init__.py::TautClient`, `taut/client/_models.py`, `taut/client/_notifications.py::NotificationsMixin.peek_inbox`, the other client mixins, and lazy root exports | `tests/test_public_api.py`, `tests/test_client.py` channel, exact-message, reaction, notification-peek, and other client contracts, shared channel/exact-message/reaction/notification contracts in `tests/test_shared_contract.py` on SQLite and PostgreSQL, `tests/test_terminal_text.py`, `tests/test_lazy_imports.py` |
 | [TAUT-8.4], [TAUT-8.5], watcher behavior and shared reactor lifecycle | `taut/watcher.py::BaseReactor`, `taut/watcher.py::TautWatcher`, `taut/_watch_runtime.py`, `taut/client/_watching.py`, `taut/client/__init__.py::TautClient.watch`, `taut/commands/watch.py` | `tests/test_watcher.py` ownership, stop, wake, cursor replay, construction cleanup, explicit-target resolution, terminal-stop, poison, ordering, and same-instance tests; `tests/test_cli.py::test_cli_watch_json_flushes_records_while_live`, `test_cli_watch_closed_pipe_exits_0_without_advancing_cursor`, `test_cli_watch_policy_failure_stops_without_advancing_cursor`; `tests/test_architecture_boundaries.py::test_first_party_reactors_inherit_guarded_lifecycle_templates`; `tests/test_shared_contract.py::test_project_watcher_receives_cli_write`; `extensions/taut_pg/tests/test_reactor.py` native-waiter rebind and forced polling-fallback tests |
 | [IAN-4], alias/name route namespace | `taut/state/_sql.py` member and alias helpers, `taut/_constants.py::route_key`, `validate_member_name` | `tests/test_state_contract.py`, `tests/test_client.py::test_set_name_changes_current_name_without_changing_member_id`, PostgreSQL create/rename-versus-alias races in `extensions/taut_pg/tests/test_pg_sidecar.py` |
-| [IAN-5], [IAN-6], addressing and special queue names | `taut/addressing.py`, `taut/client/_messaging.py::MessagingMixin.say`, `_say_dm`; `taut/client/_threads.py::_thread_from_row` | `tests/test_addressing.py`, `tests/test_client.py::test_direct_message_queue_is_stable_across_name_change`, `test_channel_names_reject_dots_and_reserved_words` |
+| [IAN-5], [IAN-6], addressing, stable existing-DM send, and special queue names | `taut/addressing.py`, `taut/client/_base.py::_resolve_direct_message`, `taut/client/_messaging.py::MessagingMixin.say`, `_say_existing_dm`, `_say_dm`; `taut/client/_threads.py::_thread_from_row` | `tests/test_addressing.py`; direct selection, corruption, nonhealing, and blank-order cases in `tests/test_direct_messages.py` and `tests/test_client.py`; full valid/miss/name-reassignment matrix in `tests/test_shared_contract.py` on SQLite and PostgreSQL; CLI/registry cases in `tests/test_cli.py` and `tests/test_command_registry.py` |
 | [IAN-7], notification and reaction payloads, observational peek, claiming, and stale pointers after message deletion | `taut/client/_messaging.py::_write_mention_notifications`, `react_to_message`, `delete_message`; `taut/client/_codec.py::notification_from_body`; `taut/client/_notifications.py::_write_notification`, `peek_inbox`, `inbox`; `taut/commands/_rendering.py`; `taut/watcher.py` notification path | notification/reaction peek, consuming-inbox, audience, broadcast-failure, and deletion-without-cascade cases in `tests/test_client.py`; notification rendering in `tests/test_cli.py`; shared notification/reaction contracts in `tests/test_shared_contract.py`; `tests/test_watcher.py` |
 | [IAN-8], channel rename, topic preservation/serialization, and partial-rename reporting | `taut/client/_threads.py::ThreadsMixin.rename_channel`, `taut/client/_base.py::_ClientBase._ensure_no_incomplete_channel_rename`; `taut/state/_sql.py` topic and rename helpers | `tests/test_client.py::test_rename_channel_moves_messages_and_subthreads`, channel topic/corruption cases, `test_incomplete_channel_rename_blocks_chat_history_operations`, `tests/test_state_contract.py`, shared rename/topic tests |
 | [TAUT-12.1], Postgres extension boundary | `extensions/taut_pg/`, `taut/_scripts.py`, `bin/pytest-pg` | `extensions/taut_pg/tests/`, `tests/test_shared_contract.py` under `bin/pytest-pg` |
@@ -817,6 +828,7 @@ watch, `taut/client/_notifications.py::NotificationsMixin.inbox` claims notifica
 
 ## Related Plans
 
+- `docs/plans/2026-08-10-stable-dm-send-plan.md`
 - `docs/plans/2026-07-29-taut-chat-pypi-publication-plan.md`
 - `docs/plans/2026-07-28-direct-message-navigation-plan.md`
 - `docs/plans/2026-07-14-blank-message-no-op-plan.md`

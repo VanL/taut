@@ -345,9 +345,22 @@ uv run --project extensions/taut_mcp --extra dev pytest \
   extensions/taut_mcp/tests/test_stdio_server.py -n 0
 uv run ./bin/pytest-pg tests/test_shared_contract.py \
   extensions/taut_mcp/tests/test_pg_conformance.py -n 1 --dist loadgroup
-uv run ruff check .
-uv run ruff format --check .
-uv run mypy
+uv run ruff check taut tests bin extensions/taut_pg/taut_pg \
+  extensions/taut_pg/tests extensions/taut_summon/taut_summon \
+  extensions/taut_summon/tests extensions/taut_mcp/taut_mcp \
+  extensions/taut_mcp/tests
+uv run ruff format --check taut tests bin extensions/taut_pg/taut_pg \
+  extensions/taut_pg/tests extensions/taut_summon/taut_summon \
+  extensions/taut_summon/tests extensions/taut_mcp/taut_mcp \
+  extensions/taut_mcp/tests
+uv run --extra dev mypy taut tests bin/release.py \
+  extensions/taut_pg/taut_pg extensions/taut_pg/tests \
+  --config-file pyproject.toml
+uv run --extra dev mypy taut tests extensions/taut_summon/taut_summon \
+  extensions/taut_summon/tests --config-file pyproject.toml
+uv run --project extensions/taut_mcp --extra dev mypy \
+  extensions/taut_mcp/taut_mcp extensions/taut_mcp/tests \
+  --config-file extensions/taut_mcp/pyproject.toml
 uv run pytest -n auto
 bin/check-plan-status-index
 uv run bin/check-cli-claims
@@ -358,6 +371,24 @@ Apply adversarial CLI probes to empty input, stdin, `--`, malformed Unicode,
 unknown options, missing workspace, read-only storage, interruption, and broken
 pipe. Inspect real rows/queues before and after negative cases rather than
 asserting only the returned error.
+
+Observed 2026-08-11 evidence:
+
+- root full suite: 1,791 passed, one existing Windows-only skip;
+- focused core/CLI/registry/shared suite: 475 passed, the same skip;
+- MCP SQLite and stdio suite: 168 passed;
+- real PostgreSQL: 51 shared-contract tests and 7 MCP conformance tests passed;
+- Ruff: all maintained scopes passed and 208 files were already formatted;
+- mypy: root/PG 135 files, Summon-inclusive 164 files, and MCP 18 files passed;
+- documentation references, 243 CLI claims across 58 sources, and the plan
+  status index passed;
+- adversarial stable-send cases fired blank stdin, literal `--`, malformed
+  ASCII/Unicode, missing/read-only storage, broken receipt output, and exact
+  durable before/after state; maintained CLI controls retained unknown-option
+  and interruption coverage.
+
+The only residual gate is the owner-selected coordinated version/floor update
+recorded below. It blocks release readiness, not the reviewed runtime contract.
 
 ## Rollout, Rollback, and Success Signals
 
@@ -419,6 +450,15 @@ motivated the narrower slice. Any creation/healing on stable send, distinct
 inaccessible error, changed mention audience, or widened handle meaning is a
 blocking implementation deviation.
 
+Release metadata remains gated on owner version selection. Core and all three
+extensions are versioned and tagged at `0.8.2`, so that immutable release
+cannot be the first version containing stable send. Raising only MCP's core
+floor would make the editable repository dependency unsatisfiable. Before
+release readiness, select the next coordinated core/MCP version, update package
+metadata and retained locks through the release workflow, and raise MCP's
+`taut-chat` floor to that exact first compatible release. The implementation
+does not guess `0.8.3` versus a larger owner-selected version.
+
 ## Review Record
 
 | Date | Reviewer | Verdict/findings | Disposition |
@@ -426,6 +466,9 @@ blocking implementation deviation.
 | 2026-08-10 | Claude Opus, focused read-only plan review | **PASS**, no P1/P2. Ratified the asymmetric creator boundary, historical decision reversal, ordinary actor-activity update on misses, content-free errors, dedicated existing-DM writer, mention audience, MCP shape-only/`oneOf` schema choice, core-before-MCP release order, and real-backend proof. P3: blank matrix said success/no-op; enumerate repeated MCP teaching sites. | Applied both P3s: blank is now silent exit 2, and D4 names the five teaching/snapshot sites. Plan is ready for spec promotion; implementation review gates remain. |
 | 2026-08-11 | Independent source/spec audit | **BLOCKED** on five promotion defects: D3 narrowed accepted `#channel` syntax, malformed-target wording ignored blank-first ordering, proof ownership omitted [IAN-9]/[IAN-10], a pattern could narrow MCP input, and Python ids were described as strings. | Corrected all five before review; also aligned the full structural matrix across both real backends and added maintained-example gates. |
 | 2026-08-11 | Claude Opus, read-only promotion review | **PASS**. Two P2 follow-ups: make MCP's stable-only empty-message result explicit without changing `@route`, and require the blank stable-target proof in normative matrices. | Applied both before promotion: [MCP-5] now pins the exact scoped [MCP-6] envelope, and [IAN-10]/[TAUT-11] require blank-before-parse proof. |
+| 2026-08-11 | Independent core-slice review | **BLOCKED** on parser complexity/formatting, missing stable-send queue-construction sentinel, insufficient blank-before-access proof, and a missing actor-absent corruption cell. | Factored the parser, formatted the CLI test, added the queue/state sentinels and distinct actor-absent matrix cell; the same reviewer reran the slice and returned **PASS**. |
+| 2026-08-11 | Fresh-eyes behavioral review | Stable-DM behavior **PASS**; completion **BLOCKED** on the plan's non-runnable bare `mypy` command, overly broad noncanonical Ruff scope, uncommitted history, and the explicit owner-selected post-`0.8.2` release floor. | Replaced the commands with the canonical three mypy lanes and maintained Ruff scopes. Commit/history confirmation follows final review; the version/floor gate remains explicitly owner-blocked. |
+| 2026-08-11 | Claude Opus, final read-only implementation review | **PASS**, no P1/P2. Cleared creation/repair ownership, nonhealing identity resolution, validation-before-queue order, blank/malformed precedence, the 15-cell no-oracle matrix, rename stability, sender/mention effects, `dm_started` confinement, CLI receipts/errors, shape-only MCP grammar, exact stable-only empty normalization, backend proof, concurrency wording, and documentation alignment. | Accepted. The unchanged `taut-chat>=0.8.2` MCP floor remains only the already recorded owner-selected release-version gate. |
 
 ## Fresh-Eyes Review
 

@@ -41,15 +41,9 @@ class TargetAddress:
 def parse_target(value: str, *, allow_dm: bool = True) -> TargetAddress:
     """Parse a command conversation target."""
 
-    if value.startswith("@"):
-        if not allow_dm:
-            raise ThreadNameError("direct-message targets are not valid here")
-        raw = value[1:]
-        try:
-            validate_member_name(raw)
-        except ValueError as exc:
-            raise ThreadNameError(str(exc)) from exc
-        return TargetAddress(kind="dm", route_key=route_key(raw), raw_route=raw)
+    dm_target = _parse_direct_message_target(value, allow_dm=allow_dm)
+    if dm_target is not None:
+        return dm_target
 
     raw_thread = value.removeprefix("#")
     if "." in raw_thread:
@@ -74,6 +68,28 @@ def parse_target(value: str, *, allow_dm: bool = True) -> TargetAddress:
     except ValueError as exc:
         raise ThreadNameError(str(exc)) from exc
     return TargetAddress(kind="channel", thread=raw_thread, channel=raw_thread)
+
+
+def _parse_direct_message_target(
+    value: str,
+    *,
+    allow_dm: bool,
+) -> TargetAddress | None:
+    if value.startswith("@"):
+        if not allow_dm:
+            raise ThreadNameError("direct-message targets are not valid here")
+        raw = value[1:]
+        try:
+            validate_member_name(raw)
+        except ValueError as exc:
+            raise ThreadNameError(str(exc)) from exc
+        return TargetAddress(kind="dm", route_key=route_key(raw), raw_route=raw)
+
+    if value.startswith("dm."):
+        if not allow_dm:
+            raise ThreadNameError("direct-message targets are not valid here")
+        return _parse_stable_dm_target(value)
+    return None
 
 
 def validate_chat_thread_name(value: str, *, allow_subthread: bool) -> str:
@@ -101,6 +117,10 @@ def parse_dm_selector(value: str) -> TargetAddress | None:
         return parse_target(value)
     if not value.startswith("dm."):
         return None
+    return _parse_stable_dm_target(value)
+
+
+def _parse_stable_dm_target(value: str) -> TargetAddress:
     if DM_SELECTOR_RE.fullmatch(value) is None:
         raise ThreadNameError(f"invalid direct-message selector: {value}")
     return TargetAddress(kind="dm", thread=value)

@@ -408,6 +408,9 @@ def test_corrupt_dm_state_fails_closed_before_queue_or_watch_runtime(
         with pytest.raises(NotFoundError) as caught:
             operation(stable)
         assert str(caught.value) == "direct message not found or inaccessible"
+    with pytest.raises(NotFoundError) as caught:
+        alice.say(stable, "must fail before queue construction")
+    assert str(caught.value) == "direct message not found or inaccessible"
     with pytest.raises(EmptyResultError, match="no direct messages"):
         alice.list_direct_messages()
     with pytest.raises(NotFoundError, match="direct message not found or inaccessible"):
@@ -461,6 +464,40 @@ def test_dm_navigation_touches_activity_without_healing_identity_claims(
     assert after is not None
     assert after["last_active_ts"] > before["last_active_ts"]
     assert navigating._state.get_identity_claim(changed_claim.claim_hash) is None
+
+
+def test_stable_dm_send_touches_activity_without_healing_identity_claims(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / ".taut.db"
+    TautClient.init(db_path=db_path)
+    original_capture = _agent_capture(cwd="/workspace/one")
+    alice = TautClient(db_path=db_path, identity_capture=original_capture)
+    alice.join("lobby")
+    alice_member = alice.whoami()
+    bob = TautClient(db_path=db_path, as_name="bob")
+    bob.join("lobby")
+    stable = bob.say(f"@{alice_member.name}", "pending").thread
+
+    changed_capture = _agent_capture(cwd="/workspace/two")
+    changed_claim = identity.claim_for_capture(changed_capture)
+    with alice._meta_queue.sidecar(transaction=True) as session:
+        session.run(
+            "DELETE FROM taut_identity_claims WHERE member_id = ?",
+            (alice_member.member_id,),
+        )
+    before = alice._state.get_member(alice_member.member_id)
+    assert before is not None
+    assert alice._state.get_identity_claim(changed_claim.claim_hash) is None
+
+    sending = TautClient(db_path=db_path, identity_capture=changed_capture)
+    sent = sending.say(stable, "stable reply")
+
+    assert sent.thread == stable
+    after = sending._state.get_member(alice_member.member_id)
+    assert after is not None
+    assert after["last_active_ts"] > before["last_active_ts"]
+    assert sending._state.get_identity_claim(changed_claim.claim_hash) is None
 
 
 def test_nonhealing_dm_resolution_honors_claim_owner_race(

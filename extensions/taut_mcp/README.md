@@ -82,6 +82,11 @@ replaces standard tools, resource reads, or subscriptions.
 `read` and `log` accept the same direct-message selectors as the CLI
 (`@name-or-alias` routes and exact stable `dm.d_*` handles), and `list`
 with `dms=true` returns the attached member's durable DM directory.
+`say` also accepts a returned exact stable handle for that already valid,
+actor-accessible conversation. Only person-addressed `@name-or-alias` may
+create a DM or its memberships; stable-handle send never creates or repairs
+one. A well-formed inaccessible stable handle returns the ordinary empty
+`message` result, while malformed syntax and route failures remain tool errors.
 
 `search(workspace, token, query, ...)` searches the same source-hydrated,
 actor-visible history as `TautClient.search`. Bare search covers registered

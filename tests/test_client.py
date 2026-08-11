@@ -7,7 +7,13 @@ from pathlib import Path
 from typing import Any, Self, cast
 
 import pytest
-from simplebroker import BrokerTarget, Queue, open_broker, resolve_broker_target
+from simplebroker import (
+    BrokerTarget,
+    Queue,
+    dump_lines,
+    open_broker,
+    resolve_broker_target,
+)
 from simplebroker.ext import IntegrityError
 
 import taut.client._base as client_base
@@ -1755,6 +1761,47 @@ def test_blank_first_dm_creates_no_thread_membership_or_notification(
     assert van._state.list_memberships(van_member.member_id) == before_memberships
     with pytest.raises(EmptyResultError):
         bob.inbox()
+
+
+def test_blank_stable_dm_say_precedes_target_parsing_and_state_access(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[TAUT-6.5, IAN-10] Stable targets retain the universal blank guard."""
+
+    van = client(tmp_path, "van")
+    bob = existing_client(tmp_path, "bob")
+    van.join("general")
+    bob.join("general")
+    stable = van.say("@bob", "seed").thread
+    state = cast(SqlSidecarTautState, van._state)
+
+    def snapshot() -> tuple[object, ...]:
+        with open_broker(van.target, config=van.config) as broker:
+            broker_lines = tuple(dump_lines(broker))[1:]
+        return (
+            state.persistence_meta(),
+            state.persistence_records(),
+            van._state.list_members(),
+            broker_lines,
+        )
+
+    before = snapshot()
+
+    def fail_state_access() -> None:
+        raise AssertionError("blank stable send reached the first state guard")
+
+    monkeypatch.setattr(
+        van,
+        "_ensure_no_incomplete_channel_rename",
+        fail_state_access,
+    )
+    with pytest.raises(BlankMessageError):
+        van.say(stable, " \t\u200b\u2060\n")
+    with pytest.raises(BlankMessageError):
+        van.say("dm.d_short", "\ufeff")
+
+    assert snapshot() == before
 
 
 def test_blank_say_precedes_existing_member_membership_failure(

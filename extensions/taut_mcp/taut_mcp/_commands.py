@@ -123,12 +123,19 @@ def execute_command(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-011] exceptio
     elif name == "set_name":
         records = (client.set_name(_required_string(arguments, "name")),)
     elif name == "say":
-        records = (
-            client.say(
-                _required_string(arguments, "target"),
-                _required_string(arguments, "text"),
-            ),
-        )
+        target = _required_string(arguments, "target")
+        try:
+            records = (
+                client.say(
+                    target,
+                    _required_string(arguments, "text"),
+                ),
+            )
+        except NotFoundError:
+            selector = addressing.parse_dm_selector(target)
+            if selector is None or selector.thread is None:
+                raise
+            records = ()
     elif name == "reply":
         records = (
             client.reply(

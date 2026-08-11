@@ -15,12 +15,16 @@ class SayCommand:
         parser.description = (
             "Post TEXT to TARGET. Use '-' for stdin; when TEXT is omitted, piped "
             "stdin is read automatically. Blank text is ignored with silent exit 2; "
-            "other UTF-8 is preserved exactly."
+            "other UTF-8 is preserved exactly. @NAME may create a direct message; "
+            "a stable direct-message handle requires an existing conversation."
         )
         parser.add_argument(
             "target",
             metavar="TARGET",
-            help="Channel, sub-thread, or @NAME direct-message target.",
+            help=(
+                "Channel, sub-thread, @NAME person-addressed direct message, or "
+                "exact stable direct-message handle for an existing conversation."
+            ),
         )
         parser.add_argument(
             "text",
