@@ -1128,7 +1128,7 @@ wheels = [
 
 [[package]]
 name = "taut-chat"
-version = "0.8.2"
+version = "0.8.5"
 source = { editable = "../../" }
 dependencies = [
     { name = "psutil" },
@@ -1157,7 +1157,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "taut-mcp"
-version = "0.8.2"
+version = "0.8.5"
 source = { editable = "." }
 dependencies = [
     { name = "jsonschema" },
@@ -1195,7 +1195,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "taut-pg"
-version = "0.8.2"
+version = "0.8.5"
 source = { editable = "../taut_pg" }
 dependencies = [
     { name = "simplebroker-pg" },
