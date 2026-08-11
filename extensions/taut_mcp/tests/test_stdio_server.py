@@ -1703,10 +1703,10 @@ main([])
 
 @pytest.mark.sqlite_only
 @pytest.mark.timeout(15)
-def test_stdio_started_command_cancellation_sends_no_result_and_commits(
+def test_stdio_started_command_cancellation_commits_effects(
     tmp_path: Path,
 ) -> None:
-    """[MCP-5]/[MCP-11] Wire cancellation does not roll back started work."""
+    """[MCP-5]/[MCP-11] Client cancellation does not roll back started work."""
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -1782,6 +1782,31 @@ main([])
                 with pytest.raises(asyncio.CancelledError):
                     await call
 
+            async def call_when_ready(
+                name: str,
+                arguments: dict[str, object],
+            ) -> types.CallToolResult:
+                deadline = asyncio.get_running_loop().time() + 5
+                while True:
+                    result = await session.call_tool(
+                        name,
+                        {
+                            "workspace": canonical,
+                            "token": member.token,
+                            **arguments,
+                        },
+                    )
+                    if not result.is_error:
+                        return result
+                    assert len(result.content) == 1
+                    assert isinstance(result.content[0], types.TextContent)
+                    assert result.content[0].text == (
+                        "workspace busy; retry after backoff"
+                    )
+                    if asyncio.get_running_loop().time() >= deadline:
+                        raise AssertionError("canceled command did not settle")
+                    await asyncio.sleep(0.05)
+
             await cancel_started(
                 "say",
                 {
@@ -1790,12 +1815,9 @@ main([])
                 },
             )
 
-            await asyncio.sleep(0.5)
-            history = await session.call_tool(
+            history = await call_when_ready(
                 "log",
                 {
-                    "workspace": canonical,
-                    "token": member.token,
                     "thread": "general",
                     "since": None,
                     "limit": 100,
@@ -1817,12 +1839,9 @@ main([])
                 "channel_topic",
                 {"channel": "general", "topic": "committed topic"},
             )
-            await asyncio.sleep(0.5)
-            shown_channel = await session.call_tool(
+            shown_channel = await call_when_ready(
                 "channel_show",
                 {
-                    "workspace": canonical,
-                    "token": member.token,
                     "channel": "general",
                 },
             )
