@@ -14,6 +14,7 @@ from typing import Any, Final
 
 from simplebroker import format_message_id
 
+from taut import addressing
 from taut._constants import (
     CHANNEL_NAME_RE,
     CLAIM_HASH_RE,
@@ -23,6 +24,10 @@ from taut._constants import (
     validate_member_name,
 )
 from taut._exceptions import TautError
+from taut.state._channel_topics import (
+    decode_channel_topic,
+    require_topic_compatible_kind,
+)
 
 FORMAT: Final = "taut-dump"
 VERSION: Final = 1
@@ -141,6 +146,7 @@ class _CoreValidator:
         self.claims: set[str] = set()
         self.thread_names: set[str] = set()
         self.memberships: set[tuple[str, str]] = set()
+        self.dm_members: dict[str, tuple[str, str]] = {}
         self.rename_names: set[str] = set()
         self.member_refs: list[tuple[int, str, str]] = []
         self.thread_refs: list[tuple[int, str]] = []
@@ -261,6 +267,16 @@ class _CoreValidator:
 
     def _accept_thread(self, record: dict[str, Any], line_number: int) -> str:
         key = record["name"]
+        meta = record["meta"]
+        kind = record["kind"]
+        try:
+            if isinstance(meta, dict) and isinstance(kind, str):
+                require_topic_compatible_kind(kind=kind, meta=meta)
+                topic = decode_channel_topic(meta)
+            else:
+                topic = None
+        except TautError:
+            self._invalid(line_number, "thread")
         valid = isinstance(key, str) and all(
             (
                 bool(key),
@@ -281,7 +297,11 @@ class _CoreValidator:
         self.thread_names.add(key)
         self.member_refs.append((line_number, record["created_by"], "thread"))
         if record["kind"] == "dm":
-            for member_id in record["meta"]["members"]:
+            members = tuple(record["meta"]["members"])
+            if key != addressing.dm_queue_name(members[0], members[1]):
+                self._invalid(line_number, "direct message")
+            self.dm_members[key] = members
+            for member_id in members:
                 self.member_refs.append((line_number, member_id, "direct message"))
         elif record["kind"] == "notification":
             self.member_refs.append(
@@ -289,6 +309,10 @@ class _CoreValidator:
             )
         if record["parent"] is not None:
             self.thread_refs.append((line_number, record["parent"]))
+        if topic is not None:
+            self.member_refs.append(
+                (line_number, topic["updated_by_id"], "channel topic")
+            )
         return key
 
     def _accept_membership(
@@ -354,6 +378,27 @@ class _CoreValidator:
                 raise TautError(
                     f"invalid Taut dump at line {line_number}: missing thread {thread!r}"
                 )
+        for thread, members in self.dm_members.items():
+            actual = {
+                member_id
+                for membership_thread, member_id in self.memberships
+                if membership_thread == thread
+            }
+            if actual != set(members):
+                raise TautError(
+                    "invalid Taut dump: direct message membership does not match "
+                    f"participants for {thread!r}"
+                )
+
+
+def validate_core_records(records: list[dict[str, Any]]) -> frozenset[str]:
+    """Validate one live or dump-neutral core projection."""
+
+    validator = _CoreValidator()
+    for record_number, record in enumerate(records, start=1):
+        validator.accept(dict(record), record_number)
+    validator.finish()
+    return frozenset(validator.member_ids)
 
 
 def _pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:

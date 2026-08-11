@@ -621,6 +621,7 @@ def test_first_party_terminal_sink_inventory_is_explicit() -> None:
             "argparse.exit",
         ),
         ("taut/commands/_rendering.py", "write_json", ".write"),
+        ("taut/commands/_rendering.py", "emit_doctor_report", ".write"),
         ("taut/commands/_rendering.py", "write_human_line", ".write"),
         ("taut/commands/_rendering.py", "write_human_line", ".write"),
         (

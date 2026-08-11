@@ -11,6 +11,7 @@ from typing import Any
 from simplebroker import Queue, format_message_id
 from simplebroker.ext import SidecarSession
 
+from taut.persistence._components import PersistenceComponentCompatibilityError
 from taut_summon import _state
 
 _FIELDS = {
@@ -25,6 +26,16 @@ _FIELDS = {
 
 
 class SummonPersistenceComponent:
+    def validate_live_schema(self, queue: Queue) -> None:
+        """Reject incompatible live state without initializing or migrating it."""
+
+        try:
+            _state.validate_summon_schema(queue)
+        except _state.SummonStateError as exc:
+            raise PersistenceComponentCompatibilityError(
+                f"taut-summon live schema is unreadable: {exc}; upgrade taut-summon"
+            ) from exc
+
     def ensure_schema(self, queue: Queue) -> None:
         _state.ensure_summon_schema(queue)
 

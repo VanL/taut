@@ -20,6 +20,7 @@ _POLICY_ERROR_MESSAGE = "terminal output policy is unavailable"
 if TYPE_CHECKING:
     from taut.client import (
         Channel,
+        DoctorReport,
         DumpReport,
         InitResult,
         LoadReport,
@@ -112,6 +113,52 @@ def emit_load_report(
         stdout,
         f"{action}: {len(report.components)} components, {report.queues} queues, "
         f"{report.messages} messages from {report.path}",
+    )
+
+
+def emit_doctor_report(
+    report: DoctorReport,
+    *,
+    json_output: bool,
+    quiet: bool,
+    stdout: TextIO,
+) -> None:
+    """Render one complete fixed workspace diagnostic report."""
+
+    if quiet:
+        return
+    if json_output:
+        stdout.write(
+            json.dumps(
+                {
+                    "checks": [
+                        {
+                            "data": check.data,
+                            "detail": check.detail,
+                            "name": check.name,
+                            "status": check.status,
+                        }
+                        for check in report.checks
+                    ],
+                    "db": report.db,
+                    "healthy": report.healthy,
+                    "type": "system_doctor",
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        return
+    for check in report.checks:
+        write_human_line(
+            stdout,
+            f"{check.status.upper()} {check.name}: {check.detail}",
+        )
+    write_human_line(
+        stdout,
+        "workspace healthy" if report.healthy else "workspace has findings",
     )
 
 

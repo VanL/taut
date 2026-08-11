@@ -336,6 +336,37 @@ def get_summon_schema_version(queue: Queue) -> int | None:
     return None if row is None else int(row[0])
 
 
+def validate_summon_schema(queue: Queue) -> None:
+    """Passively prove the current Summon metadata and table projections."""
+
+    try:
+        version = get_summon_schema_version(queue)
+    except (DatabaseError, TypeError, ValueError) as exc:
+        raise SummonSchemaVersionError("summon schema metadata is unreadable") from exc
+    if version != SUMMON_SCHEMA_VERSION:
+        raise SummonSchemaVersionError(
+            f"summon schema version {version!r} is incompatible with "
+            f"version {SUMMON_SCHEMA_VERSION}"
+        )
+    try:
+        with queue.sidecar() as session:
+            session.run(
+                """SELECT name, provider, driver_pid, driver_start_time, claimed_ts
+                   FROM taut_summon_claims WHERE 1 = 0""",
+                fetch=True,
+            )
+            session.run(
+                """SELECT member_id, token, provider, provider_session_id,
+                          driver_pid, driver_start_time, wired, updated_ts
+                   FROM taut_summon_sessions WHERE 1 = 0""",
+                fetch=True,
+            )
+    except DatabaseError as exc:
+        raise SummonSchemaVersionError(
+            "summon schema tables are missing or unreadable"
+        ) from exc
+
+
 def capture_driver_evidence(pid: int | None = None) -> tuple[int, str]:
     """Return (pid, start_time) liveness evidence for a real process.
 

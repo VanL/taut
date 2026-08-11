@@ -1034,7 +1034,8 @@ later token is command-local. `--version` is a root action before the verb.
 | `inbox` | Claim and show pending notifications for the acting member. Notifications are consumed; source chat history is not changed. | 0 showed notifications; 1 error; 2 nothing pending |
 | `log THREAD_OR_DM [--since TS] [--limit N]` | Show cursor-neutral history. A DM may be `@name-or-alias` or a stable `dm.d_*` handle and requires actor access under [IAN-5.3]. `--limit N` selects the most recent N messages after `--since`, rendered chronologically. | 0; 1 error; 2 empty / unrecognized member / inaccessible conversation |
 | `search QUERY... [--channel CHANNEL]... [--dm TARGET]... [--dms] [--from MEMBER] [--kind KIND]... [--before MSG_ID] [--limit N] [--reindex]` | Cursor-neutral search over registered chat and actor-accessible DMs. Query, scope, freshness, and repair follow spec 06. | 0 hits; 1 usage, malformed selector, provider, or index error; 2 no hits or well-formed explicit selector miss |
-| `system dump --output FILE` / `system load --input FILE [--dry-run]` | Actor-free full-workspace maintenance under spec 08. Dump writes an owner-only composite logical backup; load preflights or restores it into a fresh target. | 0 success; 1 usage/validation/conflict/I/O/backend/apply error; 2 missing input |
+| `system dump --output FILE` / `system load --input FILE [--dry-run]` | Actor-free full-workspace persistence maintenance under spec 08. Dump writes an owner-only composite logical backup; load preflights or restores it into a fresh target. | 0 success; 1 usage/validation/conflict/I/O/backend/apply error; 2 missing input |
+| `system doctor` | Actor-free fixed report of bounded core, broker, extension, and search-work observations under spec 09. It performs no repair and makes no quiescence, dump-safety, process-census, or exhaustive-health claim. | 0 complete healthy report; 1 usage/target/access/framework failure prevented a complete report; 2 complete report has a fail or dependency skip |
 | `list [--all | --dms]` | Bare: joined threads with unread state. `--all`: every registered thread. `--dms`: every valid actor-accessible DM, including read and empty conversations, in [TAUT-7.8] order. The two flags are mutually exclusive. | 0; 2 when the selected actor-scoped view is empty |
 | `watch [THREAD_OR_DM ...]` | Live-follow selected existing memberships plus the acting member's notification inbox. DM filters may be `@name-or-alias` or stable handles; they resolve once and deduplicate before watcher construction. Bare watch retains dynamic all-membership behavior. | 0 on clean stop; 1 error; 2 unrecognized member / explicit thread or DM miss |
 | `channel rename OLD NEW` | Rename a channel and every registered one-level sub-thread under it. Uses SimpleBroker's public queue rename API and sidecar rename markers. Does not rewrite message bodies. | 0; 1 error/collision/invalid name; 2 no such channel |
@@ -1057,6 +1058,9 @@ subcommands, missing or malformed arguments rejected by the parser — are
 errors and exit 1, never 2. Exit 2 is reserved for the empty/not-found
 class so that polling idioms like `taut read -q && handle_new` cannot
 mistake a typo for "nothing new". `--help` and `--version` exit 0.
+`system doctor` is the scoped exception: exit 2 means that its complete fixed
+report contains a finding or dependency skip. An incomplete doctor report or
+inspection-framework failure exits 1. No other command inherits this meaning.
 
 A blank `say` or `reply` filtered under [TAUT-6.5] is an empty-result exit 2,
 not success and not an error. It emits no stdout or stderr in human, JSON, or
@@ -1070,10 +1074,11 @@ from the owning subcommand, and root help names exit-code classes. The
 `message` noun requires `show`, `delete`, or `react`; the `channel` noun
 requires `show`, `topic`, or `rename`. A missing nested subcommand follows the
 same stderr usage and exit-1 rule as a missing top-level subcommand.
-The `system` noun requires `dump` or `load`, is core-owned, and accepts only
-`--db`, `--json`, and `--quiet` from the root-global vocabulary. It currently
-implements no `status` or `doctor` operation. An uninitialized dump source
-retains [TAUT-3.2]'s exit 1 and `taut init` hint.
+The `system` noun requires `dump`, `load`, or `doctor`, is core-owned, and
+accepts only `--db`, `--json`, and `--quiet` from the root-global vocabulary.
+Doctor has no command-local flags and follows spec 09. It does not add a
+`status` operation. An uninitialized dump or doctor source retains
+[TAUT-3.2]'s exit 1 and `taut init` hint.
 Channel help teaches the one-line 500-code-point topic bound, explicit
 `--clear`, membership requirement, observational `show` behavior, rename
 syntax and recovery role, and 0/1/2 exit classes.
@@ -1157,6 +1162,9 @@ exit classes apply equally to built-in and extension command adapters.
     `system load` emits the exact `system_load` record defined there. The dump
     body never uses stdout. Dry-run emits a normal success record with
     `dry_run: true`, `destination_checked: false`, and `applied: false`.
+  - `system doctor` emits the one aggregate `system_doctor` record defined by
+    [DOCT-3.3]. Its six ordered checks, exact stable data keys, nullable
+    unavailable values, and findings derivation are [DOCT-4].
 
   These field names are the current contract. Because the project is still in
   development, the specs describe the intended shape directly.
@@ -1182,7 +1190,8 @@ reachable through one public client method with the same semantics (the
 SimpleBroker/Weft layering rule: CLI and library share one operational
 model). Public exports from `taut`: `TautClient`, `TautWatcher`, `Message`,
 `MessageDeletion`, `MessageReaction`, `SearchHit`, `Channel`, `Thread`, `Member`,
-`PersistenceComponentReport`, `DumpReport`, `LoadReport`, the
+`PersistenceComponentReport`, `DumpReport`, `LoadReport`, `DoctorCheck`,
+`DoctorReport`, the
 exception hierarchy rooted at `TautError` including `BlankMessageError`,
 `escape_terminal_text`, and `__version__`. The package ships typed
 (`py.typed`).
@@ -1201,6 +1210,11 @@ methods are `TautClient.dump(*, output: str | Path, db_path: str | Path | None =
 None) -> DumpReport` and `TautClient.load(*, input_path: str | Path, db_path:
 str | Path | None = None, dry_run: bool = False) -> LoadReport`. They bypass
 identity-bearing client construction.
+
+`DoctorCheck` and `DoctorReport` are frozen, slotted public values with the
+exact fields in [DOCT-3.2]. The actor-free class operation is
+`TautClient.doctor(*, db_path: str | Path | None = None) -> DoctorReport`. It
+bypasses identity-bearing client construction and follows spec 09.
 
 `Channel` is a frozen, slotted public value with exact fields
 `name: str`, `topic: str | None`, `topic_updated_ts: int | None`,
@@ -1522,7 +1536,10 @@ installed-command rules; core gives it no special reservation.
 `channel`, with actor-free maintenance policy. Installed extensions contribute
 logical persistence state through the lazy, selected-command-only
 `taut.persistence_components` entry-point group. They cannot add or override
-`system` operations.
+`system` operations or register diagnostic checks. Active persistence
+contributors may supply their already-owned durable state to spec 09's one
+fixed `extension_state` check through the read-only contributor methods defined
+by [PIO-8.2].
 
 Distribution-name comparisons use Python packaging normalization: lowercase
 the name and collapse each run of hyphen, underscore, or dot to one hyphen.
@@ -1729,7 +1746,10 @@ implied by docs or output.
   after the marker.
 - Registry/queue divergence (queue deleted via broker CLI, registry row
   remains): thread lists and joins still work; reads show empty history.
-  Taut never repairs silently; a future `doctor` verb may report.
+  Taut never repairs silently. Doctor may validate Taut registry structure and
+  report observable broker counts. It cannot distinguish an intentionally empty
+  registered queue from a deleted or never-populated broker queue and does not
+  claim general registry/queue divergence detection ([DOCT-2], [DOCT-4.4]).
 - Newer `schema_version` in `taut_meta`: refuse with upgrade message
   ([TAUT-3.3]).
 - Same member active in two processes (human in two terminals): legal;
@@ -2402,6 +2422,8 @@ installing `taut-chat`.
 
 ## Related Plans
 
+- `docs/plans/2026-08-10-system-doctor-plan.md` — defines the actor-free
+  bounded diagnostic report and spec 09 promotion.
 - `docs/plans/2026-08-10-stable-dm-send-plan.md` — promotes an exact stable
   existing-DM `say` target while keeping `@route` as the sole creator and
   proving uniform no-repair misses across Python, CLI, MCP, and both backends.

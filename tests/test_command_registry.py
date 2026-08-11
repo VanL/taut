@@ -3275,6 +3275,11 @@ def test_registry_channel_help_is_nested_and_does_not_initialize_client(
             "usage: taut system load",
             "fresh workspace",
         ),
+        (
+            ["system", "doctor", "--help"],
+            "usage: taut system doctor",
+            "does not repair state",
+        ),
     ],
 )
 def test_registry_system_help_is_nested_and_actor_free(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -213,6 +214,122 @@ def test_existing_empty_summon_schema_emits_zero_record_component(
     assert len(summon_components) == 1
     assert summon_components[0].records == 0
 
+
+def test_doctor_passively_validates_active_summon_schema(tmp_path: Path) -> None:
+    """[DOCT-4.5] Current active Summon state is readable and unchanged."""
+
+    source = tmp_path / "source.db"
+    TautClient.init(db_path=source)
+    queue = Queue(_state.LEDGER_QUEUE_NAME, db_path=str(source))
+    try:
+        _state.ensure_summon_schema(queue)
+        before = _state.get_summon_schema_version(queue)
+    finally:
+        queue.close()
+
+    report = TautClient.doctor(db_path=source)
+
+    extension = next(check for check in report.checks if check.name == "extension_state")
+    assert extension.status == "pass"
+    assert extension.data == {
+        "active": ["taut-summon"],
+        "installed": ["taut-summon"],
+        "records": {"taut-summon": 0},
+    }
+    queue = Queue(_state.LEDGER_QUEUE_NAME, db_path=str(source))
+    try:
+        assert _state.get_summon_schema_version(queue) == before
+    finally:
+        queue.close()
+
+
+def test_doctor_reports_incompatible_summon_schema_without_migrating(
+    tmp_path: Path,
+) -> None:
+    """[DOCT-4.5] Live-schema rejection is a contained finding."""
+
+    source = tmp_path / "source.db"
+    TautClient.init(db_path=source)
+    queue = Queue(_state.LEDGER_QUEUE_NAME, db_path=str(source))
+    try:
+        _state.ensure_summon_schema(queue)
+        with queue.sidecar(transaction=True) as session:
+            session.run(
+                "UPDATE taut_meta SET value = ? WHERE key = ?",
+                ("99", _state.SUMMON_SCHEMA_VERSION_KEY),
+            )
+    finally:
+        queue.close()
+
+    report = TautClient.doctor(db_path=source)
+
+    extension = next(check for check in report.checks if check.name == "extension_state")
+    assert extension.status == "fail"
+    assert extension.data["active"] == ["taut-summon"]
+    assert extension.data["records"] is None
+    assert "upgrade taut-summon" in extension.detail
+    queue = Queue(_state.LEDGER_QUEUE_NAME, db_path=str(source))
+    try:
+        assert _state.get_summon_schema_version(queue) == 99
+    finally:
+        queue.close()
+
+
+def test_doctor_reports_missing_summon_table_as_compatibility_finding(
+    tmp_path: Path,
+) -> None:
+    """[PIO-8.2] Normal passive validation proves required table readability."""
+
+    source = tmp_path / "source.db"
+    TautClient.init(db_path=source)
+    queue = Queue(_state.LEDGER_QUEUE_NAME, db_path=str(source))
+    try:
+        _state.ensure_summon_schema(queue)
+    finally:
+        queue.close()
+    with sqlite3.connect(source) as connection:
+        connection.execute("DROP TABLE taut_summon_sessions")
+
+    report = TautClient.doctor(db_path=source)
+
+    extension = next(check for check in report.checks if check.name == "extension_state")
+    assert extension.status == "fail"
+    assert extension.data["records"] is None
+    assert "upgrade taut-summon" in extension.detail
+    with sqlite3.connect(source) as connection:
+        assert connection.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'taut_summon_sessions'"
+        ).fetchone() is None
+
+
+def test_doctor_unknown_metadata_with_active_summon_has_null_records(
+    tmp_path: Path,
+) -> None:
+    """[DOCT-3.2] Unobserved active record counts are null, never invented."""
+
+    source = tmp_path / "source.db"
+    TautClient.init(db_path=source)
+    queue = Queue(_state.LEDGER_QUEUE_NAME, db_path=str(source))
+    try:
+        _state.ensure_summon_schema(queue)
+        with queue.sidecar(transaction=True) as session:
+            session.run(
+                "INSERT INTO taut_meta (key, value) VALUES (?, ?)",
+                ("unknown_extension_schema", "1"),
+            )
+    finally:
+        queue.close()
+
+    report = TautClient.doctor(db_path=source)
+
+    extension = next(check for check in report.checks if check.name == "extension_state")
+    assert extension.status == "fail"
+    assert extension.data == {
+        "active": ["taut-summon"],
+        "installed": ["taut-summon"],
+        "records": None,
+    }
 
 def test_transient_summon_claim_makes_load_destination_nonfresh(
     tmp_path: Path,

@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 from simplebroker import Queue
-from simplebroker.ext import IntegrityError, SidecarSession
+from simplebroker.ext import DatabaseError, IntegrityError, SidecarSession
 
 from taut._constants import SCHEMA_VERSION, route_key
 from taut._exceptions import (
@@ -43,6 +43,14 @@ LOAD_GUARD_KEY = "load_guard"
 LOAD_GUARD_MESSAGE = (
     "load incomplete; recreate the target before running ordinary Taut operations"
 )
+
+
+class CoreSchemaInspectionError(TautError):
+    """A fixed owned schema object or column is absent or malformed."""
+
+
+class CoreStateInspectionError(TautError):
+    """A stored core row cannot be decoded into its owned logical shape."""
 
 
 META_DDL = """
@@ -134,6 +142,23 @@ DDL: tuple[str, ...] = (
         updated_ts    BIGINT NOT NULL
     )
     """,
+)
+
+_DOCTOR_REQUIRED_PROJECTIONS: tuple[str, ...] = (
+    """SELECT member_id, display_name, name_key, kind, uid, host_id,
+              host_label, anchor_pid, anchor_start_time, fingerprint, token,
+              meta, created_ts, last_active_ts
+       FROM taut_members WHERE 1 = 0""",
+    "SELECT alias_key, member_id, created_ts FROM taut_member_aliases WHERE 1 = 0",
+    """SELECT claim_hash, member_id, claim_kind, host_id, host_label,
+              evidence_json, first_seen_ts, last_seen_ts
+       FROM taut_identity_claims WHERE 1 = 0""",
+    """SELECT name, kind, parent, origin_ts, created_by, meta, created_ts
+       FROM taut_threads WHERE 1 = 0""",
+    """SELECT thread, member_id, joined_ts, last_seen_ts
+       FROM taut_membership WHERE 1 = 0""",
+    """SELECT old_name, new_name, state, affected_json, started_ts, updated_ts
+       FROM taut_channel_renames WHERE 1 = 0""",
 )
 
 
@@ -417,10 +442,25 @@ class SqlSidecarTautState:
 
         return persistence_meta(self.queue)
 
+    def probe_persistence_meta(self) -> dict[str, str]:
+        """Read metadata while classifying only schema-shape absence."""
+
+        return probe_persistence_meta(self.queue)
+
+    def probe_persistence_tables(self) -> None:
+        """Prove every required core projection is queryable."""
+
+        probe_persistence_tables(self.queue)
+
     def persistence_records(self) -> list[dict[str, Any]]:
         """Return the deterministic logical core persistence projection."""
 
         return persistence_records(self.queue)
+
+    def doctor_persistence_records(self) -> list[dict[str, Any]]:
+        """Project live records while classifying stored-row decode failures."""
+
+        return doctor_persistence_records(self.queue)
 
     def acquire_load_guard(
         self,
@@ -1290,6 +1330,47 @@ def persistence_meta(queue: Queue) -> dict[str, str]:
     return {str(row[0]): str(row[1]) for row in rows}
 
 
+def _is_schema_shape_error(exc: BaseException) -> bool:
+    current: BaseException | None = exc
+    while current is not None:
+        sqlstate = getattr(current, "sqlstate", None) or getattr(
+            current, "pgcode", None
+        )
+        if sqlstate in {"42P01", "42703"}:
+            return True
+        message = str(current).lower()
+        if message.startswith(("no such table:", "no such column:")):
+            return True
+        current = current.__cause__
+    return False
+
+
+def probe_persistence_meta(queue: Queue) -> dict[str, str]:
+    """Read core metadata and sanitize only missing-object failures."""
+
+    try:
+        return persistence_meta(queue)
+    except DatabaseError as exc:
+        if _is_schema_shape_error(exc):
+            raise CoreSchemaInspectionError("required core metadata is missing") from exc
+        raise
+
+
+def probe_persistence_tables(queue: Queue) -> None:
+    """Passively issue portable zero-row projections over required columns."""
+
+    try:
+        with queue.sidecar() as session:
+            for query in _DOCTOR_REQUIRED_PROJECTIONS:
+                session.run(query, fetch=True)
+    except DatabaseError as exc:
+        if _is_schema_shape_error(exc):
+            raise CoreSchemaInspectionError(
+                "a required core table or column is missing"
+            ) from exc
+        raise
+
+
 def persistence_records(queue: Queue) -> list[dict[str, Any]]:
     """Project authoritative core tables into deterministic logical records."""
 
@@ -1390,6 +1471,27 @@ def persistence_records(queue: Queue) -> list[dict[str, Any]]:
             rename = _require_channel_rename_row(row)
             records.append({"type": "channel_rename", **rename})
     return records
+
+
+def doctor_persistence_records(queue: Queue) -> list[dict[str, Any]]:
+    """Return the core projection with safe observed-corruption errors."""
+
+    try:
+        return persistence_records(queue)
+    except RuntimeError as exc:
+        prefixes = (
+            "taut_members.",
+            "taut_identity_claims.",
+            "taut_threads.",
+            "taut_channel_renames.",
+            "expected member row",
+            "expected thread row",
+            "expected membership row",
+            "expected channel rename row",
+        )
+        if str(exc).startswith(prefixes):
+            raise CoreStateInspectionError(str(exc)) from exc
+        raise
 
 
 def load_persistence_records(

@@ -39,6 +39,8 @@ from ._identity import IdentityMixin
 from ._messaging import MessagingMixin
 from ._models import (
     Channel,
+    DoctorCheck,
+    DoctorReport,
     DumpReport,
     InitResult,
     LoadReport,
@@ -79,6 +81,8 @@ def _validate_sqlite_path(
 
 __all__ = [
     "Channel",
+    "DoctorCheck",
+    "DoctorReport",
     "DumpReport",
     "InitResult",
     "LoadReport",
@@ -107,6 +111,18 @@ class TautClient(
 
     The CLI is a renderer over this class; command semantics live here.
     """
+
+    @classmethod
+    def doctor(
+        cls,
+        *,
+        db_path: str | Path | None = None,
+    ) -> DoctorReport:
+        """Run the fixed passive workspace diagnostic report."""
+
+        from taut._doctor import doctor_workspace
+
+        return doctor_workspace(db_path=db_path)
 
     @classmethod
     def dump(

@@ -9,7 +9,11 @@ from __future__ import annotations
 import argparse
 
 from taut.commands._protocol import CommandArgumentParser, CommandContext, CommandError
-from taut.commands._rendering import emit_dump_report, emit_load_report
+from taut.commands._rendering import (
+    emit_doctor_report,
+    emit_dump_report,
+    emit_load_report,
+)
 
 
 class SystemCommand:
@@ -17,8 +21,8 @@ class SystemCommand:
 
     def configure_parser(self, parser: CommandArgumentParser) -> None:
         parser.description = (
-            "Actor-free workspace maintenance. Exit codes: 0 success; "
-            "1 error; 2 missing input."
+            "Actor-free workspace maintenance and diagnosis. Exit codes: "
+            "0 success; 1 error; 2 missing input or completed doctor findings."
         )
         subparsers = parser.add_subparsers(
             dest="system_command",
@@ -65,6 +69,15 @@ class SystemCommand:
             help="Validate the file without opening or checking the destination.",
         )
 
+        subparsers.add_parser(
+            "doctor",
+            help="Run six fixed passive workspace checks.",
+            description=(
+                "Passively inspect bounded core, broker, extension, and search "
+                "state. This does not repair state or certify quiescence."
+            ),
+        )
+
     def run(self, context: CommandContext, args: argparse.Namespace) -> int:
         if context.as_name is not None or context.auth_token is not None:
             raise CommandError("taut system does not accept --as or --token")
@@ -97,6 +110,15 @@ class SystemCommand:
                 stdout=context.stdout,
             )
             return 0
+        if args.system_command == "doctor":
+            report = TautClient.doctor(db_path=context.db_path)
+            emit_doctor_report(
+                report,
+                json_output=context.json,
+                quiet=context.quiet,
+                stdout=context.stdout,
+            )
+            return 0 if report.healthy else 2
         raise RuntimeError(f"unsupported system operation: {args.system_command}")
 
 

@@ -22,9 +22,9 @@ taut system load --input FILE
 ```
 
 `system` is the core-owned namespace for actor-free workspace maintenance.
-Version 1 implements only `dump` and `load`. Future commands such as `status`
-or `doctor` may live there, but this spec does not reserve their behavior or add
-placeholder parsers.
+This spec owns `dump` and `load`; [DOCT-1] owns the sibling `doctor` operation.
+The operations share target resolution and passive inspection seams, but doctor
+does not inherit dump/load quiescence, mutation, or file-format behavior.
 
 This spec governs the composite file format, dump selection, sidecar logical
 records, extension contribution, consistency limits, load preflight, recovery,
@@ -119,7 +119,8 @@ dump plus temporary load-guard state. It does not emit chat notices.
 
 ### [PIO-3.1] CLI grammar and namespace
 
-The built-in `system` command owns required nested subparsers:
+For dump and load, the built-in `system` command owns required nested
+subparsers:
 
 ```text
 taut system dump --output FILE
@@ -135,7 +136,7 @@ The `system` manifest accepts only the root `--db`, `--json`, and `--quiet`
 options after the verb. Supplying actor selectors or `--timestamps` before or
 after `system` is a usage error. The command never prompts.
 
-The exit classes are:
+For dump and load, the exit classes are:
 
 - 0: dump completed; dry-run preflight found a valid internally consistent file
   while leaving destination eligibility unchecked; or load completed and
@@ -184,6 +185,10 @@ name: str
 version: int
 records: int
 ```
+
+The system doctor reuses contributor discovery and read-only sidecar access,
+but its public values and exit classes are owned by [DOCT-2] and [DOCT-3]. It
+does not change `DumpReport`, `LoadReport`, or `PersistenceComponentReport`.
 
 `DumpReport` has exact fields:
 
@@ -569,6 +574,10 @@ outside Taut's guarantee. This is why [PIO-2.4] requires operator quiescence
 for a predictable result. Core does not add a lifecycle lock, process census,
 backend-specific SQL, or compiled server extension to simulate one.
 
+The passive system doctor is not a quiescence substitute. Its observations can
+be stale as soon as they are read, and it does not certify a maintenance window
+or make dump/load safe while writers are active [DOCT-1].
+
 A failure clearing the final guard is a failed load even when every logical
 record was written. The target remains fail-closed and must be recreated. Taut
 does not guess that the preceding writes were complete.
@@ -580,7 +589,7 @@ does not guess that the preceding writes were complete.
 Installed durable-state contributors use entry-point group
 `taut.persistence_components`. Entry-point keys and manifest names match and
 are unique. Root help and unrelated commands do not enumerate this group; only
-selected `system dump` or `system load` code loads it.
+selected `system dump`, `system load`, or `system doctor` code loads it.
 
 The lightweight manifest shape is:
 
@@ -609,6 +618,20 @@ A contributor owns:
 - exact validation for every supported load version
 - insertion into its tables through a core-supplied sidecar session
 - cross-component validation through a read-only core summary
+
+For the fixed doctor inventory only, an installed contributor also owns a
+read-only `validate_live_schema(queue) -> None` compatibility check. The queue
+is core-supplied and already open; the method performs no initialization or
+repair. Returning normally means the stored live schema is readable. Raising
+`PersistenceComponentCompatibilityError` produces an `extension_state`
+finding. Any other contributor exception aborts the incomplete doctor report.
+
+This live-schema seam is distinct from `load_versions`, which describes dump
+component-format versions accepted by `validate_records` and `load_records`.
+Core must not compare live metadata values with `load_versions`. A contributor
+without `validate_live_schema` remains valid for dump/load, but doctor reports
+that its installed reader cannot establish live-schema compatibility. The seam
+does not create an extension check registry [DOCT-5].
 
 Core owns framing, file and temp lifecycle, digests, target resolution,
 quiescence policy, marker lifecycle, apply order, reporting, and error
@@ -731,5 +754,7 @@ run through a guard blocks release.
   component-identity, and coverage-preserving proof.
 - `docs/plans/2026-08-10-simplebroker-7-json-id-boundary-plan.md` — defines
   canonical timestamp writers, tolerant v1 readers, and integer restore state.
+- `docs/plans/2026-08-10-system-doctor-plan.md` defines the bounded passive
+  diagnostic surface and its reuse of persistence inspection seams.
 - `docs/plans/2026-08-07-taut-dump-load-plan.md` defines promotion,
   implementation slices, hardening gates, and independent review.

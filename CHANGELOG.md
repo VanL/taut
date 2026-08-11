@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Added actor-free `taut system doctor` and `TautClient.doctor()`. Six fixed,
+  read-only checks report core schema, load guards, logical core state, broker
+  counts, durable extension compatibility, and search-work depth. Complete
+  findings use exit 2; access or framework failure remains exit 1 without a
+  partial report. Doctor does not repair state, claim work, load a search
+  provider, or certify quiescence, and shares one portable SQLite/PostgreSQL
+  implementation with credential-safe target labels.
+
 - Added exact stable `dm.d_*` targets to `TautClient.say`, the CLI, and MCP so
   handles returned by DM list/history records can write back to that same
   existing conversation. Person-addressed `@name-or-alias` remains the sole DM

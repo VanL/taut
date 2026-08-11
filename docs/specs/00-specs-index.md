@@ -42,7 +42,10 @@ stay aligned instead of competing.
 8. `08-persistence-io.md` - actor-free composite workspace dump/load,
    logical sidecar records, extension contribution, quiescence, exact-id
    restoration, and fail-closed recovery
-9. `product-section-registry.md` - the mechanical authority table naming
+9. `09-system-doctor.md` - actor-free bounded workspace observations, fixed
+   report checks, findings-versus-framework exit classes, no repair, and no
+   quiescence or exhaustive-health claim
+10. `product-section-registry.md` - the mechanical authority table naming
    the winning contract (README section or spec) for each product
    behavior family, with the promise-granular conflict and promotion
    rules

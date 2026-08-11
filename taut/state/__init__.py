@@ -21,7 +21,12 @@ from taut.state._dialect import (
     SqlDialect,
     dialect_for_taut_target,
 )
-from taut.state._sql import SCHEMA_VERSION_KEY, SqlSidecarTautState
+from taut.state._sql import (
+    SCHEMA_VERSION_KEY,
+    CoreSchemaInspectionError,
+    CoreStateInspectionError,
+    SqlSidecarTautState,
+)
 from taut.state._types import (
     ChannelRenameRow,
     IdentityClaimRow,
@@ -190,6 +195,8 @@ __all__ = [
     "SQLITE_SQL_DIALECT",
     "ChannelRenameRow",
     "ChannelTopicRecord",
+    "CoreSchemaInspectionError",
+    "CoreStateInspectionError",
     "IdentityClaimRow",
     "MemberRow",
     "MembershipRow",

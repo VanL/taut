@@ -69,6 +69,10 @@ Quick pointers to the key guidance documents in this repository.
 | `docs/specs/03-identity-addressing-notifications.md` | Identity, addressing, and notifications spec: member ids, names, DMs, queue namespace, rename |
 | `docs/specs/04-summon.md` | Summon extension spec: agent harness as member, injection ears, CLI mouth, adapters, session ledger, control plane |
 | `docs/specs/05-taut-mcp.md` | MCP extension spec: dual-era stdio lifecycle, process-local shared ensure, explicit identity-bearing tools, notification resource, legacy/modern subscriptions, and host hints |
+| `docs/specs/06-search.md` | Search spec: cursor-neutral visible history, derived providers, durable work, recovery, and backend parity |
+| `docs/specs/07-agent-theory-and-program-theory.md` | Definitional reference for Agent Theory and program theory |
+| `docs/specs/08-persistence-io.md` | Actor-free composite dump/load, contributor, quiescence, and guarded recovery contract |
+| `docs/specs/09-system-doctor.md` | Fixed passive workspace-diagnostic report, findings/framework split, and no-repair boundary |
 | `docs/plans/README.md` | Plan directory rules |
 | `docs/plans/2026-06-12-taut-foundation-plan.md` | Historical foundation implementation plan |
 | `docs/plans/2026-06-18-member-identity-addressing-plan.md` | Implemented plan for member ids, addressing, notifications, and channel rename |
@@ -109,6 +113,7 @@ Quick pointers to the key guidance documents in this repository.
 | `docs/implementation/07-taut-mcp-architecture.md` | MCP reactor-over-reactors rationale: workspace ownership, explicit tool dispatch, cached notification resource, edge hints, and cancellation boundaries |
 | `docs/implementation/09-search-architecture.md` | Search rationale: source-hydrated derived state, backend provider boundary, durable work recovery, reconciliation, and generation rebuilds |
 | `docs/implementation/10-persistence-io.md` | Composite logical dump/load rationale: SimpleBroker reuse, sidecar authority, extension contributors, quiescence, and guarded failure recovery |
+| `docs/implementation/11-system-doctor.md` | Fixed passive diagnostic rationale: typed findings, shared validation, queue statistics, contributor compatibility, and resource ownership |
 | `docs/lessons.md` | Canonical lessons ledger |
 
 ## Product Code
@@ -117,16 +122,17 @@ Quick pointers to the key guidance documents in this repository.
 |------|---------|
 | `taut/_constants.py` | Taut constants, config translation, name validation, and identity name pools |
 | `taut/_message_text.py` | Small built-in Unicode classifier for user-authored `say` and `reply` text |
+| `taut/_maintenance.py`, `taut/_doctor.py` | Shared existing-target resolution and the actor-free six-check passive diagnostic orchestrator |
 | `taut/terminal.py`, `taut/defaults.toml` | Lightweight public terminal-text display transform, CWD `.taut.toml` presentation discovery, and packaged baseline regex policy |
 | `taut/_broker_retry.py` | Import-only, fail-closed compatibility shim for the immutable prior Summon artifact; no retry policy |
 | `taut/addressing.py` | Channel, sub-thread, DM, mention, and notification addressing helpers |
 | `taut/_scripts.py` | Importable developer-script helper logic, currently for `bin/pytest-pg` |
 | `taut/envelope.py` | Message envelope encode/decode and foreign-message fallback |
-| `taut/state/` | Internal Taut state interface, SQL dialect marker, and sidecar SQL adapter |
+| `taut/state/` | Internal Taut state interface, SQL dialect marker, sidecar SQL adapter, and passive core schema/record inspection |
 | `taut/identity.py` | Process fingerprint capture, anchor selection, presence checks |
 | `taut/client/` | Public Python API package: facade plus identity, actor-scoped DM selection/directory, messaging (including exact show/delete/react), notification, thread mixins, and plain SimpleBroker queue ownership |
 | `taut/search/` | Core search projection, SQLite FTS5 provider, strict PostgreSQL provider discovery, durable invalidation jobs, and worker state machine |
-| `taut/persistence/` | Composite dump validation, official component discovery, actor-free file lifecycle, and guarded workspace restore |
+| `taut/persistence/` | Composite dump validation, official component discovery, shared live/dump record validation, actor-free file lifecycle, and guarded workspace restore |
 | `taut/watcher.py` | Shared `BaseReactor`, vendored multi-queue scheduling, and cursor-aware `TautWatcher` with persistent owned queue handles |
 | `taut/cli.py` | Thin console entry point into the registry-backed dispatcher |
 | `taut/commands/` | Versioned command manifests/protocol, deterministic installed-command registry, root dispatcher, shared renderers, lazy per-verb adapters, and the temporary reserved Summon compatibility bridge |

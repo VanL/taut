@@ -21,7 +21,21 @@ ENTRY_POINT_GROUP = "taut.persistence_components"
 _NAME_RE = re.compile(r"[a-z][a-z0-9-]{0,31}")
 
 
+class PersistenceComponentCompatibilityError(TautError):
+    """An installed contributor cannot read its active live schema."""
+
+
+class PersistenceComponentManifestError(TautError):
+    """Installed contributor metadata violates the fixed manifest contract."""
+
+
+class PersistenceComponentRuntimeError(TautError):
+    """Trusted contributor code could not be imported or initialized."""
+
+
 class PersistenceComponent(Protocol):
+    def validate_live_schema(self, queue: Queue) -> None: ...
+
     def ensure_schema(self, queue: Queue) -> None: ...
 
     def dump_records(self, queue: Queue) -> list[dict[str, Any]]: ...
@@ -68,11 +82,13 @@ def _entry_point_identity(entry_point: metadata.EntryPoint) -> str:
 def _load_target(target: str) -> Any:
     module_name, separator, attribute = target.partition(":")
     if not separator or not module_name or not attribute or "." in attribute:
-        raise TautError(f"invalid persistence implementation target {target!r}")
+        raise PersistenceComponentRuntimeError(
+            f"invalid persistence implementation target {target!r}"
+        )
     try:
         return getattr(import_module(module_name), attribute)
     except (ImportError, AttributeError) as exc:
-        raise TautError(
+        raise PersistenceComponentRuntimeError(
             f"cannot load persistence implementation {target!r}: {exc}"
         ) from exc
 
@@ -81,14 +97,14 @@ def _validate_spec(
     entry_point: metadata.EntryPoint, value: Any
 ) -> PersistenceComponentSpec:
     if type(value) is not PersistenceComponentSpec:
-        raise TautError(
+        raise PersistenceComponentManifestError(
             f"persistence entry point {entry_point.name!r} returned "
             f"{type(value).__name__}, expected PersistenceComponentSpec"
         )
     if value.component_api_version != 1 or isinstance(
         value.component_api_version, bool
     ):
-        raise TautError(
+        raise PersistenceComponentManifestError(
             f"persistence component {entry_point.name!r} has unsupported "
             f"interface version {value.component_api_version!r}"
         )
@@ -97,7 +113,7 @@ def _validate_spec(
         or _NAME_RE.fullmatch(value.name) is None
         or value.name in {"simplebroker", "taut-core"}
     ):
-        raise TautError(
+        raise PersistenceComponentManifestError(
             f"persistence entry point {entry_point.name!r} has invalid manifest name "
             f"{value.name!r}"
         )
@@ -117,7 +133,9 @@ def _validate_spec(
         or any(not isinstance(key, str) or not key for key in value.schema_keys)
         or not isinstance(value.implementation, str)
     ):
-        raise TautError(f"persistence component {value.name!r} has malformed metadata")
+        raise PersistenceComponentManifestError(
+            f"persistence component {value.name!r} has malformed metadata"
+        )
     return value
 
 
@@ -133,34 +151,38 @@ def discover_components() -> tuple[RegisteredPersistenceComponent, ...]:
         try:
             raw_spec = entry_point.load()
         except Exception as exc:
-            raise TautError(
+            raise PersistenceComponentRuntimeError(
                 f"{identity}: persistence manifest failed to load: {exc}"
             ) from exc
         try:
             spec = _validate_spec(entry_point, raw_spec)
             if spec.name in names:
-                raise TautError(f"duplicate persistence component {spec.name!r}")
+                raise PersistenceComponentManifestError(
+                    f"duplicate persistence component {spec.name!r}"
+                )
             overlap = keys & spec.schema_keys
             if overlap:
-                raise TautError(
+                raise PersistenceComponentManifestError(
                     "duplicate persistence schema-key ownership: "
                     + ", ".join(sorted(overlap))
                 )
             factory = _load_target(spec.implementation)
             if not callable(factory):
-                raise TautError(
+                raise PersistenceComponentRuntimeError(
                     f"persistence implementation {spec.implementation!r} "
                     "is not callable"
                 )
             try:
                 component = factory()
             except Exception as exc:
-                raise TautError(
+                raise PersistenceComponentRuntimeError(
                     f"persistence implementation {spec.implementation!r} "
                     f"failed to initialize: {exc}"
                 ) from exc
-        except TautError as exc:
-            raise TautError(f"{identity}: {exc}") from exc
+        except PersistenceComponentManifestError as exc:
+            raise PersistenceComponentManifestError(f"{identity}: {exc}") from exc
+        except PersistenceComponentRuntimeError as exc:
+            raise PersistenceComponentRuntimeError(f"{identity}: {exc}") from exc
         registered.append(RegisteredPersistenceComponent(spec, component))
         names.add(spec.name)
         keys.update(spec.schema_keys)

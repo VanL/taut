@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,6 +157,25 @@ class LoadReport:
     applied: bool
 
 
+@dataclass(frozen=True, slots=True)
+class DoctorCheck:
+    """One fixed passive system-doctor observation."""
+
+    name: str
+    status: Literal["pass", "fail", "skip"]
+    detail: str
+    data: dict[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class DoctorReport:
+    """Complete result of the six fixed workspace checks."""
+
+    db: str
+    healthy: bool
+    checks: tuple[DoctorCheck, ...]
+
+
 # Keep public value-object introspection aligned with the facade import path.
 Member.__module__ = "taut.client"
 Thread.__module__ = "taut.client"
@@ -170,3 +189,5 @@ InitResult.__module__ = "taut.client"
 PersistenceComponentReport.__module__ = "taut.client"
 DumpReport.__module__ = "taut.client"
 LoadReport.__module__ = "taut.client"
+DoctorCheck.__module__ = "taut.client"
+DoctorReport.__module__ = "taut.client"

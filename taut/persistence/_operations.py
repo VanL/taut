@@ -21,12 +21,12 @@ from simplebroker import (
     format_message_id,
     load_lines,
     open_broker,
-    resolve_broker_target,
     target_for_directory,
 )
 
-from taut._constants import META_QUEUE_NAME, NO_DATABASE_MESSAGE, load_config
-from taut._exceptions import NotInitializedError, TautError
+from taut._constants import META_QUEUE_NAME, load_config
+from taut._exceptions import TautError
+from taut._maintenance import resolve_existing_target
 from taut.client._models import DumpReport, LoadReport, PersistenceComponentReport
 from taut.state import SqlSidecarTautState, dialect_for_taut_target
 
@@ -44,24 +44,7 @@ from ._format import (
 def _resolve_source(
     db_path: str | Path | None,
 ) -> tuple[BrokerTarget | str, dict[str, Any]]:
-    config = load_config()
-    explicit = db_path or os.environ.get("TAUT_DB")
-    if explicit is not None:
-        path = Path(explicit).expanduser()
-        if not path.exists():
-            raise NotInitializedError(NO_DATABASE_MESSAGE)
-        return str(path), config
-    try:
-        target = resolve_broker_target(Path.cwd(), config=config)
-    except tomllib.TOMLDecodeError as exc:
-        raise TautError(f"invalid project configuration: {exc}") from exc
-    except RuntimeError as exc:
-        raise TautError(str(exc)) from exc
-    if target is None:
-        raise NotInitializedError(NO_DATABASE_MESSAGE)
-    if target.backend_name == "sqlite" and not Path(target.target).exists():
-        raise NotInitializedError(NO_DATABASE_MESSAGE)
-    return target, config
+    return resolve_existing_target(db_path)
 
 
 def _resolve_destination(

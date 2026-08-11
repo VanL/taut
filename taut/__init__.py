@@ -28,6 +28,8 @@ from taut._exceptions import (
 if TYPE_CHECKING:
     from taut.client import (
         Channel,
+        DoctorCheck,
+        DoctorReport,
         DumpReport,
         LoadReport,
         Member,
@@ -45,6 +47,8 @@ if TYPE_CHECKING:
 
 _LAZY_EXPORTS = {
     "Channel": ("taut.client", "Channel"),
+    "DoctorCheck": ("taut.client", "DoctorCheck"),
+    "DoctorReport": ("taut.client", "DoctorReport"),
     "DumpReport": ("taut.client", "DumpReport"),
     "LoadReport": ("taut.client", "LoadReport"),
     "Member": ("taut.client", "Member"),
@@ -65,6 +69,8 @@ __all__ = [
     "BackendNotSupportedError",
     "BlankMessageError",
     "Channel",
+    "DoctorCheck",
+    "DoctorReport",
     "DumpReport",
     "EmptyResultError",
     "IdentityError",

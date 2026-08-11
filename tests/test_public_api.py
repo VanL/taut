@@ -19,6 +19,8 @@ EXPECTED_PUBLIC_EXPORTS = [
     "BackendNotSupportedError",
     "BlankMessageError",
     "Channel",
+    "DoctorCheck",
+    "DoctorReport",
     "DumpReport",
     "EmptyResultError",
     "IdentityError",
@@ -153,6 +155,38 @@ def test_persistence_reports_are_exact_frozen_slotted_public_values() -> None:
         load.path = "changed"  # type: ignore[misc]
 
 
+def test_doctor_reports_are_exact_frozen_slotted_public_values() -> None:
+    """[DOCT-3.2] Doctor reports have exact typed public shapes."""
+
+    from taut.client import DoctorCheck, DoctorReport
+
+    assert taut.DoctorCheck is DoctorCheck
+    assert taut.DoctorReport is DoctorReport
+    assert [field.name for field in fields(DoctorCheck)] == [
+        "name",
+        "status",
+        "detail",
+        "data",
+    ]
+    assert [field.name for field in fields(DoctorReport)] == [
+        "db",
+        "healthy",
+        "checks",
+    ]
+    check = DoctorCheck("core_schema", "pass", "current", {"version": 2})
+    report = DoctorReport("workspace.db", True, (check,))
+    assert not hasattr(check, "__dict__")
+    assert not hasattr(report, "__dict__")
+    with pytest.raises(FrozenInstanceError):
+        check.name = "changed"  # type: ignore[misc]
+    with pytest.raises(FrozenInstanceError):
+        report.db = "changed"  # type: ignore[misc]
+    signature = inspect.signature(taut.TautClient.doctor)
+    assert list(signature.parameters) == ["db_path"]
+    assert signature.parameters["db_path"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert signature.parameters["db_path"].default is None
+
+
 def test_search_hit_is_exact_frozen_slotted_public_value() -> None:
     """[SRCH-5.2] Search hits have one exact typed public shape."""
 
@@ -235,6 +269,8 @@ def test_client_environment_identity_inheritance_is_keyword_only_and_defaulted()
 def test_lazy_exports_are_the_owning_module_objects() -> None:
     from taut.client import (
         Channel,
+        DoctorCheck,
+        DoctorReport,
         DumpReport,
         LoadReport,
         Member,
@@ -252,6 +288,8 @@ def test_lazy_exports_are_the_owning_module_objects() -> None:
 
     assert taut.Member is Member
     assert taut.Channel is Channel
+    assert taut.DoctorCheck is DoctorCheck
+    assert taut.DoctorReport is DoctorReport
     assert taut.Message is Message
     assert taut.MessageDeletion is MessageDeletion
     assert taut.MessageReaction is MessageReaction

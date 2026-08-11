@@ -43,10 +43,62 @@ from taut.client import (
     Thread,
 )
 from taut.envelope import encode_envelope
+from taut.search._jobs import FAILED_QUEUE_NAME
 from taut.state import SqlDialect, dialect_for_taut_target
 from tests.conftest import build_cli_env, run_cli
 
 pytestmark = pytest.mark.shared
+
+
+def test_system_doctor_is_passive_and_portable_across_sql_backends(
+    taut_project: Path,
+) -> None:
+    """[DOCT-2] [DOCT-7] Healthy and failed-work reports use real storage."""
+
+    TautClient.init()
+    config = load_config()
+    target = resolve_broker_target(taut_project, config=config)
+    assert target is not None
+    meta_queue = Queue(META_QUEUE_NAME, db_path=target, config=config)
+    try:
+        state = sql_state.SqlSidecarTautState(
+            meta_queue,
+            dialect_for_taut_target(target),
+        )
+        before_meta = state.persistence_meta()
+        before_records = state.persistence_records()
+
+        healthy = TautClient.doctor()
+
+        assert healthy.healthy is True
+        assert [check.name for check in healthy.checks] == [
+            "core_schema",
+            "load_guard",
+            "core_state",
+            "broker_state",
+            "extension_state",
+            "search_work",
+        ]
+        assert healthy.db == target.display_target
+        if target.backend_name == "postgres":
+            assert healthy.db != target.target
+            assert "***" in healthy.db
+        assert state.persistence_meta() == before_meta
+        assert state.persistence_records() == before_records
+    finally:
+        meta_queue.close()
+
+    failed = Queue(FAILED_QUEUE_NAME, db_path=target, config=config)
+    try:
+        failed.write("sanitized failed-work fixture")
+    finally:
+        failed.close()
+
+    finding = TautClient.doctor()
+    search = next(check for check in finding.checks if check.name == "search_work")
+    assert finding.healthy is False
+    assert search.status == "fail"
+    assert search.data["failed"] == 1
 
 
 def _downgrade_summon_claim_schema_to_v2(queue: Queue) -> None:

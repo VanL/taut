@@ -63,6 +63,7 @@ owning spec names one.
 | MCP | `canonical-spec` | [MCP-1], [MCP-2], [MCP-3], [MCP-4], [MCP-5], [MCP-7], [MCP-9], [MCP-12] |
 | Search | `canonical-spec` | [SRCH-1], [SRCH-2], [SRCH-3], [SRCH-4], [SRCH-5], [SRCH-6], [SRCH-10], [SRCH-11] |
 | Persistence / dump-load | `canonical-spec` | [PIO-2], [PIO-3], [PIO-4], [PIO-5], [PIO-6], [PIO-7], [PIO-9], [PIO-10], [PIO-11] |
+| System diagnostics | `canonical-spec` | [DOCT-1], [DOCT-2], [DOCT-3], [DOCT-4], [DOCT-5], [DOCT-6], [DOCT-7] |
 
 Install, quickstart, roadmap, and Recommended For are the README's
 human entry material, not source-of-truth rows; installation mechanics
@@ -99,6 +100,8 @@ plan's equivalence ledger:
 
 ## Related Plans
 
+- `docs/plans/2026-08-10-system-doctor-plan.md` — adds the actor-free bounded
+  system-doctor concern and its canonical specification.
 - `docs/plans/2026-08-10-stable-dm-send-plan.md` — moves the sole-DM-creator
   promise into [IAN-5.1] while adding existing-only stable-handle send.
 - `docs/plans/2026-08-07-information-architecture-plan.md` — creates

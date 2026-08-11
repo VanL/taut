@@ -43,7 +43,7 @@ BUILTIN_SPECS = (
     _spec("search", "Search visible message history."),
     _spec(
         "system",
-        "Dump or load full-workspace maintenance data.",
+        "Dump, load, or passively diagnose a workspace.",
         globals_=_SYSTEM_GLOBALS,
     ),
     _spec("list", "List joined threads and unread state."),

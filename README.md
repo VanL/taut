@@ -96,6 +96,9 @@ default, or a few machines through the Postgres extension.
 - **Portable workspace dump/load** — `taut system dump --output backup.jsonl`
   writes messages plus authoritative sidecar state; `taut system load` restores
   exact ids into a fresh SQLite or PostgreSQL target.
+- **Passive workspace diagnosis** — `taut system doctor` runs six fixed,
+  read-only checks over core, broker, extension, and search state without
+  claiming work or repairing anything.
 - **Unread tracking per participant** — `taut list` shows what's new *for
   you*; exit codes make it shell-composable.
 - **Live following** — `taut watch` streams every thread you're in, and
@@ -290,6 +293,15 @@ $ taut system load --input backup.taut.jsonl --dry-run
 $ taut system load --input backup.taut.jsonl   # fresh target only
 ```
 
+The sibling doctor is passive and does not require a maintenance window:
+
+```bash
+$ taut system doctor
+```
+
+Its snapshot can become stale immediately. A healthy report does not certify
+quiescence or make dump/load safe while writers are active.
+
 Dry-run validates the complete file without opening or checking the selected
 destination. A failed load after its guard is acquired leaves that fresh target
 unusable; recreate it and retry the same dump.
@@ -430,6 +442,7 @@ pass `TAUT_AS` or `TAUT_TOKEN` through.
 | `taut search QUERY... [--channel CHANNEL] [--dm @NAME] [--dms]` | Search visible channel and DM history without moving cursors; add `--from`, `--kind`, `--before`, `--limit`, or `--reindex` to refine or rebuild |
 | `taut system dump --output FILE` | Write an owner-only portable logical dump of registered pending messages, core authority, and installed durable extension state |
 | `taut system load --input FILE [--dry-run]` | Validate or restore a dump into a fresh target; maintenance requires quiescence |
+| `taut system doctor` | Passively run six fixed workspace checks; no repair, work claims, or provider loading |
 | `taut list [--all \| --dms]` | Your threads with unread state; `--all` = every thread; `--dms` = every accessible DM, including read and empty conversations |
 | `taut watch [THREAD_OR_DM ...]` | Follow selected channels/sub-threads or existing DMs; default = everything you're in plus your notification inbox |
 | `taut who [THREAD]` | Members and presence |
@@ -455,6 +468,10 @@ to distinguish those cases can inspect stderr when a diagnostic exists; blank
 means that no requested record was produced. `--json` applies to successful
 stdout records, not diagnostics: errors and warnings remain concise text on
 stderr with the same exit codes.
+
+The system doctor has one scoped exception: exit `2` means the report was
+completed and one or more findings were detected. Framework, target, or
+backend failures exit `1`; a healthy completed report exits `0`.
 
 `say` and `reply` treat text as blank when it is empty or every character is
 whitespace under Python's `str.isspace()` or has Unicode category `Cf`. A blank
@@ -533,6 +550,8 @@ SimpleBroker's watcher lifecycle hooks):
 ```python
 from taut import (
     Channel,
+    DoctorCheck,
+    DoctorReport,
     Message,
     MessageDeletion,
     MessageReaction,
@@ -590,6 +609,15 @@ Dump/load are actor-free class methods and do not require a client instance:
 dumped = TautClient.dump(output="backup.taut.jsonl")
 checked = TautClient.load(input_path=dumped.path, dry_run=True)
 restored = TautClient.load(input_path=dumped.path, db_path="restored.db")
+```
+
+Doctor is actor-free as well:
+
+```python
+report: DoctorReport = TautClient.doctor()
+for check in report.checks:
+    assert isinstance(check, DoctorCheck)
+    print(check.name, check.status, check.detail)
 ```
 
 ## Trust Model (Read This Before Filing the Issue)
@@ -815,8 +843,8 @@ Docs-first: everything ships behind its own spec.
   SQLite FTS5 and PostgreSQL text search behind one API
   ([`docs/specs/06-search.md`](https://github.com/VanL/taut/blob/main/docs/specs/06-search.md)).
 
-**In progress:** portable dump/load maintenance commands (see
-[CHANGELOG.md](https://github.com/VanL/taut/blob/main/CHANGELOG.md) Unreleased; spec in review).
+**Shipped:** portable dump/load maintenance and the passive six-check system
+doctor.
 
 **Ahead, in order:**
 

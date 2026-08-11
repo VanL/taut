@@ -716,6 +716,14 @@ the `simplebroker-pg` dependency.
 
 ## 12. Failure and Verification Contract [SRCH-12]
 
+The fixed system doctor observes exactly the three search work queues from
+[SRCH-8.1]: pending, claimed, and failed. It reports their `QueueStats.total`
+depths without claiming, moving, acknowledging, rebuilding, or loading a search
+provider. Nonzero failed depth is a finding; pending or claimed depth is
+informational. The check does not prove work freshness, inspect physical search
+tables, reclaim leases, or replace [SRCH-8.2] and [SRCH-9] recovery behavior
+[DOCT-5].
+
 ### [SRCH-12.1] Failure priorities
 
 - Source chat mutation success outranks invalidation enqueue and worker launch.
@@ -803,6 +811,8 @@ Operational acceptance records, without turning host timing into CI truth:
   native lexical quality.
 - `docs/plans/2026-08-10-simplebroker-7-json-id-boundary-plan.md` — formats
   public search hit ids while preserving numeric internal work items.
+- `docs/plans/2026-08-10-system-doctor-plan.md` defines the passive fixed
+  search-work observation and its non-repair boundary.
 - `docs/plans/2026-08-07-taut-dump-load-plan.md` defines search exclusion and
   post-load rebuild behavior.
 - `docs/plans/2026-08-06-taut-search-plan.md` defines the reviewed promotion,
