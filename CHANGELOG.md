@@ -63,6 +63,11 @@
 - Made the MCP native-activity pacing proof independent of event-loop
   scheduling delays while retaining a deterministic fake-clock assertion for
   the production 0.5-second coalescing boundary.
+- Replaced four redundant full Windows source-suite runs with a deterministic
+  four-version partition whose executable oracle proves exact coverage and
+  preserves xdist groups. Release preparation now waits for exact-commit root,
+  PostgreSQL, and MCP producer CI before touching tags, and every coordinated
+  PyPI gate uses a Core Metadata 2.5-capable trusted publisher.
 
 ## 0.8.2 - 2026-08-05
 

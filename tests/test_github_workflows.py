@@ -1068,7 +1068,7 @@ def test_release_gates_publish_exact_artifact_through_top_level_pypi_job(
     postflight = pypi.rindex(".github/scripts/release_publication.py verify-pypi")
     assert tag_recheck < upload < clean_postflight < postflight
     assert (
-        "pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247" in pypi
+        "pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33" in pypi
     )
     assert "skip-existing: ${{ steps.publication.outputs.skip_existing }}" in pypi
     assert "if: ${{ steps.publication.outputs.publish == 'true' }}" in pypi

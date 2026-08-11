@@ -102,6 +102,14 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
 
 ## Project Lessons
 
+- 2026-08-11: A successful wheel build and internal artifact verification do
+  not prove that the pinned publisher can parse the wheel's Core Metadata
+  version. Build backends can advance the emitted metadata independently of
+  package source, while an older publisher fails before authentication or
+  upload. Pin a publisher known to support the emitted metadata, assert that
+  pin across every coordinated gate, and treat the failed pre-upload run plus
+  untouched PyPI state as recoverable evidence rather than rerunning it.
+
 - 2026-08-08: A dependency-floor bump reconciles manifests and the
   release-machinery-owned README copies, but hand-maintained spec and
   implementation-doc floor claims drift silently (specs said
