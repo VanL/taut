@@ -133,6 +133,9 @@ the D1–D4 spec-promotion slice is committed.
 
 ## Spec Baseline
 
+- Promotion baseline: `e22109ae26e4b899a46d9538115cefe2309b389e`
+  (`Promote stable direct-message send contract`). Runtime implementation must
+  preserve this reviewed D1–D4 boundary.
 - [IAN-5.1] classifies `dm.d_*` as a stable existing-DM selector but explicitly
   excludes it from `say`.
 - [IAN-5.3] defines the full actor-accessible stable-DM validation and uniform
