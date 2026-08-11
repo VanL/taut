@@ -213,12 +213,7 @@ def _source_collection_nodeids(shard: str) -> frozenset[str]:
     env["PYTEST_ADDOPTS"] = ""
     completed = subprocess.run(
         [
-            "uv",
-            "run",
-            "--no-sync",
-            "--extra",
-            "dev",
-            "python",
+            sys.executable,
             "-c",
             SOURCE_COLLECTION_REPORTER,
             f"--taut-source-shard={shard}",
