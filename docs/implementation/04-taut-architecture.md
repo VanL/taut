@@ -142,13 +142,20 @@ paired-wheel compatibility gates still run.
 
 After checking and building the exact preparation commit, the helper
 revalidates branch, HEAD, the full clean worktree/index, GitHub Release state,
-and local/remote tags. Only then may it push the branch, mutate or push tags, or
-cross the GitHub publication boundary. Branch and tag commands name the tested
-commit explicitly, and remote tag replacement uses an exact force-with-lease
-deletion before the explicit tag push. Checkout or tag drift therefore fails
-instead of redirecting the release. `--checks-only` never reconciles or
-commits; `--dry-run` prints the same ordering without writes. The helper has no
-PyPI upload path while the `taut` package-name request is unresolved.
+and local/remote tags. It resolves observer authentication before remote
+mutation, pushes the branch, then invokes the workflow-only mode of
+`bin/require-green-workflows.py` to wait for canonical root, PostgreSQL, and MCP
+producer success on that exact commit. This local observer consumes no hosted
+runner and selects no publication artifact. After success, the helper rechecks
+repository settings and repeats the complete fresh release fence before any
+tag action. Branch and tag commands name the tested commit explicitly, and
+remote tag replacement uses an exact force-with-lease deletion before the
+explicit tag push. Checkout, publication, setting, or tag drift therefore
+fails instead of redirecting the release. `--skip-checks` bypasses only local
+prechecks; it still requires producer evidence. `--checks-only` never
+reconciles, authenticates, polls, or commits; `--dry-run` prints the same order
+without those actions. The helper has no PyPI upload path while the `taut`
+package-name request is unresolved.
 
 For every target whose prechecks run, the helper starts one Summon local-LLM
 preparation before the precheck sequence: reuse a configured loopback endpoint
@@ -173,13 +180,17 @@ database. The final coverage job depends on all four producers and only
 downloads, combines, checks, and reports their named shards. Root coverage
 source includes `taut_mcp`, and the required unique rate-bucket debit line
 makes an absent or path-misconfigured MCP shard fatal. The root matrix
-partitions non-slow tests into a
-broad lane and one fresh serial installed-wheel lane, so the wheel-building
-fixture has one worker owner per selected cell. That environment uses the
-matrix interpreter. CI factor-covers installed artifacts across every Python
-version on Ubuntu and one representative for each other supported OS, reducing
-ten identical-style wheel lanes to six without dropping either version or OS
-coverage.
+partitions non-slow tests into a broad lane and one fresh serial installed-wheel
+lane, so the wheel-building fixture has one worker owner per selected cell.
+That environment uses the matrix interpreter. Ubuntu and macOS retain complete
+source selections. The four Windows Python cells own pairwise-disjoint
+deterministic quarters of the complete source selection, plus one small public
+CLI smoke on every version. The shard key uses xdist's full effective group
+identity after dynamic markers, so grouped tests cannot split. Real-collection
+tests prove a nonempty, disjoint, exact union. CI separately factor-covers
+installed artifacts across every Python version on Ubuntu and one
+representative for each other supported OS, reducing ten identical-style wheel
+lanes to six without dropping either version or OS coverage.
 
 On canonical branch pushes, the Test packaging job builds core, Summon, PG, and
 MCP once. It passes the explicit core/Summon wheel paths to the paired checker,
@@ -197,15 +208,16 @@ evidence for the shared backend. `.github/workflows/test-mcp-extension.yml`
 runs the complete MCP suite with its own real PostgreSQL service plus MCP-owned
 quality checks. Neither extension workflow produces release bytes.
 
-Before any real tag push, `bin/release.py` checks that immutable GitHub
+Before any real tag push, `bin/release.py` checks twice that immutable GitHub
 Releases are enabled and that environment `pypi` admits exactly the four
-release-tag families. Its explicit read-only settings mode runs the same
-check without preparing a release. PyPI Trusted Publisher records are a
-separate operator-owned prerequisite because the GitHub API cannot verify
-them.
+release-tag families: once as an early preflight and again after exact-SHA
+producer observation. Its explicit read-only settings mode runs the same check
+without preparing a release. PyPI Trusted Publisher records are a separate
+operator-owned prerequisite because the GitHub API cannot verify them.
 
-The four tag gates call `bin/require-green-workflows.py`; they do not call the
-test workflows. Every tag requires root Test, PostgreSQL Test, and MCP Test
+The four tag gates call the artifact-selecting mode of
+`bin/require-green-workflows.py`; they do not call the test workflows. Every
+tag requires root Test, PostgreSQL Test, and MCP Test
 evidence for its exact peeled commit. The observer selects canonical push evidence by
 repository, head repository, workflow path, branch, event, exact commit peeled
 from either a lightweight or annotated tag, and latest attempt,
@@ -764,9 +776,9 @@ queue high-water mark.
 | `taut/client/` | Public API facade, shared base, value models, verb mixins, shared codecs, and watcher runtime adapter |
 | `taut/watcher.py` | Shared `BaseReactor`, vendored multi-queue scheduling, chat cursor watching, notification inbox integration |
 | `taut/cli.py` | Argparse tree, rendering, exit-code mapping |
-| `bin/release.py` | PyPI/GitHub publication-state-aware release helper, target/tag planning, dependency sync, settings preflight, and local release gates |
+| `bin/release.py` | PyPI/GitHub publication-state-aware release helper, target/tag planning, dependency sync, producer-first exact-SHA observation, repeated settings/fresh-state fences, and local release gates |
 | `bin/release-artifact.py` | Attempt-bound release bundle manifest creation and fail-closed package-byte verification |
-| `bin/require-green-workflows.py` | Exact-SHA canonical workflow observer and immutable artifact selector for tag gates |
+| `bin/require-green-workflows.py` | Exact-SHA canonical workflow observer; workflow-only local waiting for the release helper and immutable artifact selection for tag gates |
 | `bin/pytest-pg` | Docker-backed Postgres test runner for shared and extension suites |
 | `extensions/taut_pg/` | Separate `taut-pg` package, docs, and PG-only tests |
 | `extensions/taut_summon/` | Separate `taut-summon` package, summon driver/adapters, docs, and real-process tests |
@@ -828,6 +840,7 @@ watch, `taut/client/_notifications.py::NotificationsMixin.inbox` claims notifica
 
 ## Related Plans
 
+- `docs/plans/2026-08-11-ci-factor-and-release-order-plan.md`
 - `docs/plans/2026-08-10-stable-dm-send-plan.md`
 - `docs/plans/2026-07-29-taut-chat-pypi-publication-plan.md`
 - `docs/plans/2026-07-28-direct-message-navigation-plan.md`

@@ -22,13 +22,37 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
-        exclude:
-          - os: macos-latest
+        include:
+          - os: ubuntu-latest
             python-version: "3.11"
-          - os: macos-latest
+            source-shard: full
+          - os: ubuntu-latest
             python-version: "3.12"
+            source-shard: full
+          - os: ubuntu-latest
+            python-version: "3.13"
+            source-shard: full
+          - os: ubuntu-latest
+            python-version: "3.14"
+            source-shard: full
+          - os: macos-latest
+            python-version: "3.13"
+            source-shard: full
+          - os: macos-latest
+            python-version: "3.14"
+            source-shard: full
+          - os: windows-latest
+            python-version: "3.11"
+            source-shard: 0/4
+          - os: windows-latest
+            python-version: "3.12"
+            source-shard: 1/4
+          - os: windows-latest
+            python-version: "3.13"
+            source-shard: 2/4
+          - os: windows-latest
+            python-version: "3.14"
+            source-shard: 3/4
 
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -59,7 +83,13 @@ jobs:
         if: ${{ matrix.os != 'ubuntu-latest' || matrix.python-version != '3.13' }}
         timeout-minutes: 20
         run: |
-          pytest -v --tb=short -m "not slow and not installed_wheel" --durations=100 --durations-min=0.5 -o faulthandler_timeout=720 --timeout=900 --timeout-method=thread --full-trace
+          pytest --taut-source-shard=${{ matrix.source-shard }} -v --tb=short -m "not slow and not installed_wheel" --durations=100 --durations-min=0.5 -o faulthandler_timeout=720 --timeout=900 --timeout-method=thread --full-trace
+
+      - name: Run Windows source compatibility smoke
+        if: ${{ matrix.os == 'windows-latest' }}
+        timeout-minutes: 5
+        run: |
+          pytest tests/test_cli.py::test_cli_json_join_say_log -v --tb=short -n 0
 
       - name: Run tests with coverage
         id: root_coverage

@@ -30,7 +30,13 @@ def _load_release_module(script_path: Path = RELEASE_SCRIPT) -> Any:
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
+    module.__dict__["_real_release_observer_token"] = module.release_observer_token
+    module.__dict__["_real_wait_for_canonical_workflows"] = (
+        module.wait_for_canonical_workflows
+    )
     module.__dict__["require_repository_settings"] = lambda: None
+    module.__dict__["release_observer_token"] = lambda: "test-token"
+    module.__dict__["wait_for_canonical_workflows"] = lambda **_kwargs: None
     module.__dict__["RELEASE_DIST_PATHS"] = ()
     return module
 
@@ -742,8 +748,8 @@ def test_public_release_flow_commits_preparation_then_reuses_it_after_failure(
         "precheck-2",
         "build",
         "wheel-check",
-        "tag",
         "push-branch",
+        "tag",
         "push-tag",
     ]
     assert release.is_dirty_worktree() is False
@@ -2651,6 +2657,32 @@ def test_version_changed_core_prepares_and_commits_before_prechecks_and_builds(
         "inspect_release_state",
         lambda target, version: state,
     )
+    original_fence = release.require_fresh_release_fence
+
+    def record_fence(*args: object, **kwargs: object) -> Any:
+        events.append("fence")
+        return original_fence(*args, **kwargs)
+
+    def observer_token() -> str:
+        events.append("auth")
+        return "secret"
+
+    monkeypatch.setattr(release, "require_fresh_release_fence", record_fence)
+    monkeypatch.setattr(
+        release,
+        "release_observer_token",
+        observer_token,
+    )
+    monkeypatch.setattr(
+        release,
+        "wait_for_canonical_workflows",
+        lambda *, head_commit, token: events.append(f"wait:{head_commit}:{token}"),
+    )
+    monkeypatch.setattr(
+        release,
+        "require_repository_settings",
+        lambda: events.append("settings"),
+    )
     monkeypatch.setattr(
         release,
         "prepare_tag",
@@ -2686,6 +2718,7 @@ def test_version_changed_core_prepares_and_commits_before_prechecks_and_builds(
     assert release.main(["core", "--version", "0.6.0"]) == 0
 
     assert events == [
+        "settings",
         "write:core:0.6.0",
         "write:pg:0.5.9",
         "write:summon:0.5.8",
@@ -2699,8 +2732,13 @@ def test_version_changed_core_prepares_and_commits_before_prechecks_and_builds(
         "prechecks",
         "uv:build:--no-sources:--out-dir:dist:.",
         "check-release-wheels",
-        "tag",
+        "fence",
+        "auth",
         "push-branch",
+        "wait:prepared:secret",
+        "settings",
+        "fence",
+        "tag",
         "push-tag",
     ]
 
@@ -2722,6 +2760,7 @@ def test_explicit_batch_version_prepares_all_manifests_but_skips_published_actio
     prepared_tags: list[str] = []
     pushed_tags: list[str] = []
     branch_pushes: list[tuple[str | None, str | None]] = []
+    remote_events: list[str] = []
 
     monkeypatch.setattr(
         release, "read_manifest_version", lambda target: manifest_versions[target]
@@ -2745,6 +2784,28 @@ def test_explicit_batch_version_prepares_all_manifests_but_skips_published_actio
     monkeypatch.setattr(release, "current_head_commit", lambda: "prepared")
     monkeypatch.setattr(release, "_require_command", lambda _name: None)
     monkeypatch.setattr(release, "require_changelog_heading", lambda _version: None)
+    monkeypatch.setattr(
+        release,
+        "require_repository_settings",
+        lambda: remote_events.append("settings"),
+    )
+
+    def observer_token() -> str:
+        remote_events.append("auth")
+        return "secret"
+
+    monkeypatch.setattr(
+        release,
+        "release_observer_token",
+        observer_token,
+    )
+    monkeypatch.setattr(
+        release,
+        "wait_for_canonical_workflows",
+        lambda *, head_commit, token: remote_events.append(
+            f"wait:{head_commit}:{token}"
+        ),
+    )
 
     def write_version_files(version: str, target: Any) -> None:
         writes.append((target.key, version))
@@ -2787,17 +2848,29 @@ def test_explicit_batch_version_prepares_all_manifests_but_skips_published_actio
         "build_postupdate_steps_for_targets",
         build_postupdate_steps_for_targets,
     )
+
+    def prepare_tag(action: Any, *, dry_run: bool) -> None:
+        assert not dry_run
+        prepared_tags.append(action.state.target.key)
+        remote_events.append(f"prepare:{action.state.target.key}")
+
     monkeypatch.setattr(
         release,
         "prepare_tag",
-        lambda action, *, dry_run: prepared_tags.append(action.state.target.key),
+        prepare_tag,
     )
+
+    def push_branch(
+        *, dry_run: bool, branch: str | None = None, head_commit: str | None = None
+    ) -> None:
+        assert not dry_run
+        branch_pushes.append((branch, head_commit))
+        remote_events.append("push-branch")
+
     monkeypatch.setattr(
         release,
         "push_current_branch",
-        lambda *, dry_run, branch=None, head_commit=None: branch_pushes.append(
-            (branch, head_commit)
-        ),
+        push_branch,
     )
     monkeypatch.setattr(
         release,
@@ -2819,12 +2892,22 @@ def test_explicit_batch_version_prepares_all_manifests_but_skips_published_actio
     ]
     assert build_targets == [("summon", "mcp", "core")]
     assert inspected_targets.count("pg") == 1
-    assert inspected_targets.count("summon") == 2
-    assert inspected_targets.count("mcp") == 2
-    assert inspected_targets.count("core") == 2
+    assert inspected_targets.count("summon") == 3
+    assert inspected_targets.count("mcp") == 3
+    assert inspected_targets.count("core") == 3
     assert prepared_tags == ["summon", "mcp", "core"]
     assert pushed_tags == ["summon", "mcp", "core"]
     assert branch_pushes == [("main", "prepared")]
+    assert remote_events == [
+        "settings",
+        "auth",
+        "push-branch",
+        "wait:prepared:secret",
+        "settings",
+        "prepare:summon",
+        "prepare:mcp",
+        "prepare:core",
+    ]
 
 
 def test_explicit_batch_version_rejects_backdating_before_remote_inspection(
@@ -2997,6 +3080,162 @@ def test_release_fence_rejects_local_checkout_drift(
         )
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (("local_tag_commit", "local-drift"), ("remote_tag_commit", "lease-drift")),
+)
+def test_post_observation_fence_rejects_local_or_remote_tag_drift(
+    field: str,
+    value: str,
+) -> None:
+    release = _load_release_module()
+    original = _release_state(release)
+    changed_values = {
+        "local_tag_commit": original.local_tag_commit,
+        "remote_tag_commit": original.remote_tag_commit,
+    }
+    changed_values[field] = value
+    changed = _release_state(release, **changed_values)
+    expected = release.ReleaseCandidate(
+        target=release.ROOT_TARGET,
+        current_version="0.1.1",
+        release_version="0.1.1",
+        state=original,
+    )
+    observed = release.replace(expected, state=changed)
+
+    with pytest.raises(SystemExit, match="changed during canonical workflow"):
+        release.require_release_states_unchanged((expected,), (observed,))
+
+
+def _configure_minimal_single_release(
+    release: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Any:
+    state = _release_state(release)
+    monkeypatch.setattr(release, "is_dirty_worktree", lambda: False)
+    monkeypatch.setattr(release, "current_branch", lambda: "main")
+    monkeypatch.setattr(release, "current_head_commit", lambda: "prepared")
+    monkeypatch.setattr(release, "_require_command", lambda _name: None)
+    monkeypatch.setattr(release, "require_changelog_heading", lambda _version: None)
+    monkeypatch.setattr(
+        release,
+        "resolve_target_version",
+        lambda _version, _target: ("0.1.1", "0.1.1", state),
+    )
+    monkeypatch.setattr(release, "prepare_release_metadata", lambda _versions: None)
+    monkeypatch.setattr(
+        release, "run_preparation_steps", lambda _targets, *, dry_run: None
+    )
+    monkeypatch.setattr(
+        release,
+        "commit_release_preparation",
+        lambda _targets, *, message: (False, "prepared"),
+    )
+    monkeypatch.setattr(
+        release, "run_postupdate_steps", lambda _target, *, dry_run: None
+    )
+    monkeypatch.setattr(
+        release,
+        "require_fresh_release_fence",
+        lambda candidates, **_kwargs: candidates,
+    )
+    monkeypatch.setattr(release, "release_observer_token", lambda: "secret")
+    return state
+
+
+def test_skip_checks_observer_failure_leaves_all_tags_untouched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _load_release_module()
+    _configure_minimal_single_release(release, monkeypatch)
+    events: list[str] = []
+    monkeypatch.setattr(
+        release,
+        "run_prechecks",
+        lambda *_args, **_kwargs: pytest.fail("--skip-checks must skip prechecks"),
+    )
+    monkeypatch.setattr(
+        release,
+        "push_current_branch",
+        lambda **_kwargs: events.append("push-branch"),
+    )
+
+    def fail_wait(**_kwargs: object) -> None:
+        events.append("wait")
+        raise SystemExit("canonical producer failed")
+
+    monkeypatch.setattr(release, "wait_for_canonical_workflows", fail_wait)
+    monkeypatch.setattr(
+        release,
+        "prepare_tag",
+        lambda *_args, **_kwargs: pytest.fail("failed evidence must not alter tags"),
+    )
+    monkeypatch.setattr(
+        release,
+        "push_tag",
+        lambda *_args, **_kwargs: pytest.fail("failed evidence must not push tags"),
+    )
+
+    with pytest.raises(SystemExit, match="canonical producer failed"):
+        release.main(["core", "--skip-checks"])
+    assert events == ["push-branch", "wait"]
+
+
+def test_branch_push_failure_starts_no_observer_or_tag_action(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _load_release_module()
+    _configure_minimal_single_release(release, monkeypatch)
+    monkeypatch.setattr(release, "run_prechecks", lambda *_args, **_kwargs: None)
+
+    def fail_push(**_kwargs: object) -> None:
+        raise subprocess.CalledProcessError(1, ("git", "push"))
+
+    monkeypatch.setattr(release, "push_current_branch", fail_push)
+    monkeypatch.setattr(
+        release,
+        "wait_for_canonical_workflows",
+        lambda **_kwargs: pytest.fail("failed branch push must not start observer"),
+    )
+    monkeypatch.setattr(
+        release,
+        "prepare_tag",
+        lambda *_args, **_kwargs: pytest.fail("failed branch push must not alter tags"),
+    )
+
+    with pytest.raises(subprocess.CalledProcessError):
+        release.main(["core"])
+
+
+def test_repository_settings_drift_after_wait_blocks_tag_action(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _load_release_module()
+    _configure_minimal_single_release(release, monkeypatch)
+    monkeypatch.setattr(release, "run_prechecks", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(release, "push_current_branch", lambda **_kwargs: None)
+    monkeypatch.setattr(release, "wait_for_canonical_workflows", lambda **_kwargs: None)
+    settings_checks = 0
+
+    def check_settings() -> None:
+        nonlocal settings_checks
+        settings_checks += 1
+        if settings_checks == 2:
+            raise SystemExit("repository settings drifted")
+
+    monkeypatch.setattr(release, "require_repository_settings", check_settings)
+    monkeypatch.setattr(
+        release,
+        "prepare_tag",
+        lambda *_args, **_kwargs: pytest.fail("settings drift must not alter tags"),
+    )
+
+    with pytest.raises(SystemExit, match="repository settings drifted"):
+        release.main(["core"])
+    assert settings_checks == 2
+
+
 def test_parse_args_accepts_positional_all_and_target_compat() -> None:
     release = _load_release_module()
 
@@ -3147,6 +3386,16 @@ def test_dry_run_publish_explains_tag_workflow_publication(
     monkeypatch.setattr(release, "inspect_release_state", fake_inspect_release_state)
     monkeypatch.setattr(release, "is_dirty_worktree", fake_is_dirty_worktree)
     monkeypatch.setattr(release, "current_head_commit", fake_current_head_commit)
+    monkeypatch.setattr(
+        release,
+        "release_observer_token",
+        lambda: pytest.fail("dry-run must not resolve observer auth"),
+    )
+    monkeypatch.setattr(
+        release,
+        "wait_for_canonical_workflows",
+        lambda **_kwargs: pytest.fail("dry-run must not poll workflows"),
+    )
 
     release.main(["--dry-run", "--skip-checks", "--publish"])
 
@@ -3223,6 +3472,130 @@ def test_capture_command_returns_stdout(monkeypatch: pytest.MonkeyPatch) -> None
     assert release.capture_command(("git", "rev-parse", "HEAD")) == "abc123"
 
 
+def test_release_observer_token_prefers_environment_without_invoking_gh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _load_release_module()
+    monkeypatch.setenv("GITHUB_TOKEN", "environment-secret")
+    monkeypatch.setattr(
+        release,
+        "_require_command",
+        lambda _name: pytest.fail("supplied GITHUB_TOKEN must avoid gh"),
+    )
+    monkeypatch.setattr(
+        release,
+        "capture_command",
+        lambda _command: pytest.fail("supplied GITHUB_TOKEN must avoid gh"),
+    )
+
+    assert release._real_release_observer_token() == "environment-secret"
+
+
+@pytest.mark.parametrize("result", ("gh-secret\n", ""))
+def test_release_observer_token_uses_captured_gh_and_rejects_blank_output(
+    monkeypatch: pytest.MonkeyPatch,
+    result: str,
+) -> None:
+    release = _load_release_module()
+    required: list[str] = []
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setattr(release, "_require_command", required.append)
+    monkeypatch.setattr(
+        release,
+        "capture_command",
+        lambda command: (
+            result.strip()
+            if command == ("gh", "auth", "token")
+            else pytest.fail(f"unexpected command: {command}")
+        ),
+    )
+
+    if result:
+        assert release._real_release_observer_token() == "gh-secret"
+    else:
+        with pytest.raises(SystemExit, match="returned no GitHub credential"):
+            release._real_release_observer_token()
+    assert required == ["gh"]
+
+
+def test_release_observer_token_propagates_gh_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _load_release_module()
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setattr(release, "_require_command", lambda name: None)
+
+    def fail_capture(command: tuple[str, ...]) -> str:
+        raise subprocess.CalledProcessError(1, command)
+
+    monkeypatch.setattr(release, "capture_command", fail_capture)
+    with pytest.raises(subprocess.CalledProcessError):
+        release._real_release_observer_token()
+
+
+def test_release_observer_token_rejects_missing_gh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _load_release_module()
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+    def missing(name: str) -> None:
+        raise SystemExit(f"Required command not found on PATH: {name}")
+
+    monkeypatch.setattr(release, "_require_command", missing)
+    monkeypatch.setattr(
+        release,
+        "capture_command",
+        lambda _command: pytest.fail("missing gh must fail before token capture"),
+    )
+    with pytest.raises(SystemExit, match="Required command not found.*gh"):
+        release._real_release_observer_token()
+
+
+def test_canonical_workflow_wait_passes_secret_only_in_child_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    release = _load_release_module()
+    calls: list[tuple[tuple[str, ...], dict[str, str]]] = []
+    monkeypatch.setattr(
+        release, "origin_remote_url", lambda: "git@github.com:VanL/taut.git"
+    )
+
+    def fake_run(
+        command: tuple[str, ...],
+        *,
+        cwd: Path,
+        check: bool,
+        env: dict[str, str],
+    ) -> None:
+        assert cwd == release.PROJECT_ROOT
+        assert check is True
+        calls.append((command, env))
+
+    monkeypatch.setattr(release.subprocess, "run", fake_run)
+    release._real_wait_for_canonical_workflows(head_commit="prepared", token="secret")
+
+    assert len(calls) == 1
+    command, child_env = calls[0]
+    assert command == (
+        sys.executable,
+        str(release.WORKFLOW_EVIDENCE_GATE),
+        "wait-workflows",
+        "--workflow",
+        "root=.github/workflows/test.yml",
+        "--workflow",
+        "pg=.github/workflows/test-pg-extension.yml",
+        "--workflow",
+        "mcp=.github/workflows/test-mcp-extension.yml",
+    )
+    assert "secret" not in " ".join(command)
+    assert child_env["GITHUB_TOKEN"] == "secret"
+    assert child_env["GITHUB_REPOSITORY"] == "VanL/taut"
+    assert child_env["GITHUB_SHA"] == "prepared"
+    assert "secret" not in capsys.readouterr().out
+
+
 def test_checks_only_runs_real_prechecks_then_exits_before_mutation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3260,6 +3633,16 @@ def test_checks_only_runs_real_prechecks_then_exits_before_mutation(
         release,
         "run_postupdate_steps",
         lambda *_args, **_kwargs: pytest.fail("checks-only must not build artifacts"),
+    )
+    monkeypatch.setattr(
+        release,
+        "release_observer_token",
+        lambda: pytest.fail("checks-only must not resolve observer auth"),
+    )
+    monkeypatch.setattr(
+        release,
+        "wait_for_canonical_workflows",
+        lambda **_kwargs: pytest.fail("checks-only must not poll workflows"),
     )
 
     assert release.main(["core", "--checks-only"]) == 0
@@ -3302,6 +3685,16 @@ def test_batch_checks_only_runs_all_prechecks_before_release_discovery(
         lambda **_kwargs: pytest.fail(
             "batch checks-only must not discover release candidates"
         ),
+    )
+    monkeypatch.setattr(
+        release,
+        "release_observer_token",
+        lambda: pytest.fail("checks-only must not resolve observer auth"),
+    )
+    monkeypatch.setattr(
+        release,
+        "wait_for_canonical_workflows",
+        lambda **_kwargs: pytest.fail("checks-only must not poll workflows"),
     )
 
     assert release.main(["all", "--checks-only"]) == 0

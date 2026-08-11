@@ -2252,10 +2252,21 @@ Helper obligations:
   `extensions/taut_mcp/taut_mcp/_process_reactor.py` before generating the
   report. The MCP compatibility workflow remains the sole live-PostgreSQL MCP
   conformance owner and does not become a second coverage owner.
-  Every root OS/Python cell still runs the source contract. The installed-wheel
-  lane uses factor coverage: all four supported Python versions on Ubuntu,
-  plus one macOS and one Windows representative, with the active matrix
-  interpreter used inside the fresh wheel environment.
+  Root source tests use explicit factor coverage rather than a full
+  OS-by-Python Cartesian repetition. The representative Ubuntu coverage cell
+  retains the complete source selection. Each macOS cell retains the complete
+  source selection. The four Windows Python cells run a deterministic,
+  pairwise-disjoint, nonempty partition whose union is exactly the complete
+  source selection. Partitioning uses xdist's effective group identity after
+  dynamic marker assignment: all inherited and direct positional or `name=`
+  group values form one indivisible scheduling unit, with ungrouped node IDs in
+  a separate hash domain. One small public CLI compatibility smoke runs on
+  every Windows Python version and is the only intentional source-test
+  duplicate. The workflow has an executable collection oracle for
+  completeness, disjointness, group integrity, and the exact four shard
+  identities. Installed-wheel factor coverage remains all four supported
+  Python versions on Ubuntu plus one macOS and one Windows representative,
+  using the active matrix interpreter.
 - After metadata preparation and prechecks, preserve but empty the root, PG,
   Summon, and MCP `dist/` directories and verify that all four are empty before
   starting any ordinary release build. Do this for every release target so an
@@ -2306,6 +2317,18 @@ Workflow obligations:
   and its name identifies the workflow attempt that produced it. The core
   bundle and artifact prefix use `taut-chat`; the extension prefixes remain
   `taut-pg`, `taut-summon`, and `taut-mcp`.
+- For a publishing invocation, the local helper pushes the prepared canonical
+  branch commit before creating, deleting, replacing, or pushing any release
+  tag. It then uses the shared exact-SHA workflow selector to wait for
+  successful canonical root Test, PostgreSQL Test, and MCP Test runs. A
+  completed non-success conclusion is fatal and is never retried by the
+  helper. After success, the helper rechecks immutable-release and exact PyPI
+  environment settings, then reruns its clean-tree, branch/HEAD, remote
+  publication, and leased tag-state fence before tag actions. Observer
+  credentials are resolved before branch push, passed only through the child
+  environment, and never logged. Dry-run reports this order without credential
+  lookup or polling. Tag-gate observers retain the same checks as defense in
+  depth and bind publication to the package-specific immutable artifact.
 - Each tag gate waits for the required canonical workflow file or id to finish
   successfully for the exact commit peeled from the release tag, canonical
   branch, source/head
@@ -2486,6 +2509,9 @@ installing `taut-chat`.
 - `docs/plans/2026-07-14-universal-release-gates-plan.md` — one universal
   default local release boundary, explicit human override, and root-plus-PG
   exact-SHA evidence for every package tag.
+- `docs/plans/2026-08-11-ci-factor-and-release-order-plan.md` — disjoint
+  Windows source-factor coverage and producer-first exact-SHA release ordering
+  that prevents hosted observers from starving their evidence producers.
 - `docs/plans/2026-07-13-ci-speed-determinism-release-evidence-plan.md` —
   coverage ownership, installed-wheel and signal isolation, strict local-LLM
   evidence, and exact-SHA release artifact reuse.

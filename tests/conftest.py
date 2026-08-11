@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
@@ -19,6 +20,59 @@ POSTGRES_TEST_BACKEND = "postgres"
 BACKEND_MARKERS = ("shared", "sqlite_only", "pg_only")
 INSTALLED_COMMAND_FIXTURE = "installed_command_fixture"
 INSTALLED_WHEEL_XDIST_GROUP = "installed-wheel"
+SOURCE_SHARD_OPTION = "--taut-source-shard"
+
+
+def _parse_source_shard(value: str | None) -> tuple[int, int] | None:
+    """Parse the opt-in source factor as a zero-based index and shard count."""
+
+    if value in (None, "", "full"):
+        return None
+    match = re.fullmatch(r"(0|[1-9][0-9]*)/([1-9][0-9]*)", value)
+    if match is None:
+        raise pytest.UsageError(
+            f"{SOURCE_SHARD_OPTION} must be 'full' or INDEX/COUNT; got {value!r}"
+        )
+    index, count = map(int, match.groups())
+    if count <= 1 or index >= count:
+        raise pytest.UsageError(
+            f"{SOURCE_SHARD_OPTION} requires COUNT > 1 and INDEX < COUNT; got {value!r}"
+        )
+    return index, count
+
+
+def _effective_xdist_group(item: Any) -> str | None:
+    """Return the complete loadgroup identity used by pytest-xdist 3.8."""
+
+    names: set[str] = set()
+    for mark in item.iter_markers("xdist_group"):
+        name = mark.args[0] if mark.args else mark.kwargs.get("name", "default")
+        names.add(str(name))
+    return "_".join(sorted(names)) if names else None
+
+
+def _source_shard_key(item: Any) -> str:
+    group = _effective_xdist_group(item)
+    if group is not None:
+        return f"group\0{group}"
+    return f"node\0{item.nodeid}"
+
+
+def _source_shard_index(key: str, count: int) -> int:
+    digest = hashlib.sha256(key.encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big") % count
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """Register the process-local canonical source-factor selector."""
+
+    parser.addoption(
+        SOURCE_SHARD_OPTION,
+        action="store",
+        default="full",
+        metavar="INDEX/COUNT",
+        help="run one deterministic source-factor shard (default: full)",
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -442,15 +496,28 @@ def run_cli(
     specname="pytest_collection_modifyitems",
 )
 def pytest_collection_modifyitems_installed_wheel(
+    config: pytest.Config,
     items: list[pytest.Item],
 ) -> Iterator[None]:
-    """Derive fixture ownership before pytest's marker deselection hook."""
+    """Derive fixture ownership, then apply any opt-in source factor shard."""
 
     for item in items:
         if INSTALLED_COMMAND_FIXTURE in getattr(item, "fixturenames", ()):
             item.add_marker(pytest.mark.installed_wheel)
             item.add_marker(pytest.mark.xdist_group(INSTALLED_WHEEL_XDIST_GROUP))
     yield
+
+    shard = _parse_source_shard(config.getoption(SOURCE_SHARD_OPTION))
+    if shard is None:
+        return
+    index, count = shard
+    selected: list[pytest.Item] = []
+    deselected: list[pytest.Item] = []
+    for item in items:
+        destination = _source_shard_index(_source_shard_key(item), count)
+        (selected if destination == index else deselected).append(item)
+    items[:] = selected
+    config.hook.pytest_deselected(items=deselected)
 
 
 @pytest.hookimpl(tryfirst=True)

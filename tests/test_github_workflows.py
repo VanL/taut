@@ -51,6 +51,23 @@ class Reporter:
 raise SystemExit(pytest.main(sys.argv[1:], plugins=[Reporter()]))
 """
 
+SOURCE_COLLECTION_REPORTER = """
+import json
+import sys
+
+import pytest
+
+
+class Reporter:
+    def pytest_collection_finish(self, session):
+        print("TAUT_SOURCE_COLLECTED=" + json.dumps([
+            item.nodeid for item in session.items
+        ]))
+
+
+raise SystemExit(pytest.main(sys.argv[1:], plugins=[Reporter()]))
+"""
+
 
 def _workflow(name: str) -> str:
     return (WORKFLOW_DIR / name).read_text(encoding="utf-8")
@@ -191,6 +208,48 @@ def _summon_collection_records(path: str) -> tuple[dict[str, object], ...]:
     return tuple(json.loads(report))
 
 
+def _source_collection_nodeids(shard: str) -> frozenset[str]:
+    env = os.environ.copy()
+    env["PYTEST_ADDOPTS"] = ""
+    completed = subprocess.run(
+        [
+            "uv",
+            "run",
+            "--no-sync",
+            "--extra",
+            "dev",
+            "python",
+            "-c",
+            SOURCE_COLLECTION_REPORTER,
+            f"--taut-source-shard={shard}",
+            "--collect-only",
+            "-q",
+            "-c",
+            "pyproject.toml",
+            "-m",
+            "not slow and not installed_wheel",
+            "tests",
+        ],
+        cwd=PROJECT_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=120,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    report = next(
+        line.removeprefix("TAUT_SOURCE_COLLECTED=")
+        for line in completed.stdout.splitlines()
+        if line.startswith("TAUT_SOURCE_COLLECTED=")
+    )
+    records = json.loads(report)
+    assert isinstance(records, list)
+    return frozenset(records)
+
+
 def test_summon_collection_probe_owns_its_dev_dependencies(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -283,6 +342,15 @@ def test_test_workflow_is_reusable_and_owns_canonical_release_artifacts() -> Non
             ): 1,
             (
                 "test",
+                "Run Windows source compatibility smoke",
+                (),
+                ".",
+                None,
+                "0",
+                None,
+            ): 1,
+            (
+                "test",
                 "Run taut-summon extension unit tests",
                 (),
                 "extensions/taut_summon/tests",
@@ -343,6 +411,50 @@ def test_summon_live_files_have_disjoint_unit_and_live_owners(
     assert live
     assert unit.isdisjoint(live)
     assert unit | live == all_nodeids
+
+
+def test_windows_source_matrix_uses_exact_factor_shards_and_version_smoke() -> None:
+    document = _workflow_data("test.yml")
+    test_job = document["jobs"]["test"]
+    matrix = test_job["strategy"]["matrix"]
+    rows = matrix["include"]
+    windows_rows = [row for row in rows if row["os"] == "windows-latest"]
+
+    assert [(row["python-version"], row["source-shard"]) for row in windows_rows] == [
+        ("3.11", "0/4"),
+        ("3.12", "1/4"),
+        ("3.13", "2/4"),
+        ("3.14", "3/4"),
+    ]
+    assert all(
+        row["source-shard"] == "full" for row in rows if row["os"] != "windows-latest"
+    )
+
+    steps = _named_steps(test_job)
+    source = steps["Run tests with pytest"]
+    assert "--taut-source-shard=${{ matrix.source-shard }}" in source["run"]
+    smoke = steps["Run Windows source compatibility smoke"]
+    assert smoke["if"] == "${{ matrix.os == 'windows-latest' }}"
+    assert smoke["run"].split() == [
+        "pytest",
+        "tests/test_cli.py::test_cli_json_join_say_log",
+        "-v",
+        "--tb=short",
+        "-n",
+        "0",
+    ]
+
+
+def test_windows_source_factor_is_exact_complete_disjoint_nonempty_union() -> None:
+    complete = _source_collection_nodeids("full")
+    shards = tuple(_source_collection_nodeids(f"{index}/4") for index in range(4))
+
+    assert complete
+    assert all(shards)
+    assert frozenset().union(*shards) == complete
+    for index, left in enumerate(shards):
+        for right in shards[index + 1 :]:
+            assert left.isdisjoint(right)
 
 
 def test_coverage_reuses_existing_ubuntu_lanes_and_aggregates_without_tests() -> None:

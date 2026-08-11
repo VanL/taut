@@ -49,6 +49,14 @@ RELEASE_DIST_PATHS: Final[tuple[Path, ...]] = (
 RELEASE_WHEEL_SET_CHECKER: Final[Path] = (
     PROJECT_ROOT / "bin" / "build-and-check-release-wheels.py"
 )
+WORKFLOW_EVIDENCE_GATE: Final[Path] = (
+    PROJECT_ROOT / "bin" / "require-green-workflows.py"
+)
+CANONICAL_PRODUCER_WORKFLOWS: Final[tuple[tuple[str, str], ...]] = (
+    ("root", ".github/workflows/test.yml"),
+    ("pg", ".github/workflows/test-pg-extension.yml"),
+    ("mcp", ".github/workflows/test-mcp-extension.yml"),
+)
 
 ROOT_RELEASE_WORKFLOW: Final[str] = ".github/workflows/release-gate.yml"
 PG_RELEASE_WORKFLOW: Final[str] = ".github/workflows/release-gate-pg.yml"
@@ -1238,6 +1246,47 @@ def push_current_branch(
     )
 
 
+def release_observer_token() -> str:
+    """Resolve local observer auth without exposing the credential."""
+
+    supplied = os.environ.get("GITHUB_TOKEN", "").strip()
+    if supplied:
+        return supplied
+    _require_command("gh")
+    token = capture_command(("gh", "auth", "token"))
+    if not token:
+        fail("gh auth token returned no GitHub credential")
+    return token
+
+
+def wait_for_canonical_workflows(*, head_commit: str, token: str) -> None:
+    """Wait for exact-SHA producer evidence without logging its credential."""
+
+    repository = github_repo_slug_from_remote(origin_remote_url())
+    if repository is None:
+        fail("Origin remote is not a GitHub repository")
+    command: Command = (
+        sys.executable,
+        str(WORKFLOW_EVIDENCE_GATE),
+        "wait-workflows",
+        *(
+            part
+            for key, path in CANONICAL_PRODUCER_WORKFLOWS
+            for part in ("--workflow", f"{key}={path}")
+        ),
+    )
+    print(f"+ {format_command(command)}", flush=True)
+    child_env = os.environ.copy()
+    child_env.update(
+        {
+            "GITHUB_TOKEN": token,
+            "GITHUB_REPOSITORY": repository,
+            "GITHUB_SHA": head_commit,
+        }
+    )
+    subprocess.run(command, cwd=PROJECT_ROOT, check=True, env=child_env)
+
+
 def is_dirty_worktree() -> bool:
     return bool(capture_command(("git", "status", "--porcelain")))
 
@@ -2184,6 +2233,25 @@ def require_fresh_release_fence(
     return tuple(refreshed)
 
 
+def require_release_states_unchanged(
+    expected: tuple[ReleaseCandidate, ...],
+    observed: tuple[ReleaseCandidate, ...],
+) -> None:
+    """Reject tag or publication drift across exact-SHA observation."""
+
+    expected_states = {candidate.target.key: candidate.state for candidate in expected}
+    observed_states = {candidate.target.key: candidate.state for candidate in observed}
+    if expected_states.keys() != observed_states.keys():
+        fail("Release target set changed during canonical workflow observation")
+    for key, expected_state in expected_states.items():
+        observed_state = observed_states[key]
+        if observed_state != expected_state:
+            fail(
+                f"Release state for {expected_state.target.package_name} changed "
+                "during canonical workflow observation; no tag action ran"
+            )
+
+
 def _candidate_targets(
     candidates: tuple[ReleaseCandidate, ...],
 ) -> tuple[ReleaseTarget, ...]:
@@ -2483,12 +2551,17 @@ def _run_dry_batch_release(
         "dry-run: would revalidate branch, HEAD, clean worktree, GitHub "
         "Release and PyPI state, and tags before remote actions"
     )
-    for candidate in plan.candidates:
-        prepare_tag(plan.tag_actions[candidate.target.key], dry_run=True)
     push_current_branch(
         dry_run=True,
         head_commit=PENDING_RELEASE_COMMIT,
     )
+    print(
+        "dry-run: would resolve GitHub auth, wait for exact-SHA root, PG, and "
+        "MCP producer workflows, then recheck repository settings and the full "
+        "release fence"
+    )
+    for candidate in plan.candidates:
+        prepare_tag(plan.tag_actions[candidate.target.key], dry_run=True)
     for candidate in plan.candidates:
         push_tag(plan.tag_actions[candidate.target.key], dry_run=True)
     print(
@@ -2568,13 +2641,32 @@ def _run_batch_release(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-063] excep
         retag=args.retag,
     )
 
-    for candidate in candidates:
-        prepare_tag(tag_actions[candidate.target.key], dry_run=False)
+    observer_token = release_observer_token()
     push_current_branch(
         dry_run=False,
         branch=plan.preparation_branch,
         head_commit=preparation_commit,
     )
+    wait_for_canonical_workflows(
+        head_commit=preparation_commit,
+        token=observer_token,
+    )
+    require_repository_settings()
+    refreshed_candidates = require_fresh_release_fence(
+        candidates,
+        preparation_branch=plan.preparation_branch,
+        preparation_commit=preparation_commit,
+    )
+    require_release_states_unchanged(candidates, refreshed_candidates)
+    candidates = refreshed_candidates
+    tag_actions = _plan_candidate_tag_actions(
+        candidates,
+        head_commit=preparation_commit,
+        version_changed=release_commit_created,
+        retag=args.retag,
+    )
+    for candidate in candidates:
+        prepare_tag(tag_actions[candidate.target.key], dry_run=False)
     for candidate in candidates:
         push_tag(tag_actions[candidate.target.key], dry_run=False)
 
@@ -2666,11 +2758,16 @@ def _run_single_release(
             "dry-run: would revalidate branch, HEAD, clean worktree, GitHub "
             "Release and PyPI state, and tags before remote actions"
         )
-        prepare_tag(tag_action, dry_run=True)
         push_current_branch(
             dry_run=True,
             head_commit=PENDING_RELEASE_COMMIT,
         )
+        print(
+            "dry-run: would resolve GitHub auth, wait for exact-SHA root, PG, and "
+            "MCP producer workflows, then recheck repository settings and the "
+            "full release fence"
+        )
+        prepare_tag(tag_action, dry_run=True)
         push_tag(tag_action, dry_run=True)
         print(
             f"dry-run: next step is to wait for {target.release_workflow} "
@@ -2698,6 +2795,30 @@ def _run_single_release(
         release_version=target_version,
         state=state,
     )
+    (refreshed_candidate,) = require_fresh_release_fence(
+        (candidate,),
+        preparation_branch=preparation_branch,
+        preparation_commit=preparation_commit,
+    )
+    require_release_states_unchanged((candidate,), (refreshed_candidate,))
+    candidate = refreshed_candidate
+    tag_action = plan_tag_action(
+        candidate.state,
+        version_changed=release_commit_created,
+        head_commit=preparation_commit,
+        retag=args.retag,
+    )
+    observer_token = release_observer_token()
+    push_current_branch(
+        dry_run=False,
+        branch=preparation_branch,
+        head_commit=preparation_commit,
+    )
+    wait_for_canonical_workflows(
+        head_commit=preparation_commit,
+        token=observer_token,
+    )
+    require_repository_settings()
     (candidate,) = require_fresh_release_fence(
         (candidate,),
         preparation_branch=preparation_branch,
@@ -2710,11 +2831,6 @@ def _run_single_release(
         retag=args.retag,
     )
     prepare_tag(tag_action, dry_run=False)
-    push_current_branch(
-        dry_run=False,
-        branch=preparation_branch,
-        head_commit=preparation_commit,
-    )
     push_tag(tag_action, dry_run=False)
     print(
         f"Next step: wait for {target.release_workflow} on {state.tag_name}. "

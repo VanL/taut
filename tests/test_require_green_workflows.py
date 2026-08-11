@@ -624,6 +624,62 @@ def test_wait_exports_verified_workflow_and_artifact_evidence(
     }
 
 
+def test_wait_workflows_needs_no_output_file_or_artifact_request(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    gate = _load_gate()
+    monkeypatch.setenv("GITHUB_TOKEN", "secret")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "VanL/taut")
+    monkeypatch.setenv("GITHUB_SHA", SHA)
+    monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+    urls: list[str] = []
+
+    def get_json(url: str, **_kwargs: Any) -> dict[str, Any]:
+        urls.append(url)
+        assert "/artifacts" not in url
+        return {
+            "total_count": 3,
+            "workflow_runs": [
+                _workflow_run(),
+                _workflow_run(
+                    run_id=202,
+                    workflow_id=12,
+                    path=".github/workflows/test-pg-extension.yml@refs/heads/main",
+                ),
+                _workflow_run(
+                    run_id=303,
+                    workflow_id=13,
+                    path=".github/workflows/test-mcp-extension.yml@refs/heads/main",
+                ),
+            ],
+        }
+
+    monkeypatch.setattr(gate, "github_json_get", get_json)
+
+    result = gate.main(
+        [
+            "wait-workflows",
+            "--workflow",
+            "root=.github/workflows/test.yml",
+            "--workflow",
+            "pg=.github/workflows/test-pg-extension.yml",
+            "--workflow",
+            "mcp=.github/workflows/test-mcp-extension.yml",
+        ]
+    )
+
+    assert result == 0
+    assert len(urls) == 1
+    assert "/actions/runs?" in urls[0]
+    assert capsys.readouterr().out.splitlines() == [
+        "green=mcp,pg,root",
+        "canonical workflow root passed: run 101 attempt 1",
+        "canonical workflow pg passed: run 202 attempt 1",
+        "canonical workflow mcp passed: run 303 attempt 1",
+    ]
+
+
 def test_wait_requires_artifact_to_come_from_root_workflow(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

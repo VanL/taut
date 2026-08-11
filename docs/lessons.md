@@ -692,6 +692,18 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   Python/Windows combinations without those controls need an explicit
   capability skip plus a deterministic blocking-stream behavior owner.
 
+- 2026-08-11: A runner-hosted observer can deadlock the workflows that produce
+  its evidence when both share a bounded runner quota. Create producer evidence
+  first and observe it from the initiating process; keep later hosted observers
+  only where they own artifact selection or publication defense in depth.
+
+- 2026-08-11: Replacing a repeated OS/Python Cartesian suite with factor
+  coverage is safe only when collection itself is the executable oracle. Prove
+  that every shard is nonempty, shards are pairwise disjoint, and their union
+  equals the full selection. Hash the scheduler's complete group identity after
+  dynamic markers, not a node ID or one closest marker, or tests that require
+  co-location can split.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

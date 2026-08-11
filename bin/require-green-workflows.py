@@ -678,6 +678,8 @@ def build_parser() -> argparse.ArgumentParser:
     wait.add_argument("--workflow", action="append", required=True)
     wait.add_argument("--artifact-workflow", required=True)
     wait.add_argument("--artifact-prefix", required=True)
+    wait_workflows = subparsers.add_parser("wait-workflows")
+    wait_workflows.add_argument("--workflow", action="append", required=True)
     verify = subparsers.add_parser("verify-artifact")
     verify.add_argument("--artifact-id", type=_positive_int, required=True)
     verify.add_argument("--artifact-digest", required=True)
@@ -800,6 +802,34 @@ def _run_wait(args: argparse.Namespace) -> None:
     _write_github_output(output_path, outputs)
 
 
+def _run_wait_workflows(args: argparse.Namespace) -> None:
+    """Wait for exact-SHA canonical workflows without selecting an artifact."""
+
+    token = _required_environment("GITHUB_TOKEN")
+    repository = _validated_repository(_required_environment("GITHUB_REPOSITORY"))
+    sha = _validated_sha(_required_environment("GITHUB_SHA"))
+    api_url = os.environ.get("GITHUB_API_URL", "https://api.github.com")
+    requirements = _parse_requirements(args.workflow)
+    check = wait_for_required_workflows(
+        fetch_runs=lambda: fetch_workflow_runs_once(
+            api_url=api_url,
+            repository=repository,
+            sha=sha,
+            token=token,
+        ),
+        requirements=requirements,
+        repository=repository,
+        sha=sha,
+    )
+    for requirement in requirements:
+        run = check.passed[requirement.key]
+        print(
+            f"canonical workflow {requirement.key} passed: "
+            f"run {run.id} attempt {run.run_attempt}",
+            flush=True,
+        )
+
+
 def _run_verify_artifact(args: argparse.Namespace) -> None:
     token = _required_environment("GITHUB_TOKEN")
     repository = _validated_repository(_required_environment("GITHUB_REPOSITORY"))
@@ -837,6 +867,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         args = build_parser().parse_args(argv)
         if args.mode == "wait":
             _run_wait(args)
+        elif args.mode == "wait-workflows":
+            _run_wait_workflows(args)
         elif args.mode == "verify-artifact":
             _run_verify_artifact(args)
         else:
