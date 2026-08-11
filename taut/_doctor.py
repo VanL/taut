@@ -194,7 +194,9 @@ def doctor_workspace(*, db_path: str | Path | None) -> DoctorReport:
     try:
         return _doctor_workspace(db_path=db_path)
     except DatabaseError as exc:
-        raise TautError("system doctor could not access the selected workspace") from exc
+        raise TautError(
+            "system doctor could not access the selected workspace"
+        ) from exc
 
 
 def _doctor_workspace(*, db_path: str | Path | None) -> DoctorReport:
@@ -345,9 +347,7 @@ def _extension_check(
             data["records"] = None
             return _check("extension_state", "fail", str(exc), data)
         except Exception as exc:
-            raise TautError(
-                f"{item.spec.name} live-schema inspection failed"
-            ) from exc
+            raise TautError(f"{item.spec.name} live-schema inspection failed") from exc
         try:
             records = item.component.dump_records(queue)
             item.component.validate_records(

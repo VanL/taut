@@ -1352,7 +1352,9 @@ def probe_persistence_meta(queue: Queue) -> dict[str, str]:
         return persistence_meta(queue)
     except DatabaseError as exc:
         if _is_schema_shape_error(exc):
-            raise CoreSchemaInspectionError("required core metadata is missing") from exc
+            raise CoreSchemaInspectionError(
+                "required core metadata is missing"
+            ) from exc
         raise
 
 

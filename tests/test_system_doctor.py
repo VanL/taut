@@ -522,9 +522,7 @@ def test_doctor_human_output_is_seven_escaped_lines(tmp_path: Path) -> None:
     TautClient.init(db_path=db_path)
     _write_meta(db_path, "foreign\x1b[31m", "1")
 
-    rc, out, err = run_cli(
-        "--db", str(db_path), "system", "doctor", cwd=tmp_path
-    )
+    rc, out, err = run_cli("--db", str(db_path), "system", "doctor", cwd=tmp_path)
 
     assert rc == 2
     assert err == ""

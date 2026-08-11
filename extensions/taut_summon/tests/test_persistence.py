@@ -229,7 +229,9 @@ def test_doctor_passively_validates_active_summon_schema(tmp_path: Path) -> None
 
     report = TautClient.doctor(db_path=source)
 
-    extension = next(check for check in report.checks if check.name == "extension_state")
+    extension = next(
+        check for check in report.checks if check.name == "extension_state"
+    )
     assert extension.status == "pass"
     assert extension.data == {
         "active": ["taut-summon"],
@@ -263,7 +265,9 @@ def test_doctor_reports_incompatible_summon_schema_without_migrating(
 
     report = TautClient.doctor(db_path=source)
 
-    extension = next(check for check in report.checks if check.name == "extension_state")
+    extension = next(
+        check for check in report.checks if check.name == "extension_state"
+    )
     assert extension.status == "fail"
     assert extension.data["active"] == ["taut-summon"]
     assert extension.data["records"] is None
@@ -292,15 +296,20 @@ def test_doctor_reports_missing_summon_table_as_compatibility_finding(
 
     report = TautClient.doctor(db_path=source)
 
-    extension = next(check for check in report.checks if check.name == "extension_state")
+    extension = next(
+        check for check in report.checks if check.name == "extension_state"
+    )
     assert extension.status == "fail"
     assert extension.data["records"] is None
     assert "upgrade taut-summon" in extension.detail
     with sqlite3.connect(source) as connection:
-        assert connection.execute(
-            "SELECT 1 FROM sqlite_master "
-            "WHERE type = 'table' AND name = 'taut_summon_sessions'"
-        ).fetchone() is None
+        assert (
+            connection.execute(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type = 'table' AND name = 'taut_summon_sessions'"
+            ).fetchone()
+            is None
+        )
 
 
 def test_doctor_unknown_metadata_with_active_summon_has_null_records(
@@ -323,13 +332,16 @@ def test_doctor_unknown_metadata_with_active_summon_has_null_records(
 
     report = TautClient.doctor(db_path=source)
 
-    extension = next(check for check in report.checks if check.name == "extension_state")
+    extension = next(
+        check for check in report.checks if check.name == "extension_state"
+    )
     assert extension.status == "fail"
     assert extension.data == {
         "active": ["taut-summon"],
         "installed": ["taut-summon"],
         "records": None,
     }
+
 
 def test_transient_summon_claim_makes_load_destination_nonfresh(
     tmp_path: Path,
