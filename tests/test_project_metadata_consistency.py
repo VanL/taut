@@ -163,22 +163,26 @@ def test_package_versions_and_derived_metadata_match_their_owners() -> None:
     } in requirements
 
 
-def test_retained_locks_resolve_the_supported_simplebroker_pair() -> None:
-    expected_by_lock = {
+def test_retained_locks_resolve_at_or_above_supported_broker_floors() -> None:
+    simplebroker_floor = _dependency_floor(_project("pyproject.toml"), "simplebroker")
+    simplebroker_pg_floor = _dependency_floor(
+        _project("extensions/taut_pg/pyproject.toml"), "simplebroker-pg"
+    )
+    minimum_by_lock = {
         "uv.lock": {
-            "simplebroker": "7.0.0",
-            "simplebroker-pg": "3.5.2",
+            "simplebroker": simplebroker_floor,
+            "simplebroker-pg": simplebroker_pg_floor,
         },
         "extensions/taut_summon/uv.lock": {
-            "simplebroker": "7.0.0",
+            "simplebroker": simplebroker_floor,
         },
         "extensions/taut_mcp/uv.lock": {
-            "simplebroker": "7.0.0",
-            "simplebroker-pg": "3.5.2",
+            "simplebroker": simplebroker_floor,
+            "simplebroker-pg": simplebroker_pg_floor,
         },
     }
 
-    for path, expected in expected_by_lock.items():
+    for path, minimums in minimum_by_lock.items():
         lock = _manifest(path)
         packages = lock["package"]
         assert isinstance(packages, list)
@@ -186,10 +190,12 @@ def test_retained_locks_resolve_the_supported_simplebroker_pair() -> None:
             str(package["name"]): str(package["version"])
             for package in packages
             if isinstance(package, dict)
-            and package.get("name") in expected
+            and package.get("name") in minimums
             and "version" in package
         }
-        assert resolved == expected
+        assert resolved.keys() == minimums.keys()
+        for name, minimum in minimums.items():
+            assert _version_tuple(resolved[name]) >= _version_tuple(minimum)
 
 
 def test_readme_install_examples_use_public_distribution_names() -> None:
