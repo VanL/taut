@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.8.5 - 2026-08-11
+
+- Raised the core dependency floor to SimpleBroker 7.0.0 and the PostgreSQL
+  development/runtime floor to SimpleBroker-PG 3.5.2. Public JSON now renders
+  message IDs and nanosecond timestamps as exact decimal strings while Python
+  and storage keep integer values, preventing silent rounding in JavaScript
+  clients.
 - Added actor-free `taut system doctor` and `TautClient.doctor()`. Six fixed,
   read-only checks report core schema, load guards, logical core state, broker
   counts, durable extension compatibility, and search-work depth. Complete
@@ -44,7 +51,16 @@
 - Extended `bin/pytest-pg` to route explicit MCP PostgreSQL tests with both
   extension dependency overlays, so the MCP adapter is exercised against real
   PostgreSQL and compared with direct `TautClient.search()` results.
-- Make the MCP native-activity pacing proof independent of event-loop
+- Reworked the public documentation into explicit product-contract, agent
+  recipe, specification, and implementation layers, with a product-section
+  registry and program theory naming the owner of each promise.
+- Strengthened test evidence across core and every extension by replacing
+  count-only, mirrored, timing-sensitive, and private-state assertions with
+  behavioral proofs. Added a shared eventual-evidence helper, deterministic
+  PTY/pipe and xdist watchdog oracles, and required coverage-path checks; also
+  reduced PostgreSQL pagination setup transactions without reducing its paging
+  assertions.
+- Made the MCP native-activity pacing proof independent of event-loop
   scheduling delays while retaining a deterministic fake-clock assertion for
   the production 0.5-second coalescing boundary.
 

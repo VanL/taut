@@ -1151,6 +1151,7 @@ requires-dist = [
     { name = "simplebroker-pg", marker = "extra == 'dev'", specifier = ">=3.5.2" },
     { name = "taut-summon", marker = "extra == 'dev'", editable = "../taut_summon" },
     { name = "types-psutil", marker = "extra == 'dev'", specifier = ">=6.0" },
+    { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
 ]
 provides-extras = ["dev"]
 
