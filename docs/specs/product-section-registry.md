@@ -90,8 +90,6 @@ plan's equivalence ledger:
 - the identity heuristic of looking past shells and wrapper commands,
   and the new-identity candidate diagnostic block (natural home:
   [IAN-3])
-- `say @name` as the sole DM creator, stated affirmatively (natural
-  home: [IAN-5.3])
 - notification claims by `taut watch` stated generically, the
   crash-window framing of pointer loss, and the guarantee that
   ordinary chat activity does not necessarily create a pointer
@@ -101,5 +99,7 @@ plan's equivalence ledger:
 
 ## Related Plans
 
+- `docs/plans/2026-08-10-stable-dm-send-plan.md` — moves the sole-DM-creator
+  promise into [IAN-5.1] while adding existing-only stable-handle send.
 - `docs/plans/2026-08-07-information-architecture-plan.md` — creates
   this registry and records the cutover equivalence ledger.

@@ -100,10 +100,10 @@ default, or a few machines through the Postgres extension.
   you*; exit codes make it shell-composable.
 - **Live following** — `taut watch` streams every thread you're in, and
   picks up threads you join while it runs.
-- **Durable direct-message navigation** — `taut say @claude ...` maps the
-  current name to a stable member-id pair queue. `read`, `log`, and `watch`
-  reopen it by current name or stable `dm.d_*` handle; `list --dms` discovers
-  every accessible conversation, including read and empty ones.
+- **Durable direct-message handles** — `taut say @claude ...` maps the current
+  name to a stable member-id pair queue. `say`, `read`, `log`, and `watch`
+  reuse an existing conversation by its exact `dm.d_*` handle; `list --dms`
+  discovers every accessible conversation, including read and empty ones.
 - **Consumable notifications** — mentions and new DMs can wake the member's
   notification inbox without adding per-device state.
 - **Stable member identity** — names can change, but messages, cursors,
@@ -303,12 +303,14 @@ $ taut log @claude
 $ taut list --dms
 DM with Claude  no unread
 $ taut read dm.d_aaaaaaaaaaaaaaaaaaaaaaaaaa
+$ taut say dm.d_aaaaaaaaaaaaaaaaaaaaaaaaaa "same conversation, no name lookup"
 ```
 
 The `@name-or-alias` form follows the current route owner each time. The
 `dm.d_*` value shown by JSON or `list --dms` is the stable conversation handle,
-so it still reopens the same pair after either participant renames. Navigation
-never creates a conversation; only `say @name` can start one.
+so it still reopens the same pair after either participant renames. Sending to
+that handle requires the existing fully valid conversation and never creates or
+repairs one. Only `say @name` can start a conversation.
 
 Channels may render as `#general` in human output, but bare `general` remains
 the command-line form. If you want to type the hash, quote it:
@@ -384,7 +386,8 @@ There are three identity modes:
    member for the current operation without full process/session capture. An
    existing selector does not rewrite that member's process claim, anchor, or
    fingerprint. A missing explicit name creates a member only when the command
-   already permits creation, such as `join` or a viable direct message.
+   already permits creation, such as `join` or a viable first-contact
+   `say @route`; stable-handle send is existing-only.
 3. `taut rejoin Claude` (or `taut rejoin --token TOKEN`) captures the current
    process claim and deliberately associates it with the selected existing
    member. It does not rename the member or rewrite history.
@@ -412,7 +415,7 @@ pass `TAUT_AS` or `TAUT_TOKEN` through.
 | `taut join THREAD [--as NAME] [--persona TEXT] [--new]` | Join (creating if needed) a channel; you start at now |
 | `taut leave THREAD` | Leave a thread; history stays |
 | `taut set name NAME` | Change your current display/routing name; old messages keep the old name |
-| `taut say THREAD\|@NAME [TEXT\|-]` | Post to a channel, sub-thread, or direct message (stdin with `-` or a pipe) |
+| `taut say THREAD\|@NAME\|DM_HANDLE [TEXT\|-]` | Post to a channel, sub-thread, person-addressed DM, or existing stable DM (stdin with `-` or a pipe); only `@NAME` may create a DM |
 | `taut reply THREAD MSG_ID [TEXT\|-]` | Reply in a sub-thread, creating it on first reply |
 | `taut message show MSG_ID` | Show one visible message without claiming it; advances that thread's seen cursor through the message |
 | `taut message delete MSG_ID` | Delete one of your own ordinary messages; no related state is cascaded |
@@ -556,6 +559,8 @@ for msg in client.read(limit=100):  # up to 100 per joined thread; advances curs
 
 for dm in client.list_direct_messages():
     print(dm.name, dm.display_name, dm.unread)
+    sent = client.say(dm.name, "stable existing conversation")
+    assert sent.thread == dm.name
 
 for msg in client.log("@claude"):  # stable dm.d_* handles also work
     print(msg.thread, msg.from_name, msg.text)

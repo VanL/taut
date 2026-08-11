@@ -317,11 +317,16 @@ Taut conversation arguments use these shapes:
 | `@claude` | direct message with the member currently named `claude`, or aliased `claude` if a Taut member alias exists |
 | `dm.d_<26-lowercase-base32-chars>` | one existing stable direct-message conversation, subject to actor access checks in [IAN-5.3] |
 
-Not every command accepts every class. `say` accepts channels, subthreads, and
-`@name-or-alias`; it does not accept a stable `dm.d_*` handle. `read`, `log`,
-and `watch` accept their existing channel/subthread forms plus both DM selector
-forms. `join`, `leave`, `reply`, `channel rename`, and `who THREAD` retain
-their existing narrower contracts.
+Not every command accepts every class. `say` accepts channels, subthreads,
+`@name-or-alias`, and exact stable `dm.d_*` handles. The two DM forms are
+intentionally asymmetric. `@route` selects a person at invocation time and
+remains the sole operation that may create a deterministic DM and its
+memberships. A stable handle selects only an already registered, fully valid,
+actor-accessible conversation under [IAN-5.3]; it never creates, adopts,
+redirects, or heals DM or identity state. `read`, `log`, and `watch` accept
+their existing channel/subthread forms plus both DM selector forms. `join`,
+`leave`, `reply`, `channel rename`, and `who THREAD` retain their existing
+narrower contracts.
 
 Documentation should prefer bare channel names in shell commands because an
 unquoted leading `#` can be interpreted as a shell comment. Human rendering may
@@ -367,6 +372,21 @@ selection returns one content-free not-found/empty result without exposing
 another participant, registry metadata, queue contents, member-route
 existence, or whether another pair owns the supplied handle. Malformed selector
 syntax remains a validation error.
+
+Stable-handle send uses the same complete validation as stable-handle
+navigation before publishing its source message. A well-formed absent,
+inaccessible, or structurally invalid handle returns the same content-free
+not-found result and performs no identity, claim, route, registry, membership,
+queue, cursor, notification, or message creation or repair. Noncreating,
+nonhealing actor resolution may update the already existing actor's ordinary
+activity timestamp, as for other attempted sends. On a valid conversation,
+publication follows the ordinary existing-thread write contract: it updates
+the sender's ordinary activity/cursor state and may emit ordinary mention
+pointers only to the other participant. It never emits `dm_started`.
+
+This validation is an operation-level precondition. It does not exclude or
+quiesce direct backend writers and does not promise that a concurrent
+root-level storage mutation cannot race between observations.
 
 Navigation never creates or heals a member, identity claim, route, queue,
 thread, membership, notification, or DM. A valid current route with no
@@ -772,6 +792,12 @@ or report the interrupted rename. The recovery command is
   malformed registry metadata, pair/name mismatch, missing members, or missing
   participant memberships, with absent and inaccessible adapter output
   indistinguishable.
+- Stable-handle `say` applies that same complete validation before source
+  publication. Every well-formed miss remains content-free and creates or
+  repairs no state except the permitted activity update of an already existing
+  actor. A valid stable send writes only ordinary existing-conversation effects,
+  emits no `dm_started`, and never notifies a named third party outside the
+  exact pair.
 - Actor-scoped DM directory results include read and empty valid DMs, exclude
   malformed/inaccessible rows, and sort by newest surviving row with empty
   conversations last.
@@ -827,6 +853,20 @@ Required proofs:
   when an alias exists; public alias-management tests belong with the future
   alias command
 - a direct-message queue is stable across both participants changing names
+- stable-handle `say` succeeds only for a fully valid actor-accessible existing
+  DM and returns that exact stable thread without creating or healing registry,
+  identity, route, membership, queue, cursor, or notification state on any
+  well-formed miss; the permitted activity update of an already existing actor
+  is asserted separately
+- the stable-send matrix fires absent, wrong-kind, invalid participant
+  count/id/name, deterministic-name mismatch, nonparticipant, missing member,
+  and either missing membership against real SQLite and PostgreSQL state
+- a blank stable-handle send attempt is filtered before target parsing,
+  identity resolution, or any state access
+- first-contact `say @route` remains the sole DM creator and emits exactly one
+  `dm_started`; stable-handle send never emits it, remains stable across rename
+  and alias reassignment, and limits mention notification to the other exact
+  participant
 - mentions write exactly one notification per mentioned member per message,
   scoped to the DM participants when the source queue is a direct-message
   queue
@@ -871,6 +911,9 @@ Required proofs:
 
 ## Related Plans
 
+- `docs/plans/2026-08-10-stable-dm-send-plan.md` — accepts an exact stable
+  existing-DM handle for `say` without widening person-addressed creation or
+  repair behavior.
 - `docs/plans/2026-08-10-test-quality-remediation-plan.md` — completes exact
   addressing, reserved-prefix, identity, and direct-message participant proof
   without substituting totals for named contract elements.

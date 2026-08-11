@@ -1025,7 +1025,7 @@ later token is command-local. `--version` is a root action before the verb.
 | `channel show CHANNEL` | Return current metadata for one registered top-level channel. Resolves no actor and changes no activity, membership, queue, message, notification, or cursor state. | 0 showed; 1 invalid name, corrupt metadata, or error; 2 no such top-level channel |
 | `channel topic CHANNEL TEXT` / `channel topic CHANNEL --clear` | Set one exact one-line topic or explicitly clear it. Requires an existing acting member and current channel membership. A same-value set and absent clear are successful no-ops. No stdin form. | 0 changed or no-op; 1 usage, invalid topic, corruption, or error; 2 no such channel / unrecognized member / not a member |
 | `set name NAME` | Change the acting member's current display name and route key. Does not rewrite old messages. | 0; 1 error/name collision; 2 unrecognized |
-| `say TARGET [TEXT\|-]` | Post a message (stdin with `-` or when piped and TEXT omitted). Blank text is filtered before routing under [TAUT-6.5]. `TARGET` may be a channel, sub-thread, or `@name` direct-message target ([IAN-5]). Channel and sub-thread targets require membership. Prints message id with `-t` only when a message is written. | 0 wrote; 1 error; 2 blank filtered / not a member / no such member |
+| `say TARGET [TEXT\|-]` | Post a message (stdin with `-` or when piped and TEXT omitted). Blank text is filtered before routing under [TAUT-6.5]. `TARGET` retains every [IAN-5.1] channel/sub-thread form, including quoted `#channel`, and also accepts `@name-or-alias` or an exact `dm.d_<26-lowercase-base32-chars>` stable handle. Channel and sub-thread targets require membership. `@route` may create the deterministic conversation; `dm.d_*` requires an existing fully valid actor-accessible conversation and never creates or heals one. Prints message id with `-t` only when a message is written. | 0 wrote; 1 malformed syntax on a nonblank attempt or error; 2 blank filtered / not a member / no such member / inaccessible or invalid stable DM |
 | `reply THREAD MSG_ID [TEXT\|-]` | Post into the sub-thread of MSG_ID, creating it on first reply. Blank text is filtered before parent resolution under [TAUT-6.5]. Requires membership in THREAD. A full 19-digit id resolves exactly. A suffix >= 4 digits resolves via a bounded public-API scan of the most recent 1,000 message ids of THREAD; ambiguous -> error listing candidates. | 0 wrote; 1 error (including ambiguous suffix); 2 blank filtered / no such message / not a member |
 | `message show MSG_ID` | Show one exact full-id message from the acting member's current chat memberships, then advance that thread's high-water cursor through it. No implicit join. Use `log` for cursor-neutral known-thread inspection. | 0 showed; 1 malformed/out-of-range id or error; 2 unrecognized member / inaccessible or absent message |
 | `message delete MSG_ID` | Physically delete one exact author-owned ordinary message, including after leaving its thread. Irreversible, potentially blind, and no cascade. | 0 deleted; 1 malformed/out-of-range id or error; 2 unrecognized member / absent or not deletable |
@@ -1227,6 +1227,18 @@ threads=list[str] | None)` canonicalizes explicit DM selectors before creating
 `TautWatcher`. These methods share one private actor-aware selector boundary;
 adapters and the future TUI must not derive DM queue names or inspect private
 state.
+
+`TautClient.say(target: str, text: str) -> Message` retains every [IAN-5.1]
+channel/sub-thread form and also accepts `@name-or-alias` or an exact
+`dm.d_<26-lowercase-base32-chars>` stable handle. `@route` may create the
+deterministic conversation. A stable handle requires an existing fully valid
+actor-accessible conversation under [IAN-5.3] and never creates or heals one.
+Malformed syntax on a nonblank attempt is a validation error. A well-formed
+inaccessible or invalid stable handle raises the ordinary content-free
+not-found class. A successful stable send returns the stable DM thread and
+preserves the ordinary integer Python message id; JSON adapters emit that id as
+[TAUT-3.5]'s canonical string. Blank filtering and human output remain
+unchanged.
 
 The exact-message signatures are
 `TautClient.show_message(msg_id: str) -> Message` and
@@ -1805,6 +1817,16 @@ posture:
   log activity and cursor neutrality, read cursor effects, explicit-watch
   canonicalization and deduplication, and rejection before queue or watcher
   construction. Broker, state, queue, and watcher internals are not mocked.
+- Stable-handle send tests use the public client against real SQLite and
+  PostgreSQL state. They fire valid, absent, wrong-kind, malformed-registry,
+  deterministic-name-mismatch, missing-member, missing-membership, and
+  nonparticipant cases; prove every miss creates or heals no state beyond the
+  permitted existing-actor activity update; preserve rename and alias-route
+  independence; prove ordinary cursor/unread and peer-only mention effects;
+  and prove only first-contact `@route` emits `dm_started`. CLI and MCP cases
+  pin malformed versus content-free-miss classes, canonical string ids, and
+  stable-thread receipts. Parser, identity, broker, sidecar, notification,
+  CLI, MCP, and PostgreSQL paths remain real.
 - Shared real SQLite and PostgreSQL reaction contracts prove validation-first
   behavior; current channel, exact-child, and confidentiality-checked
   direct-message audiences; actor exclusion; cursor effects; one public
@@ -1872,10 +1894,12 @@ posture:
   `Cf` zero-width/format characters, mixtures, and visible text containing
   such characters without claiming exhaustive Unicode visibility. A named
   invisible non-`Cf` counterexample remains accepted to pin the boundary.
-- Real client and CLI tests prove channel, first-DM, and first-reply blank
-  attempts leave identity/activity, thread, membership, queue, message,
-  notification, and cursor state unchanged; CLI modes exit 2 silently; and
-  accepted text remains exact. Shared coverage runs on SQLite and PostgreSQL.
+- Real client and CLI tests prove channel, first-DM, stable-handle-DM, and
+  first-reply blank attempts leave identity/activity, thread, membership,
+  queue, message, notification, and cursor state unchanged; the stable-handle
+  case performs no target parsing or identity resolution; CLI modes exit 2
+  silently; and accepted text remains exact. Shared coverage runs on SQLite
+  and PostgreSQL.
 - Envelope encode/decode gets a property-based round-trip test including
   `from_id`, sender-name snapshots, and foreign-body inputs.
 - Multi-process write/read interleaving over one database is exercised at
@@ -2378,6 +2402,9 @@ installing `taut-chat`.
 
 ## Related Plans
 
+- `docs/plans/2026-08-10-stable-dm-send-plan.md` — promotes an exact stable
+  existing-DM `say` target while keeping `@route` as the sole creator and
+  proving uniform no-repair misses across Python, CLI, MCP, and both backends.
 - `docs/plans/2026-08-10-test-quality-remediation-plan.md` — strengthens core
   behavioral oracles, removes redundant implementation pins, and preserves
   aggregate, per-package, required-path, and line-level coverage evidence.

@@ -674,7 +674,7 @@ hint.
 | `channel_show` | Return current metadata for one registered top-level Taut channel. Reads only shared registry state and does not resolve identity, touch activity, inspect a broker queue, or move a cursor. | true | false | true | true |
 | `channel_topic` | Set or clear one registered top-level Taut channel's topic. Requires the attached member's current channel membership; a changed value replaces shared topic state and updates member activity, while an identical value is a no-op. | false | true | false | true |
 | `set_name` | Change the attached member's Taut display name. Replaces identity-routing state for that member. | false | true | false | true |
-| `say` | Post a new Taut message to a channel, sub-thread, or direct-message target. | false | false | false | true |
+| `say` | Post a new Taut message to a channel, sub-thread, person-addressed direct message, or an existing direct-message conversation. `@name-or-alias` may create a DM; exact `dm.d_*` requires an existing actor-accessible conversation and never creates or heals one. | false | false | false | true |
 | `reply` | Post a new reply under a top-level channel message. May create the reply sub-thread and membership. | false | false | false | true |
 | `message_show` | Return one exact full-id message from this member's current chat memberships, then advance that thread's high-water cursor through the returned id. This may mark unseen intervening history seen. It never joins a thread; use `log` for cursor-neutral known-channel or sub-thread inspection. | false | true | false | true |
 | `message_delete` | Physically and irreversibly delete one exact ordinary message authored by this member, including after leaving its thread. It does not cascade to notifications, sub-threads, memberships, cursors, or thread registry state and is not recall. | false | true | false | true |
@@ -761,7 +761,7 @@ include these descriptions, not only types and required-property lists.
 | `read.thread` | Optional chat-or-DM selector. Null or omitted reads every joined chat thread. | Explicit DM selection requires an existing accessible conversation and advances only its returned page. |
 | `persona` | Optional persona text stored for the attached member while joining. | Null leaves the current persona unchanged. |
 | `name` | Case-preserving Taut member name matching `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`; routing uniqueness is case-insensitive. | Used only by `set_name`. |
-| `target` | Message destination: a channel such as `general`, a sub-thread such as `general.<19-digit-parent-message-id>`, or a direct message such as `@claude`. | Used only by `say`; no stdin sentinel. |
+| `target` | Message destination: a channel such as `general`, a sub-thread such as `general.<19-digit-parent-message-id>`, a person-addressed direct message such as `@claude`, or an exact stable handle `dm.d_<26-lowercase-base32-chars>`. `@name-or-alias` may create a DM; an exact stable handle requires an existing actor-accessible conversation and never creates or heals one. | Used only by `say`; no stdin sentinel. |
 | `text` | Nonblank message text written as participant content under Taut's core size and validation rules. | Used by `say` and `reply`. |
 | `topic` | Current channel topic as a string of at most 500 Unicode code points with no CR or LF, or null to clear it. Core rejects blank/Cf-only strings. | Required by `channel_topic`; the string branch uses `maxLength: 500` and `not: { "pattern": "[\\r\\n]" }`. |
 | `reply.msg_id` | Parent message id: the full 19-digit id, or a unique suffix of at least 4 digits among the most recent 1,000 ids in the channel. | Used only by `reply`; ambiguity is an error. |
@@ -790,7 +790,7 @@ include these descriptions, not only types and required-property lists.
 | `channel_show` | `workspace: string`, `token: string`, `channel: string` | all | lazily ensures the workspace if needed; calls `TautClient.get_channel(channel)` without actor resolution, activity, queue, or cursor effects after binding |
 | `channel_topic` | `workspace: string`, `token: string`, `channel: string`, `topic: string or null` | all | lazily ensures the workspace if needed; calls `TautClient.set_channel_topic(channel, topic)` directly; null clears and current membership is required |
 | `set_name` | `workspace: string`, `token: string`, `name: string` | all | lazily ensures the workspace if needed; no member-id argument |
-| `say` | `workspace: string`, `token: string`, `target: string`, `text: string` | all | lazily ensures the workspace if needed; no stdin sentinel; core blank/size rules apply |
+| `say` | `workspace: string`, `token: string`, `target: string`, `text: string` | all | lazily ensures the workspace if needed; no stdin sentinel; core blank/size rules apply; `@route` may create a DM, while exact `dm.d_*` requires an existing actor-accessible conversation and never creates or heals one |
 | `reply` | `workspace: string`, `token: string`, `thread: string`, `msg_id: string`, `text: string` | all | lazily ensures the workspace if needed; core exact/suffix id rules apply |
 | `message_show` | `workspace: string`, `token: string`, `msg_id: string` | all | lazily ensures the workspace if needed; exact 19-digit pattern; calls `TautClient.show_message(msg_id)`; searches only current registered chat memberships and may advance the located high-water cursor |
 | `message_delete` | `workspace: string`, `token: string`, `msg_id: string` | all | lazily ensures the workspace if needed; exact 19-digit pattern; calls `TautClient.delete_message(msg_id)`; may delete the acting author's own ordinary row after leave and returns no source content |
@@ -831,6 +831,17 @@ inaccessible DM maps to the same content-free typed empty result as every other
 well-formed DM miss, without route, participant, or existence detail. `log`
 retains `readOnlyHint=true` and `idempotentHint=true`; its DM identity selection
 uses core's read-only resolver.
+
+The `say.target` schema remains a shape-only string because one regular
+expression would narrow the complete current core grammar, including accepted
+quoted `#channel` and channel/sub-thread forms. Core owns semantic parsing of
+that value. It accepts the existing channel/subthread grammar, [IAN-4]'s
+`@route`, and exact stable-DM grammar `^dm\.d_[a-z2-7]{26}$`; malformed syntax
+is a tool error. Per [MCP-6], only a well-formed exact stable-handle miss is
+normalized to the ordinary empty `message` envelope: `empty=true`,
+`record_type="message"`, empty `records`, `guidance`, and `warnings`, plus the
+canonical workspace. Route-addressed and channel/sub-thread failures retain
+their existing tool-error behavior.
 
 MCP handlers are async while Taut operations are synchronous. The process
 reactor first enters [MCP-4]'s shared ensure lifecycle for a
@@ -1094,6 +1105,10 @@ the content-free guidance above; they reveal no body, author, participant,
 thread, or existence distinction. Shape-invalid exact ids are rejected by the
 tool schema. An in-shape but out-of-range id reaches core validation and
 returns `isError` without dispatch-side identity/activity or lookup effects.
+For `say`, a well-formed exact stable `dm.d_*` target that is absent,
+inaccessible, or structurally invalid returns the same empty `message` result
+with `guidance: []`; route-addressed `@name-or-alias` keeps its existing error
+and creation behavior. Malformed target syntax remains `isError`.
 Missing, inaccessible, ineligible, and recipient-empty reaction targets return
 byte-equivalent empty `reaction` results with the content-free guidance above.
 A raised broadcast returns the ordinary nonempty `audience_count` success
@@ -1439,11 +1454,12 @@ initialization and modern discovery. They require:
    returned by that consuming call.
 10. Prefer `read` with one explicit selector when only one conversation is
     intended. Use `list(dms=true)` to discover durable DM conversations and
-    stable handles. Use `log` for cursor-neutral channel, subthread, or DM
-    history. After an uncertain `read`, inspect `list` and the selected
-    conversation with `log` before retrying. A later log cannot prove which
-    read page reached the host. Do not timer-poll `channel_show` or
-    `channel_topic`.
+    stable handles. `say` may reuse one of those exact handles only for the
+    existing actor-accessible conversation; only person-addressed `@route` may
+    create a DM. Use `log` for cursor-neutral channel, subthread, or DM history.
+    After an uncertain `read`, inspect `list` and the selected conversation with
+    `log` before retrying. A later log cannot prove which read page reached the
+    host. Do not timer-poll `channel_show` or `channel_topic`.
 11. Use `search` to discover visible history without knowing a thread. Bare
     search covers registered channels, their subthreads, and actor-accessible
     DMs; explicit channel, DM, author, kind, and before selectors replace or
@@ -1881,6 +1897,15 @@ Required proof includes:
 - explicit `read` and `log` accept both DM selector forms and reject malformed,
   absent, corrupt, and nonparticipant handles without queue access or content
   leakage; route rename/reuse and stable-handle behavior match core
+- `say` teaching, shape-only target schema, dispatch, result, and backend proof
+  move together. Real SQLite and PostgreSQL calls prove valid stable-handle
+  send, rename stability, uniform absent/nonparticipant/missing-membership
+  empty results with no creation or repair, peer-only mention delivery, no
+  `dm_started` for stable send, and unchanged first-contact creation through
+  `@route`. Exact manifest snapshots cover the tool row, shared target-property
+  text, tool input row, runtime tool description, and runtime target
+  description; malformed grammar remains an error and successful ids remain
+  canonical strings.
 - `list(dms=true)` includes unread, caught-up, and empty valid DMs in core
   order, emits the existing thread schema, rejects `all=true` before child
   dispatch, and creates no state
@@ -2182,6 +2207,9 @@ compatibility workflow.
 
 ## Related Plans
 
+- `docs/plans/2026-08-10-stable-dm-send-plan.md` — teaches and proves stable
+  existing-DM send through the fixed `say` tool without adding a second MCP
+  operation or widening DM creation.
 - `docs/plans/2026-08-10-test-quality-remediation-plan.md` — consolidates MCP
   inventory ownership under exact mappings and strengthens page, resource,
   cancellation, and backend-conformance oracles.
