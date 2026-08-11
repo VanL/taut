@@ -664,13 +664,13 @@ def test_pg_runner_command_uses_bounded_xdist_defaults(
             (
                 "shared and not slow",
                 "tests",
-                scripts.PG_TEST_DEFAULT_WORKERS,
+                "4",
                 "loadgroup",
             ): 1,
             (
                 "pg_only",
                 "extensions/taut_pg/tests",
-                scripts.PG_TEST_DEFAULT_WORKERS,
+                "4",
                 "loadgroup",
             ): 1,
         }
