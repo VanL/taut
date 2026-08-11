@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from tests.helpers.eventually import async_eventually
 
 import taut_mcp._workspace_reactor as workspace_reactor
 from taut import TautClient, addressing, identity
@@ -35,14 +36,6 @@ def _workspace(
     other = TautClient(db_path=db, as_name=other_name)
     other.join("general")
     return workspace, token, other
-
-
-async def _wait_until(predicate: Any, *, timeout: float = 5.0) -> None:
-    deadline = asyncio.get_running_loop().time() + timeout
-    while not predicate():
-        if asyncio.get_running_loop().time() >= deadline:
-            raise AssertionError("condition did not become true")
-        await asyncio.sleep(0.01)
 
 
 @pytest.mark.sqlite_only
@@ -93,7 +86,7 @@ def test_reaction_appears_in_recipient_resource_and_inbox_consumes_it(
                 == []
             )
 
-            await _wait_until(
+            await async_eventually(
                 lambda: (
                     json.loads(recipient_reactor.current_text)["workspaces"][0][
                         "notifications"
@@ -111,6 +104,15 @@ def test_reaction_appears_in_recipient_resource_and_inbox_consumes_it(
                     ]
                 ),
                 timeout=1.5,
+                interval=0.01,
+                description="recipient resource publishes reaction notification",
+                snapshot=lambda: {
+                    "notification_count": len(
+                        json.loads(recipient_reactor.current_text)["workspaces"][0][
+                            "notifications"
+                        ]
+                    )
+                },
             )
             claimed = await recipient_reactor._execute_ready_tool(
                 str(recipient_attached["workspace"]),
@@ -175,15 +177,28 @@ def test_legacy_failure_cannot_suppress_modern_resource_delivery(
         reactor.configure_modern_resource_sender(modern_update)
         try:
             await reactor.attach_workspace(str(workspace), token)
-            await _wait_until(
-                lambda: len(legacy_attempts) == 1 and len(modern_updates) == 1
+            await async_eventually(
+                lambda: len(legacy_attempts) == 1 and len(modern_updates) == 1,
+                timeout=5.0,
+                interval=0.01,
+                description="initial resource change reaches both adapters",
+                snapshot=lambda: {
+                    "legacy_attempt_count": len(legacy_attempts),
+                    "modern_update_count": len(modern_updates),
+                },
             )
             assert legacy_attempts == modern_updates
 
             other.say("general", "changed @selected")
-            await _wait_until(
+            await async_eventually(
                 lambda: len(legacy_attempts) == 2 and len(modern_updates) == 2,
                 timeout=1.5,
+                interval=0.01,
+                description="changed resource reaches both adapters",
+                snapshot=lambda: {
+                    "legacy_attempt_count": len(legacy_attempts),
+                    "modern_update_count": len(modern_updates),
+                },
             )
             assert legacy_attempts == modern_updates
         finally:
@@ -359,12 +374,23 @@ def test_backstop_detects_external_consumption_without_touching_identity(
                 addressing.notification_queue_name(str(row["member_id"]))
             )
             assert notification_queue.read_one(with_timestamps=True) is not None
-            await _wait_until(
+            await async_eventually(
                 lambda: (
                     json.loads(reactor.current_text)["workspaces"][0]["notifications"]
                     == []
                 ),
                 timeout=1.5,
+                interval=0.01,
+                description=(
+                    "resource refresh reflects external notification consumption"
+                ),
+                snapshot=lambda: {
+                    "notification_count": len(
+                        json.loads(reactor.current_text)["workspaces"][0][
+                            "notifications"
+                        ]
+                    )
+                },
             )
             assert bound_identity() == before
             assert reactor.list_workspaces()["records"][0]["workspace"] == canonical
@@ -500,7 +526,13 @@ def test_native_activity_wake_is_immediate_but_bursts_are_paced(
             attached = await reactor.attach_workspace(str(workspace), token)
             assert factory_called.wait(timeout=1)
             reactor.subscribe(updated)
-            await _wait_until(lambda: len(updates) == 1)
+            await async_eventually(
+                lambda: len(updates) == 1,
+                timeout=5.0,
+                interval=0.01,
+                description="initial subscription update is delivered",
+                snapshot=lambda: {"update_count": len(updates)},
+            )
             updates.clear()
 
             # A completed command starts a fresh observational-backstop interval.
@@ -513,12 +545,24 @@ def test_native_activity_wake_is_immediate_but_bursts_are_paced(
             other.say("general", "first @selected")
             started = asyncio.get_running_loop().time()
             waiter.fire()
-            await _wait_until(lambda: len(updates) == 1, timeout=0.3)
+            await async_eventually(
+                lambda: len(updates) == 1,
+                timeout=0.3,
+                interval=0.01,
+                description="native activity wake delivers first update",
+                snapshot=lambda: {"update_count": len(updates)},
+            )
             assert updates[0] - started < 0.3
 
             other.say("general", "second @selected")
             waiter.fire()
-            await _wait_until(lambda: len(updates) == 2, timeout=0.6)
+            await async_eventually(
+                lambda: len(updates) == 2,
+                timeout=0.6,
+                interval=0.01,
+                description="paced native activity delivers second update",
+                snapshot=lambda: {"update_count": len(updates)},
+            )
             assert updates[1] - updates[0] >= 0.45
             notifications = json.loads(reactor.current_text)["workspaces"][0][
                 "notifications"
@@ -586,7 +630,7 @@ def test_native_wait_failure_falls_back_to_observational_backstop(
         try:
             attached = await reactor.attach_workspace(str(workspace), token)
             other.say("general", "fallback @selected")
-            await _wait_until(
+            await async_eventually(
                 lambda: (
                     len(
                         json.loads(reactor.current_text)["workspaces"][0][
@@ -596,6 +640,15 @@ def test_native_wait_failure_falls_back_to_observational_backstop(
                     == 1
                 ),
                 timeout=1.5,
+                interval=0.01,
+                description="observational backstop publishes notification",
+                snapshot=lambda: {
+                    "notification_count": len(
+                        json.loads(reactor.current_text)["workspaces"][0][
+                            "notifications"
+                        ]
+                    )
+                },
             )
             assert reactor.list_workspaces()["records"] == attached["records"]
         finally:

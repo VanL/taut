@@ -40,7 +40,7 @@ EXTENSIONLESS_PYTHON = {
 REVIEWED_FAMILIES = ["E", "W", "F", "I", "B", "C901", "C4", "UP"]
 GLOBAL_IGNORES = ["E501", "B008"]
 RAW_RULE_COUNTS = {
-    "BLE001": 91,
+    "BLE001": 92,
     "C901": 37,
     "DTZ006": 1,
     "F401": 1,
@@ -324,7 +324,7 @@ def test_raw_active_rule_inventory_and_registry_are_exact() -> None:
     )
     assert [group.group_id for group in snapshot.groups] == [
         f"RUFF-SUP-{number:03d}"
-        for number in range(1, 84)
+        for number in range(1, 85)
         if number not in RETIRED_GROUP_NUMBERS
     ]
 

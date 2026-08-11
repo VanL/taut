@@ -13,6 +13,7 @@ from mcp import types
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.server.session import ServerSession
 from mcp.shared.message import SessionMessage
+from tests.helpers.eventually import async_eventually
 
 from taut import TautClient
 from taut_mcp._claude_channel import (
@@ -23,14 +24,6 @@ from taut_mcp._process_reactor import ProcessReactor
 from taut_mcp.server import create_server
 
 EXTENSION_ROOT = Path(__file__).resolve().parents[1]
-
-
-async def _wait_until(predicate: Any, *, timeout: float = 5.0) -> None:
-    deadline = asyncio.get_running_loop().time() + timeout
-    while not predicate():
-        if asyncio.get_running_loop().time() >= deadline:
-            raise AssertionError("condition did not become true")
-        await asyncio.sleep(0.01)
 
 
 def _workspace(tmp_path: Path) -> tuple[Path, str, TautClient]:
@@ -201,19 +194,52 @@ def test_claude_attempt_tracker_is_independent_and_fail_open(
         reactor.subscribe(standard_send)
         try:
             attached = await reactor.attach_workspace(str(workspace), token)
-            await _wait_until(lambda: len(attempts) == 1 and len(warnings) == 1)
-            await _wait_until(lambda: len(standard_updates) == 1)
+            await async_eventually(
+                lambda: len(attempts) == 1 and len(warnings) == 1,
+                timeout=5.0,
+                interval=0.01,
+                description="failed Claude channel send records one attempt and warning",
+                snapshot=lambda: {
+                    "attempt_count": len(attempts),
+                    "warning_count": len(warnings),
+                },
+            )
+            await async_eventually(
+                lambda: len(standard_updates) == 1,
+                timeout=5.0,
+                interval=0.01,
+                description="initial standard resource update is delivered",
+                snapshot=lambda: {"update_count": len(standard_updates)},
+            )
             first_text = reactor.current_text
             assert attempts == [first_text]
             assert warnings == ["taut-mcp: Claude channel wake failed; continuing"]
+            assert not reactor._claude_tasks
             reactor._recompute_resource()
-            await asyncio.sleep(0.05)
+            assert reactor.current_text == first_text
+            assert reactor.last_claude_attempted_text == first_text
+            assert not reactor._claude_tasks
             assert attempts == [first_text]
 
             reactor.unsubscribe()
             other.say("general", "changed @selected")
-            await _wait_until(lambda: len(attempts) == 2, timeout=1.5)
-            await _wait_until(lambda: len(warnings) == 2)
+            await async_eventually(
+                lambda: len(attempts) == 2,
+                timeout=1.5,
+                interval=0.01,
+                description="changed resource triggers second Claude attempt",
+                snapshot=lambda: {"attempt_count": len(attempts)},
+            )
+            await async_eventually(
+                lambda: len(warnings) == 2,
+                timeout=5.0,
+                interval=0.01,
+                description="second Claude failure records warning",
+                snapshot=lambda: {
+                    "attempt_count": len(attempts),
+                    "warning_count": len(warnings),
+                },
+            )
             assert standard_updates == [first_text]
             assert attempts[1] == reactor.current_text
             assert attempts[1] != first_text

@@ -122,6 +122,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 | `2026-08-10-stable-dm-send-plan.md` | active | no | Class 5 existing-conversation stable-handle `say` target; `@route` remains the sole DM creator; focused Opus plan review passed. |
 | `2026-08-10-system-doctor-plan.md` | completed | no | Class 5 actor-free report-only system doctor; implementation, real SQLite/PostgreSQL verification, final Opus review, and owner-authorized close-out passed. |
 | `2026-08-10-test-quality-remediation-plan.md` | completed | no | Class 4 repository-wide test-oracle remediation; 81 audited dispositions with hosted OS/Python, required-path, and coverage-preservation evidence recorded in the plan. |
+| `2026-08-11-eventually-test-helper-adoption-plan.md` | completed | no | Class 5+P repository-only sync/async eventual-evidence helper; seven eligible loop migrations, one audited Summon retention, full local verification, and final independent review passed before owner-authorized close-out. |
 
 ## Retired Plans
 

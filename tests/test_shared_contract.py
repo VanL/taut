@@ -4,8 +4,6 @@ import json
 import subprocess
 import sys
 import threading
-import time
-from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, cast
@@ -46,6 +44,7 @@ from taut.envelope import encode_envelope
 from taut.search._jobs import FAILED_QUEUE_NAME
 from taut.state import SqlDialect, dialect_for_taut_target
 from tests.conftest import build_cli_env, run_cli
+from tests.helpers.eventually import eventually
 
 pytestmark = pytest.mark.shared
 
@@ -109,15 +108,6 @@ def _downgrade_summon_claim_schema_to_v2(queue: Queue) -> None:
             "UPDATE taut_meta SET value = ? WHERE key = ?",
             ("2", SUMMON_SCHEMA_VERSION_KEY),
         )
-
-
-def _wait_until(predicate: Callable[[], bool], *, timeout: float = 3.0) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        time.sleep(0.01)
-    raise AssertionError("condition was not satisfied before timeout")
 
 
 def _spawn_cli(cwd: Path, *args: object) -> subprocess.Popen[str]:
@@ -622,7 +612,12 @@ def test_project_watcher_receives_cli_write(taut_project: Path) -> None:
     watcher = van.watch(record)
     thread = watcher.start()
     try:
-        _wait_until(thread.is_alive)
+        eventually(
+            thread.is_alive,
+            timeout=3.0,
+            interval=0.01,
+            description="shared-contract watcher thread starts",
+        )
 
         rc, out, err = run_cli(
             "--as",
@@ -636,7 +631,17 @@ def test_project_watcher_receives_cli_write(taut_project: Path) -> None:
         assert rc == 0, err
         written = json.loads(out)
 
-        _wait_until(lambda: "hello from watched cli" in seen)
+        eventually(
+            lambda: "hello from watched cli" in seen,
+            timeout=3.0,
+            interval=0.01,
+            description="shared-contract watcher delivers the CLI-written message",
+            snapshot=lambda: {
+                "thread_alive": thread.is_alive(),
+                "stop_requested": watcher._stop_requested,
+                "seen_count": len(seen),
+            },
+        )
         assert thread.is_alive()
         assert written["text"] == "hello from watched cli"
     finally:

@@ -137,6 +137,8 @@ Quick pointers to the key guidance documents in this repository.
 | `taut/cli.py` | Thin console entry point into the registry-backed dispatcher |
 | `taut/commands/` | Versioned command manifests/protocol, deterministic installed-command registry, root dispatcher, shared renderers, lazy per-verb adapters, and the temporary reserved Summon compatibility bridge |
 | `tests/` | Contract tests using real SQLite files, shared backend markers, and subprocess CLI |
+| `tests/helpers/eventually.py` | Repository-only [DOM-10.3] sync/async eventual-evidence helper; owns aggregate deadlines, final recheck, failure priority, and timeout diagnostics without driving product state |
+| `tests/test_eventually.py` | Controlled-time firing tests for every [DOM-10.3] interface and deadline edge, including snapshot failure and asyncio cancellation |
 | `tests/test_docs_references.py` | Maintained-source path and local/external citation-family gate |
 | `tests/test_cli_claims.py` | Maintained-source inline/fenced Taut command-path grammar, deterministic registry validation, and exact exemption gate |
 | `tests/test_project_metadata_consistency.py` | Relational gate comparing constants, first-party floors, README pins, wheel names, and retained-lock versions to their owning package manifests |

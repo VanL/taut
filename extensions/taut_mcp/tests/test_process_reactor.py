@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from tests.helpers.eventually import async_eventually
 
 import taut_mcp._process_reactor as process_reactor
 import taut_mcp._workspace_reactor as workspace_reactor
@@ -56,18 +57,6 @@ class _FingerprintAuditedCandidates(dict[int, Any]):
         if candidate is not None:
             self.cleared_before_pop.append(candidate.fingerprint is None)
         return super().pop(key, default)
-
-
-async def _wait_until(
-    predicate: Any,
-    *,
-    timeout: float = 5.0,
-) -> None:
-    deadline = asyncio.get_running_loop().time() + timeout
-    while not predicate():
-        if asyncio.get_running_loop().time() >= deadline:
-            raise AssertionError("condition did not become true")
-        await asyncio.sleep(0.01)
 
 
 def _assert_frame_excludes_request_values(
@@ -603,7 +592,17 @@ def test_concurrent_lazy_aliases_publish_only_one_client(
         ]
         try:
             assert await asyncio.to_thread(validation_started.wait, 5)
-            await _wait_until(lambda: any(call.done() for call in calls))
+            await async_eventually(
+                lambda: any(call.done() for call in calls),
+                timeout=5.0,
+                interval=0.01,
+                description="one concurrent alias attachment finishes",
+                snapshot=lambda: {
+                    "done_count": sum(call.done() for call in calls),
+                    "total_count": len(calls),
+                    "validation_call_count": len(validation_calls),
+                },
+            )
             completed = next(call for call in calls if call.done())
             with _tool_error("workspace busy; retry after backoff"):
                 completed.result()
@@ -708,7 +707,16 @@ def test_resolution_timeout_retires_candidate_without_publishing(
             "stalled attachment reservation exists; restart taut-mcp to clear"
         ]
         release_resolution.set()
-        await _wait_until(lambda: not reactor._candidates)
+        await async_eventually(
+            lambda: not reactor._candidates,
+            timeout=5.0,
+            interval=0.01,
+            description="timed-out resolution candidate is reaped",
+            snapshot=lambda: {
+                "candidate_count": len(reactor._candidates),
+                "candidate_generations": sorted(reactor._candidates),
+            },
+        )
         await reactor.aclose()
 
     asyncio.run(scenario())
@@ -800,7 +808,16 @@ def test_detach_uses_distinct_five_second_deadline_and_final_liveness_check(
         loop.call_soon_threadsafe = drop_wake  # type: ignore[assignment]
         try:
             detach = asyncio.create_task(reactor.detach_workspace(canonical))
-            await _wait_until(lambda: not entry.owner.thread.is_alive())
+            await async_eventually(
+                lambda: not entry.owner.thread.is_alive(),
+                timeout=5.0,
+                interval=0.01,
+                description="detach owner thread stops at the timeout boundary",
+                snapshot=lambda: {
+                    "owner_thread_alive": entry.owner.thread.is_alive(),
+                    "entry_status": entry.status,
+                },
+            )
             reactor._detach_timeout(canonical, entry.generation)
             result = await detach
             assert result["records"][0]["status"] == "detached"
@@ -947,7 +964,16 @@ def test_detach_timeout_becomes_retryable_reactor_failed(
             await reactor.attach_workspace(canonical, token)
 
         release_periodic_peek.set()
-        await _wait_until(lambda: not entry.owner.thread.is_alive())
+        await async_eventually(
+            lambda: not entry.owner.thread.is_alive(),
+            timeout=5.0,
+            interval=0.01,
+            description="failed detach owner thread stops before retry",
+            snapshot=lambda: {
+                "owner_thread_alive": entry.owner.thread.is_alive(),
+                "entry_status": entry.status,
+            },
+        )
         detached = await reactor.detach_workspace(canonical)
         assert detached["records"][0]["status"] == "detached"
         await reactor.aclose()
@@ -975,10 +1001,20 @@ def test_periodic_peek_marks_lost_identity_without_healing_it(tmp_path: Path) ->
                 )
             admin.close()
 
-            await _wait_until(
+            await async_eventually(
                 lambda: (
                     reactor.list_workspaces()["records"][0]["status"] == "identity_lost"
-                )
+                ),
+                timeout=5.0,
+                interval=0.01,
+                description="periodic peek publishes identity-lost status",
+                snapshot=lambda: {
+                    "record_count": len(reactor.list_workspaces()["records"]),
+                    "statuses": [
+                        record["status"]
+                        for record in reactor.list_workspaces()["records"]
+                    ],
+                },
             )
             assert reactor._entries[canonical].fingerprint is None
             assert json.loads(reactor.current_text) == {
@@ -1043,7 +1079,18 @@ def test_canceled_attach_waiter_does_not_cancel_started_child_lifecycle(
             await attach
 
         release_validation.set()
-        await _wait_until(lambda: bool(reactor.list_workspaces()["records"]))
+        await async_eventually(
+            lambda: bool(reactor.list_workspaces()["records"]),
+            timeout=5.0,
+            interval=0.01,
+            description="canceled attach publishes the started workspace",
+            snapshot=lambda: {
+                "record_count": len(reactor.list_workspaces()["records"]),
+                "statuses": [
+                    record["status"] for record in reactor.list_workspaces()["records"]
+                ],
+            },
+        )
         [record] = reactor.list_workspaces()["records"]
         assert record["status"] == "ready"
         identity_result = await reactor.execute_tool(
@@ -1101,7 +1148,18 @@ def test_canceled_lazy_ensure_publishes_without_admitting_domain_command(
             await call
 
         release_validation.set()
-        await _wait_until(lambda: bool(reactor.list_workspaces()["records"]))
+        await async_eventually(
+            lambda: bool(reactor.list_workspaces()["records"]),
+            timeout=5.0,
+            interval=0.01,
+            description="canceled lazy tool publishes the started workspace",
+            snapshot=lambda: {
+                "record_count": len(reactor.list_workspaces()["records"]),
+                "statuses": [
+                    record["status"] for record in reactor.list_workspaces()["records"]
+                ],
+            },
+        )
         canonical = str(reactor.list_workspaces()["records"][0]["workspace"])
         history = await reactor.execute_tool(
             canonical,

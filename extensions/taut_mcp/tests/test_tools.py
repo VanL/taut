@@ -12,6 +12,7 @@ from typing import Any, cast
 import pytest
 from jsonschema import ValidationError, validate
 from simplebroker import BrokerTarget, Queue
+from tests.helpers.eventually import async_eventually
 
 import taut_mcp._workspace_reactor as workspace_reactor
 from taut import (
@@ -103,14 +104,6 @@ def _workspace_with_two_members(
     other.say("general", f"hello @{selected_name}")
     other.close()
     return workspace, member.token
-
-
-async def _wait_until(predicate: Any, *, timeout: float = 5.0) -> None:
-    deadline = asyncio.get_running_loop().time() + timeout
-    while not predicate():
-        if asyncio.get_running_loop().time() >= deadline:
-            raise AssertionError("condition did not become true")
-        await asyncio.sleep(0.01)
 
 
 def _assert_result(
@@ -1880,8 +1873,17 @@ def test_cancel_before_child_start_is_a_no_op_and_releases_the_slot(
                     {"target": "general", "text": "must not commit"},
                 )
             )
-            await _wait_until(
-                lambda: reactor._entries[canonical].active_command_id is not None
+            await async_eventually(
+                lambda: reactor._entries[canonical].active_command_id is not None,
+                timeout=5.0,
+                interval=0.01,
+                description="started say command occupies the workspace slot",
+                snapshot=lambda: {
+                    "slot_occupied": (
+                        reactor._entries[canonical].active_command_id is not None
+                    ),
+                    "task_done": canceled.done(),
+                },
             )
             canceled.cancel()
             with pytest.raises(asyncio.CancelledError):
@@ -1890,8 +1892,17 @@ def test_cancel_before_child_start_is_a_no_op_and_releases_the_slot(
                 await reactor.detach_workspace(canonical)
 
             release_peek.set()
-            await _wait_until(
-                lambda: reactor._entries[canonical].active_command_id is None
+            await async_eventually(
+                lambda: reactor._entries[canonical].active_command_id is None,
+                timeout=5.0,
+                interval=0.01,
+                description="canceled pre-start command releases the workspace slot",
+                snapshot=lambda: {
+                    "slot_occupied": (
+                        reactor._entries[canonical].active_command_id is not None
+                    ),
+                    "task_done": canceled.done(),
+                },
             )
             observer = TautClient(db_path=workspace / ".taut.db", token=token)
             try:
@@ -1953,8 +1964,17 @@ def test_cancel_after_child_start_discards_result_but_keeps_committed_state(
                 await reactor.detach_workspace(canonical)
 
             release.set()
-            await _wait_until(
-                lambda: reactor._entries[canonical].active_command_id is None
+            await async_eventually(
+                lambda: reactor._entries[canonical].active_command_id is None,
+                timeout=5.0,
+                interval=0.01,
+                description="canceled started command releases the workspace slot",
+                snapshot=lambda: {
+                    "slot_occupied": (
+                        reactor._entries[canonical].active_command_id is not None
+                    ),
+                    "task_done": canceled.done(),
+                },
             )
             observer = TautClient(db_path=workspace / ".taut.db", token=token)
             try:
@@ -2048,8 +2068,17 @@ def test_canceled_started_dm_read_recovers_directory_and_history(
                 await canceled
 
             release.set()
-            await _wait_until(
-                lambda: reactor._entries[canonical].active_command_id is None
+            await async_eventually(
+                lambda: reactor._entries[canonical].active_command_id is None,
+                timeout=5.0,
+                interval=0.01,
+                description="canceled committed read releases the workspace slot",
+                snapshot=lambda: {
+                    "slot_occupied": (
+                        reactor._entries[canonical].active_command_id is not None
+                    ),
+                    "task_done": canceled.done(),
+                },
             )
             directory = await reactor._execute_ready_tool(
                 canonical,
@@ -2701,8 +2730,17 @@ def test_late_search_cancellation_does_not_retry_or_retire_workspace(
             with pytest.raises(asyncio.CancelledError):
                 await pending
             release.set()
-            await _wait_until(
-                lambda: reactor._entries[canonical].active_command_id is None
+            await async_eventually(
+                lambda: reactor._entries[canonical].active_command_id is None,
+                timeout=5.0,
+                interval=0.01,
+                description="canceled search releases the workspace slot",
+                snapshot=lambda: {
+                    "slot_occupied": (
+                        reactor._entries[canonical].active_command_id is not None
+                    ),
+                    "task_done": pending.done(),
+                },
             )
             assert calls == 1
             identity_result = await reactor._execute_ready_tool(

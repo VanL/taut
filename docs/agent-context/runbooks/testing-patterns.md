@@ -110,6 +110,31 @@ Fix:
 - use bounded polling or the existing wait helper
 - do not rely on a single immediate read when behavior settles over time
 
+### Canonical eventual-evidence helper
+
+Use `tests.helpers.eventually.eventually` when a synchronous test already
+polls a side-effect-free predicate for positive evidence. Use
+`async_eventually` when the asyncio event loop must yield between checks. Pass
+an explicit timeout and a concrete description at every call site; add a cheap,
+side-effect-free snapshot when it materially improves timeout triage. Keep
+suite-specific defaults in a thin domain adapter only after enumerating every
+transitive caller and proving every predicate is observation-only. A shared
+`Callable[[], bool]` surface can hide control requests, consumptive reads, or
+identity-touching calls; Summon's mixed-domain adapter therefore remains with
+its owning harness.
+
+A legal predicate observes current state and may be called once more at the
+deadline. It does not consume a broker or pipe record, call `process_once`,
+mutate the system under test, or translate a domain failure into `False`.
+Predicate exceptions remain failures. Snapshot collection runs only after a
+timeout and is best-effort; it must not become a second test action.
+
+Do not use elapsed time to prove non-occurrence. First wait for evidence that
+causally follows the interval under test, then assert the negative invariant
+over retained history or state. Keep blocking primitives, fixed-turn loops,
+protocol reads, and startup-versus-behavior watchdogs in their owning harness
+when they carry stronger semantics than polling.
+
 ### Pattern 5: Prose Pinned Where Structure Is the Contract
 
 Symptoms:

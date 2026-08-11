@@ -29,6 +29,7 @@ from taut.watcher import (
     TautWatcher,
 )
 from tests.conftest import run_cli
+from tests.helpers.eventually import eventually
 
 pytestmark = pytest.mark.sqlite_only
 
@@ -37,15 +38,6 @@ _BASE_REACTOR_SIGINT_PROBE_MODULE = "tests.helpers.base_reactor_sigint_probe"
 _BASE_REACTOR_SIGINT_PROBE_STARTUP_TIMEOUT = 15.0
 _BASE_REACTOR_SIGINT_PROBE_TIMEOUT = 3.0
 _BASE_REACTOR_SIGINT_PROBE_GROUP = pytest.mark.xdist_group("base-reactor-sigint-probe")
-
-
-def _wait_until(predicate: Callable[[], bool], *, timeout: float = 3.0) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        time.sleep(0.01)
-    raise AssertionError("condition was not satisfied before timeout")
 
 
 def _spawn_cli(cwd: Path, *args: object) -> subprocess.Popen[str]:
@@ -233,11 +225,17 @@ def _drain_unread(client: TautClient, thread: str | None = None) -> None:
         pass
 
 
-def _thread_is_read(client: TautClient, thread: str) -> bool:
-    for item in client.list_threads(all_threads=True):
-        if item.name == thread:
-            return not item.unread
-    return False
+def _cursor_reached(
+    client: TautClient,
+    watcher: TautWatcher,
+    thread: str,
+    timestamp: int,
+) -> bool:
+    membership = client._state.get_membership(
+        thread=thread,
+        member_id=watcher.member_id,
+    )
+    return membership is not None and membership["last_seen_ts"] >= timestamp
 
 
 class FakeWaiter:
@@ -574,7 +572,12 @@ def test_base_reactor_background_owner_closes_current_waiter(
     )
     thread = watcher.start()
     try:
-        _wait_until(watcher._strategy.uses_native_activity)
+        eventually(
+            watcher._strategy.uses_native_activity,
+            timeout=3.0,
+            interval=0.01,
+            description="base reactor switches to native activity waiting",
+        )
     finally:
         watcher.stop()
         thread.join(timeout=3.0)
@@ -1636,7 +1639,12 @@ def test_taut_watcher_start_drives_the_same_persistent_instance(tmp_path: Path) 
     watcher = van.watch(lambda _item: None, threads=["foo"])
     thread = watcher.start()
     try:
-        _wait_until(lambda: watcher._drive_thread is thread)
+        eventually(
+            lambda: watcher._drive_thread is thread,
+            timeout=3.0,
+            interval=0.01,
+            description="started watcher owns its returned drive thread",
+        )
         assert not hasattr(watcher, "_thread_watcher")
         assert watcher.is_running()
     finally:
@@ -1765,14 +1773,39 @@ def test_client_watch_filter_delivers_selected_threads_only(tmp_path: Path) -> N
     watcher = van.watch(_record_message_threads(seen), threads=["bar"])
     thread = watcher.start()
     try:
-        _wait_until(thread.is_alive)
+        eventually(
+            thread.is_alive,
+            timeout=3.0,
+            interval=0.01,
+            description="filtered watcher thread starts",
+        )
 
         bob.say("foo", "hidden")
-        bob.say("bar", "visible")
+        visible = bob.say("bar", "visible")
 
-        _wait_until(lambda: ("bar", "visible") in seen)
+        eventually(
+            lambda: ("bar", "visible") in seen,
+            timeout=3.0,
+            interval=0.01,
+            description="filtered watcher delivers the selected bar message",
+            snapshot=lambda: {
+                "thread_alive": thread.is_alive(),
+                "seen_count": len(seen),
+            },
+        )
         assert ("foo", "hidden") not in seen
-        _wait_until(lambda: _thread_is_read(van, "bar"))
+        eventually(
+            lambda: _cursor_reached(van, watcher, "bar", visible.ts),
+            timeout=3.0,
+            interval=0.01,
+            description=(
+                "filtered watcher advances the bar cursor through the selected message"
+            ),
+            snapshot=lambda: {
+                "target_ts": visible.ts,
+                "cursor": watcher._cursors.get("bar", 0),
+            },
+        )
         with pytest.raises(EmptyResultError):
             van.read("bar")
         assert [message.text for message in van.read("foo")] == ["hidden"]
@@ -1803,17 +1836,49 @@ def test_live_watch_filter_drops_left_thread_without_killing_watcher(
     )
     thread = watcher.start()
     try:
-        _wait_until(thread.is_alive)
+        eventually(
+            thread.is_alive,
+            timeout=3.0,
+            interval=0.01,
+            description="membership-refresh watcher thread starts",
+        )
 
         van.leave("foo")
-        _wait_until(lambda: watcher.list_queues() == ["bar"])
+        eventually(
+            lambda: watcher.list_queues() == ["bar"],
+            timeout=3.0,
+            interval=0.01,
+            description="watcher removes the left foo membership",
+            snapshot=lambda: {
+                "thread_alive": thread.is_alive(),
+                "queues": watcher.list_queues(),
+            },
+        )
 
         bob.say("foo", "should not display")
-        bob.say("bar", "still watching")
+        retained = bob.say("bar", "still watching")
 
-        _wait_until(lambda: ("bar", "still watching") in seen)
+        eventually(
+            lambda: ("bar", "still watching") in seen,
+            timeout=3.0,
+            interval=0.01,
+            description="watcher delivers from the retained bar membership",
+            snapshot=lambda: {
+                "thread_alive": thread.is_alive(),
+                "seen_count": len(seen),
+            },
+        )
         assert ("foo", "should not display") not in seen
-        _wait_until(lambda: _thread_is_read(van, "bar"))
+        eventually(
+            lambda: _cursor_reached(van, watcher, "bar", retained.ts),
+            timeout=3.0,
+            interval=0.01,
+            description="watcher advances the bar cursor through the retained message",
+            snapshot=lambda: {
+                "target_ts": retained.ts,
+                "cursor": watcher._cursors.get("bar", 0),
+            },
+        )
         with pytest.raises(EmptyResultError):
             van.read("bar")
         assert thread.is_alive()
@@ -1833,7 +1898,12 @@ def test_live_watcher_receives_message_from_cli_subprocess(tmp_path: Path) -> No
     watcher = van.watch(_record_message_texts(seen))
     thread = watcher.start()
     try:
-        _wait_until(thread.is_alive)
+        eventually(
+            thread.is_alive,
+            timeout=3.0,
+            interval=0.01,
+            description="CLI watcher thread starts",
+        )
 
         rc, _out, err = run_cli(
             "--as",
@@ -1845,7 +1915,16 @@ def test_live_watcher_receives_message_from_cli_subprocess(tmp_path: Path) -> No
         )
 
         assert rc == 0, err
-        _wait_until(lambda: "from subprocess" in seen)
+        eventually(
+            lambda: "from subprocess" in seen,
+            timeout=3.0,
+            interval=0.01,
+            description="watcher delivers the CLI-written foo message",
+            snapshot=lambda: {
+                "thread_alive": thread.is_alive(),
+                "seen_count": len(seen),
+            },
+        )
         assert thread.is_alive()
     finally:
         watcher.stop()
@@ -1899,14 +1978,37 @@ def test_live_watcher_picks_up_mid_watch_join_via_add_queue(tmp_path: Path) -> N
     )
     thread = watcher.start()
     try:
-        _wait_until(thread.is_alive)
+        eventually(
+            thread.is_alive,
+            timeout=3.0,
+            interval=0.01,
+            description="mid-watch membership watcher thread starts",
+        )
 
         van.join("bar")
         bob.join("bar")
         bob.say("bar", "new room")
 
-        _wait_until(lambda: "bar" in watcher.list_queues())
-        _wait_until(lambda: ("bar", "new room") in seen)
+        eventually(
+            lambda: "bar" in watcher.list_queues(),
+            timeout=3.0,
+            interval=0.01,
+            description="watcher adds the joined bar membership",
+            snapshot=lambda: {
+                "thread_alive": thread.is_alive(),
+                "queues": watcher.list_queues(),
+            },
+        )
+        eventually(
+            lambda: ("bar", "new room") in seen,
+            timeout=3.0,
+            interval=0.01,
+            description="watcher delivers from the newly joined bar membership",
+            snapshot=lambda: {
+                "thread_alive": thread.is_alive(),
+                "seen_count": len(seen),
+            },
+        )
         assert "foo" in watcher.list_queues()
     finally:
         watcher.stop()
@@ -1973,15 +2075,38 @@ def test_live_watcher_drop_to_zero_then_rejoin_continues(tmp_path: Path) -> None
     )
     thread = watcher.start()
     try:
-        _wait_until(thread.is_alive)
+        eventually(
+            thread.is_alive,
+            timeout=3.0,
+            interval=0.01,
+            description="zero-membership watcher thread starts",
+        )
 
         van.leave("foo")
-        _wait_until(lambda: watcher.list_queues() == [])
+        eventually(
+            lambda: watcher.list_queues() == [],
+            timeout=3.0,
+            interval=0.01,
+            description="watcher removes its last chat membership",
+            snapshot=lambda: {
+                "thread_alive": thread.is_alive(),
+                "queues": watcher.list_queues(),
+            },
+        )
         van.join("bar")
         bob.join("bar")
         bob.say("bar", "after rejoin")
 
-        _wait_until(lambda: ("bar", "after rejoin") in seen)
+        eventually(
+            lambda: ("bar", "after rejoin") in seen,
+            timeout=3.0,
+            interval=0.01,
+            description="watcher delivers after rejoining bar",
+            snapshot=lambda: {
+                "thread_alive": thread.is_alive(),
+                "seen_count": len(seen),
+            },
+        )
         assert thread.is_alive()
     finally:
         watcher.stop()
@@ -2019,11 +2144,35 @@ def test_live_watcher_does_not_redispatch_after_cursor_advance(
     watcher = van.watch(_record_message_timestamps(seen))
     thread = watcher.start()
     try:
-        _wait_until(thread.is_alive)
+        eventually(
+            thread.is_alive,
+            timeout=3.0,
+            interval=0.01,
+            description="cursor watcher thread starts",
+        )
 
         message = bob.say("foo", "once")
-        _wait_until(lambda: seen.count(message.ts) == 1)
-        _wait_until(lambda: _thread_is_read(van, "foo"))
+        eventually(
+            lambda: seen.count(message.ts) == 1,
+            timeout=3.0,
+            interval=0.01,
+            description="watcher observes the target message exactly once",
+            snapshot=lambda: {
+                "thread_alive": thread.is_alive(),
+                "target_count": seen.count(message.ts),
+                "seen_count": len(seen),
+            },
+        )
+        eventually(
+            lambda: _cursor_reached(van, watcher, "foo", message.ts),
+            timeout=3.0,
+            interval=0.01,
+            description="watcher advances the foo cursor through the target message",
+            snapshot=lambda: {
+                "target_ts": message.ts,
+                "cursor": watcher._cursors.get("foo", 0),
+            },
+        )
 
         assert seen.count(message.ts) == 1
         with pytest.raises(EmptyResultError):
@@ -2070,10 +2219,24 @@ def test_taut_watcher_skips_message_deleted_before_fetch(tmp_path: Path) -> None
     watcher = reader.watch(_record_message_timestamps(seen))
     thread = watcher.start()
     try:
-        _wait_until(thread.is_alive)
+        eventually(
+            thread.is_alive,
+            timeout=3.0,
+            interval=0.01,
+            description="deleted-message watcher thread starts",
+        )
 
         later = author.say("foo", "surviving later message")
-        _wait_until(lambda: later.ts in seen)
+        eventually(
+            lambda: later.ts in seen,
+            timeout=3.0,
+            interval=0.01,
+            description="watcher delivers the surviving later message",
+            snapshot=lambda: {
+                "thread_alive": thread.is_alive(),
+                "seen_count": len(seen),
+            },
+        )
         assert seen == [later.ts]
     finally:
         watcher.stop()
@@ -2105,7 +2268,7 @@ def test_taut_watcher_may_display_message_deleted_after_fetch(
         watcher.process_once()
         assert seen == [target.ts]
         assert reader.queue("foo").peek_one(exact_timestamp=target.ts) is None
-        assert _thread_is_read(reader, "foo")
+        assert _cursor_reached(reader, watcher, "foo", target.ts)
 
         watcher.process_once()
         assert seen == [target.ts]
@@ -2144,8 +2307,28 @@ def test_taut_watcher_cursor_failure_replays_after_restart(
     second = van.watch(_record_message_timestamps(second_seen))
     second_thread = second.start()
     try:
-        _wait_until(lambda: second_seen == [message.ts])
-        _wait_until(lambda: _thread_is_read(van, "foo"))
+        eventually(
+            lambda: second_seen == [message.ts],
+            timeout=3.0,
+            interval=0.01,
+            description="replacement watcher replays the cursor-failed message",
+            snapshot=lambda: {
+                "thread_alive": second_thread.is_alive(),
+                "target_count": second_seen.count(message.ts),
+            },
+        )
+        eventually(
+            lambda: _cursor_reached(van, second, "foo", message.ts),
+            timeout=3.0,
+            interval=0.01,
+            description=(
+                "replacement watcher advances the foo cursor through the replayed message"
+            ),
+            snapshot=lambda: {
+                "target_ts": message.ts,
+                "cursor": second._cursors.get("foo", 0),
+            },
+        )
     finally:
         second.stop()
         second_thread.join(timeout=3.0)
@@ -2183,7 +2366,17 @@ def test_taut_watcher_preserves_per_queue_order_without_handler_overlap(
         bob.say("beta", "b1")
         bob.say("alpha", "a2")
         bob.say("beta", "b2")
-        _wait_until(lambda: len(seen) == 4)
+        eventually(
+            lambda: len(seen) == 4,
+            timeout=3.0,
+            interval=0.01,
+            description="watcher delivers all four ordered messages",
+            snapshot=lambda: {
+                "thread_alive": watcher_thread.is_alive(),
+                "target_count": 4,
+                "seen_count": len(seen),
+            },
+        )
     finally:
         watcher.stop()
         watcher_thread.join(timeout=3.0)
@@ -2237,21 +2430,38 @@ def test_watcher_poison_message_advances_after_three_failures(
     )
     thread = watcher.start()
     try:
-        _wait_until(thread.is_alive)
+        eventually(
+            thread.is_alive,
+            timeout=3.0,
+            interval=0.01,
+            description="poison-message watcher thread starts",
+        )
 
         message = client.say("foo", "poison")
         failure_key = (message.thread, message.ts)
 
         def poison_message_advanced() -> bool:
-            if attempts.count(message.ts) != 3 or failure_key in watcher._failures:
-                return False
-            try:
-                client.list_threads()
-            except EmptyResultError:
-                return True
-            return False
+            return (
+                attempts.count(message.ts) == 3
+                and failure_key not in watcher._failures
+                and _cursor_reached(client, watcher, "foo", message.ts)
+            )
 
-        _wait_until(poison_message_advanced)
+        eventually(
+            poison_message_advanced,
+            timeout=3.0,
+            interval=0.01,
+            description=(
+                "watcher retries the poison message three times and advances its cursor"
+            ),
+            snapshot=lambda: {
+                "thread_alive": thread.is_alive(),
+                "target_ts": message.ts,
+                "attempt_count": attempts.count(message.ts),
+                "failure_pending": failure_key in watcher._failures,
+                "cursor": watcher._cursors.get("foo", 0),
+            },
+        )
 
         assert attempts.count(message.ts) == 3
         assert failure_key not in watcher._failures
@@ -2292,12 +2502,37 @@ def test_stop_watching_from_refreshed_chat_queue_does_not_poison_advance(
     )
     thread = watcher.start()
     try:
-        _wait_until(thread.is_alive)
+        eventually(
+            thread.is_alive,
+            timeout=3.0,
+            interval=0.01,
+            description="late-membership watcher thread starts",
+        )
         van.join("late")
         bob.join("late")
-        _wait_until(lambda: "late" in watcher.list_queues())
+        eventually(
+            lambda: "late" in watcher.list_queues(),
+            timeout=3.0,
+            interval=0.01,
+            description="watcher adds the late membership",
+            snapshot=lambda: {
+                "thread_alive": thread.is_alive(),
+                "stop_requested": watcher._stop_requested,
+                "queues": watcher.list_queues(),
+            },
+        )
         bob.say("late", "terminal sink probe")
-        _wait_until(lambda: not thread.is_alive())
+        eventually(
+            lambda: not thread.is_alive(),
+            timeout=3.0,
+            interval=0.01,
+            description="StopWatching from the late chat handler stops the watcher",
+            snapshot=lambda: {
+                "thread_alive": thread.is_alive(),
+                "attempted_count": len(attempted),
+                "stop_requested": watcher._stop_requested,
+            },
+        )
 
         assert len(attempted) == 1
         unread = van.read_unread("late")
@@ -2327,9 +2562,24 @@ def test_stop_watching_from_notification_queue_stops_reactor(tmp_path: Path) -> 
     watcher = _white_box_watcher(van, closed_sink)
     thread = watcher.start()
     try:
-        _wait_until(thread.is_alive)
+        eventually(
+            thread.is_alive,
+            timeout=3.0,
+            interval=0.01,
+            description="notification watcher thread starts",
+        )
         bob.say("foo", "@van ping")
-        _wait_until(lambda: not thread.is_alive())
+        eventually(
+            lambda: not thread.is_alive(),
+            timeout=3.0,
+            interval=0.01,
+            description="StopWatching from the notification handler stops the watcher",
+            snapshot=lambda: {
+                "thread_alive": thread.is_alive(),
+                "attempted_count": len(attempted),
+                "stop_requested": watcher._stop_requested,
+            },
+        )
 
         assert len(attempted) == 1
     finally:
@@ -2358,14 +2608,37 @@ def test_watcher_claims_mention_notification_without_consuming_chat(
     watcher = bob.watch(collect, threads=["foo"])
     thread = watcher.start()
     try:
-        _wait_until(thread.is_alive)
+        eventually(
+            thread.is_alive,
+            timeout=3.0,
+            interval=0.01,
+            description="mention-claim watcher thread starts",
+        )
 
         written = van.say("foo", "hello @bob")
 
-        _wait_until(
-            lambda: any(item.message_ts == written.ts for item in seen_notifications)
+        eventually(
+            lambda: any(item.message_ts == written.ts for item in seen_notifications),
+            timeout=3.0,
+            interval=0.01,
+            description="watcher claims the target mention notification",
+            snapshot=lambda: {
+                "thread_alive": thread.is_alive(),
+                "target_ts": written.ts,
+                "notification_count": len(seen_notifications),
+            },
         )
-        _wait_until(lambda: any(item.ts == written.ts for item in seen_messages))
+        eventually(
+            lambda: any(item.ts == written.ts for item in seen_messages),
+            timeout=3.0,
+            interval=0.01,
+            description="watcher still delivers the target chat message",
+            snapshot=lambda: {
+                "thread_alive": thread.is_alive(),
+                "target_ts": written.ts,
+                "seen_count": len(seen_messages),
+            },
+        )
         with pytest.raises(EmptyResultError):
             bob.inbox()
         assert "hello @bob" in [message.text for message in bob.log("foo")]
@@ -2388,19 +2661,32 @@ def test_watcher_claims_reaction_notification_without_source_preflight(
     watcher = alice.watch(seen.append, threads=["foo"])
     thread = watcher.start()
     try:
-        _wait_until(thread.is_alive)
+        eventually(
+            thread.is_alive,
+            timeout=3.0,
+            interval=0.01,
+            description="reaction-claim watcher thread starts",
+        )
 
         bob.react_to_message(str(target.ts), "ack")
         alice.delete_message(str(target.ts))
 
-        _wait_until(
+        eventually(
             lambda: any(
                 isinstance(item, Notification)
                 and item.type == "reaction"
                 and item.message_ts == target.ts
                 and item.reaction == "ack"
                 for item in seen
-            )
+            ),
+            timeout=3.0,
+            interval=0.01,
+            description="watcher claims the target reaction notification",
+            snapshot=lambda: {
+                "thread_alive": thread.is_alive(),
+                "target_ts": target.ts,
+                "seen_count": len(seen),
+            },
         )
         with pytest.raises(EmptyResultError):
             alice.inbox()
@@ -2480,12 +2766,27 @@ def test_multi_queue_watcher_remove_first_queue_keeps_data_version_polling(
         assert "guard.first" not in closed_queues
 
         thread = watcher.start()
-        _wait_until(thread.is_alive)
+        eventually(
+            thread.is_alive,
+            timeout=3.0,
+            interval=0.01,
+            description="data-version guard watcher thread starts",
+        )
 
         with Queue("guard.second", db_path=str(tmp_path / ".taut.db")) as writer:
             writer.write("still alive")
 
-        _wait_until(lambda: ("guard.second", "still alive") in seen)
+        eventually(
+            lambda: ("guard.second", "still alive") in seen,
+            timeout=3.0,
+            interval=0.01,
+            description="watcher delivers from the retained data-version queue",
+            snapshot=lambda: {
+                "thread_alive": thread.is_alive(),
+                "target_count": 1,
+                "seen_count": len(seen),
+            },
+        )
         assert not any(name == "guard.first" for name, _ in seen)
     finally:
         watcher.stop()
@@ -2527,12 +2828,27 @@ def test_multi_queue_watcher_remove_non_data_version_queue_unregisters_only(
         assert isinstance(watcher._get_queue_for_data_version().get_data_version(), int)
 
         thread = watcher.start()
-        _wait_until(thread.is_alive)
+        eventually(
+            thread.is_alive,
+            timeout=3.0,
+            interval=0.01,
+            description="non-data-version removal watcher thread starts",
+        )
 
         with Queue("close.first", db_path=str(tmp_path / ".taut.db")) as writer:
             writer.write("first still watched")
 
-        _wait_until(lambda: ("close.first", "first still watched") in seen)
+        eventually(
+            lambda: ("close.first", "first still watched") in seen,
+            timeout=3.0,
+            interval=0.01,
+            description="watcher delivers from the retained first queue",
+            snapshot=lambda: {
+                "thread_alive": thread.is_alive(),
+                "target_count": 1,
+                "seen_count": len(seen),
+            },
+        )
     finally:
         watcher.stop()
         if thread is not None:
@@ -2588,20 +2904,57 @@ def test_taut_watcher_membership_churn_closes_removed_queues(
         )
 
     try:
-        _wait_until(thread.is_alive)
+        eventually(
+            thread.is_alive,
+            timeout=3.0,
+            interval=0.01,
+            description="membership-churn watcher thread starts",
+        )
 
         for cycle in range(10):
             name = f"churn{cycle}"
             van.join(name)
-            _wait_until(partial(queue_listed, name))
+            eventually(
+                partial(queue_listed, name),
+                timeout=3.0,
+                interval=0.01,
+                description=f"watcher adds {name} during membership churn",
+                snapshot=lambda: {
+                    "thread_alive": thread.is_alive(),
+                    "stop_requested": watcher._stop_requested,
+                    "queues": watcher.list_queues(),
+                },
+            )
             van.leave(name)
-            _wait_until(partial(queue_removed_and_closed, name))
+            eventually(
+                partial(queue_removed_and_closed, name),
+                timeout=3.0,
+                interval=0.01,
+                description=f"watcher removes and closes {name} during membership churn",
+                snapshot=lambda: {
+                    "thread_alive": thread.is_alive(),
+                    "queues": watcher.list_queues(),
+                    "closed_queue_names": [
+                        queue_name for queue_name, _close_thread in closed_queues
+                    ],
+                },
+            )
             assert (name, thread) in closed_queues
 
         # Functional assertion — unconditional on every platform: the
         # watcher still delivers messages after ten join/leave cycles.
         bob.say("home", "after churn")
-        _wait_until(lambda: ("home", "after churn") in seen)
+        eventually(
+            lambda: ("home", "after churn") in seen,
+            timeout=3.0,
+            interval=0.01,
+            description="watcher delivers after membership churn",
+            snapshot=lambda: {
+                "thread_alive": thread.is_alive(),
+                "target_count": 1,
+                "seen_count": len(seen),
+            },
+        )
     finally:
         watcher.stop()
         thread.join(timeout=2)
@@ -2627,7 +2980,12 @@ def test_taut_watcher_stop_closes_persistent_queues(
     monkeypatch.setattr(Queue, "close", close_spy)
     thread = watcher.start()
     try:
-        _wait_until(thread.is_alive)
+        eventually(
+            thread.is_alive,
+            timeout=3.0,
+            interval=0.01,
+            description="persistent-queue watcher thread starts",
+        )
     finally:
         watcher.stop()
         thread.join(timeout=2)
@@ -2655,11 +3013,26 @@ def test_watcher_runs_with_no_chat_threads_for_notification_inbox(
     watcher = bob.watch(collect)
     thread = watcher.start()
     try:
-        _wait_until(thread.is_alive)
+        eventually(
+            thread.is_alive,
+            timeout=3.0,
+            interval=0.01,
+            description="notification-only watcher thread starts",
+        )
 
         written = van.say("foo", "ping @bob")
 
-        _wait_until(lambda: any(item.message_ts == written.ts for item in seen))
+        eventually(
+            lambda: any(item.message_ts == written.ts for item in seen),
+            timeout=3.0,
+            interval=0.01,
+            description="notification-only watcher delivers the target mention",
+            snapshot=lambda: {
+                "thread_alive": thread.is_alive(),
+                "target_ts": written.ts,
+                "seen_count": len(seen),
+            },
+        )
         assert thread.is_alive()
     finally:
         watcher.stop()

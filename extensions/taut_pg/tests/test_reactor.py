@@ -16,17 +16,22 @@ from taut._exceptions import EmptyResultError
 from taut.client import Message, Notification, TautClient
 from taut.client._watching import _watch_runtime_for_client
 from taut.watcher import TautWatcher
+from tests.helpers.eventually import eventually
 
 pytestmark = pytest.mark.pg_only
 
 
-def _wait_until(predicate: Callable[[], bool], *, timeout: float = 5.0) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        time.sleep(0.01)
-    raise AssertionError("condition was not satisfied before timeout")
+def _cursor_reached(
+    client: TautClient,
+    watcher: TautWatcher,
+    thread: str,
+    timestamp: int,
+) -> bool:
+    membership = client._state.get_membership(
+        thread=thread,
+        member_id=watcher.member_id,
+    )
+    return membership is not None and membership["last_seen_ts"] >= timestamp
 
 
 class RecordingNativeWaiter:
@@ -110,19 +115,26 @@ def test_taut_watcher_polls_and_refreshes_membership_without_native_waiter(  # n
         else:
             drive_errors.append(args.exc_value)
 
-    def new_room_is_read() -> bool:
-        return any(
-            row.name == "new-room" and not row.unread
-            for row in van.list_threads(all_threads=True)
-        )
-
-    def wait_while_drive_is_healthy(predicate: Callable[[], bool]) -> None:
+    def wait_while_drive_is_healthy(
+        predicate: Callable[[], bool],
+        *,
+        description: str,
+    ) -> None:
         def check() -> bool:
             if drive_errors:
                 raise AssertionError("watcher drive thread failed") from drive_errors[0]
             return predicate()
 
-        _wait_until(check)
+        eventually(
+            check,
+            timeout=5.0,
+            interval=0.01,
+            description=description,
+            snapshot=lambda: {
+                "thread_alive": thread.is_alive(),
+                "drive_errors": len(drive_errors),
+            },
+        )
 
     monkeypatch.setattr(threading, "excepthook", record_drive_error)
 
@@ -142,7 +154,10 @@ def test_taut_watcher_polls_and_refreshes_membership_without_native_waiter(  # n
 
         van.join("new-room")
         bob.join("new-room")
-        wait_while_drive_is_healthy(lambda: "new-room" in watcher.list_queues())
+        wait_while_drive_is_healthy(
+            lambda: "new-room" in watcher.list_queues(),
+            description="PG polling watcher adds new-room membership",
+        )
 
         written = bob.say("new-room", "polled delivery")
         expected = (written.thread, written.text, written.ts)
@@ -151,8 +166,14 @@ def test_taut_watcher_polls_and_refreshes_membership_without_native_waiter(  # n
             with observation_lock:
                 return expected in seen
 
-        wait_while_drive_is_healthy(delivery_seen)
-        wait_while_drive_is_healthy(new_room_is_read)
+        wait_while_drive_is_healthy(
+            delivery_seen,
+            description="PG polling watcher observes new-room delivery",
+        )
+        wait_while_drive_is_healthy(
+            lambda: _cursor_reached(van, watcher, "new-room", written.ts),
+            description="PG polling watcher advances the new-room cursor",
+        )
         with pytest.raises(EmptyResultError):
             van.read("new-room")
         with observation_lock:
@@ -259,8 +280,19 @@ def test_taut_watcher_native_waiter_rebinds_on_membership_topology_change(  # no
     )
     thread = watcher.start()
     try:
-        _wait_until(thread.is_alive)
-        _wait_until(lambda: len(proxies) == 1)
+        eventually(
+            thread.is_alive,
+            timeout=5.0,
+            interval=0.01,
+            description="PG native-waiter watcher thread starts",
+        )
+        eventually(
+            lambda: len(proxies) == 1,
+            timeout=5.0,
+            interval=0.01,
+            description="PG watcher creates initial native waiter",
+            snapshot=lambda: {"proxy_count": len(proxies)},
+        )
         initial_proxy = proxies[0]
         assert "home" in initial_proxy.queue_names
         assert "new-room" not in initial_proxy.queue_names
@@ -268,22 +300,66 @@ def test_taut_watcher_native_waiter_rebinds_on_membership_topology_change(  # no
         van.join("new-room")
         bob.join("new-room")
         bob.say("home", "refresh-add")
-        _wait_until(lambda: refresh_count >= 1)
-        _wait_until(lambda: "new-room" in watcher.list_queues())
-        _wait_until(lambda: len(proxies) >= 2 and initial_proxy.close_calls == 1)
+        eventually(
+            lambda: refresh_count >= 1,
+            timeout=5.0,
+            interval=0.01,
+            description="PG watcher refreshes added membership",
+        )
+        eventually(
+            lambda: "new-room" in watcher.list_queues(),
+            timeout=5.0,
+            interval=0.01,
+            description="PG watcher lists added new-room membership",
+        )
+        eventually(
+            lambda: len(proxies) >= 2 and initial_proxy.close_calls == 1,
+            timeout=5.0,
+            interval=0.01,
+            description="PG watcher rebinds native waiter after membership add",
+            snapshot=lambda: {
+                "proxy_count": len(proxies),
+                "initial_close_calls": initial_proxy.close_calls,
+            },
+        )
         add_proxy = proxies[-1]
         assert "new-room" in add_proxy.queue_names
 
         new_room_wake_floor = add_proxy.true_wakes
         bob.say("new-room", "native-wake")
-        _wait_until(lambda: ("new-room", "native-wake") in seen, timeout=3.0)
+        eventually(
+            lambda: ("new-room", "native-wake") in seen,
+            timeout=3.0,
+            interval=0.01,
+            description="PG native waiter delivers new-room message",
+            snapshot=lambda: {"seen_count": len(seen)},
+        )
         assert new_room_native_before_handler == [True]
 
         van.leave("new-room")
         bob.say("home", "refresh-remove")
-        _wait_until(lambda: refresh_count >= 2)
-        _wait_until(lambda: "new-room" not in watcher.list_queues())
-        _wait_until(lambda: len(proxies) >= 3 and add_proxy.close_calls == 1)
+        eventually(
+            lambda: refresh_count >= 2,
+            timeout=5.0,
+            interval=0.01,
+            description="PG watcher refreshes removed membership",
+        )
+        eventually(
+            lambda: "new-room" not in watcher.list_queues(),
+            timeout=5.0,
+            interval=0.01,
+            description="PG watcher removes new-room membership",
+        )
+        eventually(
+            lambda: len(proxies) >= 3 and add_proxy.close_calls == 1,
+            timeout=5.0,
+            interval=0.01,
+            description="PG watcher rebinds native waiter after membership removal",
+            snapshot=lambda: {
+                "proxy_count": len(proxies),
+                "added_close_calls": add_proxy.close_calls,
+            },
+        )
         remaining_proxy = proxies[-1]
         assert "home" in remaining_proxy.queue_names
         assert "new-room" not in remaining_proxy.queue_names
@@ -297,7 +373,13 @@ def test_taut_watcher_native_waiter_rebinds_on_membership_topology_change(  # no
             assert ("new-room", "removed-no-wake") not in seen
 
         bob.say("home", "remaining-wake")
-        _wait_until(lambda: ("home", "remaining-wake") in seen)
+        eventually(
+            lambda: ("home", "remaining-wake") in seen,
+            timeout=5.0,
+            interval=0.01,
+            description="PG remaining native waiter delivers home message",
+            snapshot=lambda: {"seen_count": len(seen)},
+        )
         assert remaining_proxy.true_wakes > removed_baseline
         assert home_native_before_handler == [True]
     finally:
