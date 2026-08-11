@@ -2062,7 +2062,7 @@ def test_invalid_unread_limit_does_not_implicitly_join_subthread(
     assert peek_calls == []
 
 
-def test_read_unread_advances_cursor_once_for_a_full_thread_page(
+def test_read_unread_advances_cursor_once_for_returned_page(
     tmp_path: Path,
 ) -> None:
     van = client(tmp_path, "van")
@@ -2076,9 +2076,10 @@ def test_read_unread_advances_cursor_once_for_a_full_thread_page(
             kind="message",
             text=f"message {index}",
         )
-        for index in range(1000)
+        for index in range(3)
     ]
-    timestamps = [queue.generate_timestamp() for _ in bodies]
+    first_ts = queue.generate_timestamp() + 1
+    timestamps = [first_ts + offset for offset in range(len(bodies))]
     queue.insert_messages(list(zip(bodies, timestamps, strict=True)))
     delegate = van._state
 
@@ -2102,7 +2103,7 @@ def test_read_unread_advances_cursor_once_for_a_full_thread_page(
 
     unread = van.read_unread("general")
 
-    assert len(unread) == 1000
+    assert [message.ts for message in unread] == timestamps
     assert counting.advance_calls == [timestamps[-1]]
     membership = delegate.get_membership(thread="general", member_id=member_id)
     assert membership is not None
@@ -2123,7 +2124,8 @@ def test_unread_limit_accepts_one_and_one_thousand(tmp_path: Path) -> None:
         )
         for index in range(1001)
     ]
-    timestamps = [queue.generate_timestamp() for _ in bodies]
+    first_ts = queue.generate_timestamp() + 1
+    timestamps = [first_ts + offset for offset in range(len(bodies))]
     queue.insert_messages(list(zip(bodies, timestamps, strict=True)))
 
     first = van.read_unread("general", limit=1)

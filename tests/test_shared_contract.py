@@ -42,6 +42,7 @@ from taut.client import (
     TautClient,
     Thread,
 )
+from taut.envelope import encode_envelope
 from taut.state import SqlDialect, dialect_for_taut_target
 from tests.conftest import build_cli_env, run_cli
 
@@ -204,7 +205,20 @@ def test_project_read_limit_paginates_without_skipping(taut_project: Path) -> No
     writer.join("general")
     reader.read("general")
     reader_id = reader.whoami().member_id
-    written = [writer.say("general", f"message {index}") for index in range(250)]
+    writer_identity = writer.whoami()
+    queue = writer.queue("general")
+    bodies = [
+        encode_envelope(
+            from_id=writer_identity.member_id,
+            from_name=writer_identity.name,
+            kind="message",
+            text=f"message {index}",
+        )
+        for index in range(250)
+    ]
+    first_written_ts = queue.generate_timestamp() + 1
+    written_timestamps = [first_written_ts + offset for offset in range(len(bodies))]
+    queue.insert_messages(list(zip(bodies, written_timestamps, strict=True)))
 
     pages: list[list[Message]] = []
     cursor_timestamps: list[int] = []
@@ -220,15 +234,16 @@ def test_project_read_limit_paginates_without_skipping(taut_project: Path) -> No
     assert [len(page) for page in pages] == [100, 100, 50]
     for page_index, page in enumerate(pages):
         start = page_index * 100
-        expected = written[start : start + 100]
+        expected_timestamps = written_timestamps[start : start + 100]
         assert [message.text for message in page] == [
-            f"message {index}" for index in range(start, start + len(expected))
+            f"message {index}"
+            for index in range(start, start + len(expected_timestamps))
         ]
-        assert [message.ts for message in page] == [message.ts for message in expected]
+        assert [message.ts for message in page] == expected_timestamps
         assert cursor_timestamps[page_index] == page[-1].ts
 
     returned_timestamps = [message.ts for page in pages for message in page]
-    assert returned_timestamps == [message.ts for message in written]
+    assert returned_timestamps == written_timestamps
     with pytest.raises(EmptyResultError):
         reader.read("general", limit=100)
 
