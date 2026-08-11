@@ -18,6 +18,7 @@ import subprocess
 import sys
 import threading
 import time
+import weakref
 from pathlib import Path
 from typing import Any, ClassVar, cast
 
@@ -239,11 +240,13 @@ def test_rate_audit_reconciles_late_join_leave_and_rejoin_with_real_queues(
         driver_start_time="driver-start",
         audit_start_ts=audit_start,
     )
-    closed: list[int] = []
+    # Keep identity without extending object lifetime: CPython may reuse a
+    # closed queue's id for a later audit handle.
+    closed: list[weakref.ReferenceType[Queue]] = []
     real_close = Queue.close
 
     def close_spy(queue: Queue) -> None:
-        closed.append(id(queue))
+        closed.append(weakref.ref(queue))
         real_close(queue)
 
     monkeypatch.setattr(Queue, "close", close_spy)
@@ -262,7 +265,7 @@ def test_rate_audit_reconciles_late_join_leave_and_rejoin_with_real_queues(
         actor.leave("ops")
         loop._audit_pass()
         assert "ops" not in loop._thread_queues
-        assert closed.count(id(first_handle)) == 1
+        assert any(queue_ref() is first_handle for queue_ref in closed)
 
         actor.join("ops")
         actor.say("ops", "after rejoin")
