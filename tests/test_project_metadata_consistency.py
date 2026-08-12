@@ -87,6 +87,22 @@ def test_package_versions_and_derived_metadata_match_their_owners() -> None:
     assert isinstance(dev, list)
     assert f"simplebroker-pg>={simplebroker_pg_floor}" in dev
     assert f"taut-summon>={summon_version}" in dev
+    assert optional["all"] == [
+        f"taut-pg>={pg_version}",
+        f"taut-summon>={summon_version}",
+        f"taut-mcp>={mcp_version}",
+    ]
+
+    root_tool = root_manifest["tool"]
+    assert isinstance(root_tool, dict)
+    root_uv = root_tool["uv"]
+    assert isinstance(root_uv, dict)
+    root_sources = root_uv["sources"]
+    assert isinstance(root_sources, dict)
+    assert root_sources["taut-mcp"] == {
+        "path": "./extensions/taut_mcp",
+        "editable": True,
+    }
 
     mcp_optional = mcp["optional-dependencies"]
     assert isinstance(mcp_optional, dict)

@@ -211,7 +211,8 @@ def _prepare_invocation(
             environment.stdout,
             environment.stderr,
             escape_description=(
-                not merged.json or _command_tail_requests_help(command_tail)
+                (not selected.spec.raw_stdio_transport and not merged.json)
+                or _command_tail_requests_help(command_tail)
             ),
         )
     except BaseException as exc:
@@ -246,7 +247,8 @@ def _prepare_invocation(
         stderr=environment.stderr,
         _client_factory=environment.client_factory,
     )
-    if not context.json:
+    assert selected.spec is not None
+    if not context.json and not selected.spec.raw_stdio_transport:
         from taut.commands._rendering import preflight_human_output_policy
 
         preflight_human_output_policy()

@@ -281,6 +281,41 @@ def test_empty_stdio_server_initializes_with_fixed_manifest() -> None:
     )
 
 
+@pytest.mark.timeout(10)
+def test_main_taut_extension_path_initializes_same_stdio_server() -> None:
+    """[TAUT-8.6]/[MCP-3] Installed MCP is operable through primary taut."""
+
+    asyncio.run(
+        _inspect_empty_server(
+            sys.executable,
+            ["-m", "taut", "mcp"],
+            cwd=EXTENSION_ROOT,
+            env=os.environ.copy(),
+        )
+    )
+
+
+@pytest.mark.timeout(10)
+def test_main_taut_path_forwards_claude_channel_launch_flag() -> None:
+    """[MCP-3] The main path shares the standalone launch flag grammar."""
+
+    async def scenario() -> None:
+        parameters = StdioServerParameters(
+            command=sys.executable,
+            args=["-m", "taut", "mcp", "--claude-channel"],
+            cwd=EXTENSION_ROOT,
+            env=os.environ.copy(),
+        )
+        async with (
+            stdio_client(parameters) as (read_stream, write_stream),
+            ClientSession(read_stream, write_stream) as session,
+        ):
+            initialized = await session.initialize()
+        assert initialized.capabilities.experimental == {"claude/channel": {}}
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.sqlite_only
 @pytest.mark.timeout(15)
 def test_modern_discovery_lazy_identity_and_subscription_share_one_server(
@@ -592,6 +627,101 @@ def test_startup_argument_failure_is_one_line_exit_one() -> None:
 
 
 @pytest.mark.timeout(10)
+def test_main_taut_path_argument_failure_names_selected_command() -> None:
+    """[TAUT-8.6]/[MCP-3] Root-owned usage stays text before protocol start."""
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "taut", "mcp", "--not-a-real-option"],
+        cwd=EXTENSION_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    assert completed.returncode == 1
+    assert completed.stdout == ""
+    assert completed.stderr.endswith(
+        "taut mcp: error: unrecognized arguments: --not-a-real-option\n"
+    )
+    assert "Traceback" not in completed.stderr
+
+
+@pytest.mark.timeout(10)
+def test_main_taut_path_help_keeps_server_runtime_lazy() -> None:
+    """[TAUT-8.6] Command help loads parser glue, not MCP runtime owners."""
+
+    probe = """
+import contextlib
+import io
+import json
+import sys
+from taut.cli import main
+
+with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+    assert main(["mcp", "--help"]) == 0
+print(json.dumps(sorted(name for name in sys.modules if name.startswith("taut_mcp"))))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=EXTENSION_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    modules = set(json.loads(completed.stdout))
+    assert "taut_mcp.command_manifest" in modules
+    assert "taut_mcp.command" in modules
+    assert "taut_mcp.cli" in modules
+    assert "taut_mcp.server" not in modules
+    assert "taut_mcp._process_reactor" not in modules
+    assert "taut_mcp._workspace_reactor" not in modules
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["-m", "taut_mcp", "--version"], f"taut-mcp {EXPECTED_VERSION}\n"),
+        (["-m", "taut", "mcp", "--version"], f"taut mcp {EXPECTED_VERSION}\n"),
+    ],
+)
+def test_launch_surfaces_report_same_version_with_own_program_name(
+    argv: list[str],
+    expected: str,
+) -> None:
+    completed = subprocess.run(
+        [sys.executable, *argv],
+        cwd=EXTENSION_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    assert completed.returncode == 0
+    assert completed.stdout == expected
+    assert completed.stderr == ""
+
+
+@pytest.mark.timeout(10)
+def test_main_taut_path_ignores_ambient_terminal_policy(tmp_path: Path) -> None:
+    """[TAUT-8.6]/[MCP-3] Raw protocol startup does not inspect project policy."""
+
+    (tmp_path / ".taut.toml").write_text(
+        "version = 1\n[terminal_text]\nescape_patterns = [\n",
+        encoding="utf-8",
+    )
+    asyncio.run(
+        _inspect_empty_server(
+            sys.executable,
+            ["-m", "taut", "mcp"],
+            cwd=tmp_path,
+            env=os.environ.copy(),
+        )
+    )
+
+
+@pytest.mark.timeout(10)
 def test_malformed_frame_stays_protocol_clean_and_does_not_traceback() -> None:
     """[MCP-3]/[MCP-12] A recoverable malformed request stays framed."""
 
@@ -642,6 +772,36 @@ cli.main([])
 
 
 @pytest.mark.timeout(10)
+def test_main_taut_path_shares_fixed_fatal_failure_mapping() -> None:
+    """[TAUT-8.6]/[MCP-3] Both launch surfaces use one process runner."""
+
+    server_code = """
+from taut.commands._dispatch import dispatch
+from taut_mcp import cli
+
+async def fail_server(*, claude_channel=False):
+    del claude_channel
+    raise RuntimeError("sensitive backend detail")
+
+cli.run_server = fail_server
+raise SystemExit(dispatch(["mcp"]))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", server_code],
+        cwd=EXTENSION_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    assert completed.returncode == 1
+    assert completed.stdout == ""
+    assert completed.stderr == "taut-mcp: fatal server error\n"
+    assert "sensitive" not in completed.stderr
+    assert "Traceback" not in completed.stderr
+
+
+@pytest.mark.timeout(10)
 def test_windows_einval_is_a_broken_output_transport(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -657,7 +817,14 @@ def test_windows_einval_is_a_broken_output_transport(
 
 
 @pytest.mark.timeout(10)
-def test_broken_stdout_after_initialize_is_a_clean_transport_exit() -> None:  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-019] exception
+@pytest.mark.parametrize(
+    "launcher",
+    (["-m", "taut_mcp"], ["-m", "taut", "mcp"]),
+    ids=("standalone", "main-taut-path"),
+)
+def test_broken_stdout_after_initialize_is_a_clean_transport_exit(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-019] exception
+    launcher: list[str],
+) -> None:
     """[MCP-3] A peer-closing output pipe after connection exits zero."""
 
     def peer_closed(exc: OSError) -> bool:
@@ -666,7 +833,7 @@ def test_broken_stdout_after_initialize_is_a_clean_transport_exit() -> None:  # 
         )
 
     process = subprocess.Popen(
-        [sys.executable, "-m", "taut_mcp"],
+        [sys.executable, *launcher],
         cwd=EXTENSION_ROOT,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -2202,7 +2369,7 @@ main([])
 
 
 @pytest.mark.installed_wheel
-@pytest.mark.timeout(30)
+@pytest.mark.timeout(45)
 def test_installed_wheel_initializes_through_console_script(tmp_path: Path) -> None:
     core_dist = tmp_path / "core-dist"
     mcp_dist = tmp_path / "mcp-dist"
@@ -2264,6 +2431,27 @@ def test_installed_wheel_initializes_through_console_script(tmp_path: Path) -> N
         text=True,
     )
     assert installed_probe.returncode == 0, installed_probe.stderr
+    metadata_probe = subprocess.run(
+        [
+            str(python),
+            "-c",
+            (
+                "from importlib.metadata import distribution; "
+                "core = distribution('taut-chat'); mcp = distribution('taut-mcp'); "
+                "all_requirements = {item.split('>=', 1)[0] for item in "
+                "(core.requires or []) if \"extra == 'all'\" in item}; "
+                "assert all_requirements == {'taut-pg', 'taut-summon', 'taut-mcp'}; "
+                "commands = {(item.name, item.value) for item in mcp.entry_points "
+                "if item.group == 'taut.commands'}; "
+                "assert commands == {('mcp', 'taut_mcp.command_manifest:mcp')}"
+            ),
+        ],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert metadata_probe.returncode == 0, metadata_probe.stderr
     core_console = venv / ("Scripts/taut.exe" if os.name == "nt" else "bin/taut")
     nested_help = subprocess.run(
         [str(core_console), "channel", "--help"],
@@ -2293,6 +2481,22 @@ def test_installed_wheel_initializes_through_console_script(tmp_path: Path) -> N
         _inspect_modern_empty_server(
             str(console),
             [],
+            cwd=tmp_path,
+            env=isolated_env,
+        )
+    )
+    asyncio.run(
+        _inspect_empty_server(
+            str(core_console),
+            ["mcp"],
+            cwd=tmp_path,
+            env=isolated_env,
+        )
+    )
+    asyncio.run(
+        _inspect_modern_empty_server(
+            str(core_console),
+            ["mcp"],
             cwd=tmp_path,
             env=isolated_env,
         )

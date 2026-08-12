@@ -144,7 +144,7 @@ Quick pointers to the key guidance documents in this repository.
 | `tests/test_project_metadata_consistency.py` | Relational gate comparing constants, first-party floors, README pins, wheel names, and retained-lock versions to their owning package manifests |
 | `extensions/taut_pg/` | Separate `taut-pg` project with backend registration, built-in PostgreSQL full-text search provider, extension metadata, README, and PG-only tests |
 | `extensions/taut_summon/` | Separate `taut-summon` project: lazy public facade, typed rich-host controller with non-owning signal default and object-local identity, explicit CLI signal opt-in, one-signal terminal-retirement adapters with sanitized child identity, ledger, control plane, persona, and real-process conformance suite |
-| `extensions/taut_mcp/` | Separate `taut-mcp` project: dual-era stdio server, master process reactor, one owner-thread reactor per resident workspace, explicit workspace-plus-token schemas for identity-using tools, notification resource, legacy/modern subscription adapters, and optional legacy Claude channel hint |
+| `extensions/taut_mcp/` | Separate `taut-mcp` project: installed `taut mcp` manifest/adapter plus standalone convenience script over one process runner, dual-era stdio server, master process reactor, one owner-thread reactor per resident workspace, explicit workspace-plus-token schemas for identity-using tools, notification resource, legacy/modern subscription adapters, and optional legacy Claude channel hint |
 
 ## Skills
 

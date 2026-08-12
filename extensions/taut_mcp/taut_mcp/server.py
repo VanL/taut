@@ -6,7 +6,6 @@ import asyncio
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from importlib.metadata import version
 from typing import cast
 
 from mcp import types
@@ -40,9 +39,8 @@ from ._tools import (
     ToolValidationError,
     validate_tool_call,
 )
+from ._version import SERVER_NAME, SERVER_VERSION
 
-SERVER_NAME = "taut_mcp"
-SERVER_VERSION = version("taut-mcp")
 NOTIFICATIONS_URI = "taut://notifications/current"
 TOOL_NAMES = frozenset(TOOLS_BY_NAME)
 INVALID_TOOL_ARGUMENTS = "invalid tool arguments; inspect the tool schema and retry"

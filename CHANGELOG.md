@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Added the complete `taut-chat[all]` extension bundle and the protocol-clean
+  `taut mcp` main extension path. Standalone extension executables remain
+  supported conveniences, while command-bearing extensions are also reachable
+  through the primary `taut` executable.
+
 ## 0.8.6 - 2026-08-11
 
 - Raised the supported dependency floors to SimpleBroker 7.1.0 and

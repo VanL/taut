@@ -90,6 +90,24 @@ Cross-thread payloads use unbounded `queue.Queue` instances. Payload-free
 drain its queue. The master never calls a child client or broker queue and
 never blocks its event loop on `Thread.join()`.
 
+### Two launch adapters, one process runner
+
+The installed distribution registers `taut mcp` through a lightweight command
+manifest and retains `taut-mcp` as a standalone convenience script. Both parser
+surfaces read installed identity from lightweight `taut_mcp._version`, use
+`taut_mcp.cli.configure_parser()`, and call
+`taut_mcp.cli.run_process()`; neither invokes the other executable. The shared
+runner alone owns `asyncio.run`, broken-transport silence, the fixed fatal
+diagnostic, and shell status.
+
+The manifest's raw-stdio declaration makes the root dispatcher skip ambient
+terminal-policy description escaping and preflight on successful execution.
+The adapter then calls `run_server()` without explicit streams, preserving the
+MCP SDK's ownership of file descriptors 0 and 1 and its diversion of stray
+process output away from the wire. Help and parser failures occur before that
+handoff and remain ordinary `taut mcp` text. The adapter declares no root
+globals and never constructs a core client.
+
 ### Workspace plus token is the reconstructable handle
 
 Every identity-using tool carries an absolute workspace locator and an
@@ -302,6 +320,9 @@ Configuring this path is not evidence that a PyPI version has been published.
 
 | Path | Ownership |
 |------|-----------|
+| `extensions/taut_mcp/taut_mcp/command_manifest.py`, `extensions/taut_mcp/taut_mcp/command.py` | lightweight `taut mcp` registration and raw-stdio command adapter |
+| `extensions/taut_mcp/taut_mcp/_version.py` | lightweight installed server identity shared by help/version and runtime paths |
+| `extensions/taut_mcp/taut_mcp/cli.py` | shared launch arguments, process runner, transport-failure mapping, and standalone adapter |
 | `extensions/taut_mcp/taut_mcp/server.py` | SDK v2 dual-era handlers, lifespan, instructions, cache hints, protocol adapters, and result serialization |
 | `extensions/taut_mcp/taut_mcp/_process_reactor.py` | resident registry, shared ensure, alias arbitration, admission, rate state, aggregate text, edge fanout, and teardown |
 | `extensions/taut_mcp/taut_mcp/_workspace_reactor.py` | child resolution, client ownership, command loop, token-copy cleanup, and observational notification service |
@@ -344,6 +365,7 @@ changelog, and plan evidence whenever ownership or rationale changes.
 
 ## Related Plans
 
+- `docs/plans/2026-08-12-extension-main-path-and-all-extra-plan.md`
 - `docs/plans/2026-08-10-stable-dm-send-plan.md`
 - `docs/plans/2026-08-10-mcp-search-plan.md`
 - `docs/plans/2026-07-29-taut-chat-pypi-publication-plan.md`

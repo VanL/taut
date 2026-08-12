@@ -22,6 +22,9 @@ dependencies = [
 [project.scripts]
 taut-mcp = "taut_mcp.cli:main"
 
+[project.entry-points."taut.commands"]
+mcp = "taut_mcp.command_manifest:mcp"
+
 [project.optional-dependencies]
 dev = [
     "build>=1.2",

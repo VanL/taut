@@ -127,17 +127,21 @@ The product, import package, and command are still named Taut and `taut`. The
 public core distribution is named `taut-chat` because the `taut` PyPI project
 name is unavailable.
 
-For command-line use, install the core application with `pipx`:
+For command-line use, install either the core application or the complete
+first-party extension bundle with `pipx`:
 
 ```bash
 pipx install taut-chat
+# or
+pipx install 'taut-chat[all]'
 taut --help
 ```
 
 The pipx environment is consequently named `taut-chat`, even though the
-installed executable is `taut`. Optional extensions must be injected into that
-environment. To install all three extensions and expose their standalone
-commands:
+installed executable is `taut`. The `all` bundle makes Postgres, `taut summon`,
+`taut dismiss`, and `taut mcp` available through that primary executable. Each
+extension remains directly installable. To additionally expose the supported
+standalone `taut-summon` and `taut-mcp` convenience commands:
 
 ```bash
 pipx inject --include-apps taut-chat taut-pg taut-summon taut-mcp
@@ -145,14 +149,25 @@ pipx inject --include-apps taut-chat taut-pg taut-summon taut-mcp
 
 This provides `taut` plus the `taut-summon` and `taut-mcp` executables. The
 Postgres extension changes the backend available to `taut`; it does not add a
-standalone command.
+standalone command. With uv tool environments, the corresponding optional
+exposure mechanism is:
+
+```bash
+uv tool install 'taut-chat[all]' \
+  --with-executables-from taut-summon \
+  --with-executables-from taut-mcp
+```
 
 For a Python project or an existing virtual environment:
 
 ```bash
 uv add taut-chat
+# or install the complete first-party bundle
+uv add 'taut-chat[all]'
 # or
 python -m pip install taut-chat
+# or
+python -m pip install 'taut-chat[all]'
 ```
 
 Add the unchanged extension distribution names when needed:
@@ -233,6 +248,10 @@ pointers only; reading it does not claim them or advance chat cursors.
 The package is wired into the coordinated PyPI and immutable GitHub
 Release path; that configuration does not itself mean a release has
 been published.
+
+Installed, it registers the primary `taut mcp` launch path. The separately
+exposable `taut-mcp` script is a supported convenience alias over the same
+process runner.
 
 Installation, running from a checkout, and host notes (including the
 experimental `--claude-channel` wake cue) live in the

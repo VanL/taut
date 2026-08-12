@@ -69,12 +69,18 @@ state and are not a source of Taut correctness.
 
 ## 3. Packaging, Startup, and Transport [MCP-3]
 
-The distribution name is `taut-mcp`; its console script is `taut-mcp`. It
-declares `mcp>=2.0.0,<3` and uses that SDK's native support for legacy
-`2025-11-25` and modern `2026-07-28` clients from one handler set. The SDK
-owns legacy initialization, modern discovery, protocol negotiation, stdio
-framing, and era-specific wire envelopes. Taut application code does not
-branch on protocol version for tool semantics.
+The distribution name is `taut-mcp`. It registers `mcp` in the
+`taut.commands` entry-point group, making `taut mcp` the main Taut extension
+path, and also publishes the supported convenience console script `taut-mcp`.
+Both surfaces accept the same launch flags and call one shared process runner;
+neither surface invokes the other. The `mcp` command declares raw stdio
+protocol ownership under [TAUT-8.6], so successful dispatch performs no
+ambient project terminal-policy preflight and the MCP SDK retains direct
+ownership of process stdin/stdout. It declares `mcp>=2.0.0,<3` and uses that
+SDK's native support for legacy `2025-11-25` and modern `2026-07-28` clients
+from one handler set. The SDK owns legacy initialization, modern discovery,
+protocol negotiation, stdio framing, and era-specific wire envelopes. Taut
+application code does not branch on protocol version for tool semantics.
 
 Application-owned tool-input validation uses Draft 2020-12 validators
 compiled once from the same fixed schemas returned by `tools/list`; the
@@ -2193,19 +2199,29 @@ unique rate-admission marker makes a missing, empty, or path-misconfigured shard
 fatal. Live MCP PostgreSQL behavior remains owned by the required canonical MCP
 compatibility workflow.
 
+Installed-artifact verification launches the same real stdio initialization
+through both `taut mcp` and `taut-mcp`, proves both launch-flag parsers and
+fixed failure classes, and proves the main path emits no human preflight or
+other non-protocol stdout. Metadata verification requires the installed MCP
+wheel to register its `mcp` manifest.
+
 ## Implementation Mapping
 
 | Contract | Current owner |
 |----------|---------------|
-| [MCP-1]–[MCP-3] package, dual-era SDK adapter, and stdio lifecycle | `extensions/taut_mcp/pyproject.toml`, `extensions/taut_mcp/taut_mcp/cli.py`, `extensions/taut_mcp/taut_mcp/server.py` |
+| [MCP-1]–[MCP-3] package, main/standalone launch adapters, dual-era SDK adapter, and stdio lifecycle | `extensions/taut_mcp/pyproject.toml`, `extensions/taut_mcp/taut_mcp/command_manifest.py`, `extensions/taut_mcp/taut_mcp/command.py`, `extensions/taut_mcp/taut_mcp/_version.py`, `extensions/taut_mcp/taut_mcp/cli.py`, `extensions/taut_mcp/taut_mcp/server.py` |
 | [MCP-4] process-local shared ensure and workspace lifecycle | `extensions/taut_mcp/taut_mcp/_process_reactor.py`, `extensions/taut_mcp/taut_mcp/_workspace_reactor.py` |
 | [MCP-5]–[MCP-6] manifest, validation, dispatch, and results | `extensions/taut_mcp/taut_mcp/_tools.py`, `extensions/taut_mcp/taut_mcp/_commands.py`, `extensions/taut_mcp/taut_mcp/server.py` |
 | [MCP-7]–[MCP-8] aggregate resource, reactor hierarchy, and dual notification adapters | `extensions/taut_mcp/taut_mcp/_process_reactor.py`, `extensions/taut_mcp/taut_mcp/_workspace_reactor.py`, `extensions/taut_mcp/taut_mcp/server.py` |
 | [MCP-9] instructions and legacy-only Claude adapter | `extensions/taut_mcp/taut_mcp/server.py`, `extensions/taut_mcp/taut_mcp/_claude_channel.py` |
 | [MCP-10]–[MCP-11] safety and failure behavior | `extensions/taut_mcp/taut_mcp/server.py`, `extensions/taut_mcp/taut_mcp/_process_reactor.py`, `extensions/taut_mcp/taut_mcp/_workspace_reactor.py` |
-| [MCP-12] acceptance proof | `extensions/taut_mcp/tests/test_dual_era_contract.py`, `extensions/taut_mcp/tests/test_process_reactor.py`, and the rest of `extensions/taut_mcp/tests/`, with rationale in `docs/implementation/07-taut-mcp-architecture.md` |
+| [MCP-12] acceptance proof | `extensions/taut_mcp/tests/test_dual_era_contract.py`, `extensions/taut_mcp/tests/test_process_reactor.py`, `extensions/taut_mcp/tests/test_stdio_server.py`, and the rest of `extensions/taut_mcp/tests/`, with rationale in `docs/implementation/07-taut-mcp-architecture.md` |
 
 ## Related Plans
+
+- `docs/plans/2026-08-12-extension-main-path-and-all-extra-plan.md` — adds the
+  protocol-clean main `taut mcp` launch path while retaining the standalone
+  script and one shared process runner.
 
 - `docs/plans/2026-08-10-stable-dm-send-plan.md` — teaches and proves stable
   existing-DM send through the fixed `say` tool without adding a second MCP

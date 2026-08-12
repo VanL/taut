@@ -1486,6 +1486,35 @@ wheel is discoverable without core knowing its filesystem location. Static
 registration is reserved for core-owned built-ins that must exist when running
 from a source checkout.
 
+A Taut extension may additionally publish one or more standalone console
+scripts. Installers may expose those scripts explicitly, including
+`pipx inject --include-apps` and
+`uv tool install --with-executables-from`; those scripts are supported
+convenience surfaces, not substitutes for the main command interface. Every
+extension that publishes a standalone script must also expose its primary
+executable capability through one or more installed `taut.commands` manifests
+and the primary `taut` executable. A standalone script may retain additional
+administrative or convenience subcommands, but it cannot be the only way to
+operate the extension's main capability. Equivalent operations across the two
+surfaces share one typed domain or process runner; neither invokes the other
+executable or parses its output. An extension with no executable operation,
+such as a backend selected by project configuration, need not invent a command.
+
+A command whose operation is itself a raw stdio protocol transport declares
+that ownership in its manifest. On successful execution, core skips the
+human-terminal-output policy preflight and the adapter owns ambient process
+stdin/stdout rather than the ordinary command-context text streams. Root and
+command help, usage errors, and manifest diagnostics remain core-owned text
+before protocol startup. The declaration is not inferred from a command name
+and does not permit protocol output before adapter execution. All ordinary
+commands retain context-stream authority and terminal-policy preflight.
+
+The core distribution publishes an `all` optional-dependency extra containing
+the compatible `taut-pg`, `taut-summon`, and `taut-mcp` distributions. It is a
+convenience bundle, not a merger of package ownership: each extension remains
+separately versioned and directly installable, and core does not import or
+initialize an extension until its registered surface is selected.
+
 A manifest contains exactly the command-interface version, canonical
 lowercase-hyphenated name, non-empty root-help summary, closed set of root
 global options that may be consumed after the verb (each option's documented
@@ -2165,9 +2194,13 @@ Helper obligations:
   `taut-chat>=...` floor; the Summon manifest owns the root dev
   `taut-summon>=...` floor; the PG manifest owns the root dev
   `simplebroker-pg>=...` floor; and the MCP manifest owns its MCP SDK range and
-  dev-only `taut-pg` floor. Refresh the Summon lock selectively with
+  dev-only `taut-pg` floor. Refresh the root lock after reconciling its local
+  first-party sources, refresh the Summon lock selectively with
   `uv lock --upgrade-package simplebroker`, reconcile the MCP lock with plain
-  `uv lock` in its project, and do not create a root or PG lock.
+  `uv lock` in its project, and do not create a PG lock.
+  The PG, Summon, and MCP manifests respectively own the three version floors
+  in the root `all` extra; normal release preparation reconciles all three on
+  every invocation after selected manifest versions are written.
 - Stage only the release-file allowlist and create the local
   release-preparation commit before prechecks. The prechecks verify that exact
   commit. `--checks-only` remains non-mutating and reports drift; `--dry-run`
@@ -2444,6 +2477,11 @@ installing `taut-chat`.
   terminal-text helper contract for extension renderers.
 
 ## Related Plans
+
+- `docs/plans/2026-08-12-extension-main-path-and-all-extra-plan.md` — requires
+  every command-bearing extension to support the main `taut` path, adds the
+  protocol-stdio command declaration, and introduces the complete first-party
+  `all` extra.
 
 - `docs/plans/2026-08-10-system-doctor-plan.md` — defines the actor-free
   bounded diagnostic report and spec 09 promotion.

@@ -661,6 +661,57 @@ def test_json_watch_skips_human_policy_preflight(
     assert stderr.getvalue() == ""
 
 
+def test_declared_raw_stdio_command_skips_human_policy_preflight(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from taut import terminal
+    from taut.commands import CommandSpec
+    from taut.commands._dispatch import dispatch
+    from taut.commands._registry import CommandRegistry
+    from tests.test_command_registry import _Distribution, _EntryPoint
+
+    manifest = CommandSpec(
+        1,
+        "fixture",
+        "Fixture.",
+        frozenset(),
+        "tests.test_command_registry:_create_namespace_command",
+        raw_stdio_transport=True,
+    )
+    registry = CommandRegistry(
+        entry_points=(
+            _EntryPoint(
+                "fixture",
+                "fixture.manifest:fixture",
+                manifest,
+                _Distribution("fixture-owner"),
+            ),
+        )
+    )
+    (tmp_path / "defaults.toml").write_text("terminal_text = [", encoding="utf-8")
+    monkeypatch.setattr(terminal.resources, "files", lambda _package: tmp_path)
+    terminal._default_pattern_sources.cache_clear()
+    terminal._compiled_default_patterns.cache_clear()
+    stdout = StringIO()
+    stderr = StringIO()
+    try:
+        result = dispatch(
+            ["fixture", "value"],
+            registry=registry,
+            stdin=StringIO(),
+            stdout=stdout,
+            stderr=stderr,
+        )
+    finally:
+        terminal._default_pattern_sources.cache_clear()
+        terminal._compiled_default_patterns.cache_clear()
+
+    assert result == 0
+    assert stdout.getvalue() == "false|value\n"
+    assert stderr.getvalue() == ""
+
+
 def test_maximum_size_printable_and_control_heavy_inputs() -> None:
     from taut import escape_terminal_text
 

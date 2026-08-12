@@ -11,9 +11,17 @@ from typing import Never
 
 import anyio
 
-from .server import SERVER_VERSION, run_server
+from ._version import SERVER_VERSION
 
 FATAL_SERVER_ERROR = b"taut-mcp: fatal server error\n"
+
+
+async def run_server(*, claude_channel: bool = False) -> None:
+    """Load and run the protocol server only after a launch surface executes."""
+
+    from .server import run_server as serve
+
+    await serve(claude_channel=claude_channel)
 
 
 def _is_broken_transport(error: BaseException) -> bool:
@@ -52,6 +60,13 @@ class _Parser(argparse.ArgumentParser):
 
 def _parser() -> argparse.ArgumentParser:
     parser = _Parser(prog="taut-mcp")
+    configure_parser(parser)
+    return parser
+
+
+def configure_parser(parser: argparse.ArgumentParser) -> None:
+    """Add the shared launch-only MCP arguments to one parser."""
+
     parser.add_argument(
         "--claude-channel",
         action="store_true",
@@ -62,7 +77,23 @@ def _parser() -> argparse.ArgumentParser:
         action="version",
         version=f"%(prog)s {SERVER_VERSION}",
     )
-    return parser
+
+
+def run_process(*, claude_channel: bool = False) -> int:
+    """Run the process-scoped server and map transport failures to shell status."""
+
+    try:
+        asyncio.run(run_server(claude_channel=claude_channel))
+    except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-065] exception
+        if _is_broken_transport(exc):
+            _silence_broken_stdout()
+            return 0
+        try:
+            os.write(2, FATAL_SERVER_ERROR)
+        except OSError:
+            pass
+        return 1
+    return 0
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -70,14 +101,6 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     parser = _parser()
     args = parser.parse_args(argv)
-    try:
-        asyncio.run(run_server(claude_channel=bool(args.claude_channel)))
-    except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-065] exception
-        if _is_broken_transport(exc):
-            _silence_broken_stdout()
-            return
-        try:
-            os.write(2, FATAL_SERVER_ERROR)
-        except OSError:
-            pass
-        raise SystemExit(1) from None
+    result = run_process(claude_channel=bool(args.claude_channel))
+    if result:
+        raise SystemExit(result)

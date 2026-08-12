@@ -132,14 +132,23 @@ consuming or mutating call.
 
 The extension distribution remains `taut-mcp`; its core dependency is the
 `taut-chat` distribution, which still provides `import taut` and the `taut`
-command. The repository's coordinated PyPI and immutable GitHub Release path
-is configured, but configuring it does not publish a release. Once the first
-coordinated PyPI version is published:
+command. Installed MCP registers `taut mcp` as its primary extension path. The
+standalone `taut-mcp` executable is a supported convenience alias over the same
+process runner. The repository's coordinated PyPI and immutable GitHub Release
+path is configured, but configuring it does not publish a release. Once the
+first coordinated PyPI version is published:
 
 ```bash
-pipx install taut-chat
+pipx install 'taut-chat[all]'
+taut mcp
+```
+
+To expose the standalone convenience command too:
+
+```bash
 pipx inject --include-apps taut-chat taut-mcp
-taut-mcp
+# uv equivalent for a new tool environment:
+uv tool install 'taut-chat[all]' --with-executables-from taut-mcp
 ```
 
 The tag gate reuses the exact wheel and sdist built by canonical Test. It
@@ -151,7 +160,7 @@ From this checkout:
 
 ```bash
 uv sync --directory extensions/taut_mcp --extra dev
-uv run --directory extensions/taut_mcp taut-mcp
+uv run --directory extensions/taut_mcp taut mcp
 ```
 
 Stdout is reserved for MCP messages. Diagnostics are content-free and go to

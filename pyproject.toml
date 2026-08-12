@@ -36,6 +36,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+all = [
+    "taut-pg>=0.8.6",
+    "taut-summon>=0.8.6",
+    "taut-mcp>=0.8.6",
+]
 dev = [
     "build>=1.2",
     "hypothesis>=6.100",
@@ -64,6 +69,7 @@ Issues = "https://github.com/VanL/taut/issues"
 [tool.uv.sources]
 taut-pg = { path = "./extensions/taut_pg", editable = true }
 taut-summon = { path = "./extensions/taut_summon", editable = true }
+taut-mcp = { path = "./extensions/taut_mcp", editable = true }
 
 [tool.hatch.build]
 include = [

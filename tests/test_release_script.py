@@ -406,6 +406,11 @@ def test_prepare_release_metadata_repairs_all_derived_copies_idempotently(
                 '    "simplebroker>=5.3.2",',
                 "]",
                 "[project.optional-dependencies]",
+                "all = [",
+                '    "taut-pg>=0.5.0",',
+                '    "taut-summon>=0.5.0",',
+                '    "taut-mcp>=0.5.0",',
+                "]",
                 "dev = [",
                 '    "simplebroker-pg>=3.2.0",',
                 '    "taut-summon>=0.5.0",',
@@ -486,6 +491,8 @@ def test_prepare_release_metadata_repairs_all_derived_copies_idempotently(
         in first[tmp_path / "taut" / "_constants.py"]
     )
     assert '"taut-summon>=0.6.3",' in first[tmp_path / "pyproject.toml"]
+    assert '"taut-pg>=0.6.2",' in first[tmp_path / "pyproject.toml"]
+    assert '"taut-mcp>=0.6.4",' in first[tmp_path / "pyproject.toml"]
     assert '"simplebroker-pg>=3.2.1",' in first[tmp_path / "pyproject.toml"]
     assert (
         'version = "0.6.2"'
@@ -557,7 +564,11 @@ def _build_public_release_repository(tmp_path: Path) -> Path:
         tmp_path / "pyproject.toml": (
             '[project]\nname = "taut-chat"\nversion = "0.6.1"\n'
             'dependencies = [\n    "simplebroker>=5.3.2",\n]\n'
-            "[project.optional-dependencies]\ndev = [\n"
+            "[project.optional-dependencies]\nall = [\n"
+            '    "taut-pg>=0.5.0",\n'
+            '    "taut-summon>=0.5.0",\n'
+            '    "taut-mcp>=0.5.0",\n]\n'
+            "dev = [\n"
             '    "simplebroker-pg>=3.2.0",\n'
             '    "taut-summon>=0.5.0",\n]\n'
         ),
@@ -594,6 +605,7 @@ def _build_public_release_repository(tmp_path: Path) -> Path:
         ),
         tmp_path / "extensions" / "taut_summon" / "uv.lock": ("stale retained lock\n"),
         tmp_path / "extensions" / "taut_mcp" / "uv.lock": "stale retained lock\n",
+        tmp_path / "uv.lock": "stale retained root lock\n",
         tmp_path / "CHANGELOG.md": "# Changelog\n\n## 0.6.1 - 2026-07-13\n",
         tmp_path / ".gitignore": "__pycache__/\n",
         tmp_path / "unrelated.txt": "untouched\n",
@@ -649,6 +661,12 @@ class _PublicReleaseTransport:
             elif effective_cwd == release.MCP_EXTENSION_DIR:
                 release.MCP_UV_LOCK_PATH.write_text(
                     "taut=0.6.1\ntaut-pg=0.6.1\ntaut-mcp=0.6.1\n",
+                    encoding="utf-8",
+                )
+            elif effective_cwd == release.PROJECT_ROOT:
+                release.ROOT_UV_LOCK_PATH.write_text(
+                    "taut-chat=0.6.1\ntaut-pg=0.6.1\ntaut-summon=0.6.1\n"
+                    "taut-mcp=0.6.1\n",
                     encoding="utf-8",
                 )
             return
@@ -733,6 +751,7 @@ def test_public_release_flow_commits_preparation_then_reuses_it_after_failure(
     assert transport.events == [
         "lock",
         "lock",
+        "lock",
         "git-add",
         "git-commit",
         "precheck-1",
@@ -743,6 +762,7 @@ def test_public_release_flow_commits_preparation_then_reuses_it_after_failure(
     assert release.main(["core"]) == 0
     assert release.current_head_commit() == preparation_head
     assert transport.events == [
+        "lock",
         "lock",
         "lock",
         "precheck-2",
@@ -780,6 +800,9 @@ def test_sync_root_summon_dev_dependency_updates_root_floor(tmp_path: Path) -> N
                 'name = "taut-chat"',
                 'version = "0.4.0"',
                 "[project.optional-dependencies]",
+                "all = [",
+                '    "taut-summon>=0.2.0",',
+                "]",
                 "dev = [",
                 '    "taut-summon>=0.1.0",',
                 "]",
@@ -799,7 +822,60 @@ def test_sync_root_summon_dev_dependency_updates_root_floor(tmp_path: Path) -> N
     )
 
     assert updated_version == "0.5.0"
-    assert '"taut-summon>=0.5.0",' in root_pyproject_path.read_text(encoding="utf-8")
+    text = root_pyproject_path.read_text(encoding="utf-8")
+    assert 'all = [\n    "taut-summon>=0.2.0",\n]' in text
+    assert 'dev = [\n    "taut-summon>=0.5.0",\n]' in text
+
+
+def test_sync_root_all_dependencies_updates_only_all_extra(tmp_path: Path) -> None:
+    release = _load_release_module()
+    root_pyproject_path = tmp_path / "pyproject.toml"
+    root_pyproject_path.write_text(
+        "[project]\n"
+        'name = "taut-chat"\n'
+        'version = "0.8.6"\n\n'
+        "[project.optional-dependencies]\n"
+        "all = [\n"
+        '    "taut-pg>=0.1.0",\n'
+        '    "taut-summon>=0.1.0",\n'
+        '    "taut-mcp>=0.1.0",\n'
+        "]\n"
+        "dev = [\n"
+        '    "taut-summon>=0.7.0",\n'
+        "]\n",
+        encoding="utf-8",
+    )
+    manifests: dict[str, Path] = {}
+    for name, version in (("pg", "0.5.0"), ("summon", "0.6.0"), ("mcp", "0.7.0")):
+        path = tmp_path / f"{name}.toml"
+        path.write_text(
+            f'[project]\nname = "taut-{name}"\nversion = "{version}"\n',
+            encoding="utf-8",
+        )
+        manifests[name] = path
+
+    updated = release.sync_root_all_dependencies(
+        root_pyproject_path=root_pyproject_path,
+        pg_pyproject_path=manifests["pg"],
+        summon_pyproject_path=manifests["summon"],
+        mcp_pyproject_path=manifests["mcp"],
+    )
+
+    text = root_pyproject_path.read_text(encoding="utf-8")
+    assert updated == {"taut-pg": "0.5.0", "taut-summon": "0.6.0", "taut-mcp": "0.7.0"}
+    assert '    "taut-pg>=0.5.0",' in text
+    assert '    "taut-summon>=0.6.0",' in text
+    assert '    "taut-mcp>=0.7.0",' in text
+    assert 'dev = [\n    "taut-summon>=0.7.0",\n]' in text
+    assert (
+        release.sync_root_all_dependencies(
+            root_pyproject_path=root_pyproject_path,
+            pg_pyproject_path=manifests["pg"],
+            summon_pyproject_path=manifests["summon"],
+            mcp_pyproject_path=manifests["mcp"],
+        )
+        == {}
+    )
 
 
 def test_sync_root_pg_dev_dependency_uses_pg_manifest_floor(tmp_path: Path) -> None:
@@ -903,6 +979,10 @@ def test_release_sync_updates_all_first_party_dependency_directions(
         calls.append("pg-runtime-to-root-dev")
         return "3.2.1"
 
+    def sync_extensions_to_root_all() -> dict[str, str]:
+        calls.append("extensions-to-root-all")
+        return {"taut-pg": "0.5.1", "taut-summon": "0.5.1", "taut-mcp": "0.5.1"}
+
     def sync_mcp_to_root() -> str:
         calls.append("mcp-to-root")
         return "0.6.0"
@@ -927,6 +1007,11 @@ def test_release_sync_updates_all_first_party_dependency_directions(
         "sync_root_pg_dev_dependency",
         sync_pg_runtime_to_root_dev,
     )
+    monkeypatch.setattr(
+        release,
+        "sync_root_all_dependencies",
+        sync_extensions_to_root_all,
+    )
     monkeypatch.setattr(release, "sync_mcp_core_dependency", sync_mcp_to_root)
     monkeypatch.setattr(
         release,
@@ -940,6 +1025,7 @@ def test_release_sync_updates_all_first_party_dependency_directions(
         {
             "root-to-summon": 1,
             "pg-runtime-to-root-dev": 1,
+            "extensions-to-root-all": 1,
             "pg-to-root": 1,
             "summon-to-root": 1,
             "mcp-to-root": 1,
@@ -2179,11 +2265,13 @@ def test_summon_preparation_reconciles_both_retained_locks_before_builds() -> No
     build_steps = release.build_postupdate_steps(release.SUMMON_TARGET)
 
     assert [step.command for step in preparation_steps] == [
+        ("uv", "lock"),
         ("uv", "lock", "--upgrade-package", "simplebroker"),
         ("uv", "lock"),
     ]
-    assert preparation_steps[0].cwd == release.SUMMON_EXTENSION_DIR
-    assert preparation_steps[1].cwd == release.MCP_EXTENSION_DIR
+    assert preparation_steps[0].cwd == release.PROJECT_ROOT
+    assert preparation_steps[1].cwd == release.SUMMON_EXTENSION_DIR
+    assert preparation_steps[2].cwd == release.MCP_EXTENSION_DIR
     assert build_steps[0].command == (
         "uv",
         "build",
@@ -2204,11 +2292,13 @@ def test_pg_preparation_reconciles_both_retained_extension_locks() -> None:
     steps = release.build_preparation_steps_for_targets((release.PG_TARGET,))
 
     assert [step.command for step in steps] == [
+        ("uv", "lock"),
         ("uv", "lock", "--upgrade-package", "simplebroker"),
         ("uv", "lock"),
     ]
-    assert steps[0].cwd == release.SUMMON_EXTENSION_DIR
-    assert steps[1].cwd == release.MCP_EXTENSION_DIR
+    assert steps[0].cwd == release.PROJECT_ROOT
+    assert steps[1].cwd == release.SUMMON_EXTENSION_DIR
+    assert steps[2].cwd == release.MCP_EXTENSION_DIR
 
 
 def test_core_postupdate_checks_fresh_paired_release_wheels_after_build() -> None:
@@ -2241,7 +2331,7 @@ def test_core_dry_run_executes_preparation_then_artifact_plan(
         if command == ("uv", "lock", "--upgrade-package", "simplebroker"):
             assert cwd == release.SUMMON_EXTENSION_DIR
         elif command == ("uv", "lock"):
-            assert cwd == release.MCP_EXTENSION_DIR
+            assert cwd in {release.PROJECT_ROOT, release.MCP_EXTENSION_DIR}
         else:
             assert cwd == release.PROJECT_ROOT
         calls.append((command, dry_run))
@@ -2255,6 +2345,7 @@ def test_core_dry_run_executes_preparation_then_artifact_plan(
     release.run_postupdate_steps(release.ROOT_TARGET, dry_run=True)
 
     assert calls == [
+        (("uv", "lock"), True),
         (("uv", "lock", "--upgrade-package", "simplebroker"), True),
         (("uv", "lock"), True),
         (("uv", "build", "--no-sources", "--out-dir", "dist", "."), True),
@@ -2534,6 +2625,7 @@ def test_release_wheel_failure_leaves_preparation_commit_and_stops_remote_mutati
         release.main(["core", "--skip-checks"])
 
     assert commands == [
+        ("uv", "lock"),
         ("uv", "lock", "--upgrade-package", "simplebroker"),
         ("uv", "lock"),
         (
@@ -2725,6 +2817,7 @@ def test_version_changed_core_prepares_and_commits_before_prechecks_and_builds(
         "write:mcp:0.5.7",
         "sync-paired-floors",
         "sync-simplebroker-readme",
+        "uv:lock",
         "uv:lock:--upgrade-package:simplebroker",
         "uv:lock",
         "git-add",
@@ -3010,6 +3103,7 @@ def test_clean_rerun_reuses_preparation_commit_without_duplicate_commit(
         command[:2] not in {("git", "add"), ("git", "commit")} for command in commands
     )
     assert commands == [
+        ("uv", "lock"),
         ("uv", "lock", "--upgrade-package", "simplebroker"),
         ("uv", "lock"),
         ("uv", "build", "--no-sources", "--out-dir", "dist", "."),
@@ -3318,6 +3412,7 @@ def test_release_file_paths_for_targets_dedupes_root_files() -> None:
 
     assert set(paths) == {
         release.PYPROJECT_PATH,
+        release.ROOT_UV_LOCK_PATH,
         release.CONSTANTS_PATH,
         release.ROOT_README_PATH,
         release.PG_PYPROJECT_PATH,

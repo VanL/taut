@@ -45,6 +45,27 @@ EXEMPTIONS: dict[ExemptionKey, str] = {
     (Path("docs/specs/08-persistence-io.md"), ("load",)): (
         "Explicitly rejected top-level alias; persistence lives under taut system."
     ),
+    (Path("README.md"), ("mcp",)): (
+        "Installed taut-mcp extension command; absent from the core-only registry."
+    ),
+    (Path("docs/plans/README.md"), ("mcp",)): (
+        "Installed taut-mcp extension command named by the active-plan index."
+    ),
+    (Path("extensions/taut_mcp/README.md"), ("mcp",)): (
+        "Installed taut-mcp extension command; absent from the core-only registry."
+    ),
+    (Path("docs/implementation/02-repository-map.md"), ("mcp",)): (
+        "Installed taut-mcp extension command; absent from the core-only registry."
+    ),
+    (Path("docs/implementation/06-command-extensions.md"), ("mcp",)): (
+        "Installed taut-mcp extension command; absent from the core-only registry."
+    ),
+    (Path("docs/implementation/07-taut-mcp-architecture.md"), ("mcp",)): (
+        "Installed taut-mcp extension command; absent from the core-only registry."
+    ),
+    (Path("docs/specs/05-taut-mcp.md"), ("mcp",)): (
+        "Installed taut-mcp extension command; absent from the core-only registry."
+    ),
 }
 
 _INLINE_CODE_RE = re.compile(r"(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)")
@@ -579,7 +600,10 @@ def test_repository_cli_claims_are_current() -> None:
 def test_bin_entry_point_exit_classes(tmp_path: Path) -> None:
     checker = REPO_ROOT / "bin" / "check-cli-claims"
     readme = tmp_path / "README.md"
-    readme.write_text("`taut channel show dev`\n", encoding="utf-8")
+    readme.write_text(
+        "`taut channel show dev`\n`taut mcp`\n",
+        encoding="utf-8",
+    )
 
     clean = subprocess.run(
         [sys.executable, str(checker), "--root", str(tmp_path)],
@@ -589,9 +613,12 @@ def test_bin_entry_point_exit_classes(tmp_path: Path) -> None:
         check=False,
     )
     assert clean.returncode == 0
-    assert "1 command claim(s)" in clean.stdout
+    assert "2 command claim(s)" in clean.stdout
 
-    readme.write_text("`taut rename old new`\n", encoding="utf-8")
+    readme.write_text(
+        "`taut rename old new`\n`taut mcp`\n",
+        encoding="utf-8",
+    )
     stale = subprocess.run(
         [sys.executable, str(checker), "--root", str(tmp_path)],
         cwd=REPO_ROOT,

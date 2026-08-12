@@ -26,6 +26,7 @@ from typing import Final, Literal, NoReturn
 
 PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parents[1]
 PYPROJECT_PATH: Final[Path] = PROJECT_ROOT / "pyproject.toml"
+ROOT_UV_LOCK_PATH: Final[Path] = PROJECT_ROOT / "uv.lock"
 CONSTANTS_PATH: Final[Path] = PROJECT_ROOT / "taut" / "_constants.py"
 CHANGELOG_PATH: Final[Path] = PROJECT_ROOT / "CHANGELOG.md"
 ROOT_README_PATH: Final[Path] = PROJECT_ROOT / "README.md"
@@ -93,9 +94,6 @@ CONSTANTS_VERSION_PATTERN: Final[re.Pattern[str]] = re.compile(
 )
 TAUT_DEPENDENCY_PATTERN: Final[re.Pattern[str]] = re.compile(
     r'(?m)^(\s*"taut-chat>=)[^"]+(",\s*)$'
-)
-TAUT_SUMMON_DEPENDENCY_PATTERN: Final[re.Pattern[str]] = re.compile(
-    r'(?m)^(\s*"taut-summon>=)([^"]+)(",\s*)$'
 )
 TAUT_PG_DEPENDENCY_PATTERN: Final[re.Pattern[str]] = re.compile(
     r'(?m)^(\s*"taut-pg>=)([^"]+)(",\s*)$'
@@ -665,24 +663,90 @@ def sync_root_summon_dev_dependency(
         summon_pyproject_path=summon_pyproject_path
     )
     text = root_pyproject_path.read_text(encoding="utf-8")
-
-    def replace_dependency(match: re.Match[str]) -> str:
-        prefix, current_version, suffix = match.groups()
-        if current_version == summon_version:
-            return match.group(0)
-        return f"{prefix}{summon_version}{suffix}"
-
-    updated, count = TAUT_SUMMON_DEPENDENCY_PATTERN.subn(
-        replace_dependency,
+    updated, changed = _replace_optional_dependency_floor(
         text,
-        count=1,
+        extra="dev",
+        package="taut-summon",
+        version=summon_version,
     )
-    if count != 1:
-        fail("Expected one taut-summon dependency in root pyproject.toml")
-    if updated == text:
+    if not changed:
         return None
     root_pyproject_path.write_text(updated, encoding="utf-8")
     return summon_version
+
+
+def _replace_optional_dependency_floor(
+    text: str,
+    *,
+    extra: str,
+    package: str,
+    version: str,
+) -> tuple[str, bool]:
+    section_marker = "[project.optional-dependencies]"
+    section_start = text.find(section_marker)
+    if section_start < 0:
+        fail("Could not find [project.optional-dependencies] in root pyproject.toml")
+    section_end = text.find("\n[", section_start + len(section_marker))
+    if section_end < 0:
+        section_end = len(text)
+    section = text[section_start:section_end]
+    extra_pattern = re.compile(
+        rf"(?ms)^{re.escape(extra)}\s*=\s*\[\s*\n(?P<body>.*?)^\]\s*$"
+    )
+    extra_match = extra_pattern.search(section)
+    if extra_match is None:
+        fail(f"Could not find {extra!r} optional dependency extra")
+    body = extra_match.group("body")
+    dependency_pattern = re.compile(
+        rf'(?m)^(\s*"{re.escape(package)}>=)([^"]+)(",\s*)$'
+    )
+    updated_body, count = dependency_pattern.subn(
+        rf"\g<1>{version}\g<3>",
+        body,
+        count=1,
+    )
+    if count != 1:
+        fail(f"Expected one {package} dependency in root {extra} extra")
+    if updated_body == body:
+        return text, False
+    body_start = section_start + extra_match.start("body")
+    body_end = section_start + extra_match.end("body")
+    return f"{text[:body_start]}{updated_body}{text[body_end:]}", True
+
+
+def sync_root_all_dependencies(
+    *,
+    root_pyproject_path: Path = PYPROJECT_PATH,
+    pg_pyproject_path: Path = PG_PYPROJECT_PATH,
+    summon_pyproject_path: Path = SUMMON_PYPROJECT_PATH,
+    mcp_pyproject_path: Path = MCP_PYPROJECT_PATH,
+) -> dict[str, str]:
+    """Set each root all-extra floor from its owning extension manifest."""
+
+    owners = (
+        ("taut-pg", pg_pyproject_path),
+        ("taut-summon", summon_pyproject_path),
+        ("taut-mcp", mcp_pyproject_path),
+    )
+    text = root_pyproject_path.read_text(encoding="utf-8")
+    updated_packages: dict[str, str] = {}
+    for package, manifest_path in owners:
+        version = _read_version(
+            manifest_path,
+            PYPROJECT_VERSION_PATTERN,
+            display_path(manifest_path),
+        )
+        text, changed = _replace_optional_dependency_floor(
+            text,
+            extra="all",
+            package=package,
+            version=version,
+        )
+        if changed:
+            updated_packages[package] = version
+    if updated_packages:
+        root_pyproject_path.write_text(text, encoding="utf-8")
+    return updated_packages
 
 
 def sync_root_pg_dev_dependency(
@@ -1715,6 +1779,11 @@ def build_preparation_steps_for_targets(
         fail("At least one release target is required")
     return (
         CommandStep(
+            ("uv", "lock"),
+            "Reconcile root all-extra and development dependencies",
+            cwd=PROJECT_ROOT,
+        ),
+        CommandStep(
             ("uv", "lock", "--upgrade-package", "simplebroker"),
             "Refresh retained taut-summon dependencies selectively",
             cwd=SUMMON_EXTENSION_DIR,
@@ -1915,6 +1984,7 @@ def run_preparation_steps(targets: tuple[ReleaseTarget, ...], *, dry_run: bool) 
 def _release_file_paths(_target: ReleaseTarget) -> tuple[Path, ...]:
     paths = [
         PYPROJECT_PATH,
+        ROOT_UV_LOCK_PATH,
         CONSTANTS_PATH,
         ROOT_README_PATH,
         PG_PYPROJECT_PATH,
@@ -2332,6 +2402,11 @@ def _print_dry_run_root_dependency_notes(
         )
     else:
         print(f"dry-run: taut-summon {summon_version} would be released in this batch")
+    all_floors = ", ".join(
+        f"{target.package_name}>={read_manifest_version(target)}"
+        for target in (PG_TARGET, SUMMON_TARGET, MCP_TARGET)
+    )
+    print(f"dry-run: would ensure root all extra requires {all_floors}")
 
 
 def _sync_root_release_dependencies() -> None:
@@ -2345,6 +2420,14 @@ def _sync_root_release_dependencies() -> None:
         print("Root dev dependency already matches simplebroker-pg")
     else:
         print(f"Updated root dev dependency: simplebroker-pg>={pg_runtime_floor}")
+    all_updates = sync_root_all_dependencies()
+    if not all_updates:
+        print("Root all extra already matches first-party extension versions")
+    else:
+        updates = ", ".join(
+            f"{package}>={version}" for package, version in all_updates.items()
+        )
+        print(f"Updated root all extra: {updates}")
     pg_dependency_version = sync_pg_core_dependency()
     if pg_dependency_version is None:
         print("taut-pg dependency already matches taut-chat")

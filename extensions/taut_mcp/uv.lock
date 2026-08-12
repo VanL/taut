@@ -1149,11 +1149,14 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = "==0.16.1" },
     { name = "simplebroker", specifier = ">=7.1.0" },
     { name = "simplebroker-pg", marker = "extra == 'dev'", specifier = ">=3.6.0" },
+    { name = "taut-mcp", marker = "extra == 'all'", editable = "." },
+    { name = "taut-pg", marker = "extra == 'all'", editable = "../taut_pg" },
+    { name = "taut-summon", marker = "extra == 'all'", editable = "../taut_summon" },
     { name = "taut-summon", marker = "extra == 'dev'", editable = "../taut_summon" },
     { name = "types-psutil", marker = "extra == 'dev'", specifier = ">=6.0" },
     { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["all", "dev"]
 
 [[package]]
 name = "taut-mcp"

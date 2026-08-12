@@ -64,6 +64,16 @@ must be injected into the same pipx environment as core. It also matters for
 tests: setting `PYTHONPATH` is not a valid substitute for installing the wheel
 and its generated entry-point metadata.
 
+An extension may also publish a standalone script, and installers may expose
+it with mechanisms such as `pipx inject --include-apps` or
+`uv tool install --with-executables-from`. That is an additional convenience
+surface. The extension still registers its primary executable capability
+through `taut.commands`, so that capability remains available through `taut`. A
+standalone script may keep extra administrative conveniences, such as
+`taut-summon status`, without requiring a one-for-one root command. Backend-only
+extensions such as `taut-pg` have no executable operation and therefore no
+invented verb.
+
 The integration flow is:
 
 ```text
@@ -91,7 +101,9 @@ frozen `CommandSpec` with exactly these fields:
 - a canonical lowercase, hyphenated `name`;
 - a non-empty one-line `summary` for root help;
 - a `frozenset[GlobalOption]` naming root globals accepted after the verb;
-- an `implementation` target in `module:attribute` form.
+- an `implementation` target in `module:attribute` form; and
+- `raw_stdio_transport: bool = False`, set only when execution itself owns a
+  protocol on ambient process stdin/stdout.
 
 The installed entry point targets the manifest object, not the command
 factory. For example, Summon publishes:
@@ -285,6 +297,13 @@ subsystem failure to first use; it does not hide the failure. Diagnostics must
 still name the selected distribution, entry point, implementation target, and
 original cause where those values are available.
 
+Raw-stdio commands remain ordinary for root help, command help, usage errors,
+and discovery diagnostics. On successful execution only, the dispatcher skips
+description escaping and human-output-policy preflight, then the adapter owns
+ambient stdio. This narrow exception lets `taut mcp` preserve the MCP SDK's fd
+claiming and stray-output diversion. It is explicit manifest metadata rather
+than a command-name special case; ordinary adapters still use context streams.
+
 The package facades and command factories solve different problems. Facades
 preserve convenient typed Python imports. Factories prevent one CLI verb from
 initializing unrelated subsystems. Keep both seams narrow instead of inventing
@@ -302,6 +321,11 @@ terminal ownership safely. Summon's reusable boundary is `SummonController`
 plus its typed models and `SummonInteraction`. The standalone
 `taut-summon` console and the installed `taut summon`/`taut dismiss` adapters
 share parser helpers and controller calls; neither invokes the other.
+
+MCP follows the same composition rule. `taut mcp` and `taut-mcp` share launch
+argument configuration plus one process runner in `taut_mcp.cli`; neither
+executes the other surface. The root adapter declares no root globals and never
+constructs a `TautClient`.
 
 That shared call path also makes process ownership explicit. A rich host calls
 `SummonController.run_foreground(...)` with the default

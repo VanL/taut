@@ -287,6 +287,8 @@ def _validate_manifest(entry_point_name: str, loaded: object) -> None:
         isinstance(option, GlobalOption) for option in loaded.post_verb_globals
     ):
         raise TypeError("post_verb_globals must be a frozenset of GlobalOption")
+    if not isinstance(loaded.raw_stdio_transport, bool):
+        raise TypeError("raw_stdio_transport must be a bool")
     validate_import_target(loaded.implementation)
 
 

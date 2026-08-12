@@ -811,6 +811,11 @@ def test_compatible_installed_manifest_is_discovered_after_builtins() -> None:
         ),
         (pytest.param("wrong-version", "unsupported command interface", id="version")),
         (pytest.param("empty-summary", "summary must be non-empty", id="summary")),
+        (
+            pytest.param(
+                "bad-raw-stdio", "raw_stdio_transport must be a bool", id="raw-stdio"
+            )
+        ),
         (pytest.param("bad-target", "module:attribute", id="implementation")),
     ],
 )
@@ -827,6 +832,15 @@ def test_bad_manifest_isolated_as_selected_command_error(
         loaded = CommandSpec(2, "fixture", "Fixture.", frozenset(), "pkg.cmd:create")
     elif loaded == "empty-summary":
         loaded = CommandSpec(1, "fixture", "  ", frozenset(), "pkg.cmd:create")
+    elif loaded == "bad-raw-stdio":
+        loaded = CommandSpec(
+            1,
+            "fixture",
+            "Fixture.",
+            frozenset(),
+            "pkg.cmd:create",
+            raw_stdio_transport="yes",  # type: ignore[arg-type]
+        )
     elif loaded == "bad-target":
         loaded = CommandSpec(1, "fixture", "Fixture.", frozenset(), "not-a-target")
 

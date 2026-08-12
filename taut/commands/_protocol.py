@@ -38,6 +38,7 @@ class CommandSpec:
     summary: str
     post_verb_globals: frozenset[GlobalOption]
     implementation: str
+    raw_stdio_transport: bool = False
 
 
 class CommandArgumentParser(argparse.ArgumentParser):
