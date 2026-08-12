@@ -351,7 +351,7 @@ wheels = [
 
 [[package]]
 name = "taut-chat"
-version = "0.8.5"
+version = "0.8.6"
 source = { editable = "../../" }
 dependencies = [
     { name = "psutil" },
@@ -380,7 +380,7 @@ provides-extras = ["dev"]
 
 [[package]]
 name = "taut-summon"
-version = "0.8.5"
+version = "0.8.6"
 source = { editable = "." }
 dependencies = [
     { name = "taut-chat" },

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "taut-pg"
-version = "0.8.5"
+version = "0.8.6"
 description = "Postgres support package for Taut"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -14,7 +14,7 @@ authors = [
     {name = "Van Lindberg", email = "van.lindberg@gmail.com"},
 ]
 dependencies = [
-    "taut-chat>=0.8.5",
+    "taut-chat>=0.8.6",
     "simplebroker-pg>=3.6.0",
 ]
 
