@@ -828,7 +828,8 @@ class _DumpValidator:
             self._accept_simplebroker_header(record, line_number)
             return
         # This is an intentional compatibility pin to SimpleBroker dump format
-        # v1 as shipped by the runtime floor (>=7.0.0). A future upstream
+        # v1 was introduced in 7.0.0 and is retained by the runtime floor. A
+        # future upstream
         # field is a format change that needs an explicit Taut load-version
         # decision, not something to accept and then silently discard.
         _exact_fields(

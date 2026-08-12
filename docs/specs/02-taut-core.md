@@ -359,7 +359,7 @@ an accident. Two consequences are binding:
   CLI/client work, persistent owned handles for long-lived actors, and
   `close()` at owned lifetime end.
 
-  The `simplebroker>=7.0.0` floor is load-bearing. Version 5.2.0 supplies the
+  The `simplebroker>=7.1.0` floor is load-bearing. Version 5.2.0 supplies the
   reference ownership model, 5.2.2 first passed Taut's persistent-owner
   process/control proof, 5.3.0 supplies the public live activity-waiter
   replacement contract, 5.3.1 makes `Queue.write()` return the exact committed
@@ -380,7 +380,7 @@ an accident. Two consequences are binding:
   project-config discovery helpers are public through `simplebroker.ext`.
   Version 7.0.0 adds the public exact message-id formatter and makes
   SimpleBroker-owned JSON ids and high-water values strings while keeping
-  Python and backend values integer; `simplebroker-pg>=3.5.2` requires that
+  Python and backend values integer; `simplebroker-pg>=3.6.0` requires that
   core line. Taut uses neither
   the SimpleBroker command layer nor the newly
   re-exported project-config helpers; it continues to use the root queue/target
@@ -1295,8 +1295,8 @@ through read-only identity resolution. It does not update activity, record an
 identity claim, inspect unread state, or create membership. Long-lived
 extensions use it to reconcile their own thread-scoped resources.
 
-Core runtime dependencies: exactly `simplebroker>=7.0.0` and `psutil`. The
-optional `taut-pg` extension adds `simplebroker-pg>=3.5.2` and its driver
+Core runtime dependencies: exactly `simplebroker>=7.1.0` and `psutil`. The
+optional `taut-pg` extension adds `simplebroker-pg>=3.6.0` and its driver
 dependencies in the same environment as Taut. Python ≥ 3.11. The CLI uses
 argparse, not a CLI framework.
 
@@ -2395,14 +2395,14 @@ Workflow obligations:
 Core and `taut-summon` reactor changes ship as a paired release. The release
 helper synchronizes every extension's `taut-chat>=` floor to the exact new core
 version, refreshes every retained lock, and rejects any resolved
-`simplebroker<7.0.0` or `simplebroker-pg<3.5.2`. Release evidence includes an
+`simplebroker<7.1.0` or `simplebroker-pg<3.6.0`. Release evidence includes an
 installed-artifact canary built from the current paired wheels. Core may
 publish first only as the extensions' immediate dependency; the coordinated
 release is not announced until all four PyPI and GitHub publications pass.
 
 New core wheel metadata has normalized project name `taut-chat` and contains
 one unmarked
-`simplebroker>=X.Y.Z` requirement with `X.Y.Z >= 7.0.0`; other operators,
+`simplebroker>=X.Y.Z` requirement with `X.Y.Z >= 7.1.0`; other operators,
 compound specifiers, markers, and weaker floors fail closed. New Summon
 metadata contains exactly one unmarked
 `taut-chat>=<new-core-version>` requirement, so the supplied current core wheel

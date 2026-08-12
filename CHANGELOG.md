@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.8.6 - 2026-08-11
+
+- Raised the supported dependency floors to SimpleBroker 7.1.0 and
+  SimpleBroker-PG 3.6.0, and refreshed retained development dependencies.
+
 ## 0.8.5 - 2026-08-11
 
 - Raised the core dependency floor to SimpleBroker 7.0.0 and the PostgreSQL

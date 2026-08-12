@@ -19,8 +19,8 @@ PG_ROOT = PROJECT_ROOT / "extensions" / "taut_pg"
 PG_PYPROJECT = PG_ROOT / "pyproject.toml"
 WHEEL_MATRIX_CHECKER = PROJECT_ROOT / "bin" / "check-core-summon-wheel-matrix.py"
 HISTORICAL_SUMMON_REF = "taut_summon/v0.5.4"
-MINIMUM_SIMPLEBROKER = (7, 0, 0)
-MINIMUM_SIMPLEBROKER_PG = (3, 5, 2)
+MINIMUM_SIMPLEBROKER = (7, 1, 0)
+MINIMUM_SIMPLEBROKER_PG = (3, 6, 0)
 MINIMUM_TAUT_CHAT = (0, 5, 1)
 
 
@@ -76,7 +76,7 @@ def _check_retained_summon_lock(path: Path = SUMMON_LOCK) -> None:
     if _version_tuple(version, label="retained Summon simplebroker") < (
         MINIMUM_SIMPLEBROKER
     ):
-        _fail(f"retained Summon lock resolved simplebroker {version} below 7.0.0")
+        _fail(f"retained Summon lock resolved simplebroker {version} below 7.1.0")
 
 
 def _check_pg_resolution(path: Path) -> None:
@@ -91,7 +91,7 @@ def _check_pg_resolution(path: Path) -> None:
     if _version_tuple(version, label="ephemeral simplebroker-pg") < (
         MINIMUM_SIMPLEBROKER_PG
     ):
-        _fail(f"ephemeral PG resolution selected simplebroker-pg {version} below 3.5.2")
+        _fail(f"ephemeral PG resolution selected simplebroker-pg {version} below 3.6.0")
 
 
 def _check_pg_manifest(path: Path = PG_PYPROJECT) -> None:
@@ -109,7 +109,7 @@ def _check_pg_manifest(path: Path = PG_PYPROJECT) -> None:
 
     requirements = (
         ("taut-chat", MINIMUM_TAUT_CHAT, "0.5.1"),
-        ("simplebroker-pg", MINIMUM_SIMPLEBROKER_PG, "3.5.2"),
+        ("simplebroker-pg", MINIMUM_SIMPLEBROKER_PG, "3.6.0"),
     )
     for project, minimum, rendered_minimum in requirements:
         pattern = rf"{re.escape(project)}>=(\d+)\.(\d+)\.(\d+)"

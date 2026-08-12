@@ -163,7 +163,7 @@ uv add taut-chat taut-pg taut-summon taut-mcp
 python -m pip install taut-chat taut-pg taut-summon taut-mcp
 ```
 
-Requirements: Python 3.11+. Runtime dependencies are `simplebroker>=7.0.0`
+Requirements: Python 3.11+. Runtime dependencies are `simplebroker>=7.1.0`
 (which itself has none) and `psutil` for cross-platform process metadata.
 
 ### Postgres Extension
@@ -780,7 +780,7 @@ with the boundary itself specified by [TAUT-9] in the
 <summary><strong>Why argparse and a small dependency set?</strong></summary>
 
 Taut follows SimpleBroker's discipline: the install should be boring.
-Runtime dependencies are exactly `simplebroker>=7.0.0` and `psutil`. The CLI is
+Runtime dependencies are exactly `simplebroker>=7.1.0` and `psutil`. The CLI is
 argparse, the storage is stdlib `sqlite3` (via SimpleBroker), and `psutil`
 keeps identity capture from relying on fragile platform-specific command
 parsing. The planned TUI ships as an optional extra so the core dependency

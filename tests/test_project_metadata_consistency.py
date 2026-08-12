@@ -61,10 +61,10 @@ def test_package_versions_and_derived_metadata_match_their_owners() -> None:
     assert summon["name"] == "taut-summon"
     assert mcp["name"] == "taut-mcp"
     simplebroker_floor = _dependency_floor(root, "simplebroker")
-    assert simplebroker_floor == "7.0.0"
+    assert simplebroker_floor == "7.1.0"
     assert _dependency_floor(pg, "taut-chat") == root_version
     simplebroker_pg_floor = _dependency_floor(pg, "simplebroker-pg")
-    assert simplebroker_pg_floor == "3.5.2"
+    assert simplebroker_pg_floor == "3.6.0"
     assert _dependency_floor(summon, "taut-chat") == root_version
     assert _dependency_floor(mcp, "taut-chat") == root_version
     for manifest in (pg_manifest, summon_manifest, mcp_manifest):
