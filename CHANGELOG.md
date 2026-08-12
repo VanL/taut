@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.7 - 2026-08-12
+
 - Added the complete `taut-chat[all]` extension bundle and the protocol-clean
   `taut mcp` main extension path. Standalone extension executables remain
   supported conveniences, while command-bearing extensions are also reachable
