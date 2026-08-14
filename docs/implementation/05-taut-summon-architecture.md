@@ -654,11 +654,13 @@ wait on that adapter.
 
 Stream finalization deliberately closes before joining the event pump because
 a still-live provider can otherwise deadlock on undrained stdout. Closing a
-Python text stream can wake a concurrent iterator with `ValueError` instead of
-EOF. The shared reader normalizes that result only when terminal retirement is
+Python text stream can wake a concurrent iterator with the built-in
+`ValueError("I/O operation on closed file.")` instead of EOF. The shared reader
+normalizes only that exact type and diagnostic when terminal retirement is
 already published and the same stdout object reports closed, then emits the
-reaped child's final `ExitEvent`. An open-stream `ValueError`, malformed frame,
-or adapter translation failure remains fatal to supervision.
+reaped child's final `ExitEvent`. Decode-error subclasses and every other read,
+malformed-frame, or adapter-translation failure remain fatal regardless of
+close state.
 
 The extension CLI keeps one documented argparse inventory for `run`, `stop`,
 and `status`. Root help owns exit classes; each subcommand owns its syntax and

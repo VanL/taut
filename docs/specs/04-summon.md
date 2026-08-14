@@ -404,11 +404,12 @@ waiting for pump exit before close is not valid because a provider may remain
 alive after its graceful interrupt.
 
 When blocking `close()` releases a structured stdout stream while its event
-pump is blocked in iteration, the resulting closed-stream read is normal EOF
-only after terminal retirement is published and that same stream reports
-closed. Read, framing, or translation failures observed while the stream is
-open remain fatal. The normal owned-close path still emits one final `exit`
-event after child reap.
+pump is blocked in iteration, the resulting read is normal EOF only when it is
+the exact built-in `ValueError` with the text-stream closed-file diagnostic,
+terminal retirement is published, and that same stream reports closed.
+Decode-error subclasses and every other read, framing, or translation failure
+remain fatal regardless of close state. The normal owned-close path still
+emits one final `exit` event after child reap.
 
 An adapter that has no structured wire envelope (the PTY adapter,
 [SUM-7.4]) emits only the `activity` and `exit` members of the event

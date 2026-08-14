@@ -38,18 +38,20 @@ Comprehension gates, answered before implementation:
 
 1. Which owner may close stdout? `StreamJsonHandle.close()` after bounded child
    wait/escalation/reap; the event pump must not close it first.
-2. Which read failure is nonfatal? Only a closed-stream `ValueError` observed
-   after terminal retirement is published and the same stream reports closed.
-   A read failure while open remains fatal. A wrong answer blocks editing until
-   [SUM-7.1] and `_stream.py` are reread.
+2. Which read failure is nonfatal? Only the exact built-in
+   `ValueError("I/O operation on closed file.")` observed after terminal
+   retirement is published and the same stream reports closed. Decode-error
+   subclasses and other read failures remain fatal regardless of close state.
+   A wrong answer blocks editing until [SUM-7.1] and `_stream.py` are reread.
 
 ## Invariants and Constraints
 
 - Keep close-before-pump-join ordering. Joining first can deadlock on a live
   provider with undrained stdout.
-- Normalize only the exact owned-close condition: lifecycle is no longer
-  `open` and the same stdout object is closed.
-- Preserve malformed protocol, I/O, parser, and open-stream failures as fatal.
+- Normalize only the exact built-in closed-file `ValueError` when lifecycle is
+  no longer `open` and the same stdout object is closed.
+- Preserve decode-error subclasses and every other read, malformed protocol,
+  I/O, and parser failure as fatal regardless of close state.
 - Preserve one `ExitEvent` after the child has been reaped.
 - Do not change timeouts, process parallelism, restart policy, or public API.
 - The deterministic stream double may control the race, but the production
@@ -67,8 +69,9 @@ is no irreversible state change in this fix.
 - `05626d187003e118d7a56cc5e79cbc292f7ef66a` —
   `docs/specs/04-summon.md` [SUM-7.1] at plan authoring time.
 
-Promotion baseline: pending the dedicated spec-promotion commit; implementation
-must not be committed before this is replaced with that commit SHA.
+Promotion baseline: `0eae1b466602999ea982950b88c8fc1ebf58ddb2` —
+[SUM-7.1], the implementation note, plan, and status-index backlink promoted
+before the implementation commit.
 
 ## Proposed Spec Delta
 
@@ -78,10 +81,11 @@ Promotion strategy: A, in-file before implementation.
 
 > When blocking `close()` releases a structured stdout stream while its event
 > pump is blocked in iteration, the resulting closed-stream read is normal EOF
-> only after terminal retirement is published and that same stream reports
-> closed. Read, framing, or translation failures observed while the stream is
-> open remain fatal. The normal owned-close path still emits one final `exit`
-> event after child reap.
+> only when it is the exact built-in `ValueError` with the text-stream
+> closed-file diagnostic, terminal retirement is published, and that same
+> stream reports closed. Decode-error subclasses and every other read, framing,
+> or translation failure remain fatal regardless of close state. The normal
+> owned-close path still emits one final `exit` event after child reap.
 
 ## Deviation Log
 
@@ -135,3 +139,8 @@ Any broad swallow or join-before-close proposal is blocking.
   normalization boundary to `next(lines)` alone. All three boundary tests and
   both affected full test files pass with unhandled-thread warnings promoted
   to errors.
+- 2026-08-14: Re-review found that `UnicodeDecodeError` is also a `ValueError`
+  subclass, corrected the plan from Class 3 to Class 5, and required a precise
+  anti-mocking claim. Added a fourth red-first guard, limited normalization to
+  exact built-in closed-file messages and `type(exc) is ValueError`, added the
+  [SUM-7.1] Related Plans backlink, and promoted the spec at `0eae1b4`.
