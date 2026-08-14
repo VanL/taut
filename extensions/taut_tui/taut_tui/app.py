@@ -1,7 +1,8 @@
 """Textual composition root for the human-first Taut interface.
 
 Spec references:
-- docs/specs/10-taut-tui.md [TUI-4.3], [TUI-5], [TUI-6], [TUI-8], [TUI-9]
+- docs/specs/10-taut-tui.md [TUI-2.2], [TUI-4.3], [TUI-5], [TUI-6],
+  [TUI-7.1], [TUI-8], [TUI-9]
 """
 
 from __future__ import annotations
@@ -53,7 +54,13 @@ from taut_tui.actions import (
     resolve_mouse,
 )
 from taut_tui.domain import TuiDomainActions
-from taut_tui.forms import FORM_SPECS, ActionInputKind, input_spec
+from taut_tui.forms import (
+    FORM_SPECS,
+    ActionApplicabilityFacts,
+    ActionInputKind,
+    evaluate_action_applicability,
+    input_spec,
+)
 from taut_tui.layout import layout_placement, transition_layout
 from taut_tui.models import (
     DraftState,
@@ -833,6 +840,14 @@ class TautApp(App[None]):
                 self.visual_state,
                 selected_navigation=context.target,
             )
+        applicability = evaluate_action_applicability(
+            action_id,
+            self._current_action_applicability_facts(),
+        )
+        if not applicability.enabled:
+            assert applicability.reason is not None
+            self._show_error(applicability.reason)
+            return
         if self._open_native_form(action_id) or self._dispatch_shell_action(action_id):
             return
         domain = self._domain
@@ -856,6 +871,28 @@ class TautApp(App[None]):
             ),
             message_id=self.visual_state.selected_message_id,
             surface=self.visual_state.focus.surface,
+        )
+
+    def _current_action_applicability_facts(self) -> ActionApplicabilityFacts:
+        """Project mutable Textual state into the closed pure fact vocabulary."""
+
+        target = self.visual_state.active_conversation
+        selected_message_id = self.visual_state.selected_message_id
+        draft = None if target is None else self.visual_state.draft_for(target)
+        return ActionApplicabilityFacts(
+            selected_target=self.visual_state.selected_navigation is not None,
+            active_target=target is not None,
+            active_channel=(
+                target is not None and self._target_kinds.get(target) == "channel"
+            ),
+            selected_message=(
+                selected_message_id is not None
+                and any(
+                    message.ts == selected_message_id for message in self._message_rows
+                )
+            ),
+            selected_search_result=self._selected_search_hit is not None,
+            has_nonblank_draft=draft is not None and bool(draft.text.strip()),
         )
 
     def _open_native_form(self, action_id: ActionId) -> bool:
@@ -901,18 +938,16 @@ class TautApp(App[None]):
             self._run_action(domain.show_identity())
         elif action_id is ActionId.CONVERSATION_OPEN:
             target = self.visual_state.selected_navigation
-            if target is None:
-                self._show_error("Select a conversation first.")
-            else:
-                intent = self._advance_conversation_intent()
-                self.visual_state = replace(
-                    self.visual_state,
-                    scroll_anchor=ScrollAnchor.tail(),
-                )
-                self._watch_future(
-                    domain.open_conversation(target, intent_token=intent),
-                    lambda done: self._apply_optional_conversation(intent, done),
-                )
+            assert target is not None
+            intent = self._advance_conversation_intent()
+            self.visual_state = replace(
+                self.visual_state,
+                scroll_anchor=ScrollAnchor.tail(),
+            )
+            self._watch_future(
+                domain.open_conversation(target, intent_token=intent),
+                lambda done: self._apply_optional_conversation(intent, done),
+            )
         elif action_id is ActionId.NOTIFICATIONS_OPEN:
             self._render_notifications(domain.notifications())
         elif action_id is ActionId.MEMBERS_OPEN:
@@ -1276,70 +1311,23 @@ class TautApp(App[None]):
 
     def _palette_entries(self) -> tuple[PaletteEntry, ...]:
         summon_available = self._summon is not None
-        return tuple(
-            PaletteEntry(
-                spec,
-                enabled=(reason := self._action_disabled_reason(spec.action_id))
-                is None,
-                reason=reason,
-                scope=self._palette_scope(spec.action_id),
-                gesture_hint=gesture_hint(spec.action_id),
+        facts = self._current_action_applicability_facts()
+        entries: list[PaletteEntry] = []
+        for spec in available_action_specs(
+            summon_available=summon_available,
+            route=ActionRoute.PALETTE,
+        ):
+            applicability = evaluate_action_applicability(spec.action_id, facts)
+            entries.append(
+                PaletteEntry(
+                    spec,
+                    enabled=applicability.enabled,
+                    reason=applicability.reason,
+                    scope=self._palette_scope(spec.action_id),
+                    gesture_hint=gesture_hint(spec.action_id),
+                )
             )
-            for spec in available_action_specs(
-                summon_available=summon_available,
-                route=ActionRoute.PALETTE,
-            )
-        )
-
-    def _action_disabled_reason(self, action_id: ActionId) -> str | None:
-        channel_only = {
-            ActionId.CHANNEL_LEAVE,
-            ActionId.CHANNEL_SHOW_TOPIC,
-            ActionId.CHANNEL_SET_TOPIC,
-            ActionId.CHANNEL_CLEAR_TOPIC,
-            ActionId.CHANNEL_RENAME,
-        }
-        target = self.visual_state.active_conversation
-        if action_id in channel_only and (
-            target is not None and self._target_kinds.get(target) != "channel"
-        ):
-            return "Select a channel first"
-        if (
-            action_id
-            in {
-                ActionId.CHANNEL_LEAVE,
-                ActionId.MEMBERS_OPEN,
-                ActionId.CHANNEL_SHOW_TOPIC,
-                ActionId.CHANNEL_SET_TOPIC,
-                ActionId.CHANNEL_CLEAR_TOPIC,
-                ActionId.CHANNEL_RENAME,
-                ActionId.COMPOSE_ENTER,
-                ActionId.MESSAGE_SEND,
-            }
-            and self.visual_state.active_conversation is None
-        ):
-            return "Select a conversation first"
-        if (
-            action_id
-            in {
-                ActionId.MESSAGE_REPLY,
-                ActionId.MESSAGE_REACT,
-                ActionId.MESSAGE_DELETE,
-            }
-            and self.visual_state.selected_message_id is None
-        ):
-            return "Select a message first"
-        if (
-            action_id is ActionId.CONVERSATION_OPEN
-            and self.visual_state.selected_navigation is None
-        ):
-            return "Select a conversation first"
-        if (
-            action_id is ActionId.SEARCH_OPEN_RESULT
-            and self._selected_search_hit is None
-        ):
-            return "Select a search result first"
-        return None
+        return tuple(entries)
 
     def _palette_scope(self, action_id: ActionId) -> str:
         if action_id in {

@@ -1,7 +1,8 @@
-"""Typed native-form and direct-action input contracts.
+"""Typed native-form, direct-action, and applicability contracts.
 
-This module describes TUI-owned fields and visual preflight only. It does not
-parse command lines, call the domain, or reproduce core validation.
+This module describes TUI-owned fields, visual preflight, and the pure mapping
+from visual facts to action applicability. It does not parse command lines,
+call the domain, or reproduce core validation.
 
 Spec references:
 - docs/specs/10-taut-tui.md [TUI-2.2], [TUI-2.3], [TUI-3.3], [TUI-7]
@@ -45,6 +46,7 @@ class ContextRequirement(StrEnum):
     """Typed visual state an action needs in addition to form values."""
 
     ACTIVE_TARGET = "active-target"
+    ACTIVE_CHANNEL = "active-channel"
     SELECTED_TARGET = "selected-target"
     SELECTED_MESSAGE = "selected-message"
     SELECTED_SEARCH_RESULT = "selected-search-result"
@@ -228,6 +230,34 @@ class ActionInputSpec:
     @property
     def contextual(self) -> bool:
         return bool(self.context)
+
+
+@dataclass(frozen=True, slots=True)
+class ActionApplicabilityFacts:
+    """Closed visual facts consumed by action input requirements."""
+
+    selected_target: bool = False
+    active_target: bool = False
+    active_channel: bool = False
+    selected_message: bool = False
+    selected_search_result: bool = False
+    has_nonblank_draft: bool = False
+
+    def __post_init__(self) -> None:
+        if self.active_channel and not self.active_target:
+            raise ValueError("an active channel requires an active target")
+
+
+@dataclass(frozen=True, slots=True)
+class ActionApplicability:
+    """Enabled state or the human reason for the first unmet requirement."""
+
+    enabled: bool
+    reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.enabled is (self.reason is not None):
+            raise ValueError("enabled applicability has no reason; disabled has one")
 
 
 @dataclass(frozen=True, slots=True)
@@ -451,7 +481,7 @@ _ACTION_INPUT_SPECS = (
     _input(ActionId.CHANNEL_JOIN),
     _input(
         ActionId.CHANNEL_LEAVE,
-        context=(ContextRequirement.ACTIVE_TARGET,),
+        context=(ContextRequirement.ACTIVE_CHANNEL,),
         confirmation_target=ConfirmationTarget.CONTEXT,
     ),
     _input(ActionId.DIRECT_MESSAGE_START),
@@ -462,19 +492,19 @@ _ACTION_INPUT_SPECS = (
     ),
     _input(
         ActionId.CHANNEL_SHOW_TOPIC,
-        context=(ContextRequirement.ACTIVE_TARGET,),
+        context=(ContextRequirement.ACTIVE_CHANNEL,),
     ),
     _input(
         ActionId.CHANNEL_SET_TOPIC,
-        context=(ContextRequirement.ACTIVE_TARGET,),
+        context=(ContextRequirement.ACTIVE_CHANNEL,),
     ),
     _input(
         ActionId.CHANNEL_CLEAR_TOPIC,
-        context=(ContextRequirement.ACTIVE_TARGET,),
+        context=(ContextRequirement.ACTIVE_CHANNEL,),
     ),
     _input(
         ActionId.CHANNEL_RENAME,
-        context=(ContextRequirement.ACTIVE_TARGET,),
+        context=(ContextRequirement.ACTIVE_CHANNEL,),
     ),
     _input(
         ActionId.COMPOSE_ENTER,
@@ -522,6 +552,42 @@ def input_spec(action_id: ActionId) -> ActionInputSpec:
     return ACTION_INPUT_SPECS[action_id]
 
 
+def _requirement_status(
+    requirement: ContextRequirement,
+    facts: ActionApplicabilityFacts,
+) -> tuple[bool, str]:
+    """Map one closed requirement to its fact and stable human reason."""
+
+    if requirement is ContextRequirement.ACTIVE_TARGET:
+        return facts.active_target, "Select a conversation first"
+    if requirement is ContextRequirement.ACTIVE_CHANNEL:
+        return facts.active_channel, "Select a channel first"
+    if requirement is ContextRequirement.SELECTED_TARGET:
+        return facts.selected_target, "Select a conversation first"
+    if requirement is ContextRequirement.SELECTED_MESSAGE:
+        return facts.selected_message, "Select a message first"
+    if requirement is ContextRequirement.SELECTED_SEARCH_RESULT:
+        return facts.selected_search_result, "Select a search result first"
+    if requirement is ContextRequirement.DRAFT:
+        return facts.has_nonblank_draft, "Enter a message first"
+    raise AssertionError(f"unhandled context requirement: {requirement.value}")
+
+
+def evaluate_action_applicability(
+    action_id: ActionId,
+    facts: ActionApplicabilityFacts,
+) -> ActionApplicability:
+    """Evaluate one action's ordered input requirements against visual facts."""
+
+    if action_spec(action_id).requires_summon:
+        return ActionApplicability(enabled=True)
+    for requirement in input_spec(action_id).context:
+        satisfied, reason = _requirement_status(requirement, facts)
+        if not satisfied:
+            return ActionApplicability(enabled=False, reason=reason)
+    return ActionApplicability(enabled=True)
+
+
 def validate_visual_input(
     form: FormSpec,
     values: Mapping[str, str],
@@ -555,6 +621,8 @@ def validate_visual_input(
 __all__ = [
     "ACTION_INPUT_SPECS",
     "FORM_SPECS",
+    "ActionApplicability",
+    "ActionApplicabilityFacts",
     "ActionInputKind",
     "ActionInputSpec",
     "ConfirmationTarget",
@@ -566,6 +634,7 @@ __all__ = [
     "FormSpec",
     "VisualValidationCode",
     "VisualValidationError",
+    "evaluate_action_applicability",
     "form_spec",
     "input_spec",
     "validate_visual_input",

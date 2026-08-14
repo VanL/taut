@@ -70,6 +70,24 @@ only required and nonblank fields; public core operations retain domain and
 race validation. Exact-target confirmations cover leave, rename, message
 delete, dump replacement, and Summon dismissal.
 
+The ordered context requirements in each non-Summon input contract also own
+semantic applicability. `forms.py` evaluates those requirements against one
+immutable set of closed visual facts and returns enabled or the first human
+reason. This keeps requirement order, channel-only scope, draft preconditions,
+and reason text behind the same small interface that tests and consumers use.
+Registered Summon actions bypass the non-Summon input table after their package
+availability has already been filtered by the action registry.
+
+`TautApp` is the thin state adapter. It projects selected navigation, active
+target and channel kind, current-message membership, selected search result,
+and the active target's nonblank draft into the pure facts. The palette and
+central dispatcher consume the evaluator; dispatch checks after any
+route-supplied target projection and before forms, shell actions, or domain
+handlers. Existing mouse-control visibility stays presentation policy, while
+central dispatch prevents hidden, pointer, keyboard, and programmatic routes
+from bypassing the same result. Handler checks remain only as stale-state and
+domain-race defense.
+
 Each `ActionSpec.routes` set is authoritative at typed invocation
 construction. `ActionInvocation.__post_init__()` rejects an action/route pair
 that the registry does not declare, including direct dataclass construction;
@@ -233,6 +251,9 @@ it without eager Textual import.
 
 ## Related Plans
 
+- `docs/plans/2026-08-14-taut-tui-action-applicability-authority-plan.md` —
+  plans one ordered applicability authority in the action-input contracts with
+  thin palette, control, and central-dispatch consumers.
 - `docs/plans/2026-08-14-taut-tui-action-route-contract-plan.md` — authoritative
   route composition plus exhaustive 54-pair producer and 32-action handler
   firing gates.

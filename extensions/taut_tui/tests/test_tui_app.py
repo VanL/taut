@@ -213,11 +213,17 @@ def test_real_empty_search_renders_no_matches_in_the_native_screen(
 
 
 def test_vi_and_conventional_keys_share_mode_actions_without_stealing_text() -> None:
+    from dataclasses import replace
+
     from taut_tui.app import TautApp
 
     async def exercise() -> None:
         app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
+            app.visual_state = replace(
+                app.visual_state,
+                active_conversation="general",
+            )
             await pilot.press("i")
             assert app.visual_state.mode is InteractionMode.COMPOSE
             composer = app.query_one("#composer", Input)
@@ -236,11 +242,17 @@ def test_vi_and_conventional_keys_share_mode_actions_without_stealing_text() -> 
 
 
 def test_real_resize_reflows_without_replacing_visual_state() -> None:
+    from dataclasses import replace
+
     from taut_tui.app import TautApp
 
     async def exercise() -> None:
         app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(130, 34)) as pilot:
+            app.visual_state = replace(
+                app.visual_state,
+                active_conversation="general",
+            )
             await pilot.press("i", "d", "r", "a", "f", "t")
             await pilot.resize_terminal(64, 34)
             assert app.layout_mode is LayoutMode.COMPACT
@@ -850,6 +862,184 @@ def test_palette_entries_report_current_scope_gestures_and_disabled_reasons(
             assert entries[ActionId.COMPOSE_ENTER].enabled is True
             assert entries[ActionId.COMPOSE_ENTER].scope == "DM with bob"
             assert entries[ActionId.COMPOSE_ENTER].gesture_hint is not None
+
+    asyncio.run(exercise())
+
+
+def test_palette_applicability_is_driven_by_current_visual_facts(
+    tmp_path: Path,
+) -> None:
+    from dataclasses import replace
+
+    from taut.client import Message, SearchHit
+    from taut_tui.actions import ActionId
+    from taut_tui.app import TautApp
+    from taut_tui.models import DraftState
+
+    db_path = tmp_path / "palette-applicability.db"
+    TautClient.init(db_path=db_path)
+
+    async def exercise() -> None:
+        app = TautApp(db_path=str(db_path), as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 34)):
+
+            def entries() -> dict[ActionId, Any]:
+                return {
+                    entry.action.action_id: entry for entry in app._palette_entries()
+                }
+
+            assert entries()[ActionId.CHANNEL_LEAVE].reason == (
+                "Select a channel first"
+            )
+            assert entries()[ActionId.MEMBERS_OPEN].reason == (
+                "Select a conversation first"
+            )
+
+            target = "dm.d_example"
+            app._target_kinds[target] = "dm"
+            app.visual_state = replace(
+                app.visual_state,
+                active_conversation=target,
+            )
+            assert entries()[ActionId.CHANNEL_LEAVE].reason == (
+                "Select a channel first"
+            )
+            assert entries()[ActionId.MESSAGE_SEND].reason == "Enter a message first"
+
+            app.visual_state = app.visual_state.with_draft(
+                DraftState(target=target, text="   ", cursor_position=3, revision=1)
+            )
+            assert entries()[ActionId.MESSAGE_SEND].reason == "Enter a message first"
+
+            app.visual_state = app.visual_state.with_draft(
+                DraftState(target=target, text="ready", cursor_position=5, revision=2)
+            )
+            assert entries()[ActionId.MESSAGE_SEND].enabled is True
+
+            app.visual_state = replace(app.visual_state, selected_message_id=7)
+            app._message_rows = ()
+            assert entries()[ActionId.MESSAGE_REACT].reason == "Select a message first"
+            app._message_rows = (
+                Message(target, 7, "m_alice", "alice", "message", "hello"),
+            )
+            assert entries()[ActionId.MESSAGE_REACT].enabled is True
+
+            assert entries()[ActionId.SEARCH_OPEN_RESULT].reason == (
+                "Select a search result first"
+            )
+            app._selected_search_hit = SearchHit(
+                thread=target,
+                ts=7,
+                from_id="m_alice",
+                from_name="alice",
+                kind="message",
+                text="hello",
+                thread_kind="dm",
+                channel=None,
+                parent=None,
+                members=("m_alice", "m_bob"),
+            )
+            assert entries()[ActionId.SEARCH_OPEN_RESULT].enabled is True
+
+            app._target_kinds[target] = "channel"
+            assert entries()[ActionId.CHANNEL_LEAVE].enabled is True
+
+    asyncio.run(exercise())
+
+
+def test_central_dispatch_enforces_applicability_before_forms_and_mouse_handlers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dataclasses import replace
+
+    from taut_tui.actions import ActionId, ActionRoute
+    from taut_tui.app import TautApp
+
+    db_path = tmp_path / "dispatch-applicability.db"
+    TautClient.init(db_path=db_path)
+
+    async def exercise() -> None:
+        app = TautApp(db_path=str(db_path), as_name=None, continuity_token=None)
+        async with app.run_test(size=(130, 34)) as pilot:
+            await _pause_until(pilot, lambda: app._domain is not None)
+            target = "general"
+            app._target_kinds[target] = "channel"
+            app.visual_state = replace(
+                app.visual_state,
+                active_conversation=target,
+            )
+            app._update_context_affordances()
+            reached: list[str] = []
+            monkeypatch.setattr(
+                app,
+                "_submit_composer",
+                lambda _text: reached.append("send"),
+            )
+
+            send_entry = next(
+                entry
+                for entry in app._palette_entries()
+                if entry.action.action_id is ActionId.MESSAGE_SEND
+            )
+            assert send_entry.enabled is False
+            assert send_entry.reason == "Enter a message first"
+            assert app.query_one("#composer-send").display is True
+            app.query_one("#composer-send", Button).press()
+            await pilot.pause()
+            assert reached == []
+            assert send_entry.reason in str(app.query_one("#inspector-body").render())
+
+            app.visual_state = replace(app.visual_state, selected_message_id=99)
+            app._message_rows = ()
+            app._dispatch_tui_action(
+                ActionId.MESSAGE_REPLY,
+                source=ActionRoute.PALETTE,
+            )
+            assert app.screen is app._base_screen
+            assert "Select a message first" in str(
+                app.query_one("#inspector-body").render()
+            )
+
+    asyncio.run(exercise())
+
+
+def test_conversation_open_evaluates_after_navigation_target_projection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut_tui.actions import ActionContext, ActionId, ActionRoute, invoke_action
+    from taut_tui.app import TautApp
+
+    db_path = tmp_path / "projected-applicability.db"
+    TautClient.init(db_path=db_path)
+
+    async def exercise() -> None:
+        app = TautApp(db_path=str(db_path), as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 34)) as pilot:
+            await _pause_until(pilot, lambda: app._domain is not None)
+            reached: list[ActionId] = []
+
+            def dispatch(action_id: ActionId, _domain: object) -> bool:
+                reached.append(action_id)
+                return True
+
+            monkeypatch.setattr(
+                app,
+                "_dispatch_simple_domain_action",
+                dispatch,
+            )
+
+            app._dispatch_action_invocation(
+                invoke_action(
+                    ActionId.CONVERSATION_OPEN,
+                    ActionContext(target="general"),
+                    source=ActionRoute.NAVIGATION,
+                )
+            )
+
+            assert app.visual_state.selected_navigation == "general"
+            assert reached == [ActionId.CONVERSATION_OPEN]
 
     asyncio.run(exercise())
 

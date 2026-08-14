@@ -67,6 +67,17 @@ keyboard, mouse, command-palette, and contextual-menu gestures dispatch the
 same action objects. One operation must not acquire separate behavior because
 it was reached through a different gesture.
 
+For every non-Summon action, the action input contract's ordered context
+requirements are the sole TUI declaration of semantic applicability. One
+TUI-owned evaluator maps current visual facts to those requirements and
+returns either enabled or the human reason for the first unmet requirement.
+Palette entries and central dispatch consume that result; route producers and
+handlers do not maintain per-action applicability sets. Existing control
+visibility remains presentation policy and cannot bypass central dispatch.
+Summon package availability remains capability filtering rather than a context
+requirement. Handler checks may defend against stale state or domain races,
+but they must not define a broader applicability policy.
+
 The registry's route set is authoritative composition data. A route names the
 production boundary that emits an action:
 
@@ -367,6 +378,15 @@ actions. Results show a human label, target or scope where relevant, and the
 conventional and vi-like gesture when one exists. Disabled actions state the
 reason. Selecting an action either performs it or opens its native form.
 
+Context requirements are evaluated in declared order. The closed visual facts
+are: selected navigation target, active conversation, active channel, selected
+current message, selected search result, and nonblank draft for the active
+conversation. `message.send` requires an active conversation followed by a
+nonblank draft; channel-context actions require an active channel. The first
+unmet requirement supplies the disabled reason. Layout visibility and
+mode-specific binding eligibility are presentation concerns and do not
+redefine semantic applicability.
+
 Palette entries are exactly the currently available native action specs whose
 declared routes include `PALETTE`; applicability controls whether such an entry
 is enabled, not whether an action from another route is inserted.
@@ -663,6 +683,11 @@ The following enumerable matrices have firing tests:
   rejected; exact route-derived palette membership including exclusion of
   `command.open`; and every destructive confirmation fired through its native
   path;
+- every declared action-context requirement, with satisfied and unsatisfied
+  firing cases; exact per-action requirement tuples driving the pure evaluator;
+  palette enabled/reason state and central dispatch agreeing for the same
+  visual facts; and each existing mouse action control unable to bypass a
+  disabled result;
 - every gesture/equivalent row in [TUI-8.1] and mouse parity in [TUI-8.2];
 - width boundaries 49/50, 79/80, 119/120 and height boundaries 19/20;
 - wide to medium to compact to too-small and reverse reflow with the preserved
@@ -716,6 +741,9 @@ Version 1 does not include:
 
 ## Related Plans
 
+- `docs/plans/2026-08-14-taut-tui-action-applicability-authority-plan.md` —
+  plans the Class 5 promotion of ordered action-input context requirements into
+  the sole semantic applicability authority across TUI routes.
 - `docs/plans/2026-08-14-taut-tui-display-sink-coverage-plan.md` — moves
   terminal escaping into owned display/toast sinks and adds structural plus
   real-PTY coverage for [TUI-12.2]/[TUI-13.1].

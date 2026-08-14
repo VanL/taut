@@ -12,11 +12,14 @@ from taut_tui.actions import ActionId, ConfirmationPolicy, action_spec
 from taut_tui.forms import (
     ACTION_INPUT_SPECS,
     FORM_SPECS,
+    ActionApplicability,
+    ActionApplicabilityFacts,
     ActionInputKind,
     ConfirmationTarget,
     ContextRequirement,
     FieldKind,
     VisualValidationCode,
+    evaluate_action_applicability,
     form_spec,
     input_spec,
     validate_visual_input,
@@ -82,12 +85,12 @@ EXPECTED_SUBMIT_LABELS = {
 
 EXPECTED_CONTEXT = {
     ActionId.CONVERSATION_OPEN: (ContextRequirement.SELECTED_TARGET,),
-    ActionId.CHANNEL_LEAVE: (ContextRequirement.ACTIVE_TARGET,),
+    ActionId.CHANNEL_LEAVE: (ContextRequirement.ACTIVE_CHANNEL,),
     ActionId.MEMBERS_OPEN: (ContextRequirement.ACTIVE_TARGET,),
-    ActionId.CHANNEL_SHOW_TOPIC: (ContextRequirement.ACTIVE_TARGET,),
-    ActionId.CHANNEL_SET_TOPIC: (ContextRequirement.ACTIVE_TARGET,),
-    ActionId.CHANNEL_CLEAR_TOPIC: (ContextRequirement.ACTIVE_TARGET,),
-    ActionId.CHANNEL_RENAME: (ContextRequirement.ACTIVE_TARGET,),
+    ActionId.CHANNEL_SHOW_TOPIC: (ContextRequirement.ACTIVE_CHANNEL,),
+    ActionId.CHANNEL_SET_TOPIC: (ContextRequirement.ACTIVE_CHANNEL,),
+    ActionId.CHANNEL_CLEAR_TOPIC: (ContextRequirement.ACTIVE_CHANNEL,),
+    ActionId.CHANNEL_RENAME: (ContextRequirement.ACTIVE_CHANNEL,),
     ActionId.COMPOSE_ENTER: (ContextRequirement.ACTIVE_TARGET,),
     ActionId.MESSAGE_SEND: (
         ContextRequirement.ACTIVE_TARGET,
@@ -101,6 +104,54 @@ EXPECTED_CONTEXT = {
     ActionId.MESSAGE_DELETE: (ContextRequirement.SELECTED_MESSAGE,),
     ActionId.SEARCH_OPEN_RESULT: (ContextRequirement.SELECTED_SEARCH_RESULT,),
 }
+
+APPLICABILITY_CASES = (
+    (
+        ContextRequirement.SELECTED_TARGET,
+        ActionId.CONVERSATION_OPEN,
+        ActionApplicabilityFacts(),
+        ActionApplicabilityFacts(selected_target=True),
+        "Select a conversation first",
+    ),
+    (
+        ContextRequirement.ACTIVE_TARGET,
+        ActionId.MEMBERS_OPEN,
+        ActionApplicabilityFacts(),
+        ActionApplicabilityFacts(active_target=True),
+        "Select a conversation first",
+    ),
+    (
+        ContextRequirement.ACTIVE_CHANNEL,
+        ActionId.CHANNEL_LEAVE,
+        ActionApplicabilityFacts(active_target=True),
+        ActionApplicabilityFacts(active_target=True, active_channel=True),
+        "Select a channel first",
+    ),
+    (
+        ContextRequirement.SELECTED_MESSAGE,
+        ActionId.MESSAGE_REACT,
+        ActionApplicabilityFacts(active_target=True),
+        ActionApplicabilityFacts(active_target=True, selected_message=True),
+        "Select a message first",
+    ),
+    (
+        ContextRequirement.SELECTED_SEARCH_RESULT,
+        ActionId.SEARCH_OPEN_RESULT,
+        ActionApplicabilityFacts(),
+        ActionApplicabilityFacts(selected_search_result=True),
+        "Select a search result first",
+    ),
+    (
+        ContextRequirement.DRAFT,
+        ActionId.MESSAGE_SEND,
+        ActionApplicabilityFacts(active_target=True),
+        ActionApplicabilityFacts(
+            active_target=True,
+            has_nonblank_draft=True,
+        ),
+        "Enter a message first",
+    ),
+)
 
 
 def test_every_non_summon_action_has_one_closed_input_classification() -> None:
@@ -170,6 +221,54 @@ def test_context_requirements_are_explicit_and_exact() -> None:
     assert all(
         spec.contextual is bool(spec.context) for spec in ACTION_INPUT_SPECS.values()
     )
+
+
+@pytest.mark.parametrize(
+    ("requirement", "action_id", "missing_facts", "satisfied_facts", "reason"),
+    APPLICABILITY_CASES,
+)
+def test_every_context_requirement_has_satisfied_and_unsatisfied_firing_cases(
+    requirement: ContextRequirement,
+    action_id: ActionId,
+    missing_facts: ActionApplicabilityFacts,
+    satisfied_facts: ActionApplicabilityFacts,
+    reason: str,
+) -> None:
+    assert requirement in input_spec(action_id).context
+    assert evaluate_action_applicability(action_id, missing_facts) == (
+        ActionApplicability(enabled=False, reason=reason)
+    )
+    assert evaluate_action_applicability(action_id, satisfied_facts) == (
+        ActionApplicability(enabled=True)
+    )
+
+
+def test_context_requirement_firing_inventory_is_complete() -> None:
+    assert {case[0] for case in APPLICABILITY_CASES} == set(ContextRequirement)
+
+
+def test_action_applicability_uses_declared_first_failure_order() -> None:
+    assert evaluate_action_applicability(
+        ActionId.MESSAGE_SEND,
+        ActionApplicabilityFacts(),
+    ) == ActionApplicability(
+        enabled=False,
+        reason="Select a conversation first",
+    )
+    assert evaluate_action_applicability(
+        ActionId.MESSAGE_SEND,
+        ActionApplicabilityFacts(active_target=True),
+    ) == ActionApplicability(
+        enabled=False,
+        reason="Enter a message first",
+    )
+
+
+def test_registered_summon_action_has_no_core_context_requirement() -> None:
+    assert evaluate_action_applicability(
+        ActionId.SUMMON_START,
+        ActionApplicabilityFacts(),
+    ) == ActionApplicability(enabled=True)
 
 
 def test_confirmation_metadata_is_the_actions_registry_contract() -> None:

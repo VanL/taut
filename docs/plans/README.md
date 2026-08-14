@@ -51,6 +51,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 
 | Plan | Status | Exemplar | Note |
 |------|--------|----------|------|
+| `2026-08-14-taut-tui-action-applicability-authority-plan.md` | completed | no | Class 5 hardened contract correction making ordered non-Summon input requirements authoritative across palette, mouse controls, and central dispatch; implementation, verification, and independent review passed. |
 | `2026-08-14-command-context-continuity-token-plan.md` | completed | no | Class 5 contract correction aligning program theory, registry/TUI account, and the public command-context identity-selector name; local verification passed. |
 | `2026-08-14-windows-postrelease-ci-determinism-plan.md` | active | no | Class 5 diagnosis and event-based correction for independent Windows TUI callback and MCP SQLite/reactor failures. |
 | `2026-08-14-pypi-finalizer-consistency-plan.md` | completed | no | Class 5 correction making each independent GitHub finalizer boundedly verify exact PyPI visibility before immutable publication. |
