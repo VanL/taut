@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from concurrent.futures import Future
 from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import Event
 from typing import Any, cast
 
 import pytest
+from textual import events
+from textual.message import Message as TextualMessage
 from textual.widgets import Button, Input, OptionList, Select
 
 from taut import EmptyResultError, NotFoundError
@@ -25,9 +28,33 @@ from taut_tui.screens import (
     SearchScreen,
     SummonStartScreen,
 )
+from taut_tui.session import ConversationSnapshot
 from taut_tui.summon import TuiSummonOperations
 
 pytestmark = pytest.mark.sqlite_only
+
+
+class FocusProbe:
+    def __init__(self) -> None:
+        self._targets: dict[Any, asyncio.Event] = {}
+
+    def observe(self, message: TextualMessage) -> None:
+        if isinstance(message, events.DescendantFocus):
+            event = self._targets.pop(message.widget, None)
+            if event is not None:
+                event.set()
+
+    async def focus(self, widget: Any) -> None:
+        if widget.has_focus:
+            return
+        focused = asyncio.Event()
+        self._targets[widget] = focused
+        widget.focus()
+        try:
+            await asyncio.wait_for(focused.wait(), timeout=5)
+        finally:
+            self._targets.pop(widget, None)
+        assert widget.has_focus
 
 
 @dataclass(slots=True)
@@ -37,9 +64,19 @@ class HandlerContext:
     db_path: Path
     message_ts: int
     alice_token: str
+    monkeypatch: pytest.MonkeyPatch
+    focus_probe: FocusProbe
 
 
 HandlerCase = Callable[[HandlerContext], Awaitable[None]]
+
+
+def _successful_conversation(
+    future: Future[ConversationSnapshot | None],
+) -> ConversationSnapshot | None:
+    if future.cancelled() or future.exception() is not None:
+        return None
+    return future.result()
 
 
 async def _eventually(
@@ -116,33 +153,54 @@ async def _select_palette(context: HandlerContext, action_id: ActionId) -> None:
     )
     assert options.get_option_at_index(option_index).disabled is False
     options.highlighted = option_index
-    options.focus()
+    await context.focus_probe.focus(options)
     await context.pilot.press("enter")
     await context.pilot.pause()
 
 
 async def _open_general(context: HandlerContext) -> None:
-    context.app._dispatch_tui_action(
-        ActionId.CONVERSATION_OPEN,
-        source=ActionRoute.NAVIGATION,
-        context=ActionContext(
-            target="general",
-            target_label="#general",
-            surface=LogicalSurface.NAVIGATION,
-        ),
-    )
-    await _eventually(
-        context.pilot,
-        lambda: context.app.visual_state.active_conversation == "general",
-    )
+    conversation_applied = asyncio.Event()
+    observed_snapshots: list[ConversationSnapshot | None] = []
+    apply_optional_conversation = context.app._apply_optional_conversation
+    expected_intent = context.app._conversation_intent + 1
+
+    def observe_general(
+        intent: int,
+        future: Future[ConversationSnapshot | None],
+    ) -> None:
+        apply_optional_conversation(intent, future)
+        if intent == expected_intent:
+            observed_snapshots.append(_successful_conversation(future))
+            conversation_applied.set()
+
+    with context.monkeypatch.context() as patch:
+        patch.setattr(
+            context.app,
+            "_apply_optional_conversation",
+            observe_general,
+        )
+        context.app._dispatch_tui_action(
+            ActionId.CONVERSATION_OPEN,
+            source=ActionRoute.NAVIGATION,
+            context=ActionContext(
+                target="general",
+                target_label="#general",
+                surface=LogicalSurface.NAVIGATION,
+            ),
+        )
+        await asyncio.wait_for(conversation_applied.wait(), timeout=5)
+    assert len(observed_snapshots) == 1
+    snapshot = observed_snapshots[0]
+    assert snapshot is not None
+    assert snapshot.intent_token == expected_intent
+    assert snapshot.target == "general"
+    assert any(message.ts == context.message_ts for message in snapshot.messages)
+    assert context.app.visual_state.active_conversation == "general"
 
 
 async def _select_message(context: HandlerContext) -> None:
     await _open_general(context)
-    await _eventually(
-        context.pilot,
-        lambda: any(row.ts == context.message_ts for row in context.app._message_rows),
-    )
+    assert any(row.ts == context.message_ts for row in context.app._message_rows)
     context.app.visual_state = replace(
         context.app.visual_state,
         selected_message_id=context.message_ts,
@@ -446,14 +504,34 @@ async def _search_open_result(context: HandlerContext) -> None:
         context.app._selected_search_hit = observer.search("seed handler message")[0]
     finally:
         observer.close()
-    await _select_palette(context, ActionId.SEARCH_OPEN_RESULT)
-    await _eventually(
-        context.pilot,
-        lambda: (
-            any(row.ts == context.message_ts for row in context.app._message_rows)
-            and context.app.visual_state.scroll_anchor.message_id == context.message_ts
-        ),
+    search_context_applied = asyncio.Event()
+    observed_snapshots: list[ConversationSnapshot | None] = []
+    apply_optional_conversation = context.app._apply_optional_conversation
+    expected_intent = context.app._conversation_intent + 1
+
+    def observe_search_context(
+        intent: int,
+        future: Future[ConversationSnapshot | None],
+    ) -> None:
+        apply_optional_conversation(intent, future)
+        if intent == expected_intent:
+            observed_snapshots.append(_successful_conversation(future))
+            search_context_applied.set()
+
+    context.monkeypatch.setattr(
+        context.app,
+        "_apply_optional_conversation",
+        observe_search_context,
     )
+    await _select_palette(context, ActionId.SEARCH_OPEN_RESULT)
+    await asyncio.wait_for(search_context_applied.wait(), timeout=5)
+    assert len(observed_snapshots) == 1
+    snapshot = observed_snapshots[0]
+    assert snapshot is not None
+    assert snapshot.intent_token == expected_intent
+    assert snapshot.target == "general"
+    assert any(message.ts == context.message_ts for message in snapshot.messages)
+    assert any(row.ts == context.message_ts for row in context.app._message_rows)
     assert context.app.visual_state.active_conversation == "general"
     assert context.app.visual_state.scroll_anchor.message_id == context.message_ts
 
@@ -690,6 +768,7 @@ def test_handler_case_registry_is_exact() -> None:
 def test_every_action_reaches_a_concrete_handler(
     action_id: ActionId,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def exercise() -> None:
         db_path = tmp_path / f"{action_id.value}.db"
@@ -717,8 +796,20 @@ def test_every_action_reaches_a_concrete_handler(
             as_name=None if action_id is ActionId.WORKSPACE_INITIALIZE else "alice",
             auth_token=None,
         )
-        async with app.run_test(size=(120, 36)) as pilot:
-            context = HandlerContext(app, pilot, db_path, message_ts, alice_token)
+        focus_probe = FocusProbe()
+        async with app.run_test(
+            size=(120, 36),
+            message_hook=focus_probe.observe,
+        ) as pilot:
+            context = HandlerContext(
+                app,
+                pilot,
+                db_path,
+                message_ts,
+                alice_token,
+                monkeypatch,
+                focus_probe,
+            )
             await _eventually(
                 pilot,
                 lambda: (

@@ -62,3 +62,17 @@ leave every release tag untouched.
   observed a message row that was already present before the action, then
   asserted the still-pending history anchor. The completion condition now
   requires the exact search-result anchor as well as the row.
+- 2026-08-14: Exact-SHA root CI then exposed a Windows-only test portability
+  defect: a configuration test used `/explicit` as an absolute path. The
+  application correctly rejected that relative Windows path. The test now uses
+  `tmp_path` for native absolute ambient and explicit locations while retaining
+  both exact configuration assertions.
+- 2026-08-14: The same exact-SHA run exposed a Windows scheduling defect in the
+  search-result handler proof. The complete domain action remained correct in
+  20 sequential and 16 concurrent local repetitions, but the test pressed
+  Enter immediately after requesting palette focus and sampled a two-stage
+  future through a fixed pause count. The route now waits for committed focus,
+  then observes the real final conversation-application callback through an
+  event with a bounded fail-safe. It still asserts the exact message row,
+  active conversation, and history anchor; no product timeout, parallelism, or
+  assertion was weakened.

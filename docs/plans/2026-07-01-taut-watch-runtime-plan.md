@@ -265,7 +265,9 @@ Cursor ownership stays split deliberately:
 `TautClient.watch()` remains:
 
 ```python
-return TautWatcher(_watch_runtime_for_client(self), member["member_id"], handler, threads=threads)
+return TautWatcher(
+    _watch_runtime_for_client(self), member["member_id"], handler, threads=threads
+)
 ```
 
 Because `TautWatcher` is exported from `taut`, preserve direct construction as a

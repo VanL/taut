@@ -697,6 +697,20 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   retirement and that exact stream reports closed; otherwise preserve it as a
   fatal read failure.
 
+- 2026-08-14: A path literal that is absolute on the authoring OS is not a
+  portable absolute-path fixture. When the behavior under test is native path
+  validation, derive both ambient and explicit paths from pytest's `tmp_path`;
+  otherwise Windows can correctly reject the fixture while the test calls it
+  an application failure.
+
+- 2026-08-14: A UI test must synchronize both the input precondition and the
+  asynchronous result boundary. Calling `focus()` does not prove that the
+  framework has committed focus before the next key, and a fixed count of
+  short event-loop pauses is not proof that a multi-stage worker result was
+  applied. Wait for committed focus, then signal from the real result-apply
+  callback and retain exact final-state assertions. The timeout remains only a
+  deadlock fail-safe, not the success condition.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

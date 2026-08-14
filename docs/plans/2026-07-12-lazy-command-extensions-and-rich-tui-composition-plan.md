@@ -304,8 +304,8 @@ Rules:
 ```python
 class Command(Protocol):
     def configure_parser(self, parser: CommandArgumentParser) -> None: ...
-    def run(self, context: CommandContext,
-            args: argparse.Namespace) -> int: ...
+    def run(self, context: CommandContext, args: argparse.Namespace) -> int: ...
+
 
 CommandFactory = Callable[[], Command]
 ```
@@ -426,8 +426,9 @@ class SummonController:
     def list_live(self) -> tuple[SummonedMember, ...]: ...
     def status(self, name: str) -> SummonStatus: ...
     def stop(self, name: str) -> StopResult: ...
-    def run_foreground(self, request: SummonRequest,
-                       interaction: SummonInteraction) -> None: ...
+    def run_foreground(
+        self, request: SummonRequest, interaction: SummonInteraction
+    ) -> None: ...
 ```
 
 Rules:
@@ -482,21 +483,22 @@ class TerminalIntent(Enum):
     REQUIRED = "required"
     PREFERRED = "preferred"
 
+
 class TerminalAvailability(Enum):
     AVAILABLE = "available"
     NO_TTY = "no-tty"
     NESTED_HOST = "nested-host"
     UNAVAILABLE = "unavailable"
 
+
 @dataclass(frozen=True, slots=True)
 class TerminalLease:
     input_fd: int
     output_fd: int
 
+
 class SummonInteraction(Protocol):
-    def terminal_availability(
-        self, intent: TerminalIntent
-    ) -> TerminalAvailability: ...
+    def terminal_availability(self, intent: TerminalIntent) -> TerminalAvailability: ...
     def terminal_lease(self) -> ContextManager[TerminalLease]: ...
 ```
 

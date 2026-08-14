@@ -661,6 +661,7 @@ Tests:
 
   ```python
   from simplebroker.ext import get_backend_plugin
+
   assert get_backend_plugin("postgres").name == "postgres"
   ```
 
@@ -809,8 +810,8 @@ Implementation guidance:
    ```python
    POSTGRES_TEST_BACKEND = "postgres"
 
-   def active_backend(env: Mapping[str, str] | None = None) -> str:
-       ...
+
+   def active_backend(env: Mapping[str, str] | None = None) -> str: ...
    ```
 
    Use `BROKER_TEST_BACKEND=postgres` only as a test-runner control variable.
@@ -851,8 +852,7 @@ Implementation guidance:
 5. Add one typed helper for writing or ensuring `.taut.toml`:
 
    ```python
-   def ensure_taut_project_config(root: Path, *, dsn: str, schema: str) -> Path:
-       ...
+   def ensure_taut_project_config(root: Path, *, dsn: str, schema: str) -> Path: ...
    ```
 
    This helper is the only code path that writes `.taut.toml` in root tests.

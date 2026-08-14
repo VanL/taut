@@ -245,17 +245,19 @@ def test_relative_taut_db_clears_default_location(
 def test_explicit_location_and_name_suppress_taut_db(
     clean_env: None,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    monkeypatch.setenv("TAUT_DB", "/tmp/ambient.db")
+    explicit_location = tmp_path / "explicit"
+    monkeypatch.setenv("TAUT_DB", str(tmp_path / "ambient.db"))
 
     config = load_config(
         {
-            "TAUT_DEFAULT_DB_LOCATION": "/explicit",
+            "TAUT_DEFAULT_DB_LOCATION": str(explicit_location),
             "TAUT_DEFAULT_DB_NAME": "workspace.db",
         }
     )
 
-    assert config["BROKER_DEFAULT_DB_LOCATION"] == "/explicit"
+    assert config["BROKER_DEFAULT_DB_LOCATION"] == str(explicit_location)
     assert config["BROKER_DEFAULT_DB_NAME"] == "workspace.db"
 
 
