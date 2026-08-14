@@ -6,7 +6,7 @@ Class: 5. This work crosses the TUI callback boundary and an MCP child-thread /
 SQLite transaction boundary after hosted Windows exposed two independent
 failures. Async and storage lifecycle hardening require a dated hardened plan.
 
-Status: active.
+Status: completed at `eeb59ab6466a7fbe7afaab58dc034aad34384468`.
 
 Plan type: diagnosis and implementation. No product-spec revision is authorized
 until a deterministic MCP reproduction identifies a contract mismatch.
@@ -429,5 +429,13 @@ separate root tests retain that contract.
   kill. The full watcher suite then passed all 91 tests under real subprocess
   coverage, produced eight nonempty shards and no empty shard, and combined
   successfully. The combiner remains unchanged and fail-closed. Focused Ruff,
-  format, mypy, documentation-path, plan-index, and diff checks pass; the final
-  changed-SHA hosted producer and combiner remain the rollout gate.
+  format, mypy, documentation-path, plan-index, and diff checks pass. The final
+  changed-SHA hosted producer and combiner were the remaining rollout gate.
+- Canonical root run `31847430667` passed all 21 jobs at exact commit
+  `eeb59ab6466a7fbe7afaab58dc034aad34384468`. All 20 producer/test jobs passed,
+  including Windows Python 3.11 through 3.14, the live local-LLM smoke,
+  packaging, and repository lint/type checks. The dependent coverage job
+  `94918130700` then downloaded the real artifacts, retained the zero-byte
+  rejection boundary, combined them, and passed. This closes the rollout gate
+  without a timeout increase, assertion change, coverage filter, skipped lane,
+  or reduction in parallelism.
