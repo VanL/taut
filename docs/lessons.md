@@ -3,13 +3,6 @@
 Startup context is the Golden Rules plus entries after the watermark in
 `docs/coalescing.md`; the rest of this ledger is searchable history.
 
-- 2026-07-14: A renderer failure inside a watcher callback can be mistaken for
-  poison input and retried or cursor-advanced. Preflight install-owned display
-  policy before entering a deferred callback, and keep the fixed bootstrap
-  diagnostic outside the failed renderer. Logging formatters need the same
-  internal bootstrap handling because `logging.raiseExceptions` can otherwise
-  emit its own unsafe traceback.
-
 Use this file for durable, project-level lessons that should influence future
 sessions.
 
@@ -144,14 +137,6 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   coordinated release lanes, and keep old-version behavior in isolated wheel
   matrices instead of relying on ambient developer state.
 
-- 2026-07-13: Replacing argparse with manual option extraction requires the
-  parser's validation backstop, not just its happy-path token movement. A
-  separated value option must reject another option token or the literal `--`
-  as a missing value; otherwise hoisting silently changes both error classes
-  and the remaining grammar. Pin the rejection matrix and the intentional
-  exceptions, such as negative numbers, literal `-`, and joined
-  option-looking values.
-
 - 2026-07-11: A tight `pytest-timeout` marker under xdist thread mode is a
   worker-kill boundary, not an ordinary failing assertion. On a saturated
   Windows runner, a real queue-handle topology test exceeded its three-second
@@ -176,17 +161,16 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   it after object publication but before readiness/run, and make the join fatal
   if the old owner survives so no later generation can overlap it.
 
-- 2026-07-10: `site.getsitepackages()` ordering is platform-specific. Test
-  fixtures must select a structural `site-packages`/`dist-packages` entry, not
-  index zero; otherwise Windows can place synthetic packages at the venv root
-  and make a correct isolation verifier look broken.
-
-- 2026-07-10: A Popen-shaped boundary fake must implement every platform path
-  that CI can select. If production uses `send_signal()` on POSIX and
-  `terminate()` on Windows, a fake that implements only the developer-host path
-  creates a false product failure across the whole Windows matrix. Exercise the
-  alternate branch through a module-local platform binding, and keep real OS
-  signal probes scoped to operating systems that provide those semantics.
+- 2026-07-10 (3 entries): compatibility-floor provenance and portable test
+  boundaries, verified distilled — the spec separates SimpleBroker's reference
+  ownership model from its current accepted floor; wheel fixtures select a
+  structural site-packages path; and the scripted-adapter tests fire both
+  POSIX `send_signal()` and Windows `terminate()` branches
+  (`docs/specs/02-taut-core.md`,
+  `docs/implementation/05-taut-summon-architecture.md`,
+  `tests/test_core_summon_wheel_matrix.py`, and
+  `extensions/taut_summon/tests/test_scripted_adapter.py`).
+  (distilled from 3 entries, 2026-07-10..2026-07-10, source 9410b6b)
 
 - 2026-07-10: An integration test should own one load-bearing boundary. If its
   assertions cover event-pump throughput and ledger persistence, cleanup should
@@ -335,12 +319,6 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   `PRAGMA integrity_check` stayed `ok`.
   (distilled from 4 entries, 2026-07-08..2026-07-09, source 9410b6b)
 
-- 2026-07-10: Correction to the preceding supported-floor statement: 5.2.0
-  remains the provenance of the reactor ownership model, but 5.2.2 is the first
-  supported SimpleBroker release that passes the real multi-process control
-  visibility proof. Documentation and compatibility gates must distinguish a
-  design's reference version from the minimum runtime that passed acceptance.
-
 - 2026-07-10: A bounded thread join is not proof of teardown. A supervisor must
   check that the worker actually stopped before starting the next generation,
   retire a timed-out generation, and fence every external side effect on the
@@ -478,10 +456,12 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   and their tests host-dependent; use `as_posix()` when the identifier belongs
   to repository syntax rather than the local filesystem UI.
 
-- 2026-07-12: A synchronous reactor's SIGINT handler should publish stop and
-  wake state, then unwind. Resource close, joins, and native waiter teardown
-  belong outside signal context; otherwise asynchronous signal re-entry can
-  block on locks that normal cleanup is meant to own.
+- 2026-07-12 (1 entry): synchronous signal-context ownership, verified
+  distilled — `BaseReactor` handlers publish stop/wake state and unwind;
+  resource close, joins, and native waiter teardown stay in ordinary cleanup
+  (`docs/implementation/05-taut-summon-architecture.md` and the real
+  `BaseReactor` signal probe).
+  (distilled from 1 entry, 2026-07-12..2026-07-12, source 9410b6b)
 
 - 2026-07-12: A synthetic PTY peer must consume terminal-reset output before
   joining code that restores termios with `TCSADRAIN`. Joining first can make a
@@ -498,14 +478,13 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   known-safe one-worker boundaries. Matrix jobs on isolated CI hosts do not
   need serialization for SQLite safety.
 
-- 2026-07-13: Expected cancellation must leave its `except` scope before it
-  enters cleanup that consults `sys.exception()`. Otherwise the cleanup owner
-  sees the actively handled cancellation as a primary failure and can turn a
-  clean stop into a false error. Pin the cancellation at the real blocking
-  operation with events, publish teardown and release as separate finalized
-  facts, and keep ACK truth strict. Timing repetition cannot prove this class
-  of bug because scheduler load only changes which exception scope owns the
-  transition.
+- 2026-07-13 (2 entries): parser-backstop and cancellation-scope rules,
+  verified distilled — global option hoisting preserves the parser's missing-
+  value matrix, while expected cancellation leaves its `except` scope before
+  cleanup consults `sys.exception()` (`docs/specs/02-taut-core.md`,
+  `docs/implementation/05-taut-summon-architecture.md`, parser regression
+  tests, and the live driver/PTY/stream cleanup symbols).
+  (distilled from 2 entries, 2026-07-13..2026-07-13, source 9410b6b)
 
 - 2026-07-13: A consistency test should verify derived state, not become a
   second source for the same release literal. Put ownership in package
@@ -573,6 +552,13 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   an existing local `.venv` can otherwise hide a clean-runner failure where the
   child environment correctly lacks `pytest`.
 
+- 2026-07-14: A renderer failure inside a watcher callback can be mistaken for
+  poison input and retried or cursor-advanced. Preflight install-owned display
+  policy before entering a deferred callback, and keep the fixed bootstrap
+  diagnostic outside the failed renderer. Logging formatters need the same
+  internal bootstrap handling because `logging.raiseExceptions` can otherwise
+  emit its own unsafe traceback.
+
 - 2026-07-14: A helper-thread timeout is a state transition, not just a test
   timeout. If expiry releases a real transaction or lock, scheduler starvation
   can manufacture the behavior the test is meant to reject. Keep the resource
@@ -592,58 +578,15 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   inherited disable and never enters strict setup. Release environments must
   force both the enable flag and strict mode, with an executable test for each.
 
-- 2026-07-14: “Configurable” must name who can configure the behavior. A public
-  Python argument serves embedders and extensions but not a human using the
-  CLI. For a user-facing safety default, define the operator config surface,
-  precedence, discovery root, freshness, and failure behavior separately from
-  the library override.
-
-- 2026-07-14: Gate a performance fast path on deterministic operation
-  selection over a real backend, not a wall-clock ratio. A call-through counter
-  can prove that caught-up rows skip the expensive public operation while real
-  storage still supplies every result; a manual median/IQR benchmark then shows
-  materiality and residual cost without making host timing part of CI.
-
-- 2026-07-14: Backend-coverage audits must follow test markers through their
-  runner, not infer scope from file names or local defaults. A `shared` module
-  can already exercise identity, CLI, and watcher behavior under PostgreSQL
-  even when ordinary root pytest uses SQLite; identify the narrower missing
-  capability path before proposing duplicate suites.
-
-- 2026-07-14: Human terminal output is not a machine protocol, even when its
-  old layout resembles one. A safety renderer may intentionally make tabs and
-  other controls visible, turning delimiter parsing into a false missing-field
-  failure. Read operational state through a typed API or explicit JSON path;
-  reserve human-output assertions for presentation behavior.
-
-- 2026-07-14: A terminal-safety test must not require the filesystem to accept
-  terminal control bytes as a filename. POSIX permits names that Windows
-  rejects, so the test can stall in a dependency's setup or lock path instead
-  of proving rendering. Test raw-to-safe output at the renderer boundary, then
-  keep real CLI and storage integration on a portable valid path. If a
-  platform forbids the supplied storage target, reject it before dependency
-  setup and retain a platform-specific CLI firing test for that failure path.
-
-- 2026-07-14: A lazily loaded command has two help owners: its lightweight
-  manifest summary for root help and its command adapter description for
-  subcommand help. When contract wording changes, update and fire tests for
-  both owners; importing the adapter into root help would defeat the lazy-load
-  boundary rather than solve the drift.
-
-- 2026-07-14: Classify use of a hardened workflow separately from changes to
-  that workflow. An explicitly requested release through unchanged normal
-  machinery can stay small because the machinery owns gates, fences, evidence,
-  and resumable retries. Product work, disabled gates, override flags, manual
-  publication, machinery changes, and ad hoc recovery retain their normal
-  higher classifications.
-
-- 2026-07-14: Race recovery must preserve selector precedence. A shared
-  creation helper cannot blindly return the owner of a colliding inferred
-  claim when the caller explicitly selected a different name. Cross the
-  selector role with both the insert-collision and post-insert claim-collision
-  windows in deterministic real-state tests, and recover only after an
-  authoritative owner lookup proves the race. An integrity error alone is not
-  that proof.
+- 2026-07-14 (8 entries): verified distilled into their existing owners —
+  operator configuration and typed human/machine output boundaries in
+  [TAUT-3.2]/[TAUT-6.4]; deterministic backend fast-path and cross-backend
+  coverage ownership in [TAUT-12] and the architecture trace; portable
+  terminal targets and dual lazy-help owners in [TAUT-6.4]/[TAUT-8.2]; routine
+  release classification in the writing-plans runbook; and selector-precedence
+  race recovery in [IAN-3]. Symbol-liveness and focused parity tests were
+  rechecked for every disposition.
+  (distilled from 8 entries, 2026-07-14..2026-07-14, source 9410b6b)
 
 - 2026-07-14: A thread event immediately before a blocking call proves only
   that the thread reached that line; it does not prove that the scheduler let

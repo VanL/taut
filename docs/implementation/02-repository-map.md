@@ -93,7 +93,7 @@ Quick pointers to the key guidance documents in this repository.
 | `docs/plans/2026-07-01-taut-watch-runtime-plan.md` | Implemented `TautWatchRuntime` seam between `TautClient` and the watcher |
 | `docs/plans/2026-07-06-taut-summon-plan.md` | Implemented `taut-summon` extension: delegation verbs, ledger, adapters, driver, control plane, conformance suite |
 | `docs/plans/2026-07-10-taut-summon-quality-remediation-plan.md` | Implemented and independently verified remediation for state, lifecycle, control, PTY, driver-generation, and paired-release findings |
-| `docs/plans/2026-07-11-multi-factor-review-remediation-plan.md` | Implemented and independently reviewed external multi-factor remediation; current worktree remains uncommitted |
+| `docs/plans/2026-07-11-multi-factor-review-remediation-plan.md` | Implemented and independently reviewed external multi-factor remediation |
 | `docs/plans/2026-07-12-lazy-command-extensions-and-rich-tui-composition-plan.md` | Reviewed implementation plan for command extensions, lazy subsystem loading, public Summon composition, and rich-host boundaries |
 | `docs/plans/2026-07-13-ci-speed-determinism-release-evidence-plan.md` | Reviewed implementation plan for existing-lane coverage, deterministic worker/process ownership, strict local-LLM evidence, canonical package artifacts, and exact-SHA release gates |
 | `docs/plans/2026-07-14-universal-release-gates-plan.md` | Reviewed implementation and release plan for one default all-extension local gate, explicit human override, and both exact-SHA workflow requirements for every tag |
