@@ -75,7 +75,6 @@ directory. Run `bin/check-plan-status-index` after changing it.
 | `2026-07-08-release-helper-simplebroker-port-plan.md` | completed | no | Completed; landed evidence includes `9f16343a`. |
 | `2026-07-08-taut-sqlite-contention-hardening-plan.md` | superseded | no | Explicitly replaced by the 2026-07-09 reactor-safety plan. |
 | `2026-07-09-taut-reactor-safety-plan.md` | completed | no | Completed; landed evidence includes `7ba4def`. |
-| `2026-07-10-ci-failure-remediation-plan.md` | retired-pending | no | Soft-retired 2026-08-08 coalescing sweep; harvest gate re-verified from the current tree; source `b03709452`. |
 | `2026-07-10-taut-dynamic-native-waiter-replacement-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |
 | `2026-07-10-taut-summon-quality-remediation-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |
 | `2026-07-11-multi-factor-review-remediation-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |
@@ -90,14 +89,11 @@ directory. Run `bin/check-plan-status-index` after changing it.
 | `2026-07-14-agent-interfaces-runbook-adoption-plan.md` | completed | yes | Completed exemplar retained for its review dispositions. |
 | `2026-07-14-blank-message-no-op-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |
 | `2026-07-14-routine-release-classification-plan.md` | completed | no | Completed; landed evidence includes `b2da819`. |
-| `2026-07-14-single-project-config-source-spec-plan.md` | retired-pending | no | Soft-retired 2026-08-08 coalescing sweep; harvest gate re-verified from the current tree; source `db67b94b`. |
 | `2026-07-14-smaller-quality-followups-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |
 | `2026-07-14-taut-mcp-extension-plan.md` | completed | no | Completed; landed evidence includes `4d25deb`. |
 | `2026-07-14-taut-tui-cross-reference-correction-plan.md` | completed | no | Completed; landed evidence includes `b2da819`. |
-| `2026-07-14-terminal-output-safety-plan.md` | retired-pending | no | Soft-retired 2026-08-08 coalescing sweep; harvest gate re-verified from the current tree; source `281f04fa`. |
 | `2026-07-14-trusted-identity-selector-fast-path-plan.md` | completed | no | Completed; landed evidence includes `b2da819`. |
 | `2026-07-14-universal-release-gates-plan.md` | completed | no | Completed; landed evidence includes `ce2bbb1`. |
-| `2026-07-15-per-call-read-limit-plan.md` | retired-pending | no | Soft-retired 2026-08-08 coalescing sweep; harvest gate re-verified (the handoff's durable-rationale blocker did not reproduce — [TAUT-7.2] carries the contract rationale); source `4a129e94`. |
 | `2026-07-15-taut-0.7.1-portability-and-coverage-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |
 | `2026-07-15-taut-mcp-release-integration-plan.md` | completed | no | Completed; landed evidence includes `dd699e4`. |
 | `2026-07-28-agent-guidance-delta-wave-plan.md` | completed | no | Class 3+P propagation of the agent-guidance wave at `51626db`; transplants applied and local gates green, independent review and landing authorization outstanding. |
