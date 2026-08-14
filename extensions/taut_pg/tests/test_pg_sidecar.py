@@ -10,7 +10,7 @@ from typing import Any
 import psycopg
 import pytest
 from simplebroker import Queue, target_for_directory
-from simplebroker.ext import IntegrityError
+from simplebroker.ext import IntegrityError, get_backend_plugin
 from taut_summon._state import (
     DriverConflictError,
     capture_driver_evidence,
@@ -27,6 +27,35 @@ from taut.client import TautClient
 from taut.state import POSTGRES_SQL_DIALECT, SqlSidecarTautState
 
 pytestmark = pytest.mark.pg_only
+
+
+def test_direct_taut_backend_settings_select_postgres_without_project_file(
+    tmp_path: Path,
+    pg_dsn: str,
+    pg_schema: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TAUT_BACKEND", "postgres")
+    monkeypatch.setenv("TAUT_BACKEND_TARGET", pg_dsn)
+    monkeypatch.setenv("TAUT_BACKEND_SCHEMA", pg_schema)
+
+    try:
+        result = TautClient.init()
+        client = TautClient(as_name="van")
+        try:
+            client.join("general")
+            assert client.joined_thread_names() == ("general",)
+        finally:
+            client.close()
+        assert result.created is False
+        assert result.db.startswith("postgresql://")
+        assert not (tmp_path / ".taut.toml").exists()
+    finally:
+        get_backend_plugin("postgres").cleanup_target(
+            pg_dsn,
+            backend_options={"schema": pg_schema},
+        )
 
 
 def _assert_advisory_lock_held(

@@ -69,11 +69,13 @@ filesystem error surfaces. Core rejects those paths before constructing
 `Queue`; it does not broaden this into a portable filename policy, so POSIX
 acceptance and non-SQLite targets remain unchanged.
 
-The load-bearing supported SimpleBroker floor is `simplebroker>=7.1.0`, aligned
+The load-bearing supported SimpleBroker floor is `simplebroker>=7.3.2`, aligned
 with
 `simplebroker-pg>=3.6.0`. Version 7.0.0 supplies the public message-id formatter
 and the exact-string JSON boundary while leaving Python and backend values as
-integers. Version 5.6.1 remains the origin of atomic exact-name
+integers. Version 7.3.2 supplies the immutable ambient-free resolved-config
+marker that Taut preserves across lower layers. Version 5.6.1 remains the
+origin of atomic exact-name
 `broadcast(..., queue_names=..., create_missing=True)`, in addition to the
 earlier interruptible watcher bootstrap, corrected runner cleanup, and
 initialized timestamp-conflict metrics. Taut does not use
@@ -732,7 +734,8 @@ queue high-water mark.
   or receives one paired with the exact resolved broker config through its
   explicit embedding handoff. Only `TautClient.init()` creates a database.
 - Backend selection: `--db`, `db_path=`, and `TAUT_DB` remain filesystem path
-  selectors. Postgres is selected only through `.taut.toml`.
+  selectors. Postgres is normally selected through `.taut.toml`; explicit
+  `TAUT_BACKEND*` values are the no-project-file backend-selection door.
 - SimpleBroker API: taut imports from `simplebroker` and `simplebroker.ext`
   only. No private SimpleBroker modules and no SQL against broker tables.
 - Reaction fanout: exactly one public exact-name broadcast owns the
@@ -758,6 +761,16 @@ queue high-water mark.
   dropped rather than treated as fatal errors. The interval refresh must remain
   independent of queue message presence; moving it behind a message-pending gate
   breaks non-SQLite forward compatibility.
+
+Configuration crosses the SimpleBroker boundary as a complete immutable
+`ResolvedConfig`. `taut/_constants.py` first lists the few named defaults that
+encode Taut behavior: storage, project discovery, SQLite selection, and load
+skew. Its other named defaults mostly have nothing to do with Taut policy.
+They mirror SimpleBroker solely to close every field and isolate Taut from
+ambient `BROKER_*`. The nominal mapping matters as much as completeness because
+broker lower layers resolve config repeatedly; an ordinary dictionary would
+resume ambient environment reads. Client and watcher ownership boundaries
+therefore recreate the public marker through the ambient-free resolver.
 
 ## Key Files
 
@@ -794,7 +807,7 @@ requirement or auditing implementation coverage.
 
 | Spec area | Primary code owners | Contract tests |
 |---|---|---|
-| [TAUT-3.2], project resolution, resolved target/config handoff, and Windows SQLite path preflight | `taut/_constants.py::load_config`, `taut/client/_base.py::_ClientBase.__init__`, `_resolve_target`, `taut/client/__init__.py::TautClient.init` | resolved-handoff, argument-pair, missing-target cases in `tests/test_client.py`; `tests/test_shared_contract.py::test_project_resolved_target_config_handoff_contract` on SQLite and PostgreSQL; `tests/test_project_config.py`; `tests/test_cli.py::test_init_uses_project_config_postgres_backend`, `test_windows_sqlite_target_validation_rejects_every_control`, `test_posix_sqlite_target_validation_preserves_control_bearing_paths`, and `test_cli_windows_control_bearing_database_target_fails_fast` |
+| [TAUT-3.2], isolated config translation, project resolution, resolved target/config handoff, and Windows SQLite path preflight | `taut/_constants.py::load_config`, `freeze_broker_config`, `taut/client/_base.py::_ClientBase.__init__`, `_resolve_target`, `taut/client/__init__.py::TautClient.init`, `taut/client/_watching.py`, `taut/watcher.py` | exhaustive translation/isolation cases in `tests/test_constants.py`; resolved-handoff, argument-pair, missing-target cases in `tests/test_client.py`; `tests/test_shared_contract.py::test_project_resolved_target_config_handoff_contract` on SQLite and PostgreSQL; `tests/test_project_config.py`; `tests/test_cli.py::test_init_uses_project_config_postgres_backend`, `test_windows_sqlite_target_validation_rejects_every_control`, `test_posix_sqlite_target_validation_preserves_control_bearing_paths`, and `test_cli_windows_control_bearing_database_target_fails_fast` |
 | [TAUT-3.3], [TAUT-3.4], sidecar schema and version gate | `taut/state/_sql.py::SqlSidecarTautState.ensure_schema`, `taut/state/__init__.py::TautState` | `tests/test_state_contract.py`, `tests/test_shared_contract.py`, `extensions/taut_pg/tests/test_pg_sidecar.py::test_postgres_concurrent_empty_schema_initializers_converge` |
 | [TAUT-4], channels, membership, replies, reads, logs, and listing | `taut/client/_threads.py::ThreadsMixin.join`, `leave`, `list_threads`; `taut/client/_messaging.py::MessagingMixin.say`, `reply`, `read_unread`, `log`; `taut/client/_identity.py::IdentityMixin.who` | `tests/test_client.py`, `tests/test_cli.py`, `tests/test_shared_contract.py` |
 | [TAUT-4.4], channel-topic validation, observational reads, membership-scoped mutation, metadata merge, and rename serialization | `taut/state/_channel_topics.py`; `taut/state/_sql.py::set_channel_topic`, `start_channel_rename`; `taut/client/_threads.py::ThreadsMixin.get_channel`, `set_channel_topic`, `_channel_from_row` | Channel-topic and corruption cases in `tests/test_state_contract.py`, `tests/test_client.py`, and `tests/test_shared_contract.py` on SQLite and PostgreSQL; channel CLI cases in `tests/test_cli.py` |

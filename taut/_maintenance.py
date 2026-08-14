@@ -5,9 +5,8 @@ from __future__ import annotations
 import os
 import tomllib
 from pathlib import Path
-from typing import Any
 
-from simplebroker import BrokerTarget, resolve_broker_target
+from simplebroker import BrokerTarget, ResolvedConfig, resolve_broker_target
 
 from taut._constants import NO_DATABASE_MESSAGE, load_config
 from taut._exceptions import NotInitializedError, TautError
@@ -15,7 +14,7 @@ from taut._exceptions import NotInitializedError, TautError
 
 def resolve_existing_target(
     db_path: str | Path | None,
-) -> tuple[BrokerTarget | str, dict[str, Any]]:
+) -> tuple[BrokerTarget | str, ResolvedConfig]:
     """Resolve an existing workspace without creating a SQLite target."""
 
     config = load_config()

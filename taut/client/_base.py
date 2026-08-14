@@ -12,7 +12,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, NoReturn
 
-from simplebroker import BrokerTarget, Queue, resolve_broker_target
+from simplebroker import BrokerTarget, Queue, ResolvedConfig, resolve_broker_target
 
 from taut import addressing, identity
 from taut._constants import (
@@ -20,6 +20,7 @@ from taut._constants import (
     META_QUEUE_NAME,
     NO_DATABASE_MESSAGE,
     PROJECT_CONFIG_NAME,
+    freeze_broker_config,
     load_config,
 )
 from taut._exceptions import (
@@ -47,7 +48,10 @@ _MISSING_POSTGRES_PLUGIN_HINT = (
 )
 
 
-def _raise_invalid_project_config(exc: tomllib.TOMLDecodeError) -> NoReturn:
+def _raise_invalid_project_config(
+    exc: tomllib.TOMLDecodeError,
+    project_config_name: str = PROJECT_CONFIG_NAME,
+) -> NoReturn:
     """Re-raise a project-config parse failure naming the offending file.
 
     SimpleBroker's target resolution raises the raw ``TOMLDecodeError``
@@ -55,7 +59,7 @@ def _raise_invalid_project_config(exc: tomllib.TOMLDecodeError) -> NoReturn:
     was parsing; a CLI diagnostic must name the offending input.
     """
 
-    raise TautError(f"invalid {PROJECT_CONFIG_NAME}: {exc}") from exc
+    raise TautError(f"invalid {project_config_name}: {exc}") from exc
 
 
 def _raise_with_backend_install_hint(exc: RuntimeError) -> NoReturn:
@@ -156,7 +160,7 @@ def _direct_message_context_for_state(
 class _ClientBase(ABC):
     """Shared state and cross-mixin type contract for TautClient."""
 
-    config: dict[str, Any]
+    config: ResolvedConfig
     target: BrokerTarget | str
     as_name: str | None
     token: str | None
@@ -191,7 +195,9 @@ class _ClientBase(ABC):
         if broker_target is not None and db_path is not None:
             raise ValueError("broker_target cannot be combined with db_path")
         self.config = (
-            load_config() if broker_config is None else deepcopy(dict(broker_config))
+            load_config()
+            if broker_config is None
+            else freeze_broker_config(broker_config)
         )
         self.target = self._resolve_target(db_path, broker_target=broker_target)
         reaction_config_path = (
@@ -319,7 +325,10 @@ class _ClientBase(ABC):
         try:
             target = resolve_broker_target(Path.cwd(), config=self.config)
         except tomllib.TOMLDecodeError as exc:
-            _raise_invalid_project_config(exc)
+            _raise_invalid_project_config(
+                exc,
+                str(self.config["BROKER_PROJECT_CONFIG_NAME"]),
+            )
         except RuntimeError as exc:
             _raise_with_backend_install_hint(exc)
         if target is None:

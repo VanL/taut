@@ -46,6 +46,7 @@ from typing import TYPE_CHECKING, Any, cast, final
 from simplebroker import (
     BrokerTarget,
     Queue,
+    ResolvedConfig,
     create_activity_waiter_for_queues,
     resolve_broker_target,
 )
@@ -61,6 +62,7 @@ from taut import addressing
 from taut._constants import (
     QUEUE_PRIORITY_NORMAL,
     WATCH_MEMBERSHIP_REFRESH_SECONDS,
+    freeze_broker_config,
     load_config,
 )
 from taut._exceptions import MembershipError
@@ -91,7 +93,7 @@ REACTOR_LIFECYCLE_METHODS = (
 def resolve_context_broker_target(
     starting_dir: str | Path | None = None,
     *,
-    config: dict[str, Any] | None = None,
+    config: Mapping[str, Any] | None = None,
 ) -> BrokerTarget:
     target = resolve_broker_target(starting_dir, config=config)
     if target is None:
@@ -207,10 +209,10 @@ class MultiQueueWatcher(BaseWatcher):
         if not queue_configs:
             raise ValueError("queue_configs cannot be empty")
 
-        config_dict: dict[str, Any] = (
-            dict(config) if config is not None else load_config()
+        config_dict: ResolvedConfig = (
+            freeze_broker_config(config) if config is not None else load_config()
         )
-        self._config: dict[str, Any] = config_dict
+        self._config: ResolvedConfig = config_dict
 
         self._persistent = persistent
         self._yield_strategy = yield_strategy

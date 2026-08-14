@@ -174,7 +174,10 @@ class TautClient(
             try:
                 target_obj = target_for_directory(Path.cwd(), config=config)
             except tomllib.TOMLDecodeError as exc:
-                _raise_invalid_project_config(exc)
+                _raise_invalid_project_config(
+                    exc,
+                    str(config["BROKER_PROJECT_CONFIG_NAME"]),
+                )
             except RuntimeError as exc:
                 _raise_with_backend_install_hint(exc)
             target = target_obj

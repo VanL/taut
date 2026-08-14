@@ -362,7 +362,7 @@ class _RuntimeImportVisitor(ast.NodeVisitor):
         (
             Path("taut/_constants.py"),
             set(),
-            {"simplebroker"},
+            {"simplebroker", "simplebroker.ext"},
         ),
         (
             Path("taut/cli.py"),

@@ -12,11 +12,12 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
 from threading import Event
-from typing import Any, TypeAlias
+from typing import TypeAlias
 
 from simplebroker import (
     ActivityWaiter,
     BrokerTarget,
+    ResolvedConfig,
     create_activity_waiter_for_queues,
     resolve_broker_target,
 )
@@ -207,10 +208,15 @@ def _workspace_owner(target: BrokerTarget) -> Path:
 
 def _resolve_workspace(
     locator: str,
-) -> tuple[BrokerTarget, dict[str, Any], str, tuple[int, int]]:
-    # Override the only TAUT_DB-derived broker setting. Attachments resolve only
-    # from their explicit directory and .taut.toml/.taut.db project state.
-    config = load_config({"BROKER_DEFAULT_DB_NAME": DEFAULT_DB_NAME})
+) -> tuple[BrokerTarget, ResolvedConfig, str, tuple[int, int]]:
+    # Explicit workspace resolution outranks ambient TAUT_DB for both halves of
+    # the lower-layer default path.
+    config = load_config(
+        {
+            "TAUT_DEFAULT_DB_LOCATION": "",
+            "TAUT_DEFAULT_DB_NAME": DEFAULT_DB_NAME,
+        }
+    )
     try:
         target = resolve_broker_target(locator, config=config)
     except tomllib.TOMLDecodeError as exc:
@@ -255,7 +261,7 @@ class _WorkspaceReactor:
         self.client: TautClient | None = None
         self.token = ""
         self.target: BrokerTarget | None = None
-        self.config: dict[str, Any] | None = None
+        self.config: ResolvedConfig | None = None
         self.canonical = ""
         self.directory_identity = (0, 0)
         self.backend = ""

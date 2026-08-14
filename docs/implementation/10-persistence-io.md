@@ -27,7 +27,7 @@ file before opening a load target, retains byte offsets rather than message
 bodies, and replays the nested broker section from disk. Framing records are
 canonical UTF-8 JSON; SimpleBroker payload lines remain owned by SimpleBroker.
 Taut still validates the exact nested version-1 header and message field sets.
-That is an intentional compatibility pin to the `simplebroker>=7.1.0` format
+That is an intentional compatibility pin to the `simplebroker>=7.3.2` format
 contract: a future nested field requires an explicit version decision when the
 dependency floor moves, rather than permissive acceptance and silent loss.
 Version 1 permits canonical strings or exact JSON integer tokens for nested

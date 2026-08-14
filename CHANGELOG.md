@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Isolated Taut's complete SimpleBroker configuration under mechanical
+  `TAUT_*` spellings. Ambient `BROKER_*` values no longer affect Taut, while
+  immutable resolved config survives repeated lower-layer resolution. Most of
+  the newly named defaults mirror SimpleBroker solely to close the namespace.
+- Raised the runtime floor to SimpleBroker 7.3.2 for its public immutable
+  `ResolvedConfig` and ambient-free `resolve_isolated_config()` embedding API.
+
 ## 0.8.7 - 2026-08-12
 
 - Added the complete `taut-chat[all]` extension bundle and the protocol-clean

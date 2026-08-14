@@ -17,6 +17,7 @@ from typing import Any, BinaryIO
 from simplebroker import (
     BrokerTarget,
     Queue,
+    ResolvedConfig,
     dump_lines,
     format_message_id,
     load_lines,
@@ -43,13 +44,13 @@ from ._format import (
 
 def _resolve_source(
     db_path: str | Path | None,
-) -> tuple[BrokerTarget | str, dict[str, Any]]:
+) -> tuple[BrokerTarget | str, ResolvedConfig]:
     return resolve_existing_target(db_path)
 
 
 def _resolve_destination(
     db_path: str | Path | None,
-) -> tuple[BrokerTarget | str, dict[str, Any]]:
+) -> tuple[BrokerTarget | str, ResolvedConfig]:
     config = load_config()
     explicit = db_path or os.environ.get("TAUT_DB")
     if explicit is not None:

@@ -51,6 +51,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 
 | Plan | Status | Exemplar | Note |
 |------|--------|----------|------|
+| `2026-08-13-simplebroker-config-isolation-plan.md` | completed | no | Class 5 symmetric Taut/SimpleBroker configuration isolation; published 7.3.2 artifact, exhaustive mapping, cross-backend proof, and independent closeout review passed. |
 | `2026-06-12-taut-0.1.1-hardening-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |
 | `2026-06-12-taut-foundation-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |
 | `2026-06-17-github-actions-release-workflows-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |

@@ -111,26 +111,43 @@ Taut resolves its database the way git resolves a repository:
 1. `--db PATH` (CLI) or `db_path=` (API), if given, is used as-is — but
    the file must already exist (see the creation rule below).
 2. `TAUT_DB`, if set, behaves exactly like `--db`.
-3. Otherwise taut searches upward from the current directory for `.taut.toml`
-   or `.taut.db` through SimpleBroker project resolution, and uses the first
-   resolved target.
+3. Otherwise Taut asks SimpleBroker to resolve from the current directory
+   using the Taut-resolved project config path/name and default SQLite
+   database name, and uses the resolved target. Relative project settings use
+   upward discovery; an absolute project-config path selects its one configured
+   location. The defaults are `.taut.toml` and `.taut.db`.
 4. If nothing is found, commands fail with exit code 1 and the message
    `No taut database found. Run 'taut init' to create one.` Only
    `taut init` creates a database.
 
-`.taut.toml` is the only project file Taut reads as project configuration.
-Default SQLite discovery does not require it; selecting Postgres does. When
-step 3 discovers `.taut.toml`, that file is authoritative for storage and must
-contain `version`, `backend`, and `target`, including when `backend = "sqlite"`.
-It may also contain the Taut-owned `[terminal_text]` settings defined by
-[TAUT-6.4] and the optional Taut-owned `[reactions]` table. Packaged reaction
-defaults are `values = ["ack", "blocked"]`. A storage-authoritative
-`.taut.toml` may replace that ordered list; a missing table or key inherits
-the packaged values, while an explicit empty list disables outbound
-reactions. Values are unique lowercase ASCII strings matching
-`^[a-z0-9][a-z0-9_-]{0,31}$`; Taut does not normalize or deduplicate them.
-Invalid reaction configuration fails client construction. Unknown keys remain
-ignored.
+`.taut.toml` is Taut's default project configuration file; selecting Postgres
+normally uses it. The translated `TAUT_PROJECT_CONFIG_PATH` and
+`TAUT_PROJECT_CONFIG_NAME` settings may explicitly select a different Taut
+project configuration location/name. Taut searches only that configured
+project file and the configured default SQLite database name. It never falls
+back to ambient SimpleBroker project settings or merges multiple project
+files. A user may deliberately set the Taut project filename to a name also
+used by another application; after that explicit Taut setting, the file is a
+Taut input rather than an ambient SimpleBroker fallback.
+
+A discovered Taut project file is authoritative for its `backend`, `target`,
+and `backend_options`. The translated `TAUT_BACKEND` and
+`TAUT_BACKEND_*` settings are the explicit no-project-file backend-selection
+door. The default remains SQLite. An explicit path selector (`--db`,
+`db_path=`, or `TAUT_DB`) remains path-only, takes precedence over project and
+backend settings, and requires an existing SQLite file except for `taut init`.
+The optional Taut-owned `[reactions]` table is read only from the selected
+storage project file under its existing contract. `[terminal_text]` remains
+the separate current-directory `.taut.toml` presentation policy defined by
+[TAUT-6.4]; storage selectors do not relocate it.
+
+Packaged reaction defaults are `values = ["ack", "blocked"]`. A
+storage-authoritative selected Taut project file may replace that ordered
+list; a missing table or key inherits the packaged values, while an explicit
+empty list disables outbound reactions. Values are unique lowercase ASCII
+strings matching `^[a-z0-9][a-z0-9_-]{0,31}$`; Taut does not normalize or
+deduplicate them. Invalid reaction configuration fails client construction.
+Unknown keys remain ignored.
 
 Reaction values are resolved from the selected `BrokerTarget.config_path` and
 frozen when `TautClient` is constructed. Explicit `db_path`/`TAUT_DB`
@@ -139,13 +156,14 @@ config. An MCP workspace freezes the same client snapshot until detach and
 reattach. This lookup is separate from SimpleBroker configuration translation
 and from [TAUT-6.4]'s current-directory presentation policy.
 
-Taut does not inspect `pyproject.toml`, `.broker.toml`, or any other project
-file for Taut settings, and does not combine project settings from multiple
-project files. The presentation-only case described by [TAUT-6.4] does not
-make a settings-only `.taut.toml` a valid step-3 storage configuration.
+Taut does not inspect `pyproject.toml`, ambient `.broker.toml`, or any project
+file other than the one selected through Taut's own project config settings,
+and does not combine project settings from multiple files. The
+presentation-only case described by [TAUT-6.4] does not make a settings-only
+selected Taut project file a valid step-3 storage configuration.
 
 Implementation contract: taut owns no backend-target search logic of its own.
-The upward storage search is one call:
+Storage resolution is one call:
 `simplebroker.resolve_broker_target(cwd, config=cfg)`,
 which returns the discovered target or `None` (→ the `taut init` error).
 Plain `Queue(name, config=cfg)` does **not** search upward — it resolves
@@ -165,14 +183,16 @@ operation may construct `TautClient` with `broker_target=BrokerTarget` and
 `broker_config=Mapping[str, Any]`. The two arguments are a pair: supplying only
 one raises `ValueError`, and `broker_target` is mutually exclusive with
 `db_path`. `broker_config` is the resolved `load_config()` mapping used to
-produce that target. This handoff bypasses current-directory and `TAUT_DB`
-storage selection so a caller can freeze one resolved project without changing
-process-global state. It does not make DSN strings valid `db_path` values, alter
-identity selectors, or permit database creation. A handed-off SQLite target
-must name an absolute path that resolves to an existing file; a handed-off
-non-SQLite target retains its backend name, target, and backend options. The
-client copies the resolved config and target backend-options mapping at the
-constructor boundary, so later caller mutation cannot change the attachment.
+produce that target. The client recreates its own immutable ambient-free
+SimpleBroker `ResolvedConfig` at the constructor boundary; an ordinary copied
+dictionary is not passed down because it would discard the isolation marker.
+This handoff bypasses current-directory and `TAUT_DB` storage selection so a
+caller can freeze one resolved project without changing process-global state.
+It does not make DSN strings valid `db_path` values, alter identity selectors,
+or permit database creation. A handed-off SQLite target must name an absolute
+path that resolves to an existing file; a handed-off non-SQLite target retains
+its backend name, target, and backend options. Later caller mutation cannot
+change the attachment.
 
 On Windows, a resolved SQLite path containing any U+0000 through U+001F
 control character is invalid. `taut init` rejects it before constructing a
@@ -182,8 +202,8 @@ characters are not allowed`. The path itself is not echoed. POSIX path
 acceptance is unchanged.
 
 v0.2.0 supports SQLite in the core package and Postgres through the separate
-`taut-pg` extension. Postgres selection uses `.taut.toml` with SimpleBroker's
-project-config shape:
+`taut-pg` extension. The ordinary Postgres selection path uses `.taut.toml`
+with SimpleBroker's project-config shape:
 
 ```toml
 version = 1
@@ -194,27 +214,100 @@ target = "postgresql://postgres:postgres@127.0.0.1:54329/taut_test"
 schema = "taut_project"
 ```
 
-The configuration handed to SimpleBroker goes through `resolve_config()`
-with these keys:
+Taut and standalone SimpleBroker have symmetric configuration namespaces.
+Taut reads `TAUT_*`; SimpleBroker reads `BROKER_*`. Ambient `BROKER_*` values,
+whether valid or invalid, do not affect Taut. Ambient `TAUT_*` values do not
+affect standalone SimpleBroker. Taut never obtains isolation by temporarily
+editing the process environment.
 
-| Taut intent | SimpleBroker config key | Value |
-|---|---|---|
-| database filename | `BROKER_DEFAULT_DB_NAME` | `.taut.db` |
-| upward search | `BROKER_PROJECT_SCOPE` | `true` |
-| config-file isolation | `BROKER_PROJECT_CONFIG_NAME` | `.taut.toml` |
-| ambient backend pin | `BROKER_BACKEND` | `sqlite` |
+`load_config()` compiles one complete Taut-owned input mapping, mechanically
+renames every supported `TAUT_NAME` to `BROKER_NAME`, and passes the complete
+mapping through SimpleBroker's public `resolve_isolated_config()` helper. That
+helper returns a nominal public immutable `ResolvedConfig` mapping. Broker
+lower layers recognize that type without consulting ambient `BROKER_*`;
+converting it to an ordinary dictionary discards the isolation guarantee and
+is not permitted on the Taut-to-broker handoff. SimpleBroker owns value
+coercion, validation, safe rejected-value display, and the resulting typed
+broker mapping. Taut owns input selection, key translation, Taut-specific
+defaults, mapping-parity enforcement, and translation of a typed invalid-key
+diagnostic back to its public Taut spelling.
 
-`BROKER_PROJECT_CONFIG_NAME=.taut.toml` exists so a stray `.broker.toml`
-belonging to a standalone SimpleBroker or Weft project can never redirect
-taut. It is also the Postgres backend-selection door ([TAUT-12.1]) using the
-same project-config format SimpleBroker and Weft already use, which is why
-backend support costs taut no new resolution machinery. `BROKER_BACKEND` is
-pinned to SQLite in Taut's resolved config so ambient `BROKER_*` variables do
-not silently become Taut's public backend API. `.taut.toml` still wins through
-SimpleBroker project resolution. `TAUT_DB`, `TAUT_AS`, and `TAUT_TOKEN` are the
-only public environment knobs in the core CLI.
+The named defaults have two different roles. These Taut-important values are
+grouped first in code because they encode Taut behavior: default storage is
+`.taut.db` in the selected directory; project search is enabled; project
+configuration defaults to `.taut.toml`; the default backend is SQLite; and
+maximum load watermark future skew defaults to 300 seconds. `TAUT_DB` remains
+the higher-precedence Taut path selector and replaces the compiled default
+location/name pair.
 
-Unknown keys in `.taut.toml` are ignored, not rejected — the same
+| Taut key | Raw default | Why Taut owns it |
+|---|---:|---|
+| `TAUT_DEFAULT_DB_LOCATION` | `""` | selected directory |
+| `TAUT_DEFAULT_DB_NAME` | `.taut.db` | Taut storage filename |
+| `TAUT_PROJECT_CONFIG_PATH` | `""` | project-root search |
+| `TAUT_PROJECT_CONFIG_NAME` | `.taut.toml` | isolated default project filename |
+| `TAUT_PROJECT_SCOPE` | `1` | upward project discovery |
+| `TAUT_BACKEND` | `sqlite` | zero-config backend |
+| `TAUT_LOAD_MAX_FUTURE_SKEW_SECONDS` | `300` | Taut load eligibility |
+
+Every other named default exists to make the broker mapping complete so an
+ambient `BROKER_*` value can never fill a missing field. Almost all of these
+values have no independent Taut meaning: they mirror supported SimpleBroker
+defaults for cache, durability, batching, vacuum, polling, logging, and
+backend connection-part settings. Naming them in Taut is an isolation
+mechanism, not a claim that they are Taut product policy.
+
+| Taut key | Raw default | Taut key | Raw default |
+|---|---:|---|---:|
+| `TAUT_BUSY_TIMEOUT` | `5000` | `TAUT_CACHE_MB` | `10` |
+| `TAUT_SYNC_MODE` | `FULL` | `TAUT_WAL_AUTOCHECKPOINT` | `1000` |
+| `TAUT_MAX_MESSAGE_SIZE` | `10485760` | `TAUT_READ_COMMIT_INTERVAL` | `1` |
+| `TAUT_GENERATOR_BATCH_SIZE` | `100` | `TAUT_AUTO_VACUUM` | `1` |
+| `TAUT_AUTO_VACUUM_INTERVAL` | `100` | `TAUT_VACUUM_THRESHOLD` | `10` |
+| `TAUT_VACUUM_BATCH_SIZE` | `1000` | `TAUT_SKIP_IDLE_CHECK` | `0` |
+| `TAUT_JITTER_FACTOR` | `0.15` | `TAUT_INITIAL_CHECKS` | `100` |
+| `TAUT_MAX_INTERVAL` | `0.1` | `TAUT_BURST_SLEEP` | `0.00001` |
+| `TAUT_DEBUG` | `""` | `TAUT_LOGGING_ENABLED` | `0` |
+| `TAUT_BACKEND_HOST` | `localhost` | `TAUT_BACKEND_PORT` | `5432` |
+| `TAUT_BACKEND_USER` | `postgres` | `TAUT_BACKEND_PASSWORD` | `""` |
+| `TAUT_BACKEND_DATABASE` | `simplebroker` | `TAUT_BACKEND_SCHEMA` | `simplebroker_pg_v1` |
+| `TAUT_BACKEND_TARGET` | `""` |  |  |
+
+These two tables are the closed 32-field translation inventory. The values are
+raw strings so SimpleBroker's public field schema remains the sole normalizer;
+resolved values may differ, such as vacuum threshold `10` becoming ratio
+`0.1`.
+
+The mapping is exhaustive and bijective over SimpleBroker's public resolved
+config keys. Except for the separate `TAUT_DB` path selector, each broker
+setting uses mechanical prefix substitution: `TAUT_<suffix>` becomes
+`BROKER_<suffix>`. The input precedence within private `load_config()` is:
+explicit Taut-spelled override, then `TAUT_DB` for the default location/name
+pair, then the corresponding ambient `TAUT_*` value, then the named default.
+An explicit location/name override therefore suppresses ambient `TAUT_DB`;
+this is required by multi-workspace embedders resolving an explicit project
+directory. An absolute `TAUT_DB` splits into location and basename. A relative
+`TAUT_DB` clears the location and remains relative. Unknown explicit override
+keys fail rather than pass through.
+
+The isolated resolver rejects unknown keys and returns canonical keys only.
+Taut compares its translated input key set with the returned canonical key
+set. A dependency upgrade that adds, removes, or renames a canonical broker
+key therefore fails closed before target or handle construction until Taut
+assigns the corresponding named default and verifies its role.
+
+When SimpleBroker rejects translated Taut input with
+`simplebroker.ext.InvalidConfigError`, Taut converts it into a safe
+`ValueError` that names the corresponding `TAUT_*` key and preserves the
+upstream expected-form and redacted value display. SimpleBroker's documented
+total and fallback normalizations remain authoritative. Ambient `BROKER_*`
+input is neither parsed nor diagnosed on a Taut path.
+
+`TAUT_AS` and `TAUT_TOKEN` remain identity inputs outside broker translation.
+`TAUT_DB` remains the explicit database selector. Taut does not recognize
+`BROKER_*` as a fallback spelling.
+
+Unknown keys in the selected Taut project file are ignored, not rejected — the same
 forward-compatibility posture SimpleBroker's project-config loader applies
 and that notification consumers apply to unknown payload fields
 ([IAN-7.2]). A malformed file (invalid TOML) is a loud error naming the
@@ -359,7 +452,7 @@ an accident. Two consequences are binding:
   CLI/client work, persistent owned handles for long-lived actors, and
   `close()` at owned lifetime end.
 
-  The `simplebroker>=7.1.0` floor is load-bearing. Version 5.2.0 supplies the
+  The `simplebroker>=7.3.2` floor is load-bearing. Version 5.2.0 supplies the
   reference ownership model, 5.2.2 first passed Taut's persistent-owner
   process/control proof, 5.3.0 supplies the public live activity-waiter
   replacement contract, 5.3.1 makes `Queue.write()` return the exact committed
@@ -381,7 +474,9 @@ an accident. Two consequences are binding:
   Version 7.0.0 adds the public exact message-id formatter and makes
   SimpleBroker-owned JSON ids and high-water values strings while keeping
   Python and backend values integer; `simplebroker-pg>=3.6.0` requires that
-  core line. Taut uses neither
+  core line. Version 7.3.2 adds the public immutable `ResolvedConfig` and
+  ambient-free `resolve_isolated_config()` embedding boundary required by
+  [TAUT-3.2]. Taut uses neither
   the SimpleBroker command layer nor the newly
   re-exported project-config helpers; it continues to use the root queue/target
   API and the existing `simplebroker.ext` embedder surfaces. Persistent Queue
@@ -1295,7 +1390,7 @@ through read-only identity resolution. It does not update activity, record an
 identity claim, inspect unread state, or create membership. Long-lived
 extensions use it to reconcile their own thread-scoped resources.
 
-Core runtime dependencies: exactly `simplebroker>=7.1.0` and `psutil`. The
+Core runtime dependencies: exactly `simplebroker>=7.3.2` and `psutil`. The
 optional `taut-pg` extension adds `simplebroker-pg>=3.6.0` and its driver
 dependencies in the same environment as Taut. Python ≥ 3.11. The CLI uses
 argparse, not a CLI framework.
@@ -2477,6 +2572,10 @@ installing `taut-chat`.
   terminal-text helper contract for extension renderers.
 
 ## Related Plans
+
+- `docs/plans/2026-08-13-simplebroker-config-isolation-plan.md` — complete
+  Taut-prefixed broker mapping, nominal ambient-free lower-layer config, and
+  symmetric Taut/SimpleBroker namespace isolation.
 
 - `docs/plans/2026-08-12-extension-main-path-and-all-extra-plan.md` — requires
   every command-bearing extension to support the main `taut` path, adds the

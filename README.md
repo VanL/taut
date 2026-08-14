@@ -178,7 +178,7 @@ uv add taut-chat taut-pg taut-summon taut-mcp
 python -m pip install taut-chat taut-pg taut-summon taut-mcp
 ```
 
-Requirements: Python 3.11+. Runtime dependencies are `simplebroker>=7.1.0`
+Requirements: Python 3.11+. Runtime dependencies are `simplebroker>=7.3.2`
 (which itself has none) and `psutil` for cross-platform process metadata.
 
 ### Postgres Extension
@@ -186,10 +186,10 @@ Requirements: Python 3.11+. Runtime dependencies are `simplebroker>=7.1.0`
 `taut-pg` is a separate distribution: the same commands on a
 project-configured Postgres database. Install it into the same
 environment as `taut-chat` (it brings in `simplebroker-pg` and the
-driver dependencies), then select Postgres with a `.taut.toml` in the
-project root and run `taut init` normally. `TAUT_DB`, `--db`, and
-`db_path=` remain filesystem path selectors; `.taut.toml` is the
-Postgres door. Extensions use their own tags (`taut_pg/vX.Y.Z`,
+driver dependencies), then normally select Postgres with a `.taut.toml` in the
+project root and run `taut init`. The explicit `TAUT_BACKEND*` settings are the
+no-project-file backend door. `TAUT_DB`, `--db`, and `db_path=` remain
+filesystem path selectors. Extensions use their own tags (`taut_pg/vX.Y.Z`,
 `taut_summon/vX.Y.Z`), so their versions do not generally have to
 match the core package version; the first PyPI publication is one
 coordinated version across all four distributions.
@@ -210,6 +210,13 @@ is [TAUT-3.2] in the
 [core spec](https://github.com/VanL/taut/blob/main/docs/specs/02-taut-core.md);
 terminal rendering policy, the other `.taut.toml` table, is covered
 under the Trust Model below.
+
+Taut reads its broker settings only through the mechanically corresponding
+`TAUT_*` names listed in [TAUT-3.2]. Ambient `BROKER_*` settings belong to
+standalone SimpleBroker and do not affect Taut, even when they are invalid.
+Most named Taut defaults merely complete the lower-layer mapping for that
+isolation; they do not express separate Taut cache, vacuum, polling, or logging
+policy.
 
 ### Summon Extension
 
@@ -470,9 +477,13 @@ pass `TAUT_AS` or `TAUT_TOKEN` through.
 
 Global options: `--db PATH`, `--as NAME`, `--token TOKEN`, `--json`,
 `-t/--timestamps`, `-q/--quiet`. Environment: `TAUT_DB`, `TAUT_AS`,
-`TAUT_TOKEN`. Project reaction and terminal-rendering policy live in
-`.taut.toml`. The actor-free `system` namespace accepts only `--db`, `--json`,
-and `--quiet`; actor selectors and timestamps are usage errors.
+`TAUT_TOKEN`, and the complete Taut-owned `TAUT_*` broker-setting catalog in
+[TAUT-3.2](https://github.com/VanL/taut/blob/main/docs/specs/02-taut-core.md).
+Ambient `BROKER_*` values do not affect Taut. Reaction policy lives in the
+Taut-selected storage project file; terminal-rendering policy retains its
+separate current-directory `.taut.toml` contract. The actor-free `system`
+namespace accepts only `--db`, `--json`, and `--quiet`; actor selectors and
+timestamps are usage errors.
 
 **Exit codes** (SimpleBroker's convention): `0` success, `1` error, `2`
 empty / nothing new / not found. So this is a polling inbox:
@@ -799,7 +810,7 @@ with the boundary itself specified by [TAUT-9] in the
 <summary><strong>Why argparse and a small dependency set?</strong></summary>
 
 Taut follows SimpleBroker's discipline: the install should be boring.
-Runtime dependencies are exactly `simplebroker>=7.1.0` and `psutil`. The CLI is
+Runtime dependencies are exactly `simplebroker>=7.3.2` and `psutil`. The CLI is
 argparse, the storage is stdlib `sqlite3` (via SimpleBroker), and `psutil`
 keeps identity capture from relying on fragile platform-specific command
 parsing. The planned TUI ships as an optional extra so the core dependency

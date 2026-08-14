@@ -6,7 +6,7 @@ from importlib import resources
 from pathlib import Path
 
 import pytest
-from simplebroker import resolve_broker_target
+from simplebroker import BrokerTarget, resolve_broker_target
 
 from taut._constants import PROJECT_CONFIG_NAME, load_config
 from taut._exceptions import NotInitializedError, TautError
@@ -350,6 +350,142 @@ def test_env_only_broker_backend_does_not_select_postgres(
     assert result.created is True
     assert result.db == str(tmp_path / ".taut.db")
     assert (tmp_path / ".taut.db").exists()
+
+
+def test_invalid_ambient_broker_config_does_not_affect_real_taut_client(
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("BROKER_BUSY_TIMEOUT", "not-an-integer")
+
+    result = TautClient.init()
+    client = TautClient(as_name="van")
+    try:
+        client.join("general")
+        assert client.joined_thread_names() == ("general",)
+    finally:
+        client.close()
+
+    assert result.created is True
+
+
+def test_taut_project_config_name_selects_alternate_project_file(
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    alternate = "workspace.taut.toml"
+    _write_project_config(
+        tmp_path / alternate,
+        backend="sqlite",
+        target="selected.db",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TAUT_PROJECT_CONFIG_NAME", alternate)
+
+    result = TautClient.init()
+
+    assert result.created is True
+    assert result.db == str(tmp_path / "selected.db")
+    assert (tmp_path / "selected.db").exists()
+
+
+def test_malformed_alternate_taut_project_file_names_selected_file(
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    alternate = "workspace.taut.toml"
+    (tmp_path / alternate).write_text("backend = [", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TAUT_PROJECT_CONFIG_NAME", alternate)
+
+    with pytest.raises(TautError, match=rf"^invalid {alternate}:"):
+        TautClient.init()
+
+
+def test_relative_taut_project_config_path_searches_upward(
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    project = tmp_path / "project"
+    nested = project / "nested"
+    config_dir = project / "config"
+    nested.mkdir(parents=True)
+    config_dir.mkdir()
+    _write_project_config(
+        config_dir / PROJECT_CONFIG_NAME,
+        backend="sqlite",
+        target="selected.db",
+    )
+    TautClient.init(db_path=config_dir / "selected.db")
+    monkeypatch.chdir(nested)
+    monkeypatch.setenv("TAUT_PROJECT_CONFIG_PATH", "config")
+
+    client = TautClient(as_name="van")
+    try:
+        assert isinstance(client.target, BrokerTarget)
+        assert client.target.target == str(config_dir / "selected.db")
+    finally:
+        client.close()
+
+    assert (config_dir / "selected.db").exists()
+
+
+def test_absolute_taut_project_config_path_checks_only_that_location(
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    selected = tmp_path / "selected"
+    elsewhere = tmp_path / "elsewhere"
+    selected.mkdir()
+    elsewhere.mkdir()
+    _write_project_config(
+        selected / PROJECT_CONFIG_NAME,
+        backend="sqlite",
+        target="selected.db",
+    )
+    _write_project_config(
+        elsewhere / PROJECT_CONFIG_NAME,
+        backend="sqlite",
+        target="wrong.db",
+    )
+    monkeypatch.chdir(elsewhere)
+    monkeypatch.setenv("TAUT_PROJECT_CONFIG_PATH", str(selected))
+
+    result = TautClient.init()
+
+    assert result.db == str(selected / "selected.db")
+    assert (selected / "selected.db").exists()
+    assert not (elsewhere / "wrong.db").exists()
+
+
+def test_taut_backend_setting_selects_backend_without_project_file(
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TAUT_BACKEND", "postgres")
+    monkeypatch.setenv(
+        "TAUT_BACKEND_TARGET",
+        "postgresql://taut.example/direct_backend",
+    )
+
+    class EmptyEntryPoints:
+        def select(
+            self, **_kwargs: object
+        ) -> tuple[importlib_metadata.EntryPoint, ...]:
+            return ()
+
+    monkeypatch.setattr(importlib_metadata, "entry_points", EmptyEntryPoints)
+
+    with pytest.raises(TautError, match="Install taut-pg"):
+        TautClient.init()
 
 
 def test_missing_postgres_plugin_error_mentions_extension(

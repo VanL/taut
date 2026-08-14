@@ -13,7 +13,10 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Mapping
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
+
+if TYPE_CHECKING:
+    from simplebroker import ResolvedConfig
 
 __version__: Final[str] = "0.8.7"
 
@@ -108,26 +111,127 @@ NO_DATABASE_MESSAGE: Final[str] = (
 )
 
 
-def load_config(overrides: Mapping[str, Any] | None = None) -> dict[str, Any]:
+# These defaults encode behavior that is important to Taut. Keep them first.
+_TAUT_BROKER_DEFAULTS: Final[dict[str, str]] = {
+    "TAUT_DEFAULT_DB_LOCATION": "",
+    "TAUT_DEFAULT_DB_NAME": DEFAULT_DB_NAME,
+    "TAUT_PROJECT_CONFIG_PATH": "",
+    "TAUT_PROJECT_CONFIG_NAME": PROJECT_CONFIG_NAME,
+    "TAUT_PROJECT_SCOPE": "1",
+    "TAUT_BACKEND": "sqlite",
+    "TAUT_LOAD_MAX_FUTURE_SKEW_SECONDS": "300",
+    # The remaining named values merely mirror SimpleBroker defaults. Almost
+    # all have nothing to do with Taut product policy; they are present so the
+    # complete lower-layer config is isolated from ambient BROKER_* settings.
+    "TAUT_BUSY_TIMEOUT": "5000",
+    "TAUT_CACHE_MB": "10",
+    "TAUT_SYNC_MODE": "FULL",
+    "TAUT_WAL_AUTOCHECKPOINT": "1000",
+    "TAUT_MAX_MESSAGE_SIZE": "10485760",
+    "TAUT_READ_COMMIT_INTERVAL": "1",
+    "TAUT_GENERATOR_BATCH_SIZE": "100",
+    "TAUT_AUTO_VACUUM": "1",
+    "TAUT_AUTO_VACUUM_INTERVAL": "100",
+    "TAUT_VACUUM_THRESHOLD": "10",
+    "TAUT_VACUUM_BATCH_SIZE": "1000",
+    "TAUT_SKIP_IDLE_CHECK": "0",
+    "TAUT_JITTER_FACTOR": "0.15",
+    "TAUT_INITIAL_CHECKS": "100",
+    "TAUT_MAX_INTERVAL": "0.1",
+    "TAUT_BURST_SLEEP": "0.00001",
+    "TAUT_DEBUG": "",
+    "TAUT_LOGGING_ENABLED": "0",
+    "TAUT_BACKEND_HOST": "localhost",
+    "TAUT_BACKEND_PORT": "5432",
+    "TAUT_BACKEND_USER": "postgres",
+    "TAUT_BACKEND_PASSWORD": "",
+    "TAUT_BACKEND_DATABASE": "simplebroker",
+    "TAUT_BACKEND_SCHEMA": "simplebroker_pg_v1",
+    "TAUT_BACKEND_TARGET": "",
+}
+
+_CONFIG_COMPATIBILITY_ERROR: Final[str] = (
+    "incompatible SimpleBroker configuration schema: "
+    "Taut's complete configuration mapping must be updated"
+)
+_UNKNOWN_BROKER_KEY_EXPECTED: Final[str] = (
+    "a recognized canonical BROKER_* configuration key"
+)
+
+
+def _broker_config_key(taut_key: str) -> str:
+    return f"BROKER_{taut_key.removeprefix('TAUT_')}"
+
+
+def freeze_broker_config(config: Mapping[str, Any]) -> ResolvedConfig:
+    """Recreate a complete ambient-free broker mapping at an ownership boundary."""
+
+    from simplebroker import resolve_isolated_config
+    from simplebroker.ext import InvalidConfigError
+
+    expected = {_broker_config_key(key) for key in _TAUT_BROKER_DEFAULTS}
+    if set(config) != expected:
+        raise RuntimeError(_CONFIG_COMPATIBILITY_ERROR)
+    try:
+        resolved = resolve_isolated_config(config)
+    except InvalidConfigError as exc:
+        if exc.expected == _UNKNOWN_BROKER_KEY_EXPECTED:
+            raise RuntimeError(_CONFIG_COMPATIBILITY_ERROR) from exc
+        raise
+    if set(resolved) != expected:
+        raise RuntimeError(_CONFIG_COMPATIBILITY_ERROR)
+    return resolved
+
+
+def load_config(
+    overrides: Mapping[str, Any] | None = None,
+) -> ResolvedConfig:
     """Return SimpleBroker config with taut's public ``TAUT_*`` surface translated.
 
-    Taut exposes only ``TAUT_DB``, ``TAUT_AS``, and ``TAUT_TOKEN``. Only
-    ``TAUT_DB`` affects broker config; identity environment is consumed by the
-    client layer. The three broker keys below are the full project-resolution
-    contract for [TAUT-3.2].
+    The returned nominal mapping is complete and ambient-free. ``TAUT_AS`` and
+    ``TAUT_TOKEN`` remain identity inputs consumed by the client layer.
     """
 
-    from simplebroker import resolve_config
+    from simplebroker import resolve_isolated_config
+    from simplebroker.ext import InvalidConfigError
+
+    explicit = dict(overrides or {})
+    unknown = set(explicit).difference(_TAUT_BROKER_DEFAULTS)
+    if unknown:
+        key = min(unknown, key=str)
+        raise ValueError(f"unknown Taut configuration key: {key}")
 
     raw: dict[str, Any] = {
-        "BROKER_DEFAULT_DB_NAME": os.environ.get("TAUT_DB", DEFAULT_DB_NAME),
-        "BROKER_PROJECT_SCOPE": True,
-        "BROKER_PROJECT_CONFIG_NAME": PROJECT_CONFIG_NAME,
-        "BROKER_BACKEND": "sqlite",
+        key: os.environ.get(key, default)
+        for key, default in _TAUT_BROKER_DEFAULTS.items()
     }
-    if overrides:
-        raw.update(overrides)
-    return resolve_config(raw)
+    taut_db = os.environ.get("TAUT_DB")
+    if taut_db is not None:
+        raw["TAUT_DEFAULT_DB_LOCATION"] = (
+            os.path.dirname(taut_db) if os.path.isabs(taut_db) else ""
+        )
+        raw["TAUT_DEFAULT_DB_NAME"] = (
+            os.path.basename(taut_db) if os.path.isabs(taut_db) else taut_db
+        )
+    raw.update(explicit)
+    translated = {_broker_config_key(key): value for key, value in raw.items()}
+
+    try:
+        resolved = resolve_isolated_config(translated)
+    except InvalidConfigError as exc:
+        if exc.expected == _UNKNOWN_BROKER_KEY_EXPECTED:
+            raise RuntimeError(_CONFIG_COMPATIBILITY_ERROR) from exc
+        taut_key = f"TAUT_{exc.key.removeprefix('BROKER_')}"
+        if taut_key not in _TAUT_BROKER_DEFAULTS:
+            raise RuntimeError(_CONFIG_COMPATIBILITY_ERROR) from exc
+        raise ValueError(
+            f"invalid configuration {taut_key}={exc.value_display}: "
+            f"expected {exc.expected}"
+        ) from exc
+
+    if set(translated) != set(resolved):
+        raise RuntimeError(_CONFIG_COMPATIBILITY_ERROR)
+    return resolved
 
 
 def normalize_name_seed(seed: str | None, *, fallback: str = "agent") -> str:

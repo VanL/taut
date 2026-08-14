@@ -293,7 +293,13 @@ def installed_command_fixture(
 
 @pytest.fixture
 def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for key in ("TAUT_DB", "TAUT_AS", "TAUT_TOKEN"):
+    config_keys = {
+        key
+        for key in os.environ
+        if key.startswith(("TAUT_", "BROKER_")) and key != "BROKER_TEST_BACKEND"
+    }
+    config_keys.update(("TAUT_DB", "TAUT_AS", "TAUT_TOKEN"))
+    for key in config_keys:
         monkeypatch.delenv(key, raising=False)
 
 
