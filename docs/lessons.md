@@ -95,6 +95,13 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
 
 ## Project Lessons
 
+- 2026-08-14: A package-specific post-tag publication gate is not a substitute
+  for pre-tag test evidence. When a separately shipped extension has an owned
+  CI suite, give it a distinct push-triggered producer workflow and require
+  that workflow's exact-SHA success before creating any coordinated release
+  tag. Move the existing suite rather than cloning it, so stronger release
+  evidence does not duplicate runner work.
+
 - 2026-08-11: A successful wheel build and internal artifact verification do
   not prove that the pinned publisher can parse the wheel's Core Metadata
   version. Build backends can advance the emitted metadata independently of

@@ -124,6 +124,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 | `2026-08-11-eventually-test-helper-adoption-plan.md` | completed | no | Class 5+P repository-only sync/async eventual-evidence helper; seven eligible loop migrations, one audited Summon retention, full local verification, and final independent review passed before owner-authorized close-out. |
 | `2026-08-11-ci-factor-and-release-order-plan.md` | completed | no | Completed at `f4830b0`: exact factor coverage, producer-first release ordering, and coordinated immutable 0.8.5 publication passed. |
 | `2026-08-12-extension-main-path-and-all-extra-plan.md` | completed | no | Class 5 command-extension contract, protocol-clean `taut mcp`, and `taut-chat[all]` convenience bundle; full verification and independent review passed before owner-authorized closeout. |
+| `2026-08-14-tui-pretag-gate-plan.md` | active | no | Class 4 extraction of TUI's retained matrix into independent exact-SHA pre-tag evidence for all five coordinated releases. |
 
 ## Retired Plans
 

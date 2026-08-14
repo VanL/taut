@@ -4129,6 +4129,8 @@ def test_canonical_workflow_wait_passes_secret_only_in_child_environment(
         "pg=.github/workflows/test-pg-extension.yml",
         "--workflow",
         "mcp=.github/workflows/test-mcp-extension.yml",
+        "--workflow",
+        "tui=.github/workflows/test-tui-extension.yml",
     )
     assert "secret" not in " ".join(command)
     assert child_env["GITHUB_TOKEN"] == "secret"

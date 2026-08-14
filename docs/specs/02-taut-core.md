@@ -2484,8 +2484,9 @@ distribution.
 Workflow obligations:
 
 - Canonical `push` runs of `.github/workflows/test.yml`,
-  `.github/workflows/test-pg-extension.yml`, and
-  `.github/workflows/test-mcp-extension.yml` are the test evidence for a
+  `.github/workflows/test-pg-extension.yml`,
+  `.github/workflows/test-mcp-extension.yml`, and
+  `.github/workflows/test-tui-extension.yml` are the test evidence for a
   release SHA. On canonical `main`/`master` pushes, the root workflow remains
   the sole release-byte owner: it builds core, Summon, PG, MCP, and TUI, runs
   the existing paired and PG wheel checks plus fresh core/MCP and core/TUI
@@ -2493,8 +2494,10 @@ Workflow obligations:
   uploads five separate immutable provenance
   bundles. The PG workflow remains real database evidence for the shared PG
   surface; the MCP workflow runs its complete suite with a real PostgreSQL
-  service plus its quality gates. Neither extension workflow produces release
-  bytes. Pull-request and manual runs retain ordinary packaging smoke but do not
+  service plus its quality gates. The TUI workflow runs the retained-lock TUI
+  suite across its OS/Python factor matrix. None of the extension workflows
+  produces release bytes. Pull-request and manual runs retain ordinary
+  packaging smoke but do not
   produce release evidence. Each release bundle records the exact commit,
   public distribution name and version, file allowlist, and SHA-256 digests,
   and its name identifies the workflow attempt that produced it. The core
@@ -2503,7 +2506,7 @@ Workflow obligations:
 - For a publishing invocation, the local helper pushes the prepared canonical
   branch commit before creating, deleting, replacing, or pushing any release
   tag. It then uses the shared exact-SHA workflow selector to wait for
-  successful canonical root Test, PostgreSQL Test, and MCP Test runs. A
+  successful canonical root Test, PostgreSQL Test, MCP Test, and TUI Test runs. A
   completed non-success conclusion is fatal and is never retried by the
   helper. After success, the helper rechecks immutable-release and exact PyPI
   environment settings, then reruns its clean-tree, branch/HEAD, remote
@@ -2517,7 +2520,7 @@ Workflow obligations:
   branch, source/head
   repository, latest attempt, and `push` event. It normalizes API `path@ref`
   values rather than trusting display names or path strings. Every package tag
-  requires successful root Test, PostgreSQL Test, and MCP Test evidence for the
+  requires successful root Test, PostgreSQL Test, MCP Test, and TUI Test evidence for the
   exact peeled tag commit. The five tag gates observe those canonical workflows
   and never invoke them. Each observer makes one repository-wide
   runs-list request per poll and filters workflow files locally. A

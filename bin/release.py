@@ -62,6 +62,7 @@ CANONICAL_PRODUCER_WORKFLOWS: Final[tuple[tuple[str, str], ...]] = (
     ("root", ".github/workflows/test.yml"),
     ("pg", ".github/workflows/test-pg-extension.yml"),
     ("mcp", ".github/workflows/test-mcp-extension.yml"),
+    ("tui", ".github/workflows/test-tui-extension.yml"),
 )
 
 ROOT_RELEASE_WORKFLOW: Final[str] = ".github/workflows/release-gate.yml"

@@ -51,6 +51,10 @@
   Terminal control escaping is enforced at every display and toast sink, and
   the action registry's declared routes are now authoritative and exhaustively
   exercised through their real producers and handlers.
+- Made the retained-lock TUI OS/Python matrix an independent canonical
+  workflow. Coordinated releases now require its exact-commit success before
+  any tag is created, while the root workflow remains the sole producer of all
+  five release artifact bundles.
 
 ## 0.8.7 - 2026-08-12
 

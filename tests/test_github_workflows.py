@@ -273,8 +273,12 @@ def test_summon_collection_probe_owns_its_dev_dependencies(
     ]
 
 
-def test_root_workflow_runs_tui_extension_suite_against_retained_lock() -> None:
-    document = _workflow_data("test.yml")
+def test_tui_workflow_runs_extension_suite_against_retained_lock() -> None:
+    root_document = _workflow_data("test.yml")
+    assert "tui-retained" not in root_document["jobs"]
+
+    document = _workflow_data("test-tui-extension.yml")
+    assert "workflow_call:" in _workflow("test-tui-extension.yml")
     job = document["jobs"]["tui-retained"]
 
     assert job["strategy"]["matrix"]["include"] == [
@@ -941,6 +945,7 @@ def test_setup_uv_steps_have_tight_timeouts() -> None:
     for name in (
         "test.yml",
         "test-pg-extension.yml",
+        "test-tui-extension.yml",
         "release.yml",
         "release-gate-summon.yml",
         "release-gate-mcp.yml",
@@ -972,6 +977,7 @@ def _assert_exact_sha_release_observer(name: str, *, artifact_prefix: str) -> st
     assert "uses: ./.github/workflows/test.yml" not in workflow
     assert "uses: ./.github/workflows/test-pg-extension.yml" not in workflow
     assert "uses: ./.github/workflows/test-mcp-extension.yml" not in workflow
+    assert "uses: ./.github/workflows/test-tui-extension.yml" not in workflow
     assert "timeout-minutes: 110" in evidence
     assert 'git rev-parse "${GITHUB_REF}^{commit}"' in evidence
     assert "GITHUB_SHA: ${{ steps.tag.outputs.tag_commit }}" in evidence
@@ -981,6 +987,9 @@ def _assert_exact_sha_release_observer(name: str, *, artifact_prefix: str) -> st
     assert evidence.count("--workflow pg=.github/workflows/test-pg-extension.yml") == 1
     assert (
         evidence.count("--workflow mcp=.github/workflows/test-mcp-extension.yml") == 1
+    )
+    assert (
+        evidence.count("--workflow tui=.github/workflows/test-tui-extension.yml") == 1
     )
     assert "--artifact-workflow root" in evidence
     assert f"--artifact-prefix {artifact_prefix}" in evidence
@@ -1049,6 +1058,16 @@ def test_mcp_workflow_runs_sqlite_postgres_quality_and_build_gates() -> None:
     assert "uv build --project extensions/taut_mcp" in workflow
     assert "release-artifact.py" not in workflow
     assert "release-taut-mcp" not in workflow
+
+
+def test_tui_workflow_is_a_non_artifact_canonical_producer() -> None:
+    workflow = _workflow("test-tui-extension.yml")
+
+    assert "push:" in workflow
+    assert "pull_request:" in workflow
+    assert "workflow_call:" in workflow
+    assert "release-artifact.py" not in workflow
+    assert "release-taut-tui" not in workflow
 
 
 @pytest.mark.parametrize(

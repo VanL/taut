@@ -152,8 +152,8 @@ After checking and building the exact preparation commit, the helper
 revalidates branch, HEAD, the full clean worktree/index, GitHub Release state,
 and local/remote tags. It resolves observer authentication before remote
 mutation, pushes the branch, then invokes the workflow-only mode of
-`bin/require-green-workflows.py` to wait for canonical root, PostgreSQL, and MCP
-producer success on that exact commit. This local observer consumes no hosted
+`bin/require-green-workflows.py` to wait for canonical root, PostgreSQL, MCP,
+and TUI producer success on that exact commit. This local observer consumes no hosted
 runner and selects no publication artifact. After success, the helper rechecks
 repository settings and repeats the complete fresh release fence before any
 tag action. Branch and tag commands name the tested commit explicitly, and
@@ -200,11 +200,11 @@ installed artifacts across every Python version on Ubuntu and one
 representative for each other supported OS, reducing ten identical-style wheel
 lanes to six without dropping either version or OS coverage.
 
-On canonical branch pushes, the Test packaging job builds core, Summon, PG, and
-MCP once. It passes the explicit core/Summon wheel paths to the paired checker,
+On canonical branch pushes, the Test packaging job builds core, Summon, PG,
+MCP, and TUI once. It passes the explicit core/Summon wheel paths to the paired checker,
 installs PG with the exact core wheel in one clean venv, and installs MCP with
 the exact core wheel in another before running `taut-mcp --version`. It then
-uses `bin/release-artifact.py` to create four attempt-qualified bundles. Each
+uses `bin/release-artifact.py` to create five attempt-qualified bundles. Each
 bundle contains one wheel, one sdist, and an inner manifest bound to package
 name/version, commit, exact file names, and SHA-256 digests. Verification also
 binds the release tag family and version to the package. The core distribution,
@@ -214,18 +214,20 @@ distribution and tag names also remain unchanged.
 `.github/workflows/test-pg-extension.yml` remains the real Docker Postgres
 evidence for the shared backend. `.github/workflows/test-mcp-extension.yml`
 runs the complete MCP suite with its own real PostgreSQL service plus MCP-owned
-quality checks. Neither extension workflow produces release bytes.
+quality checks. `.github/workflows/test-tui-extension.yml` owns the retained-lock
+TUI OS/Python matrix moved out of the root workflow. None of these extension
+workflows produces release bytes.
 
 Before any real tag push, `bin/release.py` checks twice that immutable GitHub
-Releases are enabled and that environment `pypi` admits exactly the four
+Releases are enabled and that environment `pypi` admits exactly the five
 release-tag families: once as an early preflight and again after exact-SHA
 producer observation. Its explicit read-only settings mode runs the same check
 without preparing a release. PyPI Trusted Publisher records are a separate
 operator-owned prerequisite because the GitHub API cannot verify them.
 
-The four tag gates call the artifact-selecting mode of
+The five tag gates call the artifact-selecting mode of
 `bin/require-green-workflows.py`; they do not call the test workflows. Every
-tag requires root Test, PostgreSQL Test, and MCP Test
+tag requires root Test, PostgreSQL Test, MCP Test, and TUI Test
 evidence for its exact peeled commit. The observer selects canonical push evidence by
 repository, head repository, workflow path, branch, event, exact commit peeled
 from either a lightweight or annotated tag, and latest attempt,

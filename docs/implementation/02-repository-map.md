@@ -29,11 +29,12 @@ Quick pointers to the key guidance documents in this repository.
 | `.github/workflows/test.yml` | Push/PR/reusable pytest, lint, type, deterministic serial direct root/Summon unit coverage plus checked same-run process/MCP aggregation, deterministic exact-union Windows source-factor shards, and sole canonical release-byte production for all five packages |
 | `.github/workflows/test-pg-extension.yml` | Push/PR/reusable Docker Postgres gate for `taut-pg` |
 | `.github/workflows/test-mcp-extension.yml` | Push/PR/reusable Ubuntu SQLite/live-PostgreSQL MCP behavior, representative macOS/Windows non-PG compatibility, package-local quality, and disposable build gate; never a release-byte owner |
-| `.github/workflows/release-gate.yml` | `v*` observer for `taut-chat`: exact-SHA Test/PG/MCP evidence, draft staging, top-level PyPI Trusted Publishing, digest verification, and immutable GitHub finalization |
-| `.github/workflows/release-gate-pg.yml` | `taut_pg/v*` observer for `taut-pg`: exact-SHA Test/PG/MCP evidence, draft staging, top-level PyPI Trusted Publishing, digest verification, and immutable GitHub finalization |
-| `.github/workflows/release-gate-summon.yml` | `taut_summon/v*` observer for `taut-summon`: exact-SHA Test/PG/MCP evidence, draft staging, top-level PyPI Trusted Publishing, digest verification, and immutable GitHub finalization |
-| `.github/workflows/release-gate-mcp.yml` | `taut_mcp/v*` observer for `taut-mcp`: exact-SHA Test/PG/MCP evidence, draft staging, top-level PyPI Trusted Publishing, digest verification, and immutable GitHub finalization |
-| `.github/workflows/release-gate-tui.yml` | `taut_tui/v*` observer for `taut-tui`: exact-SHA Test/PG/MCP evidence, draft staging, top-level PyPI Trusted Publishing, digest verification, and immutable GitHub finalization |
+| `.github/workflows/test-tui-extension.yml` | Push/PR/reusable retained-lock TUI behavior across its OS/Python factor matrix; required exact-SHA pre-tag evidence and never a release-byte owner |
+| `.github/workflows/release-gate.yml` | `v*` observer for `taut-chat`: exact-SHA Test/PG/MCP/TUI evidence, draft staging, top-level PyPI Trusted Publishing, digest verification, and immutable GitHub finalization |
+| `.github/workflows/release-gate-pg.yml` | `taut_pg/v*` observer for `taut-pg`: exact-SHA Test/PG/MCP/TUI evidence, draft staging, top-level PyPI Trusted Publishing, digest verification, and immutable GitHub finalization |
+| `.github/workflows/release-gate-summon.yml` | `taut_summon/v*` observer for `taut-summon`: exact-SHA Test/PG/MCP/TUI evidence, draft staging, top-level PyPI Trusted Publishing, digest verification, and immutable GitHub finalization |
+| `.github/workflows/release-gate-mcp.yml` | `taut_mcp/v*` observer for `taut-mcp`: exact-SHA Test/PG/MCP/TUI evidence, draft staging, top-level PyPI Trusted Publishing, digest verification, and immutable GitHub finalization |
+| `.github/workflows/release-gate-tui.yml` | `taut_tui/v*` observer for `taut-tui`: exact-SHA Test/PG/MCP/TUI evidence, draft staging, top-level PyPI Trusted Publishing, digest verification, and immutable GitHub finalization |
 | `.github/workflows/release.yml` | Reusable no-rebuild exact-artifact draft staging and verified-bundle carry; the five top-level gates, not this reusable workflow, own PyPI OIDC publication |
 | `.github/workflows/release-finalize.yml` | Reusable least-privilege exact-artifact PyPI recheck and immutable GitHub Release finalizer |
 
