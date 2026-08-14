@@ -51,6 +51,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 
 | Plan | Status | Exemplar | Note |
 |------|--------|----------|------|
+| `2026-08-14-summon-stream-close-race-plan.md` | active | no | Class 5 [SUM-7.1] lifecycle hardening after the release gate exposed a close-induced event-pump thread exception. |
 | `2026-08-14-taut-tui-display-sink-coverage-plan.md` | completed | no | Class 3 structural ownership refactor making TUI display widgets enforce terminal escaping and adding an explicit sink inventory plus real-PTY proof. |
 | `2026-08-14-taut-tui-action-route-contract-plan.md` | completed | no | Class 5 implementation of authoritative TUI route semantics with exhaustive 54-pair real-route and 32-action concrete-handler firing gates. |
 | `2026-08-14-review-findings-remediation-plan.md` | completed | no | Class 5+P remediation of the verified 0.9.0 review findings; implementation, local verification, independent review, and owner-authorized landing are complete. |

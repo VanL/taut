@@ -652,6 +652,14 @@ no bootstrap session event because the CLI emits nothing before its first
 injected turn; the driver therefore does not spend the generic session-event
 wait on that adapter.
 
+Stream finalization deliberately closes before joining the event pump because
+a still-live provider can otherwise deadlock on undrained stdout. Closing a
+Python text stream can wake a concurrent iterator with `ValueError` instead of
+EOF. The shared reader normalizes that result only when terminal retirement is
+already published and the same stdout object reports closed, then emits the
+reaped child's final `ExitEvent`. An open-stream `ValueError`, malformed frame,
+or adapter translation failure remains fatal to supervision.
+
 The extension CLI keeps one documented argparse inventory for `run`, `stop`,
 and `status`. Root help owns exit classes; each subcommand owns its syntax and
 database-selection guidance. Omitting `--db` explicitly means normal Taut

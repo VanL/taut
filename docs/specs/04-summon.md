@@ -403,6 +403,13 @@ ownership-checked release. An undrained stream is a child-stdout deadlock;
 waiting for pump exit before close is not valid because a provider may remain
 alive after its graceful interrupt.
 
+When blocking `close()` releases a structured stdout stream while its event
+pump is blocked in iteration, the resulting closed-stream read is normal EOF
+only after terminal retirement is published and that same stream reports
+closed. Read, framing, or translation failures observed while the stream is
+open remain fatal. The normal owned-close path still emits one final `exit`
+event after child reap.
+
 An adapter that has no structured wire envelope (the PTY adapter,
 [SUM-7.4]) emits only the `activity` and `exit` members of the event
 union — a permitted subset. The driver's pump tolerates a stream that
@@ -1376,6 +1383,9 @@ thread do not satisfy this boundary by themselves.
 
 ## Related Plans
 
+- `docs/plans/2026-08-14-summon-stream-close-race-plan.md` — narrows
+  close-induced stream EOF normalization without hiding open-stream, decoding,
+  framing, or translation failures.
 - `docs/plans/2026-08-14-review-findings-remediation-plan.md` — review-driven
   lifecycle, contract-proof, diagnostic, and release-gate remediation for
   the coordinated 0.9.0 candidate.
