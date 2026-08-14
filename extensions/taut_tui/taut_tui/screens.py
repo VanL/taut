@@ -14,27 +14,22 @@ from concurrent.futures import Future
 from dataclasses import dataclass
 from typing import ClassVar, TypeVar
 
-from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
 from textual.message import Message as TextualMessage
 from textual.screen import ModalScreen
-from textual.widgets import (
-    Button,
-    Checkbox,
-    Input,
-    Label,
-    OptionList,
-    Select,
-    Static,
-)
 from textual.widgets.option_list import Option
 
-from taut import escape_terminal_text
 from taut_tui.actions import ActionId, ActionSpec
 from taut_tui.forms import FieldKind, FormSpec, validate_visual_input
-from taut_tui.widgets import TautOptionList
+from taut_tui.widgets import TautButton as Button
+from taut_tui.widgets import TautCheckbox as Checkbox
+from taut_tui.widgets import TautInput as Input
+from taut_tui.widgets import TautLabel as Label
+from taut_tui.widgets import TautOptionList as OptionList
+from taut_tui.widgets import TautSelect as Select
+from taut_tui.widgets import TautStatic as Static
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,7 +197,7 @@ class NativeFormScreen(_TautModalScreen[FormSubmission | None]):
         self.post_message(self.Submitted(self, result))
 
     def show_domain_error(self, message: str) -> None:
-        self.query_one("#form-errors", Static).update(Text(_display_text(message)))
+        self.query_one("#form-errors", Static).update(message)
         self.query_one("#form-submit", Button).disabled = False
         self.query_one("#form-cancel", Button).disabled = False
 
@@ -247,7 +242,7 @@ class ConfirmationScreen(_TautModalScreen[bool]):
     def compose(self) -> ComposeResult:
         with Vertical(classes="taut-modal"):
             yield Static("Confirm action", classes="modal-title")
-            yield Static(Text(_display_text(self.prompt)))
+            yield Static(self.prompt)
             with Horizontal(id="form-controls"):
                 yield Button("Cancel", id="confirmation-cancel")
                 yield Button(
@@ -285,7 +280,7 @@ class CommandPaletteScreen(_TautModalScreen[ActionId | None]):
         with Vertical(classes="taut-modal"):
             yield Static("Commands", classes="modal-title")
             yield Input(placeholder="Find a native action", id="palette-query")
-            yield TautOptionList(id="palette-results")
+            yield OptionList(id="palette-results")
 
     def on_mount(self) -> None:
         self._render_results("")
@@ -305,7 +300,7 @@ class CommandPaletteScreen(_TautModalScreen[ActionId | None]):
                 self.dismiss(entry.action.action_id)
                 return
 
-    def on_taut_option_list_activated(self, event: TautOptionList.Activated) -> None:
+    def on_taut_option_list_activated(self, event: OptionList.Activated) -> None:
         if event.chain == 1:
             return
         entry = self._visible[event.option_index]
@@ -332,9 +327,7 @@ class CommandPaletteScreen(_TautModalScreen[ActionId | None]):
             gesture = "" if entry.gesture_hint is None else f"  {entry.gesture_hint}"
             options.add_option(
                 Option(
-                    Text(
-                        _display_text(f"{entry.action.label}{context}{gesture}{suffix}")
-                    ),
+                    f"{entry.action.label}{context}{gesture}{suffix}",
                     id=entry.action.action_id.value,
                     disabled=not entry.enabled,
                 )
@@ -359,7 +352,7 @@ class SearchScreen(_TautModalScreen[object | None]):
             yield Static("Search history", classes="modal-title")
             yield Input(placeholder="Search visible history", id="search-query")
             yield Static(id="search-errors")
-            yield TautOptionList(id="search-results")
+            yield OptionList(id="search-results")
 
     def on_mount(self) -> None:
         self.query_one("#search-query", Input).focus()
@@ -381,7 +374,7 @@ class SearchScreen(_TautModalScreen[object | None]):
 
         future.add_done_callback(completed)
 
-    def on_taut_option_list_activated(self, event: TautOptionList.Activated) -> None:
+    def on_taut_option_list_activated(self, event: OptionList.Activated) -> None:
         if event.chain == 1:
             return
         self.dismiss(self._results[event.option_index])
@@ -412,12 +405,7 @@ class SearchScreen(_TautModalScreen[object | None]):
             thread = str(getattr(result, "thread", "unknown"))
             author = str(getattr(result, "from_name", "unknown"))
             text = str(getattr(result, "text", ""))
-            options.add_option(
-                Text(
-                    f"{_display_text(thread)}  {_display_text(author)}  "
-                    f"{_display_text(text)}"
-                )
-            )
+            options.add_option(f"{thread}  {author}  {text}")
 
 
 class SummonStartScreen(_TautModalScreen[SummonStartSubmission | None]):
@@ -440,7 +428,7 @@ class SummonStartScreen(_TautModalScreen[SummonStartSubmission | None]):
             yield Input(value="general", id="summon-threads", classes="form-field")
             yield Label("Provider", classes="field-label")
             yield Select(
-                ((_display_text(provider), provider) for provider in self._providers),
+                ((provider, provider) for provider in self._providers),
                 prompt="Infer from name",
                 id="summon-provider",
                 classes="form-field",
@@ -573,12 +561,6 @@ class NamedActionScreen(_TautModalScreen[NamedActionSubmission | None]):
 
 def _field_widget_id(field_id: str) -> str:
     return f"field-{field_id.replace('_', '-')}"
-
-
-def _display_text(value: str) -> str:
-    return "\n".join(
-        escape_terminal_text(line, inherit_defaults=True) for line in value.split("\n")
-    )
 
 
 def _fuzzy_match(query: str, candidate: str) -> bool:

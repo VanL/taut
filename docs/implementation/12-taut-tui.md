@@ -70,6 +70,24 @@ only required and nonblank fields; public core operations retain domain and
 race validation. Exact-target confirmations cover leave, rename, message
 delete, dump replacement, and Summon dismissal.
 
+Each `ActionSpec.routes` set is authoritative at typed invocation
+construction. `ActionInvocation.__post_init__()` rejects an action/route pair
+that the registry does not declare, including direct dataclass construction;
+`_dispatch_tui_action()` has no default route that could hide a producer's
+identity. The five routes name semantic production boundaries, so navigation,
+palette, and search-result activation keep those routes regardless of the
+physical key or pointer that activated them. `MOUSE` names the explicit
+base-screen parity controls.
+
+Route-derived surfaces query the same registry. In particular, the command
+palette requests only available specs declaring `PALETTE`; `command.open`
+therefore remains on its direct key and Commands control without recursively
+listing itself. Tests provide two complementary enumerable gates: every
+declared action/route pair fires its real Textual producer into the central
+dispatcher, and every `ActionId` continues through one real route to a
+concrete UI or public-domain postcondition. Stale route claims are removed
+when no such producer exists rather than being treated as aspirational UI.
+
 Mouse parity is explicit rather than inferred from labels. The composer has a
 Send control; the inspector exposes Members and selected-message
 Reply/React/Delete controls. Those buttons build the same typed action
@@ -176,9 +194,19 @@ ownership, so overlapping TUI hosts may restore out of order without leaving a
 retired forwarding handler installed.
 
 All core, extension, diagnostic, path, target, and message projections pass
-through the same terminal-control escaping boundary. A real PTY probe covers
-CSI and OSC payloads because Rich `Text` does not neutralize those bytes by
-itself.
+through extension-owned display widgets. Plain strings are escaped when a
+widget installs or updates content. Styled content is assembled only through a
+protected factory that escapes semantic segments before Rich sees them; raw
+Rich `Text` is rejected because Rich may discard controls before the widget
+boundary. Option add/set/replace paths, select labels, placeholders, labels,
+buttons, checkboxes, and application toasts share that ownership. Summon log
+records carry a protected one-pass escaped value from the logging bridge so a
+project regex cannot rescan generated escape notation at the widget boundary.
+
+A package-wide structural inventory rejects raw or qualified Textual display
+widget imports outside the adapter owner, raw Rich `Text`, and local terminal
+escape wrappers. A real PTY probe covers initial and updated CSI/OSC-bearing
+content because Rich and Textual do not neutralize those bytes by themselves.
 
 ## Where to Change and How to Verify
 
@@ -205,6 +233,8 @@ it without eager Textual import.
 
 ## Related Plans
 
+- `docs/plans/2026-08-14-taut-tui-display-sink-coverage-plan.md` — structural
+  display/toast ownership and enumerable terminal-escape sink proof.
 - `docs/plans/2026-08-14-review-findings-remediation-plan.md` — watcher,
   inspector, intent, teardown, pointer, Summon-control, and framework-floor
   remediation after the coordinated 0.9.0 review.

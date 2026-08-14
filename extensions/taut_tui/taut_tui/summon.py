@@ -21,7 +21,7 @@ from typing import Any, Protocol, cast
 
 from textual.message import Message as TextualMessage
 
-from taut import escape_terminal_text
+from taut_tui.widgets import escape_display_text
 
 
 class SummonUnavailable(RuntimeError):
@@ -574,7 +574,7 @@ class SummonLogBridge:
             self._deliver(message)
 
     def accept(self, message: str) -> None:
-        safe = escape_terminal_text(message)
+        safe = escape_display_text(message)
         with self._lock:
             if self._leased:
                 self._buffer.append(safe)

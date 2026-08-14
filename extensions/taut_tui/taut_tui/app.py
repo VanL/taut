@@ -12,20 +12,17 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, ClassVar, TypeVar, cast
 
-from rich.text import Text
 from textual import events
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, SeverityLevel
 from textual.binding import Binding, BindingType
 from textual.containers import Grid, Horizontal, Vertical
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, OptionList, Static
 
 from taut import (
     IdentityError,
     NotInitializedError,
     TautError,
-    escape_terminal_text,
 )
 from taut.addressing import parse_target
 from taut.client import (
@@ -98,18 +95,26 @@ from taut_tui.summon import (
     TuiSummonOperations,
 )
 from taut_tui.system import TuiSystemOperations
-from taut_tui.widgets import TautOptionList
+from taut_tui.widgets import (
+    DisplayText,
+    TautButton,
+    TautInput,
+    TautOptionList,
+    TautStatic,
+    display_text,
+    escape_display_text,
+)
 
 _ResultT = TypeVar("_ResultT")
 
 
-class ResizeHint(Static):
+class ResizeHint(TautStatic):
     """Focusable recovery target while all content surfaces are hidden."""
 
     can_focus = True
 
 
-class InspectorBody(Static):
+class InspectorBody(TautStatic):
     """Focusable contextual surface for keyboard and mouse parity."""
 
     can_focus = True
@@ -262,6 +267,26 @@ class TautApp(App[None]):
         Binding("ctrl+q", "quit_tui", "Quit", show=False),
     ]
 
+    def notify(
+        self,
+        message: str,
+        *,
+        title: str = "",
+        severity: SeverityLevel = "information",
+        timeout: float | None = None,
+        markup: bool = False,
+    ) -> None:
+        """Route every toast through the same terminal-display boundary."""
+
+        del markup
+        super().notify(
+            str(escape_display_text(message)),
+            title=str(escape_display_text(title)),
+            severity=severity,
+            timeout=timeout,
+            markup=False,
+        )
+
     def _query_base(
         self,
         selector: str | type[Any],
@@ -320,38 +345,40 @@ class TautApp(App[None]):
     def compose(self) -> ComposeResult:
         with Horizontal(id="workspace"):
             with Vertical(id="navigation", classes="surface"):
-                yield Static("Conversations", classes="surface-title")
+                yield TautStatic("Conversations", classes="surface-title")
                 yield TautOptionList("Loading workspace…", id="navigation-list")
             with Vertical(id="conversation", classes="surface"):
-                yield Static(
+                yield TautStatic(
                     "Conversation", id="target-header", classes="surface-title"
                 )
                 yield TautOptionList(id="transcript")
                 with Horizontal(id="composer-controls"):
-                    yield Input(placeholder="Message selected target", id="composer")
-                    yield Button("Send", id="composer-send")
+                    yield TautInput(
+                        placeholder="Message selected target", id="composer"
+                    )
+                    yield TautButton("Send", id="composer-send")
             with Vertical(id="inspector", classes="surface"):
-                yield Static("Inspector", classes="surface-title")
+                yield TautStatic("Inspector", classes="surface-title")
                 yield InspectorBody(
                     "Select a message, member, or action",
                     id="inspector-body",
                 )
                 with Grid(id="context-actions"):
-                    yield Button("Members", id="members-action")
-                    yield Button("Reply", id="reply-action")
-                    yield Button("React", id="react-action")
-                    yield Button("Delete", id="delete-action")
+                    yield TautButton("Members", id="members-action")
+                    yield TautButton("Reply", id="reply-action")
+                    yield TautButton("React", id="react-action")
+                    yield TautButton("Delete", id="delete-action")
             yield ResizeHint(
                 "Terminal too small\nResize to at least 50 columns × 20 rows",
                 id="resize-hint",
             )
         with Horizontal(id="status-bar"):
-            yield Static(id="status-line")
-            yield Button("Pane", id="pane-affordance")
-            yield Button("Replies", id="reply-affordance")
-            yield Button("Commands", id="commands-affordance")
-            yield Button("Search", id="search-affordance")
-            yield Button("Help", id="help-affordance")
+            yield TautStatic(id="status-line")
+            yield TautButton("Pane", id="pane-affordance")
+            yield TautButton("Replies", id="reply-affordance")
+            yield TautButton("Commands", id="commands-affordance")
+            yield TautButton("Search", id="search-affordance")
+            yield TautButton("Help", id="help-affordance")
 
     def on_mount(self) -> None:
         if self._base_screen is None:
@@ -360,7 +387,7 @@ class TautApp(App[None]):
         self._accepted_size = size
         self._apply_placement(size)
         self._set_mode(InteractionMode.NORMAL)
-        self._query_base("#navigation-list", OptionList).focus()
+        self._query_base("#navigation-list", TautOptionList).focus()
         self._update_status()
         self._session = TuiSession(
             db_path=self.db_path,
@@ -482,7 +509,7 @@ class TautApp(App[None]):
         if snapshot is not None:
             self._render_messages(snapshot.messages)
 
-    def on_input_changed(self, event: Input.Changed) -> None:
+    def on_input_changed(self, event: TautInput.Changed) -> None:
         if event.input.id != "composer":
             return
         target = self.visual_state.active_conversation or "__unselected__"
@@ -499,7 +526,7 @@ class TautApp(App[None]):
             )
         )
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
+    def on_input_submitted(self, event: TautInput.Submitted) -> None:
         if event.input.id != "composer" or not event.value.strip():
             return
         self._dispatch_tui_action(
@@ -532,7 +559,7 @@ class TautApp(App[None]):
         if target is None:
             return
         try:
-            composer = self._query_base("#composer", Input)
+            composer = self._query_base("#composer", TautInput)
         except NoMatches:
             return
         draft = self.visual_state.draft_for(target)
@@ -545,7 +572,7 @@ class TautApp(App[None]):
             )
         )
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
+    def on_button_pressed(self, event: TautButton.Pressed) -> None:
         if event.button.id == "pane-affordance":
             self._cycle_surface()
             return
@@ -619,7 +646,7 @@ class TautApp(App[None]):
 
     def on_option_list_option_highlighted(
         self,
-        event: OptionList.OptionHighlighted,
+        event: TautOptionList.OptionHighlighted,
     ) -> None:
         if self._shutting_down:
             return
@@ -763,7 +790,7 @@ class TautApp(App[None]):
             self._apply_placement(self._accepted_size)
             self._focus_visual_target()
         else:
-            self._query_base("#navigation-list", OptionList).focus()
+            self._query_base("#navigation-list", TautOptionList).focus()
 
     def check_action(
         self,
@@ -850,7 +877,7 @@ class TautApp(App[None]):
     def _dispatch_shell_action(self, action_id: ActionId) -> bool:
         if action_id is ActionId.COMPOSE_ENTER:
             self._set_mode(InteractionMode.COMPOSE)
-            self._query_base("#composer", Input).focus()
+            self._query_base("#composer", TautInput).focus()
         elif action_id is ActionId.COMMAND_OPEN:
             self.action_open_command()
         elif action_id is ActionId.SEARCH_OPEN:
@@ -891,7 +918,7 @@ class TautApp(App[None]):
         elif action_id is ActionId.MEMBERS_OPEN:
             self._run_action(domain.members(self.visual_state.active_conversation))
         elif action_id is ActionId.MESSAGE_SEND:
-            composer = self._query_base("#composer", Input)
+            composer = self._query_base("#composer", TautInput)
             if composer.value.strip():
                 self._submit_composer(composer.value)
         elif action_id is ActionId.SEARCH_OPEN_RESULT:
@@ -1071,7 +1098,7 @@ class TautApp(App[None]):
 
     def _dispatch_navigation_intent(self, intent: InteractionIntent) -> bool:
         focused = self.focused
-        if not isinstance(focused, OptionList):
+        if not isinstance(focused, TautOptionList):
             if intent is InteractionIntent.SURFACE_PREVIOUS:
                 self._move_surface(-1)
                 return True
@@ -1172,11 +1199,11 @@ class TautApp(App[None]):
             pane_choice=LogicalSurface.INSPECTOR,
             focus=FocusTarget(LogicalSurface.INSPECTOR, "inspector-body"),
         )
-        self._query_base("#inspector-body", Static).update(
-            Text.assemble(
-                (_display_text(message.from_name), "bold"),
+        self._query_base("#inspector-body", TautStatic).update(
+            display_text(
+                (message.from_name, "bold"),
                 f"  {message.ts}\n",
-                _display_text(message.text),
+                message.text,
                 "\n\nReply · React · Delete",
             )
         )
@@ -1211,7 +1238,7 @@ class TautApp(App[None]):
 
     def _update_reply_affordance(self) -> None:
         try:
-            button = self._query_base("#reply-affordance", Button)
+            button = self._query_base("#reply-affordance", TautButton)
         except NoMatches:
             return
         current = self.visual_state.open_reply_thread
@@ -1228,10 +1255,10 @@ class TautApp(App[None]):
             message.ts == self.visual_state.selected_message_id
             for message in self._message_rows
         )
-        self._query_base("#composer-send", Button).display = usable and has_target
-        self._query_base("#members-action", Button).display = usable and has_target
+        self._query_base("#composer-send", TautButton).display = usable and has_target
+        self._query_base("#members-action", TautButton).display = usable and has_target
         for selector in ("#reply-action", "#react-action", "#delete-action"):
-            self._query_base(selector, Button).display = usable and has_message
+            self._query_base(selector, TautButton).display = usable and has_message
         self._query_base("#context-actions").display = usable and (
             has_target or has_message
         )
@@ -1242,8 +1269,7 @@ class TautApp(App[None]):
             lines.append("No replies yet.")
         else:
             lines.extend(
-                f"{message.ts}  {_display_text(message.from_name)}  "
-                f"{_display_text(message.text)}"
+                f"{message.ts}  {message.from_name}  {message.text}"
                 for message in snapshot.reply_messages
             )
         self._render_inspector("\n".join(lines), kind=InspectorKind.REPLIES)
@@ -1590,12 +1616,8 @@ class TautApp(App[None]):
             if raw_target is None
             else self._target_labels.get(raw_target, raw_target)
         )
-        self._query_base("#status-line", Static).update(
-            Text(
-                _display_text(
-                    f"{self.visual_state.mode.value}  {target}  {self._operation_state}"
-                )
-            )
+        self._query_base("#status-line", TautStatic).update(
+            f"{self.visual_state.mode.value}  {target}  {self._operation_state}"
         )
 
     def _watch_future(
@@ -1795,7 +1817,7 @@ class TautApp(App[None]):
 
     def _render_inspector(
         self,
-        text: str,
+        text: str | DisplayText,
         *,
         kind: InspectorKind = InspectorKind.SYSTEM,
         style: str | None = None,
@@ -1821,10 +1843,12 @@ class TautApp(App[None]):
             ),
         )
         self._apply_placement(self._accepted_size)
-        rendered = Text(_display_text(text))
+        rendered = text
         if style is not None:
-            rendered.stylize(style)
-        self._query_base("#inspector-body", Static).update(rendered)
+            if not isinstance(text, str):
+                raise TypeError("styled inspector input must be a plain string")
+            rendered = display_text((text, style))
+        self._query_base("#inspector-body", TautStatic).update(rendered)
         if should_reveal:
             self._focus_visual_target()
 
@@ -1909,7 +1933,7 @@ class TautApp(App[None]):
     def _apply_summon_log(self, message: str) -> None:
         try:
             self._render_inspector(
-                f"Summon\n{message}",
+                display_text("Summon\n", message),
                 kind=InspectorKind.SUMMON,
             )
         except BaseException:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-087] exception
@@ -2043,9 +2067,9 @@ class TautApp(App[None]):
         targets: tuple[str | ActionId, ...],
         labels: tuple[str, ...],
     ) -> None:
-        navigation = self._query_base("#navigation-list", OptionList)
+        navigation = self._query_base("#navigation-list", TautOptionList)
         navigation.clear_options()
-        navigation.add_options(Text(_display_text(label)) for label in labels)
+        navigation.add_options(labels)
         self._navigation_targets = list(targets)
 
     def _commit_conversation_from_worker(
@@ -2130,7 +2154,7 @@ class TautApp(App[None]):
         snapshot = session.commit_returned_message(message) if session else None
         if snapshot is not None:
             self._apply_conversation(snapshot)
-        composer = self._query_base("#composer", Input)
+        composer = self._query_base("#composer", TautInput)
         if pending is not None:
             target, revision = pending
             draft = self.visual_state.draft_for(target)
@@ -2161,9 +2185,7 @@ class TautApp(App[None]):
             model_generation=snapshot.generation,
         )
         target_label = self._target_labels.get(snapshot.target, snapshot.target)
-        self._query_base("#target-header", Static).update(
-            Text(_display_text(target_label))
-        )
+        self._query_base("#target-header", TautStatic).update(target_label)
         self._render_messages(snapshot.messages)
         if snapshot.reply_thread is not None:
             self._render_reply_inspector(snapshot)
@@ -2180,8 +2202,8 @@ class TautApp(App[None]):
             self._apply_placement(self._accepted_size)
             self._focus_visual_target()
         draft = self.visual_state.draft_for(snapshot.target)
-        composer = self._query_base("#composer", Input)
-        composer.placeholder = _display_text(f"Message {target_label}")
+        composer = self._query_base("#composer", TautInput)
+        composer.placeholder = f"Message {target_label}"
         composer.value = "" if draft is None else draft.text
         if draft is not None:
             composer.cursor_position = draft.cursor_position
@@ -2279,7 +2301,7 @@ class TautApp(App[None]):
             )
         self.visual_state = replace(self.visual_state, scroll_anchor=anchor)
 
-    def _message_prompt(self, message: Message) -> Text:
+    def _message_prompt(self, message: Message) -> DisplayText:
         target = self.visual_state.active_conversation
         reply_marker = (
             "  ↳ replies"
@@ -2287,19 +2309,19 @@ class TautApp(App[None]):
             else ""
         )
         if self.layout_mode is LayoutMode.COMPACT:
-            return Text.assemble(
-                (_display_text(message.from_name), "bold"),
+            return display_text(
+                (message.from_name, "bold"),
                 f"  {message.ts}",
                 (reply_marker, "italic"),
                 "\n",
-                _display_text(message.text),
+                message.text,
             )
-        return Text.assemble(
+        return display_text(
             (str(message.ts), "dim"),
             "  ",
-            (_display_text(message.from_name), "bold"),
+            (message.from_name, "bold"),
             "  ",
-            _display_text(message.text),
+            message.text,
             (reply_marker, "italic"),
         )
 
@@ -2376,30 +2398,24 @@ def _safe_projection(value: object) -> str:
         )
         detail = " ".join(f"{key}={item}" for key, item in sorted(details.items()))
         suffix = f"\n{detail}" if detail else ""
-        return _display_text(
+        return (
             f"Summon status\n{name}\nprovider={provider}  driver={driver}\n"
             f"session={session or '-'}  threads={thread_count}\nlag={lag}{suffix}"
         )
     member_id = getattr(value, "member_id", None)
     if name is not None and provider is not None and member_id is not None:
-        return _display_text(f"{name}  {provider}  live  session={session or '-'}")
+        return f"{name}  {provider}  live  session={session or '-'}"
     member_name = getattr(value, "member_name", None)
     if member_name is not None:
-        return _display_text(str(member_name))
+        return str(member_name)
     if name is not None:
-        return _display_text(str(name))
+        return str(name)
     path = getattr(value, "path", None)
     if path is not None:
-        return _display_text(str(path))
+        return str(path)
     if isinstance(value, (str, int, float, bool)):
-        return _display_text(str(value))
+        return str(value)
     return type(value).__name__
-
-
-def _display_text(value: str) -> str:
-    return "\n".join(
-        escape_terminal_text(line, inherit_defaults=True) for line in value.split("\n")
-    )
 
 
 def _surface_for_widget(widget_id: str | None) -> LogicalSurface | None:

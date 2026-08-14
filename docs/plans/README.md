@@ -51,6 +51,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 
 | Plan | Status | Exemplar | Note |
 |------|--------|----------|------|
+| `2026-08-14-taut-tui-display-sink-coverage-plan.md` | completed | no | Class 3 structural ownership refactor making TUI display widgets enforce terminal escaping and adding an explicit sink inventory plus real-PTY proof. |
 | `2026-08-14-review-findings-remediation-plan.md` | completed | no | Class 5+P remediation of the verified 0.9.0 review findings; implementation, local verification, independent review, and owner-authorized landing are complete. |
 | `2026-08-13-ranged-dependency-policy-plan.md` | completed | no | Completed: ranged declarations, lock-selected minimums, no duplicate version assertions, and all retained lock/test/static gates passed. |
 | `2026-08-13-simplebroker-config-isolation-plan.md` | completed | no | Class 5 symmetric Taut/SimpleBroker configuration isolation; published 7.3.2 artifact, exhaustive mapping, cross-backend proof, and independent closeout review passed. |

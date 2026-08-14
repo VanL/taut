@@ -684,6 +684,9 @@ Version 1 does not include:
 
 ## Related Plans
 
+- `docs/plans/2026-08-14-taut-tui-display-sink-coverage-plan.md` — moves
+  terminal escaping into owned display/toast sinks and adds structural plus
+  real-PTY coverage for [TUI-12.2]/[TUI-13.1].
 - `docs/plans/2026-08-14-review-findings-remediation-plan.md` — review-driven
   lifecycle, contract-proof, diagnostic, and release-gate remediation for
   the coordinated 0.9.0 candidate.
