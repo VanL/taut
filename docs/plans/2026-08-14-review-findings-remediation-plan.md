@@ -1,7 +1,7 @@
 # 0.9.0 Review Findings Remediation Plan
 
-Status: active. Implementation, local verification, and independent completed-
-work review passed. The owner-authorized landing remains outstanding.
+Status: completed. Implementation, local verification, independent completed-
+work review, and the owner-authorized landing are recorded below.
 
 Class: 5+P. The work changes two product contracts, repairs several async and
 cleanup lifecycles, and widens the standing release helper's PostgreSQL proof.
@@ -501,6 +501,7 @@ correct exit class, no traceback, and no partial success claim.
 | 2026-08-14, Slice 5 | Focused S1-S6 and changed-owner tests passed; serial broad Summon unit and required four-worker process selections passed; Ruff and 40-file mypy passed. | Stream writes are epoch-cancelable on capable real pipes, control error remains primary through teardown, PTY settle uses one wakeable budget, Claude skips session wait, C1 is stripped only from detached injection, and confirmation performs the final read. One auto-xdist run hung after all dots during gateway teardown; the identical serial selection and isolated process lane passed. |
 | 2026-08-14, Slice 6 | Missing-PG doctor/dump/load/client tests passed; portable ASCII search passed on real SQLite and PostgreSQL; PG Unicode/diacritic/oversized-lexeme test passed; distinct MCP PG harness passed 7 tests. `test_release_script.py` passed with exact command order. | P1-P3 are closed. Implementation exposed the omitted [TAUT-12.5] delta; it was promoted and recorded before further release work. |
 | 2026-08-14, integrated verification | Focused core/persistence/release set and full non-PG MCP suite exited 0; TUI 196 passed; Summon serial unit and four-worker process lanes exited 0; `bin/pytest-pg --fast` passed 257 shared plus 37 PG-only tests; explicit MCP PG passed 7. Ruff passed and 235 files were formatted. Five mypy owners passed 132, 12, 40, 21, and 29 files. Doc paths, references, plan index, metadata consistency, and diff checks passed. | Local completion floor is green. External live-harness/local-LLM release lanes and hosted CI are not claimed here; no release was requested. |
+| 2026-08-14, owner-authorized landing | `b2405c2b2107aae88a983be0a0fede22278c8ed1` (`Fix verified 0.9.0 review findings`) recorded by `git log`. | The verified implementation, promoted contracts, tests, implementation notes, and review evidence are committed. The original untracked bug-report input remains outside the commit. |
 
 ## Completion Gate
 
