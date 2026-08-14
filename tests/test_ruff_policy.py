@@ -24,11 +24,12 @@ EXTENSIONLESS_PYTHON = {
     "bin/check-plan-status-index",
     "bin/coalesce-check",
     "bin/pytest-pg",
+    "bin/render-tui-screens",
 }
 REVIEWED_FAMILIES = ["E", "W", "F", "I", "B", "C901", "C4", "UP"]
 GLOBAL_IGNORES = ["E501", "B008"]
 RAW_RULE_COUNTS = {
-    "BLE001": 119,
+    "BLE001": 124,
     "C901": 38,
     "DTZ006": 1,
     "F401": 1,
@@ -137,7 +138,7 @@ def _tracked_python_files() -> set[str]:
     return paths
 
 
-def test_tracked_python_inventory_includes_all_six_extensionless_tools() -> None:
+def test_tracked_python_inventory_includes_all_extensionless_tools() -> None:
     tracked = _tracked_python_files()
     assert EXTENSIONLESS_PYTHON <= tracked
     assert all(
@@ -267,7 +268,7 @@ def test_raw_active_rule_inventory_and_registry_are_exact() -> None:
     )
     assert [group.group_id for group in snapshot.groups] == [
         f"RUFF-SUP-{number:03d}"
-        for number in range(1, 89)
+        for number in range(1, 90)
         if number not in RETIRED_GROUP_NUMBERS
     ]
 

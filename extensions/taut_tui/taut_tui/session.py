@@ -468,7 +468,7 @@ class TuiSession:
         primary: Exception | None = None
         try:
             self._stop_watcher_owned()
-        except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] cleanup
+        except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-089] exception
             primary = exc
         try:
             if self._client is not None:

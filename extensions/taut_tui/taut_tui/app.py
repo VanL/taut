@@ -446,7 +446,7 @@ class TautApp(App[None]):
                     if self._session is not None:
                         try:
                             self._session.close()
-                        except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] cleanup
+                        except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-089] exception
                             detail = str(exc) or type(exc).__name__
                             self._operation_state = f"cleanup failed: {detail}"
                             self.notify(
