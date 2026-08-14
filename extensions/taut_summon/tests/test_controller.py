@@ -14,6 +14,7 @@ from dataclasses import fields
 from pathlib import Path
 from typing import Any
 
+import psutil
 import pytest
 from simplebroker import Queue
 from taut_summon._control import control_in_queue_name
@@ -398,9 +399,18 @@ def test_foreground_ready_callback_failure_cleans_up_and_preserves_cause(
     )
     failure = RuntimeError("host callback failed")
     seen: list[SummonRunHandle] = []
+    child_processes: list[psutil.Process] = []
 
     def on_ready(handle: SummonRunHandle) -> None:
         seen.append(handle)
+        starts = [
+            entry for entry in _received_entries(received) if entry["event"] == "start"
+        ]
+        assert len(starts) == 1
+        # Retain the child's creation identity while it is known live. A later
+        # PID-only probe can observe a reused PID, and os.kill(pid, 0) is not a
+        # harmless existence check on Windows.
+        child_processes.append(psutil.Process(int(starts[0]["pid"])))
         raise failure
 
     with pytest.raises(
@@ -425,8 +435,8 @@ def test_foreground_ready_callback_failure_cleans_up_and_preserves_cause(
         entry for entry in _received_entries(received) if entry["event"] == "start"
     ]
     assert len(starts) == 1
-    with pytest.raises(ProcessLookupError):
-        os.kill(int(starts[0]["pid"]), 0)
+    assert len(child_processes) == 1
+    assert not child_processes[0].is_running()
 
 
 def test_foreground_ready_callback_may_request_immediate_stop(
