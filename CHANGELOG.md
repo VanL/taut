@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## 0.9.0 - 2026-08-13
+## 0.9.0 - 2026-08-14
 
 - Isolated Taut's complete SimpleBroker configuration under mechanical
   `TAUT_*` spellings. Ambient `BROKER_*` values no longer affect Taut, while
@@ -33,6 +33,24 @@
 - Added Summon's optional exact-once foreground readiness callback and immutable
   exact-run stop handle for rich hosts. Callback-free CLI behavior retains its
   existing lifecycle and signal ownership.
+- Fixed identity rejoin so an existing member preserves its unread cursor, and
+  made explicit invalid workspace directories and missing PostgreSQL support
+  fail with Taut-owned initialization and installation guidance across client,
+  doctor, dump, and load paths.
+- Hardened MCP lifecycle ownership: degraded reactors now wait instead of
+  spinning, shutdown closes new-work admission, abandoned attach failures are
+  retrieved, and the public teaching contract is asserted field by field. The
+  coordinated release gate now includes live MCP PostgreSQL conformance.
+- Hardened Summon cancellation and teardown across blocked stream writes,
+  control-loop cleanup, PTY settling, Claude startup, detached text injection,
+  and final process-exit confirmation while keeping the original failure as
+  the primary diagnostic.
+- Tightened TUI behavior and lifecycle handling for native forms, empty
+  results, help and inspector state, watcher failures, stale intents, pointer
+  routing, executor teardown, and reply-surface preservation after deletion.
+  Terminal control escaping is enforced at every display and toast sink, and
+  the action registry's declared routes are now authoritative and exhaustively
+  exercised through their real producers and handlers.
 
 ## 0.8.7 - 2026-08-12
 
