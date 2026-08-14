@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from _windows_mcp_diagnostic import phase
 from jsonschema import ValidationError, validate
 from simplebroker import BrokerTarget, Queue
 from tests.helpers.eventually import async_eventually
@@ -2313,51 +2314,70 @@ def test_explicit_dm_read_log_and_directory_use_public_core_contract(
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     db = workspace / ".taut.db"
-    TautClient.init(db_path=db)
-    selected = TautClient(db_path=db, as_name="selected")
-    selected.join("general")
+    with phase("tools.seed.init"):
+        TautClient.init(db_path=db)
+    with phase("tools.seed.selected.construct"):
+        selected = TautClient(db_path=db, as_name="selected")
+    with phase("tools.seed.selected.join"):
+        selected.join("general")
     member = selected.last_created_member
     assert member is not None and member.token is not None
     selected_id = member.member_id
-    other = TautClient(db_path=db, as_name="other")
-    other.join("general")
-    third = TautClient(db_path=db, as_name="third")
-    third.join("general")
-    sent = other.say("@selected", "private history")
-    selected.close()
-    other.close()
-    third.close()
+    with phase("tools.seed.other.construct"):
+        other = TautClient(db_path=db, as_name="other")
+    with phase("tools.seed.other.join"):
+        other.join("general")
+    with phase("tools.seed.third.construct"):
+        third = TautClient(db_path=db, as_name="third")
+    with phase("tools.seed.third.join"):
+        third.join("general")
+    with phase("tools.seed.other.say"):
+        sent = other.say("@selected", "private history")
+    with phase("tools.seed.selected.close"):
+        selected.close()
+    with phase("tools.seed.other.close"):
+        other.close()
+    with phase("tools.seed.third.close"):
+        third.close()
 
     async def scenario() -> None:
-        reactor = ProcessReactor(asyncio.get_running_loop())
-        observer = TautClient(db_path=db)
+        with phase("tools.reactor.construct"):
+            reactor = ProcessReactor(asyncio.get_running_loop())
+        with phase("tools.observer.construct"):
+            observer = TautClient(db_path=db)
         try:
-            canonical = str(
-                (
-                    await reactor.attach_workspace(
-                        str(workspace),
-                        member.token or "",
-                    )
-                )["workspace"]
-            )
-            before_log = observer._state.get_member(selected_id)
+            with phase("tools.reactor.attach_workspace"):
+                canonical = str(
+                    (
+                        await reactor.attach_workspace(
+                            str(workspace),
+                            member.token or "",
+                        )
+                    )["workspace"]
+                )
+            with phase("tools.observer.get_member.before_log"):
+                before_log = observer._state.get_member(selected_id)
             assert before_log is not None
 
-            history = await reactor._execute_ready_tool(
-                canonical,
-                "log",
-                {"thread": "@other", "since": None, "limit": 100},
-            )
+            with phase("tools.reactor.log"):
+                history = await reactor._execute_ready_tool(
+                    canonical,
+                    "log",
+                    {"thread": "@other", "since": None, "limit": 100},
+                )
             _assert_result(history, record_type="message", workspace=canonical)
             assert history["records"][0]["thread"] == sent.thread
             assert history["records"][0]["text"] == "private history"
-            assert observer._state.get_member(selected_id) == before_log
+            with phase("tools.observer.get_member.after_log"):
+                after_log = observer._state.get_member(selected_id)
+            assert after_log == before_log
 
-            unread = await reactor._execute_ready_tool(
-                canonical,
-                "read",
-                {"thread": sent.thread, "limit": 100},
-            )
+            with phase("tools.reactor.read"):
+                unread = await reactor._execute_ready_tool(
+                    canonical,
+                    "read",
+                    {"thread": sent.thread, "limit": 100},
+                )
             _assert_result(
                 unread,
                 record_type="message",
@@ -2366,14 +2386,15 @@ def test_explicit_dm_read_log_and_directory_use_public_core_contract(
             )
             assert unread["records"][0]["thread"] == sent.thread
 
-            stable_write = await reactor._execute_ready_tool(
-                canonical,
-                "say",
-                {
-                    "target": sent.thread,
-                    "text": "stable reply @other and private @third",
-                },
-            )
+            with phase("tools.reactor.say"):
+                stable_write = await reactor._execute_ready_tool(
+                    canonical,
+                    "say",
+                    {
+                        "target": sent.thread,
+                        "text": "stable reply @other and private @third",
+                    },
+                )
             _assert_result(
                 stable_write,
                 record_type="message",
@@ -2381,27 +2402,41 @@ def test_explicit_dm_read_log_and_directory_use_public_core_contract(
             )
             assert stable_write["records"][0]["thread"] == sent.thread
             assert len(stable_write["records"][0]["ts"]) == 19
-            other_observer = TautClient(db_path=db, as_name="other")
+            with phase("tools.other_observer.construct"):
+                other_observer = TautClient(db_path=db, as_name="other")
             try:
-                assert [
-                    (item.type, item.thread, item.message_ts)
-                    for item in other_observer.inbox()
-                ] == [("mention", sent.thread, int(stable_write["records"][0]["ts"]))]
+                with phase("tools.other_observer.inbox"):
+                    other_inbox = [
+                        (item.type, item.thread, item.message_ts)
+                        for item in other_observer.inbox()
+                    ]
+                assert other_inbox == [
+                    ("mention", sent.thread, int(stable_write["records"][0]["ts"]))
+                ]
             finally:
-                other_observer.close()
-            third_observer = TautClient(db_path=db, as_name="third")
+                with phase("tools.other_observer.close"):
+                    other_observer.close()
+            with phase("tools.third_observer.construct"):
+                third_observer = TautClient(db_path=db, as_name="third")
             try:
-                with pytest.raises(EmptyResultError):
+                with (
+                    phase("tools.third_observer.inbox"),
+                    pytest.raises(EmptyResultError),
+                ):
                     third_observer.inbox()
             finally:
-                third_observer.close()
+                with phase("tools.third_observer.close"):
+                    third_observer.close()
 
-            directory = await reactor._execute_ready_tool(
-                canonical,
-                "list",
-                {"dms": True},
-            )
+            with phase("tools.reactor.list"):
+                directory = await reactor._execute_ready_tool(
+                    canonical,
+                    "list",
+                    {"dms": True},
+                )
             _assert_result(directory, record_type="thread", workspace=canonical)
+            with phase("tools.observer.list_threads"):
+                observed_threads = observer.list_threads(all_threads=True)
             assert directory["records"] == [
                 {
                     "kind": "dm",
@@ -2409,7 +2444,7 @@ def test_explicit_dm_read_log_and_directory_use_public_core_contract(
                     "members": list(
                         next(
                             item
-                            for item in observer.list_threads(all_threads=True)
+                            for item in observed_threads
                             if item.name == sent.thread
                         ).members
                     ),
@@ -2419,10 +2454,13 @@ def test_explicit_dm_read_log_and_directory_use_public_core_contract(
                 }
             ]
         finally:
-            observer.close()
-            await reactor.aclose()
+            with phase("tools.observer.close"):
+                observer.close()
+            with phase("tools.reactor.aclose"):
+                await reactor.aclose()
 
-    asyncio.run(scenario())
+    with phase("tools.scenario"):
+        asyncio.run(scenario())
 
 
 @pytest.mark.sqlite_only

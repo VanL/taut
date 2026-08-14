@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import IO, Any, cast
 
 import pytest
+from _windows_mcp_diagnostic import phase
 from jsonschema import validate
 from mcp import ClientSession, types
 from mcp.client import Client
@@ -326,19 +327,28 @@ def test_modern_discovery_lazy_identity_and_subscription_share_one_server(
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     database = workspace / ".taut.db"
-    TautClient.init(db_path=database)
-    selected = TautClient(db_path=database, as_name="selected")
-    selected.join("general")
+    with phase("stdio.seed.init"):
+        TautClient.init(db_path=database)
+    with phase("stdio.seed.selected.construct"):
+        selected = TautClient(db_path=database, as_name="selected")
+    with phase("stdio.seed.selected.join"):
+        selected.join("general")
     member = selected.last_created_member
     assert member is not None and member.token is not None
-    sent = selected.say("general", "modern stdio needle café")
-    other = TautClient(db_path=database, as_name="other")
-    other.join("general")
+    with phase("stdio.seed.selected.say_general"):
+        sent = selected.say("general", "modern stdio needle café")
+    with phase("stdio.seed.other.construct"):
+        other = TautClient(db_path=database, as_name="other")
+    with phase("stdio.seed.other.join"):
+        other.join("general")
     other_member = other.last_created_member
     assert other_member is not None
-    direct = selected.say("@other", "modern stdio private needle")
-    selected.close()
-    other.close()
+    with phase("stdio.seed.selected.say_direct"):
+        direct = selected.say("@other", "modern stdio private needle")
+    with phase("stdio.seed.selected.close"):
+        selected.close()
+    with phase("stdio.seed.other.close"):
+        other.close()
 
     async def scenario() -> None:
         parameters = StdioServerParameters(
@@ -347,222 +357,255 @@ def test_modern_discovery_lazy_identity_and_subscription_share_one_server(
             cwd=EXTENSION_ROOT,
             env=os.environ.copy(),
         )
-        async with Client(stdio_client(parameters), mode="auto") as client:
+        with phase("stdio.client.lifecycle"):
+            client_context = Client(stdio_client(parameters), mode="auto")
+            async with client_context as client:
 
-            def assert_complete(result: object) -> None:
-                typed = cast(Any, result)
-                assert typed.result_type == "complete"
-                assert typed.meta is not None
-                assert typed.meta["io.modelcontextprotocol/serverInfo"] == {
+                def assert_complete(result: object) -> None:
+                    typed = cast(Any, result)
+                    assert typed.result_type == "complete"
+                    assert typed.meta is not None
+                    assert typed.meta["io.modelcontextprotocol/serverInfo"] == {
+                        "name": "taut_mcp",
+                        "version": EXPECTED_VERSION,
+                    }
+
+                discovered = client.session.discover_result
+                assert discovered is not None
+                assert client.session.initialize_result is None
+                assert_complete(discovered)
+                assert discovered.supported_versions == ["2026-07-28"]
+                assert discovered.ttl_ms == 3_600_000
+                assert discovered.cache_scope == "public"
+                assert discovered.capabilities.tools is not None
+                assert discovered.capabilities.tools.list_changed is False
+                assert discovered.capabilities.resources is not None
+                assert discovered.capabilities.resources.subscribe is True
+                assert discovered.capabilities.resources.list_changed is False
+                assert discovered.meta is not None
+                assert discovered.meta["io.modelcontextprotocol/serverInfo"] == {
                     "name": "taut_mcp",
                     "version": EXPECTED_VERSION,
                 }
 
-            discovered = client.session.discover_result
-            assert discovered is not None
-            assert client.session.initialize_result is None
-            assert_complete(discovered)
-            assert discovered.supported_versions == ["2026-07-28"]
-            assert discovered.ttl_ms == 3_600_000
-            assert discovered.cache_scope == "public"
-            assert discovered.capabilities.tools is not None
-            assert discovered.capabilities.tools.list_changed is False
-            assert discovered.capabilities.resources is not None
-            assert discovered.capabilities.resources.subscribe is True
-            assert discovered.capabilities.resources.list_changed is False
-            assert discovered.meta is not None
-            assert discovered.meta["io.modelcontextprotocol/serverInfo"] == {
-                "name": "taut_mcp",
-                "version": EXPECTED_VERSION,
-            }
+                with phase("stdio.client.list_tools"):
+                    tools = await client.list_tools()
+                with phase("stdio.client.list_resources"):
+                    resources = await client.list_resources()
+                assert_complete(tools)
+                assert_complete(resources)
+                assert tools.tools == list(TOOLS)
+                assert tools.ttl_ms == 300_000
+                assert tools.cache_scope == "public"
+                assert resources.ttl_ms == 300_000
+                assert resources.cache_scope == "public"
 
-            tools = await client.list_tools()
-            resources = await client.list_resources()
-            assert_complete(tools)
-            assert_complete(resources)
-            assert tools.tools == list(TOOLS)
-            assert tools.ttl_ms == 300_000
-            assert tools.cache_scope == "public"
-            assert resources.ttl_ms == 300_000
-            assert resources.cache_scope == "public"
+                with phase("stdio.client.listen.initial"):
+                    async with (
+                        client.listen(
+                            resource_subscriptions=[NOTIFICATIONS_URL]
+                        ) as first,
+                        client.listen(
+                            resource_subscriptions=[NOTIFICATIONS_URL]
+                        ) as second,
+                        client.listen(
+                            resource_subscriptions=["taut://notifications/unmatched"]
+                        ) as unmatched,
+                    ):
+                        with phase("stdio.client.call_tool.whoami"):
+                            result = await client.call_tool(
+                                "whoami",
+                                {
+                                    "workspace": str(workspace),
+                                    "token": member.token,
+                                },
+                            )
+                        assert_complete(result)
+                        assert result.is_error is False
+                        assert result.structured_content is not None
+                        canonical = str(result.structured_content["workspace"])
+                        with phase("stdio.client.listen.initial.events"):
+                            first_event, second_event = await asyncio.gather(
+                                anext(first),
+                                anext(second),
+                            )
+                        assert isinstance(first_event, ResourceUpdated)
+                        assert isinstance(second_event, ResourceUpdated)
+                        assert first_event.uri == NOTIFICATIONS_URL
+                        assert second_event.uri == NOTIFICATIONS_URL
+                        assert first.subscription_id != second.subscription_id
+                        with (
+                            phase("stdio.client.listen.unmatched"),
+                            pytest.raises(TimeoutError),
+                        ):
+                            await asyncio.wait_for(anext(unmatched), timeout=0.1)
 
-            async with (
-                client.listen(resource_subscriptions=[NOTIFICATIONS_URL]) as first,
-                client.listen(resource_subscriptions=[NOTIFICATIONS_URL]) as second,
-                client.listen(
-                    resource_subscriptions=["taut://notifications/unmatched"]
-                ) as unmatched,
-            ):
-                result = await client.call_tool(
-                    "whoami",
-                    {
-                        "workspace": str(workspace),
-                        "token": member.token,
-                    },
-                )
-                assert_complete(result)
-                assert result.is_error is False
-                assert result.structured_content is not None
-                canonical = str(result.structured_content["workspace"])
-                first_event, second_event = await asyncio.gather(
-                    anext(first),
-                    anext(second),
-                )
-                assert isinstance(first_event, ResourceUpdated)
-                assert isinstance(second_event, ResourceUpdated)
-                assert first_event.uri == NOTIFICATIONS_URL
-                assert second_event.uri == NOTIFICATIONS_URL
-                assert first.subscription_id != second.subscription_id
-                with pytest.raises(TimeoutError):
-                    await asyncio.wait_for(anext(unmatched), timeout=0.1)
+                with phase("stdio.observer.construct"):
+                    observer = TautClient(db_path=database, token=member.token)
 
-            observer = TautClient(db_path=database, token=member.token)
+                def snapshot() -> tuple[object, object, object]:
+                    with phase("stdio.observer.snapshot"):
+                        return (
+                            observer._state.get_member(member.member_id),
+                            observer._state.list_memberships(member.member_id),
+                            observer.peek_inbox(limit=1000),
+                        )
 
-            def snapshot() -> tuple[object, object, object]:
-                return (
-                    observer._state.get_member(member.member_id),
-                    observer._state.list_memberships(member.member_id),
-                    observer.peek_inbox(limit=1000),
-                )
+                try:
+                    before_search = snapshot()
+                    with phase("stdio.client.call_tool.search"):
+                        searched = await client.call_tool(
+                            "search",
+                            {
+                                "workspace": canonical,
+                                "token": member.token,
+                                "query": "needle",
+                                "channels": ["general"],
+                                "direct_messages": [direct.thread],
+                                "all_direct_messages": False,
+                                "from_member": "selected",
+                                "kinds": ["message"],
+                                "before": None,
+                                "limit": 50,
+                                "reindex": True,
+                            },
+                        )
+                    assert_complete(searched)
+                    assert searched.is_error is False
+                    assert searched.structured_content is not None
+                    assert searched.structured_content["record_type"] == "search_hit"
+                    assert searched.structured_content["records"] == [
+                        {
+                            "channel": None,
+                            "from": "selected",
+                            "from_id": member.member_id,
+                            "kind": "message",
+                            "members": sorted(
+                                [member.member_id, other_member.member_id]
+                            ),
+                            "parent": None,
+                            "text": "modern stdio private needle",
+                            "thread": direct.thread,
+                            "thread_kind": "dm",
+                            "ts": str(direct.ts),
+                        },
+                        {
+                            "channel": "general",
+                            "from": "selected",
+                            "from_id": member.member_id,
+                            "kind": "message",
+                            "members": None,
+                            "parent": None,
+                            "text": "modern stdio needle café",
+                            "thread": "general",
+                            "thread_kind": "channel",
+                            "ts": str(sent.ts),
+                        },
+                    ]
+                    search_tool = next(tool for tool in TOOLS if tool.name == "search")
+                    assert search_tool.output_schema is not None
+                    validate(
+                        instance=searched.structured_content,
+                        schema=search_tool.output_schema,
+                    )
+                    assert isinstance(searched.content[0], types.TextContent)
+                    assert searched.content[0].text == json.dumps(
+                        searched.structured_content,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
 
-            before_search = snapshot()
-            searched = await client.call_tool(
-                "search",
-                {
-                    "workspace": canonical,
-                    "token": member.token,
-                    "query": "needle",
-                    "channels": ["general"],
-                    "direct_messages": [direct.thread],
-                    "all_direct_messages": False,
-                    "from_member": "selected",
-                    "kinds": ["message"],
-                    "before": None,
-                    "limit": 50,
-                    "reindex": True,
-                },
-            )
-            assert_complete(searched)
-            assert searched.is_error is False
-            assert searched.structured_content is not None
-            assert searched.structured_content["record_type"] == "search_hit"
-            assert searched.structured_content["records"] == [
-                {
-                    "channel": None,
-                    "from": "selected",
-                    "from_id": member.member_id,
-                    "kind": "message",
-                    "members": sorted([member.member_id, other_member.member_id]),
-                    "parent": None,
-                    "text": "modern stdio private needle",
-                    "thread": direct.thread,
-                    "thread_kind": "dm",
-                    "ts": str(direct.ts),
-                },
-                {
-                    "channel": "general",
-                    "from": "selected",
-                    "from_id": member.member_id,
-                    "kind": "message",
-                    "members": None,
-                    "parent": None,
-                    "text": "modern stdio needle café",
-                    "thread": "general",
-                    "thread_kind": "channel",
-                    "ts": str(sent.ts),
-                },
-            ]
-            search_tool = next(tool for tool in TOOLS if tool.name == "search")
-            assert search_tool.output_schema is not None
-            validate(
-                instance=searched.structured_content,
-                schema=search_tool.output_schema,
-            )
-            assert isinstance(searched.content[0], types.TextContent)
-            assert searched.content[0].text == json.dumps(
-                searched.structured_content,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            )
+                    with phase("stdio.client.call_tool.search_unicode"):
+                        unicode_result = await client.call_tool(
+                            "search",
+                            {
+                                "workspace": canonical,
+                                "token": member.token,
+                                "query": "café",
+                                "channels": ["general"],
+                            },
+                        )
+                    assert unicode_result.is_error is False
+                    assert unicode_result.structured_content is not None
+                    assert unicode_result.structured_content["records"] == [
+                        searched.structured_content["records"][1]
+                    ]
+                    validate(
+                        instance=unicode_result.structured_content,
+                        schema=search_tool.output_schema,
+                    )
 
-            unicode_result = await client.call_tool(
-                "search",
-                {
-                    "workspace": canonical,
-                    "token": member.token,
-                    "query": "café",
-                    "channels": ["general"],
-                },
-            )
-            assert unicode_result.is_error is False
-            assert unicode_result.structured_content is not None
-            assert unicode_result.structured_content["records"] == [
-                searched.structured_content["records"][1]
-            ]
-            validate(
-                instance=unicode_result.structured_content,
-                schema=search_tool.output_schema,
-            )
+                    with phase("stdio.client.call_tool.search_empty"):
+                        empty_search = await client.call_tool(
+                            "search",
+                            {
+                                "workspace": canonical,
+                                "token": member.token,
+                                "query": "absentmodernstdio",
+                            },
+                        )
+                    assert empty_search.is_error is False
+                    assert empty_search.structured_content == {
+                        "empty": True,
+                        "guidance": [],
+                        "record_type": "search_hit",
+                        "records": [],
+                        "warnings": [],
+                        "workspace": canonical,
+                    }
+                    validate(
+                        instance=empty_search.structured_content,
+                        schema=search_tool.output_schema,
+                    )
+                    assert snapshot() == before_search
+                finally:
+                    with phase("stdio.observer.close"):
+                        observer.close()
 
-            empty_search = await client.call_tool(
-                "search",
-                {
-                    "workspace": canonical,
-                    "token": member.token,
-                    "query": "absentmodernstdio",
-                },
-            )
-            assert empty_search.is_error is False
-            assert empty_search.structured_content == {
-                "empty": True,
-                "guidance": [],
-                "record_type": "search_hit",
-                "records": [],
-                "warnings": [],
-                "workspace": canonical,
-            }
-            validate(
-                instance=empty_search.structured_content,
-                schema=search_tool.output_schema,
-            )
-            assert snapshot() == before_search
-            observer.close()
+                with phase("stdio.client.call_tool.detach_workspace"):
+                    detached = await client.call_tool(
+                        "detach_workspace",
+                        {"workspace": canonical},
+                    )
+                assert_complete(detached)
+                assert detached.is_error is False
+                with phase("stdio.client.listen.resumed"):
+                    async with client.listen(
+                        resource_subscriptions=[NOTIFICATIONS_URL]
+                    ) as resumed:
+                        with phase("stdio.client.call_tool.attach_workspace"):
+                            reattached = await client.call_tool(
+                                "attach_workspace",
+                                {
+                                    "workspace": str(workspace),
+                                    "token": member.token,
+                                },
+                            )
+                        assert_complete(reattached)
+                        with phase("stdio.client.listen.resumed.event"):
+                            resumed_event = await anext(resumed)
+                        assert isinstance(resumed_event, ResourceUpdated)
+                        assert resumed_event.uri == NOTIFICATIONS_URL
 
-            detached = await client.call_tool(
-                "detach_workspace",
-                {"workspace": canonical},
-            )
-            assert_complete(detached)
-            assert detached.is_error is False
-            async with client.listen(
-                resource_subscriptions=[NOTIFICATIONS_URL]
-            ) as resumed:
-                reattached = await client.call_tool(
-                    "attach_workspace",
-                    {
-                        "workspace": str(workspace),
-                        "token": member.token,
-                    },
-                )
-                assert_complete(reattached)
-                resumed_event = await anext(resumed)
-                assert isinstance(resumed_event, ResourceUpdated)
-                assert resumed_event.uri == NOTIFICATIONS_URL
+                with (
+                    phase("stdio.client.read_resource.missing"),
+                    pytest.raises(MCPError) as missing,
+                ):
+                    await client.read_resource("taut://notifications/missing")
+                assert missing.value.error.code == -32602
 
-            with pytest.raises(MCPError) as missing:
-                await client.read_resource("taut://notifications/missing")
-            assert missing.value.error.code == -32602
+                with phase("stdio.client.read_resource.current"):
+                    current = await client.read_resource(NOTIFICATIONS_URL)
+                assert_complete(current)
+                assert current.ttl_ms == 0
+                assert current.cache_scope == "private"
+                assert isinstance(current.contents[0], types.TextResourceContents)
+                current_payload = json.loads(current.contents[0].text)
+                assert current_payload["workspaces"][0]["workspace"] == canonical
 
-            current = await client.read_resource(NOTIFICATIONS_URL)
-            assert_complete(current)
-            assert current.ttl_ms == 0
-            assert current.cache_scope == "private"
-            assert isinstance(current.contents[0], types.TextResourceContents)
-            current_payload = json.loads(current.contents[0].text)
-            assert current_payload["workspaces"][0]["workspace"] == canonical
-
-    asyncio.run(scenario())
+    with phase("stdio.scenario"):
+        asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("mode", ["legacy", "auto"])

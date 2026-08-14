@@ -107,19 +107,25 @@ separate root tests retain that contract.
    successful `InitResult`, then keep the final file and inspector assertions.
    If fresh Windows does not deliver the exact callback, reclassify this as an
    application failure and stop before calling the test fixed.
-2. Build a red-capable MCP feedback loop in temporary
-   `.github/workflows/windows-mcp-aggregate-diagnostic.yml`, containing one
-   Windows 3.13 job and no producer, lint, coverage, artifact, or release jobs.
-   Its two exact commands run
+2. Build a red-capable MCP feedback loop by temporarily narrowing the already
+   default-branch-registered `.github/workflows/test-mcp-extension.yml` on the
+   diagnostic branch. GitHub does not register a new dispatch-only workflow
+   that exists only on a non-default branch. The temporary branch version
+   contains one Windows 3.13 job and no producer, lint, coverage, artifact, or
+   release jobs; it is restored exactly before landing. Its two exact commands run
    `test_windows_aggregate_diagnostic.py::test_exact_mcp_body_budget_lane` and
    `test_windows_aggregate_diagnostic.py::test_exact_mcp_body_phase_lane` with
-   `-n 0`; the workflow is `workflow_dispatch` only. A dedicated child process
+   `-n 0`; the branch workflow is `workflow_dispatch` only, and the second
+   command also fires the Windows process-tree cleanup contract test. A
+   dedicated child process
    calls each exact test body directly with a fresh temporary path, so the
    retained pytest `@timeout(15)` marker is not changed. The child acknowledges
    readiness after import/instrumentation and before test work. Every protocol
    record has unique body, iteration, operation, and sequence IDs.
 
-   The budget lane adds only acknowledged body-entered and terminal records.
+   The budget lane adds only acknowledged body-entered, MCP-grandchild PID
+   ownership, and terminal records. The PID control record exists solely so a
+   failed probe can verify process-tree cleanup; it is excluded from timing.
    Inner macro phases append child-local monotonic entered/returned/error times
    without IPC; SQLite wrappers are not installed. A body is evidence of
    aggregate pressure only if that one body is still active at its own
@@ -129,11 +135,15 @@ separate root tests retain that contract.
    per-body timing distribution; never use detailed ACK overhead to authorize
    a lifecycle change.
 
-   The separate phase lane installs transparent SQLite observers and publishes
-   synchronous acknowledged entered/returned/error records for every real
-   SQLite begin/commit/close plus macro phases covering every seed
+   The separate phase lane installs transparent SQLite observers in the
+   diagnostic driver and publishes synchronous acknowledged
+   entered/returned/error records for every driver-process SQLite
+   begin/commit/close plus macro phases covering every seed
    `init`/client construction/`join`/`say`/`close`, external observer
-   operation/close, and reactor or subprocess await in both exact nodes. This
+   operation/close, and reactor or subprocess await in both exact nodes. The
+   stdio server remains an unmodified grandchild: its await boundary and PID
+   ownership are observed, while its stdout remains exclusively MCP framing.
+   This
    lane may repeat fresh bodies to amplify a rare missing transition, but its
    elapsed time is location evidence only. In both lanes, assertion or product
    exceptions produce an acknowledged terminal error with traceback and are
@@ -234,6 +244,12 @@ separate root tests retain that contract.
   location evidence only. The protocol also fails immediately on assertion,
   product, EOF, exit, or transport errors and verifies diagnostic child plus
   MCP-grandchild cleanup. Re-review found no remaining implementation blocker.
+- Independent implementation review found and closed three pre-push defects:
+  branch-only workflow registration, untested aggregate acceptance, and an
+  exited-driver PID reuse window in forced cleanup. The diagnostic now narrows
+  the already registered MCP workflow, fires all four acceptance/rejection
+  cases, and excludes an exited driver from taskkill targets. Final re-review
+  found no remaining blocker before hosted dispatch.
 
 ## Execution Log
 
@@ -278,3 +294,11 @@ separate root tests retain that contract.
   sources and 1,270 claims; the plan index and `git diff --check` also passed.
   This closes the TUI slice. The plan remains active at the explicit upstream
   MCP stop gate.
+- The temporary exact-body driver passed both original targets and both probe
+  lanes locally. One-iteration budget timings were 0.27 seconds for tools and
+  0.83 seconds for stdio; the detailed lane observed 51/51 tool commits and
+  33/33 stdio-driver commits returning, plus exact MCP grandchild create/stop.
+  Predicate and cleanup fault tests passed; MCP Ruff and mypy are clean. The
+  canonical MCP workflow contract test is intentionally red only on this
+  disposable diagnostic branch because its registered workflow is temporarily
+  narrowed; exact restoration is required before any landing commit.
