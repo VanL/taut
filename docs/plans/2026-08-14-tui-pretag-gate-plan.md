@@ -5,7 +5,7 @@ Date: 2026-08-14
 Class: 4. This changes the exact-SHA workflow evidence required before remote
 release tags and publication.
 
-Status: active.
+Status: completed.
 
 ## Goal
 
@@ -76,3 +76,14 @@ leave every release tag untouched.
   event with a bounded fail-safe. It still asserts the exact message row,
   active conversation, and history anchor; no product timeout, parallelism, or
   assertion was weakened.
+- 2026-08-14: The completed release run proved all four required pre-tag
+  producers green at exact SHA `24dc2bc073d21adbdeaa24e4bbdc7192b84ea2a4`:
+  root `31831006077`, PostgreSQL `31831006039`, MCP `31831006047`, and TUI
+  `31831006061`. The release helper then created all five tags at that SHA.
+- 2026-08-14: All five tag gates completed successfully. Each GitHub Release is
+  public and immutable; every PyPI project has exactly its expected wheel and
+  sdist, all hashes match GitHub, and every file has an exact Sigstore
+  attestation. TUI run `31831944421` required a failed-job rerun after exposing
+  an independent PyPI observer consistency defect; that release-machinery bug
+  is corrected under the finalizer-consistency plan without weakening the TUI
+  gate.

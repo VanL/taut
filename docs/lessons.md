@@ -711,6 +711,13 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   callback and retain exact final-state assertions. The timeout remains only a
   deadlock fail-safe, not the success condition.
 
+- 2026-08-14: Remote-observation success is not transferable consistency
+  evidence across CI runners. A publisher can observe complete PyPI state while
+  a fresh finalizer briefly reaches a CDN node that still reports absence.
+  Every independent observer guarding a one-way transition must establish its
+  own bounded semantic convergence. Retry only exact pending states; malformed
+  responses, unexpected files, and digest mismatches remain immediately fatal.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

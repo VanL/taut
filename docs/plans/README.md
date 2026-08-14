@@ -51,7 +51,8 @@ directory. Run `bin/check-plan-status-index` after changing it.
 
 | Plan | Status | Exemplar | Note |
 |------|--------|----------|------|
-| `2026-08-14-summon-stream-close-race-plan.md` | active | no | Class 5 [SUM-7.1] lifecycle hardening after the release gate exposed a close-induced event-pump thread exception. |
+| `2026-08-14-pypi-finalizer-consistency-plan.md` | completed | no | Class 5 correction making each independent GitHub finalizer boundedly verify exact PyPI visibility before immutable publication. |
+| `2026-08-14-summon-stream-close-race-plan.md` | completed | no | Class 5 [SUM-7.1] lifecycle hardening after the release gate exposed a close-induced event-pump thread exception. |
 | `2026-08-14-taut-tui-display-sink-coverage-plan.md` | completed | no | Class 3 structural ownership refactor making TUI display widgets enforce terminal escaping and adding an explicit sink inventory plus real-PTY proof. |
 | `2026-08-14-taut-tui-action-route-contract-plan.md` | completed | no | Class 5 implementation of authoritative TUI route semantics with exhaustive 54-pair real-route and 32-action concrete-handler firing gates. |
 | `2026-08-14-review-findings-remediation-plan.md` | completed | no | Class 5+P remediation of the verified 0.9.0 review findings; implementation, local verification, independent review, and owner-authorized landing are complete. |
@@ -125,7 +126,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 | `2026-08-11-eventually-test-helper-adoption-plan.md` | completed | no | Class 5+P repository-only sync/async eventual-evidence helper; seven eligible loop migrations, one audited Summon retention, full local verification, and final independent review passed before owner-authorized close-out. |
 | `2026-08-11-ci-factor-and-release-order-plan.md` | completed | no | Completed at `f4830b0`: exact factor coverage, producer-first release ordering, and coordinated immutable 0.8.5 publication passed. |
 | `2026-08-12-extension-main-path-and-all-extra-plan.md` | completed | no | Class 5 command-extension contract, protocol-clean `taut mcp`, and `taut-chat[all]` convenience bundle; full verification and independent review passed before owner-authorized closeout. |
-| `2026-08-14-tui-pretag-gate-plan.md` | active | no | Class 4 extraction of TUI's retained matrix into independent exact-SHA pre-tag evidence for all five coordinated releases. |
+| `2026-08-14-tui-pretag-gate-plan.md` | completed | no | Class 4 extraction of TUI's retained matrix into independent exact-SHA pre-tag evidence for all five coordinated releases. |
 
 ## Retired Plans
 

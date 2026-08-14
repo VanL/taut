@@ -471,7 +471,7 @@ def test_finalize_checks_pypi_and_exact_assets_before_publishing(
     def verify_pypi(
         observed: object,
         *,
-        retry_delays: tuple[float, ...],
+        retry_delays: tuple[float, ...] = publication.PYPI_RETRY_DELAYS,
     ) -> None:
         calls.append(("VERIFY", "pypi", (observed, retry_delays)))
 
@@ -491,7 +491,7 @@ def test_finalize_checks_pypi_and_exact_assets_before_publishing(
     )
 
     assert calls == [
-        ("VERIFY", "pypi", (expected, ())),
+        ("VERIFY", "pypi", (expected, publication.PYPI_RETRY_DELAYS)),
         (
             "PATCH",
             "/repos/VanL/taut/releases/17",
@@ -635,18 +635,22 @@ def test_finalize_rerun_requires_public_immutable_release_and_complete_pypi(
 ) -> None:
     manifest, dist, digests = _release_files(tmp_path)
     expected = publication.read_publication(manifest, dist)
-    verified: list[object] = []
+    verified: list[tuple[object, tuple[float, ...]]] = []
     monkeypatch.setattr(publication, "resolve_tag_commit", lambda repo, tag: "a" * 40)
     monkeypatch.setattr(
         publication,
         "list_releases",
         lambda repo: (_release(digests, draft=False, immutable=True),),
     )
-    monkeypatch.setattr(
-        publication,
-        "verify_pypi",
-        lambda observed, **kwargs: verified.append(observed),
-    )
+
+    def verify_pypi(
+        observed: object,
+        *,
+        retry_delays: tuple[float, ...] = publication.PYPI_RETRY_DELAYS,
+    ) -> None:
+        verified.append((observed, retry_delays))
+
+    monkeypatch.setattr(publication, "verify_pypi", verify_pypi)
     monkeypatch.setattr(
         publication,
         "github_api_request",
@@ -659,7 +663,7 @@ def test_finalize_rerun_requires_public_immutable_release_and_complete_pypi(
         expected_sha="a" * 40,
         expected=expected,
     )
-    assert verified == [expected]
+    assert verified == [(expected, publication.PYPI_RETRY_DELAYS)]
 
 
 def test_wrong_tag_sha_and_duplicate_release_state_fail_closed(

@@ -586,7 +586,7 @@ def finalize_release(
                 f"Published GitHub Release for tag {tag} is not immutable"
             )
         require_exact_assets(release, expected)
-        verify_pypi(expected, retry_delays=())
+        verify_pypi(expected)
         return
     if release.get("draft") is not True:
         raise RuntimeError(f"GitHub Release for tag {tag} has invalid draft state")
@@ -597,7 +597,7 @@ def finalize_release(
         release=release,
         expected=expected,
     )
-    verify_pypi(expected, retry_delays=())
+    verify_pypi(expected)
 
     if release.get("draft") is False:
         if release.get("immutable") is not True:

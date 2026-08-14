@@ -263,10 +263,13 @@ SHA-256 digest is not yet visible. Extra assets, invalid or mismatched digests,
 and bound exhaustion remain fatal. Each retry searches only until the
 maintainer-visible release listing finds the known release id, which preserves
 draft visibility without scanning later pages after the match. The preceding
-PyPI job owns its bounded post-upload wait, so the finalizer performs one exact
-PyPI recheck before the draft transition. The workflow is resumable after a
-matching partial upload or after PyPI success, but it never rebuilds or reuses
-a mismatched version.
+PyPI job and the independent finalizer each run the same bounded exact PyPI
+convergence check before the draft transition because one runner's successful
+CDN observation does not linearize a later runner's view. Only absent or exact
+matching partial state is retried; mismatches and malformed or failed requests
+stay immediately fatal. The workflow is resumable after a matching partial
+upload or after PyPI success, but it never rebuilds or reuses a mismatched
+version.
 
 Core and Summon are one paired reactor release boundary. The single owner of
 that proof is `bin/build-and-check-release-wheels.py`: it builds fresh core

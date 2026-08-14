@@ -6,7 +6,7 @@ Class: 5. The fix revises normative [SUM-7.1] behavior and changes an
 asynchronous child-stream cleanup boundary after a release gate exposed an
 unhandled pump-thread exception.
 
-Status: active.
+Status: completed.
 
 Plan type: implementation with spec revision.
 
@@ -157,3 +157,9 @@ Any broad swallow or join-before-close proposal is blocking.
   caused by the regression test's thread-failure relay. Replaced the broad
   catch with `Future.result()` so thread failures reach the asserting thread
   without a suppression. The exact Ruff inventory and race test both pass.
+- 2026-08-14: The normal unskipped 0.9.0 release precheck passed the complete
+  Summon unit, process, strict live-harness, and local-LLM slices. Exact-SHA
+  producer run `31831006077` and Summon tag gate `31831941022` both completed
+  successfully at `24dc2bc073d21adbdeaa24e4bbdc7192b84ea2a4`; no pump-thread
+  warning recurred. The GitHub and PyPI Summon artifacts are exact, published,
+  hash-matched, and Sigstore-attested.

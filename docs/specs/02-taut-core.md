@@ -2571,9 +2571,12 @@ Workflow obligations:
   The finalizer boundedly retries only an expected asset whose uploaded state
   or SHA-256 digest is not yet visible from GitHub. An invalid or mismatched
   digest, an unexpected asset, or exhaustion of that bound fails closed. The
-  finalizer performs one exact PyPI recheck; the preceding top-level
-  publication job owns the bounded post-upload PyPI wait. The final response
-  must report an immutable release. A rerun accepts an
+  finalizer independently performs the same bounded exact PyPI convergence
+  check as the publisher job. A successful observation in one runner is not
+  transferable cache-consistency evidence for another runner. Only absent or
+  exact matching partial state is retried; malformed responses, unexpected
+  files, changed digests, and other request failures remain immediately fatal.
+  The final response must report an immutable release. A rerun accepts an
   already-public release only when its tag commit, exact assets, immutable
   state, and complete PyPI file set all match. Publication-state helpers never
   accept a token argument; workflow tokens arrive only through environment
