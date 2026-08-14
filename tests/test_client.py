@@ -13,6 +13,7 @@ from simplebroker import (
     dump_lines,
     open_broker,
     resolve_broker_target,
+    sbqueue,
 )
 from simplebroker.ext import IntegrityError
 
@@ -2792,6 +2793,28 @@ def test_client_default_queue_handles_are_transient(tmp_path: Path) -> None:
     assert first is not second
     assert first._persistent is False
     assert second._persistent is False
+
+
+def test_default_ephemeral_client_operation_releases_owned_runner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    van = client(tmp_path, "van")
+    van.join("general")
+    general = van.queue("general")
+    assert general._persistent is False
+    close_calls = 0
+    real_close = sbqueue.DBConnection.close
+
+    def observed_close(connection: Any) -> None:
+        nonlocal close_calls
+        real_close(connection)
+        close_calls += 1
+
+    monkeypatch.setattr(sbqueue.DBConnection, "close", observed_close)
+
+    assert isinstance(general.has_pending(), bool)
+    assert close_calls >= 1
 
 
 def test_persistent_client_reuses_queue_handles_and_closes_them(

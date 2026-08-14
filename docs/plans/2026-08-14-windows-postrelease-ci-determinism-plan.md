@@ -107,19 +107,26 @@ separate root tests retain that contract.
    successful `InitResult`, then keep the final file and inspector assertions.
    If fresh Windows does not deliver the exact callback, reclassify this as an
    application failure and stop before calling the test fixed.
-2. Build a red-capable MCP feedback loop in temporary
-   `.github/workflows/windows-mcp-aggregate-diagnostic.yml`, containing one
-   Windows 3.13 job and no producer, lint, coverage, artifact, or release jobs.
-   Its two exact commands run
+2. Build a red-capable MCP feedback loop by temporarily narrowing the already
+   default-branch-registered `.github/workflows/test-mcp-extension.yml` on the
+   diagnostic branch. GitHub does not register a new dispatch-only workflow
+   that exists only on a non-default branch. The temporary branch version
+   contains one Windows 3.13 job and no producer, lint, coverage, artifact, or
+   release jobs; it is restored exactly before landing. Its two exact commands
+   run
    `test_windows_aggregate_diagnostic.py::test_exact_mcp_body_budget_lane` and
    `test_windows_aggregate_diagnostic.py::test_exact_mcp_body_phase_lane` with
-   `-n 0`; the workflow is `workflow_dispatch` only. A dedicated child process
+   `-n 0`; the branch workflow is `workflow_dispatch` only, and the second
+   command also fires the Windows process-tree cleanup contract test. A
+   dedicated child process
    calls each exact test body directly with a fresh temporary path, so the
    retained pytest `@timeout(15)` marker is not changed. The child acknowledges
    readiness after import/instrumentation and before test work. Every protocol
    record has unique body, iteration, operation, and sequence IDs.
 
-   The budget lane adds only acknowledged body-entered and terminal records.
+   The budget lane adds only acknowledged body-entered, MCP-grandchild PID
+   ownership, and terminal records. The PID control record exists solely so a
+   failed probe can verify process-tree cleanup; it is excluded from timing.
    Inner macro phases append child-local monotonic entered/returned/error times
    without IPC; SQLite wrappers are not installed. A body is evidence of
    aggregate pressure only if that one body is still active at its own
@@ -129,11 +136,15 @@ separate root tests retain that contract.
    per-body timing distribution; never use detailed ACK overhead to authorize
    a lifecycle change.
 
-   The separate phase lane installs transparent SQLite observers and publishes
-   synchronous acknowledged entered/returned/error records for every real
-   SQLite begin/commit/close plus macro phases covering every seed
+   The separate phase lane installs transparent SQLite observers in the
+   diagnostic driver and publishes synchronous acknowledged
+   entered/returned/error records for every driver-process SQLite
+   begin/commit/close plus macro phases covering every seed
    `init`/client construction/`join`/`say`/`close`, external observer
-   operation/close, and reactor or subprocess await in both exact nodes. This
+   operation/close, and reactor or subprocess await in both exact nodes. The
+   stdio server remains an unmodified grandchild: its await boundary and PID
+   ownership are observed, while its stdout remains exclusively MCP framing.
+   This
    lane may repeat fresh bodies to amplify a rare missing transition, but its
    elapsed time is location evidence only. In both lanes, assertion or product
    exceptions produce an acknowledged terminal error with traceback and are
@@ -163,17 +174,22 @@ separate root tests retain that contract.
 5. Run full TUI and MCP suites, repository-wide Ruff, all five mypy lanes, doc
    checks, and diff checks. Obtain independent implementation review, commit,
    push, and require fresh Windows success without rerunning a failed attempt.
-6. If exact phase evidence shows continuing aggregate progress rather than a
-   missing transition, optimize only test-owned database setup. This test-only
+6. If exact phase evidence shows no missing transition and the minimal lane
+   places a completed body near the retained cap primarily through unrelated
+   seed lifecycle work, optimize only test-owned database setup. The firing
+   authorization is either one body with post-15 inner progress, or a body
+   within 2.5 seconds of the cap where measured seed operations consume more
+   than three quarters of its duration and the detailed lane returns every
+   matching transition. This test-only
    change has no deterministic local red and changes no product behavior, so
    its explicit red-green substitute is: unchanged exact result/state
    assertions, diagnostic pre/post counts of ephemeral runner creation and
    terminal cycles removed, a repeatable local timing sample, and one fresh
    changed-SHA hosted Windows run. The two failed MCP cases do not claim
-   `TautClient`'s default ephemeral lifecycle. In the stdio node, convert seed
-   `selected`/`other` and the parent-process `observer` to public
-   `persistent=True`; the MCP server is a separate process, so the observer
-   remains process-independent. In the tools node, convert only seed
+   `TautClient`'s default ephemeral lifecycle. In the stdio node, convert only
+   seed `selected`/`other` to public `persistent=True`; keep the parent-process
+   observer ephemeral because its independent reads are part of the assertion.
+   In the tools node, convert only seed
    `selected`/`other`/`third`; keep `observer`, `other_observer`, and
    `third_observer` ephemeral because they intentionally prove operations
    outside the in-process reactor's shared session. Put every persistent client
@@ -194,9 +210,9 @@ separate root tests retain that contract.
 - Stop if the exact TUI callback is absent on fresh Windows or production needs
   changes; reclassify the provisional test-race diagnosis as an app failure.
 - Stop if the exact-body loop shows neither a missing entered/returned
-  transition nor acknowledged aggregate progress beyond 15 seconds. A terminal
-  stack sampled at 15 seconds or a nearby synthetic lock failure is not a
-  substitute for either discriminator.
+  transition nor the firing setup-pressure predicate in slice 6. A terminal
+  stack sampled at 15 seconds, total batch duration, or a nearby synthetic lock
+  failure is not a substitute for either discriminator.
 - Stop before changing SimpleBroker, SQLite pragmas, Taut public semantics,
   reactor command ordering, or dependency floors; each requires an explicit
   ownership decision and likely a spec delta.
@@ -234,6 +250,17 @@ separate root tests retain that contract.
   location evidence only. The protocol also fails immediately on assertion,
   product, EOF, exit, or transport errors and verifies diagnostic child plus
   MCP-grandchild cleanup. Re-review found no remaining implementation blocker.
+- Independent implementation review found and closed three pre-push defects:
+  branch-only workflow registration, untested aggregate acceptance, and an
+  exited-driver PID reuse window in forced cleanup. The diagnostic now narrows
+  the already registered MCP workflow, fires all four acceptance/rejection
+  cases, and excludes an exited driver from taskkill targets. Final re-review
+  found no remaining blocker before hosted dispatch.
+- Independent review accepted the narrower setup-pressure predicate after the
+  changed-SHA evidence: it authorizes only a test-owned headroom optimization,
+  not a timeout-only classification or production-race claim. External
+  observers, exact assertions, default semantics, and the 15-second valve
+  remain unchanged.
 
 ## Execution Log
 
@@ -278,3 +305,74 @@ separate root tests retain that contract.
   sources and 1,270 claims; the plan index and `git diff --check` also passed.
   This closes the TUI slice. The plan remains active at the explicit upstream
   MCP stop gate.
+- The temporary exact-body driver passed both original targets and both probe
+  lanes locally. One-iteration budget timings were 0.27 seconds for tools and
+  0.83 seconds for stdio; the detailed lane observed 51/51 tool commits and
+  33/33 stdio-driver commits returning, plus exact MCP grandchild create/stop.
+  Predicate and cleanup fault tests passed; MCP Ruff and mypy are clean. The
+  canonical MCP workflow contract test is intentionally red only on this
+  disposable diagnostic branch because its registered workflow is temporarily
+  narrowed; exact restoration is required before any landing commit.
+- Exact-SHA hosted run `31843304093`, job `94904571578`, passed both Windows
+  3.13 lanes at `bdb8a38a7a920964e3d69cbe12f3eb8121b425f2`. The detailed lane
+  returned all 255 tools commits / 545 closes, all 165 stdio-driver commits /
+  420 closes, and all five MCP create/stop pairs; its slowest stdio body was
+  10.31 seconds. The budget step passed, but GitHub dropped its one oversized
+  JSON output line, so that green is not accepted as classification evidence.
+  The output was split into bounded summary and per-body records with a firing
+  serialization test; a fresh changed-SHA dispatch is required.
+- Changed-SHA run `31843761841`, job `94905920632`, passed at `8a68c2a`. All 20
+  tools and 20 stdio minimal bodies completed with no missing transition. Tools
+  ranged from 2.07 to 12.78 seconds; the 12.78-second body spent 4.92, 2.91,
+  and 2.85 seconds in its three seed joins before the MCP scenario. Another
+  body spent 4.77 seconds in seed `say`. Stdio ranged from 3.25 to 7.66 seconds.
+  No body crossed 15 seconds, so the strict post-threshold predicate remains
+  false; however, the near-cap tools body spent over 83 percent of its duration
+  in unrelated seed joins alone, while the detailed lane returned every
+  transition. This fires the narrower setup-pressure predicate above. It does
+  not exclude or claim to fix a rarer SQLite race.
+- The final test-only slice makes only the five seed clients persistent and
+  closes them through `ExitStack`; all external observers remain ephemeral.
+  Twenty local exact bodies improved from 0.239 to 0.166 seconds mean for tools
+  (30.5 percent) and from 0.754 to 0.682 seconds for stdio (9.6 percent), with
+  every original assertion retained. A transparent real-operation count probe,
+  sampled only after each complete test body and every `ExitStack` close,
+  confirms that persistence removes rather than defers setup churn. The tools
+  body fell from 109 to 32 `SQLiteRunner` constructions and tracked-connection
+  closes, while runner-close calls fell from 195 to 32 and `DBConnection.close`
+  calls from 224 to 84; its 51 commits were unchanged. The stdio driver fell
+  from 84 to 15 runner constructions, runner closes, and tracked-connection
+  closes, while `DBConnection.close` calls fell from 168 to 38; its 33 commits
+  were unchanged. The wrappers delegated to the real methods, and both exact
+  bodies retained every assertion. A separate real operation test proves a
+  default ephemeral client still completes SimpleBroker connection cleanup.
+- Changed-SHA Windows diagnostic run `31844584201`, job `94908313924`, passed
+  at `f056efb2828d3f35ffe5b7ec6b82c74201d9fdd5`. All 20 tools and 20 stdio
+  minimal bodies completed, all detailed entered/returned pairs matched, and
+  all five MCP subprocesses were reaped. Against run `31843761841`, tools mean
+  duration fell from 3.610 to 1.597 seconds (55.8 percent) and maximum duration
+  from 12.781 to 2.331 seconds (81.8 percent); stdio mean fell from 3.955 to
+  2.994 seconds (24.3 percent) and maximum from 7.660 to 3.244 seconds (57.7
+  percent). Across five detailed tools bodies, commits stayed at 255 and begins
+  at 260 while tracked SQLite closes fell from 545 to 160 (70.6 percent).
+  Across five stdio-driver bodies, commits and begins stayed at 165 while
+  closes fell from 420 to 75 (82.1 percent). This is causal hosted evidence
+  that the test-only ownership change removes irrelevant terminal churn while
+  preserving the same logical database work. It still does not exclude a rare
+  lower-layer SQLite failure. A fresh canonical, uninstrumented MCP matrix at
+  the landing SHA remains required.
+- The release-owned local gates are green on the landing tree: root broad
+  `1970 passed, 1 skipped`; installed-wheel `28 passed`; PostgreSQL shared
+  `257 passed` and extension `37 passed`; MCP PostgreSQL conformance `7 passed`;
+  Summon unit `303 passed`, process `244 passed`, and live harness `8 passed`;
+  TUI `296 passed`; MCP non-PG `265 passed, 7 deselected`. The local-model lane
+  reported its explicit environment skip because this machine has no configured
+  Ollama model, so it is not counted as live-model proof. The first root run
+  also exposed a test-isolation defect: an all-published release-script unit
+  test read the ambient feature branch even though branch policy was outside
+  its subject. Pinning that input to `main` made the named non-mutating behavior
+  portable without changing production. Repository-wide Ruff, format, and
+  suppression reconciliation pass across 391 files. All five release-owned
+  mypy lanes pass across 132 root, 12 PostgreSQL, 40 Summon, 21 MCP, and 31 TUI
+  source files. Documentation paths pass for 63 sources and 1,271 claims; the
+  plan status index and `git diff --check` pass.

@@ -5,7 +5,7 @@ import hashlib
 import json
 import threading
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any, cast
 
@@ -2314,19 +2314,20 @@ def test_explicit_dm_read_log_and_directory_use_public_core_contract(
     workspace.mkdir()
     db = workspace / ".taut.db"
     TautClient.init(db_path=db)
-    selected = TautClient(db_path=db, as_name="selected")
-    selected.join("general")
-    member = selected.last_created_member
-    assert member is not None and member.token is not None
-    selected_id = member.member_id
-    other = TautClient(db_path=db, as_name="other")
-    other.join("general")
-    third = TautClient(db_path=db, as_name="third")
-    third.join("general")
-    sent = other.say("@selected", "private history")
-    selected.close()
-    other.close()
-    third.close()
+    with ExitStack() as seed_clients:
+        selected = TautClient(db_path=db, as_name="selected", persistent=True)
+        seed_clients.callback(selected.close)
+        selected.join("general")
+        member = selected.last_created_member
+        assert member is not None and member.token is not None
+        selected_id = member.member_id
+        other = TautClient(db_path=db, as_name="other", persistent=True)
+        seed_clients.callback(other.close)
+        other.join("general")
+        third = TautClient(db_path=db, as_name="third", persistent=True)
+        seed_clients.callback(third.close)
+        third.join("general")
+        sent = other.say("@selected", "private history")
 
     async def scenario() -> None:
         reactor = ProcessReactor(asyncio.get_running_loop())

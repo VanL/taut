@@ -3472,6 +3472,7 @@ def test_all_published_explicit_batch_is_a_non_mutating_noop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     release = _load_release_module()
+    monkeypatch.setattr(release, "current_branch", lambda: "main")
     monkeypatch.setattr(release, "is_dirty_worktree", lambda: False)
     monkeypatch.setattr(release, "read_manifest_version", lambda _target: "0.6.0")
     monkeypatch.setattr(

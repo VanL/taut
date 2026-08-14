@@ -718,6 +718,15 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   own bounded semantic convergence. Retry only exact pending states; malformed
   responses, unexpected files, and digest mismatches remain immediately fatal.
 
+- 2026-08-14: A timeout stack samples the operation that happened to own the
+  thread at the deadline; it does not prove that operation is stuck. In a broad
+  integration test, measure each body and each entered/returned phase before
+  assigning production ownership. If unrelated fixture setup consumes most of
+  the deadlock budget, give that setup a bounded public lifecycle suited to the
+  test and move the default-lifecycle contract to its own real-operation test.
+  Keep external observers and all product assertions unchanged, and do not
+  claim that the refactor excludes a rarer production race.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent
