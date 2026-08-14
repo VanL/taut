@@ -181,7 +181,10 @@ async def _workspace_initialize(context: HandlerContext) -> None:
     assert not context.db_path.exists()
     await _select_palette(context, ActionId.WORKSPACE_INITIALIZE)
     await _eventually(context.pilot, context.db_path.is_file)
-    assert "Workspace created" in _inspector(context)
+    await _eventually(
+        context.pilot,
+        lambda: "Workspace created" in _inspector(context),
+    )
 
 
 async def _identity_rejoin(context: HandlerContext) -> None:

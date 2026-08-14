@@ -870,12 +870,12 @@ def test_navigation_single_click_selects_while_enter_and_double_click_activate(
         app = TautApp(db_path=str(db_path), as_name="alice", auth_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             navigation = app.query_one("#navigation-list", TautOptionList)
-            for _ in range(100):
-                await pilot.pause(0.01)
-                if navigation.option_count:
-                    break
+            await _pause_until(
+                pilot,
+                lambda: app._navigation_targets[:1] == ["general"],
+            )
             assert await pilot.click("#navigation-list", offset=(1, 0)) is True
-            await pilot.pause(0.1)
+            await _pause_until(pilot, lambda: navigation.highlighted == 0)
             assert navigation.highlighted == 0
             assert app.visual_state.active_conversation is None
 
@@ -889,10 +889,10 @@ def test_navigation_single_click_selects_while_enter_and_double_click_activate(
         second = TautApp(db_path=str(db_path), as_name="alice", auth_token=None)
         async with second.run_test(size=(100, 34)) as pilot:
             navigation = second.query_one("#navigation-list", TautOptionList)
-            for _ in range(100):
-                await pilot.pause(0.01)
-                if navigation.option_count:
-                    break
+            await _pause_until(
+                pilot,
+                lambda: second._navigation_targets[:1] == ["general"],
+            )
             assert await pilot.click("#navigation-list", offset=(1, 0), times=2) is True
             for _ in range(100):
                 await pilot.pause(0.01)
@@ -954,10 +954,13 @@ def test_direct_message_header_and_composer_use_actor_scoped_label(
         app = TautApp(db_path=str(db_path), as_name="alice", auth_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             navigation = app.query_one("#navigation-list", TautOptionList)
-            for _ in range(100):
-                await pilot.pause(0.01)
-                if navigation.option_count:
-                    break
+            await _pause_until(
+                pilot,
+                lambda: any(
+                    isinstance(target, str) and target != "general"
+                    for target in app._navigation_targets
+                ),
+            )
             dm_index = next(
                 index
                 for index, target in enumerate(app._navigation_targets)

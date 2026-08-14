@@ -40,3 +40,9 @@ leave every release tag untouched.
   observer was still waiting. No tag had been created. Added failing tests for
   the independent TUI workflow and its required presence in the local and tag
   observers.
+- 2026-08-14: The first new TUI producer run caught three Ubuntu 3.11 test
+  races before tagging. The tests waited for a placeholder row, file creation,
+  or any navigation option rather than their actual rendered outcome. Replaced
+  those weak waits with semantic conditions for the inspector result, channel
+  target, pointer selection, and direct-message target. No product timeout was
+  changed and no failed run was rerun.
