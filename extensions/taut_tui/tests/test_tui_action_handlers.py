@@ -16,7 +16,7 @@ from textual.message import Message as TextualMessage
 from textual.widgets import Button, Input, OptionList, Select
 
 from taut import EmptyResultError, NotFoundError
-from taut.client import TautClient
+from taut.client import InitResult, TautClient
 from taut_tui.actions import ActionContext, ActionId, ActionRoute, action_spec
 from taut_tui.app import TautApp
 from taut_tui.models import InspectorKind, InteractionMode, LogicalSurface
@@ -237,12 +237,36 @@ async def _accept_confirmation(context: HandlerContext, exact_target: str) -> No
 
 async def _workspace_initialize(context: HandlerContext) -> None:
     assert not context.db_path.exists()
-    await _select_palette(context, ActionId.WORKSPACE_INITIALIZE)
-    await _eventually(context.pilot, context.db_path.is_file)
-    await _eventually(
-        context.pilot,
-        lambda: "Workspace created" in _inspector(context),
-    )
+    action_completed = asyncio.Event()
+    observed: list[Future[Any]] = []
+    apply_action_result = context.app._apply_action_result
+
+    def observe_initialize(
+        future: Future[Any],
+        *,
+        refresh_navigation: bool,
+    ) -> None:
+        try:
+            apply_action_result(
+                future,
+                refresh_navigation=refresh_navigation,
+            )
+        finally:
+            observed.append(future)
+            action_completed.set()
+
+    with context.monkeypatch.context() as patch:
+        patch.setattr(context.app, "_apply_action_result", observe_initialize)
+        await _select_palette(context, ActionId.WORKSPACE_INITIALIZE)
+        await asyncio.wait_for(action_completed.wait(), timeout=5)
+
+    assert len(observed) == 1
+    future = observed[0]
+    assert not future.cancelled()
+    assert future.exception() is None
+    assert future.result() == InitResult(db=str(context.db_path), created=True)
+    assert context.db_path.is_file()
+    assert "Workspace created" in _inspector(context)
 
 
 async def _identity_rejoin(context: HandlerContext) -> None:

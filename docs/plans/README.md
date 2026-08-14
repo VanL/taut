@@ -51,6 +51,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 
 | Plan | Status | Exemplar | Note |
 |------|--------|----------|------|
+| `2026-08-14-windows-postrelease-ci-determinism-plan.md` | active | no | Class 5 diagnosis and event-based correction for independent Windows TUI callback and MCP SQLite/reactor failures. |
 | `2026-08-14-pypi-finalizer-consistency-plan.md` | completed | no | Class 5 correction making each independent GitHub finalizer boundedly verify exact PyPI visibility before immutable publication. |
 | `2026-08-14-summon-stream-close-race-plan.md` | completed | no | Class 5 [SUM-7.1] lifecycle hardening after the release gate exposed a close-induced event-pump thread exception. |
 | `2026-08-14-taut-tui-display-sink-coverage-plan.md` | completed | no | Class 3 structural ownership refactor making TUI display widgets enforce terminal escaping and adding an explicit sink inventory plus real-PTY proof. |

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import sys
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -2310,6 +2311,10 @@ def test_bare_read_forwards_per_thread_limit_and_includes_direct_messages(
 def test_explicit_dm_read_log_and_directory_use_public_core_contract(
     tmp_path: Path,
 ) -> None:
+    def diagnostic_phase(name: str) -> None:
+        print(f"[DEBUG-mcp-windows-dm] {name}", file=sys.stderr, flush=True)
+
+    diagnostic_phase("setup:start")
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     db = workspace / ".taut.db"
@@ -2327,11 +2332,15 @@ def test_explicit_dm_read_log_and_directory_use_public_core_contract(
     selected.close()
     other.close()
     third.close()
+    diagnostic_phase("setup:complete")
 
     async def scenario() -> None:
         reactor = ProcessReactor(asyncio.get_running_loop())
+        diagnostic_phase("observer:create:start")
         observer = TautClient(db_path=db)
+        diagnostic_phase("observer:create:complete")
         try:
+            diagnostic_phase("reactor:attach:start")
             canonical = str(
                 (
                     await reactor.attach_workspace(
@@ -2340,24 +2349,33 @@ def test_explicit_dm_read_log_and_directory_use_public_core_contract(
                     )
                 )["workspace"]
             )
+            diagnostic_phase("reactor:attach:complete")
+            diagnostic_phase("observer:get-member-before-log:start")
             before_log = observer._state.get_member(selected_id)
+            diagnostic_phase("observer:get-member-before-log:complete")
             assert before_log is not None
 
+            diagnostic_phase("reactor:log:start")
             history = await reactor._execute_ready_tool(
                 canonical,
                 "log",
                 {"thread": "@other", "since": None, "limit": 100},
             )
+            diagnostic_phase("reactor:log:complete")
             _assert_result(history, record_type="message", workspace=canonical)
             assert history["records"][0]["thread"] == sent.thread
             assert history["records"][0]["text"] == "private history"
+            diagnostic_phase("observer:get-member-after-log:start")
             assert observer._state.get_member(selected_id) == before_log
+            diagnostic_phase("observer:get-member-after-log:complete")
 
+            diagnostic_phase("reactor:read:start")
             unread = await reactor._execute_ready_tool(
                 canonical,
                 "read",
                 {"thread": sent.thread, "limit": 100},
             )
+            diagnostic_phase("reactor:read:complete")
             _assert_result(
                 unread,
                 record_type="message",
@@ -2366,6 +2384,7 @@ def test_explicit_dm_read_log_and_directory_use_public_core_contract(
             )
             assert unread["records"][0]["thread"] == sent.thread
 
+            diagnostic_phase("reactor:say:start")
             stable_write = await reactor._execute_ready_tool(
                 canonical,
                 "say",
@@ -2374,6 +2393,7 @@ def test_explicit_dm_read_log_and_directory_use_public_core_contract(
                     "text": "stable reply @other and private @third",
                 },
             )
+            diagnostic_phase("reactor:say:complete")
             _assert_result(
                 stable_write,
                 record_type="message",
@@ -2381,48 +2401,70 @@ def test_explicit_dm_read_log_and_directory_use_public_core_contract(
             )
             assert stable_write["records"][0]["thread"] == sent.thread
             assert len(stable_write["records"][0]["ts"]) == 19
+            diagnostic_phase("other-observer:create:start")
             other_observer = TautClient(db_path=db, as_name="other")
+            diagnostic_phase("other-observer:create:complete")
             try:
+                diagnostic_phase("other-observer:inbox:start")
                 assert [
                     (item.type, item.thread, item.message_ts)
                     for item in other_observer.inbox()
                 ] == [("mention", sent.thread, int(stable_write["records"][0]["ts"]))]
+                diagnostic_phase("other-observer:inbox:complete")
             finally:
+                diagnostic_phase("other-observer:close:start")
                 other_observer.close()
+                diagnostic_phase("other-observer:close:complete")
+            diagnostic_phase("third-observer:create:start")
             third_observer = TautClient(db_path=db, as_name="third")
+            diagnostic_phase("third-observer:create:complete")
             try:
+                diagnostic_phase("third-observer:inbox:start")
                 with pytest.raises(EmptyResultError):
                     third_observer.inbox()
+                diagnostic_phase("third-observer:inbox:complete")
             finally:
+                diagnostic_phase("third-observer:close:start")
                 third_observer.close()
+                diagnostic_phase("third-observer:close:complete")
 
+            diagnostic_phase("reactor:list:start")
             directory = await reactor._execute_ready_tool(
                 canonical,
                 "list",
                 {"dms": True},
             )
+            diagnostic_phase("reactor:list:complete")
             _assert_result(directory, record_type="thread", workspace=canonical)
+            diagnostic_phase("observer:list-threads:start")
+            observed_members = list(
+                next(
+                    item
+                    for item in observer.list_threads(all_threads=True)
+                    if item.name == sent.thread
+                ).members
+            )
+            diagnostic_phase("observer:list-threads:complete")
             assert directory["records"] == [
                 {
                     "kind": "dm",
                     "last_ts": stable_write["records"][0]["ts"],
-                    "members": list(
-                        next(
-                            item
-                            for item in observer.list_threads(all_threads=True)
-                            if item.name == sent.thread
-                        ).members
-                    ),
+                    "members": observed_members,
                     "parent": None,
                     "thread": sent.thread,
                     "unread": False,
                 }
             ]
         finally:
+            diagnostic_phase("observer:close:start")
             observer.close()
+            diagnostic_phase("observer:close:complete")
+            diagnostic_phase("reactor:close:start")
             await reactor.aclose()
+            diagnostic_phase("reactor:close:complete")
 
     asyncio.run(scenario())
+    diagnostic_phase("test:complete")
 
 
 @pytest.mark.sqlite_only
