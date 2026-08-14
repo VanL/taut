@@ -2224,22 +2224,34 @@ def test_orientation_control_failure_remains_primary_and_tears_down(
     driver._control_error = control_failure
     driver._control_failed.set()
 
-    class FailingHandle:
+    class FailingHandle(_CountingHandle):
+        def __init__(self) -> None:
+            super().__init__()
+            self.closed = threading.Event()
+
         def inject(self, _text: str) -> None:
             raise AdapterError("orientation write failed")
 
+        def close(self) -> None:
+            super().close()
+            self.closed.set()
+
+    handle = FailingHandle()
+    generation = driver._activate_generation()
+    pump_observed_close: list[bool] = []
+
+    def run_pump() -> None:
+        pump_observed_close.append(handle.closed.wait(timeout=1.0))
+        driver._finish_generation(generation)
+
+    pump = threading.Thread(target=run_pump)
+    pump.start()
     running = types.SimpleNamespace(
-        generation=object(),
-        handle=FailingHandle(),
-        pump=object(),
+        generation=generation,
+        handle=handle,
+        pump=pump,
     )
-    teardowns: list[tuple[Any, Any, Any]] = []
     monkeypatch.setattr(driver, "_settle_for_orientation", lambda _handle: None)
-    monkeypatch.setattr(
-        driver,
-        "_teardown_generation",
-        lambda generation, handle, pump: teardowns.append((generation, handle, pump)),
-    )
 
     with pytest.raises(DriverError, match="control loop failed") as caught:
         driver._orient_running_generation(
@@ -2249,7 +2261,10 @@ def test_orientation_control_failure_remains_primary_and_tears_down(
         )
 
     assert caught.value.__cause__ is control_failure
-    assert teardowns == [(running.generation, running.handle, running.pump)]
+    assert handle.close_calls == 1
+    assert pump_observed_close == [True]
+    assert not pump.is_alive()
+    assert driver._active_generation is None
 
 
 def test_stop_before_handle_publication_requests_close_on_published_handle(

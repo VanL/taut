@@ -642,11 +642,15 @@ serialized nonblocking raw writes and a lifecycle epoch: reusable `interrupt()`
 cancels active and queued old-epoch writes while leaving the next epoch open;
 `request_close()` advances the epoch and permanently retires delivery before
 signaling. The writer uses a duplicated fd so cancellation checks never hold
-the lifecycle lock across I/O. Runtimes without public nonblocking pipe controls
-retain the deterministic buffered fallback and do not satisfy the real
-pipe-full capability probe. Claude stream mode declares no bootstrap session
-event because the CLI emits nothing before its first injected turn; the driver
-therefore does not spend the generic session-event wait on that adapter.
+the lifecycle lock across I/O. Cancellation can follow a successfully written
+prefix, leaving a torn protocol line that a later reusable inject appends to;
+that bounded corruption belongs to the interrupted provider turn and is why
+callers must not treat a canceled inject as delivered. Runtimes without public
+nonblocking pipe controls retain the deterministic buffered fallback and do
+not satisfy the real pipe-full capability probe. Claude stream mode declares
+no bootstrap session event because the CLI emits nothing before its first
+injected turn; the driver therefore does not spend the generic session-event
+wait on that adapter.
 
 The extension CLI keeps one documented argparse inventory for `run`, `stop`,
 and `status`. Root help owns exit classes; each subcommand owns its syntax and

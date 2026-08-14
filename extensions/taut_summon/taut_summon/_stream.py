@@ -107,9 +107,9 @@ class StreamJsonHandle(ABC):
         line = json.dumps(payload, separators=(",", ":")) + "\n"
         # Serialize injectors against each other so concurrent injects can
         # never interleave partial protocol lines. Deliberately NOT the
-        # lifecycle lock: a blocked inject must stay interruptible —
-        # interrupt()/close() kill the child, which breaks the pipe and
-        # unblocks the writer ([SUM-7.1]).
+        # lifecycle lock: a blocked inject must stay interruptible. The write
+        # epoch publishes cancellation without waiting for the pipe or child
+        # to make progress ([SUM-7.1]).
         with self._inject_lock:
             # A caller may have entered inject while another injector owned
             # the serialization gate.  Recheck after the wait so close's

@@ -1178,20 +1178,63 @@ def test_deletion_refresh_preserves_open_reply_surface(
     asyncio.run(exercise())
 
 
-def test_superseding_conversation_intent_clears_search_operation_state() -> None:
+def test_superseding_navigation_clears_and_rejects_stale_search(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut.client import Message
+    from taut_tui.actions import ActionId
     from taut_tui.app import TautApp
+    from taut_tui.widgets import TautOptionList
+
+    db_path = tmp_path / "superseded-search.db"
+    TautClient.init(db_path=db_path)
+    alice = TautClient(db_path=db_path, as_name="alice")
+    alice.join("general")
+    alice.join("random")
+    alice.say("general", "needle from the old search")
+    hit = alice.search("needle")[0]
+    context: list[Message] = alice.history_around("general", str(hit.ts))
+    pending: Future[list[Message]] = Future()
 
     async def exercise() -> None:
-        app = TautApp(db_path=None, as_name=None, auth_token=None)
-        async with app.run_test(size=(100, 34)):
-            app._operation_state = "searching"
-            prior = app._conversation_intent
+        app = TautApp(db_path=str(db_path), as_name="alice", auth_token=None)
+        async with app.run_test(size=(100, 34)) as pilot:
+            assert app._domain is not None
+            monkeypatch.setattr(
+                app._domain,
+                "open_search_result",
+                lambda _hit: pending,
+            )
+            app._selected_search_hit = hit
+            app._dispatch_tui_action(ActionId.SEARCH_OPEN_RESULT)
+            await pilot.pause()
+            assert app._operation_state == "searching"
 
-            assert app._advance_conversation_intent() == prior + 1
+            navigation = app.query_one("#navigation-list", TautOptionList)
+            await _pause_until(
+                pilot,
+                lambda: _has_option_containing(navigation, "#random"),
+            )
+            navigation.highlighted = _option_index_containing(navigation, "#random")
+            navigation.focus()
+            await pilot.press("enter")
+            await _pause_until(
+                pilot,
+                lambda: app.visual_state.active_conversation == "random",
+            )
             assert app._operation_state == "idle"
             assert "searching" not in str(app.query_one("#status-line").render())
 
-    asyncio.run(exercise())
+            pending.set_result(context)
+            await pilot.pause()
+            assert app.visual_state.active_conversation == "random"
+            assert app._operation_state == "idle"
+
+    try:
+        asyncio.run(exercise())
+    finally:
+        alice.close()
 
 
 def test_current_watcher_degradation_is_visible_in_the_status_line() -> None:
