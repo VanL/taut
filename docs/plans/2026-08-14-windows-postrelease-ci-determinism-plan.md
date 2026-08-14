@@ -173,17 +173,22 @@ separate root tests retain that contract.
 5. Run full TUI and MCP suites, repository-wide Ruff, all five mypy lanes, doc
    checks, and diff checks. Obtain independent implementation review, commit,
    push, and require fresh Windows success without rerunning a failed attempt.
-6. If exact phase evidence shows continuing aggregate progress rather than a
-   missing transition, optimize only test-owned database setup. This test-only
+6. If exact phase evidence shows no missing transition and the minimal lane
+   places a completed body near the retained cap primarily through unrelated
+   seed lifecycle work, optimize only test-owned database setup. The firing
+   authorization is either one body with post-15 inner progress, or a body
+   within 2.5 seconds of the cap where measured seed operations consume more
+   than three quarters of its duration and the detailed lane returns every
+   matching transition. This test-only
    change has no deterministic local red and changes no product behavior, so
    its explicit red-green substitute is: unchanged exact result/state
    assertions, diagnostic pre/post counts of ephemeral runner creation and
    terminal cycles removed, a repeatable local timing sample, and one fresh
    changed-SHA hosted Windows run. The two failed MCP cases do not claim
-   `TautClient`'s default ephemeral lifecycle. In the stdio node, convert seed
-   `selected`/`other` and the parent-process `observer` to public
-   `persistent=True`; the MCP server is a separate process, so the observer
-   remains process-independent. In the tools node, convert only seed
+   `TautClient`'s default ephemeral lifecycle. In the stdio node, convert only
+   seed `selected`/`other` to public `persistent=True`; keep the parent-process
+   observer ephemeral because its independent reads are part of the assertion.
+   In the tools node, convert only seed
    `selected`/`other`/`third`; keep `observer`, `other_observer`, and
    `third_observer` ephemeral because they intentionally prove operations
    outside the in-process reactor's shared session. Put every persistent client
@@ -204,9 +209,9 @@ separate root tests retain that contract.
 - Stop if the exact TUI callback is absent on fresh Windows or production needs
   changes; reclassify the provisional test-race diagnosis as an app failure.
 - Stop if the exact-body loop shows neither a missing entered/returned
-  transition nor acknowledged aggregate progress beyond 15 seconds. A terminal
-  stack sampled at 15 seconds or a nearby synthetic lock failure is not a
-  substitute for either discriminator.
+  transition nor the firing setup-pressure predicate in slice 6. A terminal
+  stack sampled at 15 seconds, total batch duration, or a nearby synthetic lock
+  failure is not a substitute for either discriminator.
 - Stop before changing SimpleBroker, SQLite pragmas, Taut public semantics,
   reactor command ordering, or dependency floors; each requires an explicit
   ownership decision and likely a spec delta.
@@ -310,3 +315,13 @@ separate root tests retain that contract.
   so that green is not accepted as classification evidence. The output was
   split into bounded summary and per-body records with a firing serialization
   test; a fresh changed-SHA dispatch is required.
+- Changed-SHA run `31843761841`, job `94905920632`, passed at `8a68c2a`. All 20
+  tools and 20 stdio minimal bodies completed with no missing transition. Tools
+  ranged from 2.07 to 12.78 seconds; the 12.78-second body spent 4.92, 2.91,
+  and 2.85 seconds in its three seed joins before the MCP scenario. Another
+  body spent 4.77 seconds in seed `say`. Stdio ranged from 3.25 to 7.66 seconds.
+  No body crossed 15 seconds, so the strict post-threshold predicate remains
+  false; however, the near-cap tools body spent over 83 percent of its duration
+  in unrelated seed joins alone, while the detailed lane returned every
+  transition. This fires the narrower setup-pressure predicate above. It does
+  not exclude or claim to fix a rarer SQLite race.

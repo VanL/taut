@@ -330,7 +330,11 @@ def test_modern_discovery_lazy_identity_and_subscription_share_one_server(
     with phase("stdio.seed.init"):
         TautClient.init(db_path=database)
     with phase("stdio.seed.selected.construct"):
-        selected = TautClient(db_path=database, as_name="selected")
+        selected = TautClient(
+            db_path=database,
+            as_name="selected",
+            persistent=True,
+        )
     with phase("stdio.seed.selected.join"):
         selected.join("general")
     member = selected.last_created_member
@@ -338,7 +342,11 @@ def test_modern_discovery_lazy_identity_and_subscription_share_one_server(
     with phase("stdio.seed.selected.say_general"):
         sent = selected.say("general", "modern stdio needle café")
     with phase("stdio.seed.other.construct"):
-        other = TautClient(db_path=database, as_name="other")
+        other = TautClient(
+            db_path=database,
+            as_name="other",
+            persistent=True,
+        )
     with phase("stdio.seed.other.join"):
         other.join("general")
     other_member = other.last_created_member

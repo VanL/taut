@@ -2317,18 +2317,18 @@ def test_explicit_dm_read_log_and_directory_use_public_core_contract(
     with phase("tools.seed.init"):
         TautClient.init(db_path=db)
     with phase("tools.seed.selected.construct"):
-        selected = TautClient(db_path=db, as_name="selected")
+        selected = TautClient(db_path=db, as_name="selected", persistent=True)
     with phase("tools.seed.selected.join"):
         selected.join("general")
     member = selected.last_created_member
     assert member is not None and member.token is not None
     selected_id = member.member_id
     with phase("tools.seed.other.construct"):
-        other = TautClient(db_path=db, as_name="other")
+        other = TautClient(db_path=db, as_name="other", persistent=True)
     with phase("tools.seed.other.join"):
         other.join("general")
     with phase("tools.seed.third.construct"):
-        third = TautClient(db_path=db, as_name="third")
+        third = TautClient(db_path=db, as_name="third", persistent=True)
     with phase("tools.seed.third.join"):
         third.join("general")
     with phase("tools.seed.other.say"):
