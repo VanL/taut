@@ -93,6 +93,125 @@ def test_watched_future_drops_result_if_shutdown_starts_after_queueing(
     assert applied == []
 
 
+def test_watched_future_contains_missing_widget_during_screen_teardown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from textual.css.query import NoMatches
+
+    from taut_tui.app import TautApp
+
+    app = TautApp(db_path=None, as_name=None, auth_token=None)
+    queued: list[tuple[Callable[..., None], tuple[object, ...]]] = []
+
+    def queue(callback: Callable[..., None], *args: object) -> None:
+        queued.append((callback, args))
+
+    def detached_apply(_future: Future[None]) -> None:
+        raise NoMatches("screen detached")
+
+    monkeypatch.setattr(app, "call_later", queue)
+    future: Future[None] = Future()
+    app._watch_future(future, detached_apply)
+    future.set_result(None)
+
+    callback, args = queued[0]
+    callback(*args)
+
+
+def test_token_only_rejoin_form_reaches_the_real_public_client(tmp_path: Path) -> None:
+    from taut_tui.actions import ActionId
+    from taut_tui.app import TautApp
+    from taut_tui.screens import FormSubmission
+
+    db_path = tmp_path / "token-only-rejoin.db"
+    TautClient.init(db_path=db_path)
+    creator = TautClient(db_path=db_path, as_name="alice")
+    creator.join("general")
+    created = creator.last_created_member
+    assert created is not None
+    assert created.token is not None
+    creator.close()
+
+    class ScreenProbe:
+        def __init__(self) -> None:
+            self.completed = False
+            self.error: str | None = None
+
+        def complete(self) -> None:
+            self.completed = True
+
+        def show_domain_error(self, message: str) -> None:
+            self.error = message
+
+    async def exercise() -> None:
+        app = TautApp(db_path=str(db_path), as_name=None, auth_token=None)
+        async with app.run_test(size=(100, 34)) as pilot:
+            assert app._domain is not None
+            screen = ScreenProbe()
+            assert app._complete_identity_form(
+                FormSubmission(
+                    ActionId.IDENTITY_REJOIN,
+                    {"name_or_alias": "", "continuity_token": created.token or ""},
+                ),
+                app._domain,
+                screen=screen,  # type: ignore[arg-type]
+            )
+            await _pause_until(
+                pilot, lambda: screen.completed or screen.error is not None
+            )
+            assert screen.completed is True
+            assert screen.error is None
+            assert (
+                app._domain.show_identity().result(timeout=5).member_id
+                == created.member_id
+            )
+
+    asyncio.run(exercise())
+
+
+def test_help_teaches_consumable_shared_notification_pointers() -> None:
+    from taut_tui.app import TautApp
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, auth_token=None)
+        async with app.run_test(size=(100, 34)):
+            app.action_open_help()
+            rendered = str(app.query_one("#inspector-body").render())
+            assert "consumable and shared by sessions" in rendered
+            assert "chat history remains durable" in rendered
+
+    asyncio.run(exercise())
+
+
+def test_real_empty_search_renders_no_matches_in_the_native_screen(
+    tmp_path: Path,
+) -> None:
+    from textual.widgets import Input, Static
+
+    from taut_tui.app import TautApp
+
+    db_path = tmp_path / "empty-search-screen.db"
+    TautClient.init(db_path=db_path)
+    setup = TautClient(db_path=db_path, as_name="alice")
+    setup.join("general")
+    setup.close()
+
+    async def exercise() -> None:
+        app = TautApp(db_path=str(db_path), as_name="alice", auth_token=None)
+        async with app.run_test(size=(100, 34)) as pilot:
+            app.action_open_search()
+            await pilot.pause()
+            query = app.screen.query_one("#search-query", Input)
+            query.value = "nothing-can-match-this"
+            await pilot.press("enter")
+            errors = app.screen.query_one("#search-errors", Static)
+            await _pause_until(pilot, lambda: "No matches" in str(errors.render()))
+
+            assert str(errors.render()) == "No matches"
+
+    asyncio.run(exercise())
+
+
 def test_vi_and_conventional_keys_share_mode_actions_without_stealing_text() -> None:
     from taut_tui.app import TautApp
 
@@ -710,6 +829,39 @@ def test_navigation_single_click_selects_while_enter_and_double_click_activate(
     asyncio.run(exercise())
 
 
+def test_navigation_drag_out_does_not_swallow_next_keyboard_enter(
+    tmp_path: Path,
+) -> None:
+    from taut_tui.app import TautApp
+    from taut_tui.widgets import TautOptionList
+
+    db_path = tmp_path / "pointer-drag-out.db"
+    TautClient.init(db_path=db_path)
+    setup = TautClient(db_path=db_path, as_name="alice")
+    setup.join("general")
+    setup.close()
+
+    async def exercise() -> None:
+        app = TautApp(db_path=str(db_path), as_name="alice", auth_token=None)
+        async with app.run_test(size=(100, 34)) as pilot:
+            navigation = app.query_one("#navigation-list", TautOptionList)
+            await _pause_until(pilot, lambda: bool(navigation.option_count))
+            navigation.highlighted = 0
+            navigation.focus()
+
+            assert await pilot.mouse_down("#navigation-list", offset=(1, 0)) is True
+            assert await pilot.mouse_up("#transcript", offset=(1, 0)) is True
+            await pilot.press("enter")
+            await _pause_until(
+                pilot,
+                lambda: app.visual_state.active_conversation == "general",
+            )
+
+            assert app.visual_state.active_conversation == "general"
+
+    asyncio.run(exercise())
+
+
 def test_direct_message_header_and_composer_use_actor_scoped_label(
     tmp_path: Path,
 ) -> None:
@@ -938,6 +1090,160 @@ def test_live_reply_notification_refreshes_the_contextual_reply_marker(
     finally:
         alice.close()
         bob.close()
+
+
+def test_notification_delivery_preserves_non_notification_inspector_content() -> None:
+    from taut.client import Notification
+    from taut_tui.app import TautApp
+    from taut_tui.models import InspectorKind
+
+    notification = Notification(
+        type="mention",
+        to_id=None,
+        actor_id=None,
+        actor_name="bob",
+        thread="general",
+        message_ts=1,
+    )
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, auth_token=None)
+        async with app.run_test(size=(100, 34)):
+            for kind, content in (
+                (InspectorKind.MESSAGE, "selected message details"),
+                (InspectorKind.SYSTEM, "help content"),
+                (InspectorKind.SUMMON, "summon status content"),
+            ):
+                app._render_inspector(content, kind=kind)
+                assert app._apply_delivery(0, notification) is True
+                assert content in str(app.query_one("#inspector-body").render())
+                assert app.visual_state.inspector is not None
+                assert app.visual_state.inspector.kind is kind
+
+    asyncio.run(exercise())
+
+
+def test_deletion_refresh_preserves_open_reply_surface(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dataclasses import replace
+
+    from taut_tui.app import TautApp
+    from taut_tui.session import ConversationSnapshot
+
+    db_path = tmp_path / "delete-reply.db"
+    TautClient.init(db_path=db_path)
+    pending: Future[object] = Future()
+    opened: list[tuple[str, str | None, int | None]] = []
+
+    async def exercise() -> None:
+        app = TautApp(db_path=str(db_path), as_name=None, auth_token=None)
+        async with app.run_test(size=(100, 34)):
+            assert app._session is not None
+
+            def open_conversation(
+                target: str,
+                *,
+                reply_thread: str | None = None,
+                intent_token: int | None = None,
+            ) -> Future[object]:
+                opened.append((target, reply_thread, intent_token))
+                return pending
+
+            monkeypatch.setattr(app._session, "open_conversation", open_conversation)
+            app._conversation_intent = 4
+            app.visual_state = replace(
+                app.visual_state,
+                active_conversation="general",
+                open_reply_thread="general.123",
+            )
+
+            app._refresh_after_deletion(target="general", intent=4)
+
+            assert opened == [("general", "general.123", 4)]
+            app.visual_state = replace(app.visual_state, selected_message_id=123)
+            app._apply_conversation(
+                ConversationSnapshot(
+                    generation=2,
+                    target="general",
+                    messages=(),
+                    reply_thread="general.123",
+                    intent_token=4,
+                )
+            )
+            assert app.visual_state.selected_message_id is None
+            assert app.visual_state.open_reply_thread == "general.123"
+
+    asyncio.run(exercise())
+
+
+def test_superseding_conversation_intent_clears_search_operation_state() -> None:
+    from taut_tui.app import TautApp
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, auth_token=None)
+        async with app.run_test(size=(100, 34)):
+            app._operation_state = "searching"
+            prior = app._conversation_intent
+
+            assert app._advance_conversation_intent() == prior + 1
+            assert app._operation_state == "idle"
+            assert "searching" not in str(app.query_one("#status-line").render())
+
+    asyncio.run(exercise())
+
+
+def test_current_watcher_degradation_is_visible_in_the_status_line() -> None:
+    from dataclasses import replace
+
+    from taut_tui.app import TautApp
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, auth_token=None)
+        async with app.run_test(size=(100, 34)):
+            app.visual_state = replace(app.visual_state, model_generation=7)
+
+            app._apply_watcher_degraded(7, "delivery was rejected")
+
+            status = str(app.query_one("#status-line").render())
+            assert "live updates stopped" in status
+            assert "delivery was rejected" in status
+
+    asyncio.run(exercise())
+
+
+def test_unmount_contains_session_cleanup_failure_without_skipping_system_close() -> (
+    None
+):
+    from taut_tui.app import TautApp
+
+    class FailingSession:
+        def close(self) -> None:
+            raise RuntimeError("watcher remained live")
+
+    class SystemProbe:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, auth_token=None)
+        system = SystemProbe()
+        async with app.run_test(size=(100, 34)):
+            assert app._session is not None
+            app._session.close()
+            app._session = FailingSession()  # type: ignore[assignment]
+            assert app._system is not None
+            app._system.close()
+            app._system = system  # type: ignore[assignment]
+
+        assert system.closed is True
+        assert app._operation_state == "cleanup failed: watcher remained live"
+
+    asyncio.run(exercise())
 
 
 def test_summon_worker_base_exception_and_presentation_failure_stay_visible_or_contained(

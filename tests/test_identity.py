@@ -522,6 +522,19 @@ def test_rank_candidates_scores_matching_process_fingerprints() -> None:
     assert identity.rank_candidates(_capture(anchor=False), [full_match]) == []
 
 
+def test_rank_candidates_scores_stored_session_id_zero() -> None:
+    capture = _capture()
+    assert capture.anchor is not None
+    capture = replace(capture, anchor=replace(capture.anchor, session_id=0))
+    match = _member_row(
+        fingerprint=json.dumps({"session_id": 0}),
+    )
+
+    assert identity.rank_candidates(capture, [match]) == [
+        (match, ["same session"]),
+    ]
+
+
 def test_capture_linux_process_reads_procfs_fields(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

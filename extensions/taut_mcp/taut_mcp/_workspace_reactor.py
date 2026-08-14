@@ -287,6 +287,9 @@ class _WorkspaceReactor:
         )
 
     def _wait_for_work(self) -> None:
+        if self.degraded:
+            self.wake.wait()
+            return
         if not self.ready or self.activity_waiter is None:
             timeout = NOTIFICATION_BACKSTOP_SECONDS
             if self.ready:

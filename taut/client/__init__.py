@@ -28,12 +28,12 @@ from taut._constants import (
     load_config,
 )
 from taut._exceptions import MembershipError, TautError
+from taut._maintenance import backend_install_hint_error
 from taut.state import MemberRow, SqlSidecarTautState, dialect_for_taut_target
 
 from ._base import (
     _ClientBase,
     _raise_invalid_project_config,
-    _raise_with_backend_install_hint,
 )
 from ._identity import IdentityMixin
 from ._messaging import MessagingMixin
@@ -179,7 +179,10 @@ class TautClient(
                     str(config["BROKER_PROJECT_CONFIG_NAME"]),
                 )
             except RuntimeError as exc:
-                _raise_with_backend_install_hint(exc)
+                hinted = backend_install_hint_error(exc)
+                if hinted is not None:
+                    raise hinted from exc
+                raise
             target = target_obj
             db_file = (
                 Path(target_obj.target) if target_obj.backend_name == "sqlite" else None

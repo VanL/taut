@@ -29,6 +29,7 @@ from taut._exceptions import (
     NotInitializedError,
     TautError,
 )
+from taut._maintenance import backend_install_hint_error
 from taut._reactions import load_reaction_values
 from taut.state import (
     ChannelRenameRow,
@@ -41,11 +42,6 @@ from taut.state import (
 )
 
 from ._models import Member, Message
-
-_MISSING_POSTGRES_PLUGIN_ERROR = "Unknown backend plugin: postgres"
-_MISSING_POSTGRES_PLUGIN_HINT = (
-    "Install taut-pg in the same environment as taut to enable Postgres project configs"
-)
 
 
 def _raise_invalid_project_config(
@@ -60,20 +56,6 @@ def _raise_invalid_project_config(
     """
 
     raise TautError(f"invalid {project_config_name}: {exc}") from exc
-
-
-def _raise_with_backend_install_hint(exc: RuntimeError) -> NoReturn:
-    """Re-raise missing Postgres backend errors with the Taut extension hint."""
-
-    message = str(exc)
-    if (
-        _MISSING_POSTGRES_PLUGIN_ERROR in message
-        or "Requested backend 'postgres' is not available" in message
-    ):
-        raise TautError(
-            f"{_MISSING_POSTGRES_PLUGIN_ERROR}. {_MISSING_POSTGRES_PLUGIN_HINT}."
-        ) from exc
-    raise exc
 
 
 def _json_dumps(value: Any) -> str:
@@ -319,7 +301,7 @@ class _ClientBase(ABC):
         explicit = db_path or os.environ.get("TAUT_DB")
         if explicit is not None:
             path = Path(explicit).expanduser()
-            if not path.exists():
+            if not path.is_file():
                 raise NotInitializedError(NO_DATABASE_MESSAGE)
             return str(path)
         try:
@@ -330,7 +312,10 @@ class _ClientBase(ABC):
                 str(self.config["BROKER_PROJECT_CONFIG_NAME"]),
             )
         except RuntimeError as exc:
-            _raise_with_backend_install_hint(exc)
+            hinted = backend_install_hint_error(exc)
+            if hinted is not None:
+                raise hinted from exc
+            raise
         if target is None:
             raise NotInitializedError(NO_DATABASE_MESSAGE)
         if target.backend_name == "sqlite" and not Path(target.target).exists():

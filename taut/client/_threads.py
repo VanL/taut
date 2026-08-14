@@ -92,6 +92,13 @@ class ThreadsMixin(_ClientBase):
         member = self._require_member(resolved)
         queue = self.queue(thread)
         ts = queue.generate_timestamp()
+        existing_membership = self._state.get_membership(
+            thread=thread,
+            member_id=member["member_id"],
+        )
+        prior_cursor = (
+            ts if existing_membership is None else existing_membership["last_seen_ts"]
+        )
         existing_thread = self._state.get_thread(thread)
         created_thread = existing_thread is None
         if created_thread:
@@ -133,7 +140,7 @@ class ThreadsMixin(_ClientBase):
             queue=queue,
             thread=thread,
             member_id=member["member_id"],
-            prior_cursor=ts,
+            prior_cursor=prior_cursor,
             own_message_ts=message.ts,
         )
         return message

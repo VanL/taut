@@ -175,6 +175,7 @@ class PtyHandle:
         self._close_error: str | None = None
         self._reader_started = False
         self._reader_started_event = threading.Event()
+        self._settle_wake = threading.Event()
         self._master_closed = False
         self._exit_emitted = False
         self._bracketed_paste = False
@@ -208,15 +209,31 @@ class PtyHandle:
         return fields
 
     def wait_until_quiet(self) -> None:
-        self._reader_started_event.wait(timeout=self._max_settle_s)
         deadline = time.monotonic() + self._max_settle_s
-        while time.monotonic() < deadline:
+        while not self._reader_started_event.is_set():
+            with self._lifecycle_lock:
+                if self._retired or self._master_closed:
+                    return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            self._settle_wake.wait(timeout=min(0.05, remaining))
+            self._settle_wake.clear()
+        while True:
+            with self._lifecycle_lock:
+                if self._retired or self._master_closed:
+                    return
+            now = time.monotonic()
             if (
                 self._seen_output.is_set()
-                and time.monotonic() - self._last_output_ts >= self._quiet_s
+                and now - self._last_output_ts >= self._quiet_s
             ):
                 return
-            time.sleep(0.05)
+            remaining = deadline - now
+            if remaining <= 0:
+                return
+            self._settle_wake.wait(timeout=min(0.05, remaining))
+            self._settle_wake.clear()
 
     def attach(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-030] exception
         self,
@@ -348,6 +365,7 @@ class PtyHandle:
             self._close_state = "close_requested"
             self._retired = True
             self._write_epoch += 1
+            self._settle_wake.set()
             if not self._master_closed:
                 operation = self._register_operation_unlocked()
                 try:
@@ -432,6 +450,7 @@ class PtyHandle:
             self._reader_started = True
             self._last_output_ts = time.monotonic()
             self._reader_started_event.set()
+            self._settle_wake.set()
             if self._master_closed:
                 yield from self._emit_exit()
                 return
@@ -459,6 +478,7 @@ class PtyHandle:
                     break
                 self._last_output_ts = time.monotonic()
                 self._seen_output.set()
+                self._settle_wake.set()
                 replies = self._responder.feed(data)
                 self._bracketed_paste = self._responder.bracketed_paste
                 for reply in replies:
@@ -654,6 +674,7 @@ class PtyHandle:
         if self._master_closed:
             return
         self._master_closed = True
+        self._settle_wake.set()
         try:
             os.close(self._master_fd)
         except OSError as exc:
@@ -958,7 +979,7 @@ def _sanitize_for_pty(text: str) -> str:
             out.append(" ")
         elif char == "\n":
             out.append(char)
-        elif char == "\x1b" or code == 0x7F or code < 0x20:
+        elif char == "\x1b" or code == 0x7F or code < 0x20 or 0x80 <= code <= 0x9F:
             continue
         else:
             out.append(char)

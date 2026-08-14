@@ -692,6 +692,58 @@ def test_controller_refuses_error_stop_ack_before_release_confirmation(
     assert responder_errors == []
 
 
+def test_release_confirmation_reads_once_after_final_sleep(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import taut_summon.controller as controller_module
+    from taut_summon import SummonController
+
+    now = 0.0
+    released = False
+    reads = 0
+
+    class QueueHandle:
+        def close(self) -> None:
+            pass
+
+    class Client:
+        def queue(self, name: str) -> QueueHandle:
+            assert name == "taut.summon_state"
+            return QueueHandle()
+
+    def monotonic() -> float:
+        return now
+
+    def sleep(seconds: float) -> None:
+        nonlocal now, released
+        assert 0 < seconds <= 0.05
+        now += seconds
+        if now >= 0.1:
+            released = True
+
+    def get_session(_queue: QueueHandle, member_id: str) -> dict[str, Any]:
+        nonlocal reads
+        assert member_id == "m_reviewer"
+        reads += 1
+        return {
+            "driver_pid": None if released else 123,
+            "driver_start_time": None if released else "start",
+        }
+
+    monkeypatch.setattr(controller_module.time, "monotonic", monotonic)
+    monkeypatch.setattr(controller_module.time, "sleep", sleep)
+    monkeypatch.setattr(controller_module, "get_session", get_session)
+
+    assert SummonController._confirm_released(
+        Client(),  # type: ignore[arg-type]
+        "m_reviewer",
+        driver_pid=123,
+        driver_start_time="start",
+        timeout=0.1,
+    )
+    assert reads == 3
+
+
 def test_package_facade_is_lazy_and_preserves_introspection() -> None:
     code = """
 import json

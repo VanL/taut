@@ -33,6 +33,13 @@ class TautOptionList(OptionList):
     def on_mouse_down(self, event: object) -> None:
         del event
         self._pointer_pending = True
+        self.capture_mouse()
+
+    def on_mouse_up(self, event: object) -> None:
+        style = getattr(event, "style", None)
+        released_option = None if style is None else style.meta.get("option")
+        self._pointer_pending = isinstance(released_option, int)
+        self.release_mouse()
 
     def on_click(self, event: object) -> None:
         style = getattr(event, "style", None)

@@ -313,6 +313,11 @@ message id. Deletion and channel leave/rename require exact-target
 confirmation. The TUI never guesses a reply suffix, DM queue name, reaction
 vocabulary, or authorization rule.
 
+After successful message deletion, refresh preserves the currently open
+reply surface when its registered sub-thread still exists. Physical message
+deletion does not itself cascade into sub-thread deletion or close an
+otherwise valid reply surface.
+
 ### [TUI-6.4] Search, presence, and reply threads
 
 Search is cursor-neutral and uses the public search result contract. Opening a
@@ -679,6 +684,9 @@ Version 1 does not include:
 
 ## Related Plans
 
+- `docs/plans/2026-08-14-review-findings-remediation-plan.md` — review-driven
+  lifecycle, contract-proof, diagnostic, and release-gate remediation for
+  the coordinated 0.9.0 candidate.
 - `docs/plans/2026-08-12-taut-tui-implementation-plan.md`: staged
   implementation, hardening, verification, and review plan.
 

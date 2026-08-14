@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.metadata as importlib_metadata
 import json
 import sqlite3
 from io import StringIO
@@ -15,9 +16,47 @@ from taut._constants import META_QUEUE_NAME
 from taut.persistence import PersistenceComponentSpec
 from taut.persistence._components import RegisteredPersistenceComponent
 from taut.search._jobs import CLAIMED_QUEUE_NAME, FAILED_QUEUE_NAME, PENDING_QUEUE_NAME
-from tests.conftest import run_cli
+from tests.conftest import ensure_taut_project_config, run_cli
 
 pytestmark = pytest.mark.sqlite_only
+
+
+def test_doctor_missing_postgres_plugin_mentions_taut_pg(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    ensure_taut_project_config(
+        tmp_path,
+        dsn="postgresql://taut.example/missing_plugin",
+        schema="taut_schema",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    class EmptyEntryPoints:
+        def select(self, **_kwargs: object) -> tuple[object, ...]:
+            return ()
+
+    monkeypatch.setattr(importlib_metadata, "entry_points", EmptyEntryPoints)
+
+    with pytest.raises(TautError, match="Install taut-pg"):
+        TautClient.doctor()
+
+
+def test_doctor_preserves_taut_error_shape_for_other_resolution_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import taut._maintenance as maintenance
+
+    monkeypatch.chdir(tmp_path)
+
+    def fail_resolution(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("backend resolution failed")
+
+    monkeypatch.setattr(maintenance, "resolve_broker_target", fail_resolution)
+
+    with pytest.raises(TautError, match="backend resolution failed"):
+        TautClient.doctor()
 
 
 def _doctor_check(report: DoctorReport, name: str) -> DoctorCheck:

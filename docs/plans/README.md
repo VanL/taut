@@ -51,6 +51,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 
 | Plan | Status | Exemplar | Note |
 |------|--------|----------|------|
+| `2026-08-14-review-findings-remediation-plan.md` | active | no | Class 5+P remediation of the verified 0.9.0 review findings; implementation, local verification, and independent completed-work review passed; owner landing remains. |
 | `2026-08-13-ranged-dependency-policy-plan.md` | completed | no | Completed: ranged declarations, lock-selected minimums, no duplicate version assertions, and all retained lock/test/static gates passed. |
 | `2026-08-13-simplebroker-config-isolation-plan.md` | completed | no | Class 5 symmetric Taut/SimpleBroker configuration isolation; published 7.3.2 artifact, exhaustive mapping, cross-backend proof, and independent closeout review passed. |
 | `2026-08-12-live-point-in-time-dump-plan.md` | completed | no | Completed: live logical dump, strict restore chronology, Taut-to-broker skew configuration, and integrated SQLite/PostgreSQL verification passed. |

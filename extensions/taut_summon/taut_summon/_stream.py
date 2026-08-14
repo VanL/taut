@@ -26,6 +26,8 @@ Spec references:
 from __future__ import annotations
 
 import json
+import os
+import select
 import signal
 import subprocess
 import sys
@@ -64,6 +66,21 @@ class StreamJsonHandle(ABC):
         self._close_condition = threading.Condition(self._lifecycle_lock)
         self._close_state = "open"
         self._close_error: str | None = None
+        self._write_epoch = 0
+        self._write_waiting = threading.Event()
+        self._stdin_fd: int | None = None
+        stdin = proc.stdin
+        if stdin is not None:
+            try:
+                stdin_fd = stdin.fileno()
+                os.set_blocking(stdin_fd, False)
+            except (AttributeError, OSError, ValueError):
+                # Popen-shaped deterministic test doubles and older runtimes
+                # without public pipe controls retain the buffered fallback.
+                # Real pipe-cancellation tests capability-check this boundary.
+                pass
+            else:
+                self._stdin_fd = stdin_fd
 
     @property
     def session_id(self) -> str | None:
@@ -76,7 +93,7 @@ class StreamJsonHandle(ABC):
         return self._proc.pid
 
     def inject(self, text: str) -> None:
-        self._require_open_for_inject()
+        write_epoch = self._open_write_epoch()
         stdin = self._proc.stdin
         if stdin is None:  # pragma: no cover - spawn always pipes stdin
             raise AdapterError("provider child has no stdin pipe")
@@ -97,7 +114,10 @@ class StreamJsonHandle(ABC):
             # A caller may have entered inject while another injector owned
             # the serialization gate.  Recheck after the wait so close's
             # published "closing" state is a hard no-new-delivery boundary.
-            self._require_open_for_inject()
+            self._validate_write_epoch(write_epoch)
+            if self._stdin_fd is not None:
+                self._write_raw(line.encode("utf-8"), write_epoch)
+                return
             try:
                 stdin.write(line)
                 stdin.flush()
@@ -107,11 +127,65 @@ class StreamJsonHandle(ABC):
                 # object.
                 raise AdapterError(f"inject failed: {exc}") from exc
 
-    def _require_open_for_inject(self) -> None:
+    def _open_write_epoch(self) -> int:
         with self._lifecycle_lock:
             state = self._close_state
+            if state != "open":
+                raise AdapterError(f"provider child is {state}; inject refused")
+            return self._write_epoch
+
+    def _validate_write_epoch(self, write_epoch: int) -> None:
+        with self._lifecycle_lock:
+            state = self._close_state
+            current_epoch = self._write_epoch
         if state != "open":
             raise AdapterError(f"provider child is {state}; inject refused")
+        if write_epoch != current_epoch:
+            raise AdapterError("provider pipe write interrupted")
+        if self._proc.poll() is not None:
+            raise AdapterError("provider child exited during inject")
+
+    def _write_raw(self, payload: bytes, write_epoch: int) -> None:
+        assert self._stdin_fd is not None
+        try:
+            fd = os.dup(self._stdin_fd)
+        except OSError as exc:
+            self._validate_write_epoch(write_epoch)
+            raise AdapterError(f"inject pipe lease failed: {exc}") from exc
+        offset = 0
+        try:
+            while offset < len(payload):
+                self._validate_write_epoch(write_epoch)
+                try:
+                    written = os.write(fd, payload[offset:])
+                except BlockingIOError:
+                    written = None
+                except OSError as exc:
+                    self._validate_write_epoch(write_epoch)
+                    raise AdapterError(f"inject failed: {exc}") from exc
+                self._validate_write_epoch(write_epoch)
+                if written is None:
+                    self._write_waiting.set()
+                    if sys.platform == "win32":  # pragma: no cover - Windows CI
+                        threading.Event().wait(0.05)
+                    else:
+                        try:
+                            select.select([], [fd], [], 0.05)
+                        except (OSError, ValueError) as exc:
+                            self._validate_write_epoch(write_epoch)
+                            raise AdapterError(
+                                f"inject pipe wait failed: {exc}"
+                            ) from exc
+                    continue
+                if written <= 0:
+                    raise AdapterError("inject wrote no bytes")
+                offset += written
+        finally:
+            self._write_waiting.clear()
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
     def wait_until_quiet(self) -> None:
         """Structured streams need no terminal-output settle period."""
@@ -148,6 +222,7 @@ class StreamJsonHandle(ABC):
         with self._lifecycle_lock:
             if self._close_state != "open":
                 return
+            self._write_epoch += 1
             self._send_interrupt()
 
     def request_close(self) -> None:
@@ -155,6 +230,7 @@ class StreamJsonHandle(ABC):
             if self._close_state != "open":
                 return
             self._close_state = "close_requested"
+            self._write_epoch += 1
             self._send_interrupt()
 
     def close(self) -> None:  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-035] exception

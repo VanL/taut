@@ -7,7 +7,7 @@ Spec references:
 from __future__ import annotations
 
 from contextlib import contextmanager
-from threading import Event, Thread
+from threading import Event, Lock, Thread
 from typing import Any
 
 import pytest
@@ -131,6 +131,51 @@ def test_pending_owned_run_blocks_quit_until_readiness_or_return() -> None:
     finally:
         ready_gate.set()
         controller.release.set()
+        operations.close()
+
+
+def test_control_work_is_not_starved_by_eight_blocked_foreground_runs() -> None:
+    from taut_tui.summon import TuiSummonOperations
+
+    class SaturatingController(_Controller):
+        def __init__(self) -> None:
+            super().__init__()
+            self.start_count = 0
+            self.start_lock = Lock()
+            self.all_started = Event()
+
+        def run_foreground(
+            self,
+            request: object,
+            interaction: object,
+            *,
+            install_signal_handlers: bool,
+            on_ready: object,
+        ) -> None:
+            del request, interaction, install_signal_handlers, on_ready
+            with self.start_lock:
+                self.start_count += 1
+                if self.start_count == 8:
+                    self.all_started.set()
+            assert self.release.wait(5)
+
+    controller = SaturatingController()
+    operations = TuiSummonOperations(controller=controller)
+    workers = [operations.start(object(), object())[1] for _ in range(8)]
+    try:
+        assert controller.all_started.wait(5)
+        assert operations.submit_status("agent").result(timeout=1) == (
+            "status",
+            "agent",
+        )
+        assert operations.submit_stop("agent").result(timeout=1) == (
+            "stop",
+            "agent",
+        )
+    finally:
+        controller.release.set()
+        for worker in workers:
+            worker.result(timeout=5)
         operations.close()
 
 

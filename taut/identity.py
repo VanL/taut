@@ -426,7 +426,10 @@ def rank_candidates(
         if fp.get("tty") and fp.get("tty") == current.tty:
             score += 10
             reasons.append("same tty")
-        if fp.get("session_id") and fp.get("session_id") == current.session_id:
+        if (
+            fp.get("session_id") is not None
+            and fp.get("session_id") == current.session_id
+        ):
             score += 5
             reasons.append("same session")
         if score:

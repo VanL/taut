@@ -211,9 +211,12 @@ running three concurrent lanes that a cold reader must keep distinct:
    at-least-once to the process boundary. Adapter death is fatal-and-resume:
    the handler halts injection (blocking until the driver stops the watcher)
    so [TAUT-8.4]'s three-strikes poison advance can never skip live chat.
-   PTY orientation settling waits for the reader to observe at least one byte
+   PTY orientation settling spends one aggregate deadline across reader start
+   and quiet observation. It waits for the reader to observe at least one byte
    from the child before treating a quiet interval as settled; if a harness
    never prints a prompt, the bounded settle deadline remains the fallback.
+   Terminal retirement and master closure wake this wait through the handle's
+   synchronized settle event, so STOP does not spend the remaining budget.
    This keeps slow-starting PTY children from losing orientation during process
    startup while preserving a hard upper bound.
    The driver's readiness boundary is the watcher's initial drain, not thread
@@ -270,7 +273,10 @@ ownership-checked ledger release → exit 0. Signal and control paths call only
 nonblocking `request_close()`; they never wait, join, reap, or release streams.
 Assignment plus a post-publication shutdown/control-failure recheck covers both
 spawn/stop orders without another driver lock. `_teardown_generation()` is the
-only blocking adapter finalizer.
+only blocking adapter finalizer. A fatal control error remains primary when it
+races an adapter failure: generation teardown still runs inside the control
+error's exception scope, and cleanup failures attach as notes rather than
+replacing the control diagnostic.
 
 ### PTY adapter: capable terminal, not screen parser ([SUM-7.4])
 
@@ -305,9 +311,11 @@ single-reader invariant and the shipped shell ordering.
 
 Injection is keyboard input, so it is sanitized before framing: CR/CRLF
 canonicalize to LF, C0 controls except LF are stripped, `DEL` and `ESC` are
-removed, and tab becomes a space. If the harness enabled bracketed paste, LF is
-preserved inside paste framing; otherwise LF collapses to spaces so one chat
-message is one submitted turn. Orientation is the first injected turn for PTY
+removed, C1 controls (`U+0080..U+009F`) are stripped, and tab becomes a space.
+If the harness enabled bracketed paste, LF is preserved inside paste framing;
+otherwise LF collapses to spaces so one chat message is one submitted turn.
+The attached bridge remains byte-transparent; this sanitizer owns only detached
+Unicode injection. Orientation is the first injected turn for PTY
 (`orientation_via_inject=True`), after the pump starts and settle observes the
 reader's `last_output_ts`, but before the watcher starts. If STOP or SIGINT
 races this pre-watch orientation step, the driver requests terminal close and
@@ -627,11 +635,18 @@ The extension holds to core's dependency posture: it imports from
 `simplebroker` and `simplebroker.ext` only, runs no SQL against broker-owned
 tables, and touches core through the public `TautClient`, `taut.identity`,
 `taut.addressing`, `taut.envelope`, and `taut.watcher` seams. The adapters
-supervise real child processes over real pipes; the shared stream-json plumbing lives
-in `extensions/taut_summon/taut_summon/_stream.py` so both shipped adapters
-share the [SUM-7.1] handle mechanics (flushed inject, thread-safe
-reusable interrupt, terminal close request/finalization, single-consumer
-events) once.
+supervise real child processes over real pipes; the shared stream-json plumbing
+lives in `extensions/taut_summon/taut_summon/_stream.py` so both shipped
+adapters share the [SUM-7.1] handle mechanics once. Real pipe injection uses
+serialized nonblocking raw writes and a lifecycle epoch: reusable `interrupt()`
+cancels active and queued old-epoch writes while leaving the next epoch open;
+`request_close()` advances the epoch and permanently retires delivery before
+signaling. The writer uses a duplicated fd so cancellation checks never hold
+the lifecycle lock across I/O. Runtimes without public nonblocking pipe controls
+retain the deterministic buffered fallback and do not satisfy the real
+pipe-full capability probe. Claude stream mode declares no bootstrap session
+event because the CLI emits nothing before its first injected turn; the driver
+therefore does not spend the generic session-event wait on that adapter.
 
 The extension CLI keeps one documented argparse inventory for `run`, `stop`,
 and `status`. Root help owns exit classes; each subcommand owns its syntax and
@@ -703,7 +718,7 @@ require a separately drained subprocess pipe.
 | `extensions/taut_summon/taut_summon/_state.py` | The two-table ledger, claim/session helpers, single-driver guard evidence ([SUM-8]) |
 | `extensions/taut_summon/taut_summon/_control.py` | Fixed `_ControlReactor`, between-turn replacement supervisor, client, `sys.*` queue derivation, rate backstop ([SUM-9]/[SUM-10]/[SUM-11]) |
 | `extensions/taut_summon/taut_summon/_adapter.py` | `AdapterHandle` lifecycle, `ProviderAdapter` protocol, `AdapterEvent` union, adapter registry ([SUM-7.1]) |
-| `extensions/taut_summon/taut_summon/_stream.py` | Shared stream-json child-process mechanics, reusable interruption, terminal-close request, and blocking finalization |
+| `extensions/taut_summon/taut_summon/_stream.py` | Shared stream-json child-process mechanics, nonblocking write leases and cancellation epochs, reusable interruption, terminal-close request, and blocking finalization |
 | `extensions/taut_summon/taut_summon/_pty.py` | Universal interactive PTY adapter, terminal-query responder, attach bridge, and terminal-retirement fd-operation lifecycle |
 | `extensions/taut_summon/taut_summon/_scripted.py` | The `scripted` test adapter (real subprocess, fake model) — the anti-mocking seam |
 | `extensions/taut_summon/taut_summon/scripted_provider.py` | The scripted provider child, including bounded physical-SIGINT cleanup and signal-count evidence |
@@ -781,6 +796,9 @@ the integrity step.
 
 ## Related Plans
 
+- `docs/plans/2026-08-14-review-findings-remediation-plan.md` — bounded
+  stream-write cancellation, one-budget PTY settle, primary-error teardown,
+  C1 sanitization, Claude startup, and final confirmation polling.
 - `docs/plans/2026-07-29-taut-chat-pypi-publication-plan.md` — core
   distribution rename, current-wheel boundary, and exact-artifact publication.
 - `docs/plans/2026-07-14-blank-message-no-op-plan.md` — typed core blank result

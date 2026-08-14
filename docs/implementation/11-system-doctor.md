@@ -15,6 +15,11 @@ report to exit 0, an incomplete inspection exception to exit 1 through the
 ordinary dispatcher, and a complete report with findings to the doctor-specific
 exit 2.
 
+The maintenance resolver also owns missing-backend normalization. A PostgreSQL
+project without `taut-pg` fails before report construction with the same
+actionable install hint as normal client construction; doctor never returns a
+partial finding set for that framework failure.
+
 The six observations use these owners:
 
 1. `taut/state/_sql.py` reads metadata and issues portable zero-row projections
@@ -78,11 +83,13 @@ target, so PostgreSQL credentials remain redacted.
 `tests/test_system_doctor.py` covers the public model, exact CLI/JSON/human
 surfaces, all exit classes, dependency shapes, schema and logical corruption,
 broker/search totals, contributor containment, forbidden-call tripwires,
-non-mutation, and safe framework failure. `extensions/taut_summon/tests/
+non-mutation, missing-PostgreSQL installation guidance, and safe framework
+failure. `extensions/taut_summon/tests/
 test_persistence.py` covers active, incompatible, and missing-table Summon
 state without migration. The shared backend contract in
 `tests/test_shared_contract.py` runs healthy and failed-search reports against
 real SQLite and PostgreSQL and verifies logical state plus target redaction.
 
-The owning specification is `docs/specs/09-system-doctor.md`; the execution and
-review record is `docs/plans/2026-08-10-system-doctor-plan.md`.
+The owning specification is `docs/specs/09-system-doctor.md`; execution and
+review records are `docs/plans/2026-08-10-system-doctor-plan.md` and
+`docs/plans/2026-08-14-review-findings-remediation-plan.md`.

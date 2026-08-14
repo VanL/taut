@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import hashlib
 import json
 import os
@@ -150,6 +151,45 @@ def test_teardown_denies_ready_publication_after_validation_started(
         with pytest.raises(asyncio.CancelledError):
             await attach
         assert reactor.list_workspaces()["records"] == []
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(10)
+def test_teardown_rejects_detach_admission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[MCP-11] Close publishes its gate before yielding during teardown."""
+
+    workspace, token, _ = _create_workspace(tmp_path, "selected")
+    close_started = threading.Event()
+    release_close = threading.Event()
+    real_close = workspace_reactor.TautClient.close
+
+    def delayed_close(client: TautClient) -> None:
+        close_started.set()
+        if not release_close.wait(timeout=5):
+            raise AssertionError("test did not release workspace close")
+        real_close(client)
+
+    monkeypatch.setattr(workspace_reactor.TautClient, "close", delayed_close)
+
+    async def scenario() -> None:
+        reactor = ProcessReactor(asyncio.get_running_loop())
+        attached = await reactor.attach_workspace(str(workspace), token)
+        close = asyncio.create_task(reactor.aclose())
+        try:
+            assert await asyncio.to_thread(close_started.wait, 5)
+            with _tool_error(process_reactor.ATTACHMENT_FAILED):
+                await asyncio.wait_for(
+                    reactor.detach_workspace(str(attached["workspace"])),
+                    timeout=0.25,
+                )
+        finally:
+            release_close.set()
+            await asyncio.wait_for(close, timeout=5)
 
     asyncio.run(scenario())
 
@@ -1102,6 +1142,53 @@ def test_canceled_attach_waiter_does_not_cancel_started_child_lifecycle(
         assert identity_result["records"][0]["name"] == "selected"
         await reactor.aclose()
         _skip_if_coroutine_frames_are_unavailable(inspected=frame_inspected)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(10)
+def test_canceled_attach_retrieves_later_validation_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[MCP-4]/[MCP-11] An abandoned ensure owns its fixed failure."""
+
+    workspace, token, _ = _create_workspace(tmp_path, "selected")
+    validation_started = threading.Event()
+    release_validation = threading.Event()
+
+    def failing_client(*_args: object, **_kwargs: Any) -> TautClient:
+        validation_started.set()
+        if not release_validation.wait(timeout=5):
+            raise AssertionError("test did not release validation")
+        raise RuntimeError("participant-controlled validation detail")
+
+    monkeypatch.setattr(workspace_reactor, "TautClient", failing_client)
+
+    async def scenario() -> None:
+        loop = asyncio.get_running_loop()
+        contexts: list[dict[str, Any]] = []
+        loop.set_exception_handler(lambda _loop, context: contexts.append(context))
+        reactor = ProcessReactor(loop)
+        attach = asyncio.create_task(reactor.attach_workspace(str(workspace), token))
+        assert await asyncio.to_thread(validation_started.wait, 5)
+        attach.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await attach
+
+        release_validation.set()
+        await async_eventually(
+            lambda: not reactor._candidates,
+            timeout=5.0,
+            interval=0.01,
+            description="failed canceled attachment owner is reaped",
+        )
+        gc.collect()
+        await asyncio.sleep(0)
+        await reactor.aclose()
+
+        assert contexts == []
 
     asyncio.run(scenario())
 

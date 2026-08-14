@@ -129,9 +129,13 @@ class TuiSummonOperations:
             controller = controller_type(db_path=db_path)
         self._controller = controller
         self._ready_callback = ready_callback
-        self._executor = ThreadPoolExecutor(
+        self._foreground_executor = ThreadPoolExecutor(
             max_workers=8,
-            thread_name_prefix="taut-tui-summon",
+            thread_name_prefix="taut-tui-summon-foreground",
+        )
+        self._control_executor = ThreadPoolExecutor(
+            max_workers=2,
+            thread_name_prefix="taut-tui-summon-control",
         )
         self._supervisor = ThreadPoolExecutor(
             max_workers=1,
@@ -180,17 +184,17 @@ class TuiSummonOperations:
     def submit_list(self) -> Future[tuple[object, ...]]:
         with self._lock:
             self._ensure_open()
-        return self._executor.submit(self._controller.list_live)
+        return self._control_executor.submit(self._controller.list_live)
 
     def submit_status(self, name: str) -> Future[object]:
         with self._lock:
             self._ensure_open()
-        return self._executor.submit(self._controller.status, name)
+        return self._control_executor.submit(self._controller.status, name)
 
     def submit_stop(self, name: str) -> Future[object]:
         with self._lock:
             self._ensure_open()
-        return self._executor.submit(self._controller.stop, name)
+        return self._control_executor.submit(self._controller.stop, name)
 
     def start(
         self,
@@ -236,7 +240,7 @@ class TuiSummonOperations:
                     if self._owned.get(token) is record:
                         self._owned.pop(token, None)
 
-        future = self._executor.submit(run)
+        future = self._foreground_executor.submit(run)
         with self._lock:
             record.future = future
         return token, future
@@ -326,7 +330,8 @@ class TuiSummonOperations:
                 return
             self._closed = True
         self.request_owned_stops()
-        self._executor.shutdown(wait=False, cancel_futures=False)
+        self._foreground_executor.shutdown(wait=False, cancel_futures=False)
+        self._control_executor.shutdown(wait=False, cancel_futures=False)
         self._supervisor.shutdown(wait=False, cancel_futures=False)
 
     def _ensure_open(self) -> None:

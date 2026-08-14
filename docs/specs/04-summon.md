@@ -705,15 +705,16 @@ output or the bounded settle deadline before injecting orientation. This keeps
 cold-start PTY children from losing orientation during process startup while
 still bounding harnesses that never print a prompt.
 
-**Ears and orientation.** In detached driver mode, `inject(text)` writes
-to the master under an inject lock. Payloads are canonicalized and
-sanitized before submission: CRLF/lone CR become LF; `ESC`, `DEL`, and
-all C0 controls except LF are stripped; `TAB` becomes a space. If the
-harness has enabled bracketed paste (`ESC[?2004h` observed in output),
-the sanitized text is framed as `ESC[200~...ESC[201~` plus `\r`,
-preserving LF. Otherwise remaining LFs collapse to spaces and exactly one
-turn is submitted with trailing `\r`. Embedded paste delimiters cannot
-survive because `ESC` is removed.
+**Ears and orientation.** In detached driver mode, `inject(text)` writes to
+the master under an inject lock. Payloads are canonicalized and sanitized
+before submission: CRLF/lone CR become LF; `ESC`, `DEL`, all C0 controls
+except LF, and all C1 controls (`U+0080` through `U+009F`) are stripped;
+`TAB` becomes a space. If the harness has enabled bracketed paste
+(`ESC[?2004h` observed in output), the sanitized text is framed as
+`ESC[200~...ESC[201~` plus `\r`, preserving LF. Otherwise remaining LFs
+collapse to spaces and exactly one turn is submitted with trailing `\r`.
+Embedded 7-bit or Unicode C1 paste delimiters cannot survive this
+Unicode-to-terminal encoding path because `ESC` and C1 controls are removed.
 
 Before the first injected chat turn, the pump-owned reader publishes
 `last_output_ts`; settle polls that timestamp until quiet for `quiet_ms`
@@ -1375,6 +1376,9 @@ thread do not satisfy this boundary by themselves.
 
 ## Related Plans
 
+- `docs/plans/2026-08-14-review-findings-remediation-plan.md` — review-driven
+  lifecycle, contract-proof, diagnostic, and release-gate remediation for
+  the coordinated 0.9.0 candidate.
 - `docs/plans/2026-08-12-taut-tui-implementation-plan.md` — adds the
   human-first TUI rich-host lifecycle and this exact-run readiness handle.
 - `docs/plans/2026-08-10-test-quality-remediation-plan.md` — replaces

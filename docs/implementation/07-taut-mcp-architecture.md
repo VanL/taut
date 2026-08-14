@@ -343,8 +343,10 @@ Verify changes at the owner boundary. Use real Taut clients, broker queues,
 child threads, and stdio for behavior. Fake only a notification sink or clock
 when isolating delivery or rate policy. PostgreSQL behavior requires
 `SIMPLEBROKER_PG_TEST_DSN`; `bin/pytest-pg` recognizes explicit MCP test paths
-and installs both extension overlays. A skipped live lane is a reported
-residual, not backend-conformance evidence.
+and installs both extension overlays. The release helper therefore runs an
+explicit MCP PG conformance selection immediately after its ordinary PG gate;
+the package-local non-PG MCP suite cannot stand in for that proof. A skipped
+live lane is a reported residual, not backend-conformance evidence.
 
 ## Change Guidance
 
@@ -365,6 +367,7 @@ changelog, and plan evidence whenever ownership or rationale changes.
 
 ## Related Plans
 
+- `docs/plans/2026-08-14-review-findings-remediation-plan.md`
 - `docs/plans/2026-08-12-extension-main-path-and-all-extra-plan.md`
 - `docs/plans/2026-08-10-stable-dm-send-plan.md`
 - `docs/plans/2026-08-10-mcp-search-plan.md`

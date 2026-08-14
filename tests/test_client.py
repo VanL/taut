@@ -19,7 +19,7 @@ from simplebroker.ext import IntegrityError
 import taut.client._base as client_base
 import taut.client._messaging as messaging
 from taut import addressing, identity
-from taut._constants import META_QUEUE_NAME, load_config
+from taut._constants import META_QUEUE_NAME, NO_DATABASE_MESSAGE, load_config
 from taut._exceptions import (
     AmbiguousMessageError,
     BlankMessageError,
@@ -85,6 +85,26 @@ def test_explicit_missing_path_does_not_auto_create(tmp_path: Path) -> None:
         TautClient(db_path=tmp_path / ".taut.db")
 
     assert not (tmp_path / ".taut.db").exists()
+
+
+@pytest.mark.parametrize("selector", ["db_path", "TAUT_DB"])
+def test_explicit_database_selector_rejects_directory_with_init_hint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    selector: str,
+) -> None:
+    monkeypatch.delenv("TAUT_DB", raising=False)
+    if selector == "TAUT_DB":
+        monkeypatch.setenv("TAUT_DB", str(tmp_path))
+
+    with pytest.raises(NotInitializedError) as raised:
+        if selector == "db_path":
+            TautClient(db_path=tmp_path)
+        else:
+            TautClient()
+
+    assert str(raised.value) == NO_DATABASE_MESSAGE
+    assert raised.value.__cause__ is None
 
 
 def test_resolved_target_config_handoff_bypasses_ambient_resolution(
@@ -1859,6 +1879,21 @@ def test_join_starts_at_now_and_other_member_message_is_unread(tmp_path: Path) -
     assert [message.text for message in unread] == ["hello"]
     with pytest.raises(EmptyResultError):
         claude.read("general")
+
+
+def test_rejoin_keeps_existing_unread_cursor(tmp_path: Path) -> None:
+    alice = client(tmp_path, "alice")
+    alice.join("general")
+    bob = existing_client(tmp_path, "bob")
+    bob.join("general")
+    unread = alice.say("general", "still unread after rejoin")
+
+    rejoin_notice = bob.join("general")
+
+    assert [message.ts for message in bob.read("general")] == [
+        unread.ts,
+        rejoin_notice.ts,
+    ]
 
 
 def test_blank_channel_say_precedes_routing_and_leaves_state_unchanged(

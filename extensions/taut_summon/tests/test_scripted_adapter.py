@@ -18,6 +18,7 @@ import queue
 import signal
 import subprocess
 import sys
+import textwrap
 import threading
 import time
 import types
@@ -159,24 +160,6 @@ class _TrackingCondition:
         self._condition.notify_all()
 
 
-class _ObservedStdin:
-    """Signal the write attempt before delegating to the real pipe stream."""
-
-    def __init__(self, stream: Any) -> None:
-        self._stream = stream
-        self.write_attempted = threading.Event()
-
-    def write(self, value: str) -> int:
-        self.write_attempted.set()
-        return int(self._stream.write(value))
-
-    def flush(self) -> None:
-        self._stream.flush()
-
-    def close(self) -> None:
-        self._stream.close()
-
-
 class _SignalReleasedBlockingStream(_CountingStream):
     """Stay inside write until the process receives its terminal signal."""
 
@@ -312,7 +295,7 @@ def _process_exists(pid: int) -> bool:
     return True
 
 
-def _fill_real_stdin_pipe(handle: ScriptedHandle) -> _ObservedStdin:
+def _fill_real_stdin_pipe(handle: ScriptedHandle) -> threading.Event:
     """Fill the shipped provider's real pipe and expose inject arrival."""
 
     stdin = handle._proc.stdin
@@ -330,9 +313,7 @@ def _fill_real_stdin_pipe(handle: ScriptedHandle) -> _ObservedStdin:
     finally:
         os.set_blocking(fd, was_blocking)
     assert filled > 0
-    observed = _ObservedStdin(stdin)
-    handle._proc.stdin = cast(Any, observed)
-    return observed
+    return handle._write_waiting
 
 
 _REAL_PIPE_NONBLOCKING = pytest.mark.skipif(
@@ -549,6 +530,169 @@ def test_terminal_action_unblocks_write_after_stream_entry(
     handle.close()
 
 
+def test_interrupt_cancels_current_stream_write_and_handle_rearms() -> None:
+    proc = _SignalReleasesWriteProcess()
+    handle = ScriptedHandle(cast(Any, proc), session_id=None)
+    failures: list[Exception] = []
+
+    def blocked_inject() -> None:
+        try:
+            handle.inject("blocked turn")
+        except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
+            failures.append(exc)
+
+    injector = threading.Thread(target=blocked_inject)
+    injector.start()
+    assert isinstance(proc.stdin, _SignalReleasedBlockingStream)
+    assert proc.stdin.write_entered.wait(timeout=1.0)
+
+    handle.interrupt()
+    injector.join(timeout=2.0)
+    assert not injector.is_alive()
+    assert len(failures) == 1
+    assert isinstance(failures[0], AdapterError)
+
+    replacement = _CountingStream()
+    proc.stdin = replacement
+    proc.returncode = None
+    handle.inject("after interrupt")
+    assert len(replacement.writes) == 1
+    assert "after interrupt" in replacement.writes[0]
+    proc.returncode = 0
+    handle.close()
+
+
+@pytest.mark.skipif(
+    os.name == "nt", reason="real cooperative SIGINT probe is POSIX-only"
+)
+@_REAL_PIPE_NONBLOCKING
+def test_interrupt_cancels_full_pipe_and_real_child_accepts_next_turn() -> None:
+    control_r, control_w = os.pipe()
+    child_code = textwrap.dedent(
+        """
+        import json
+        import os
+        import signal
+        import sys
+
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        print("ready", flush=True)
+        os.read(int(sys.argv[1]), 1)
+        buffered = b""
+        while b"\\n" not in buffered:
+            buffered += os.read(0, 65536)
+        for line in sys.stdin:
+            payload = json.loads(line)
+            text = payload["message"]["content"][0]["text"]
+            print(text, flush=True)
+        """
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", child_code, str(control_r)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        bufsize=1,
+        pass_fds=(control_r,),
+    )
+    os.close(control_r)
+    handle = ScriptedHandle(proc, session_id=None)
+    assert proc.stdout is not None
+    assert proc.stdout.readline() == "ready\n"
+    _fill_real_stdin_pipe(handle)
+    failures: list[Exception] = []
+
+    def blocked_inject() -> None:
+        try:
+            handle.inject("x" * 1_000_000)
+        except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
+            failures.append(exc)
+
+    injector = threading.Thread(target=blocked_inject, daemon=True)
+    injector.start()
+    assert handle._write_waiting.wait(timeout=2.0)
+    try:
+        handle.interrupt()
+        injector.join(timeout=1.0)
+        assert not injector.is_alive()
+        assert len(failures) == 1
+        assert isinstance(failures[0], AdapterError)
+        assert proc.poll() is None
+
+        os.write(control_w, b"d")
+        assert proc.stdin is not None
+        deadline = time.monotonic() + 2.0
+        while True:
+            try:
+                os.write(proc.stdin.fileno(), b"\n")
+                break
+            except BlockingIOError:
+                assert time.monotonic() < deadline
+                time.sleep(0.01)
+        handle.inject("after interrupt")
+        assert proc.stdout.readline() == "after interrupt\n"
+    finally:
+        os.close(control_w)
+        proc.terminate()
+        proc.wait(timeout=2.0)
+        handle.close()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="real SIGINT-ignore probe is POSIX-only")
+@_REAL_PIPE_NONBLOCKING
+def test_request_close_cancels_full_pipe_when_child_ignores_sigint() -> None:
+    child_code = (
+        "import signal,time; signal.signal(signal.SIGINT, signal.SIG_IGN); "
+        "print('ready', flush=True); time.sleep(60)"
+    )
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            child_code,
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        bufsize=1,
+    )
+    handle = ScriptedHandle(proc, session_id=None)
+    assert proc.stdout is not None
+    assert proc.stdout.readline() == "ready\n"
+    stdin = proc.stdin
+    assert stdin is not None
+    fd = stdin.fileno()
+    while True:
+        try:
+            os.write(fd, b"x" * 65_536)
+        except BlockingIOError:
+            break
+    failures: list[Exception] = []
+
+    def blocked_inject() -> None:
+        try:
+            handle.inject("x" * 1_000_000)
+        except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
+            failures.append(exc)
+
+    injector = threading.Thread(target=blocked_inject, daemon=True)
+    injector.start()
+    assert handle._write_waiting.wait(timeout=2.0)
+    try:
+        handle.request_close()
+        injector.join(timeout=1.0)
+        assert not injector.is_alive()
+        assert len(failures) == 1
+        assert isinstance(failures[0], AdapterError)
+        assert proc.poll() is None
+    finally:
+        proc.terminate()
+        proc.wait(timeout=2.0)
+        handle.close()
+
+
 @_REAL_PIPE_NONBLOCKING
 def test_interrupt_retires_inject_at_real_full_pipe_boundary(tmp_path: Path) -> None:
     # The provider announces its session and then stops reading stdin, so
@@ -560,7 +704,7 @@ def test_interrupt_retires_inject_at_real_full_pipe_boundary(tmp_path: Path) -> 
         pump.next_of(SessionEvent)
 
         failures: list[Exception] = []
-        stdin = _fill_real_stdin_pipe(handle)
+        write_waiting = _fill_real_stdin_pipe(handle)
 
         def blocked_inject() -> None:
             try:
@@ -570,7 +714,7 @@ def test_interrupt_retires_inject_at_real_full_pipe_boundary(tmp_path: Path) -> 
 
         injector = threading.Thread(target=blocked_inject, daemon=True)
         injector.start()
-        assert stdin.write_attempted.wait(timeout=5.0)
+        assert write_waiting.wait(timeout=5.0)
 
         handle.interrupt()
 
@@ -592,7 +736,7 @@ def test_request_close_retires_inject_at_real_full_pipe_boundary(
         pump = EventPump(handle)
         pump.next_of(SessionEvent)
         failures: list[Exception] = []
-        stdin = _fill_real_stdin_pipe(handle)
+        write_waiting = _fill_real_stdin_pipe(handle)
 
         def blocked_inject() -> None:
             try:
@@ -602,7 +746,7 @@ def test_request_close_retires_inject_at_real_full_pipe_boundary(
 
         injector = threading.Thread(target=blocked_inject, daemon=True)
         injector.start()
-        assert stdin.write_attempted.wait(timeout=5.0)
+        assert write_waiting.wait(timeout=5.0)
 
         handle.request_close()
 

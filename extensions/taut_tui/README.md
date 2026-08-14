@@ -42,4 +42,5 @@ uv run --project extensions/taut_tui --extra dev \
   mypy extensions/taut_tui/taut_tui extensions/taut_tui/tests
 ```
 
-The exact framework-floor lane runs the complete suite with Textual 3.0.0.
+The retained lock runs the complete suite with Textual 8.2.8. There is no
+separate older-Textual compatibility lane.

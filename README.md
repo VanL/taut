@@ -187,7 +187,7 @@ python -m pip install taut-chat taut-pg taut-summon taut-mcp taut-tui
 Requirements: Python 3.11+. Base runtime dependencies are
 `simplebroker>=7.3.2` (which itself has none) and `psutil` for cross-platform
 process metadata. The optional `tui` extra installs the separate `taut-tui`
-extension, which owns its Textual 3.0-or-newer requirement. Ordinary core CLI
+extension, which owns its Textual 8.2.8-or-newer requirement. Ordinary core CLI
 and library use do not import it.
 
 ### TUI

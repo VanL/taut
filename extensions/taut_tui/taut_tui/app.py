@@ -368,6 +368,7 @@ class TautApp(App[None]):
             auth_token=self.auth_token,
             commit_conversation=self._commit_conversation_from_worker,
             accept_delivery=self._accept_delivery_from_worker,
+            report_watcher_degraded=self._report_watcher_degraded_from_worker,
         )
         self._system = TuiSystemOperations(db_path=self.db_path)
         self._domain = TuiDomainActions(
@@ -416,8 +417,17 @@ class TautApp(App[None]):
                 self._summon_interaction = None
                 try:
                     if self._session is not None:
-                        self._session.close()
-                        self._session = None
+                        try:
+                            self._session.close()
+                        except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] cleanup
+                            detail = str(exc) or type(exc).__name__
+                            self._operation_state = f"cleanup failed: {detail}"
+                            self.notify(
+                                f"TUI cleanup failed: {detail}",
+                                severity="error",
+                            )
+                        finally:
+                            self._session = None
                 finally:
                     if self._system is not None:
                         self._system.close()
@@ -706,6 +716,8 @@ class TautApp(App[None]):
             "page; Tab / Shift-Tab move focus; Enter opens; i composes; "
             ": / Ctrl-P commands; / / Ctrl-F search; ? / F1 help; "
             "g i opens notifications; q / Ctrl-Q quits. "
+            "Notification pointers are consumable and shared by sessions; "
+            "chat history remains durable. "
             "Use Pane to cycle compact surfaces and Replies to open or close a "
             "selected reply thread. "
             "Use your terminal's modified drag (commonly Shift-drag) for text selection.",
@@ -865,8 +877,7 @@ class TautApp(App[None]):
             if target is None:
                 self._show_error("Select a conversation first.")
             else:
-                self._conversation_intent += 1
-                intent = self._conversation_intent
+                intent = self._advance_conversation_intent()
                 self.visual_state = replace(
                     self.visual_state,
                     scroll_anchor=ScrollAnchor.tail(),
@@ -1188,8 +1199,7 @@ class TautApp(App[None]):
         reply_thread = self._selected_reply_thread()
         if current is None and reply_thread is None:
             return
-        self._conversation_intent += 1
-        intent = self._conversation_intent
+        intent = self._advance_conversation_intent()
         self._watch_future(
             session.open_conversation(
                 target,
@@ -1370,7 +1380,7 @@ class TautApp(App[None]):
             self._run_form_action(
                 screen,
                 domain.rejoin_identity(
-                    values["name_or_alias"],
+                    values["name_or_alias"] or None,
                     token=values["continuity_token"] or None,
                 ),
                 refresh_navigation=True,
@@ -1598,8 +1608,23 @@ class TautApp(App[None]):
                 return
 
             def apply_if_running() -> None:
-                if not self._shutting_down:
+                base_screen = self._base_screen
+                if self._shutting_down:
+                    return
+                if base_screen is not None:
+                    if not base_screen.is_attached:
+                        return
+                    try:
+                        base_screen.query_one("#workspace")
+                    except NoMatches:
+                        return
+                try:
                     apply(done)
+                except NoMatches:
+                    # The screen may detach between the readiness probe above
+                    # and a queued presentation callback. Domain work already
+                    # completed; teardown owns this missing-widget boundary.
+                    return
 
             try:
                 self.call_later(apply_if_running)
@@ -1760,7 +1785,11 @@ class TautApp(App[None]):
         ):
             return
         self._watch_future(
-            session.open_conversation(target, intent_token=intent),
+            session.open_conversation(
+                target,
+                reply_thread=self.visual_state.open_reply_thread,
+                intent_token=intent,
+            ),
             lambda done: self._apply_optional_conversation(intent, done),
         )
 
@@ -1801,7 +1830,10 @@ class TautApp(App[None]):
 
     def _render_notifications(self, notifications: tuple[Notification, ...]) -> None:
         if not notifications:
-            self._render_inspector("No notifications claimed this session.")
+            self._render_inspector(
+                "No notifications claimed this session.",
+                kind=InspectorKind.NOTIFICATIONS,
+            )
             return
         lines = ["Claimed notification pointers"]
         for notification in notifications:
@@ -1809,7 +1841,7 @@ class TautApp(App[None]):
                 f"{notification.type}  {notification.actor_name or 'unknown'}  "
                 f"{notification.thread or ''}"
             )
-        self._render_inspector("\n".join(lines))
+        self._render_inspector("\n".join(lines), kind=InspectorKind.NOTIFICATIONS)
 
     def _open_selected_search_result(self) -> None:
         domain = self._domain
@@ -1818,8 +1850,7 @@ class TautApp(App[None]):
             self._show_error("Select a search result first.")
             return
         self._operation_state = "searching"
-        self._conversation_intent += 1
-        intent = self._conversation_intent
+        intent = self._advance_conversation_intent(reset_search=False)
         self._search_hits_by_intent[intent] = hit
         self._update_status()
         self._watch_future(
@@ -1858,6 +1889,13 @@ class TautApp(App[None]):
             ),
             lambda done: self._apply_optional_conversation(intent, done),
         )
+
+    def _advance_conversation_intent(self, *, reset_search: bool = True) -> int:
+        self._conversation_intent += 1
+        if reset_search and self._operation_state == "searching":
+            self._operation_state = "idle"
+            self._update_status()
+        return self._conversation_intent
 
     def _accept_summon_log_from_worker(self, message: str) -> None:
         try:
@@ -2038,6 +2076,22 @@ class TautApp(App[None]):
         except RuntimeError:
             return False
 
+    def _report_watcher_degraded_from_worker(
+        self, generation: int, detail: str
+    ) -> None:
+        if self._shutting_down:
+            return
+        try:
+            self.call_from_thread(self._apply_watcher_degraded, generation, detail)
+        except RuntimeError:
+            return
+
+    def _apply_watcher_degraded(self, generation: int, detail: str) -> None:
+        if generation != self.visual_state.model_generation:
+            return
+        self._operation_state = f"live updates stopped: {detail}"
+        self._update_status()
+
     def _apply_optional_conversation(
         self,
         intent: int,
@@ -2136,10 +2190,14 @@ class TautApp(App[None]):
 
     def _apply_delivery(self, generation: int, item: Delivery) -> bool:
         if isinstance(item, Notification):
-            count = len(self._session.notification_feed()) if self._session else 0
-            self._query_base("#inspector-body", Static).update(
-                f"Notifications claimed this session: {count}"
-            )
+            if (
+                self.visual_state.inspector is not None
+                and self.visual_state.inspector.kind is InspectorKind.NOTIFICATIONS
+            ):
+                notifications = (
+                    self._session.notification_feed() if self._session else ()
+                )
+                self._render_notifications(notifications)
             if self._session is not None:
                 self._watch_future(
                     self._session.refresh_navigation(),

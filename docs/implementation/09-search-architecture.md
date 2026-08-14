@@ -108,8 +108,11 @@ Behavioral proof is split by owner:
   shapes, claim/reclaim races, quarantine, acknowledgement, and work frontiers.
 - `tests/test_search_client.py` and `tests/test_search_cli.py` cover public
   scope, hydration, filters, reconciliation, warnings, and rendering.
+- `tests/test_shared_contract.py` pins the public portable ASCII result set,
+  newest-first order, and state neutrality against both real backends.
 - `extensions/taut_pg/tests/test_pg_search_provider.py` runs the corresponding
-  physical provider proof against real PostgreSQL.
+  physical provider proof plus public Unicode, diacritic, and oversized-lexeme
+  expectations against real PostgreSQL.
 - `extensions/taut_mcp/tests/test_tools.py` covers the adapter boundary against
   real SQLite, including facets, state neutrality, warnings, provider errors,
   empty success, reindex, and cancellation.
@@ -134,5 +137,6 @@ truth, access control, or stale-positive prevention.
 
 ## Related Plans
 
+- `docs/plans/2026-08-14-review-findings-remediation-plan.md`
 - `docs/plans/2026-08-10-mcp-search-plan.md`
 - `docs/plans/2026-08-06-taut-search-plan.md`

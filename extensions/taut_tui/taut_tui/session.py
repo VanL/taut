@@ -59,6 +59,7 @@ class TuiSession:
         auth_token: str | None,
         commit_conversation: Callable[[ConversationSnapshot], bool] | None = None,
         accept_delivery: Callable[[int, Delivery], bool] | None = None,
+        report_watcher_degraded: Callable[[int, str], None] | None = None,
         history_limit: int = 200,
         watcher_stop_timeout: float = 2.0,
     ) -> None:
@@ -67,6 +68,9 @@ class TuiSession:
         self._auth_token = auth_token
         self._commit_conversation = commit_conversation or (lambda _snapshot: True)
         self._accept_delivery = accept_delivery or (lambda _generation, _item: True)
+        self._report_watcher_degraded = report_watcher_degraded or (
+            lambda _generation, _detail: None
+        )
         self._history_limit = history_limit
         self._watcher_stop_timeout = watcher_stop_timeout
         self._executor = ThreadPoolExecutor(
@@ -374,7 +378,45 @@ class TuiSession:
         except BaseException:
             watcher.stop(join=False)
             raise
-        self._watcher = (watcher, thread)
+        owned = (watcher, thread)
+        self._watcher = owned
+        self._monitor_watcher_exit(generation, owned)
+
+    def _monitor_watcher_exit(
+        self,
+        generation: int,
+        owned: tuple[TautWatcher, threading.Thread],
+    ) -> None:
+        _watcher, thread = owned
+
+        def observe_exit() -> None:
+            thread.join()
+            try:
+                self._executor.submit(
+                    self._mark_watcher_degraded_owned,
+                    generation,
+                    owned,
+                )
+            except RuntimeError:
+                return
+
+        threading.Thread(
+            target=observe_exit,
+            name=f"taut-tui-watcher-monitor-{generation}",
+            daemon=True,
+        ).start()
+
+    def _mark_watcher_degraded_owned(
+        self,
+        generation: int,
+        exited: tuple[TautWatcher, threading.Thread],
+    ) -> None:
+        if self._watcher != exited or not self._current_generation(generation):
+            return
+        watcher, _thread = exited
+        watcher.stop(join=False)
+        self._watcher = None
+        self._report_watcher_degraded(generation, "watcher exited unexpectedly")
 
     def _append_message(self, generation: int, item: Message) -> None:
         with self._state_lock:
@@ -423,10 +465,21 @@ class TuiSession:
         self._watcher = None
 
     def _close_owned(self) -> None:
-        self._stop_watcher_owned()
-        if self._client is not None:
-            self._client.close()
-            self._client = None
+        primary: Exception | None = None
+        try:
+            self._stop_watcher_owned()
+        except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] cleanup
+            primary = exc
+        try:
+            if self._client is not None:
+                self._client.close()
+                self._client = None
+        except Exception as exc:
+            if primary is None:
+                raise
+            primary.add_note(f"client cleanup also failed: {exc}")
+        if primary is not None:
+            raise primary
 
 
 def _append_unique(messages: tuple[Message, ...], item: Message) -> tuple[Message, ...]:

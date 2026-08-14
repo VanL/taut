@@ -194,6 +194,21 @@ def test_readme_install_examples_use_public_distribution_names() -> None:
     assert "python -m pip install taut-chat taut-tui" in tui
 
 
+def test_tui_textual_floor_prose_matches_the_manifest_owner() -> None:
+    manifest = _manifest("extensions/taut_tui/pyproject.toml")
+    project = manifest["project"]
+    assert isinstance(project, dict)
+    floor = _dependency_floor(project, "textual")
+
+    for relative_path in (
+        "README.md",
+        "extensions/taut_tui/README.md",
+        "docs/implementation/12-taut-tui.md",
+    ):
+        prose = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+        assert floor in prose, relative_path
+
+
 def test_mcp_user_docs_expose_the_console_and_release_target() -> None:
     root = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     mcp = (REPO_ROOT / "extensions" / "taut_mcp" / "README.md").read_text(

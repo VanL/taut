@@ -38,7 +38,17 @@ The same intent token crosses search-context and deletion-refresh work, so a
 late worker cannot commit after a newer target selection. Sends use independent
 tokens rather than one global pending slot; each completion may clear only the
 same target draft revision it submitted. This matters when a user sends twice
-or edits again before the first worker returns.
+or edits again before the first worker returns. A deletion refresh carries the
+already-open reply thread back through the public conversation-open path
+because core deletion does not cascade into registered sub-thread deletion.
+
+A current-generation delivery rejected by the UI is handed back to the
+serialized session owner. That owner stops and clears the rejected watcher,
+then reports a generation-scoped degraded event for the UI status line. It does
+not acknowledge the rejected message or start a replacement watcher. Session
+shutdown attempts client cleanup even when watcher teardown fails, preserving
+the watcher failure as primary; queued UI completions are discarded once the
+base screen detaches.
 
 Notifications differ on purpose. Every public watcher already claims the
 member notification queue, so the TUI stores those pointers in a bounded
@@ -46,6 +56,9 @@ session feed. It does not call `inbox()` behind the watcher or promise replay
 after a display failure. A newly claimed notification triggers a cursor-neutral
 navigation refresh. That keeps registered reply-thread markers discoverable
 when the first reply is created while the parent conversation is already open.
+Notification delivery re-renders the inspector only when the notification
+inbox owns that surface; message, help, system, and Summon inspectors retain
+their content.
 
 ## Typed Actions and Native Screens
 
@@ -61,6 +74,8 @@ Mouse parity is explicit rather than inferred from labels. The composer has a
 Send control; the inspector exposes Members and selected-message
 Reply/React/Delete controls. Those buttons build the same typed action
 invocation as keys, navigation activation, and palette selection.
+Option lists capture the pointer from press through release so a drag-out can
+clear pointer activation without misclassifying the next keyboard Enter.
 
 `screens.py` renders the searchable native palette, labelled forms,
 confirmation, cursor-neutral search, and typed Summon controls. Continuity
@@ -104,9 +119,9 @@ its successor.
 Resize work uses a latest-generation render callback. It applies no stale
 layout pass after a newer terminal size and restores a hidden compact
 conversation only when that surface becomes visible again. The tested
-framework floor is Textual 3.0.0: 1.0 exposed the named public APIs but its
-click event metadata could not implement reliable select-versus-activate
-semantics.
+framework floor is Textual 8.2.8, selected by the retained TUI lock. There is
+no separate older-Textual compatibility lane. This floor supplies the click
+event metadata used for reliable select-versus-activate semantics.
 
 The checked visual fixtures are:
 
@@ -137,6 +152,9 @@ tracks that exact handle instead of diffing mutable names. Pending runs block
 exit. Confirmed exit requests stop on every exact owned handle and supervises
 the retained workers under the 90-second host budget. External drivers are
 listed and may be explicitly dismissed, but normal TUI exit never stops them.
+Foreground runs and list/status/stop calls use separate bounded executors, so
+eight blocked owned runs cannot starve the control path needed to inspect or
+dismiss them.
 
 Ownership uses both the operation-layer record and a UI token set. Closing
 before readiness makes the late exact handle stop itself without publishing a
@@ -184,3 +202,11 @@ is no separate older-framework lane. SQLite client/watcher tests stay real;
 PostgreSQL uses the shared contract and focused TUI smoke; installed-wheel
 probes prove plain core omits the command and paired core-plus-TUI wheels expose
 it without eager Textual import.
+
+## Related Plans
+
+- `docs/plans/2026-08-14-review-findings-remediation-plan.md` — watcher,
+  inspector, intent, teardown, pointer, Summon-control, and framework-floor
+  remediation after the coordinated 0.9.0 review.
+- `docs/plans/2026-08-12-taut-tui-implementation-plan.md` — original TUI
+  implementation, contract promotion, and retained visual acceptance record.

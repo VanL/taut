@@ -2069,6 +2069,17 @@ def test_precheck_commands_select_dev_extra_and_include_typed_release_helper() -
     ):
         assert command[:6] == pytest_prefix
     assert ("uv", "run", "--no-sync", "./bin/pytest-pg", "--fast") in commands
+    assert release.MCP_PG_TEST_COMMAND == (
+        "uv",
+        "run",
+        "--no-sync",
+        "./bin/pytest-pg",
+        "--fast",
+        "extensions/taut_mcp/tests/test_pg_conformance.py",
+    )
+    assert commands.index(release.MCP_PG_TEST_COMMAND) == (
+        commands.index(release.PG_TEST_COMMAND) + 1
+    )
     assert release.SUMMON_UNIT_TEST_COMMAND in commands
     assert release.SUMMON_PROCESS_TEST_COMMAND in commands
     assert release.SUMMON_LIVE_HARNESS_TEST_COMMAND in commands
@@ -2128,6 +2139,13 @@ def test_every_target_set_plans_one_literal_universal_precheck_sequence(
             "0",
         ),
         ("uv", "run", "./bin/pytest-pg", "--fast"),
+        (
+            "uv",
+            "run",
+            "./bin/pytest-pg",
+            "--fast",
+            "extensions/taut_mcp/tests/test_pg_conformance.py",
+        ),
         (
             "uv",
             "run",

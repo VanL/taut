@@ -934,7 +934,13 @@ class SummonDriver:
                 return True
             running.handle.inject(system_prompt)
         except AdapterError as exc:
-            self._raise_if_control_failed()
+            try:
+                self._raise_if_control_failed()
+            except DriverError:
+                self._teardown_generation(
+                    running.generation, running.handle, running.pump
+                )
+                raise
             if not self._shutdown.is_set():
                 self._teardown_generation(
                     running.generation, running.handle, running.pump

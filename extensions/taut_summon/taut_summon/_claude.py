@@ -78,7 +78,9 @@ class ClaudeAdapter:
     supports_terminal_mode: bool = True
     supports_attach: bool = False
     orientation_via_inject: bool = False
-    emits_session_events: bool = True
+    # Claude emits no initial output before the first injected turn, so the
+    # driver must not wait for a session event during bootstrap.
+    emits_session_events: bool = False
 
     def spawn(
         self,

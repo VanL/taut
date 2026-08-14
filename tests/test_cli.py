@@ -1602,6 +1602,19 @@ def test_cli_human_list_shows_unread_counts(tmp_path: Path) -> None:
     assert out.split() == ["general", "2", "unread"]
 
 
+def test_cli_human_list_with_all_threads_read_uses_empty_result_contract(
+    tmp_path: Path,
+) -> None:
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0
+
+    rc, out, err = run_cli("--as", "van", "list", cwd=tmp_path)
+
+    assert rc == 2
+    assert out == ""
+    assert err.strip() == "no unread threads"
+
+
 def test_cli_human_list_caps_unread_count_display() -> None:
     assert _format_unread_count(999) == "999"
     assert _format_unread_count(1000) == "999+"

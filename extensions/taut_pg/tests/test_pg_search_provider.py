@@ -12,10 +12,51 @@ import pytest
 from simplebroker.ext import SidecarSession
 
 from taut._constants import META_QUEUE_NAME
+from taut._exceptions import EmptyResultError
 from taut.client import TautClient
 from taut.search._provider import IndexedDocument, SearchCandidate, ThreadWatermark
 
 pytestmark = pytest.mark.pg_only
+
+
+def test_postgres_public_search_pins_unicode_diacritic_and_lexeme_limit(
+    taut_pg_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[SRCH-12.2] Backend-native edge results are explicit and non-poisoning."""
+
+    monkeypatch.chdir(taut_pg_project)
+    TautClient.init()
+    author = TautClient(as_name="author")
+    reader = TautClient(as_name="reader")
+    author.join("general")
+    reader.join("general")
+    unicode_message = author.say("general", "café naïve 東京")
+    oversized = "x" * 3_000
+    oversized_message = author.say("general", f"stable {oversized} tail")
+
+    try:
+        assert [
+            (hit.ts, hit.text)
+            for hit in reader.search(
+                "café",
+                channels=("general",),
+                reindex=True,
+            )
+        ] == [(unicode_message.ts, "café naïve 東京")]
+        with pytest.raises(EmptyResultError, match="no search results"):
+            reader.search("cafe", channels=("general",))
+        assert [hit.ts for hit in reader.search("東京", channels=("general",))] == [
+            unicode_message.ts
+        ]
+        with pytest.raises(EmptyResultError, match="no search results"):
+            reader.search(oversized, channels=("general",))
+        assert [hit.ts for hit in reader.search("stable", channels=("general",))] == [
+            oversized_message.ts
+        ]
+    finally:
+        reader.close()
+        author.close()
 
 
 def test_postgres_search_schema_uses_only_additive_builtin_objects(

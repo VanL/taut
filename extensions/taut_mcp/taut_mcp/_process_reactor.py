@@ -12,7 +12,7 @@ import threading
 from collections.abc import Awaitable, Callable, Coroutine
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any, TypeVar, cast
 
 from simplebroker import format_message_id
 
@@ -96,6 +96,34 @@ def _freeze_command_arguments(arguments: dict[str, object]) -> CommandArguments:
 
 class WorkspaceToolError(Exception):
     """A fixed, content-free MCP tool failure."""
+
+
+_FutureResult = TypeVar("_FutureResult")
+
+
+async def _await_owned_future(
+    future: asyncio.Future[_FutureResult],
+) -> _FutureResult:
+    """Wait without transferring task cancellation to a reactor-owned future."""
+
+    waiter: asyncio.Future[_FutureResult] = asyncio.get_running_loop().create_future()
+
+    def settle(completed: asyncio.Future[_FutureResult]) -> None:
+        if waiter.cancelled():
+            if not completed.cancelled():
+                completed.exception()
+            return
+        if completed.cancelled():
+            waiter.cancel()
+            return
+        error = completed.exception()
+        if error is not None:
+            waiter.set_exception(error)
+        else:
+            waiter.set_result(completed.result())
+
+    future.add_done_callback(settle)
+    return await waiter
 
 
 @dataclass(slots=True)
@@ -515,12 +543,14 @@ class ProcessReactor:
             )
             # Once Thread.start succeeds, cancellation drops only this transport
             # waiter. The child lifecycle and master-owned future keep running.
-            return await asyncio.shield(future)
+            return await _await_owned_future(future)
         finally:
             token = ""
             fingerprint = b""
 
     async def detach_workspace(self, workspace: str) -> dict[str, Any]:
+        if self._closing:
+            raise WorkspaceToolError(ATTACHMENT_FAILED)
         self._reap_dead_owners()
         entry = self._entries.get(workspace)
         if entry is None:
@@ -555,7 +585,7 @@ class ProcessReactor:
             entry.generation,
         )
         self._recompute_resource()
-        return await asyncio.shield(entry.detach_future)
+        return await _await_owned_future(entry.detach_future)
 
     async def execute_tool(
         self,
@@ -615,7 +645,7 @@ class ProcessReactor:
             )
         )
         try:
-            completion = await asyncio.shield(future)
+            completion = await _await_owned_future(future)
         except asyncio.CancelledError:
             current = self._entries.get(canonical_workspace)
             if (

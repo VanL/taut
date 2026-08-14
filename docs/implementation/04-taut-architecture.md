@@ -104,7 +104,10 @@ SimpleBroker's public `postgres` backend plugin, `TautClient` resolves that
 `BrokerTarget`, and `taut/state/_sql.py` uses `Queue.sidecar()` to create the
 same `taut_*` tables in the configured schema. The extension package does not
 own target parsing, queue construction, SQL, identity, CLI rendering, or
-watcher behavior.
+watcher behavior. Missing-plugin normalization likewise lives below the actor
+boundary in `taut/_maintenance.py`; normal client construction, doctor, dump,
+and load reuse one install-hint owner instead of importing client-private
+diagnostics into actor-free operations.
 
 Release tooling lives in `bin/release.py`. Its boundary is repository hygiene,
 not runtime behavior. Each package manifest owns its version. A target-specific
@@ -134,15 +137,16 @@ The helper accepts `core`/`pg`/`summon`/`mcp`/`tui` targets plus `all`;
 versions remain independent. A real publishing run is allowed only from
 `main` or `master`, checked once before any preparation mutation; dry-run and
 checks-only remain branch-independent. By default, every target and `all` run
-one identical universal precheck sequence: root, PostgreSQL, all four Summon
-lanes, the explicit MCP `not pg_only` lane, the TUI suite at both the retained
-and exact framework floor, root/PG/Summon lint/format, package-local MCP and
-TUI lint/format, and five collision-safe mypy owners. The local
-MCP lane is a fast gate, not PostgreSQL evidence. Target selection controls
-metadata, ordinary builds, tags, and publication, not default verification
-scope. `--checks-only` runs that one sequence without mutation. `--skip-checks`
-remains an explicit human override; separately owned artifact builds and
-paired-wheel compatibility gates still run.
+one identical universal precheck sequence: root, PostgreSQL, an explicit MCP
+PostgreSQL selection, all four Summon lanes, the explicit MCP `not pg_only`
+lane, the TUI suite at both the retained and exact framework floor,
+root/PG/Summon lint/format, package-local MCP and TUI lint/format, and five
+collision-safe mypy owners. The local non-PG MCP lane is a fast gate; the
+selected MCP PG invocation is its local live-backend proof. Target selection
+controls metadata, ordinary builds, tags, and publication, not default
+verification scope. `--checks-only` runs that one sequence without mutation.
+`--skip-checks` remains an explicit human override; separately owned artifact
+builds and paired-wheel compatibility gates still run.
 
 After checking and building the exact preparation commit, the helper
 revalidates branch, HEAD, the full clean worktree/index, GitHub Release state,
@@ -867,6 +871,7 @@ watch, `taut/client/_notifications.py::NotificationsMixin.inbox` claims notifica
 
 ## Related Plans
 
+- `docs/plans/2026-08-14-review-findings-remediation-plan.md`
 - `docs/plans/2026-08-11-ci-factor-and-release-order-plan.md`
 - `docs/plans/2026-08-10-stable-dm-send-plan.md`
 - `docs/plans/2026-07-29-taut-chat-pypi-publication-plan.md`

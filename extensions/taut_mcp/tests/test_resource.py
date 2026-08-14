@@ -427,6 +427,42 @@ class _FakeActivityWaiter:
         self._event.set()
 
 
+def test_degraded_workspace_reactor_idles_until_stop_wake() -> None:
+    """[MCP-8] A degraded child does no timed backstop spin or DB work."""
+
+    inbound: queue.Queue[Any] = queue.Queue()
+
+    class StopWake:
+        def __init__(self) -> None:
+            self.wait_timeouts: list[float | None] = []
+
+        def wait(self, timeout: float | None = None) -> bool:
+            self.wait_timeouts.append(timeout)
+            inbound.put_nowait(workspace_reactor.StopWorkspace(7))
+            return True
+
+        def clear(self) -> None:
+            return None
+
+        def is_set(self) -> bool:
+            return False
+
+    wake = StopWake()
+    reactor = workspace_reactor._WorkspaceReactor(
+        inbound,
+        wake,  # type: ignore[arg-type]
+        queue.Queue(),
+        lambda: None,
+    )
+    reactor.generation = 7
+    reactor.ready = True
+    reactor.degraded = True
+    reactor.next_backstop_at = float("-inf")
+
+    assert reactor._run_cycle() is False
+    assert wake.wait_timeouts == [None]
+
+
 def test_workspace_reactor_defers_pending_native_snapshot_until_pacing_deadline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

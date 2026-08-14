@@ -21,6 +21,60 @@ import pytest
 pytestmark = pytest.mark.sqlite_only
 
 
+def test_dump_missing_postgres_plugin_mentions_taut_pg(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import importlib.metadata as importlib_metadata
+
+    from taut import TautClient, TautError
+    from tests.conftest import ensure_taut_project_config
+
+    ensure_taut_project_config(
+        tmp_path,
+        dsn="postgresql://taut.example/missing_plugin",
+        schema="taut_schema",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    class EmptyEntryPoints:
+        def select(self, **_kwargs: object) -> tuple[object, ...]:
+            return ()
+
+    monkeypatch.setattr(importlib_metadata, "entry_points", EmptyEntryPoints)
+
+    with pytest.raises(TautError, match="Install taut-pg"):
+        TautClient.dump(output=tmp_path / "backup.taut.jsonl")
+
+
+def test_load_missing_postgres_plugin_mentions_taut_pg(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import importlib.metadata as importlib_metadata
+
+    from taut import TautClient, TautError
+    from tests.conftest import ensure_taut_project_config
+
+    source = tmp_path / "backup.taut.jsonl"
+    source.write_bytes(_empty_dump_bytes())
+    ensure_taut_project_config(
+        tmp_path,
+        dsn="postgresql://taut.example/missing_plugin",
+        schema="taut_schema",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    class EmptyEntryPoints:
+        def select(self, **_kwargs: object) -> tuple[object, ...]:
+            return ()
+
+    monkeypatch.setattr(importlib_metadata, "entry_points", EmptyEntryPoints)
+
+    with pytest.raises(TautError, match="Install taut-pg"):
+        TautClient.load(input_path=source, dry_run=True)
+
+
 def test_taut_load_has_no_future_skew_force_surface() -> None:
     from taut import TautClient
 

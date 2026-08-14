@@ -118,3 +118,26 @@ def test_direct_message_and_reply_flows_keep_core_target_semantics(
 
     assert direct.thread.startswith("dm.")
     assert reply.thread == f"general.{origin.ts}"
+
+
+def test_empty_real_search_returns_the_domain_empty_collection(tmp_path: Path) -> None:
+    from taut_tui.domain import TuiDomainActions
+    from taut_tui.session import TuiSession
+    from taut_tui.system import TuiSystemOperations
+
+    db_path = tmp_path / "empty-search.db"
+    alice, bob = _seed(db_path)
+    session = TuiSession(db_path=str(db_path), as_name="alice", auth_token=None)
+    system = TuiSystemOperations(db_path=str(db_path))
+    actions = TuiDomainActions(
+        session=session,
+        system=system,
+        db_path=str(db_path),
+    )
+    try:
+        assert actions.search("nothing-can-match-this").result(timeout=5) == []
+    finally:
+        session.close()
+        system.close()
+        alice.close()
+        bob.close()

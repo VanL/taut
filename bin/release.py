@@ -148,6 +148,10 @@ ROOT_TEST_COMMANDS: Final[tuple[Command, ...]] = (
 )
 PUBLISH_BRANCHES: Final[frozenset[str]] = frozenset({"main", "master"})
 PG_TEST_COMMAND: Final[Command] = (*UV_RUN_PREFIX, "./bin/pytest-pg", "--fast")
+MCP_PG_TEST_COMMAND: Final[Command] = (
+    *PG_TEST_COMMAND,
+    "extensions/taut_mcp/tests/test_pg_conformance.py",
+)
 SUMMON_UNIT_TEST_COMMAND: Final[Command] = (
     *PYTEST_PREFIX,
     "extensions/taut_summon/tests",
@@ -1939,6 +1943,7 @@ def build_precheck_commands_for_targets(
     return (
         *ROOT_TEST_COMMANDS,
         PG_TEST_COMMAND,
+        MCP_PG_TEST_COMMAND,
         *SUMMON_TEST_COMMANDS,
         MCP_TEST_COMMAND,
         TUI_TEST_COMMAND,

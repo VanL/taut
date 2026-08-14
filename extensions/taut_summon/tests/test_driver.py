@@ -718,15 +718,14 @@ def test_registered_adapter_declares_session_event_capability(
 
     adapter = get_adapter(name)
 
-    assert adapter.emits_session_events is (name in {"claude-stream", "scripted"})
+    assert adapter.emits_session_events is (name == "scripted")
 
 
 def test_non_session_adapter_skips_initial_session_wait(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     driver = _new_driver(_run_request())
-    adapter = cast(Any, _AttachUnsupportedAdapter())
-    adapter.emits_session_events = False
+    adapter = get_adapter("claude-stream")
     monkeypatch.setattr(
         driver_module.time,
         "monotonic",
@@ -2215,6 +2214,42 @@ def test_request_stop_requests_terminal_close_before_wake() -> None:
     assert handle.interrupt_calls == 0
     assert handle.close_calls == 0
     assert driver._wake.is_set()
+
+
+def test_orientation_control_failure_remains_primary_and_tears_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver = _new_driver(_run_request())
+    control_failure = RuntimeError("control reactor failed")
+    driver._control_error = control_failure
+    driver._control_failed.set()
+
+    class FailingHandle:
+        def inject(self, _text: str) -> None:
+            raise AdapterError("orientation write failed")
+
+    running = types.SimpleNamespace(
+        generation=object(),
+        handle=FailingHandle(),
+        pump=object(),
+    )
+    teardowns: list[tuple[Any, Any, Any]] = []
+    monkeypatch.setattr(driver, "_settle_for_orientation", lambda _handle: None)
+    monkeypatch.setattr(
+        driver,
+        "_teardown_generation",
+        lambda generation, handle, pump: teardowns.append((generation, handle, pump)),
+    )
+
+    with pytest.raises(DriverError, match="control loop failed") as caught:
+        driver._orient_running_generation(
+            cast(Any, running),
+            cast(Any, types.SimpleNamespace(orientation_via_inject=True)),
+            "orientation",
+        )
+
+    assert caught.value.__cause__ is control_failure
+    assert teardowns == [(running.generation, running.handle, running.pump)]
 
 
 def test_stop_before_handle_publication_requests_close_on_published_handle(

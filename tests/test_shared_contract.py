@@ -203,6 +203,44 @@ def test_project_history_around_is_cursor_neutral_across_sql_backends(
     ]
 
 
+def test_project_search_portable_ascii_parity_is_newest_first_and_state_neutral(
+    taut_project: Path,
+) -> None:
+    """[SRCH-12.2] Public search has one portable ASCII backend contract."""
+
+    TautClient.init()
+    author = TautClient(as_name="author")
+    reader = TautClient(as_name="reader")
+    author.join("general")
+    reader.join("general")
+    older = author.say("general", "portable alpha-42 beta")
+    newer = author.say("general", "portable alpha 42 beta")
+    author.say("general", "portable alphabet 42 beta")
+    member_id = reader.whoami().member_id
+    before = (
+        reader._state.get_member(member_id),
+        reader._state.list_memberships(member_id),
+        reader.peek_inbox(limit=1000),
+    )
+
+    hits = reader.search(
+        "alpha 42 beta",
+        channels=("general",),
+        limit=50,
+        reindex=True,
+    )
+
+    assert [(hit.ts, hit.text) for hit in hits] == [
+        (newer.ts, "portable alpha 42 beta"),
+        (older.ts, "portable alpha-42 beta"),
+    ]
+    assert (
+        reader._state.get_member(member_id),
+        reader._state.list_memberships(member_id),
+        reader.peek_inbox(limit=1000),
+    ) == before
+
+
 def test_project_message_reaction_contract(taut_project: Path) -> None:
     TautClient.init()
     alice = TautClient(as_name="alice")

@@ -12,6 +12,7 @@ from __future__ import annotations
 from concurrent.futures import Future
 from pathlib import Path
 
+from taut import EmptyResultError
 from taut.client import (
     Channel,
     DoctorReport,
@@ -197,12 +198,15 @@ class TuiDomainActions:
                 for thread in client.list_threads(all_threads=True)
                 if thread.kind == "channel" and thread.name in joined
             )
-            return client.search(
-                query,
-                channels=channels,
-                all_direct_messages=True,
-                limit=limit,
-            )
+            try:
+                return client.search(
+                    query,
+                    channels=channels,
+                    all_direct_messages=True,
+                    limit=limit,
+                )
+            except EmptyResultError:
+                return []
 
         return self._session.submit_client_operation(search_visible)
 

@@ -301,7 +301,7 @@ class SummonController:
         queue = client.queue(LEDGER_QUEUE_NAME)
         deadline = time.monotonic() + timeout
         try:
-            while time.monotonic() < deadline:
+            while True:
                 row = get_session(queue, member_id)
                 stored = (
                     (None, None)
@@ -310,8 +310,10 @@ class SummonController:
                 )
                 if release_evidence_confirmed(stored, (driver_pid, driver_start_time)):
                     return True
-                time.sleep(0.05)
-            return False
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                time.sleep(min(0.05, remaining))
         finally:
             queue.close()
 

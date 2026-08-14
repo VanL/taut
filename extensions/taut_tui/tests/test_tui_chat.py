@@ -194,6 +194,73 @@ def test_shutdown_rejection_does_not_acknowledge_chat_message(tmp_path: Path) ->
     assert any(message.ts == sent.ts for message in replay)
 
 
+def test_current_delivery_rejection_reports_visible_degradation_owner_event(
+    tmp_path: Path,
+) -> None:
+    from taut_tui.session import TuiSession
+
+    db_path = tmp_path / "degraded.db"
+    alice, bob = _seed(db_path)
+    degraded: list[tuple[int, str]] = []
+    reported = Event()
+
+    def reject(_generation: int, _item: Message | Notification) -> bool:
+        return False
+
+    def report(generation: int, detail: str) -> None:
+        degraded.append((generation, detail))
+        reported.set()
+
+    session = TuiSession(
+        db_path=str(db_path),
+        as_name="alice",
+        auth_token=None,
+        accept_delivery=reject,
+        report_watcher_degraded=report,
+    )
+    try:
+        session.open_conversation("general").result(timeout=5)
+        bob.say("general", "reject and degrade")
+        assert reported.wait(5)
+        assert degraded == [(1, "watcher exited unexpectedly")]
+    finally:
+        session.close()
+        alice.close()
+        bob.close()
+
+
+def test_close_attempts_client_cleanup_when_watcher_stop_times_out() -> None:
+    from taut_tui.session import TuiSession, WatcherStopTimeout
+
+    class StuckThread:
+        def is_alive(self) -> bool:
+            return True
+
+    class StuckWatcher:
+        def request_stop(self) -> None:
+            return None
+
+        def stop(self, *, join: bool, timeout: float | None = None) -> None:
+            del join, timeout
+
+    class ClosingClient:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    session = TuiSession(db_path=None, as_name=None, auth_token=None)
+    client = ClosingClient()
+    session._watcher = (StuckWatcher(), StuckThread())  # type: ignore[assignment]
+    session._client = client  # type: ignore[assignment]
+
+    with pytest.raises(WatcherStopTimeout):
+        session.close()
+
+    assert client.closed is True
+
+
 def test_explicit_reply_open_commits_claimed_history_and_watches_both_surfaces(
     tmp_path: Path,
 ) -> None:

@@ -358,6 +358,9 @@ def test_wait_until_quiet_waits_for_first_output(
     handle._reader_started_event = threading.Event()
     handle._reader_started_event.set()
     handle._seen_output = threading.Event()
+    handle._lifecycle_lock = threading.RLock()
+    handle._retired = False
+    handle._master_closed = False
     handle._last_output_ts = 0.0
     handle._quiet_s = 0.1
     handle._max_settle_s = 1.0
@@ -368,7 +371,7 @@ def test_wait_until_quiet_waits_for_first_output(
     def monotonic() -> float:
         return now
 
-    def sleep(seconds: float) -> None:
+    def advance(seconds: float) -> None:
         nonlocal first_output_at, now
         sleeps.append(seconds)
         now += seconds
@@ -377,10 +380,21 @@ def test_wait_until_quiet_waits_for_first_output(
             handle._last_output_ts = now
             handle._seen_output.set()
 
+    class ControlledWake:
+        def wait(self, timeout: float | None = None) -> bool:
+            assert timeout is not None
+            advance(timeout)
+            return False
+
+        def clear(self) -> None:
+            pass
+
+    handle._settle_wake = cast(Any, ControlledWake())
+
     monkeypatch.setattr(
         _pty_module,
         "time",
-        types.SimpleNamespace(monotonic=monotonic, sleep=sleep),
+        types.SimpleNamespace(monotonic=monotonic),
     )
 
     handle.wait_until_quiet()
@@ -388,6 +402,69 @@ def test_wait_until_quiet_waits_for_first_output(
     assert first_output_at is not None
     assert sleeps
     assert now - first_output_at >= handle._quiet_s
+
+
+def test_wait_until_quiet_spends_one_total_settle_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handle = object.__new__(PtyHandle)
+    now = 10.0
+
+    class ReaderStart:
+        def is_set(self) -> bool:
+            return False
+
+    class BudgetWake:
+        def wait(self, timeout: float | None = None) -> bool:
+            nonlocal now
+            assert timeout is not None
+            now += timeout
+            return False
+
+        def clear(self) -> None:
+            pass
+
+    handle._reader_started_event = cast(Any, ReaderStart())
+    handle._settle_wake = cast(Any, BudgetWake())
+    handle._seen_output = threading.Event()
+    handle._lifecycle_lock = threading.RLock()
+    handle._retired = False
+    handle._master_closed = False
+    handle._last_output_ts = 0.0
+    handle._quiet_s = 0.1
+    handle._max_settle_s = 1.0
+    monkeypatch.setattr(
+        _pty_module.time,
+        "monotonic",
+        lambda: now,
+    )
+
+    handle.wait_until_quiet()
+
+    assert now == pytest.approx(11.0)
+
+
+def test_request_close_interrupts_pty_settle_wait(tmp_path: Path) -> None:
+    handle, _log = _spawn_fake(
+        tmp_path, {"queries": False, "modes": False, "redraw": False}
+    )
+    pump = EventPump(handle)
+    handle._quiet_s = 10.0
+    handle._max_settle_s = 10.0
+    settled = threading.Event()
+
+    def wait_for_settle() -> None:
+        handle.wait_until_quiet()
+        settled.set()
+
+    waiter = threading.Thread(target=wait_for_settle)
+    waiter.start()
+    assert handle._reader_started_event.wait(timeout=2.0)
+    handle.request_close()
+    assert settled.wait(timeout=1.0)
+    waiter.join(timeout=1.0)
+    handle.close()
+    assert isinstance(pump.drain_until_exit(), ExitEvent)
 
 
 def test_master_is_published_nonblocking_once_without_losing_flags(
@@ -693,13 +770,14 @@ def test_line_mode_inject_collapses_newlines_and_strips_controls(
     pump = EventPump(handle)
     try:
         _wait_for(log, "start")
-        handle.inject("one\r\ntwo\t\x1b[201~\x7f")
+        handle.inject("one\r\ntwo\t\x1b[201~\x7f\u009b201~")
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline:
             inputs = [entry for entry in _entries(log) if entry["event"] == "input"]
             if inputs:
                 raw = inputs[-1]["raw"]
-                assert raw == "one two [201~\r"
+                assert raw == "one two [201~201~\r"
+                assert "\u009b" not in raw
                 break
             time.sleep(0.05)
         else:

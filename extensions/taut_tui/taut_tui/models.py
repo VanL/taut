@@ -47,6 +47,7 @@ class InspectorKind(StrEnum):
     REPLIES = "replies"
     MEMBERS = "members"
     MESSAGE = "message"
+    NOTIFICATIONS = "notifications"
     SYSTEM = "system"
     SUMMON = "summon"
 

@@ -52,6 +52,12 @@ Contributors own their schema, logical record validation, freshness, and writes
 through a supplied Queue or SidecarSession. Dump never initializes an unused
 extension schema.
 
+Source and destination target resolution remain actor-free. The shared helper
+in `taut/_maintenance.py` normalizes a missing PostgreSQL backend to the same
+`taut-pg` install hint used by client construction; persistence code does not
+import private client machinery. Other backend runtime errors retain their
+original failure shape.
+
 Summon's contributor exports durable session continuity but excludes transient
 name claims and driver pid/start evidence. Its SQL stays in
 `extensions/taut_summon/taut_summon/_state.py`; the component adapter only
@@ -154,6 +160,7 @@ relabeling the H-bounded logical projection.
 
 ## Related Plans
 
+- `docs/plans/2026-08-14-review-findings-remediation-plan.md`
 - `docs/plans/2026-08-07-taut-dump-load-plan.md`
 - `docs/plans/2026-08-12-live-point-in-time-dump-plan.md`
 - `docs/plans/2026-08-06-taut-search-plan.md`
