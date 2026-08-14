@@ -46,3 +46,8 @@ leave every release tag untouched.
   those weak waits with semantic conditions for the inspector result, channel
   target, pointer selection, and direct-message target. No product timeout was
   changed and no failed run was rerun.
+- 2026-08-14: The next exact-SHA run proved Ubuntu 3.11 green and caught a
+  macOS focus-event race in the message-send handler case. The test typed as
+  soon as it requested focus, before the app had processed the focus event and
+  entered compose mode, so the first character could be consumed as a normal
+  gesture. It now waits for both focus and compose mode before typing.

@@ -363,6 +363,13 @@ async def _message_send(context: HandlerContext) -> None:
     await _open_general(context)
     composer = context.app.query_one("#composer", Input)
     composer.focus()
+    await _eventually(
+        context.pilot,
+        lambda: (
+            composer.has_focus
+            and context.app.visual_state.mode is InteractionMode.COMPOSE
+        ),
+    )
     await context.pilot.press(*"handler-send")
     assert composer.value == "handler-send"
     await context.pilot.press("escape")
