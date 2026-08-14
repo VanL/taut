@@ -684,6 +684,19 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   on that distribution, but placing the implementation under core creates the
   wrong interface even if ordinary core imports remain lazy.
 
+- 2026-08-14: A PID is not a stable process identity, and `os.kill(pid, 0)` is
+  not a portable harmless existence probe. Windows routes non-console signal
+  values through `TerminateProcess`, while a completed child's PID may also be
+  reused before a later assertion. Capture a process object while the owned
+  child is known live, then assert on that retained creation identity.
+
+- 2026-08-14: Reaping a child before releasing its streams does not guarantee
+  that another thread blocked in Python-level stream iteration has observed
+  EOF. Closing the wrapper can wake that reader with `ValueError`. Normalize
+  it as EOF only when the lifecycle owner has already published terminal
+  retirement and that exact stream reports closed; otherwise preserve it as a
+  fatal read failure.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

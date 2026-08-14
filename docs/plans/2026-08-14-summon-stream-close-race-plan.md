@@ -69,9 +69,10 @@ is no irreversible state change in this fix.
 - `05626d187003e118d7a56cc5e79cbc292f7ef66a` —
   `docs/specs/04-summon.md` [SUM-7.1] at plan authoring time.
 
-Promotion baseline: `0eae1b466602999ea982950b88c8fc1ebf58ddb2` —
-[SUM-7.1], the implementation note, plan, and status-index backlink promoted
-before the implementation commit.
+Promotion baseline: `b41f2dda0b12407ac17f42df49c9189af9d3ed71` — final
+[SUM-7.1] and implementation wording, layered on the initial plan and backlink
+promotion at `0eae1b466602999ea982950b88c8fc1ebf58ddb2`, before the implementation
+commit.
 
 ## Proposed Spec Delta
 
@@ -144,3 +145,15 @@ Any broad swallow or join-before-close proposal is blocking.
   anti-mocking claim. Added a fourth red-first guard, limited normalization to
   exact built-in closed-file messages and `type(exc) is ValueError`, added the
   [SUM-7.1] Related Plans backlink, and promoted the spec at `0eae1b4`.
+- 2026-08-14: Final review removed the unsupported no-period diagnostic variant
+  and required the owner docs to name the exact normalization predicate. The
+  final promoted spec baseline is `b41f2dd`; the deterministic race now fires
+  the production `TextIOWrapper` diagnostic exactly.
+- 2026-08-14: Independent final re-review found no remaining blocker. Five
+  focused lifecycle tests passed with unhandled-thread warnings promoted to
+  errors, and the reviewer confirmed code, tests, spec, architecture, plan,
+  promotion baseline, backlink, and anti-mocking posture align.
+- 2026-08-14: The next full release precheck caught one extra raw Ruff `BLE001`
+  caused by the regression test's thread-failure relay. Replaced the broad
+  catch with `Future.result()` so thread failures reach the asserting thread
+  without a suppression. The exact Ruff inventory and race test both pass.

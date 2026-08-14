@@ -5,9 +5,10 @@ events / interrupt, the closed ``AdapterEvent`` union, synchronous inject
 failure, interrupt unblocking an in-flight inject) and [SUM-7.2] (the
 ``scripted`` adapter ships in the package).
 
-Anti-mocking posture ([SUM-12]): every test spawns the real scripted
-provider program as a child process and speaks to it over real pipes with
-real stream-json framing. Only the model is fake.
+Anti-mocking posture ([SUM-12]): behavior and integration cases spawn the real
+scripted provider and speak over real pipes. Lifecycle-lock and failure-priority
+cases use deterministic ``Popen``-shaped boundary doubles to force otherwise
+uncontrollable interleavings through the production handle implementation.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ import threading
 import time
 import types
 from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Self, cast
@@ -61,6 +63,56 @@ class _CountingStream:
 
     def close(self) -> None:
         self.close_calls += 1
+
+
+class _CloseRacingReadStream(_CountingStream):
+    """Expose a reader blocked while its lifecycle owner closes the stream."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.read_entered = threading.Event()
+        self.close_released_read = threading.Event()
+        self.closed = False
+
+    def __iter__(self) -> _CloseRacingReadStream:
+        return self
+
+    def __next__(self) -> str:
+        self.read_entered.set()
+        assert self.close_released_read.wait(timeout=2.0)
+        raise ValueError("I/O operation on closed file.")
+
+    def close(self) -> None:
+        super().close()
+        self.closed = True
+        self.close_released_read.set()
+
+
+class _UnexpectedReadFailureStream(_CountingStream):
+    closed = False
+
+    def __iter__(self) -> _UnexpectedReadFailureStream:
+        return self
+
+    def __next__(self) -> str:
+        raise ValueError("unexpected open-stream failure")
+
+
+class _ClosedSingleLineStream(_CountingStream):
+    closed = True
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(["one complete provider frame\n"])
+
+
+class _ClosedDecodeFailureStream(_CountingStream):
+    closed = True
+
+    def __iter__(self) -> _ClosedDecodeFailureStream:
+        return self
+
+    def __next__(self) -> str:
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
 
 
 class _ReentrantInterruptProcess:
@@ -381,6 +433,65 @@ def test_windows_terminal_request_terminates_once(
 
     assert proc.terminate_calls == 1
     assert proc.signal_calls == 1
+
+
+def test_owned_close_ends_a_blocked_event_reader_without_thread_failure() -> None:
+    proc = _ReentrantInterruptProcess()
+    stream = _CloseRacingReadStream()
+    proc.stdout = stream
+    handle = ScriptedHandle(cast(Any, proc), session_id=None)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        reader = executor.submit(lambda: list(handle.events()))
+        assert stream.read_entered.wait(timeout=1.0)
+
+        handle.close()
+
+        assert reader.result(timeout=2.0) == [ExitEvent(returncode=0)]
+
+
+def test_open_event_stream_value_error_remains_fatal() -> None:
+    proc = _ReentrantInterruptProcess()
+    proc.stdout = _UnexpectedReadFailureStream()
+    handle = ScriptedHandle(cast(Any, proc), session_id=None)
+
+    try:
+        with pytest.raises(ValueError, match="unexpected open-stream failure"):
+            list(handle.events())
+    finally:
+        handle.close()
+
+
+def test_closed_event_stream_translation_value_error_remains_fatal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proc = _ReentrantInterruptProcess()
+    proc.stdout = _ClosedSingleLineStream()
+    handle = ScriptedHandle(cast(Any, proc), session_id=None)
+
+    def fail_translation(_line: str) -> AdapterEvent:
+        raise ValueError("translation failure")
+
+    monkeypatch.setattr(handle, "_parse_line", fail_translation)
+    handle.request_close()
+
+    try:
+        with pytest.raises(ValueError, match="translation failure"):
+            list(handle.events())
+    finally:
+        handle.close()
+
+
+def test_closed_event_stream_decode_failure_remains_fatal() -> None:
+    proc = _ReentrantInterruptProcess()
+    proc.stdout = _ClosedDecodeFailureStream()
+    handle = ScriptedHandle(cast(Any, proc), session_id=None)
+    handle.request_close()
+
+    try:
+        with pytest.raises(UnicodeDecodeError, match="invalid start byte"):
+            list(handle.events())
+    finally:
+        handle.close()
 
 
 def test_echo_round_trip_through_real_pipes(tmp_path: Path) -> None:

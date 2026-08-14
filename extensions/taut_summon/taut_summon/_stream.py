@@ -322,7 +322,23 @@ class StreamJsonHandle(ABC):
         stdout = self._proc.stdout
         if stdout is None:  # pragma: no cover - spawn always pipes stdout
             raise AdapterError("provider child has no stdout pipe")
-        for line in stdout:
+        lines = iter(stdout)
+        while True:
+            try:
+                line = next(lines)
+            except StopIteration:
+                break
+            except ValueError as exc:
+                with self._lifecycle_lock:
+                    owned_close = (
+                        type(exc) is ValueError
+                        and str(exc) == "I/O operation on closed file."
+                        and self._close_state != "open"
+                        and stdout.closed
+                    )
+                if not owned_close:
+                    raise
+                break
             stripped = line.strip()
             if not stripped:
                 continue
