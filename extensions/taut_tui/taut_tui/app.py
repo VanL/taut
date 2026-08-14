@@ -42,7 +42,7 @@ from taut_tui.actions import (
     ActionContext,
     ActionId,
     ActionInvocation,
-    ActionSource,
+    ActionRoute,
     InteractionIntent,
     MouseGesture,
     action_spec,
@@ -531,7 +531,7 @@ class TautApp(App[None]):
             return
         self._dispatch_tui_action(
             ActionId.MESSAGE_SEND,
-            source=ActionSource.KEYBOARD,
+            source=ActionRoute.KEYBOARD,
         )
 
     def _submit_composer(self, text: str) -> None:
@@ -591,7 +591,7 @@ class TautApp(App[None]):
         }
         action_id = actions.get(event.button.id or "")
         if action_id is not None:
-            self._dispatch_tui_action(action_id, source=ActionSource.MOUSE)
+            self._dispatch_tui_action(action_id, source=ActionRoute.MOUSE)
 
     def on_click(self, event: events.Click) -> None:
         if getattr(event.widget, "id", None) != "composer":
@@ -600,7 +600,7 @@ class TautApp(App[None]):
         if interaction.action_id is not None:
             self._dispatch_tui_action(
                 interaction.action_id,
-                source=ActionSource.MOUSE,
+                source=ActionRoute.MOUSE,
             )
 
     def on_descendant_focus(self, event: events.DescendantFocus) -> None:
@@ -636,7 +636,7 @@ class TautApp(App[None]):
             return
         self._dispatch_tui_action(
             ActionId.CONVERSATION_OPEN,
-            source=ActionSource.NAVIGATION,
+            source=ActionRoute.NAVIGATION,
             context=ActionContext(
                 target=selected,
                 target_label=self._target_labels.get(selected, selected),
@@ -689,7 +689,7 @@ class TautApp(App[None]):
             if interaction.action_id is not None:
                 self._dispatch_tui_action(
                     interaction.action_id,
-                    source=ActionSource.KEYBOARD,
+                    source=ActionRoute.KEYBOARD,
                 )
             return
         if self._dispatch_navigation_intent(interaction.intent):
@@ -774,7 +774,7 @@ class TautApp(App[None]):
         if self.visual_state.mode is InteractionMode.NORMAL:
             self._dispatch_tui_action(
                 ActionId.COMPOSE_ENTER,
-                source=ActionSource.KEYBOARD,
+                source=ActionRoute.KEYBOARD,
             )
 
     def action_leave_mode(self) -> None:
@@ -814,7 +814,7 @@ class TautApp(App[None]):
         self,
         action_id: ActionId,
         *,
-        source: ActionSource = ActionSource.CONTEXT,
+        source: ActionRoute,
         context: ActionContext | None = None,
     ) -> None:
         self._dispatch_action_invocation(
@@ -1285,7 +1285,10 @@ class TautApp(App[None]):
                 scope=self._palette_scope(spec.action_id),
                 gesture_hint=gesture_hint(spec.action_id),
             )
-            for spec in available_action_specs(summon_available=summon_available)
+            for spec in available_action_specs(
+                summon_available=summon_available,
+                route=ActionRoute.PALETTE,
+            )
         )
 
     def _action_disabled_reason(self, action_id: ActionId) -> str | None:
@@ -1360,7 +1363,7 @@ class TautApp(App[None]):
     def _complete_palette(self, action_id: ActionId | None) -> None:
         self._set_mode(InteractionMode.NORMAL)
         if action_id is not None:
-            self._dispatch_tui_action(action_id, source=ActionSource.PALETTE)
+            self._dispatch_tui_action(action_id, source=ActionRoute.PALETTE)
 
     def _complete_search(self, result: object | None) -> None:
         self._set_mode(InteractionMode.NORMAL)
@@ -1372,7 +1375,7 @@ class TautApp(App[None]):
         self._selected_search_hit = result
         self._dispatch_tui_action(
             ActionId.SEARCH_OPEN_RESULT,
-            source=ActionSource.CONTEXT,
+            source=ActionRoute.CONTEXT,
         )
 
     def _complete_form(
@@ -2361,7 +2364,7 @@ class TautApp(App[None]):
         transcript.scroll_to(y=y, animate=False, force=True)
 
     def _show_empty_action(self, action_id: ActionId) -> None:
-        self._dispatch_tui_action(action_id, source=ActionSource.NAVIGATION)
+        self._dispatch_tui_action(action_id, source=ActionRoute.NAVIGATION)
 
     def _show_error(self, message: str) -> None:
         self._render_inspector(

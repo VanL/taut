@@ -233,6 +233,9 @@ it without eager Textual import.
 
 ## Related Plans
 
+- `docs/plans/2026-08-14-taut-tui-action-route-contract-plan.md` — authoritative
+  route composition plus exhaustive 54-pair producer and 32-action handler
+  firing gates.
 - `docs/plans/2026-08-14-taut-tui-display-sink-coverage-plan.md` — structural
   display/toast ownership and enumerable terminal-escape sink proof.
 - `docs/plans/2026-08-14-review-findings-remediation-plan.md` — watcher,

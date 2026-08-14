@@ -13,13 +13,15 @@ from taut_tui.actions import (
     NORMAL_GESTURE_PAIRS,
     ActionContext,
     ActionId,
-    ActionSource,
+    ActionInvocation,
+    ActionRoute,
     ConfirmationPolicy,
     GesturePair,
     Interaction,
     InteractionIntent,
     MouseGesture,
     action_spec,
+    available_action_specs,
     invoke_action,
     resolve_gesture,
     resolve_mouse,
@@ -114,6 +116,22 @@ def test_action_inventory_is_exact_closed_and_reachable() -> None:
     assert {spec.action_id for spec in ACTION_SPECS} == set(ActionId)
     assert all(spec.routes for spec in ACTION_SPECS)
     assert all(action_spec(action_id).action_id is action_id for action_id in ActionId)
+
+
+@pytest.mark.parametrize("route", list(ActionRoute))
+def test_available_action_specs_follow_declared_routes(route: ActionRoute) -> None:
+    actual = available_action_specs(summon_available=True, route=route)
+
+    assert tuple(spec for spec in ACTION_SPECS if route in spec.routes) == actual
+
+
+def test_invocation_rejects_an_undeclared_route() -> None:
+    with pytest.raises(ValueError, match="command.open.*palette"):
+        ActionInvocation(
+            action_id=ActionId.COMMAND_OPEN,
+            context=ActionContext(),
+            source=ActionRoute.PALETTE,
+        )
 
 
 def test_normal_gesture_inventory_exactly_matches_the_spec_parity_table() -> None:
@@ -230,22 +248,20 @@ def test_keyboard_mouse_and_palette_emit_same_typed_action() -> None:
     )
 
     invocations = {
-        invoke_action(ActionId.MESSAGE_DELETE, context, source=source)
+        invoke_action(ActionId.HELP_OPEN, context, source=source)
         for source in (
-            ActionSource.KEYBOARD,
-            ActionSource.MOUSE,
-            ActionSource.PALETTE,
+            ActionRoute.KEYBOARD,
+            ActionRoute.MOUSE,
+            ActionRoute.PALETTE,
         )
     }
 
-    assert {invocation.action_id for invocation in invocations} == {
-        ActionId.MESSAGE_DELETE
-    }
+    assert {invocation.action_id for invocation in invocations} == {ActionId.HELP_OPEN}
     assert {invocation.context for invocation in invocations} == {context}
     assert {invocation.source for invocation in invocations} == {
-        ActionSource.KEYBOARD,
-        ActionSource.MOUSE,
-        ActionSource.PALETTE,
+        ActionRoute.KEYBOARD,
+        ActionRoute.MOUSE,
+        ActionRoute.PALETTE,
     }
 
 

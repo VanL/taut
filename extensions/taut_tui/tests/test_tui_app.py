@@ -454,11 +454,82 @@ def test_mouse_command_affordance_dispatches_the_native_palette() -> None:
     asyncio.run(exercise())
 
 
+def test_command_palette_excludes_command_open_action() -> None:
+    from taut_tui.actions import (
+        ActionId,
+        ActionRoute,
+        available_action_specs,
+    )
+    from taut_tui.app import TautApp
+    from taut_tui.widgets import TautOptionList
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, auth_token=None)
+        async with app.run_test(size=(100, 34)) as pilot:
+            await pilot.press("ctrl+p")
+            results = app.screen.query_one("#palette-results", TautOptionList)
+            visible_ids = {
+                results.get_option_at_index(index).id
+                for index in range(results.option_count)
+            }
+            expected_ids = {
+                spec.action_id.value
+                for spec in available_action_specs(
+                    summon_available=app._summon is not None,
+                    route=ActionRoute.PALETTE,
+                )
+            }
+            assert visible_ids == expected_ids
+            assert ActionId.COMMAND_OPEN.value not in visible_ids
+
+    asyncio.run(exercise())
+
+
+def test_empty_state_actions_use_the_navigation_route(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut_tui.actions import ActionId, ActionInvocation, ActionRoute
+    from taut_tui.app import TautApp
+    from taut_tui.models import LogicalSurface
+    from taut_tui.widgets import TautOptionList
+
+    initialized_path = tmp_path / "empty-navigation.db"
+    TautClient.init(db_path=initialized_path)
+    cases = (
+        (None, ActionId.WORKSPACE_INITIALIZE),
+        (str(initialized_path), ActionId.CHANNEL_JOIN),
+        (str(initialized_path), ActionId.IDENTITY_REJOIN),
+    )
+
+    async def exercise(db_path: str | None, expected: ActionId) -> None:
+        seen: list[ActionInvocation] = []
+        app = TautApp(db_path=db_path, as_name=None, auth_token=None)
+        async with app.run_test(size=(100, 34)) as pilot:
+            navigation = app.query_one("#navigation-list", TautOptionList)
+            await _pause_until(
+                pilot,
+                lambda: expected in app._navigation_targets,
+            )
+            navigation.highlighted = app._navigation_targets.index(expected)
+            navigation.focus()
+            monkeypatch.setattr(app, "_dispatch_action_invocation", seen.append)
+            await pilot.press("enter")
+
+            assert len(seen) == 1
+            assert seen[0].action_id is expected
+            assert seen[0].source is ActionRoute.NAVIGATION
+            assert seen[0].context.surface is LogicalSurface.NAVIGATION
+
+    for db_path, expected in cases:
+        asyncio.run(exercise(db_path, expected))
+
+
 def test_explicit_mouse_controls_use_the_typed_action_dispatcher(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from taut_tui.actions import ActionId, ActionInvocation, ActionSource
+    from taut_tui.actions import ActionId, ActionInvocation, ActionRoute
     from taut_tui.app import TautApp
     from taut_tui.widgets import TautOptionList
 
@@ -514,7 +585,7 @@ def test_explicit_mouse_controls_use_the_typed_action_dispatcher(
                 ActionId.MESSAGE_REACT,
                 ActionId.MESSAGE_DELETE,
             ]
-            assert all(item.source is ActionSource.MOUSE for item in seen)
+            assert all(item.source is ActionRoute.MOUSE for item in seen)
 
     try:
         asyncio.run(exercise())
@@ -580,7 +651,7 @@ def test_context_mouse_controls_fit_inside_the_visible_inspector(
 def test_composer_enter_uses_the_typed_keyboard_action_dispatcher(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from taut_tui.actions import ActionId, ActionInvocation, ActionSource
+    from taut_tui.actions import ActionId, ActionInvocation, ActionRoute
     from taut_tui.app import TautApp
 
     seen: list[ActionInvocation] = []
@@ -597,7 +668,7 @@ def test_composer_enter_uses_the_typed_keyboard_action_dispatcher(
 
             assert len(seen) == 1
             assert seen[0].action_id is ActionId.MESSAGE_SEND
-            assert seen[0].source is ActionSource.KEYBOARD
+            assert seen[0].source is ActionRoute.KEYBOARD
 
     asyncio.run(exercise())
 
@@ -679,7 +750,7 @@ def test_broken_summon_startup_and_sync_operations_stay_visible(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from taut_tui import app as app_module
-    from taut_tui.actions import ActionId
+    from taut_tui.actions import ActionId, ActionRoute
     from taut_tui.app import TautApp
     from taut_tui.screens import SummonStartSubmission
 
@@ -716,7 +787,10 @@ def test_broken_summon_startup_and_sync_operations_stay_visible(
         app = TautApp(db_path=str(db_path), as_name=None, auth_token=None)
         async with app.run_test(size=(100, 34)):
             app._summon = BrokenOperations()  # type: ignore[assignment]
-            app._dispatch_tui_action(ActionId.SUMMON_START)
+            app._dispatch_tui_action(
+                ActionId.SUMMON_START,
+                source=ActionRoute.PALETTE,
+            )
             assert "provider discovery failed" in str(
                 app.query_one("#inspector-body").render()
             )
@@ -1183,7 +1257,7 @@ def test_superseding_navigation_clears_and_rejects_stale_search(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from taut.client import Message
-    from taut_tui.actions import ActionId
+    from taut_tui.actions import ActionId, ActionRoute
     from taut_tui.app import TautApp
     from taut_tui.widgets import TautOptionList
 
@@ -1207,7 +1281,10 @@ def test_superseding_navigation_clears_and_rejects_stale_search(
                 lambda _hit: pending,
             )
             app._selected_search_hit = hit
-            app._dispatch_tui_action(ActionId.SEARCH_OPEN_RESULT)
+            app._dispatch_tui_action(
+                ActionId.SEARCH_OPEN_RESULT,
+                source=ActionRoute.CONTEXT,
+            )
             await pilot.pause()
             assert app._operation_state == "searching"
 
@@ -1445,7 +1522,7 @@ def test_command_palette_opens_native_form_and_applies_public_identity_change(
 def test_native_form_keeps_values_and_renders_domain_error_inline(
     tmp_path: Path,
 ) -> None:
-    from taut_tui.actions import ActionId
+    from taut_tui.actions import ActionId, ActionRoute
     from taut_tui.app import TautApp
 
     db_path = tmp_path / "inline-error.db"
@@ -1456,7 +1533,10 @@ def test_native_form_keeps_values_and_renders_domain_error_inline(
     async def exercise() -> None:
         app = TautApp(db_path=str(db_path), as_name="alice", auth_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
-            app._dispatch_tui_action(ActionId.IDENTITY_SET_NAME)
+            app._dispatch_tui_action(
+                ActionId.IDENTITY_SET_NAME,
+                source=ActionRoute.PALETTE,
+            )
             await pilot.pause()
             field = app.screen.query_one("#field-name", Input)
             field.value = "bad name"

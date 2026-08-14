@@ -67,6 +67,27 @@ keyboard, mouse, command-palette, and contextual-menu gestures dispatch the
 same action objects. One operation must not acquire separate behavior because
 it was reached through a different gesture.
 
+The registry's route set is authoritative composition data. A route names the
+production boundary that emits an action:
+
+- `PALETTE` means selection from the native command palette;
+- `NAVIGATION` means activation of a navigation-row target or navigation
+  empty-state action, regardless of whether Enter or a pointer activated it;
+- `CONTEXT` means activation from a contextual result or transient contextual
+  surface outside navigation and the palette;
+- `KEYBOARD` means a direct key binding or text-input submission owned by the
+  base application; and
+- `MOUSE` means an explicit base-screen mouse-parity action control outside a
+  semantic navigation, palette, or contextual surface, regardless of whether
+  pointer input or keyboard activation presses that focused control.
+
+Semantic surfaces take precedence over physical input provenance: a pointer
+activation in navigation is `NAVIGATION`, not an additional `MOUSE` route. A
+route producer must reject an action-route pair absent from the action's
+registry entry. Every declared pair has a firing producer test, and every
+action retains at least one fired route. Stale, non-required route claims are
+removed rather than satisfied by manufacturing a new affordance.
+
 Core actions are always registered when their public operation is available.
 A first-party extension adds native actions only through a TUI-owned adapter
 over that extension's public typed surface. PostgreSQL and search providers
@@ -345,6 +366,12 @@ reply surface changes no cursor by itself.
 actions. Results show a human label, target or scope where relevant, and the
 conventional and vi-like gesture when one exists. Disabled actions state the
 reason. Selecting an action either performs it or opens its native form.
+
+Palette entries are exactly the currently available native action specs whose
+declared routes include `PALETTE`; applicability controls whether such an entry
+is enabled, not whether an action from another route is inserted.
+`command.open` is intentionally absent from the palette it opens and remains
+reachable through its direct keyboard and mouse routes.
 
 The palette is not a shell, accepts no arbitrary argv, does not interpolate
 text into a command line, and never invokes `taut` as a subprocess.
@@ -630,7 +657,12 @@ external provider behavior, and OS fd adapters may use narrow fakes.
 
 The following enumerable matrices have firing tests:
 
-- all action ids in [TUI-2.3], including destructive confirmation;
+- all action ids in [TUI-2.3], with each id driven from at least one real route
+  to a concrete handler outcome; every declared action-route pair driven
+  through its real producer to the central dispatcher; undeclared pairs
+  rejected; exact route-derived palette membership including exclusion of
+  `command.open`; and every destructive confirmation fired through its native
+  path;
 - every gesture/equivalent row in [TUI-8.1] and mouse parity in [TUI-8.2];
 - width boundaries 49/50, 79/80, 119/120 and height boundaries 19/20;
 - wide to medium to compact to too-small and reverse reflow with the preserved
@@ -687,6 +719,9 @@ Version 1 does not include:
 - `docs/plans/2026-08-14-taut-tui-display-sink-coverage-plan.md` — moves
   terminal escaping into owned display/toast sinks and adds structural plus
   real-PTY coverage for [TUI-12.2]/[TUI-13.1].
+- `docs/plans/2026-08-14-taut-tui-action-route-contract-plan.md` — makes
+  action-route metadata authoritative and adds the missing exhaustive
+  real-route and concrete-handler firing gates for [TUI-2.3]/[TUI-13.2].
 - `docs/plans/2026-08-14-review-findings-remediation-plan.md` — review-driven
   lifecycle, contract-proof, diagnostic, and release-gate remediation for
   the coordinated 0.9.0 candidate.

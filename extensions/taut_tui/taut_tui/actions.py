@@ -141,8 +141,14 @@ ACTION_SPECS = (
         ActionId.WORKSPACE_INITIALIZE,
         ActionFamily.WORKSPACE_IDENTITY,
         "Initialize workspace",
+        routes=(_P, _N),
     ),
-    _spec(ActionId.IDENTITY_REJOIN, ActionFamily.WORKSPACE_IDENTITY, "Rejoin identity"),
+    _spec(
+        ActionId.IDENTITY_REJOIN,
+        ActionFamily.WORKSPACE_IDENTITY,
+        "Rejoin identity",
+        routes=(_P, _N),
+    ),
     _spec(ActionId.IDENTITY_SHOW, ActionFamily.WORKSPACE_IDENTITY, "Show identity"),
     _spec(
         ActionId.IDENTITY_SET_NAME, ActionFamily.WORKSPACE_IDENTITY, "Set display name"
@@ -154,7 +160,7 @@ ACTION_SPECS = (
         ActionId.CONVERSATION_OPEN,
         ActionFamily.NAVIGATION,
         "Open conversation",
-        routes=(_P, _N, _M),
+        routes=(_P, _N),
     ),
     _spec(
         ActionId.CHANNEL_JOIN, ActionFamily.NAVIGATION, "Join channel", routes=(_P, _N)
@@ -163,7 +169,7 @@ ACTION_SPECS = (
         ActionId.CHANNEL_LEAVE,
         ActionFamily.NAVIGATION,
         "Leave channel",
-        routes=(_P, _C),
+        routes=(_P,),
         confirmation=ConfirmationPolicy.ALWAYS,
         prompt="Leave {target}?",
     ),
@@ -177,7 +183,7 @@ ACTION_SPECS = (
         ActionId.NOTIFICATIONS_OPEN,
         ActionFamily.NAVIGATION,
         "Open notifications",
-        routes=(_P, _N, _K, _M),
+        routes=(_P, _N, _K),
     ),
     _spec(
         ActionId.MEMBERS_OPEN,
@@ -189,25 +195,25 @@ ACTION_SPECS = (
         ActionId.CHANNEL_SHOW_TOPIC,
         ActionFamily.CHANNEL_CONTEXT,
         "Show channel topic",
-        routes=(_P, _C),
+        routes=(_P,),
     ),
     _spec(
         ActionId.CHANNEL_SET_TOPIC,
         ActionFamily.CHANNEL_CONTEXT,
         "Set channel topic",
-        routes=(_P, _C),
+        routes=(_P,),
     ),
     _spec(
         ActionId.CHANNEL_CLEAR_TOPIC,
         ActionFamily.CHANNEL_CONTEXT,
         "Clear channel topic",
-        routes=(_P, _C),
+        routes=(_P,),
     ),
     _spec(
         ActionId.CHANNEL_RENAME,
         ActionFamily.CHANNEL_CONTEXT,
         "Rename channel",
-        routes=(_P, _C),
+        routes=(_P,),
         confirmation=ConfirmationPolicy.ALWAYS,
         prompt="Rename {target}?",
     ),
@@ -221,25 +227,25 @@ ACTION_SPECS = (
         ActionId.MESSAGE_SEND,
         ActionFamily.MESSAGES,
         "Send message",
-        routes=(_P, _C, _K, _M),
+        routes=(_P, _K, _M),
     ),
     _spec(
         ActionId.MESSAGE_REPLY,
         ActionFamily.MESSAGES,
         "Reply to message",
-        routes=(_P, _C, _M),
+        routes=(_P, _M),
     ),
     _spec(
         ActionId.MESSAGE_REACT,
         ActionFamily.MESSAGES,
         "React to message",
-        routes=(_P, _C, _M),
+        routes=(_P, _M),
     ),
     _spec(
         ActionId.MESSAGE_DELETE,
         ActionFamily.MESSAGES,
         "Delete message",
-        routes=(_P, _C, _M),
+        routes=(_P, _M),
         confirmation=ConfirmationPolicy.ALWAYS,
         prompt="Delete message {target}?",
     ),
@@ -253,7 +259,7 @@ ACTION_SPECS = (
         ActionId.SEARCH_OPEN_RESULT,
         ActionFamily.RETRIEVAL,
         "Open search result",
-        routes=(_P, _C, _M),
+        routes=(_P, _C),
     ),
     _spec(ActionId.SYSTEM_DOCTOR, ActionFamily.SYSTEM, "Run system doctor"),
     _spec(
@@ -316,20 +322,19 @@ def action_spec(action_id: ActionId) -> ActionSpec:
     return ACTION_REGISTRY[action_id]
 
 
-def available_action_specs(*, summon_available: bool) -> tuple[ActionSpec, ...]:
-    """Filter only the optional Summon family; core actions stay static."""
+def available_action_specs(
+    *,
+    summon_available: bool,
+    route: ActionRoute | None = None,
+) -> tuple[ActionSpec, ...]:
+    """Return available actions, optionally constrained to one real route."""
 
     return tuple(
-        spec for spec in ACTION_SPECS if summon_available or not spec.requires_summon
+        spec
+        for spec in ACTION_SPECS
+        if (summon_available or not spec.requires_summon)
+        and (route is None or route in spec.routes)
     )
-
-
-class ActionSource(StrEnum):
-    KEYBOARD = "keyboard"
-    MOUSE = "mouse"
-    PALETTE = "palette"
-    NAVIGATION = "navigation"
-    CONTEXT = "context"
 
 
 @dataclass(frozen=True, slots=True)
@@ -347,18 +352,23 @@ class ActionContext:
 class ActionInvocation:
     action_id: ActionId
     context: ActionContext
-    source: ActionSource
+    source: ActionRoute
+
+    def __post_init__(self) -> None:
+        if self.source not in action_spec(self.action_id).routes:
+            raise ValueError(
+                f"{self.action_id.value} does not declare route {self.source.value}"
+            )
 
 
 def invoke_action(
     action_id: ActionId,
     context: ActionContext,
     *,
-    source: ActionSource,
+    source: ActionRoute,
 ) -> ActionInvocation:
     """Build the one typed invocation shape used by every input route."""
 
-    action_spec(action_id)
     return ActionInvocation(action_id=action_id, context=context, source=source)
 
 
@@ -527,7 +537,6 @@ __all__ = [
     "ActionId",
     "ActionInvocation",
     "ActionRoute",
-    "ActionSource",
     "ActionSpec",
     "ConfirmationPolicy",
     "GesturePair",
