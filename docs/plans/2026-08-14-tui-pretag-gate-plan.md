@@ -51,3 +51,10 @@ leave every release tag untouched.
   soon as it requested focus, before the app had processed the focus event and
   entered compose mode, so the first character could be consumed as a normal
   gesture. It now waits for both focus and compose mode before typing.
+- 2026-08-14: The following run proved the macOS correction and all Ubuntu
+  cells green. Windows exposed two more polling races: a drag-out case sent
+  Enter before pointer release was applied, and a live-reply case polled for a
+  watcher-driven refresh through a one-second wall-clock loop. The former now
+  waits for the semantic target, focus, and pointer-release states. The latter
+  uses an event fired after the real navigation result applies the reply
+  marker, with a bounded fail-safe rather than repeated sleeps.

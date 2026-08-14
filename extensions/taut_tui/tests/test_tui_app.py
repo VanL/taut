@@ -919,12 +919,17 @@ def test_navigation_drag_out_does_not_swallow_next_keyboard_enter(
         app = TautApp(db_path=str(db_path), as_name="alice", auth_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             navigation = app.query_one("#navigation-list", TautOptionList)
-            await _pause_until(pilot, lambda: bool(navigation.option_count))
+            await _pause_until(
+                pilot,
+                lambda: app._navigation_targets[:1] == ["general"],
+            )
             navigation.highlighted = 0
             navigation.focus()
+            await _pause_until(pilot, lambda: navigation.has_focus)
 
             assert await pilot.mouse_down("#navigation-list", offset=(1, 0)) is True
             assert await pilot.mouse_up("#transcript", offset=(1, 0)) is True
+            await _pause_until(pilot, lambda: not navigation._pointer_pending)
             await pilot.press("enter")
             await _pause_until(
                 pilot,
@@ -1123,6 +1128,7 @@ def test_retired_summon_readiness_cannot_resurrect_visual_state() -> None:
 
 def test_live_reply_notification_refreshes_the_contextual_reply_marker(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from taut_tui.app import TautApp
     from taut_tui.widgets import TautOptionList
@@ -1139,7 +1145,10 @@ def test_live_reply_notification_refreshes_the_contextual_reply_marker(
         app = TautApp(db_path=str(db_path), as_name="alice", auth_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             navigation = app.query_one("#navigation-list", TautOptionList)
-            await _pause_until(pilot, lambda: bool(navigation.option_count))
+            await _pause_until(
+                pilot,
+                lambda: app._navigation_targets[:1] == ["general"],
+            )
             navigation.highlighted = 0
             navigation.focus()
             await pilot.press("enter")
@@ -1148,12 +1157,22 @@ def test_live_reply_notification_refreshes_the_contextual_reply_marker(
                 lambda: any(message.ts == root.ts for message in app._message_rows),
             )
 
-            bob.reply("general", str(root.ts), "a live contextual reply")
+            reply_navigation_applied = asyncio.Event()
+            apply_navigation_result = app._apply_navigation_result
 
-            await _pause_until(
-                pilot,
-                lambda: ("general", root.ts) in app._reply_threads,
+            def observe_navigation_result(future: Future[Any]) -> None:
+                apply_navigation_result(future)
+                if ("general", root.ts) in app._reply_threads:
+                    reply_navigation_applied.set()
+
+            monkeypatch.setattr(
+                app,
+                "_apply_navigation_result",
+                observe_navigation_result,
             )
+
+            bob.reply("general", str(root.ts), "a live contextual reply")
+            await asyncio.wait_for(reply_navigation_applied.wait(), timeout=5)
             transcript = app.query_one("#transcript", TautOptionList)
             root_index = next(
                 index
