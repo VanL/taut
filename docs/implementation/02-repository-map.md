@@ -77,11 +77,11 @@ Quick pointers to the key guidance documents in this repository.
 | `docs/specs/09-system-doctor.md` | Fixed passive workspace-diagnostic report, findings/framework split, and no-repair boundary |
 | `docs/specs/10-taut-tui.md` | Human-first core/extension reflection, native actions, live-read ownership, responsive layout, system operations, and rich-host Summon contract |
 | `docs/plans/README.md` | Plan directory rules |
-| `docs/plans/2026-06-12-taut-foundation-plan.md` | Historical foundation implementation plan |
+| retired: 2026-06-12-taut-foundation-plan (source `f1259c0`; see the ledger in docs/plans/README.md) | Historical foundation implementation plan |
 | `docs/plans/2026-06-18-member-identity-addressing-plan.md` | Implemented plan for member ids, addressing, notifications, and channel rename |
-| `docs/plans/2026-06-12-taut-0.1.1-hardening-plan.md` | Hardening plan for handle quality, [TAUT-11] proof burndown, README rendering, and 0.1.1 release |
-| `docs/plans/2026-06-17-github-release-helper-plan.md` | GitHub-only release-helper plan while PyPI name clearance is pending |
-| `docs/plans/2026-06-17-github-actions-release-workflows-plan.md` | GitHub Actions test and GitHub-only release workflow plan |
+| retired: 2026-06-12-taut-0.1.1-hardening-plan (source `f1259c0`; see the ledger in docs/plans/README.md) | Hardening plan for handle quality, [TAUT-11] proof burndown, README rendering, and 0.1.1 release |
+| retired: 2026-06-17-github-release-helper-plan (source `dadd324`; see the ledger in docs/plans/README.md) | Initial GitHub-only release-helper plan; current publication ownership is in [TAUT-12.5] |
+| retired: 2026-06-17-github-actions-release-workflows-plan (source `33e13ee`; see the ledger in docs/plans/README.md) | Initial GitHub Actions test and release-workflow plan; current publication ownership is in [TAUT-12.5] |
 | `docs/plans/2026-06-17-taut-pg-extension-plan.md` | Postgres extension plan covering `extensions/`, PG test harness, and GitHub-only release gates |
 | `docs/plans/2026-07-08-release-helper-simplebroker-port-plan.md` | SimpleBroker-style release helper target, batch, and summon release gate port plan |
 | `docs/plans/2026-06-17-implementation-review-followups-plan.md` | Post-review hardening for missing-plugin errors, bounded `log --limit`, and shared backend conformance |
@@ -93,7 +93,7 @@ Quick pointers to the key guidance documents in this repository.
 | `docs/plans/2026-07-01-taut-watch-runtime-plan.md` | Implemented `TautWatchRuntime` seam between `TautClient` and the watcher |
 | `docs/plans/2026-07-06-taut-summon-plan.md` | Implemented `taut-summon` extension: delegation verbs, ledger, adapters, driver, control plane, conformance suite |
 | `docs/plans/2026-07-10-taut-summon-quality-remediation-plan.md` | Implemented and independently verified remediation for state, lifecycle, control, PTY, driver-generation, and paired-release findings |
-| `docs/plans/2026-07-11-multi-factor-review-remediation-plan.md` | Implemented and independently reviewed external multi-factor remediation; current worktree remains uncommitted |
+| `docs/plans/2026-07-11-multi-factor-review-remediation-plan.md` | Implemented and independently reviewed external multi-factor remediation |
 | `docs/plans/2026-07-12-lazy-command-extensions-and-rich-tui-composition-plan.md` | Reviewed implementation plan for command extensions, lazy subsystem loading, public Summon composition, and rich-host boundaries |
 | `docs/plans/2026-07-13-ci-speed-determinism-release-evidence-plan.md` | Reviewed implementation plan for existing-lane coverage, deterministic worker/process ownership, strict local-LLM evidence, canonical package artifacts, and exact-SHA release gates |
 | `docs/plans/2026-07-14-universal-release-gates-plan.md` | Reviewed implementation and release plan for one default all-extension local gate, explicit human override, and both exact-SHA workflow requirements for every tag |

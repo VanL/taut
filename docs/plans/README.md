@@ -55,10 +55,10 @@ directory. Run `bin/check-plan-status-index` after changing it.
 | `2026-08-13-simplebroker-config-isolation-plan.md` | completed | no | Class 5 symmetric Taut/SimpleBroker configuration isolation; published 7.3.2 artifact, exhaustive mapping, cross-backend proof, and independent closeout review passed. |
 | `2026-08-12-live-point-in-time-dump-plan.md` | completed | no | Completed: live logical dump, strict restore chronology, Taut-to-broker skew configuration, and integrated SQLite/PostgreSQL verification passed. |
 | `2026-08-12-taut-tui-implementation-plan.md` | completed | no | Completed: human-first TUI, responsive reflow, native system actions, Summon rich-host lifecycle, and full retained-environment verification passed. |
-| `2026-06-12-taut-0.1.1-hardening-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |
-| `2026-06-12-taut-foundation-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |
-| `2026-06-17-github-actions-release-workflows-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |
-| `2026-06-17-github-release-helper-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |
+| `2026-06-12-taut-0.1.1-hardening-plan.md` | retired-pending | no | Soft-retired 2026-08-14 after harvest-gate re-verification; source `f1259c0`. |
+| `2026-06-12-taut-foundation-plan.md` | retired-pending | no | Soft-retired 2026-08-14 after harvest-gate re-verification; source `f1259c0`. |
+| `2026-06-17-github-actions-release-workflows-plan.md` | retired-pending | no | Soft-retired 2026-08-14 after harvest-gate re-verification; source `33e13ee`. |
+| `2026-06-17-github-release-helper-plan.md` | retired-pending | no | Soft-retired 2026-08-14 after harvest-gate re-verification; source `dadd324`. |
 | `2026-06-17-implementation-review-followups-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |
 | `2026-06-17-taut-pg-extension-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |
 | `2026-06-18-member-identity-addressing-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |
@@ -132,6 +132,10 @@ One line per retired plan; the body lives in git at the source SHA.
 
 | Plan | Dates | Outcome | Absorbed into | Source SHA |
 |------|-------|---------|---------------|------------|
+| `2026-06-12-taut-0.1.1-hardening-plan.md` | 2026-06-12, soft-retired 2026-08-14 | Post-0.1 hardening: process-evidence identity repair, cross-platform capture quality, watcher proof, and review burndown | [TAUT-8]/[TAUT-11], `docs/implementation/04-taut-architecture.md`, and the retained 2026-06-12 lessons | `f1259c0` |
+| `2026-06-12-taut-foundation-plan.md` | 2026-06-12, soft-retired 2026-08-14 | Initial package, storage, identity, envelope, client, watcher, CLI, and review foundation | [TAUT-2]–[TAUT-11], `docs/implementation/04-taut-architecture.md`, and the retained early-foundation lesson fold | `f1259c0` |
+| `2026-06-17-github-actions-release-workflows-plan.md` | 2026-06-17, soft-retired 2026-08-14 | Initial reusable CI and GitHub-release workflows with bounded setup and release fences | [TAUT-12.5] and the current release architecture; the GitHub-only/no-PyPI boundary was transitional and is not durable | `33e13ee` |
+| `2026-06-17-github-release-helper-plan.md` | 2026-06-17, soft-retired 2026-08-14 | Initial fail-closed release helper, remote inspection, and tag planning | [TAUT-12.5] and the current release architecture; GitHub-only publication was transitional, while helper-owned planning and no direct byte upload remain durable | `dadd324` |
 | `2026-07-10-ci-failure-remediation-plan.md` | 2026-07-10, soft-retired 2026-08-08 | v0.5.1 CI remediation: PTY write leases, watcher pre-publication stop, artifact fixture portability, deterministic waiter-rebind proof | [TAUT-8.5] rebind proof text, [SUM-*] related-plan history, and five 2026-07-10 lessons | `b03709452` |
 | `2026-07-14-single-project-config-source-spec-plan.md` | 2026-07-14, soft-retired 2026-08-08 | Spec-authoring clarification making `.taut.toml` the sole project settings file, rejecting alternate-manifest scanning | [TAUT-2]/[TAUT-3.2] (the governing spec is the durable record) | `db67b94b` |
 | `2026-07-14-terminal-output-safety-plan.md` | 2026-07-14, soft-retired 2026-08-08 | Packaged and project-customizable terminal-text safety policy, public escape utility, raw-PTY exemption | [TAUT-3.2]/[TAUT-6.4], Summon terminal-safety text, `taut/terminal.py` + `taut/defaults.toml`, and two 2026-07-14 lessons | `281f04fa` |

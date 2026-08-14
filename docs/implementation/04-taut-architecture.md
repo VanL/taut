@@ -879,10 +879,14 @@ watch, `taut/client/_notifications.py::NotificationsMixin.inbox` claims notifica
 - `docs/plans/2026-07-12-automatic-display-name-capitalization-plan.md`
 - `docs/plans/2026-07-10-taut-dynamic-native-waiter-replacement-plan.md`
 - `docs/plans/2026-06-18-member-identity-addressing-plan.md`
-- `docs/plans/2026-06-12-taut-foundation-plan.md`
-- `docs/plans/2026-06-12-taut-0.1.1-hardening-plan.md`
-- `docs/plans/2026-06-17-github-release-helper-plan.md`
-- `docs/plans/2026-06-17-github-actions-release-workflows-plan.md`
+- retired: 2026-06-12-taut-foundation-plan (source `f1259c0`; see the ledger
+  in `docs/plans/README.md`)
+- retired: 2026-06-12-taut-0.1.1-hardening-plan (source `f1259c0`; see the
+  ledger in `docs/plans/README.md`)
+- retired: 2026-06-17-github-release-helper-plan (source `dadd324`; see the
+  ledger in `docs/plans/README.md`)
+- retired: 2026-06-17-github-actions-release-workflows-plan (source
+  `33e13ee`; see the ledger in `docs/plans/README.md`)
 - `docs/plans/2026-06-17-taut-pg-extension-plan.md`
 - `docs/plans/2026-06-17-implementation-review-followups-plan.md`
 - `docs/plans/2026-06-18-simplebroker-latest-timestamp-plan.md`

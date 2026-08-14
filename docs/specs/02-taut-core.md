@@ -2360,13 +2360,15 @@ Helper obligations:
   set. `--checks-only` runs that same single sequence without mutation. The
   sequence is: root pytest partitioned into `not slow and not installed_wheel`
   plus a fresh serial `not slow and installed_wheel` invocation,
-  `bin/pytest-pg --fast`, the four isolated Summon lanes, one explicit MCP
-  `not pg_only` lane under the MCP project, the complete package-local TUI lane
-  against its retained lock, existing root/PG/Summon Ruff paths, package-local
-  MCP and TUI Ruff lint/format, and five collision-safe mypy owners including
-  explicit MCP and TUI project-local commands with their package configs. The
-  local MCP lane never treats excluded PostgreSQL cases as evidence; the
-  required canonical MCP workflow supplies that live-backend proof. Target
+  `bin/pytest-pg --fast`, a second PostgreSQL-harness invocation selecting
+  `extensions/taut_mcp/tests/test_pg_conformance.py`, the four isolated Summon
+  lanes, one explicit MCP `not pg_only` lane under the MCP project, the complete
+  package-local TUI lane against its retained lock, existing root/PG/Summon Ruff
+  paths, package-local MCP and TUI Ruff lint/format, and five collision-safe
+  mypy owners including explicit MCP and TUI project-local commands with their
+  package configs. The local non-PostgreSQL MCP lane never treats excluded
+  PostgreSQL cases as evidence; the selected MCP PostgreSQL invocation and the
+  required canonical MCP workflow both supply live-backend proof. Target
   selection controls metadata, ordinary package builds, tags, and publication,
   not the default verification scope. `--skip-checks` remains an explicit human
   override for dry-run and publishing commands.
@@ -2624,6 +2626,9 @@ installing `taut-chat`.
 
 ## Related Plans
 
+- `docs/plans/2026-08-14-review-findings-remediation-plan.md` — restores the
+  self-contained MCP PostgreSQL release precheck alongside lifecycle and
+  contract-proof remediation for the coordinated 0.9.0 candidate.
 - `docs/plans/2026-08-13-simplebroker-config-isolation-plan.md` — complete
   Taut-prefixed broker mapping, nominal ambient-free lower-layer config, and
   symmetric Taut/SimpleBroker namespace isolation.
@@ -2737,15 +2742,14 @@ installing `taut-chat`.
 - `docs/plans/2026-06-18-member-identity-addressing-plan.md` - implemented
   migration from the current development implementation to the stable
   member identity, mutable naming, direct-message, and notification model.
-- `docs/plans/2026-06-12-taut-foundation-plan.md` — historical foundation:
-  package scaffolding, schema, identity, envelope, client, watcher, CLI.
-- `docs/plans/2026-06-12-taut-0.1.1-hardening-plan.md` — post-0.1.0
-  hardening slice: name-quality fix, [TAUT-11] burndown, renderer
-  conformance to the README, round-5 review, 0.1.1 tag.
-- `docs/plans/2026-06-17-github-release-helper-plan.md` — GitHub-only
-  release helper while the PyPI `taut` package-name request is pending.
-- `docs/plans/2026-06-17-github-actions-release-workflows-plan.md` —
-  GitHub Actions test and GitHub-only release publication workflows.
+- retired: 2026-06-12-taut-foundation-plan — source `f1259c0`; see the
+  ledger in `docs/plans/README.md`.
+- retired: 2026-06-12-taut-0.1.1-hardening-plan — source `f1259c0`; see the
+  ledger in `docs/plans/README.md`.
+- retired: 2026-06-17-github-release-helper-plan — source `dadd324`; see the
+  ledger in `docs/plans/README.md`.
+- retired: 2026-06-17-github-actions-release-workflows-plan — source
+  `33e13ee`; see the ledger in `docs/plans/README.md`.
 - `docs/plans/2026-07-08-release-helper-simplebroker-port-plan.md` —
   release-helper port to SimpleBroker-style targets, batch planning, summon
   release gating, and GitHub-only release machinery documentation.
