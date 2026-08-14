@@ -294,6 +294,12 @@ An empty result raises `EmptyResultError`, matching the CLI exit-2 class. The
 method is the only owner of search semantics; the command adapter must not
 reimplement scope, tokenization, reconciliation, or filtering.
 
+An embedding surface that opens one `SearchHit` in surrounding history uses
+core's [TAUT-7.9] `history_around(hit.thread, str(hit.ts), ...)` operation. It
+must not call cursor-moving `show_message`, walk a private queue, or treat the
+search page as a transcript store. A source row can disappear between search
+hydration and open; the resulting exact not-found is normal convergence.
+
 ### [SRCH-5.3] JSON and human output
 
 `--json` emits one NDJSON object per hit with this exact fixed field set:

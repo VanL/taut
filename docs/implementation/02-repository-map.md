@@ -11,7 +11,7 @@ Quick pointers to the key guidance documents in this repository.
 | `README.md` | Product face and, per section, contract of record; ceded sections resolve through `docs/specs/product-section-registry.md` |
 | `llms.txt` | llmstxt.org link index for language models (absolute URLs) |
 | `docs/agent-kernel.md` | Agent product-use kernel: the sole home of agent-executable recipes; a view, never a contract |
-| `bin/release.py` | Four-package release helper for manifest-owned metadata/lock reconciliation, one universal default precheck sequence with an explicit human override, exact-path local preparation commits, non-mutating checks, producer-first exact-SHA observation, repeated fail-closed settings/publication/tag fences, namespaced tags, and coordinated `all --version` batches |
+| `bin/release.py` | Five-package release helper for manifest-owned metadata/lock reconciliation, one universal default precheck sequence with an explicit human override, exact-path local preparation commits, non-mutating checks, producer-first exact-SHA observation, repeated fail-closed settings/publication/tag fences, namespaced tags, and coordinated `all --version` batches |
 | `bin/check-plan-status-index` | Structured plan status index gate: completeness, closed status/exemplar vocabulary, and table well-formedness |
 | `bin/check-doc-paths` | Pytest-free path-claim gate over the maintained guidance surfaces plus `docs/coalescing.md` and `docs/plans/README.md`; reuses the claim grammar in `tests/test_docs_references.py` |
 | `bin/check-cli-claims` | Pytest-free command-path gate over maintained Markdown; reuses the registry-derived grammar, exact source set, and exemptions in `tests/test_cli_claims.py` |
@@ -19,20 +19,22 @@ Quick pointers to the key guidance documents in this repository.
 | `bin/pytest-pg` | Docker-backed Postgres test runner for shared root tests and `taut-pg` tests |
 | `bin/combine-coverage.py` | Pre-combine raw-shard integrity owner: validates every downloaded file through Coverage's public data API, rejects absent, zero-byte, unreadable, or warning-producing evidence, and preserves all inputs while combining |
 | `bin/check-required-coverage-paths.py` | Post-combine coverage-data checker for required child-process, critical Summon, and MCP rate-admission execution paths |
+| `bin/render-tui-screens` | Deterministic wide, medium, compact, and too-small TUI SVG regeneration for manual visual review |
 | `bin/check-core-summon-wheel-matrix.py` | Isolated installed-artifact checker for the `taut-chat` core/current-Summon pair, exact distribution metadata, live control behavior, incompatible current-core floors, and the historical `Requires-Dist: taut` rename boundary |
 | `bin/build-and-check-release-wheels.py` | Fresh-build owner, or paired explicit-current-wheel consumer in canonical CI, that builds the historical diagnostic artifact before invoking the installed-artifact matrix checker |
 | `bin/release-artifact.py` | Creates and verifies commit-bound release bundles containing one wheel, one sdist, and an inner SHA-256 manifest |
 | `bin/ruff_suppression_index.py` | Validates source-local approved Ruff directives against the human DOM-10.2.1 registry, raw `--ignore-noqa` diagnostics, the global active-rule inventory, and a generated symbol-keyed location index; check mode is read-only and write mode atomically replaces only the generated block |
 | `bin/require-green-workflows.py` | Observes canonical exact-SHA workflow evidence; its workflow-only mode lets the local release producer wait without artifact or output-file access, while tag gates select attempt-bound release artifacts by immutable id and archive digest |
 | `.github/scripts/release_publication.py` | Fail-closed draft, PyPI filename/digest, remote-tag, and immutable GitHub finalization state machine used by release workflows |
-| `.github/workflows/test.yml` | Push/PR/reusable pytest, lint, type, deterministic serial direct root/Summon unit coverage plus checked same-run process/MCP aggregation, deterministic exact-union Windows source-factor shards, and sole canonical release-byte production for all four packages |
+| `.github/workflows/test.yml` | Push/PR/reusable pytest, lint, type, deterministic serial direct root/Summon unit coverage plus checked same-run process/MCP aggregation, deterministic exact-union Windows source-factor shards, and sole canonical release-byte production for all five packages |
 | `.github/workflows/test-pg-extension.yml` | Push/PR/reusable Docker Postgres gate for `taut-pg` |
 | `.github/workflows/test-mcp-extension.yml` | Push/PR/reusable Ubuntu SQLite/live-PostgreSQL MCP behavior, representative macOS/Windows non-PG compatibility, package-local quality, and disposable build gate; never a release-byte owner |
 | `.github/workflows/release-gate.yml` | `v*` observer for `taut-chat`: exact-SHA Test/PG/MCP evidence, draft staging, top-level PyPI Trusted Publishing, digest verification, and immutable GitHub finalization |
 | `.github/workflows/release-gate-pg.yml` | `taut_pg/v*` observer for `taut-pg`: exact-SHA Test/PG/MCP evidence, draft staging, top-level PyPI Trusted Publishing, digest verification, and immutable GitHub finalization |
 | `.github/workflows/release-gate-summon.yml` | `taut_summon/v*` observer for `taut-summon`: exact-SHA Test/PG/MCP evidence, draft staging, top-level PyPI Trusted Publishing, digest verification, and immutable GitHub finalization |
 | `.github/workflows/release-gate-mcp.yml` | `taut_mcp/v*` observer for `taut-mcp`: exact-SHA Test/PG/MCP evidence, draft staging, top-level PyPI Trusted Publishing, digest verification, and immutable GitHub finalization |
-| `.github/workflows/release.yml` | Reusable no-rebuild exact-artifact draft staging and verified-bundle carry; the four top-level gates, not this reusable workflow, own PyPI OIDC publication |
+| `.github/workflows/release-gate-tui.yml` | `taut_tui/v*` observer for `taut-tui`: exact-SHA Test/PG/MCP evidence, draft staging, top-level PyPI Trusted Publishing, digest verification, and immutable GitHub finalization |
+| `.github/workflows/release.yml` | Reusable no-rebuild exact-artifact draft staging and verified-bundle carry; the five top-level gates, not this reusable workflow, own PyPI OIDC publication |
 | `.github/workflows/release-finalize.yml` | Reusable least-privilege exact-artifact PyPI recheck and immutable GitHub Release finalizer |
 
 ## Shared Agent Context
@@ -71,8 +73,9 @@ Quick pointers to the key guidance documents in this repository.
 | `docs/specs/05-taut-mcp.md` | MCP extension spec: dual-era stdio lifecycle, process-local shared ensure, explicit identity-bearing tools, notification resource, legacy/modern subscriptions, and host hints |
 | `docs/specs/06-search.md` | Search spec: cursor-neutral visible history, derived providers, durable work, recovery, and backend parity |
 | `docs/specs/07-agent-theory-and-program-theory.md` | Definitional reference for Agent Theory and program theory |
-| `docs/specs/08-persistence-io.md` | Actor-free composite dump/load, contributor, quiescence, and guarded recovery contract |
+| `docs/specs/08-persistence-io.md` | Actor-free live logical dump/load, contributor, H-boundary, and guarded recovery contract |
 | `docs/specs/09-system-doctor.md` | Fixed passive workspace-diagnostic report, findings/framework split, and no-repair boundary |
+| `docs/specs/10-taut-tui.md` | Human-first core/extension reflection, native actions, live-read ownership, responsive layout, system operations, and rich-host Summon contract |
 | `docs/plans/README.md` | Plan directory rules |
 | `docs/plans/2026-06-12-taut-foundation-plan.md` | Historical foundation implementation plan |
 | `docs/plans/2026-06-18-member-identity-addressing-plan.md` | Implemented plan for member ids, addressing, notifications, and channel rename |
@@ -112,8 +115,9 @@ Quick pointers to the key guidance documents in this repository.
 | `docs/implementation/06-command-extensions.md` | Static and installed command registration, registry/dispatch ownership, lazy imports, extension packaging, and rich composition guidance |
 | `docs/implementation/07-taut-mcp-architecture.md` | MCP reactor-over-reactors rationale: workspace ownership, explicit tool dispatch, cached notification resource, edge hints, and cancellation boundaries |
 | `docs/implementation/09-search-architecture.md` | Search rationale: source-hydrated derived state, backend provider boundary, durable work recovery, reconciliation, and generation rebuilds |
-| `docs/implementation/10-persistence-io.md` | Composite logical dump/load rationale: SimpleBroker reuse, sidecar authority, extension contributors, quiescence, and guarded failure recovery |
+| `docs/implementation/10-persistence-io.md` | Composite logical dump/load rationale: SimpleBroker H-boundary, sidecar authority, extension contributors, and guarded load recovery |
 | `docs/implementation/11-system-doctor.md` | Fixed passive diagnostic rationale: typed findings, shared validation, queue statistics, contributor compatibility, and resource ownership |
+| `docs/implementation/12-taut-tui.md` | TUI rationale: worker ownership, typed actions/forms, active-only live reads, reflow state, system boundary, and Summon terminal handoff |
 | `docs/lessons.md` | Canonical lessons ledger |
 
 ## Product Code
@@ -145,6 +149,7 @@ Quick pointers to the key guidance documents in this repository.
 | `extensions/taut_pg/` | Separate `taut-pg` project with backend registration, built-in PostgreSQL full-text search provider, extension metadata, README, and PG-only tests |
 | `extensions/taut_summon/` | Separate `taut-summon` project: lazy public facade, typed rich-host controller with non-owning signal default and object-local identity, explicit CLI signal opt-in, one-signal terminal-retirement adapters with sanitized child identity, ledger, control plane, persona, and real-process conformance suite |
 | `extensions/taut_mcp/` | Separate `taut-mcp` project: installed `taut mcp` manifest/adapter plus standalone convenience script over one process runner, dual-era stdio server, master process reactor, one owner-thread reactor per resident workspace, explicit workspace-plus-token schemas for identity-using tools, notification resource, legacy/modern subscription adapters, and optional legacy Claude channel hint |
+| `extensions/taut_tui/` | Separate `taut-tui` project: installed `taut tui` manifest/adapter, Textual human surface, semantic actions, native forms/screens, serialized public-client session, pure reflow state, actor-free system work, and public Summon rich-host adapter |
 
 ## Skills
 

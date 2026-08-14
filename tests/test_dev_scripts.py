@@ -312,6 +312,7 @@ def test_build_pg_test_uv_command_installs_extension(
     assert "--with-editable" in command
     assert "./extensions/taut_pg[dev]" in command
     assert "./extensions/taut_mcp[dev]" in command
+    assert "./extensions/taut_tui[dev]" in command
     assert command[-1] == "pytest"
 
 

@@ -20,6 +20,7 @@ from taut_summon._control import control_in_queue_name
 from taut_summon._state import (
     capture_driver_evidence,
     ensure_summon_schema,
+    get_session,
     record_session,
 )
 from taut_summon.controller import _status_from_reply
@@ -49,6 +50,7 @@ EXPECTED_PUBLIC_EXPORTS = [
     "SummonInteraction",
     "SummonOperationError",
     "SummonRequest",
+    "SummonRunHandle",
     "SummonStatus",
     "SummonedMember",
     "TerminalAvailability",
@@ -112,6 +114,73 @@ def _create_live_member(db: Path, *, name: str = "reviewer") -> Member:
     return member
 
 
+def _create_foreground_project(db: Path, *, occupied_name: str | None = None) -> None:
+    TautClient.init(db_path=db)
+    client = TautClient(db_path=db, as_name="van")
+    try:
+        client.join("general")
+    finally:
+        client.close()
+    if occupied_name is not None:
+        occupied = TautClient(db_path=db, as_name=occupied_name)
+        try:
+            occupied.join("general")
+        finally:
+            occupied.close()
+
+
+def _scripted_foreground_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    tag: str,
+    scenario: dict[str, Any] | None = None,
+) -> Path:
+    scenario_path = tmp_path / f"{tag}-scenario.json"
+    received_path = tmp_path / f"{tag}-received.jsonl"
+    scenario_path.write_text(json.dumps(scenario or {}), encoding="utf-8")
+    monkeypatch.setenv("TAUT_SUMMON_SCENARIO", str(scenario_path))
+    monkeypatch.setenv("TAUT_SUMMON_RECEIVED_LOG", str(received_path))
+    monkeypatch.setenv("TAUT_SUMMON_RESUME_BACKOFF", "0.05,0.05")
+    monkeypatch.setenv("TAUT_SUMMON_CONTROL_INTERVAL", "0.02")
+    return received_path
+
+
+def _foreground_request(name: str) -> Any:
+    from taut_summon import SummonRequest
+
+    return SummonRequest(
+        name=name,
+        threads=("general",),
+        terminal=False,
+        persona=None,
+        system_prompt_file=None,
+        rate_limit=None,
+        detach=True,
+    )
+
+
+def _received_entries(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def _wait_until(
+    predicate: Callable[[], bool], *, timeout: float = 10.0, message: str
+) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.02)
+    raise AssertionError(f"timed out waiting for {message}")
+
+
 def test_public_controller_models_have_exact_fields() -> None:
     from taut_summon import (
         DriverUnresponsive,
@@ -157,6 +226,232 @@ def test_public_controller_models_have_exact_fields() -> None:
     )
     assert issubclass(NothingSummoned, SummonOperationError)
     assert issubclass(DriverUnresponsive, SummonOperationError)
+
+
+def test_foreground_ready_callback_is_once_and_control_live_across_resume(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut_summon import (
+        ShellSummonInteraction,
+        SummonController,
+        SummonRunHandle,
+    )
+
+    db = tmp_path / ".taut.db"
+    _create_foreground_project(db)
+    received = _scripted_foreground_environment(
+        monkeypatch,
+        tmp_path,
+        tag="ready-resume",
+        scenario={"session_id": "ready-session"},
+    )
+    controller = SummonController(db_path=db)
+    ready = threading.Event()
+    callbacks: list[SummonRunHandle] = []
+    callback_threads: list[int] = []
+    callback_statuses: list[Any] = []
+    failures: list[BaseException] = []
+
+    def on_ready(handle: SummonRunHandle) -> None:
+        callbacks.append(handle)
+        callback_threads.append(threading.get_ident())
+        callback_statuses.append(controller.status(handle.member.name))
+        ready.set()
+
+    def run() -> None:
+        try:
+            controller.run_foreground(
+                _foreground_request("scripted"),
+                ShellSummonInteraction(),
+                on_ready=on_ready,
+            )
+        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
+            failures.append(exc)
+
+    worker = threading.Thread(target=run, name="summon-ready-owner")
+    worker.start()
+    assert ready.wait(timeout=10.0)
+    assert len(callbacks) == 1
+    handle = callbacks[0]
+    assert callback_threads == [worker.ident]
+    assert handle.member.name == "Scripted"
+    assert handle.member.provider == "scripted"
+    assert handle.member.provider_session_id == "ready-session"
+    assert callback_statuses[0].member_id == handle.member.member_id
+    assert callback_statuses[0].provider_session_id == "ready-session"
+    with pytest.raises(AttributeError):
+        handle.member = handle.member
+
+    starts = [
+        entry for entry in _received_entries(received) if entry["event"] == "start"
+    ]
+    assert len(starts) == 1
+    os.kill(int(starts[0]["pid"]), 9)
+    _wait_until(
+        lambda: (
+            len(
+                [
+                    entry
+                    for entry in _received_entries(received)
+                    if entry["event"] == "start"
+                ]
+            )
+            >= 2
+        ),
+        message="resumed scripted generation",
+    )
+    assert len(callbacks) == 1
+
+    handle.request_stop()
+    handle.request_stop()
+    worker.join(timeout=10.0)
+    assert not worker.is_alive()
+    assert failures == []
+    handle.request_stop()
+
+
+def test_foreground_handle_stop_is_run_scoped_after_rename_and_completion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut_summon import ShellSummonInteraction, SummonController, SummonRunHandle
+
+    db = tmp_path / ".taut.db"
+    _create_foreground_project(db, occupied_name="scripted")
+    _scripted_foreground_environment(monkeypatch, tmp_path, tag="run-scope")
+    controller = SummonController(db_path=db)
+
+    def start_run(
+        name: str,
+    ) -> tuple[threading.Thread, SummonRunHandle, list[BaseException]]:
+        ready = threading.Event()
+        handles: list[SummonRunHandle] = []
+        failures: list[BaseException] = []
+
+        def on_ready(handle: SummonRunHandle) -> None:
+            handles.append(handle)
+            ready.set()
+
+        def run() -> None:
+            try:
+                controller.run_foreground(
+                    _foreground_request(name),
+                    ShellSummonInteraction(),
+                    on_ready=on_ready,
+                )
+            except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
+                failures.append(exc)
+
+        worker = threading.Thread(target=run)
+        worker.start()
+        assert ready.wait(timeout=10.0)
+        return worker, handles[0], failures
+
+    first_worker, first, first_failures = start_run("scripted")
+    assert first.member.name != "scripted"
+    state = Queue("taut.summon_state", db_path=str(db))
+    try:
+        row = get_session(state, first.member.member_id)
+    finally:
+        state.close()
+    assert row is not None
+    identity = TautClient(db_path=db, token=row["token"])
+    try:
+        renamed = identity.set_name("reviewer")
+    finally:
+        identity.close()
+    assert renamed.member_id == first.member.member_id
+
+    first.request_stop()
+    first_worker.join(timeout=10.0)
+    assert not first_worker.is_alive()
+    assert first_failures == []
+
+    second_worker, second, second_failures = start_run("reviewer")
+    assert second.member.member_id == first.member.member_id
+    first.request_stop()
+    time.sleep(0.1)
+    assert second_worker.is_alive()
+    assert controller.status("reviewer").member_id == second.member.member_id
+    second.request_stop()
+    second_worker.join(timeout=10.0)
+    assert not second_worker.is_alive()
+    assert second_failures == []
+
+
+def test_foreground_ready_callback_failure_cleans_up_and_preserves_cause(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut_summon import (
+        ShellSummonInteraction,
+        SummonController,
+        SummonOperationError,
+        SummonRunHandle,
+    )
+
+    db = tmp_path / ".taut.db"
+    _create_foreground_project(db)
+    received = _scripted_foreground_environment(
+        monkeypatch, tmp_path, tag="callback-failure"
+    )
+    failure = RuntimeError("host callback failed")
+    seen: list[SummonRunHandle] = []
+
+    def on_ready(handle: SummonRunHandle) -> None:
+        seen.append(handle)
+        raise failure
+
+    with pytest.raises(
+        SummonOperationError, match="readiness callback failed"
+    ) as caught:
+        SummonController(db_path=db).run_foreground(
+            _foreground_request("scripted"),
+            ShellSummonInteraction(),
+            on_ready=on_ready,
+        )
+
+    assert caught.value.__cause__ is failure
+    assert len(seen) == 1
+    state = Queue("taut.summon_state", db_path=str(db))
+    try:
+        row = get_session(state, seen[0].member.member_id)
+    finally:
+        state.close()
+    assert row is not None
+    assert row["driver_pid"] is None
+    starts = [
+        entry for entry in _received_entries(received) if entry["event"] == "start"
+    ]
+    assert len(starts) == 1
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(starts[0]["pid"]), 0)
+
+
+def test_foreground_ready_callback_may_request_immediate_stop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut_summon import ShellSummonInteraction, SummonController, SummonRunHandle
+
+    db = tmp_path / ".taut.db"
+    _create_foreground_project(db)
+    _scripted_foreground_environment(monkeypatch, tmp_path, tag="immediate-stop")
+    seen: list[SummonRunHandle] = []
+
+    def on_ready(handle: SummonRunHandle) -> None:
+        seen.append(handle)
+        handle.request_stop()
+
+    SummonController(db_path=db).run_foreground(
+        _foreground_request("scripted"),
+        ShellSummonInteraction(),
+        on_ready=on_ready,
+    )
+
+    assert len(seen) == 1
+    seen[0].request_stop()
 
 
 @pytest.mark.parametrize(

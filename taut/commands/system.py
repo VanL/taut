@@ -36,9 +36,10 @@ class SystemCommand:
             "dump",
             help="Write a full-workspace composite logical backup.",
             description=(
-                "Write an owner-only composite logical backup. Stop workspace "
-                "writers for the full operation. Receipts count every registered "
-                "Taut queue, including empty queues."
+                "Write an owner-only live H-bounded logical backup while workspace "
+                "writers remain active. Racing changes may appear in this dump or "
+                "the next. Receipts count every registered Taut queue, including "
+                "empty queues."
             ),
         )
         dump_parser.add_argument(

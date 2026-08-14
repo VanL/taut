@@ -567,10 +567,6 @@ def test_release_wheel_checker_uses_fresh_separate_wheel_outputs(
             )
             (output / wheel_name).touch()
             return
-        if command[1:3] == ("pip", "compile"):
-            output = Path(command[command.index("--output-file") + 1])
-            output.write_text("simplebroker-pg==3.6.0\n", encoding="utf-8")
-            return
         assert command[:2] == (sys.executable, str(WHEEL_MATRIX_CHECKER))
         core = Path(command[command.index("--new-core") + 1])
         summon = Path(command[command.index("--new-summon") + 1])
@@ -587,7 +583,7 @@ def test_release_wheel_checker_uses_fresh_separate_wheel_outputs(
 
     builder.build_and_check()
 
-    assert len(commands) == 4
+    assert len(commands) == 3
     assert all("dist" not in part for command in commands for part in command)
 
 
@@ -632,9 +628,8 @@ def test_release_wheel_checker_dry_run_prints_build_build_check_order(
     output = capsys.readouterr().out
     core_build = output.index("uv build --wheel")
     summon_build = output.index("uv build --wheel", core_build + 1)
-    pg_resolution = output.index("uv pip compile")
     matrix_check = output.index("check-core-summon-wheel-matrix.py")
-    assert core_build < summon_build < pg_resolution < matrix_check
+    assert core_build < summon_build < matrix_check
     assert "--new-core" in output
     assert "--new-summon" in output
     assert "--historical-summon-ref taut_summon/v0.5.4" in output
@@ -655,10 +650,6 @@ def test_release_wheel_checker_reuses_explicit_current_wheels_without_building(
     def fake_run(command: tuple[str, ...]) -> None:
         commands.append(command)
         assert command[1:3] != ("build", "--wheel")
-        if command[1:3] == ("pip", "compile"):
-            output = Path(command[command.index("--output-file") + 1])
-            output.write_text("simplebroker-pg==3.6.0\n", encoding="utf-8")
-            return
         assert command[command.index("--new-core") + 1] == str(core)
         assert command[command.index("--new-summon") + 1] == str(summon)
 
@@ -669,14 +660,12 @@ def test_release_wheel_checker_reuses_explicit_current_wheels_without_building(
     roles = Counter(
         "build"
         if command[:2] == ("uv", "build")
-        else "pg-resolution"
-        if command[:3] == ("uv", "pip", "compile")
         else "wheel-matrix"
         if command[1] == str(builder.WHEEL_MATRIX_CHECKER)
         else "unexpected"
         for command in commands
     )
-    assert roles == Counter({"pg-resolution": 1, "wheel-matrix": 1})
+    assert roles == Counter({"wheel-matrix": 1})
 
 
 def test_release_wheel_checker_rejects_partial_explicit_pair(
@@ -777,85 +766,7 @@ def test_release_wheel_checker_reports_spawn_error_without_traceback(
     assert len(error.splitlines()) == 1
 
 
-def test_release_wheel_checker_rejects_retained_summon_lock_below_floor(
-    tmp_path: Path,
-    release_wheel_checker_module: ModuleType,
-) -> None:
-    builder = release_wheel_checker_module
-    lock = tmp_path / "uv.lock"
-    lock.write_text(
-        'version = 1\n[[package]]\nname = "simplebroker"\nversion = "6.0.2"\n',
-        encoding="utf-8",
-    )
-
-    with pytest.raises(
-        builder.ReleaseWheelCheckError,
-        match="retained Summon lock resolved simplebroker 6.0.2 below 7.1.0",
-    ):
-        builder._check_retained_summon_lock(lock)
-
-
-def test_release_wheel_checker_rejects_resolved_pg_plugin_below_floor(
-    tmp_path: Path,
-    release_wheel_checker_module: ModuleType,
-) -> None:
-    builder = release_wheel_checker_module
-    requirements = tmp_path / "pg-requirements.txt"
-    requirements.write_text("simplebroker-pg==3.5.2\n", encoding="utf-8")
-
-    with pytest.raises(
-        builder.ReleaseWheelCheckError,
-        match="ephemeral PG resolution selected simplebroker-pg 3.5.2 below 3.6.0",
-    ):
-        builder._check_pg_resolution(requirements)
-
-
-@pytest.mark.parametrize(
-    ("dependencies", "expected"),
-    [
-        (
-            ("taut-chat>=0.5.0", "simplebroker-pg>=3.6.0"),
-            "taut-chat>=X.Y.Z with X.Y.Z >= 0.5.1",
-        ),
-        (
-            ("taut-chat>=0.5.1", "simplebroker-pg>=3.5.2"),
-            "simplebroker-pg>=X.Y.Z with X.Y.Z >= 3.6.0",
-        ),
-    ],
-)
-def test_release_wheel_checker_rejects_weak_pg_manifest_floors(
-    tmp_path: Path,
-    release_wheel_checker_module: ModuleType,
-    dependencies: tuple[str, str],
-    expected: str,
-) -> None:
-    builder = release_wheel_checker_module
-    manifest = tmp_path / "pyproject.toml"
-    rendered = ",\n".join(f'    "{dependency}"' for dependency in dependencies)
-    manifest.write_text(
-        f"[project]\ndependencies = [\n{rendered}\n]\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(builder.ReleaseWheelCheckError, match=expected):
-        builder._check_pg_manifest(manifest)
-
-
-def test_release_wheel_checker_accepts_required_pg_manifest_floors(
-    tmp_path: Path,
-    release_wheel_checker_module: ModuleType,
-) -> None:
-    builder = release_wheel_checker_module
-    manifest = tmp_path / "pyproject.toml"
-    manifest.write_text(
-        '[project]\ndependencies = ["taut-chat>=0.5.1", "simplebroker-pg>=3.6.0"]\n',
-        encoding="utf-8",
-    )
-
-    builder._check_pg_manifest(manifest)
-
-
-def test_release_wheel_checker_checks_retained_and_ephemeral_floors(
+def test_release_wheel_checker_builds_both_wheels_before_matrix_check(
     release_wheel_checker_module: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -869,40 +780,15 @@ def test_release_wheel_checker_checks_retained_and_ephemeral_floors(
             (output / wheel).touch()
             events.append(f"build:{output.name}")
             return
-        if command[1:3] == ("pip", "compile"):
-            output = Path(command[command.index("--output-file") + 1])
-            output.write_text("simplebroker-pg==3.6.0\n", encoding="utf-8")
-            events.append("resolve:pg")
-            return
         events.append("check:wheel-matrix")
 
     monkeypatch.setattr(builder, "_run", fake_run)
-    monkeypatch.setattr(
-        builder,
-        "_check_pg_manifest",
-        lambda: events.append("check:pg-manifest"),
-    )
-    monkeypatch.setattr(
-        builder,
-        "_check_retained_summon_lock",
-        lambda: events.append("check:summon-lock"),
-    )
-
-    def check_pg(path: Path) -> None:
-        assert "simplebroker-pg==3.6.0" in path.read_text(encoding="utf-8")
-        events.append("check:pg-floor")
-
-    monkeypatch.setattr(builder, "_check_pg_resolution", check_pg)
 
     builder.build_and_check()
 
     assert events == [
-        "check:pg-manifest",
-        "check:summon-lock",
         "build:core",
         "build:summon",
-        "resolve:pg",
-        "check:pg-floor",
         "check:wheel-matrix",
     ]
 
@@ -920,29 +806,6 @@ def test_wheel_matrix_checker_reports_missing_wheel_without_traceback(
     assert "Traceback" not in completed.stderr
 
 
-def test_wheel_matrix_checker_rejects_core_without_simplebroker_7_0_0_floor(
-    tmp_path: Path,
-) -> None:
-    core = _write_wheel(
-        tmp_path / "taut_chat-0.6.0-py3-none-any.whl",
-        name="taut-chat",
-        version="0.6.0",
-        requirements=("simplebroker>=6.0.2", "psutil>=6.0"),
-    )
-    summon = _write_wheel(
-        tmp_path / "taut_summon-0.6.0-py3-none-any.whl",
-        name="taut-summon",
-        version="0.6.0",
-        requirements=("taut-chat>=0.6.0",),
-    )
-
-    completed = _run_wheel_matrix_check(tmp_path, core, summon)
-
-    assert completed.returncode == 1
-    assert "simplebroker>=X.Y.Z" in completed.stderr
-    assert "Traceback" not in completed.stderr
-
-
 def test_wheel_matrix_checker_rejects_old_core_distribution_name(
     tmp_path: Path,
 ) -> None:
@@ -950,7 +813,7 @@ def test_wheel_matrix_checker_rejects_old_core_distribution_name(
         tmp_path / "taut-0.6.0-py3-none-any.whl",
         name="taut",
         version="0.6.0",
-        requirements=("simplebroker>=7.1.0", "psutil>=6.0"),
+        requirements=(),
     )
     summon = _write_wheel(
         tmp_path / "taut_summon-0.6.0-py3-none-any.whl",
@@ -966,67 +829,6 @@ def test_wheel_matrix_checker_rejects_old_core_distribution_name(
     assert "Traceback" not in completed.stderr
 
 
-@pytest.mark.parametrize(
-    "requirements",
-    [
-        ("simplebroker>=6.0.2", "psutil>=6.0"),
-        ("simplebroker==7.1.0", "psutil>=6.0"),
-        ("simplebroker~=7.1.0", "psutil>=6.0"),
-        ("simplebroker>=7.1.0,<8", "psutil>=6.0"),
-        ('simplebroker>=7.1.0; python_version >= "3.11"', "psutil>=6.0"),
-        ("simplebroker>=7.1.0", "simplebroker>=7.1.1", "psutil>=6.0"),
-    ],
-)
-def test_wheel_matrix_checker_rejects_unsupported_simplebroker_requirement_grammar(
-    tmp_path: Path,
-    requirements: tuple[str, ...],
-) -> None:
-    core = _write_wheel(
-        tmp_path / "taut_chat-0.6.0-py3-none-any.whl",
-        name="taut-chat",
-        version="0.6.0",
-        requirements=requirements,
-    )
-    summon = _write_wheel(
-        tmp_path / "taut_summon-0.6.0-py3-none-any.whl",
-        name="taut-summon",
-        version="0.6.0",
-        requirements=("taut-chat>=0.6.0",),
-    )
-
-    completed = _run_wheel_matrix_check(tmp_path, core, summon)
-
-    assert completed.returncode == 1
-    assert "exactly one unmarked simplebroker>=X.Y.Z" in completed.stderr
-    assert "Traceback" not in completed.stderr
-
-
-@pytest.mark.parametrize("floor", ("7.1.0", "7.1.1", "8.0.0"))
-def test_wheel_matrix_checker_accepts_supported_simplebroker_floor_grammar(
-    tmp_path: Path,
-    wheel_matrix_module: ModuleType,
-    floor: str,
-) -> None:
-    core = wheel_matrix_module._read_wheel_metadata(
-        _write_wheel(
-            tmp_path / f"taut-0.6.0-{floor}-py3-none-any.whl",
-            name="taut-chat",
-            version="0.6.0",
-            requirements=(f"simplebroker>={floor}", "psutil>=6.0"),
-        )
-    )
-    summon = wheel_matrix_module._read_wheel_metadata(
-        _write_wheel(
-            tmp_path / f"taut_summon-0.6.0-{floor}-py3-none-any.whl",
-            name="taut-summon",
-            version="0.6.0",
-            requirements=("taut-chat>=0.6.0",),
-        )
-    )
-
-    wheel_matrix_module._validate_new_metadata(core, summon)
-
-
 def test_wheel_matrix_checker_rejects_summon_without_exact_new_core_floor(
     tmp_path: Path,
 ) -> None:
@@ -1034,7 +836,7 @@ def test_wheel_matrix_checker_rejects_summon_without_exact_new_core_floor(
         tmp_path / "taut_chat-0.6.0-py3-none-any.whl",
         name="taut-chat",
         version="0.6.0",
-        requirements=("simplebroker>=7.1.0", "psutil>=6.0"),
+        requirements=(),
     )
     summon = _write_wheel(
         tmp_path / "taut_summon-0.6.0-py3-none-any.whl",
@@ -1070,7 +872,7 @@ def test_wheel_matrix_checker_rejects_nonexact_or_duplicate_taut_chat_requiremen
             tmp_path / "taut_chat-0.6.0-py3-none-any.whl",
             name="taut-chat",
             version="0.6.0",
-            requirements=("simplebroker>=7.1.0", "psutil>=6.0"),
+            requirements=(),
         )
     )
     summon = wheel_matrix_module._read_wheel_metadata(
@@ -1098,7 +900,7 @@ def test_wheel_matrix_checker_rejects_taut_command_entry_points_in_core_wheel(
             tmp_path / "taut-0.6.0-py3-none-any.whl",
             name="taut-chat",
             version="0.6.0",
-            requirements=("simplebroker>=7.1.0", "psutil>=6.0"),
+            requirements=(),
             command_entry_points=(("summon", "wrong_owner:summon"),),
         )
     )
@@ -1139,7 +941,7 @@ def test_wheel_matrix_checker_requires_exact_summon_command_entry_points(
             tmp_path / "taut-0.6.0-py3-none-any.whl",
             name="taut-chat",
             version="0.6.0",
-            requirements=("simplebroker>=7.1.0", "psutil>=6.0"),
+            requirements=(),
         )
     )
     summon = wheel_matrix_module._read_wheel_metadata(
@@ -1287,33 +1089,7 @@ def test_command_interrupt_terminates_owned_process_group(
     assert terminated == [process]
 
 
-def test_new_core_case_rejects_resolved_simplebroker_below_7_1_0(
-    tmp_path: Path,
-    wheel_matrix_module: ModuleType,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _root, python, site_packages = _make_venv(tmp_path)
-    _write_fake_taut(site_packages)
-    _write_distribution(site_packages, name="simplebroker", version="6.0.2")
-    monkeypatch.setattr(
-        wheel_matrix_module,
-        "_create_environment",
-        lambda **_kwargs: (tmp_path, python),
-    )
-    monkeypatch.setattr(wheel_matrix_module, "_install", lambda **_kwargs: None)
-
-    with pytest.raises(
-        wheel_matrix_module.WheelMatrixError, match="SimpleBroker below 7.1.0 resolved"
-    ):
-        wheel_matrix_module._case_new_core(
-            wheel=tmp_path / "unused.whl",
-            work=tmp_path,
-            env=wheel_matrix_module._clean_environment(),
-            uv="uv",
-        )
-
-
-def test_new_core_case_accepts_guard_with_simplebroker_7_1_0(
+def test_new_core_case_accepts_obsolete_reactor_guard(
     tmp_path: Path,
     wheel_matrix_module: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
@@ -1321,7 +1097,7 @@ def test_new_core_case_accepts_guard_with_simplebroker_7_1_0(
 ) -> None:
     _root, python, site_packages = _make_venv(tmp_path)
     _write_fake_taut(site_packages)
-    _write_distribution(site_packages, name="simplebroker", version="7.1.0")
+    _write_distribution(site_packages, name="simplebroker", version="7.3.2")
     monkeypatch.setattr(
         wheel_matrix_module,
         "_create_environment",
@@ -1337,7 +1113,6 @@ def test_new_core_case_accepts_guard_with_simplebroker_7_1_0(
     )
 
     output = capsys.readouterr().out
-    assert '"simplebroker": "7.1.0"' in output
     assert '"guard": "rejected_before_broker_io"' in output
 
 

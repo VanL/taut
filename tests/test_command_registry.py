@@ -3272,6 +3272,8 @@ def test_registry_channel_help_is_nested_and_does_not_initialize_client(
     rendered = stdout.getvalue()
     assert usage in rendered
     assert teaching_text in " ".join(rendered.split())
+    if argv == ["system", "load", "--help"]:
+        assert "--force" not in rendered
     assert stderr.getvalue() == ""
 
 
@@ -3282,7 +3284,7 @@ def test_registry_channel_help_is_nested_and_does_not_initialize_client(
         (
             ["system", "dump", "--help"],
             "usage: taut system dump",
-            "owner-only composite",
+            "live H-bounded logical backup",
         ),
         (
             ["system", "load", "--help"],

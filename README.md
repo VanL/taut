@@ -87,6 +87,9 @@ default, or a few machines through the Postgres extension.
   installation.
 - **Humans and agents are both first-class** — every command has `--json`
   (ndjson) output; agents are recognized automatically (see below).
+- **Human-first full-screen TUI** — install `taut-chat[tui]` and run
+  `taut tui` for transcript-first navigation, native actions and forms,
+  vi-like plus conventional keys, mouse focus, and state-preserving reflow.
 - **Real history** — ordinary reads never consume messages. Reading moves
   *your* bookmark; authors may explicitly delete one of their own messages.
 - **Disposable full-text search** — `taut search parser --channel general`
@@ -94,8 +97,8 @@ default, or a few machines through the Postgres extension.
   built-in FTS5 support; `taut-pg` uses PostgreSQL's built-in text search and
   GIN, with no optional server extension required.
 - **Portable workspace dump/load** — `taut system dump --output backup.jsonl`
-  writes messages plus authoritative sidecar state; `taut system load` restores
-  exact ids into a fresh SQLite or PostgreSQL target.
+  writes a live H-bounded logical projection plus authoritative sidecar state;
+  `taut system load` restores exact ids into a fresh SQLite or PostgreSQL target.
 - **Passive workspace diagnosis** — `taut system doctor` runs six fixed,
   read-only checks over core, broker, extension, and search state without
   claiming work or repairing anything.
@@ -115,10 +118,11 @@ default, or a few machines through the Postgres extension.
   keeps it inspectable.
 - **SimpleBroker all the way down** — `.taut.db` is a standard SimpleBroker
   database. `broker -f .taut.db list` works. Plumbing is not hidden.
-- **Three optional extensions, separately installable** — `taut-pg`
+- **Four optional extensions, separately installable** — `taut-pg`
   (same commands on a project-configured Postgres), `taut-summon`
   (host an agent harness as an ordinary workspace member), and
-  `taut-mcp` (expose the workspace to MCP clients). Core stays
+  `taut-mcp` (expose the workspace to MCP clients), and `taut-tui`
+  (the human-first full-screen interface). Core stays
   dependency-boring without them.
 
 ## Installation
@@ -132,6 +136,8 @@ first-party extension bundle with `pipx`:
 
 ```bash
 pipx install taut-chat
+# or include the human-first TUI
+pipx install 'taut-chat[tui]'
 # or
 pipx install 'taut-chat[all]'
 taut --help
@@ -139,12 +145,12 @@ taut --help
 
 The pipx environment is consequently named `taut-chat`, even though the
 installed executable is `taut`. The `all` bundle makes Postgres, `taut summon`,
-`taut dismiss`, and `taut mcp` available through that primary executable. Each
+`taut dismiss`, `taut mcp`, and `taut tui` available through that primary executable. Each
 extension remains directly installable. To additionally expose the supported
 standalone `taut-summon` and `taut-mcp` convenience commands:
 
 ```bash
-pipx inject --include-apps taut-chat taut-pg taut-summon taut-mcp
+pipx inject --include-apps taut-chat taut-pg taut-summon taut-mcp taut-tui
 ```
 
 This provides `taut` plus the `taut-summon` and `taut-mcp` executables. The
@@ -173,13 +179,54 @@ python -m pip install 'taut-chat[all]'
 Add the unchanged extension distribution names when needed:
 
 ```bash
-uv add taut-chat taut-pg taut-summon taut-mcp
+uv add taut-chat taut-pg taut-summon taut-mcp taut-tui
 # or
-python -m pip install taut-chat taut-pg taut-summon taut-mcp
+python -m pip install taut-chat taut-pg taut-summon taut-mcp taut-tui
 ```
 
-Requirements: Python 3.11+. Runtime dependencies are `simplebroker>=7.3.2`
-(which itself has none) and `psutil` for cross-platform process metadata.
+Requirements: Python 3.11+. Base runtime dependencies are
+`simplebroker>=7.3.2` (which itself has none) and `psutil` for cross-platform
+process metadata. The optional `tui` extra installs the separate `taut-tui`
+extension, which owns its Textual 3.0-or-newer requirement. Ordinary core CLI
+and library use do not import it.
+
+### TUI
+
+Install the human-first extension, directly or through the core convenience
+extra, and launch it explicitly:
+
+```bash
+pipx inject taut-chat taut-tui
+# or install both at once
+pipx install 'taut-chat[tui]'
+taut tui
+```
+
+The TUI reflects the same core and loaded first-party extension capabilities.
+It does not parse CLI help or create a second chat model. Joined channels,
+direct messages, native forms, cursor-neutral search, doctor, point-in-time
+dump, and (when `taut-summon` is installed) native Summon controls all call
+their public typed APIs. Workspace restore remains deliberate CLI maintenance;
+the TUI only shows the exact `taut system load --input ...` command.
+
+Navigation supports both `hjkl` and arrow keys. `gg`/`G` pair with Home/End;
+Ctrl-U/Ctrl-D pair with PageUp/PageDown. Use `i` or click the composer to type,
+`:` or Ctrl-P for commands, `/` or Ctrl-F for search, `?` or F1 for help, and
+`q` or Ctrl-Q to quit. Tab, Shift-Tab, ordinary clicks, and the scroll wheel
+work throughout. Native terminal text selection remains available through the
+terminal's modified drag (commonly Shift-drag).
+
+Only the active conversation and an explicitly open reply surface are watched,
+so inactive conversations retain their unread state. Notification pointers are
+consumable and shared across sessions. Normal exit stops only Summon runs
+started by that TUI; externally started drivers remain live. Resizing between
+wide, medium, compact, and too-small terminals preserves the active target,
+drafts, selection, search/command mode, inspector, and transcript anchor.
+
+The exact behavior is governed by the
+[TUI spec](https://github.com/VanL/taut/blob/main/docs/specs/10-taut-tui.md);
+runtime ownership and terminal handoff are explained in the
+[TUI architecture note](https://github.com/VanL/taut/blob/main/docs/implementation/12-taut-tui.md).
 
 ### Postgres Extension
 
@@ -192,7 +239,7 @@ no-project-file backend door. `TAUT_DB`, `--db`, and `db_path=` remain
 filesystem path selectors. Extensions use their own tags (`taut_pg/vX.Y.Z`,
 `taut_summon/vX.Y.Z`), so their versions do not generally have to
 match the core package version; the first PyPI publication is one
-coordinated version across all four distributions.
+coordinated version across all five distributions.
 
 Requirements, installation, the exact `.taut.toml` shape, and the
 credential-handling warning live in the
@@ -310,8 +357,9 @@ $ make test 2>&1 | tail -20 | taut say ci -
 $ taut read --json | jq -r 'select(.kind=="message") | .text'
 ```
 
-Workspace maintenance is actor-free. Stop writers, watchers, Summon drivers,
-and foreign broker consumers for the full operation:
+Workspace maintenance is actor-free. Dump permits active writers; racing
+changes may appear in that dump or the next one. Stop writers, watchers,
+Summon drivers, and foreign broker consumers before actual load:
 
 ```bash
 $ taut system dump --output backup.taut.jsonl
@@ -326,11 +374,13 @@ $ taut system doctor
 ```
 
 Its snapshot can become stale immediately. A healthy report does not certify
-quiescence or make dump/load safe while writers are active.
+quiescence or load safety. Dump does not use doctor as a safety gate.
 
 Dry-run validates the complete file without opening or checking the selected
 destination. A failed load after its guard is acquired leaves that fresh target
-unusable; recreate it and retry the same dump.
+unusable; recreate it and retry the same dump. Load refuses a broker watermark
+too far ahead of local time. The public limit is
+`TAUT_LOAD_MAX_FUTURE_SKEW_SECONDS` (default 300); there is no force bypass.
 
 Direct messages use `@name` and route through the member's current name, not
 through the display name captured in old messages:
@@ -466,9 +516,10 @@ pass `TAUT_AS` or `TAUT_TOKEN` through.
 | `taut inbox` | Claim and show notification pointers for mentions, replies, new DMs, and reactions |
 | `taut log THREAD_OR_DM [--since TS] [--limit N]` | Show channel, sub-thread, or accessible DM history; never moves your bookmark or activity for a DM |
 | `taut search QUERY... [--channel CHANNEL] [--dm @NAME] [--dms]` | Search visible channel and DM history without moving cursors; add `--from`, `--kind`, `--before`, `--limit`, or `--reindex` to refine or rebuild |
-| `taut system dump --output FILE` | Write an owner-only portable logical dump of registered pending messages, core authority, and installed durable extension state |
+| `taut system dump --output FILE` | Write an owner-only live H-bounded logical dump of registered pending messages, core authority, and installed durable extension state |
 | `taut system load --input FILE [--dry-run]` | Validate or restore a dump into a fresh target; maintenance requires quiescence |
 | `taut system doctor` | Passively run six fixed workspace checks; no repair, work claims, or provider loading |
+| `taut tui` | Launch the optional human-first full-screen reflection over core and loaded first-party extensions |
 | `taut list [--all \| --dms]` | Your threads with unread state; `--all` = every thread; `--dms` = every accessible DM, including read and empty conversations |
 | `taut watch [THREAD_OR_DM ...]` | Follow selected channels/sub-threads or existing DMs; default = everything you're in plus your notification inbox |
 | `taut who [THREAD]` | Members and presence |
@@ -813,8 +864,9 @@ Taut follows SimpleBroker's discipline: the install should be boring.
 Runtime dependencies are exactly `simplebroker>=7.3.2` and `psutil`. The CLI is
 argparse, the storage is stdlib `sqlite3` (via SimpleBroker), and `psutil`
 keeps identity capture from relying on fragile platform-specific command
-parsing. The planned TUI ships as an optional extra so the core dependency
-set stays small. The dependency contract is exact in the
+parsing. The TUI ships as a separate `taut-tui` extension; the optional
+`taut-chat[tui]` extra is only a convenience installer for it, so the core
+dependency set stays small. The dependency contract is exact in the
 [core spec](https://github.com/VanL/taut/blob/main/docs/specs/02-taut-core.md)
 (runtime dependencies section), and dependencies are gated against the
 package manifests.
@@ -838,7 +890,8 @@ family. The layers:
   ([`03-identity-addressing-notifications.md`](https://github.com/VanL/taut/blob/main/docs/specs/03-identity-addressing-notifications.md)),
   summon ([`04-summon.md`](https://github.com/VanL/taut/blob/main/docs/specs/04-summon.md)), MCP
   ([`05-taut-mcp.md`](https://github.com/VanL/taut/blob/main/docs/specs/05-taut-mcp.md)), search
-  ([`06-search.md`](https://github.com/VanL/taut/blob/main/docs/specs/06-search.md)).
+  ([`06-search.md`](https://github.com/VanL/taut/blob/main/docs/specs/06-search.md)), TUI
+  ([`10-taut-tui.md`](https://github.com/VanL/taut/blob/main/docs/specs/10-taut-tui.md)).
 - **Extension depth:** each extension's own README —
   [`extensions/taut_pg/README.md`](https://github.com/VanL/taut/blob/main/extensions/taut_pg/README.md),
   [`extensions/taut_summon/README.md`](https://github.com/VanL/taut/blob/main/extensions/taut_summon/README.md),
@@ -872,14 +925,17 @@ Docs-first: everything ships behind its own spec.
 - **Search** — cursor-neutral full-text search over visible history,
   SQLite FTS5 and PostgreSQL text search behind one API
   ([`docs/specs/06-search.md`](https://github.com/VanL/taut/blob/main/docs/specs/06-search.md)).
+- **TUI** (`taut-tui`, conveniently installed by `taut-chat[tui]`) — the human-first reflection over core and loaded
+  first-party extensions. `taut tui` provides transcript-first navigation,
+  native actions/forms, vi-like and conventional keys, mouse focus, responsive
+  reflow, system reports, and supervised Summon terminal handoff
+  ([`docs/specs/10-taut-tui.md`](https://github.com/VanL/taut/blob/main/docs/specs/10-taut-tui.md)).
 
 **Shipped:** portable dump/load maintenance and the passive six-check system
 doctor.
 
 **Ahead, in order:**
 
-- **TUI** (`taut-chat[tui]`): panes for threads, live presence, zero new core
-  dependencies.
 - **Redis/Valkey backend.** Queues already work (`simplebroker-redis`).
   Taut's member/cursor state rides sidecar *tables* on SQL backends, so
   Redis needs a small data-structure mapping instead — same instance,
@@ -900,18 +956,23 @@ uv run --extra dev pytest
 uv run bin/check-cli-claims
 uv run --extra dev pytest extensions/taut_summon/tests
 uv run --project extensions/taut_mcp --extra dev pytest extensions/taut_mcp/tests
+uv run --project extensions/taut_tui --extra dev pytest extensions/taut_tui/tests -n 0
 uv run ./bin/pytest-pg --fast
 uv run ruff check taut tests bin extensions/taut_pg/taut_pg extensions/taut_pg/tests extensions/taut_summon/taut_summon extensions/taut_summon/tests extensions/taut_mcp/taut_mcp extensions/taut_mcp/tests
 uv run ruff format --check taut tests bin extensions/taut_pg/taut_pg extensions/taut_pg/tests extensions/taut_summon/taut_summon extensions/taut_summon/tests extensions/taut_mcp/taut_mcp extensions/taut_mcp/tests
+uv run --project extensions/taut_tui --extra dev ruff check extensions/taut_tui/taut_tui extensions/taut_tui/tests
+uv run --project extensions/taut_tui --extra dev ruff format --check extensions/taut_tui/taut_tui extensions/taut_tui/tests
 uv run --extra dev mypy taut tests bin/release.py extensions/taut_pg/taut_pg extensions/taut_pg/tests --config-file pyproject.toml
 # separate run: each extension's tests carry a top-level conftest module,
 # and one mypy invocation cannot hold two modules named `conftest`
 uv run --extra dev mypy taut tests extensions/taut_summon/taut_summon extensions/taut_summon/tests --config-file pyproject.toml
 uv run --project extensions/taut_mcp --extra dev mypy extensions/taut_mcp/taut_mcp extensions/taut_mcp/tests --config-file extensions/taut_mcp/pyproject.toml
+uv run --project extensions/taut_tui --extra dev mypy extensions/taut_tui/taut_tui extensions/taut_tui/tests --config-file extensions/taut_tui/pyproject.toml
 uv build --out-dir dist .
 uv build --out-dir extensions/taut_pg/dist extensions/taut_pg
 uv build --out-dir extensions/taut_summon/dist extensions/taut_summon
 uv build --out-dir extensions/taut_mcp/dist extensions/taut_mcp
+uv build --out-dir extensions/taut_tui/dist extensions/taut_tui
 ```
 
 Tests follow the house anti-mocking rule: the broker is never mocked,
@@ -926,13 +987,15 @@ uv run python bin/release.py --version X.Y.Z
 uv run python bin/release.py pg --dry-run
 uv run python bin/release.py summon --dry-run
 uv run python bin/release.py mcp --dry-run
+uv run python bin/release.py tui --dry-run
 uv run python bin/release.py all --dry-run
 uv run python bin/release.py all --check-repository-settings
 ```
 
 The helper updates version files, runs the release gates, manages root
-`vX.Y.Z` tags plus extension `taut_pg/vX.Y.Z`, `taut_summon/vX.Y.Z`, and
-`taut_mcp/vX.Y.Z` tags, syncs first-party dependency floors and retained locks,
+`vX.Y.Z` tags plus extension `taut_pg/vX.Y.Z`, `taut_summon/vX.Y.Z`,
+`taut_mcp/vX.Y.Z`, and `taut_tui/vX.Y.Z` tags, syncs first-party dependency
+floors and retained locks,
 checks both PyPI and GitHub publication state, and pushes to GitHub. Every
 target runs the same universal local prechecks,
 including the explicit non-PostgreSQL MCP lane. Live MCP PostgreSQL proof comes
@@ -946,7 +1009,7 @@ does not rebuild.
 
 Before the first real release, enable immutable GitHub Releases and create a
 `pypi` environment whose custom tag policies are exactly `v*`, `taut_pg/v*`,
-`taut_summon/v*`, and `taut_mcp/v*`. Configure four PyPI Trusted Publishers
+`taut_summon/v*`, `taut_mcp/v*`, and `taut_tui/v*`. Configure five PyPI Trusted Publishers
 for repository `VanL/taut`, environment `pypi`, and the exact top-level
 workflow for each distribution:
 
@@ -954,6 +1017,7 @@ workflow for each distribution:
 - `taut-pg`: `.github/workflows/release-gate-pg.yml`
 - `taut-summon`: `.github/workflows/release-gate-summon.yml`
 - `taut-mcp`: `.github/workflows/release-gate-mcp.yml`
+- `taut-tui`: `.github/workflows/release-gate-tui.yml`
 
 The settings check verifies the GitHub half. PyPI publisher configuration is
 operator-owned and must be checked in PyPI before pushing release tags.

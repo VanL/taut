@@ -65,7 +65,7 @@ from taut._constants import (
     freeze_broker_config,
     load_config,
 )
-from taut._exceptions import MembershipError
+from taut._exceptions import MembershipError, WatcherRejected
 from taut._watch_runtime import TautWatchRuntime, WatchedThread
 from taut.client import Message, Notification
 
@@ -159,7 +159,7 @@ def _taut_default_error_handler(
 ) -> bool | None:
     """Stop on terminal sink closure; preserve broker policy otherwise."""
 
-    if isinstance(exc, StopWatching):
+    if isinstance(exc, (StopWatching, WatcherRejected)):
         return False
     return default_error_handler(exc, message, timestamp)
 
@@ -1405,7 +1405,7 @@ class TautWatcher(BaseReactor):
             failure_key = (thread, timestamp)
             try:
                 self._user_handler(message)
-            except StopWatching:
+            except (StopWatching, WatcherRejected):
                 # Terminal sink failure is not poison content. Its error handler
                 # stops the reactor without advancing this durable chat cursor.
                 raise

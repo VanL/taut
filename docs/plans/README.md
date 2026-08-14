@@ -51,7 +51,10 @@ directory. Run `bin/check-plan-status-index` after changing it.
 
 | Plan | Status | Exemplar | Note |
 |------|--------|----------|------|
+| `2026-08-13-ranged-dependency-policy-plan.md` | completed | no | Completed: ranged declarations, lock-selected minimums, no duplicate version assertions, and all retained lock/test/static gates passed. |
 | `2026-08-13-simplebroker-config-isolation-plan.md` | completed | no | Class 5 symmetric Taut/SimpleBroker configuration isolation; published 7.3.2 artifact, exhaustive mapping, cross-backend proof, and independent closeout review passed. |
+| `2026-08-12-live-point-in-time-dump-plan.md` | completed | no | Completed: live logical dump, strict restore chronology, Taut-to-broker skew configuration, and integrated SQLite/PostgreSQL verification passed. |
+| `2026-08-12-taut-tui-implementation-plan.md` | completed | no | Completed: human-first TUI, responsive reflow, native system actions, Summon rich-host lifecycle, and full retained-environment verification passed. |
 | `2026-06-12-taut-0.1.1-hardening-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |
 | `2026-06-12-taut-foundation-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |
 | `2026-06-17-github-actions-release-workflows-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |

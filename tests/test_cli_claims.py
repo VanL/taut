@@ -66,6 +66,24 @@ EXEMPTIONS: dict[ExemptionKey, str] = {
     (Path("docs/specs/05-taut-mcp.md"), ("mcp",)): (
         "Installed taut-mcp extension command; absent from the core-only registry."
     ),
+    (Path("README.md"), ("tui",)): (
+        "Installed taut-tui extension command; absent from the core-only registry."
+    ),
+    (Path("extensions/taut_tui/README.md"), ("tui",)): (
+        "Installed taut-tui extension command; absent from the core-only registry."
+    ),
+    (Path("docs/implementation/02-repository-map.md"), ("tui",)): (
+        "Installed taut-tui extension command; absent from the core-only registry."
+    ),
+    (Path("docs/implementation/06-command-extensions.md"), ("tui",)): (
+        "Installed taut-tui extension command; absent from the core-only registry."
+    ),
+    (Path("docs/implementation/12-taut-tui.md"), ("tui",)): (
+        "Installed taut-tui extension command; absent from the core-only registry."
+    ),
+    (Path("docs/specs/10-taut-tui.md"), ("tui",)): (
+        "Installed taut-tui extension command; absent from the core-only registry."
+    ),
 }
 
 _INLINE_CODE_RE = re.compile(r"(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)")
@@ -601,7 +619,7 @@ def test_bin_entry_point_exit_classes(tmp_path: Path) -> None:
     checker = REPO_ROOT / "bin" / "check-cli-claims"
     readme = tmp_path / "README.md"
     readme.write_text(
-        "`taut channel show dev`\n`taut mcp`\n",
+        "`taut channel show dev`\n`taut mcp`\n`taut tui`\n",
         encoding="utf-8",
     )
 
@@ -613,10 +631,10 @@ def test_bin_entry_point_exit_classes(tmp_path: Path) -> None:
         check=False,
     )
     assert clean.returncode == 0
-    assert "2 command claim(s)" in clean.stdout
+    assert "3 command claim(s)" in clean.stdout
 
     readme.write_text(
-        "`taut rename old new`\n`taut mcp`\n",
+        "`taut rename old new`\n`taut mcp`\n`taut tui`\n",
         encoding="utf-8",
     )
     stale = subprocess.run(

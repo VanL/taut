@@ -1098,6 +1098,39 @@ def test_project_terminal_policy_applies_with_taut_db_selector(
     assert "MARK-env.db" not in human
 
 
+def test_invalid_taut_future_skew_is_one_line_and_does_not_create_target(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / ".taut.db"
+    env = {"TAUT_LOAD_MAX_FUTURE_SKEW_SECONDS": "bad"}
+
+    help_rc, _help_out, help_err = run_cli("--help", cwd=tmp_path, env=env)
+    version_rc, version_out, version_err = run_cli("--version", cwd=tmp_path, env=env)
+    rc, out, err = run_cli("init", cwd=tmp_path, env=env)
+    force_rc, _force_out, force_err = run_cli(
+        "system",
+        "load",
+        "--input",
+        "missing.taut.jsonl",
+        "--force",
+        cwd=tmp_path,
+        env=env,
+    )
+
+    assert help_rc == 0
+    assert help_err == ""
+    assert version_rc == 0
+    assert version_out.startswith("taut ")
+    assert version_err == ""
+    assert rc == 1
+    assert out == ""
+    assert len(err.splitlines()) == 1
+    assert "TAUT_LOAD_MAX_FUTURE_SKEW_SECONDS='bad'" in err
+    assert not target.exists()
+    assert force_rc == 1
+    assert "unrecognized arguments: --force" in force_err
+
+
 def test_invalid_project_terminal_policy_preflights_human_commands_only(
     tmp_path: Path,
 ) -> None:

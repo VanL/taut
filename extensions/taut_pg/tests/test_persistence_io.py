@@ -294,9 +294,13 @@ def test_postgres_partial_broker_batch_failure_leaves_target_guarded(
     try:
         # This bounds the probe only. The fault below is triggered by an observed
         # PostgreSQL commit, not by an expected SimpleBroker batch size.
+        existing = cast(
+            list[tuple[str, int]],
+            list(source_queue.peek_generator(with_timestamps=True)),
+        )
+        first_timestamp = max(timestamp for _body, timestamp in existing) + 1
         source_queue.insert_messages(
-            (f"bulk-{index}", 3_000_000_000_000_000_000 + index)
-            for index in range(10_000)
+            (f"bulk-{index}", first_timestamp + index) for index in range(10_000)
         )
         source_records = list(source_queue.peek_generator(with_timestamps=True))
     finally:

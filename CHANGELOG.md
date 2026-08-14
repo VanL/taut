@@ -2,12 +2,37 @@
 
 ## Unreleased
 
+## 0.9.0 - 2026-08-13
+
 - Isolated Taut's complete SimpleBroker configuration under mechanical
   `TAUT_*` spellings. Ambient `BROKER_*` values no longer affect Taut, while
   immutable resolved config survives repeated lower-layer resolution. Most of
   the newly named defaults mirror SimpleBroker solely to close the namespace.
-- Raised the runtime floor to SimpleBroker 7.3.2 for its public immutable
-  `ResolvedConfig` and ambient-free `resolve_isolated_config()` embedding API.
+- Changed workspace dump from quiescence-and-movement refusal to a live,
+  H-bounded logical projection. Active writes no longer invalidate export;
+  broker messages and copied membership cursors are bounded by SimpleBroker's
+  sampled high-water, while atomic owner-only publication and full-file
+  preflight remain enforced.
+- Raised the runtime floor to SimpleBroker 7.3.2 and SimpleBroker-PG 3.8.0.
+  Load restores the broker watermark and rejects excessive future skew through
+  public `TAUT_LOAD_MAX_FUTURE_SKEW_SECONDS` (default 300), translated to the
+  broker config. Taut exposes no force bypass.
+- Added the separate `taut-tui` human-first extension, available through the
+  `taut-chat[tui]` convenience extra and the complete `taut-chat[all]` bundle,
+  and its explicit `taut tui`
+  launch. It reflects public core and Summon capabilities through native
+  actions and forms, active-only live reads, vi-like plus conventional and
+  mouse input, cursor-neutral search anchoring, responsive reflow, actor-free
+  doctor/dump work, CLI-only load guidance, and supervised exact-run Summon
+  terminal handoff.
+- Added public cursor-neutral `TautClient.history_around()` and public
+  `WatcherRejected` handler control so rich hosts can anchor exact search
+  results and reject chat shutdown deliveries without advancing the chat
+  cursor or importing broker control internals. Notification pointers remain
+  consumable and have already been claimed before handler delivery.
+- Added Summon's optional exact-once foreground readiness callback and immutable
+  exact-run stop handle for rich hosts. Callback-free CLI behavior retains its
+  existing lifecycle and signal ownership.
 
 ## 0.8.7 - 2026-08-12
 

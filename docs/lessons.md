@@ -110,16 +110,15 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   pin across every coordinated gate, and treat the failed pre-upload run plus
   untouched PyPI state as recoverable evidence rather than rerunning it.
 
-- 2026-08-08: A dependency-floor bump reconciles manifests and the
-  release-machinery-owned README copies, but hand-maintained spec and
-  implementation-doc floor claims drift silently (specs said
-  `simplebroker>=6.0.1` for a week while the manifests required 6.0.2).
-  Restate floors in docs only in the literal requirement form and gate every
-  restatement against the manifests
-  (`tests/test_dependency_floor_claims.py`); prose floor statements escape
-  any gate and should be converted to the literal form. Extends the
-  2026-07-13 derived-state consistency lesson from README to the whole
-  maintained doc tree.
+- 2026-08-08 (revised 2026-08-13): A dependency-floor bump must reconcile
+  manifests and maintained documentation, but Python tests should not mirror
+  third-party requirement bounds or lock selections. The package manifest owns
+  the supported range; the owning retained lock supplies reproducibility; and
+  package tooling proves that the selected version satisfies the range. Review
+  literal dependency claims as part of the same change, and raise each declared
+  minimum to the owning lock's selected version during an approved dependency
+  refresh. Add a compatibility lane only when the project deliberately promises
+  support beyond the retained lock.
 
 - 2026-08-05: Do not infer a security classification from opacity or identity
   selection. Name the actual authority boundary, emitted and persistent
@@ -711,6 +710,29 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   equals the full selection. Hash the scheduler's complete group identity after
   dynamic markers, not a node ID or one closest marker, or tests that require
   co-location can split.
+
+- 2026-08-13: Hiding a modal widget tree is not an input boundary. A terminal
+  UI can keep routing keys to the active screen and focused field even when
+  that screen is not displayed. For a recovery-only state such as
+  `too-small`, place an opaque focus-owning screen above the whole modal stack,
+  test that hidden input cannot change, and test both initial startup and
+  nested-modal recovery. Also bound a retained wrapped-row offset to the new
+  row height when width grows, or the next message silently becomes the scroll
+  anchor.
+
+- 2026-08-13: Catching a cross-thread scheduling call does not contain the
+  callback it schedules. Logging, readiness, and operation-result presentation
+  need an exception boundary inside the UI-loop callback itself. The same
+  liveness token used by the worker owner must be checked when that callback
+  executes, not only when it is queued, or a retired run can resurrect visual
+  state.
+
+- 2026-08-13: An optional dependency extra is an installation convenience, not
+  a package-ownership seam. When a capability is defined as an extension, its
+  implementation, framework dependencies, command manifest, tests, lock, and
+  release target belong to the extension distribution. A core extra may depend
+  on that distribution, but placing the implementation under core creates the
+  wrong interface even if ordinary core imports remain lazy.
 
 ## Starter Lessons
 

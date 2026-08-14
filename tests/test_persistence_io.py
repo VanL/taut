@@ -7,8 +7,11 @@ Spec references:
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
+import time
+import warnings
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
@@ -16,6 +19,12 @@ from typing import Any, cast
 import pytest
 
 pytestmark = pytest.mark.sqlite_only
+
+
+def test_taut_load_has_no_future_skew_force_surface() -> None:
+    from taut import TautClient
+
+    assert "force" not in inspect.signature(TautClient.load).parameters
 
 
 def _line(record: dict[str, object]) -> bytes:
@@ -46,7 +55,7 @@ def _empty_dump_bytes() -> bytes:
         {
             "backend": "sqlite",
             "format": "simplebroker-dump",
-            "last_ts": 0,
+            "last_ts": "0000000000000000000",
             "type": "header",
             "version": 1,
         }
@@ -323,6 +332,45 @@ def test_dump_selects_only_registered_pending_messages_and_counts_claimed(
     assert report.omitted_claimed_messages == 2
 
 
+def test_claimed_header_only_restore_preserves_watermark_floor(tmp_path: Path) -> None:
+    from simplebroker import Queue
+
+    from taut import TautClient
+
+    source = tmp_path / "source.db"
+    TautClient.init(db_path=source)
+    client = TautClient(db_path=source, as_name="van")
+    client.join("general")
+    newest = client.say("general", "newest then claimed")
+    client.close()
+    queue = Queue("general", db_path=str(source))
+    try:
+        assert list(queue.read_generator(with_timestamps=True))
+    finally:
+        queue.close()
+
+    dump_path = tmp_path / "header-only.taut.jsonl"
+    report = TautClient.dump(output=dump_path, db_path=source)
+    records = [json.loads(line) for line in dump_path.read_text().splitlines()]
+    nested_header = next(
+        record for record in records if record.get("format") == "simplebroker-dump"
+    )
+    high_water = int(nested_header["last_ts"])
+
+    assert report.messages == 0
+    assert high_water >= newest.ts
+    assert not any(record.get("type") == "message" for record in records)
+
+    destination = tmp_path / "restored.db"
+    TautClient.load(input_path=dump_path, db_path=destination)
+    restored = Queue("general", db_path=str(destination))
+    try:
+        later = restored.write("after watermark-only restore")
+    finally:
+        restored.close()
+    assert later > high_water
+
+
 def test_load_guard_blocks_init_client_and_dump_with_recovery_diagnostic(
     tmp_path: Path,
 ) -> None:
@@ -439,7 +487,7 @@ def test_round_trip_fires_every_core_logical_record_type(tmp_path: Path) -> None
     restored.close()
 
 
-def test_load_accepts_exact_integer_tokens_and_normalizes_storage(
+def test_load_accepts_exact_integer_core_tokens_and_normalizes_storage(
     tmp_path: Path,
 ) -> None:
     from taut import TautClient
@@ -464,12 +512,7 @@ def test_load_accepts_exact_integer_tokens_and_normalizes_storage(
     }
 
     def integers(component: str, record: dict[str, object]) -> dict[str, object]:
-        if component == "simplebroker":
-            for field in ("last_ts", "id"):
-                value = record.get(field)
-                if isinstance(value, str):
-                    record[field] = int(value)
-        elif component == "taut-core" and record.get("type") in timestamp_fields:
+        if component == "taut-core" and record.get("type") in timestamp_fields:
             kind = record["type"]
             assert isinstance(kind, str)
             for field in timestamp_fields[kind]:
@@ -547,6 +590,7 @@ def test_load_rejects_non_exact_core_timestamp_representations(
 @pytest.mark.parametrize(
     "invalid",
     [
+        pytest.param(100, id="integer"),
         pytest.param(True, id="boolean"),
         pytest.param(1.5, id="float"),
         pytest.param(1e18, id="exponent"),
@@ -598,6 +642,170 @@ def test_load_rejects_non_exact_nested_broker_timestamp_representations(
 
     with pytest.raises(TautError, match=error):
         TautClient.load(input_path=malformed, db_path=tmp_path / "destination.db")
+
+
+def test_load_rejects_broker_message_above_nested_high_water(tmp_path: Path) -> None:
+    from taut import TautClient, TautError
+
+    source = tmp_path / "source.db"
+    TautClient.init(db_path=source)
+    client = TautClient(db_path=source, as_name="van")
+    client.join("general")
+    client.say("general", "payload")
+    client.close()
+    canonical = tmp_path / "canonical.taut.jsonl"
+    TautClient.dump(output=canonical, db_path=source)
+    message_id: int | None = None
+
+    def corrupt(component: str, record: dict[str, object]) -> dict[str, object]:
+        nonlocal message_id
+        if component != "simplebroker":
+            return record
+        if record.get("type") == "message":
+            message_id = int(cast(str, record["id"]))
+        elif record.get("type") == "header":
+            record["last_ts"] = "0000000000000000000"
+        return record
+
+    malformed = tmp_path / "above-high-water.taut.jsonl"
+    malformed.write_bytes(_rewrite_component_payloads(canonical.read_bytes(), corrupt))
+    assert message_id is not None and message_id > 0
+
+    with pytest.raises(TautError, match="message exceeds SimpleBroker last_ts"):
+        TautClient.load(input_path=malformed, db_path=tmp_path / "destination.db")
+
+
+def test_load_rejects_membership_cursor_above_nested_high_water(tmp_path: Path) -> None:
+    from taut import TautClient, TautError
+
+    source = tmp_path / "source.db"
+    TautClient.init(db_path=source)
+    client = TautClient(db_path=source, as_name="van")
+    client.join("general")
+    client.close()
+    canonical = tmp_path / "canonical.taut.jsonl"
+    TautClient.dump(output=canonical, db_path=source)
+    high_water: int | None = None
+    replaced = False
+
+    def corrupt(component: str, record: dict[str, object]) -> dict[str, object]:
+        nonlocal high_water, replaced
+        if component == "simplebroker" and record.get("type") == "header":
+            high_water = int(cast(str, record["last_ts"]))
+        elif component == "taut-core" and record.get("type") == "membership":
+            assert high_water is not None
+            record["last_seen_ts"] = str(high_water + 1)
+            replaced = True
+        return record
+
+    malformed = tmp_path / "future-cursor.taut.jsonl"
+    malformed.write_bytes(_rewrite_component_payloads(canonical.read_bytes(), corrupt))
+    assert replaced
+
+    with pytest.raises(TautError, match="invalid membership record"):
+        TautClient.load(input_path=malformed, db_path=tmp_path / "destination.db")
+
+
+def test_future_skew_is_apply_time_and_uses_taut_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from simplebroker import DumpClockSkewWarning, format_message_id
+
+    from taut import TautClient, TautError
+
+    source = tmp_path / "source.db"
+    TautClient.init(db_path=source)
+    canonical = tmp_path / "canonical.taut.jsonl"
+    TautClient.dump(output=canonical, db_path=source)
+    future_high_water = format_message_id(time.time_ns() + 10_000_000_000)
+
+    def future_header(component: str, record: dict[str, object]) -> dict[str, object]:
+        if component == "simplebroker" and record.get("type") == "header":
+            record["last_ts"] = future_high_water
+        return record
+
+    future_dump = tmp_path / "future.taut.jsonl"
+    future_dump.write_bytes(
+        _rewrite_component_payloads(canonical.read_bytes(), future_header)
+    )
+    monkeypatch.setenv("TAUT_LOAD_MAX_FUTURE_SKEW_SECONDS", "0")
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        report = TautClient.load(
+            input_path=future_dump,
+            db_path=tmp_path / "dry-run.db",
+            dry_run=True,
+        )
+    assert report.dry_run is True
+    assert not any(item.category is DumpClockSkewWarning for item in caught)
+
+    destination = tmp_path / "refused.db"
+    with (
+        pytest.warns(DumpClockSkewWarning),
+        pytest.raises(ValueError, match="exceeds configured maximum"),
+    ):
+        TautClient.load(input_path=future_dump, db_path=destination)
+    with pytest.raises(TautError, match="load incomplete; recreate the target"):
+        TautClient.init(db_path=destination)
+
+    monkeypatch.setenv("TAUT_LOAD_MAX_FUTURE_SKEW_SECONDS", "20")
+    with pytest.warns(DumpClockSkewWarning):
+        accepted = TautClient.load(
+            input_path=future_dump,
+            db_path=tmp_path / "accepted.db",
+        )
+    assert accepted.applied is True
+
+
+def test_default_future_skew_boundary_is_300_seconds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from simplebroker import DumpClockSkewWarning, format_message_id
+
+    from taut import TautClient
+
+    monkeypatch.delenv("TAUT_LOAD_MAX_FUTURE_SKEW_SECONDS", raising=False)
+    monkeypatch.delenv("BROKER_LOAD_MAX_FUTURE_SKEW_SECONDS", raising=False)
+    source = tmp_path / "source.db"
+    TautClient.init(db_path=source)
+    canonical = tmp_path / "canonical.taut.jsonl"
+    TautClient.dump(output=canonical, db_path=source)
+
+    def with_skew(seconds: int) -> bytes:
+        high_water = format_message_id(time.time_ns() + seconds * 1_000_000_000)
+
+        def change(
+            component: str,
+            record: dict[str, object],
+        ) -> dict[str, object]:
+            if component == "simplebroker" and record.get("type") == "header":
+                record["last_ts"] = high_water
+            return record
+
+        return _rewrite_component_payloads(canonical.read_bytes(), change)
+
+    within = tmp_path / "within-default.taut.jsonl"
+    within.write_bytes(with_skew(299))
+    with pytest.warns(DumpClockSkewWarning):
+        accepted = TautClient.load(
+            input_path=within,
+            db_path=tmp_path / "accepted.db",
+        )
+    assert accepted.applied is True
+
+    beyond = tmp_path / "beyond-default.taut.jsonl"
+    beyond.write_bytes(with_skew(301))
+    with (
+        pytest.warns(DumpClockSkewWarning),
+        pytest.raises(ValueError, match="maximum of 300 seconds"),
+    ):
+        TautClient.load(
+            input_path=beyond,
+            db_path=tmp_path / "refused.db",
+        )
 
 
 @pytest.mark.parametrize("failure", ["unknown-meta", "incomplete-rename"])

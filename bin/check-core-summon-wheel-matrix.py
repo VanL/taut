@@ -25,7 +25,6 @@ from typing import NoReturn
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_HISTORICAL_SUMMON_COMMIT = "b03709452cf4d5962b0d7204b0dab78b9bafd524"
 EXPECTED_HISTORICAL_SUMMON_VERSION = "0.5.4"
-MINIMUM_SIMPLEBROKER_VERSION = "7.1.0"
 COMMAND_TIMEOUT_SECONDS = 180.0
 CONTROL_SMOKE_TIMEOUT_SECONDS = 180.0
 EXPECTED_HISTORICAL_SUMMON_REF = "taut_summon/v0.5.4"
@@ -183,22 +182,6 @@ def _require_exact_dependency(
         )
 
 
-def _require_simplebroker_floor(metadata: WheelMetadata) -> None:
-    project_requirements = _requirements_for_project(metadata, "simplebroker")
-    match = (
-        re.fullmatch(r"simplebroker>=(\d+)\.(\d+)\.(\d+)", project_requirements[0])
-        if len(project_requirements) == 1
-        else None
-    )
-    if match is None or tuple(int(part) for part in match.groups()) < (7, 1, 0):
-        rendered = ", ".join(metadata.requirements) or "<none>"
-        _fail(
-            f"{metadata.name} {metadata.version} METADATA must contain exactly one "
-            "unmarked simplebroker>=X.Y.Z requirement with X.Y.Z >= 7.1.0; "
-            f"found: {rendered}"
-        )
-
-
 def _validate_new_metadata(core: WheelMetadata, summon: WheelMetadata) -> None:
     if _canonical_project_name(core.name) != "taut-chat":
         _fail(f"new core wheel has project name {core.name!r}, expected 'taut-chat'")
@@ -206,7 +189,6 @@ def _validate_new_metadata(core: WheelMetadata, summon: WheelMetadata) -> None:
         _fail(
             f"new Summon wheel has project name {summon.name!r}, expected 'taut-summon'"
         )
-    _require_simplebroker_floor(core)
     _require_exact_dependency(
         summon,
         project="taut-chat",
@@ -600,15 +582,6 @@ def assert_installed(module):
         raise SystemExit(f"module did not import from site-packages: {path}")
     return str(path)
 
-def release_tuple(version):
-    match = re.match(r"^(\d+)\.(\d+)\.(\d+)", version)
-    if match is None:
-        raise SystemExit(f"unrecognized SimpleBroker version: {version}")
-    return tuple(int(part) for part in match.groups())
-
-simplebroker_version = importlib.metadata.version("simplebroker")
-if release_tuple(simplebroker_version) < (7, 0, 0):
-    raise SystemExit(f"SimpleBroker below 7.1.0 resolved: {simplebroker_version}")
 """
 
 
@@ -675,7 +648,7 @@ if db.exists():
 
 print(json.dumps({
     "case": "new_core",
-    "simplebroker": simplebroker_version,
+    "simplebroker": importlib.metadata.version("simplebroker"),
     "taut_chat": importlib.metadata.version("taut-chat"),
     "taut_path": taut_path,
     "guard": "rejected_before_broker_io",

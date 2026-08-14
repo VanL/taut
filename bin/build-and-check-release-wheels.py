@@ -3,25 +3,17 @@
 from __future__ import annotations
 
 import argparse
-import re
 import shlex
 import subprocess
 import sys
 import tempfile
-import tomllib
 from pathlib import Path
 from typing import NoReturn
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SUMMON_ROOT = PROJECT_ROOT / "extensions" / "taut_summon"
-SUMMON_LOCK = SUMMON_ROOT / "uv.lock"
-PG_ROOT = PROJECT_ROOT / "extensions" / "taut_pg"
-PG_PYPROJECT = PG_ROOT / "pyproject.toml"
 WHEEL_MATRIX_CHECKER = PROJECT_ROOT / "bin" / "check-core-summon-wheel-matrix.py"
 HISTORICAL_SUMMON_REF = "taut_summon/v0.5.4"
-MINIMUM_SIMPLEBROKER = (7, 1, 0)
-MINIMUM_SIMPLEBROKER_PG = (3, 6, 0)
-MINIMUM_TAUT_CHAT = (0, 5, 1)
 
 
 class ReleaseWheelCheckError(RuntimeError):
@@ -52,84 +44,6 @@ def _single_wheel(output: Path, *, label: str) -> Path:
     return wheels[0]
 
 
-def _version_tuple(version: str, *, label: str) -> tuple[int, int, int]:
-    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", version)
-    if match is None:
-        _fail(f"{label} has unsupported version {version!r}; expected X.Y.Z")
-    major, minor, patch = match.groups()
-    return int(major), int(minor), int(patch)
-
-
-def _check_retained_summon_lock(path: Path = SUMMON_LOCK) -> None:
-    try:
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError) as exc:
-        _fail(f"cannot read retained Summon lock {path}: {exc}")
-    versions = [
-        package.get("version")
-        for package in data.get("package", [])
-        if package.get("name") == "simplebroker"
-    ]
-    if len(versions) != 1 or not isinstance(versions[0], str):
-        _fail("retained Summon lock must resolve exactly one simplebroker version")
-    version = versions[0]
-    if _version_tuple(version, label="retained Summon simplebroker") < (
-        MINIMUM_SIMPLEBROKER
-    ):
-        _fail(f"retained Summon lock resolved simplebroker {version} below 7.1.0")
-
-
-def _check_pg_resolution(path: Path) -> None:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as exc:
-        _fail(f"cannot read ephemeral PG resolution {path}: {exc}")
-    matches = re.findall(r"(?m)^simplebroker-pg==(\d+\.\d+\.\d+)$", text)
-    if len(matches) != 1:
-        _fail("ephemeral PG resolution must select exactly one simplebroker-pg==X.Y.Z")
-    version = matches[0]
-    if _version_tuple(version, label="ephemeral simplebroker-pg") < (
-        MINIMUM_SIMPLEBROKER_PG
-    ):
-        _fail(f"ephemeral PG resolution selected simplebroker-pg {version} below 3.6.0")
-
-
-def _check_pg_manifest(path: Path = PG_PYPROJECT) -> None:
-    """Require explicit unmarked core and plugin floors in taut-pg metadata."""
-
-    try:
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError) as exc:
-        _fail(f"cannot read taut-pg manifest {path}: {exc}")
-    dependencies = data.get("project", {}).get("dependencies", [])
-    if not isinstance(dependencies, list) or not all(
-        isinstance(dependency, str) for dependency in dependencies
-    ):
-        _fail("taut-pg manifest project.dependencies must be a string list")
-
-    requirements = (
-        ("taut-chat", MINIMUM_TAUT_CHAT, "0.5.1"),
-        ("simplebroker-pg", MINIMUM_SIMPLEBROKER_PG, "3.6.0"),
-    )
-    for project, minimum, rendered_minimum in requirements:
-        pattern = rf"{re.escape(project)}>=(\d+)\.(\d+)\.(\d+)"
-        matches = [
-            re.fullmatch(pattern, dependency)
-            for dependency in dependencies
-            if dependency.startswith(project)
-        ]
-        valid = [match for match in matches if match is not None]
-        if (
-            len(matches) != 1
-            or len(valid) != 1
-            or tuple(int(part) for part in valid[0].groups()) < minimum
-        ):
-            _fail(
-                "taut-pg manifest must contain exactly one unmarked "
-                f"{project}>=X.Y.Z with X.Y.Z >= {rendered_minimum}"
-            )
-
-
 def _print_dry_run_plan(
     *,
     core_output: Path,
@@ -137,7 +51,6 @@ def _print_dry_run_plan(
     core_wheel: Path | None = None,
     summon_wheel: Path | None = None,
 ) -> None:
-    pg_resolution = core_output.parent / "pg-requirements.txt"
     commands: list[tuple[str, ...]] = []
     if core_wheel is None or summon_wheel is None:
         core_wheel = core_output / "<exactly-one-wheel>"
@@ -164,15 +77,6 @@ def _print_dry_run_plan(
         )
     commands.extend(
         (
-            (
-                "uv",
-                "pip",
-                "compile",
-                str(PG_PYPROJECT),
-                "--output-file",
-                str(pg_resolution),
-                "--quiet",
-            ),
             (
                 sys.executable,
                 str(WHEEL_MATRIX_CHECKER),
@@ -216,9 +120,6 @@ def build_and_check(
             )
             return
 
-        _check_pg_manifest()
-        _check_retained_summon_lock()
-
         if core_wheel is None or summon_wheel is None:
             _run(
                 (
@@ -249,20 +150,6 @@ def build_and_check(
                     _fail(f"explicit {label} wheel does not exist: {wheel}")
                 if wheel.suffix != ".whl":
                     _fail(f"explicit {label} artifact is not a wheel: {wheel}")
-
-        pg_resolution = artifact_root / "pg-requirements.txt"
-        _run(
-            (
-                "uv",
-                "pip",
-                "compile",
-                str(PG_PYPROJECT),
-                "--output-file",
-                str(pg_resolution),
-                "--quiet",
-            )
-        )
-        _check_pg_resolution(pg_resolution)
 
         _run(
             (

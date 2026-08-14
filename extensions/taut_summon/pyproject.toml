@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "taut-summon"
-version = "0.8.7"
+version = "0.9.0"
 description = "Summon extension for Taut: host an agent harness as a workspace member"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -16,7 +16,7 @@ authors = [
 dependencies = [
     # Floor is the paired core version shipping the public terminal-text policy
     # and BlankMessageError imported by Summon's command/logging/driver paths.
-    "taut-chat>=0.8.7",
+    "taut-chat>=0.9.0",
 ]
 
 [project.scripts]
@@ -31,11 +31,13 @@ taut-summon = "taut_summon.persistence_manifest:summon"
 
 [project.optional-dependencies]
 dev = [
-    "mypy>=1.0",
-    "pytest>=7.0",
+    "build>=1.5.0",
+    "mypy>=2.3.0",
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
     "pytest-timeout>=2.4.0",
-    "pytest-xdist>=3.0",
-    "ruff==0.16.1",
+    "pytest-xdist>=3.8.0",
+    "ruff>=0.16.3",
 ]
 
 [tool.uv.sources]

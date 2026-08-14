@@ -209,6 +209,61 @@ def _make_loop(rate_limit: int) -> ControlLoop:
     )
 
 
+def test_control_ready_publication_follows_open_and_precedes_first_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ready = threading.Event()
+    shutdown = threading.Event()
+    loop = _make_loop(60)
+    loop._ready = ready
+    loop._shutdown = shutdown
+    events: list[str] = []
+
+    class Reactor:
+        def process_once(self) -> None:
+            assert ready.is_set()
+            events.append("turn")
+            shutdown.set()
+
+        def wait_for_activity(self, *, timeout: float) -> None:
+            del timeout
+
+    def open_loop() -> None:
+        assert not ready.is_set()
+        events.append("open")
+        loop._control_reactor = cast(Any, Reactor())
+
+    monkeypatch.setattr(loop, "_open", open_loop)
+    monkeypatch.setattr(loop, "_close", lambda: events.append("close"))
+    monkeypatch.setattr(loop, "_audit_if_due", lambda: None)
+
+    loop.run()
+
+    assert ready.is_set()
+    assert events == ["open", "turn", "close"]
+
+
+def test_control_ready_is_not_published_when_initial_open_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ready = threading.Event()
+    loop = _make_loop(60)
+    loop._ready = ready
+    failure = OSError("control open failed")
+
+    def fail_open() -> None:
+        raise failure
+
+    monkeypatch.setattr(loop, "_open", fail_open)
+    monkeypatch.setattr(loop, "_close", lambda: None)
+
+    with pytest.raises(OSError) as caught:
+        loop.run()
+
+    assert caught.value is failure
+    assert not ready.is_set()
+
+
 def test_rate_audit_reconciles_late_join_leave_and_rejoin_with_real_queues(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

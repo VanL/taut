@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -37,6 +38,7 @@ from taut_summon.models import (
     SummonedMember,
     SummonOperationError,
     SummonRequest,
+    SummonRunHandle,
     SummonStatus,
 )
 
@@ -190,6 +192,7 @@ class SummonController:
         interaction: SummonInteraction,
         *,
         install_signal_handlers: bool = False,
+        on_ready: Callable[[SummonRunHandle], None] | None = None,
     ) -> None:
         """Run exactly one driver lifecycle in the foreground."""
 
@@ -206,6 +209,7 @@ class SummonController:
                 interaction,
                 db_path=None if self._db_path is None else str(self._db_path),
                 install_signal_handlers=install_signal_handlers,
+                on_ready=on_ready,
             )
         except NotInitializedError as exc:
             if request.provider_flag is None:

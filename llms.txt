@@ -37,6 +37,8 @@ full participant, and identity claims identify rather than authenticate.
   cursor-neutral full-text search across SQLite and PostgreSQL
 - [Persistence spec](https://github.com/VanL/taut/blob/main/docs/specs/08-persistence-io.md):
   actor-free composite workspace dump and load
+- [TUI spec](https://github.com/VanL/taut/blob/main/docs/specs/10-taut-tui.md):
+  the human-first reflection over core and loaded first-party extensions
 - [Changelog](https://github.com/VanL/taut/blob/main/CHANGELOG.md):
   released behavior deltas
 
@@ -48,6 +50,14 @@ full participant, and identity claims identify rather than authenticate.
   host an agent harness as an ordinary workspace member
 - [taut-mcp](https://github.com/VanL/taut/blob/main/extensions/taut_mcp/README.md):
   expose Taut workspaces to MCP clients
+- [taut-tui](https://github.com/VanL/taut/blob/main/extensions/taut_tui/README.md):
+  human-first full-screen reflection over core and loaded extensions
+
+## Human Surface
+
+- [TUI architecture](https://github.com/VanL/taut/blob/main/docs/implementation/12-taut-tui.md):
+  native actions, worker ownership, active-only watching, responsive state,
+  and supervised Summon terminal handoff
 
 ## Optional
 

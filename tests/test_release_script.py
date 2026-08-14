@@ -248,10 +248,12 @@ def test_sync_readme_version_examples_updates_only_selected_artifact(
     pg = tmp_path / "pg.md"
     summon = tmp_path / "summon.md"
     mcp = tmp_path / "mcp.md"
+    tui = tmp_path / "tui.md"
     root.write_text(
         "core @v0.5.2\n./taut_pg-0.5.2-py3-none-any.whl\n"
         "./taut_summon-0.5.2-py3-none-any.whl\n"
-        "./taut_mcp-0.5.2-py3-none-any.whl\n",
+        "./taut_mcp-0.5.2-py3-none-any.whl\n"
+        "./taut_tui-0.5.2-py3-none-any.whl\n",
         encoding="utf-8",
     )
     pg.write_text(
@@ -266,6 +268,10 @@ def test_sync_readme_version_examples_updates_only_selected_artifact(
         "core @v0.5.2\n./taut_mcp-0.5.2-py3-none-any.whl\n",
         encoding="utf-8",
     )
+    tui.write_text(
+        "core @v0.5.2\n./taut_tui-0.5.2-py3-none-any.whl\n",
+        encoding="utf-8",
+    )
 
     release.sync_readme_version_examples(
         release.ROOT_TARGET,
@@ -274,6 +280,7 @@ def test_sync_readme_version_examples_updates_only_selected_artifact(
         pg_readme_path=pg,
         summon_readme_path=summon,
         mcp_readme_path=mcp,
+        tui_readme_path=tui,
     )
     release.sync_readme_version_examples(
         release.PG_TARGET,
@@ -282,6 +289,7 @@ def test_sync_readme_version_examples_updates_only_selected_artifact(
         pg_readme_path=pg,
         summon_readme_path=summon,
         mcp_readme_path=mcp,
+        tui_readme_path=tui,
     )
     release.sync_readme_version_examples(
         release.SUMMON_TARGET,
@@ -290,6 +298,7 @@ def test_sync_readme_version_examples_updates_only_selected_artifact(
         pg_readme_path=pg,
         summon_readme_path=summon,
         mcp_readme_path=mcp,
+        tui_readme_path=tui,
     )
     release.sync_readme_version_examples(
         release.MCP_TARGET,
@@ -298,12 +307,23 @@ def test_sync_readme_version_examples_updates_only_selected_artifact(
         pg_readme_path=pg,
         summon_readme_path=summon,
         mcp_readme_path=mcp,
+        tui_readme_path=tui,
+    )
+    release.sync_readme_version_examples(
+        release.TUI_TARGET,
+        "0.5.7",
+        root_readme_path=root,
+        pg_readme_path=pg,
+        summon_readme_path=summon,
+        mcp_readme_path=mcp,
+        tui_readme_path=tui,
     )
 
     assert root.read_text(encoding="utf-8") == (
         "core @v0.5.3\n./taut_pg-0.5.4-py3-none-any.whl\n"
         "./taut_summon-0.5.5-py3-none-any.whl\n"
         "./taut_mcp-0.5.6-py3-none-any.whl\n"
+        "./taut_tui-0.5.7-py3-none-any.whl\n"
     )
     assert pg.read_text(encoding="utf-8") == (
         "core @v0.5.3\n./taut_pg-0.5.4-py3-none-any.whl\n"
@@ -313,6 +333,9 @@ def test_sync_readme_version_examples_updates_only_selected_artifact(
     )
     assert mcp.read_text(encoding="utf-8") == (
         "core @v0.5.3\n./taut_mcp-0.5.6-py3-none-any.whl\n"
+    )
+    assert tui.read_text(encoding="utf-8") == (
+        "core @v0.5.3\n./taut_tui-0.5.7-py3-none-any.whl\n"
     )
 
 
@@ -396,6 +419,7 @@ def test_prepare_release_metadata_repairs_all_derived_copies_idempotently(
     (tmp_path / "extensions" / "taut_pg").mkdir(parents=True)
     (tmp_path / "extensions" / "taut_summon").mkdir(parents=True)
     (tmp_path / "extensions" / "taut_mcp").mkdir(parents=True)
+    (tmp_path / "extensions" / "taut_tui").mkdir(parents=True)
     (tmp_path / "pyproject.toml").write_text(
         "\n".join(  # noqa: FLY002 approved [DOM-10.2.1] [RUFF-SUP-072] exception
             (
@@ -410,10 +434,15 @@ def test_prepare_release_metadata_repairs_all_derived_copies_idempotently(
                 '    "taut-pg>=0.5.0",',
                 '    "taut-summon>=0.5.0",',
                 '    "taut-mcp>=0.5.0",',
+                '    "taut-tui>=0.5.0",',
+                "]",
+                "tui = [",
+                '    "taut-tui>=0.5.0",',
                 "]",
                 "dev = [",
                 '    "simplebroker-pg>=3.2.0",',
                 '    "taut-summon>=0.5.0",',
+                '    "taut-tui>=0.5.0",',
                 "]",
                 "",
             )
@@ -426,7 +455,8 @@ def test_prepare_release_metadata_repairs_all_derived_copies_idempotently(
     (tmp_path / "extensions" / "taut_pg" / "pyproject.toml").write_text(
         '[project]\nname = "taut-pg"\nversion = "0.5.0"\n'
         'dependencies = [\n    "taut-chat>=0.5.0",\n'
-        '    "simplebroker-pg>=3.2.1",\n]\n',
+        '    "simplebroker-pg>=3.2.1",\n]\n'
+        '[project.optional-dependencies]\ndev = [\n    "taut-tui>=0.5.0",\n]\n',
         encoding="utf-8",
     )
     (tmp_path / "extensions" / "taut_summon" / "pyproject.toml").write_text(
@@ -437,7 +467,15 @@ def test_prepare_release_metadata_repairs_all_derived_copies_idempotently(
     (tmp_path / "extensions" / "taut_mcp" / "pyproject.toml").write_text(
         '[project]\nname = "taut-mcp"\nversion = "0.5.0"\n'
         'dependencies = [\n    "taut-chat>=0.5.0",\n    "mcp>=1.28.1,<2",\n]\n'
-        '[project.optional-dependencies]\ndev = [\n    "taut-pg>=0.5.0",\n]\n',
+        "[project.optional-dependencies]\ndev = [\n"
+        '    "taut-pg>=0.5.0",\n'
+        '    "taut-summon>=0.5.0",\n]\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "extensions" / "taut_tui" / "pyproject.toml").write_text(
+        '[project]\nname = "taut-tui"\nversion = "0.5.0"\n'
+        'dependencies = [\n    "taut-chat>=0.5.0",\n    "textual>=3.0.0",\n]\n'
+        '[project.optional-dependencies]\ndev = [\n    "taut-summon>=0.5.0",\n]\n',
         encoding="utf-8",
     )
     (tmp_path / "README.md").write_text(
@@ -445,6 +483,7 @@ def test_prepare_release_metadata_repairs_all_derived_copies_idempotently(
         "taut_pg-0.5.0-py3-none-any.whl\n"
         "taut_summon-0.5.0-py3-none-any.whl\n"
         "taut_mcp-0.5.0-py3-none-any.whl\n"
+        "taut_tui-0.5.0-py3-none-any.whl\n"
         "simplebroker>=5.3.0\nsimplebroker>=5.3.1\n",
         encoding="utf-8",
     )
@@ -460,12 +499,17 @@ def test_prepare_release_metadata_repairs_all_derived_copies_idempotently(
         "core @v0.5.0\ntaut_mcp-0.5.0-py3-none-any.whl\n",
         encoding="utf-8",
     )
+    (tmp_path / "extensions" / "taut_tui" / "README.md").write_text(
+        "core @v0.5.0\ntaut_tui-0.5.0-py3-none-any.whl\n",
+        encoding="utf-8",
+    )
     release = _load_release_module(script)
     target_versions = (
         (release.ROOT_TARGET, "0.6.1"),
         (release.PG_TARGET, "0.6.2"),
         (release.SUMMON_TARGET, "0.6.3"),
         (release.MCP_TARGET, "0.6.4"),
+        (release.TUI_TARGET, "0.6.5"),
     )
 
     release.prepare_release_metadata(target_versions)
@@ -481,6 +525,8 @@ def test_prepare_release_metadata_repairs_all_derived_copies_idempotently(
             tmp_path / "extensions" / "taut_summon" / "README.md",
             tmp_path / "extensions" / "taut_mcp" / "pyproject.toml",
             tmp_path / "extensions" / "taut_mcp" / "README.md",
+            tmp_path / "extensions" / "taut_tui" / "pyproject.toml",
+            tmp_path / "extensions" / "taut_tui" / "README.md",
         )
     }
     release.prepare_release_metadata(target_versions)
@@ -493,6 +539,7 @@ def test_prepare_release_metadata_repairs_all_derived_copies_idempotently(
     assert '"taut-summon>=0.6.3",' in first[tmp_path / "pyproject.toml"]
     assert '"taut-pg>=0.6.2",' in first[tmp_path / "pyproject.toml"]
     assert '"taut-mcp>=0.6.4",' in first[tmp_path / "pyproject.toml"]
+    assert '"taut-tui>=0.6.5",' in first[tmp_path / "pyproject.toml"]
     assert '"simplebroker-pg>=3.2.1",' in first[tmp_path / "pyproject.toml"]
     assert (
         'version = "0.6.2"'
@@ -510,6 +557,18 @@ def test_prepare_release_metadata_repairs_all_derived_copies_idempotently(
         '"taut-pg>=0.6.2",'
         in first[tmp_path / "extensions" / "taut_mcp" / "pyproject.toml"]
     )
+    assert (
+        '"taut-summon>=0.6.3",'
+        in first[tmp_path / "extensions" / "taut_mcp" / "pyproject.toml"]
+    )
+    assert (
+        '"taut-chat>=0.6.1",'
+        in first[tmp_path / "extensions" / "taut_tui" / "pyproject.toml"]
+    )
+    assert (
+        '"taut-summon>=0.6.3",'
+        in first[tmp_path / "extensions" / "taut_tui" / "pyproject.toml"]
+    )
     assert first[tmp_path / "README.md"].count("simplebroker>=5.3.2") == 2
     assert "0.5.0" not in "".join(first.values())
 
@@ -523,6 +582,8 @@ def test_target_specific_preparation_preserves_other_manifest_versions(
         release.PG_TARGET: "0.5.9",
         release.SUMMON_TARGET: "0.5.8",
         release.MCP_TARGET: "0.5.7",
+        release.TUI_TARGET: "0.5.6",
+        release.TUI_TARGET: "0.5.6",
     }
     prepared_versions = dict(manifest_versions)
     prepared_versions[release.PG_TARGET] = "0.6.2"
@@ -554,6 +615,7 @@ def test_target_specific_preparation_preserves_other_manifest_versions(
         (release.PG_TARGET, "0.6.2"),
         (release.SUMMON_TARGET, "0.5.8"),
         (release.MCP_TARGET, "0.5.7"),
+        (release.TUI_TARGET, "0.5.6"),
     ]
 
 
@@ -567,16 +629,20 @@ def _build_public_release_repository(tmp_path: Path) -> Path:
             "[project.optional-dependencies]\nall = [\n"
             '    "taut-pg>=0.5.0",\n'
             '    "taut-summon>=0.5.0",\n'
-            '    "taut-mcp>=0.5.0",\n]\n'
+            '    "taut-mcp>=0.5.0",\n'
+            '    "taut-tui>=0.5.0",\n]\n'
+            'tui = [\n    "taut-tui>=0.5.0",\n]\n'
             "dev = [\n"
             '    "simplebroker-pg>=3.2.0",\n'
-            '    "taut-summon>=0.5.0",\n]\n'
+            '    "taut-summon>=0.5.0",\n'
+            '    "taut-tui>=0.5.0",\n]\n'
         ),
         tmp_path / "taut" / "_constants.py": ('__version__: Final[str] = "0.5.0"\n'),
         tmp_path / "extensions" / "taut_pg" / "pyproject.toml": (
             '[project]\nname = "taut-pg"\nversion = "0.6.1"\n'
             'dependencies = [\n    "taut-chat>=0.5.0",\n'
             '    "simplebroker-pg>=3.2.1",\n]\n'
+            '[project.optional-dependencies]\ndev = [\n    "taut-tui>=0.5.0",\n]\n'
         ),
         tmp_path / "extensions" / "taut_summon" / "pyproject.toml": (
             '[project]\nname = "taut-summon"\nversion = "0.6.1"\n'
@@ -585,13 +651,21 @@ def _build_public_release_repository(tmp_path: Path) -> Path:
         tmp_path / "extensions" / "taut_mcp" / "pyproject.toml": (
             '[project]\nname = "taut-mcp"\nversion = "0.6.1"\n'
             'dependencies = [\n    "taut-chat>=0.5.0",\n    "mcp>=1.28.1,<2",\n]\n'
-            '[project.optional-dependencies]\ndev = [\n    "taut-pg>=0.5.0",\n]\n'
+            "[project.optional-dependencies]\ndev = [\n"
+            '    "taut-pg>=0.5.0",\n'
+            '    "taut-summon>=0.5.0",\n]\n'
+        ),
+        tmp_path / "extensions" / "taut_tui" / "pyproject.toml": (
+            '[project]\nname = "taut-tui"\nversion = "0.6.1"\n'
+            'dependencies = [\n    "taut-chat>=0.5.0",\n    "textual>=3.0.0",\n]\n'
+            '[project.optional-dependencies]\ndev = [\n    "taut-summon>=0.5.0",\n]\n'
         ),
         tmp_path / "README.md": (
             "core @v0.5.0\n"
             "taut_pg-0.5.0-py3-none-any.whl\n"
             "taut_summon-0.5.0-py3-none-any.whl\n"
             "taut_mcp-0.5.0-py3-none-any.whl\n"
+            "taut_tui-0.5.0-py3-none-any.whl\n"
             "simplebroker>=5.3.0\nsimplebroker>=5.3.1\n"
         ),
         tmp_path / "extensions" / "taut_pg" / "README.md": (
@@ -603,8 +677,12 @@ def _build_public_release_repository(tmp_path: Path) -> Path:
         tmp_path / "extensions" / "taut_mcp" / "README.md": (
             "core @v0.5.0\ntaut_mcp-0.5.0-py3-none-any.whl\n"
         ),
+        tmp_path / "extensions" / "taut_tui" / "README.md": (
+            "core @v0.5.0\ntaut_tui-0.5.0-py3-none-any.whl\n"
+        ),
         tmp_path / "extensions" / "taut_summon" / "uv.lock": ("stale retained lock\n"),
         tmp_path / "extensions" / "taut_mcp" / "uv.lock": "stale retained lock\n",
+        tmp_path / "extensions" / "taut_tui" / "uv.lock": "stale retained lock\n",
         tmp_path / "uv.lock": "stale retained root lock\n",
         tmp_path / "CHANGELOG.md": "# Changelog\n\n## 0.6.1 - 2026-07-13\n",
         tmp_path / ".gitignore": "__pycache__/\n",
@@ -663,10 +741,15 @@ class _PublicReleaseTransport:
                     "taut=0.6.1\ntaut-pg=0.6.1\ntaut-mcp=0.6.1\n",
                     encoding="utf-8",
                 )
+            elif effective_cwd == release.TUI_EXTENSION_DIR:
+                release.TUI_UV_LOCK_PATH.write_text(
+                    "taut=0.6.1\ntaut-summon=0.6.1\ntaut-tui=0.6.1\n",
+                    encoding="utf-8",
+                )
             elif effective_cwd == release.PROJECT_ROOT:
                 release.ROOT_UV_LOCK_PATH.write_text(
                     "taut-chat=0.6.1\ntaut-pg=0.6.1\ntaut-summon=0.6.1\n"
-                    "taut-mcp=0.6.1\n",
+                    "taut-mcp=0.6.1\ntaut-tui=0.6.1\n",
                     encoding="utf-8",
                 )
             return
@@ -752,6 +835,7 @@ def test_public_release_flow_commits_preparation_then_reuses_it_after_failure(
         "lock",
         "lock",
         "lock",
+        "lock",
         "git-add",
         "git-commit",
         "precheck-1",
@@ -762,6 +846,7 @@ def test_public_release_flow_commits_preparation_then_reuses_it_after_failure(
     assert release.main(["core"]) == 0
     assert release.current_head_commit() == preparation_head
     assert transport.events == [
+        "lock",
         "lock",
         "lock",
         "lock",
@@ -839,6 +924,7 @@ def test_sync_root_all_dependencies_updates_only_all_extra(tmp_path: Path) -> No
         '    "taut-pg>=0.1.0",\n'
         '    "taut-summon>=0.1.0",\n'
         '    "taut-mcp>=0.1.0",\n'
+        '    "taut-tui>=0.1.0",\n'
         "]\n"
         "dev = [\n"
         '    "taut-summon>=0.7.0",\n'
@@ -846,7 +932,12 @@ def test_sync_root_all_dependencies_updates_only_all_extra(tmp_path: Path) -> No
         encoding="utf-8",
     )
     manifests: dict[str, Path] = {}
-    for name, version in (("pg", "0.5.0"), ("summon", "0.6.0"), ("mcp", "0.7.0")):
+    for name, version in (
+        ("pg", "0.5.0"),
+        ("summon", "0.6.0"),
+        ("mcp", "0.7.0"),
+        ("tui", "0.8.0"),
+    ):
         path = tmp_path / f"{name}.toml"
         path.write_text(
             f'[project]\nname = "taut-{name}"\nversion = "{version}"\n',
@@ -859,13 +950,20 @@ def test_sync_root_all_dependencies_updates_only_all_extra(tmp_path: Path) -> No
         pg_pyproject_path=manifests["pg"],
         summon_pyproject_path=manifests["summon"],
         mcp_pyproject_path=manifests["mcp"],
+        tui_pyproject_path=manifests["tui"],
     )
 
     text = root_pyproject_path.read_text(encoding="utf-8")
-    assert updated == {"taut-pg": "0.5.0", "taut-summon": "0.6.0", "taut-mcp": "0.7.0"}
+    assert updated == {
+        "taut-pg": "0.5.0",
+        "taut-summon": "0.6.0",
+        "taut-mcp": "0.7.0",
+        "taut-tui": "0.8.0",
+    }
     assert '    "taut-pg>=0.5.0",' in text
     assert '    "taut-summon>=0.6.0",' in text
     assert '    "taut-mcp>=0.7.0",' in text
+    assert '    "taut-tui>=0.8.0",' in text
     assert 'dev = [\n    "taut-summon>=0.7.0",\n]' in text
     assert (
         release.sync_root_all_dependencies(
@@ -873,9 +971,38 @@ def test_sync_root_all_dependencies_updates_only_all_extra(tmp_path: Path) -> No
             pg_pyproject_path=manifests["pg"],
             summon_pyproject_path=manifests["summon"],
             mcp_pyproject_path=manifests["mcp"],
+            tui_pyproject_path=manifests["tui"],
         )
         == {}
     )
+
+
+def test_sync_root_tui_dependencies_updates_tui_and_dev_extras(tmp_path: Path) -> None:
+    release = _load_release_module()
+    root_pyproject_path = tmp_path / "pyproject.toml"
+    tui_pyproject_path = tmp_path / "extensions" / "taut_tui" / "pyproject.toml"
+    tui_pyproject_path.parent.mkdir(parents=True)
+    root_pyproject_path.write_text(
+        '[project]\nname = "taut-chat"\nversion = "0.8.8"\n'
+        "[project.optional-dependencies]\n"
+        'tui = [\n    "taut-tui>=0.8.7",\n]\n'
+        'dev = [\n    "taut-tui>=0.8.7",\n]\n',
+        encoding="utf-8",
+    )
+    tui_pyproject_path.write_text(
+        '[project]\nname = "taut-tui"\nversion = "0.8.8"\n',
+        encoding="utf-8",
+    )
+
+    updated = release.sync_root_tui_dependencies(
+        root_pyproject_path=root_pyproject_path,
+        tui_pyproject_path=tui_pyproject_path,
+    )
+
+    assert updated == {"dev": "0.8.8", "tui": "0.8.8"}
+    text = root_pyproject_path.read_text(encoding="utf-8")
+    assert 'tui = [\n    "taut-tui>=0.8.8",\n]' in text
+    assert 'dev = [\n    "taut-tui>=0.8.8",\n]' in text
 
 
 def test_sync_root_pg_dev_dependency_uses_pg_manifest_floor(tmp_path: Path) -> None:
@@ -932,6 +1059,30 @@ def test_sync_summon_core_dependency_updates_exact_root_floor(
     assert '"taut-chat>=0.6.0",' in summon_pyproject_path.read_text(encoding="utf-8")
 
 
+def test_sync_tui_core_dependency_updates_exact_root_floor(tmp_path: Path) -> None:
+    release = _load_release_module()
+    root_pyproject_path = tmp_path / "pyproject.toml"
+    tui_pyproject_path = tmp_path / "extensions" / "taut_tui" / "pyproject.toml"
+    tui_pyproject_path.parent.mkdir(parents=True)
+    root_pyproject_path.write_text(
+        '[project]\nname = "taut-chat"\nversion = "0.8.8"\n',
+        encoding="utf-8",
+    )
+    tui_pyproject_path.write_text(
+        '[project]\nname = "taut-tui"\nversion = "0.8.8"\n'
+        'dependencies = [\n    "taut-chat>=0.8.7",\n]\n',
+        encoding="utf-8",
+    )
+
+    updated_version = release.sync_tui_core_dependency(
+        root_pyproject_path=root_pyproject_path,
+        tui_pyproject_path=tui_pyproject_path,
+    )
+
+    assert updated_version == "0.8.8"
+    assert '"taut-chat>=0.8.8",' in tui_pyproject_path.read_text(encoding="utf-8")
+
+
 def test_sync_mcp_pg_dev_dependency_uses_pg_manifest_version(tmp_path: Path) -> None:
     release = _load_release_module()
     pg_pyproject_path = tmp_path / "extensions" / "taut_pg" / "pyproject.toml"
@@ -957,66 +1108,161 @@ def test_sync_mcp_pg_dev_dependency_uses_pg_manifest_version(tmp_path: Path) -> 
     assert '"taut-pg>=0.7.1",' in mcp_pyproject_path.read_text(encoding="utf-8")
 
 
+def test_sync_mcp_summon_dev_dependency_uses_summon_manifest_version(
+    tmp_path: Path,
+) -> None:
+    release = _load_release_module()
+    summon_pyproject_path = tmp_path / "extensions" / "taut_summon" / "pyproject.toml"
+    mcp_pyproject_path = tmp_path / "extensions" / "taut_mcp" / "pyproject.toml"
+    summon_pyproject_path.parent.mkdir(parents=True)
+    mcp_pyproject_path.parent.mkdir(parents=True)
+    summon_pyproject_path.write_text(
+        '[project]\nname = "taut-summon"\nversion = "0.7.2"\n',
+        encoding="utf-8",
+    )
+    mcp_pyproject_path.write_text(
+        '[project]\nname = "taut-mcp"\nversion = "0.7.0"\n'
+        '[project.optional-dependencies]\ndev = [\n    "taut-summon>=0.7.0",\n]\n',
+        encoding="utf-8",
+    )
+
+    updated = release.sync_mcp_summon_dev_dependency(
+        summon_pyproject_path=summon_pyproject_path,
+        mcp_pyproject_path=mcp_pyproject_path,
+    )
+
+    assert updated == "0.7.2"
+    assert '"taut-summon>=0.7.2",' in mcp_pyproject_path.read_text(encoding="utf-8")
+
+
+def test_sync_tui_summon_dev_dependency_uses_summon_manifest_version(
+    tmp_path: Path,
+) -> None:
+    release = _load_release_module()
+    summon_pyproject_path = tmp_path / "extensions" / "taut_summon" / "pyproject.toml"
+    tui_pyproject_path = tmp_path / "extensions" / "taut_tui" / "pyproject.toml"
+    summon_pyproject_path.parent.mkdir(parents=True)
+    tui_pyproject_path.parent.mkdir(parents=True)
+    summon_pyproject_path.write_text(
+        '[project]\nname = "taut-summon"\nversion = "0.8.8"\n',
+        encoding="utf-8",
+    )
+    tui_pyproject_path.write_text(
+        '[project]\nname = "taut-tui"\nversion = "0.8.8"\n'
+        '[project.optional-dependencies]\ndev = [\n    "taut-summon>=0.8.7",\n]\n',
+        encoding="utf-8",
+    )
+
+    updated = release.sync_tui_summon_dev_dependency(
+        summon_pyproject_path=summon_pyproject_path,
+        tui_pyproject_path=tui_pyproject_path,
+    )
+
+    assert updated == "0.8.8"
+    assert '"taut-summon>=0.8.8",' in tui_pyproject_path.read_text(encoding="utf-8")
+
+
+def test_sync_pg_tui_dev_dependency_uses_tui_manifest_version(tmp_path: Path) -> None:
+    release = _load_release_module()
+    pg_pyproject_path = tmp_path / "extensions" / "taut_pg" / "pyproject.toml"
+    tui_pyproject_path = tmp_path / "extensions" / "taut_tui" / "pyproject.toml"
+    pg_pyproject_path.parent.mkdir(parents=True)
+    tui_pyproject_path.parent.mkdir(parents=True)
+    pg_pyproject_path.write_text(
+        '[project]\nname = "taut-pg"\nversion = "0.8.8"\n'
+        '[project.optional-dependencies]\ndev = [\n    "taut-tui>=0.8.7",\n]\n',
+        encoding="utf-8",
+    )
+    tui_pyproject_path.write_text(
+        '[project]\nname = "taut-tui"\nversion = "0.8.8"\n',
+        encoding="utf-8",
+    )
+
+    updated = release.sync_pg_tui_dev_dependency(
+        pg_pyproject_path=pg_pyproject_path,
+        tui_pyproject_path=tui_pyproject_path,
+    )
+
+    assert updated == "0.8.8"
+    assert '"taut-tui>=0.8.8",' in pg_pyproject_path.read_text(encoding="utf-8")
+
+
 def test_release_sync_updates_all_first_party_dependency_directions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     release = _load_release_module()
     calls: list[str] = []
 
-    def sync_root_to_summon() -> str:
-        calls.append("root-to-summon")
-        return "0.5.1"
+    def record(label: str, result: Any) -> Any:
+        def sync() -> Any:
+            calls.append(label)
+            return result
 
-    def sync_summon_to_root() -> str:
-        calls.append("summon-to-root")
-        return "0.6.0"
-
-    def sync_pg_to_root() -> str:
-        calls.append("pg-to-root")
-        return "0.6.0"
-
-    def sync_pg_runtime_to_root_dev() -> str:
-        calls.append("pg-runtime-to-root-dev")
-        return "3.2.1"
-
-    def sync_extensions_to_root_all() -> dict[str, str]:
-        calls.append("extensions-to-root-all")
-        return {"taut-pg": "0.5.1", "taut-summon": "0.5.1", "taut-mcp": "0.5.1"}
-
-    def sync_mcp_to_root() -> str:
-        calls.append("mcp-to-root")
-        return "0.6.0"
-
-    def sync_pg_to_mcp_dev() -> str:
-        calls.append("pg-to-mcp-dev")
-        return "0.6.0"
+        return sync
 
     monkeypatch.setattr(
         release,
         "sync_root_summon_dev_dependency",
-        sync_root_to_summon,
+        record("root-to-summon", "0.5.1"),
     )
     monkeypatch.setattr(
         release,
         "sync_summon_core_dependency",
-        sync_summon_to_root,
+        record("summon-to-root", "0.6.0"),
     )
-    monkeypatch.setattr(release, "sync_pg_core_dependency", sync_pg_to_root)
+    monkeypatch.setattr(
+        release, "sync_pg_core_dependency", record("pg-to-root", "0.6.0")
+    )
     monkeypatch.setattr(
         release,
         "sync_root_pg_dev_dependency",
-        sync_pg_runtime_to_root_dev,
+        record("pg-runtime-to-root-dev", "3.2.1"),
     )
     monkeypatch.setattr(
         release,
         "sync_root_all_dependencies",
-        sync_extensions_to_root_all,
+        record(
+            "extensions-to-root-all",
+            {
+                "taut-pg": "0.5.1",
+                "taut-summon": "0.5.1",
+                "taut-mcp": "0.5.1",
+                "taut-tui": "0.8.8",
+            },
+        ),
     )
-    monkeypatch.setattr(release, "sync_mcp_core_dependency", sync_mcp_to_root)
+    monkeypatch.setattr(
+        release, "sync_mcp_core_dependency", record("mcp-to-root", "0.6.0")
+    )
     monkeypatch.setattr(
         release,
         "sync_mcp_pg_dev_dependency",
-        sync_pg_to_mcp_dev,
+        record("pg-to-mcp-dev", "0.6.0"),
+    )
+    monkeypatch.setattr(
+        release,
+        "sync_mcp_summon_dev_dependency",
+        record("summon-to-mcp-dev", "0.8.8"),
+    )
+    monkeypatch.setattr(
+        release,
+        "sync_root_tui_dependencies",
+        record("tui-to-root", {"dev": "0.8.8", "tui": "0.8.8"}),
+    )
+    monkeypatch.setattr(
+        release,
+        "sync_tui_core_dependency",
+        record("tui-to-core", "0.8.8"),
+    )
+    monkeypatch.setattr(
+        release,
+        "sync_tui_summon_dev_dependency",
+        record("summon-to-tui-dev", "0.8.8"),
+    )
+    monkeypatch.setattr(
+        release,
+        "sync_pg_tui_dev_dependency",
+        record("tui-to-pg-dev", "0.8.8"),
     )
 
     release._sync_root_release_dependencies()
@@ -1030,6 +1276,11 @@ def test_release_sync_updates_all_first_party_dependency_directions(
             "summon-to-root": 1,
             "mcp-to-root": 1,
             "pg-to-mcp-dev": 1,
+            "summon-to-mcp-dev": 1,
+            "tui-to-root": 1,
+            "tui-to-core": 1,
+            "summon-to-tui-dev": 1,
+            "tui-to-pg-dev": 1,
         }
     )
 
@@ -1076,6 +1327,26 @@ def test_mcp_target_uses_namespaced_github_tag_and_joins_batch() -> None:
         release.PG_TARGET,
         release.SUMMON_TARGET,
         release.MCP_TARGET,
+        release.TUI_TARGET,
+        release.ROOT_TARGET,
+    )
+
+
+def test_tui_target_uses_namespaced_github_tag_and_joins_batch() -> None:
+    release = _load_release_module()
+
+    assert release.TUI_TARGET.package_name == "taut-tui"
+    assert release.TUI_TARGET.package_dir == Path("extensions/taut_tui")
+    assert release.TUI_TARGET.tag_for_version("0.8.8") == "taut_tui/v0.8.8"
+    assert (
+        release.TUI_TARGET.release_workflow == ".github/workflows/release-gate-tui.yml"
+    )
+    assert release.CANONICAL_TARGETS["tui"] == release.TUI_TARGET
+    assert release.BATCH_RELEASE_TARGETS == (
+        release.PG_TARGET,
+        release.SUMMON_TARGET,
+        release.MCP_TARGET,
+        release.TUI_TARGET,
         release.ROOT_TARGET,
     )
 
@@ -1144,6 +1415,71 @@ def test_mcp_precheck_lock_build_and_quality_are_package_local() -> None:
         "--out-dir",
         "extensions/taut_mcp/dist",
         "extensions/taut_mcp",
+    )
+
+
+def test_tui_precheck_lock_build_and_quality_are_package_local() -> None:
+    release = _load_release_module()
+
+    commands = release.build_precheck_commands(release.TUI_TARGET)
+    assert (
+        "uv",
+        "run",
+        "--no-sync",
+        "--project",
+        "extensions/taut_tui",
+        "--extra",
+        "dev",
+        "--with-editable",
+        ".",
+        "--with-editable",
+        "extensions/taut_tui",
+        "pytest",
+        "extensions/taut_tui/tests",
+        "-n",
+        "0",
+    ) in commands
+    assert (
+        "uv",
+        "run",
+        "--no-sync",
+        "--project",
+        "extensions/taut_tui",
+        "--extra",
+        "dev",
+        "ruff",
+        "check",
+        "extensions/taut_tui/taut_tui",
+        "extensions/taut_tui/tests",
+    ) in commands
+    assert (
+        "uv",
+        "run",
+        "--no-sync",
+        "--project",
+        "extensions/taut_tui",
+        "--extra",
+        "dev",
+        "mypy",
+        "extensions/taut_tui/taut_tui",
+        "extensions/taut_tui/tests",
+        "--config-file",
+        "extensions/taut_tui/pyproject.toml",
+    ) in commands
+
+    preparation = release.build_preparation_steps_for_targets((release.TUI_TARGET,))
+    assert any(
+        step.command == ("uv", "lock") and step.cwd == release.TUI_EXTENSION_DIR
+        for step in preparation
+    )
+    builds = release.build_postupdate_steps(release.TUI_TARGET)
+    assert builds[0].command == (
+        "uv",
+        "build",
+        "--no-sources",
+        "--out-dir",
+        "extensions/taut_tui/dist",
+        "extensions/taut_tui",
     )
 
 
@@ -1284,6 +1620,7 @@ def _repository_settings_payloads() -> dict[str, object]:
                 {"type": "tag", "name": "taut_pg/v*"},
                 {"type": "tag", "name": "taut_summon/v*"},
                 {"type": "tag", "name": "taut_mcp/v*"},
+                {"type": "tag", "name": "taut_tui/v*"},
             ]
         },
     }
@@ -1759,7 +2096,7 @@ def test_precheck_commands_select_dev_extra_and_include_typed_release_helper() -
     ) in commands
 
 
-@pytest.mark.parametrize("target_key", ("core", "pg", "summon", "mcp", "all"))
+@pytest.mark.parametrize("target_key", ("core", "pg", "summon", "mcp", "tui", "all"))
 def test_every_target_set_plans_one_literal_universal_precheck_sequence(
     target_key: str,
 ) -> None:
@@ -1864,6 +2201,22 @@ def test_every_target_set_plans_one_literal_universal_precheck_sequence(
         (
             "uv",
             "run",
+            "--project",
+            "extensions/taut_tui",
+            "--extra",
+            "dev",
+            "--with-editable",
+            ".",
+            "--with-editable",
+            "extensions/taut_tui",
+            "pytest",
+            "extensions/taut_tui/tests",
+            "-n",
+            "0",
+        ),
+        (
+            "uv",
+            "run",
             "--extra",
             "dev",
             "ruff",
@@ -1924,6 +2277,31 @@ def test_every_target_set_plans_one_literal_universal_precheck_sequence(
         (
             "uv",
             "run",
+            "--project",
+            "extensions/taut_tui",
+            "--extra",
+            "dev",
+            "ruff",
+            "check",
+            "extensions/taut_tui/taut_tui",
+            "extensions/taut_tui/tests",
+        ),
+        (
+            "uv",
+            "run",
+            "--project",
+            "extensions/taut_tui",
+            "--extra",
+            "dev",
+            "ruff",
+            "format",
+            "--check",
+            "extensions/taut_tui/taut_tui",
+            "extensions/taut_tui/tests",
+        ),
+        (
+            "uv",
+            "run",
             "--extra",
             "dev",
             "mypy",
@@ -1972,6 +2350,19 @@ def test_every_target_set_plans_one_literal_universal_precheck_sequence(
             "extensions/taut_mcp/tests",
             "--config-file",
             "extensions/taut_mcp/pyproject.toml",
+        ),
+        (
+            "uv",
+            "run",
+            "--project",
+            "extensions/taut_tui",
+            "--extra",
+            "dev",
+            "mypy",
+            "extensions/taut_tui/taut_tui",
+            "extensions/taut_tui/tests",
+            "--config-file",
+            "extensions/taut_tui/pyproject.toml",
         ),
     )
 
@@ -2098,7 +2489,7 @@ def test_local_llm_model_probe_treats_startup_disconnect_as_not_ready(
     )
 
 
-@pytest.mark.parametrize("target_key", ("core", "pg", "summon", "mcp", "all"))
+@pytest.mark.parametrize("target_key", ("core", "pg", "summon", "mcp", "tui", "all"))
 def test_prechecks_start_local_llm_before_other_release_gates(
     target_key: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -2189,7 +2580,7 @@ def test_prechecks_start_local_llm_before_other_release_gates(
     ]
 
 
-@pytest.mark.parametrize("target_key", ("core", "pg", "summon", "mcp"))
+@pytest.mark.parametrize("target_key", ("core", "pg", "summon", "mcp", "tui"))
 def test_every_single_target_closes_local_llm_after_an_earlier_gate_failure(
     target_key: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -2268,10 +2659,12 @@ def test_summon_preparation_reconciles_both_retained_locks_before_builds() -> No
         ("uv", "lock"),
         ("uv", "lock", "--upgrade-package", "simplebroker"),
         ("uv", "lock"),
+        ("uv", "lock"),
     ]
     assert preparation_steps[0].cwd == release.PROJECT_ROOT
     assert preparation_steps[1].cwd == release.SUMMON_EXTENSION_DIR
     assert preparation_steps[2].cwd == release.MCP_EXTENSION_DIR
+    assert preparation_steps[3].cwd == release.TUI_EXTENSION_DIR
     assert build_steps[0].command == (
         "uv",
         "build",
@@ -2295,10 +2688,12 @@ def test_pg_preparation_reconciles_both_retained_extension_locks() -> None:
         ("uv", "lock"),
         ("uv", "lock", "--upgrade-package", "simplebroker"),
         ("uv", "lock"),
+        ("uv", "lock"),
     ]
     assert steps[0].cwd == release.PROJECT_ROOT
     assert steps[1].cwd == release.SUMMON_EXTENSION_DIR
     assert steps[2].cwd == release.MCP_EXTENSION_DIR
+    assert steps[3].cwd == release.TUI_EXTENSION_DIR
 
 
 def test_core_postupdate_checks_fresh_paired_release_wheels_after_build() -> None:
@@ -2331,7 +2726,11 @@ def test_core_dry_run_executes_preparation_then_artifact_plan(
         if command == ("uv", "lock", "--upgrade-package", "simplebroker"):
             assert cwd == release.SUMMON_EXTENSION_DIR
         elif command == ("uv", "lock"):
-            assert cwd in {release.PROJECT_ROOT, release.MCP_EXTENSION_DIR}
+            assert cwd in {
+                release.PROJECT_ROOT,
+                release.MCP_EXTENSION_DIR,
+                release.TUI_EXTENSION_DIR,
+            }
         else:
             assert cwd == release.PROJECT_ROOT
         calls.append((command, dry_run))
@@ -2347,6 +2746,7 @@ def test_core_dry_run_executes_preparation_then_artifact_plan(
     assert calls == [
         (("uv", "lock"), True),
         (("uv", "lock", "--upgrade-package", "simplebroker"), True),
+        (("uv", "lock"), True),
         (("uv", "lock"), True),
         (("uv", "build", "--no-sources", "--out-dir", "dist", "."), True),
         (
@@ -2365,7 +2765,7 @@ def test_empty_release_dist_directories_removes_contents_but_keeps_directories(
 ) -> None:
     release = _load_release_module()
     dist_paths = tuple(
-        tmp_path / name / "dist" for name in ("root", "pg", "summon", "mcp")
+        tmp_path / name / "dist" for name in ("root", "pg", "summon", "mcp", "tui")
     )
     for dist_path in dist_paths:
         (dist_path / "nested").mkdir(parents=True)
@@ -2512,6 +2912,7 @@ def test_release_builds_pin_each_package_local_dist_directory() -> None:
         release.PG_EXTENSION_DIR / "dist",
         release.SUMMON_EXTENSION_DIR / "dist",
         release.MCP_EXTENSION_DIR / "dist",
+        release.TUI_EXTENSION_DIR / "dist",
     )
 
     steps = release.build_postupdate_steps_for_targets(
@@ -2520,10 +2921,11 @@ def test_release_builds_pin_each_package_local_dist_directory() -> None:
             release.PG_TARGET,
             release.SUMMON_TARGET,
             release.MCP_TARGET,
+            release.TUI_TARGET,
         )
     )
 
-    assert [step.command for step in steps[:4]] == [
+    assert [step.command for step in steps[:5]] == [
         ("uv", "build", "--no-sources", "--out-dir", "dist", "."),
         (
             "uv",
@@ -2549,10 +2951,18 @@ def test_release_builds_pin_each_package_local_dist_directory() -> None:
             "extensions/taut_mcp/dist",
             "extensions/taut_mcp",
         ),
+        (
+            "uv",
+            "build",
+            "--no-sources",
+            "--out-dir",
+            "extensions/taut_tui/dist",
+            "extensions/taut_tui",
+        ),
     ]
-    assert all(step.cwd == release.PROJECT_ROOT for step in steps[:4])
+    assert all(step.cwd == release.PROJECT_ROOT for step in steps[:5])
     assert (
-        tuple((step.cwd / step.command[4]).resolve() for step in steps[:4])
+        tuple((step.cwd / step.command[4]).resolve() for step in steps[:5])
         == release.RELEASE_DIST_PATHS
     )
 
@@ -2627,6 +3037,7 @@ def test_release_wheel_failure_leaves_preparation_commit_and_stops_remote_mutati
     assert commands == [
         ("uv", "lock"),
         ("uv", "lock", "--upgrade-package", "simplebroker"),
+        ("uv", "lock"),
         ("uv", "lock"),
         (
             "git",
@@ -2705,6 +3116,7 @@ def test_version_changed_core_prepares_and_commits_before_prechecks_and_builds(
         release.PG_TARGET: "0.5.9",
         release.SUMMON_TARGET: "0.5.8",
         release.MCP_TARGET: "0.5.7",
+        release.TUI_TARGET: "0.5.6",
     }
     monkeypatch.setattr(
         release,
@@ -2815,10 +3227,12 @@ def test_version_changed_core_prepares_and_commits_before_prechecks_and_builds(
         "write:pg:0.5.9",
         "write:summon:0.5.8",
         "write:mcp:0.5.7",
+        "write:tui:0.5.6",
         "sync-paired-floors",
         "sync-simplebroker-readme",
         "uv:lock",
         "uv:lock:--upgrade-package:simplebroker",
+        "uv:lock",
         "uv:lock",
         "git-add",
         "git-commit",
@@ -2844,6 +3258,7 @@ def test_explicit_batch_version_prepares_all_manifests_but_skips_published_actio
         release.PG_TARGET: "0.5.9",
         release.SUMMON_TARGET: "0.5.8",
         release.MCP_TARGET: "0.5.6",
+        release.TUI_TARGET: "0.5.5",
         release.ROOT_TARGET: "0.5.7",
     }
     writes: list[tuple[str, str]] = []
@@ -2923,7 +3338,9 @@ def test_explicit_batch_version_prepares_all_manifests_but_skips_published_actio
         targets: tuple[Any, ...], *, message: str
     ) -> tuple[bool, str]:
         preparation_targets.append(tuple(target.key for target in targets))
-        assert message == "Release taut-summon 0.6.0, taut-mcp 0.6.0, taut-chat 0.6.0"
+        assert message == (
+            "Release taut-summon 0.6.0, taut-mcp 0.6.0, taut-tui 0.6.0, taut-chat 0.6.0"
+        )
         return True, "prepared"
 
     monkeypatch.setattr(
@@ -2978,18 +3395,20 @@ def test_explicit_batch_version_prepares_all_manifests_but_skips_published_actio
         ("pg", "0.6.0"),
         ("summon", "0.6.0"),
         ("mcp", "0.6.0"),
+        ("tui", "0.6.0"),
     ]
     assert preparation_targets == [
-        ("pg", "summon", "mcp", "core"),
-        ("pg", "summon", "mcp", "core"),
+        ("pg", "summon", "mcp", "tui", "core"),
+        ("pg", "summon", "mcp", "tui", "core"),
     ]
-    assert build_targets == [("summon", "mcp", "core")]
+    assert build_targets == [("summon", "mcp", "tui", "core")]
     assert inspected_targets.count("pg") == 1
     assert inspected_targets.count("summon") == 3
     assert inspected_targets.count("mcp") == 3
+    assert inspected_targets.count("tui") == 3
     assert inspected_targets.count("core") == 3
-    assert prepared_tags == ["summon", "mcp", "core"]
-    assert pushed_tags == ["summon", "mcp", "core"]
+    assert prepared_tags == ["summon", "mcp", "tui", "core"]
+    assert pushed_tags == ["summon", "mcp", "tui", "core"]
     assert branch_pushes == [("main", "prepared")]
     assert remote_events == [
         "settings",
@@ -2999,6 +3418,7 @@ def test_explicit_batch_version_prepares_all_manifests_but_skips_published_actio
         "settings",
         "prepare:summon",
         "prepare:mcp",
+        "prepare:tui",
         "prepare:core",
     ]
 
@@ -3011,6 +3431,7 @@ def test_explicit_batch_version_rejects_backdating_before_remote_inspection(
         release.PG_TARGET: "0.6.0",
         release.SUMMON_TARGET: "0.6.1",
         release.MCP_TARGET: "0.6.0",
+        release.TUI_TARGET: "0.6.0",
         release.ROOT_TARGET: "0.6.0",
     }
     monkeypatch.setattr(
@@ -3105,6 +3526,7 @@ def test_clean_rerun_reuses_preparation_commit_without_duplicate_commit(
     assert commands == [
         ("uv", "lock"),
         ("uv", "lock", "--upgrade-package", "simplebroker"),
+        ("uv", "lock"),
         ("uv", "lock"),
         ("uv", "build", "--no-sources", "--out-dir", "dist", "."),
         (sys.executable, str(release.RELEASE_WHEEL_SET_CHECKER)),
@@ -3340,7 +3762,7 @@ def test_parse_args_accepts_positional_all_and_target_compat() -> None:
         release.parse_args(["pg", "--target", "summon"])
 
 
-@pytest.mark.parametrize("target", ("all", "core", "pg", "summon", "mcp"))
+@pytest.mark.parametrize("target", ("all", "core", "pg", "summon", "mcp", "tui"))
 def test_skip_checks_remains_an_explicit_human_override(target: str) -> None:
     release = _load_release_module()
 
@@ -3423,6 +3845,9 @@ def test_release_file_paths_for_targets_dedupes_root_files() -> None:
         release.MCP_PYPROJECT_PATH,
         release.MCP_README_PATH,
         release.MCP_UV_LOCK_PATH,
+        release.TUI_PYPROJECT_PATH,
+        release.TUI_README_PATH,
+        release.TUI_UV_LOCK_PATH,
     }
     assert len(paths) == len(set(paths))
 
@@ -3809,7 +4234,7 @@ def test_checks_only_rejects_dry_run_and_skip_checks() -> None:
         release.parse_args(["--checks-only", "--skip-checks"])
 
 
-@pytest.mark.parametrize("target", ("all", "core", "pg", "summon", "mcp"))
+@pytest.mark.parametrize("target", ("all", "core", "pg", "summon", "mcp", "tui"))
 @pytest.mark.parametrize("branch", ("topic/ci-work", "HEAD"))
 def test_publishing_targets_reject_noncanonical_branch_before_mutation(
     target: str,

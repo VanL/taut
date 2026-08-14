@@ -1,0 +1,96 @@
+#!/usr/bin/env python3
+"""Regenerate the deterministic Taut TUI visual-review SVGs."""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+from pathlib import Path
+
+from taut_tui.app import TautApp
+from taut_tui.models import LayoutMode
+from taut_tui.session import ConversationSnapshot
+from textual.widgets import Input
+
+from taut.client import Message
+
+_SIZES = ((130, 34), (100, 34), (64, 34), (40, 15))
+_MESSAGES = (
+    Message(
+        thread="general",
+        ts=1723400000000000000,
+        from_id="member-alice",
+        from_name="alice",
+        kind="message",
+        text="The TUI reflects core chat semantics; it does not invent another chat.",
+    ),
+    Message(
+        thread="general",
+        ts=1723400001000000000,
+        from_id="member-bob",
+        from_name="bob",
+        kind="message",
+        text="Arrow keys and vi keys share the same actions. Mouse focus works too.",
+    ),
+    Message(
+        thread="general",
+        ts=1723400002000000000,
+        from_id="member-agent",
+        from_name="reviewer",
+        kind="message",
+        text="Resize keeps the conversation, draft, selection, and scroll intent.",
+    ),
+)
+
+
+def _arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("docs/implementation/artifacts/tui"),
+    )
+    return parser.parse_args()
+
+
+async def _render(output_dir: Path) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    app = TautApp(
+        db_path=str(output_dir / "nonexistent-preview.db"),
+        as_name="preview",
+        auth_token=None,
+    )
+    async with app.run_test(size=_SIZES[0]) as pilot:
+        await pilot.pause()
+        app._set_navigation_actions(
+            ("general", "release", "dm.preview"),
+            ("  #general", "* #release 3", "  bob"),
+        )
+        app._apply_conversation(
+            ConversationSnapshot(
+                generation=1,
+                target="general",
+                messages=_MESSAGES,
+            )
+        )
+        app._select_message(2)
+        app.query_one("#composer", Input).value = "A target-scoped draft"
+        for width, height in _SIZES:
+            await pilot.resize_terminal(width, height)
+            await pilot.pause()
+            if app.layout_mode is not LayoutMode.TOO_SMALL:
+                app._render_messages(_MESSAGES)
+            svg = app.export_screenshot(title=f"Taut TUI {width}x{height}")
+            (output_dir / f"taut-tui-{width}x{height}.svg").write_text(
+                "\n".join(line.rstrip() for line in svg.splitlines()) + "\n",
+                encoding="utf-8",
+            )
+
+
+def main() -> None:
+    args = _arguments()
+    asyncio.run(_render(args.output_dir))
+
+
+if __name__ == "__main__":
+    main()

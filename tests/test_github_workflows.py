@@ -273,6 +273,38 @@ def test_summon_collection_probe_owns_its_dev_dependencies(
     ]
 
 
+def test_root_workflow_runs_tui_extension_suite_against_retained_lock() -> None:
+    document = _workflow_data("test.yml")
+    job = document["jobs"]["tui-retained"]
+
+    assert job["strategy"]["matrix"]["include"] == [
+        {"os": "ubuntu-latest", "python-version": "3.11"},
+        {"os": "ubuntu-latest", "python-version": "3.13"},
+        {"os": "ubuntu-latest", "python-version": "3.14"},
+        {"os": "macos-latest", "python-version": "3.13"},
+        {"os": "windows-latest", "python-version": "3.13"},
+    ]
+    steps = _named_steps(job)
+    cache_glob = steps["Install uv"]["with"]["cache-dependency-glob"]
+    assert "extensions/taut_tui/pyproject.toml" in cache_glob
+    assert "extensions/taut_tui/uv.lock" in cache_glob
+    assert steps["Run taut-tui suite against retained lock"]["run"].split() == [
+        "uv",
+        "run",
+        "--project",
+        "extensions/taut_tui",
+        "--extra",
+        "dev",
+        "--locked",
+        "pytest",
+        "extensions/taut_tui/tests",
+        "-v",
+        "--tb=short",
+        "-n",
+        "0",
+    ]
+
+
 def test_test_workflow_is_reusable_and_owns_canonical_release_artifacts() -> None:
     workflow = _workflow("test.yml")
     document = _workflow_data("test.yml")
@@ -287,12 +319,26 @@ def test_test_workflow_is_reusable_and_owns_canonical_release_artifacts() -> Non
     core_build = packaging.index("- name: Build core package")
     summon_build = packaging.index("- name: Build taut-summon extension package")
     mcp_build = packaging.index("- name: Build taut-mcp extension package")
+    tui_build = packaging.index("- name: Build taut-tui extension package")
     release_wheel_check = packaging.index("- name: Check paired release wheels")
     wheel_smoke = packaging.index("- name: Smoke test core wheel")
-    assert core_build < summon_build < mcp_build < release_wheel_check < wheel_smoke
+    assert (
+        core_build
+        < summon_build
+        < mcp_build
+        < tui_build
+        < release_wheel_check
+        < wheel_smoke
+    )
     mcp_build_step = packaging[mcp_build:release_wheel_check]
     assert "uv build --out-dir release-dist/mcp extensions/taut_mcp" in mcp_build_step
     assert "\n        if:" not in mcp_build_step
+    tui_build_step = packaging[tui_build:release_wheel_check]
+    assert "uv build --out-dir release-dist/tui extensions/taut_tui" in tui_build_step
+    assert "\n        if:" not in tui_build_step
+    tui_smoke = _step_block(packaging, "Smoke test taut-tui wheel with paired core")
+    assert "release-dist/core/*.whl release-dist/tui/*.whl" in tui_smoke
+    assert "taut tui --help" in tui_smoke
     assert "summon-process:" in workflow
     assert "name: taut-summon process" in workflow
     assert "max-parallel:" not in workflow
@@ -775,6 +821,20 @@ def test_canonical_packaging_builds_and_smokes_each_release_artifact_once() -> N
             "release-bundles/taut-mcp",
             "Upload MCP release evidence",
         ),
+        "taut-tui": (
+            "Build taut-tui extension package",
+            (
+                "uv",
+                "build",
+                "--out-dir",
+                "release-dist/tui",
+                "extensions/taut_tui",
+            ),
+            "extensions/taut_tui",
+            "release-dist/tui",
+            "release-bundles/taut-tui",
+            "Upload TUI release evidence",
+        ),
     }
     bundle_commands = [
         shlex.split(line)
@@ -845,6 +905,10 @@ def test_canonical_packaging_builds_and_smokes_each_release_artifact_once() -> N
         "Smoke test taut-mcp wheel with paired core": (
             "release-dist/core/*.whl release-dist/mcp/*.whl",
             "taut-mcp --version",
+        ),
+        "Smoke test taut-tui wheel with paired core": (
+            "release-dist/core/*.whl release-dist/tui/*.whl",
+            "taut tui --help",
         ),
     }
     assert {
@@ -1011,6 +1075,13 @@ def test_mcp_workflow_runs_sqlite_postgres_quality_and_build_gates() -> None:
             "extensions/taut_mcp",
             "taut-mcp",
             "release-taut-mcp",
+        ),
+        (
+            "release-gate-tui.yml",
+            "taut_tui/v*",
+            "extensions/taut_tui",
+            "taut-tui",
+            "release-taut-tui",
         ),
     ),
 )

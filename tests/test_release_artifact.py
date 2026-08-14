@@ -194,6 +194,16 @@ def test_cli_bundle_output_is_accepted_by_publication_gate(tmp_path: Path) -> No
                 "taut_pg/v1.2.3",
             ),
         ),
+        (
+            "taut-tui",
+            "taut_tui/v1.2.3",
+            (
+                "v1.2.3",
+                "taut_tui/1.2.3",
+                "taut_tui/v1.2.4",
+                "taut_mcp/v1.2.3",
+            ),
+        ),
     ),
 )
 def test_verify_bundle_fires_every_release_tag_family(

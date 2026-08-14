@@ -138,6 +138,7 @@ class ParsedDump:
 
 class _CoreValidator:
     def __init__(self) -> None:
+        self.broker_high_water: int | None = None
         self.last_key: tuple[int, Any] | None = None
         self.member_ids: set[str] = set()
         self.route_keys: set[str] = set()
@@ -329,6 +330,13 @@ class _CoreValidator:
                 key not in self.memberships,
                 _nonnegative_int(record["joined_ts"]),
                 _nonnegative_int(record["last_seen_ts"]),
+                # A high-water exists only inside a composite dump. Live
+                # projections, including doctor, retain structural validation
+                # without inventing a broker snapshot bound.
+                (
+                    self.broker_high_water is None
+                    or record["last_seen_ts"] <= self.broker_high_water
+                ),
             )
         )
         if not valid:
@@ -476,6 +484,14 @@ def _valid_external_message_id(value: Any) -> bool:
     except (TypeError, ValueError):
         return False
     return True
+
+
+def _valid_canonical_external_message_id(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and MESSAGE_ID_RE.fullmatch(value) is not None
+        and _valid_external_message_id(value)
+    )
 
 
 def _normalize_core_record(record: dict[str, Any]) -> None:
@@ -654,6 +670,7 @@ class _DumpValidator:
         self.message_ids: set[int] = set()
         self.last_message_key: tuple[str, int] | None = None
         self.nested_header_seen = False
+        self.nested_high_water: int | None = None
         self.core_validator = _CoreValidator()
 
     def accept(
@@ -838,6 +855,8 @@ class _DumpValidator:
             line_number=line_number,
         )
         try:
+            if not _valid_canonical_external_message_id(record["id"]):
+                raise ValueError
             message_id = _message_id_as_int(record["id"])
         except (TypeError, ValueError):
             raise TautError(
@@ -854,6 +873,12 @@ class _DumpValidator:
         if not valid:
             raise TautError(
                 f"invalid Taut dump at line {line_number}: invalid SimpleBroker message"
+            )
+        assert self.nested_high_water is not None
+        if message_id > self.nested_high_water:
+            raise TautError(
+                f"invalid Taut dump at line {line_number}: "
+                "message exceeds SimpleBroker last_ts"
             )
         message_key = (queue, message_id)
         if self.last_message_key is not None and message_key <= self.last_message_key:
@@ -881,11 +906,13 @@ class _DumpValidator:
             or record["format"] != "simplebroker-dump"
             or record["version"] != 1
             or not isinstance(record["backend"], str)
-            or not _valid_external_message_id(record["last_ts"])
+            or not _valid_canonical_external_message_id(record["last_ts"])
         ):
             raise TautError(
                 f"invalid Taut dump at line {line_number}: invalid SimpleBroker header"
             )
+        self.nested_high_water = _message_id_as_int(record["last_ts"])
+        self.core_validator.broker_high_water = self.nested_high_water
         self.nested_header_seen = True
 
     @staticmethod

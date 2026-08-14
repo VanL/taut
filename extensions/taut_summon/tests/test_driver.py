@@ -973,6 +973,163 @@ def test_driver_ledger_client_is_persistent_and_foreground_owned(
     assert FakeClient.closed_on == [owner]
 
 
+def test_foreground_run_remains_live_while_control_owner_survives_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeQueue:
+        def generate_timestamp(self) -> int:
+            return 1
+
+    class FakeClient:
+        def __init__(self, **_kwargs: Any) -> None:
+            self.target = "sqlite:///driver-owned"
+
+        def queue(self, name: str) -> FakeQueue:
+            assert name == "taut.summon_state"
+            return FakeQueue()
+
+        def close(self) -> None:
+            return
+
+    monkeypatch.setattr(driver_module, "TautClient", FakeClient)
+    monkeypatch.setattr(driver_module, "ensure_summon_schema", lambda _queue: None)
+    monkeypatch.setattr(driver_module, "capture_driver_evidence", lambda: (1, "s"))
+    monkeypatch.setattr(driver_module, "_HALT_ACK_TIMEOUT_SECONDS", 0.01)
+
+    ready = threading.Event()
+    run_handles: list[Any] = []
+
+    def record_ready(run_handle: Any) -> None:
+        run_handles.append(run_handle)
+        ready.set()
+
+    driver = SummonDriver(
+        _run_request(),
+        interaction=ShellSummonInteraction(),
+        on_ready=record_ready,
+    )
+    boot = _BootstrapResult("m_reviewer", "reviewer", "tok", "scripted", None)
+    adapter_handle = _CountingHandle()
+    driver._handle = cast(Any, adapter_handle)
+    assert driver._control_ready is not None
+    driver._control_ready.set()
+    monkeypatch.setattr(driver, "_bootstrap", lambda _client: boot)
+
+    def supervise(
+        _boot: _BootstrapResult,
+        _display: str,
+        **_kwargs: Any,
+    ) -> int:
+        driver._await_control_and_publish_ready(boot, threading.Event())
+        return 0
+
+    monkeypatch.setattr(driver, "_supervise", supervise)
+    monkeypatch.setattr(driver, "_release", lambda: None)
+
+    release_control = threading.Event()
+    control_owner = threading.Thread(target=release_control.wait)
+    driver._control_thread = control_owner
+    run_errors: list[BaseException] = []
+
+    def run_driver() -> None:
+        try:
+            driver.run()
+        except SummonOperationError as exc:
+            run_errors.append(exc)
+
+    foreground = threading.Thread(target=run_driver)
+    control_owner.start()
+    foreground.start()
+    try:
+        assert ready.wait(timeout=5.0)
+        foreground.join(timeout=0.1)
+        assert foreground.is_alive()
+        assert len(run_handles) == 1
+        run_handles[0].request_stop()
+        assert driver._shutdown.is_set()
+    finally:
+        release_control.set()
+        control_owner.join(timeout=5.0)
+        foreground.join(timeout=5.0)
+
+    assert not foreground.is_alive()
+    assert len(run_errors) == 1
+    assert isinstance(run_errors[0], SummonOperationError)
+    assert "control owner did not stop" in str(run_errors[0])
+
+
+def test_surviving_control_owner_cleanup_does_not_replace_primary_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeQueue:
+        def generate_timestamp(self) -> int:
+            return 1
+
+    class FakeClient:
+        def __init__(self, **_kwargs: Any) -> None:
+            self.target = "sqlite:///driver-owned"
+
+        def queue(self, name: str) -> FakeQueue:
+            assert name == "taut.summon_state"
+            return FakeQueue()
+
+        def close(self) -> None:
+            return
+
+    monkeypatch.setattr(driver_module, "TautClient", FakeClient)
+    monkeypatch.setattr(driver_module, "ensure_summon_schema", lambda _queue: None)
+    monkeypatch.setattr(driver_module, "capture_driver_evidence", lambda: (1, "s"))
+    monkeypatch.setattr(driver_module, "_HALT_ACK_TIMEOUT_SECONDS", 0.01)
+
+    driver = _new_driver(_run_request())
+    boot = _BootstrapResult("m_reviewer", "reviewer", "tok", "scripted", None)
+    primary = DriverError("primary supervision failure")
+    supervision_failed = threading.Event()
+    monkeypatch.setattr(driver, "_bootstrap", lambda _client: boot)
+
+    def fail_supervision(
+        _boot: _BootstrapResult,
+        _display: str,
+        **_kwargs: Any,
+    ) -> int:
+        supervision_failed.set()
+        raise primary
+
+    monkeypatch.setattr(driver, "_supervise", fail_supervision)
+    monkeypatch.setattr(driver, "_release", lambda: None)
+
+    release_control = threading.Event()
+    control_owner = threading.Thread(target=release_control.wait)
+    driver._control_thread = control_owner
+    run_errors: list[BaseException] = []
+
+    def run_driver() -> None:
+        try:
+            driver._run()
+        except DriverError as exc:
+            run_errors.append(exc)
+
+    foreground = threading.Thread(target=run_driver)
+    control_owner.start()
+    foreground.start()
+    try:
+        assert supervision_failed.wait(timeout=5.0)
+        foreground.join(timeout=0.1)
+        assert foreground.is_alive()
+    finally:
+        release_control.set()
+        control_owner.join(timeout=5.0)
+        foreground.join(timeout=5.0)
+
+    assert run_errors == [primary]
+    assert getattr(primary, "__notes__", []) == [
+        (
+            "cleanup also failed: DriverError: "
+            "Summon control owner did not stop within the cleanup budget"
+        )
+    ]
+
+
 def test_watcher_failure_wakes_driver_for_rebuild(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1753,6 +1910,131 @@ def test_initial_control_open_failure_is_driver_fatal(
     with pytest.raises(DriverError) as caught:
         driver._raise_if_control_failed()
     assert caught.value.__cause__ is failure
+
+
+def test_callback_absent_does_not_create_or_pass_a_control_readiness_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    driver, _handle = _control_supervision_driver()
+
+    class StoppingControlLoop:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+        def run(self) -> None:
+            driver._shutdown.set()
+
+    monkeypatch.setattr(driver_module, "ControlLoop", StoppingControlLoop)
+    assert driver._control_ready is None
+
+    driver._start_control_thread(_control_supervision_boot())
+    assert driver._control_thread is not None
+    driver._control_thread.join(timeout=5.0)
+
+    assert captured["ready"] is None
+
+
+@pytest.mark.parametrize(
+    ("live_session", "bootstrap_session", "expected"),
+    [
+        ("live-session", "bootstrap-session", "live-session"),
+        (None, "bootstrap-session", "bootstrap-session"),
+    ],
+)
+def test_foreground_handle_uses_exact_session_precedence(
+    live_session: str | None,
+    bootstrap_session: str | None,
+    expected: str | None,
+) -> None:
+    seen: list[Any] = []
+    driver = SummonDriver(
+        _run_request(),
+        interaction=ShellSummonInteraction(),
+        on_ready=seen.append,
+    )
+    handle = _CountingHandle()
+    handle.session_id = live_session
+    driver._handle = cast(Any, handle)
+    assert driver._control_ready is not None
+    driver._control_ready.set()
+    boot = _BootstrapResult(
+        member_id="m_reviewer",
+        member_name="Reviewer",
+        token="tok",
+        provider="scripted",
+        provider_session_id=bootstrap_session,
+    )
+
+    driver._await_control_and_publish_ready(boot, threading.Event())
+
+    assert len(seen) == 1
+    assert seen[0].member.provider_session_id == expected
+
+
+def test_foreground_control_readiness_timeout_requests_normal_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[Any] = []
+    driver = SummonDriver(
+        _run_request(),
+        interaction=ShellSummonInteraction(),
+        on_ready=seen.append,
+    )
+    handle = _CountingHandle()
+    driver._handle = cast(Any, handle)
+    monkeypatch.setattr(driver_module, "_FOREGROUND_READINESS_TIMEOUT_SECONDS", 0.01)
+
+    with pytest.raises(DriverError, match="control loop did not become ready"):
+        driver._await_control_and_publish_ready(
+            _control_supervision_boot(), threading.Event()
+        )
+
+    assert seen == []
+    assert driver._shutdown.is_set()
+    assert handle.request_close_calls == 1
+
+
+@pytest.mark.parametrize("abort", ["generation", "shutdown"])
+def test_foreground_readiness_abort_before_callback_is_startup_fatal(
+    abort: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[Any] = []
+    driver = SummonDriver(
+        _run_request(),
+        interaction=ShellSummonInteraction(),
+        on_ready=seen.append,
+    )
+    generation = types.SimpleNamespace(harness_dead=threading.Event())
+    if abort == "generation":
+        generation.harness_dead.set()
+    else:
+        driver._shutdown.set()
+    handle = _CountingHandle()
+    running = types.SimpleNamespace(
+        generation=generation,
+        handle=handle,
+        pump=object(),
+    )
+    teardowns: list[tuple[Any, Any, Any]] = []
+    monkeypatch.setattr(driver, "_watch_until_wake", lambda _boot: None)
+    monkeypatch.setattr(driver, "_raise_if_pump_failed", lambda _generation: None)
+    monkeypatch.setattr(
+        driver,
+        "_teardown_generation",
+        lambda found_generation, found_handle, found_pump: teardowns.append(
+            (found_generation, found_handle, found_pump)
+        ),
+    )
+
+    with pytest.raises(DriverError, match="foreground readiness"):
+        driver._await_running_generation(
+            cast(Any, running), _control_supervision_boot()
+        )
+
+    assert seen == []
+    assert teardowns == [(generation, handle, running.pump)]
 
 
 def test_expected_stop_allows_control_loop_to_return_cleanly(

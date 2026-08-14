@@ -36,7 +36,8 @@ Out of scope for version 1:
   loads
 - dumping to stdout or loading from stdin
 - encryption, signing, compression, remote storage, retention, or scheduling
-- a point-in-time live backup claim while writers remain active
+- one cross-component database transaction or one-physical-nanosecond claim
+  across every mutable broker, core, and extension field
 - raw SQL table dumps or physical SQLite/PostgreSQL backup formats
 - exporting unknown SimpleBroker queues or SimpleBroker aliases
 - a portable Weft Monitor store format; Weft's operational JSONL and reports
@@ -91,21 +92,18 @@ each extension initialize their current schema, then translate logical records
 into it. A `taut-dump` format version and a component format version therefore
 do not equal a database schema version.
 
-### [PIO-2.4] Maintenance requires quiescence
+### [PIO-2.4] Live dump; quiescent load
 
-Dump and load are maintenance operations. The operator must stop Taut writers,
-watchers, Summon drivers, foreign SimpleBroker consumers, and other processes
-that can mutate the selected broker or sidecar state for the operation's full
-duration.
+Dump and load have different concurrency contracts. Load remains destructive
+maintenance and requires operator quiescence under [PIO-7]. Dump permits Taut
+writers, watchers, Summon drivers, foreign SimpleBroker users, and other
+workspace processes to remain active.
 
-SimpleBroker dump is a logical export, not a point-in-time snapshot under
-concurrent writers [SB-IO-2]. The current public broker and sidecar APIs do not
-offer one transaction spanning both stores. Taut samples broker metadata and
-compares independently serialized sidecar components before and after broker
-export. It refuses activity it observes, but a successful check is not proof
-that no invisible race occurred. Exact cross-component state requires actual
-quiescence. Taut does not add a global workspace lock that other clients do not
-honor.
+A successful dump is a coherent, validated, importable logical projection.
+Racing writes and mutations may appear in this dump or a later one according to
+the projection boundary that observes them. Ordinary workspace advancement
+does not invalidate a dump. The format does not claim one transaction or one
+physical instant across broker, core sidecar, and extension projections.
 
 ### [PIO-2.5] No identity or chat side effects
 
@@ -142,9 +140,10 @@ For dump and load, the exit classes are:
   while leaving destination eligibility unchecked; or load completed and
   cleared its guard
 - 1: usage, malformed or incompatible dump, digest mismatch, output or input
-  I/O error other than a missing input, observed source activity, incomplete
-  channel rename, unrecognized durable extension state, unavailable component
-  importer, non-fresh destination, backend error, or any failed apply/recovery
+  I/O error other than a missing input, incomplete channel rename,
+  unrecognized durable extension state, unavailable component importer,
+  non-fresh destination, backend error, or any failed validation, apply, or
+  recovery
 - 2: the named input file is absent
 
 An uninitialized source follows [TAUT-3.2]'s existing no-database contract:
@@ -300,13 +299,27 @@ version, rejects alias and unknown nested record types, and verifies every
 message queue is present in the Taut core thread component. It supplies the
 retained lines unchanged to `load_lines()`.
 
-SimpleBroker dump v1 may represent `last_ts` and message `id` as either a JSON
-integer token or a canonical 19-digit string. Taut validates both forms with
-the supported public formatter and normalizes them to integers only for
-ordering and duplicate checks. The original nested payload lines remain
-byte-for-byte unchanged for `load_lines()`. Floats, exponent notation,
-booleans, malformed strings, and values outside the supported timestamp range
-are invalid.
+Taut dump v1 requires the current SimpleBroker writer's canonical 19-digit
+string form for both `last_ts` and message `id`. There are no pre-contract Taut
+dumps requiring a compatibility branch. JSON integer tokens, floats, exponent
+notation, booleans, malformed strings, and values outside the supported
+timestamp range are invalid. Taut normalizes valid strings to integers only for
+ordering, bounds, and duplicate checks; retained nested lines remain
+byte-for-byte unchanged for `load_lines()`.
+
+For Taut dump, the first unchanged nested header supplies broker-global
+high-water `H`. SimpleBroker 7.3.1 owns pending-message selection at or below
+H. Taut rejects a violating above-H line rather than silently hiding an
+incompatible producer, omits aliases, and retains a racing duplicate id only
+at its deterministic first observation across the component. Retained header
+and message lines remain byte-for-byte unchanged. H is a message chronology
+boundary, not a claim of one-nanosecond resolution or frozen
+pending/claimed/delete/move state.
+
+Load restores broker allocation state to at least H; exact equality is not
+required. Every successfully generated later message id must be greater than H
+and every restored message id. Deliberately far-future exact ids retain
+SimpleBroker's existing possible allocation stall until wall time catches up.
 
 ### [PIO-4.4] Taut core component
 
@@ -342,6 +355,11 @@ legacy component-version branch or a reason to introduce version 2.
 Only completed channel-rename rows are legal. Dump refuses while any rename is
 incomplete, using the existing recovery diagnostic and command. Load rejects a
 non-completed rename record.
+
+Each emitted membership `last_seen_ts` is
+`min(live_last_seen_ts, H)`. This rewrites the copied logical record only; dump
+never moves a live workspace cursor backward. No other core or extension
+timestamp is clamped merely because it exceeds H.
 
 Core schema-version rows and operational load-guard rows are never payload
 records. The destination writes its current core schema version.
@@ -425,26 +443,25 @@ disposable metadata table and is not a persistence component.
 
 ## 6. Dump Operation [PIO-6]
 
-### [PIO-6.1] Preflight and stable-view check
+### [PIO-6.1] Projection and validation protocol
 
 Dump resolves the target without identity, verifies the current core schema,
 refuses an active load guard, refuses an incomplete channel rename, discovers
 component manifests, and validates all `taut_meta` key ownership before writing
 the destination.
 
-It then:
+It then begins the selected SimpleBroker stream, reads H from its first header,
+obtains one deterministic logical projection from core and each active
+extension contributor, retains the H-bounded broker projection, assembles the
+owner-only staged composite, and validates the complete file before atomic
+publication. Each component projection must be internally consistent. The
+final validator enforces cross-component references, message and cursor
+bounds, versions, order, counts, and digests.
 
-1. serializes each sidecar component to deterministic logical records
-2. samples public broker queue metadata for the registered queue set
-3. streams the selected SimpleBroker component to staging
-4. samples the same broker metadata again
-5. serializes every sidecar component again and compares digests
-6. refuses and removes staging if either broker metadata or sidecar digests
-   changed
-7. assembles those records in one owner-only staged composite and verifies it
-
-These checks catch observed movement. They do not weaken [PIO-2.4]'s quiescence
-requirement or turn the result into a database snapshot claim.
+Dump does not repeat projections to prove immobility. It fails only when it
+cannot obtain legal component projections, encounters incomplete or
+incompatible state, cannot build a valid composite, or cannot safely write,
+validate, and publish the file. Source movement alone is not a failure.
 
 ### [PIO-6.2] File lifecycle and permissions
 
@@ -478,9 +495,9 @@ Load makes no destination writes until it has read the full file and validated:
 - outer, nested SimpleBroker, core, and extension versions
 - exact field sets, types, identifier grammar, timestamp bounds, uniqueness,
   and current logical JSON shapes
-- tolerant timestamp fields only at their explicit owners: canonical strings
-  or exact JSON integer tokens normalized to integers before storage; no
-  float, exponent, boolean, malformed-string, or out-of-range substitute
+- canonical exact-string nested SimpleBroker `last_ts` and message `id`; no
+  integer, float, exponent, boolean, malformed-string, or out-of-range
+  substitute for those dependency-owned identity fields
 - core foreign-key and structural relations, without inventing a requirement
   that deleted historical messages still exist
 - every broker message queue against the core thread registry
@@ -495,6 +512,14 @@ current public SimpleBroker connection path initializes backend schema, so
 claiming a zero-write PostgreSQL eligibility check would be false. A successful
 dry-run therefore returns `destination_checked: false`; actual load repeats the
 file preflight and checks [PIO-7.2] immediately before guard acquisition.
+
+Future-watermark skew is host-dependent apply eligibility, not file validity.
+Dry-run neither warns about nor rejects it. Actual load passes Taut's resolved
+SimpleBroker config to `load_lines()` without a force override. Any positive
+physical skew emits SimpleBroker's public `DumpClockSkewWarning`; skew beyond
+`BROKER_LOAD_MAX_FUTURE_SKEW_SECONDS` rejects apply. Taut exposes the public
+environment spelling `TAUT_LOAD_MAX_FUTURE_SKEW_SECONDS`, translated under
+[TAUT-3.2], with default `300`. Taut has no CLI or Python force surface.
 
 Dry-run does reject an input path that resolves to or is the same existing file
 as a selected SQLite destination or its `-wal`/`-shm` companions. It does not
@@ -530,14 +555,14 @@ Actual load requires quiescence, then:
 3. loads core and extension logical records in dependency order in one sidecar
    transaction
 4. passes the unchanged nested SimpleBroker lines to `load_lines()` so exact
-   message ids are restored
+   message ids and header high-water are restored; this is also where the
+   apply host's future-skew eligibility is checked
 5. deletes the guard in one final sidecar transaction
 
-`load_lines()` delegates exact-id insertion to SimpleBroker's public
-`insert_messages()` path, which advances the broker timestamp counter beyond
-the largest restored id. The first later broker write must therefore receive an
-id greater than every restored id. Load must not emulate or separately mutate
-that clock.
+`load_lines()` delegates exact-id insertion to SimpleBroker and monotonically
+restores the header H as an allocation floor. Every successfully generated
+later id is greater than H and every restored id. Load must not emulate,
+lower, or separately mutate that clock.
 
 All ordinary current-version Taut client construction, `init`, dump, search,
 and extension commands must fail closed with an actionable
@@ -568,6 +593,12 @@ or attempt to prove last-connection status. For PostgreSQL, the public
 SimpleBroker load path may additionally commit message batches independently
 of the sidecar transaction. Neither backend claims atomic rollback.
 
+Excessive future skew is one such post-guard failure: core and extension
+sidecar state has already committed when SimpleBroker rejects the apply host.
+The dump remains file-valid and may still dry-run successfully. The recovery
+action is to recreate the destination and retry after correcting the clock or
+`TAUT_LOAD_MAX_FUTURE_SKEW_SECONDS`; Taut does not offer force.
+
 If any Taut process, foreign SimpleBroker operation, raw database connection,
 or filesystem mutation overlaps load, exact storage and client outcomes are
 outside Taut's guarantee. This is why [PIO-2.4] requires operator quiescence
@@ -575,8 +606,8 @@ for a predictable result. Core does not add a lifecycle lock, process census,
 backend-specific SQL, or compiled server extension to simulate one.
 
 The passive system doctor is not a quiescence substitute. Its observations can
-be stale as soon as they are read, and it does not certify a maintenance window
-or make dump/load safe while writers are active [DOCT-1].
+be stale as soon as they are read. It neither authorizes nor gates live logical
+dump, and it does not make load safe while writers are active [DOCT-1].
 
 A failure clearing the final guard is a failed load even when every logical
 record was written. The target remains fail-closed and must be recreated. Taut
@@ -634,11 +665,18 @@ that its installed reader cannot establish live-schema compatibility. The seam
 does not create an extension check registry [DOCT-5].
 
 Core owns framing, file and temp lifecycle, digests, target resolution,
-quiescence policy, marker lifecycle, apply order, reporting, and error
+dump-projection and load-quiescence policy, marker lifecycle, apply order,
+reporting, and error
 containment. Contributors must not construct queues, open independent database
 connections, touch broker-private tables, emit configuration or credentials,
 or create their own dump files. Core supplies a fresh replayable iterator for
 validation and load rather than requiring contributors to retain all records.
+
+For dump, a contributor's `dump_records(queue)` call returns one deterministic,
+individually consistent logical projection. Contributors may not require
+cross-component simultaneity or fail merely because unrelated workspace state
+advanced. Core validates the completed composite and rejects dangling or
+illegal cross-component state.
 
 The component API is an internal official-extension seam, not a general public
 plugin SDK. One contributor failure is fatal to dump or preflight because a
@@ -655,9 +693,10 @@ partial backup must not look complete.
 - A newer outer or component version is rejected with the installed supported
   versions. No best-effort downgrade or unknown-component skip occurs.
 - Claimed selected rows are omitted and counted. Dump does not resurrect them.
-- A sidecar component that changes during the dump causes failure even when
-  broker metadata is stable. Broker movement causes failure even when sidecar
-  state is stable.
+- Concurrent broker appends and coherent sidecar or extension mutations do not
+  abort dump. A mutation may appear in this dump or a later one. An incomplete
+  transition, incompatible projection, dangling cross-component reference, or
+  invalid final composite still fails before publication.
 - Output-parent errors and atomic-replace errors leave the prior destination
   file unchanged when the platform operation permits that guarantee.
 - Provider or extension state that cannot be represented without credentials
@@ -705,9 +744,9 @@ At minimum, firing tests cover:
 
 - every core logical record type and every fixed report field
 - raw token-type proof above `2**53`, adjacent-id stability, canonical string
-  output, accepted exact integer-token input, rejected float/exponent/boolean
-  and malformed forms, and integer backend values after load for core,
-  SimpleBroker, and Summon v1 components
+  output, integer-token normalization for Taut-owned core and Summon v1
+  timestamps, strict rejection of integer/float/exponent/boolean and malformed
+  nested SimpleBroker identity forms, and integer backend values after load
 - exact registered-queue inclusion; empty registry threads; foreign queue,
   SimpleBroker alias, search, control, claim, and derived-table exclusion
 - claimed-row omission and count
@@ -716,10 +755,20 @@ At minimum, firing tests cover:
   input without full message-body retention
 - owner-only output, atomic replacement, unwritable output, temp cleanup, and
   no configuration or credential bytes
-- incomplete rename, source load guard, changing sidecar, changing broker
-  metadata, unknown `taut_meta` key, and missing component importer
+- incomplete rename, source load guard, illegal component projection, unknown
+  `taut_meta` key, and missing component importer
+- active broker append and coherent sidecar or extension mutation with
+  successful before-or-after inclusion; broker-wide duplicate-id containment
+  under a racing move; copied-cursor clamp without live source mutation; final
+  validation, restore, and first later allocation above H
 - dry-run byte-for-byte destination non-mutation, `destination_checked: false`,
   and file/component report equality with apply preflight
+- default 300-second future-skew boundary, positive warning, translated Taut
+  override, excessive apply refusal after guard/sidecar commit, dry-run success
+  without skew warning, guarded-target recovery, and absence of force surfaces
+- invalid Taut skew values named with the Taut spelling, invalid ambient broker
+  skew retained as a lower-level failure, import safety, no fallback, one-line
+  CLI diagnostics, and rejection before target creation
 - output/input SQLite database, WAL, SHM, symlink, and hard-link identity
   rejection before any target mutation
 - nonexistent/fresh/nonempty/failed destinations and two concurrent loaders
@@ -749,6 +798,8 @@ run through a guard blocks release.
 
 ## Related Plans
 
+- `docs/plans/2026-08-12-live-point-in-time-dump-plan.md` — replaces dump
+  quiescence and movement-abort with the live H-bounded logical projection.
 - `docs/plans/2026-08-10-test-quality-remediation-plan.md` — replaces
   batch-size and positional assertions with report-contract, partial-batch,
   component-identity, and coverage-preserving proof.

@@ -36,6 +36,7 @@ EXPECTED_PUBLIC_EXPORTS = [
     "PersistenceComponentReport",
     "SchemaVersionError",
     "SearchHit",
+    "WatcherRejected",
     "TautClient",
     "TautError",
     "TautWatcher",
@@ -88,6 +89,8 @@ def test_exception_leaves_are_public_exports() -> None:
     assert len(taut.__all__) == len(set(taut.__all__)) == len(EXPECTED_PUBLIC_EXPORTS)
     assert set(taut.__all__) == set(EXPECTED_PUBLIC_EXPORTS)
     assert issubclass(taut.BlankMessageError, taut.EmptyResultError)
+    assert taut.WatcherRejected.__module__ == "taut._exceptions"
+    assert not issubclass(taut.WatcherRejected, taut.TautError)
 
 
 def test_persistence_reports_are_exact_frozen_slotted_public_values() -> None:
@@ -241,6 +244,16 @@ def test_unread_limit_is_keyword_only_with_core_default() -> None:
         assert parameters["thread"].default is None
         assert parameters["limit"].kind is inspect.Parameter.KEYWORD_ONLY
         assert parameters["limit"].default == 1000
+
+
+def test_history_around_bounds_are_keyword_only_with_core_defaults() -> None:
+    parameters = inspect.signature(taut.TautClient.history_around).parameters
+
+    assert list(parameters) == ["self", "thread", "msg_id", "before", "after"]
+    assert parameters["before"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameters["before"].default == 25
+    assert parameters["after"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameters["after"].default == 25
 
 
 def test_notification_peek_limit_is_keyword_only_with_core_default() -> None:

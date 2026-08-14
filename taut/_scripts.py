@@ -228,6 +228,8 @@ def _pg_test_uv_command(*args: str) -> list[str]:
             "./extensions/taut_pg[dev]",
             "--with-editable",
             "./extensions/taut_mcp[dev]",
+            "--with-editable",
+            "./extensions/taut_tui[dev]",
             *args,
         ]
     )

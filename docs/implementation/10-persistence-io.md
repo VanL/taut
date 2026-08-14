@@ -8,8 +8,8 @@ where its owners live. The normative behavior is in
 is `docs/plans/2026-08-07-taut-dump-load-plan.md`.
 
 The implementation owns full-workspace dump/load only. It does not turn Taut
-into a backup scheduler, add merge or replace modes, or make live multi-store
-snapshot claims.
+into a backup scheduler, add merge or replace modes, or claim one physical
+transaction across independently projected stores.
 
 ## Design Rationale
 
@@ -30,9 +30,11 @@ Taut still validates the exact nested version-1 header and message field sets.
 That is an intentional compatibility pin to the `simplebroker>=7.3.2` format
 contract: a future nested field requires an explicit version decision when the
 dependency floor moves, rather than permissive acceptance and silent loss.
-Version 1 permits canonical strings or exact JSON integer tokens for nested
-`last_ts` and `id`. The validator normalizes only for bounds, ordering, and
-duplicate checks, then replays the original lines unchanged to SimpleBroker.
+Taut has no pre-contract dumps, so version 1 requires SimpleBroker's canonical
+19-digit strings for nested `last_ts` and `id`. The validator normalizes them
+only for bounds, ordering, and duplicate checks, then replays the original
+lines unchanged to SimpleBroker. It rejects any message id above the retained
+header high-water rather than silently hiding an incompatible producer.
 
 ### Logical authority, not physical tables
 
@@ -64,12 +66,20 @@ unreleased version-1 contract in place. It adds neither a version-2 format nor
 a legacy component loader, and it never rewrites opaque metadata or stored
 broker bodies.
 
-### Destructive maintenance boundary
+### Live logical dump boundary; destructive load boundary
 
-Dump and load require operator quiescence. Public broker and sidecar APIs do not
-offer one transaction across both stores. Dump samples broker state and repeats
-sidecar projections to catch observed movement, but those checks are not proof
-that no race happened.
+Dump permits active writers. SimpleBroker samples broker-global high-water H
+when its dump iterator starts and emits only messages with id at or below H.
+Taut rewrites only copied membership cursors as `min(source_cursor, H)`; it
+never moves a live workspace cursor backward. Core sidecar and extension
+components remain individually consistent projections. A racing mutation may
+therefore appear in this dump or a later one.
+
+This is a coherent, validated, importable logical projection, not a frozen
+cross-store transaction. Claims, deletes, moves, registry changes, and sidecar
+metadata do not share one nanosecond boundary. Generic workspace advancement
+does not fail dump. An illegal projection, incomplete rename, incompatible
+nested record, validation failure, or unsafe file publication still does.
 
 Load admits only a nonexistent or fresh target. It commits authoritative
 sidecar state before broker history and keeps a `taut_meta` load guard across
@@ -86,6 +96,13 @@ before that transaction; they cannot share its atomic boundary. Quiescence is
 what closes that gap. If an overlapping writer violates it and a later insert
 fails, the already acquired guard remains and the target is discarded.
 
+SimpleBroker owns load-watermark eligibility. Taut maps public
+`TAUT_LOAD_MAX_FUTURE_SKEW_SECONDS` to
+`BROKER_LOAD_MAX_FUTURE_SKEW_SECONDS`, with default 300, and passes the resolved
+config to `load_lines()`. Taut exposes no force bypass. Dry-run does not perform
+this host-clock check. Actual excessive-skew refusal occurs after guard and
+sidecar commit, so the target remains guarded and must be recreated.
+
 ## Boundaries and Invariants
 
 - `_operations.py` may use only public SimpleBroker persistence and metadata
@@ -96,7 +113,9 @@ fails, the already acquired guard remains and the target is discarded.
 - `taut/state/_sql.py` is the sole production owner of core sidecar SQL.
   Extension SQL stays in that extension's existing state module.
 - The load guard is a fail-closed recovery marker, not a distributed lock.
-  Quiescence remains the operator's responsibility.
+  Quiescence remains the operator's responsibility for load.
+- Dump's H bounds broker chronology and copied monotone cursors. It does not
+  make sidecar and extension projection timing physically atomic.
 - A failed dump cannot replace an older output. A failed post-guard load is not
   repaired or rolled back in place.
 - Persistence commands are actor-free. They must not construct an
@@ -110,7 +129,7 @@ fails, the already acquired guard remains and the target is discarded.
 | Path | Owner |
 |---|---|
 | `taut/persistence/_format.py` | Composite framing, strict streaming preflight, replay offsets, core logical validation |
-| `taut/persistence/_operations.py` | Target/file lifecycle, stable-view checks, component assembly, freshness, guarded apply |
+| `taut/persistence/_operations.py` | Target/file lifecycle, H-bounded component assembly, cursor projection, freshness, guarded apply |
 | `taut/persistence/_components.py` | Lazy official-contributor discovery and manifest validation |
 | `taut/state/_sql.py` | Core logical projection/import, freshness recheck, load-guard lifecycle |
 | `taut/commands/system.py` | Actor-free nested CLI grammar and report dispatch |
@@ -129,11 +148,12 @@ both-direction cross-backend proofs live in
 Read [PIO-2], [PIO-4], [PIO-7], and [PIO-8] before changing the format or apply
 order. A new component or logical record version needs a spec revision and
 backward-load tests. Do not solve an observed maintenance race by adding a lock
-that ordinary clients do not honor. If stronger live-backup semantics become a
-product goal, treat that as a new cross-store protocol rather than extending
-the version-1 guard.
+that ordinary clients do not honor. If a frozen physical snapshot becomes a
+product goal, treat that as a new cross-store protocol rather than weakening or
+relabeling the H-bounded logical projection.
 
 ## Related Plans
 
 - `docs/plans/2026-08-07-taut-dump-load-plan.md`
+- `docs/plans/2026-08-12-live-point-in-time-dump-plan.md`
 - `docs/plans/2026-08-06-taut-search-plan.md`

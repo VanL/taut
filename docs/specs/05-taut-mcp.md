@@ -76,16 +76,18 @@ Both surfaces accept the same launch flags and call one shared process runner;
 neither surface invokes the other. The `mcp` command declares raw stdio
 protocol ownership under [TAUT-8.6], so successful dispatch performs no
 ambient project terminal-policy preflight and the MCP SDK retains direct
-ownership of process stdin/stdout. It declares `mcp>=2.0.0,<3` and uses that
-SDK's native support for legacy `2025-11-25` and modern `2026-07-28` clients
-from one handler set. The SDK owns legacy initialization, modern discovery,
-protocol negotiation, stdio framing, and era-specific wire envelopes. Taut
-application code does not branch on protocol version for tool semantics.
+ownership of process stdin/stdout. It declares the direct ranges
+`mcp>=2.0.0,<3` and `jsonschema>=4.26.0,<5`; their lower bounds are the versions
+selected in the current retained MCP lock, and the major ceilings record known
+compatibility boundaries. The SDK provides native support for legacy
+`2025-11-25` and modern `2026-07-28` clients from one handler set. It owns
+legacy initialization, modern discovery, protocol negotiation, stdio framing,
+and era-specific wire envelopes. Taut application code does not branch on
+protocol version for tool semantics.
 
-Application-owned tool-input validation uses Draft 2020-12 validators
-compiled once from the same fixed schemas returned by `tools/list`; the
-package declares `jsonschema>=4.20,<5` directly. Validation completes before
-rate charging or any semantic work. Network `$ref` resolution is disabled
+Application-owned tool-input validation uses Draft 2020-12 validators compiled
+once from the same fixed schemas returned by `tools/list`. Validation completes
+before rate charging or semantic work. Network `$ref` resolution is disabled
 and the fixed schemas contain no external references.
 
 Repository publication follows [TAUT-12.5]. `taut-mcp` is the `mcp` release
@@ -1717,12 +1719,12 @@ before its final snapshot reaches the parent, so the operation and aggregate
 cache are both non-authoritative after restart; callers inspect database
 state. No final resource update is guaranteed during shutdown.
 
-The approved `mcp>=2.0.0,<3` range must demonstrate both legacy
+The MCP SDK selected by the retained MCP lock must demonstrate both legacy
 `2025-11-25` and modern `2026-07-28` stdio clients against the same
 async application handlers. The process reactor captures the running loop
 from era-neutral lifespan startup, and no synchronous AnyIO worker owns a
-protocol handler or reactor bridge. A dependency outside the approved range
-requires a new compatibility review.
+protocol handler or reactor bridge. Changing a declared major ceiling requires
+a new compatibility review.
 
 All process-local registry, rate, aggregate, and subscription-adapter state
 resets when the stdio process ends. That reset is never a correctness change:

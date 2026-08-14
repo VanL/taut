@@ -257,6 +257,7 @@ def test_controller_foreground_run_requires_explicit_interaction() -> None:
         "request",
         "interaction",
         "install_signal_handlers",
+        "on_ready",
     ]
     assert parameters["interaction"].default is inspect.Parameter.empty
     assert parameters["install_signal_handlers"].kind is inspect.Parameter.KEYWORD_ONLY

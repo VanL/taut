@@ -473,7 +473,7 @@ an accident. Two consequences are binding:
   project-config discovery helpers are public through `simplebroker.ext`.
   Version 7.0.0 adds the public exact message-id formatter and makes
   SimpleBroker-owned JSON ids and high-water values strings while keeping
-  Python and backend values integer; `simplebroker-pg>=3.6.0` requires that
+  Python and backend values integer; `simplebroker-pg>=3.8.0` requires that
   core line. Version 7.3.2 adds the public immutable `ResolvedConfig` and
   ambient-free `resolve_isolated_config()` embedding boundary required by
   [TAUT-3.2]. Taut uses neither
@@ -1093,6 +1093,34 @@ no durable index.
 Human DM headings use [IAN-6.4]'s current-name label. Machine message records
 retain the canonical stable queue in `thread`.
 
+### [TAUT-7.9] Cursor-neutral exact history context
+
+`TautClient.history_around(thread: str, msg_id: str, *, before: int = 25,
+after: int = 25) -> list[Message]` returns the exact pending anchor plus the
+nearest surviving messages on either side in ascending message-id order. It is
+the embedding seam for opening a search result or otherwise placing an exact
+message in bounded history without applying `show_message`'s read transition.
+
+The thread follows `log` visibility: registered channels and sub-threads do not
+require membership; a direct-message selector requires an existing valid
+actor-accessible conversation and uses read-only actor resolution. The method
+moves no cursor, claims no row, creates no member or membership, and does not
+touch member activity. The anchor must exist in the selected canonical thread;
+a miss raises `NotFoundError("message not found in THREAD: MSG_ID")` and does
+not search other threads.
+
+`msg_id` uses [TAUT-7.6]'s exact string validator. `before` and `after` reject
+`bool` and non-integers with `TypeError("NAME must be an integer")`; each must
+be from 0 through 999 inclusive or raises
+`ValueError("NAME must be between 0 and 999")`. Their sum must be no greater
+than 999 or raises
+`ValueError("before and after must total at most 999")`, keeping the returned
+anchor-inclusive page at 1,000 messages or fewer. These argument checks precede
+rename preflight, actor resolution, and broker history access. Surrounding
+rows use SimpleBroker's public pending peeks and canonical tolerant message
+decoding; claimed or deleted rows are absent under the ordinary chat-history
+model.
+
 ## 8. Surfaces [TAUT-8]
 
 ### [TAUT-8.1] CLI verbs
@@ -1286,7 +1314,7 @@ SimpleBroker/Weft layering rule: CLI and library share one operational
 model). Public exports from `taut`: `TautClient`, `TautWatcher`, `Message`,
 `MessageDeletion`, `MessageReaction`, `SearchHit`, `Channel`, `Thread`, `Member`,
 `PersistenceComponentReport`, `DumpReport`, `LoadReport`, `DoctorCheck`,
-`DoctorReport`, the
+`DoctorReport`, `WatcherRejected`, the
 exception hierarchy rooted at `TautError` including `BlankMessageError`,
 `escape_terminal_text`, and `__version__`. The package ships typed
 (`py.typed`).
@@ -1356,6 +1384,10 @@ visibility, cursor, ownership, no-cascade, error, race, and receipt contracts
 are [TAUT-7.6]. `MessageDeletion` is a frozen, slotted public value object with
 exact fields `thread: str`, `ts: int`, and `deleted: bool = True`.
 
+`TautClient.history_around(thread: str, msg_id: str, *, before: int = 25,
+after: int = 25) -> list[Message]` is [TAUT-7.9]'s cursor-neutral exact context
+lookup. It adds no second public value shape.
+
 `TautClient.react_to_message(msg_id: str, reaction: str) ->
 MessageReaction` follows [TAUT-7.7]. `MessageReaction` is a frozen, slotted
 public value object with exact fields `thread: str`, `message_ts: int`,
@@ -1391,7 +1423,7 @@ identity claim, inspect unread state, or create membership. Long-lived
 extensions use it to reconcile their own thread-scoped resources.
 
 Core runtime dependencies: exactly `simplebroker>=7.3.2` and `psutil`. The
-optional `taut-pg` extension adds `simplebroker-pg>=3.6.0` and its driver
+optional `taut-pg` extension adds `simplebroker-pg>=3.8.0` and its driver
 dependencies in the same environment as Taut. Python ≥ 3.11. The CLI uses
 argparse, not a CLI framework.
 
@@ -1450,6 +1482,14 @@ first failed delivery, leaves the chat cursor unchanged, and emits no traceback.
 A policy failure exits the CLI with status 1 and the fixed [TAUT-6.4] bootstrap
 diagnostic. CLI watch flushes each rendered record before successful handler
 return.
+
+Public watch handlers signal the same terminal rejection by raising
+`WatcherRejected`, a Taut-owned package-root exception that is deliberately not
+a `TautError`: it is handler control flow, not a domain failure. Taut translates
+it at the watcher boundary to the underlying broker stop mechanism. Embedders
+do not import SimpleBroker's stop exception. A rejected chat item never advances
+its cursor and does not increment the poison count. A rejected notification
+stops the watcher but retains [IAN-7]'s already-consumed pointer semantics.
 
 `TautWatcher` subclasses a taut-vendored copy of Weft's
 `MultiQueueWatcher` (copied, attributed; taut must not depend on weft).
@@ -1595,17 +1635,20 @@ surfaces share one typed domain or process runner; neither invokes the other
 executable or parses its output. An extension with no executable operation,
 such as a backend selected by project configuration, need not invent a command.
 
-A command whose operation is itself a raw stdio protocol transport declares
-that ownership in its manifest. On successful execution, core skips the
-human-terminal-output policy preflight and the adapter owns ambient process
-stdin/stdout rather than the ordinary command-context text streams. Root and
-command help, usage errors, and manifest diagnostics remain core-owned text
-before protocol startup. The declaration is not inferred from a command name
-and does not permit protocol output before adapter execution. All ordinary
+A command whose operation must own ambient process stdin/stdout declares that
+ownership with the manifest's legacy-named `raw_stdio_transport` field. This
+includes a raw stdio protocol transport and a full-screen terminal
+application. On successful execution, core skips the human-terminal-output
+policy preflight and the adapter owns ambient process stdin/stdout rather than
+the ordinary command-context text streams. Root and command help, usage
+errors, and manifest diagnostics remain core-owned text before ambient
+ownership starts. The declaration is not inferred from a command name and
+does not permit operation output before adapter execution. All ordinary
 commands retain context-stream authority and terminal-policy preflight.
 
 The core distribution publishes an `all` optional-dependency extra containing
-the compatible `taut-pg`, `taut-summon`, and `taut-mcp` distributions. It is a
+the compatible `taut-pg`, `taut-summon`, `taut-mcp`, and `taut-tui`
+distributions. It is a
 convenience bundle, not a merger of package ownership: each extension remains
 separately versioned and directly installable, and core does not import or
 initialize an extension until its registered surface is selected.
@@ -2206,11 +2249,12 @@ Shape decided 2026-06-12:
 Core obligations: envelope readers ignore unknown fields ([TAUT-6.1]) and no
 code assumes members only speak via CLI invocations.
 
-### [TAUT-12.4] Rich first-party TUI
+### [TAUT-12.4] Rich first-party TUI extension
 
-The future TUI has its own product spec and ships as an optional installed
-command provider under [TAUT-8.6]. It is a first-party composition root, not a
-generic renderer over argparse or command manifests. It may present rich
+The TUI has its own product spec and ships in the separate `taut-tui`
+distribution as an optional installed command provider under [TAUT-8.6]. It is
+a first-party composition root, not part of the core package and not a generic
+renderer over argparse or command manifests. It may present rich
 capability-specific flows and depend directly on public typed interfaces from
 core and first-party extensions such as Summon.
 
@@ -2221,10 +2265,10 @@ extension tables, synthesize control JSON, or duplicate driver/PTY lifecycle.
 Its conversation picker must use `TautClient.list_direct_messages()` for
 durable direct-message discovery. It must not infer private queue naming,
 reconstruct actor access from registry tables, or depend on presence state.
-Its own spec must choose screen behavior, framework/dependencies, managed
-child-process ownership, terminal handoff, and what happens to TUI-launched
-drivers when the TUI exits. None of those choices are implied by the command
-registry.
+`docs/specs/10-taut-tui.md` chooses screen behavior, framework dependencies,
+managed child-process ownership, terminal handoff, and what happens to
+TUI-launched drivers when the TUI exits. None of those choices are implied by
+the command registry or owned by core.
 
 ### [TAUT-12.5] Release machinery
 
@@ -2253,12 +2297,14 @@ Release targets:
   `.github/workflows/release-gate-summon.yml`.
 - `mcp` releases `taut-mcp` from `extensions/taut_mcp` with a
   `taut_mcp/vX.Y.Z` tag and `.github/workflows/release-gate-mcp.yml`.
+- `tui` releases `taut-tui` from `extensions/taut_tui` with a
+  `taut_tui/vX.Y.Z` tag and `.github/workflows/release-gate-tui.yml`.
 - `all` releases every requested package version absent from both PyPI and
   published GitHub Releases. With `--version X.Y.Z`, the helper prepares all
-  four package manifests at that coordinated version. Without `--version`,
+  five package manifests at that coordinated version. Without `--version`,
   each manifest remains the source for its current version. Package versions
   are otherwise independent, but the first `taut-chat` publication is one
-  coordinated new version across core and all three extensions; existing
+  coordinated new version across core and all four extensions; existing
   GitHub-only versions are not republished under changed metadata.
 
 Helper obligations:
@@ -2268,7 +2314,7 @@ Helper obligations:
 - A publishing release runs from `main` or `master`, the branches that produce
   canonical push-triggered CI evidence. One shared guard rejects a topic branch
   or detached `HEAD` before release metadata mutation for `all`, `core`, `pg`,
-  `summon`, and `mcp`. Dry-run and checks-only remain usable from other branches
+  `summon`, `mcp`, and `tui`. Dry-run and checks-only remain usable from other branches
   because they do not publish.
 - Before release, reject dirty worktrees unless `--dry-run` is set. Query both
   the published GitHub Release and exact PyPI package/version for every
@@ -2280,21 +2326,24 @@ Helper obligations:
 - Prepare deterministic metadata before running release prechecks. Change only
   the selected package versions, but reconcile every manifest-owned derived
   copy on every normal release invocation: root `taut/_constants.py`, README
-  tag and wheel examples, all three extension `taut-chat>=...` floors and local
+  tag and wheel examples, all four extension `taut-chat>=...` floors and local
   source keys, the root dev `taut-summon>=...` and
   `simplebroker-pg>=...` floors, every exact root README SimpleBroker
-  occurrence, and the retained Summon and MCP locks. Each package manifest
+  occurrence, and the retained Summon, MCP, and TUI locks. Each package manifest
   owns its version; the root manifest owns the core constant and SimpleBroker
   requirement; the root version owns every first-party extension
   `taut-chat>=...` floor; the Summon manifest owns the root dev
   `taut-summon>=...` floor; the PG manifest owns the root dev
-  `simplebroker-pg>=...` floor; and the MCP manifest owns its MCP SDK range and
-  dev-only `taut-pg` floor. Refresh the root lock after reconciling its local
+  `simplebroker-pg>=...` floor; the MCP manifest owns its MCP SDK range and
+  dev-only `taut-pg` and `taut-summon` floors; and the TUI manifest owns the
+  root convenience floors plus its Textual floor. Refresh the root lock after
+  reconciling its local
   first-party sources, refresh the Summon lock selectively with
   `uv lock --upgrade-package simplebroker`, reconcile the MCP lock with plain
-  `uv lock` in its project, and do not create a PG lock.
-  The PG, Summon, and MCP manifests respectively own the three version floors
-  in the root `all` extra; normal release preparation reconciles all three on
+  `uv lock` in its project, reconcile the TUI lock with plain `uv lock` in its
+  project, and do not create a PG lock.
+  The PG, Summon, MCP, and TUI manifests respectively own the four version floors
+  in the root `all` extra; normal release preparation reconciles all four on
   every invocation after selected manifest versions are written.
 - Stage only the release-file allowlist and create the local
   release-preparation commit before prechecks. The prechecks verify that exact
@@ -2312,9 +2361,10 @@ Helper obligations:
   sequence is: root pytest partitioned into `not slow and not installed_wheel`
   plus a fresh serial `not slow and installed_wheel` invocation,
   `bin/pytest-pg --fast`, the four isolated Summon lanes, one explicit MCP
-  `not pg_only` lane under the MCP project, existing root/PG/Summon Ruff paths,
-  package-local MCP Ruff lint/format, and four collision-safe mypy owners
-  including an explicit MCP project-local command with its package config. The
+  `not pg_only` lane under the MCP project, the complete package-local TUI lane
+  against its retained lock, existing root/PG/Summon Ruff paths, package-local
+  MCP and TUI Ruff lint/format, and five collision-safe mypy owners including
+  explicit MCP and TUI project-local commands with their package configs. The
   local MCP lane never treats excluded PostgreSQL cases as evidence; the
   required canonical MCP workflow supplies that live-backend proof. Target
   selection controls metadata, ordinary package builds, tags, and publication,
@@ -2396,7 +2446,7 @@ Helper obligations:
   Python versions on Ubuntu plus one macOS and one Windows representative,
   using the active matrix interpreter.
 - After metadata preparation and prechecks, preserve but empty the root, PG,
-  Summon, and MCP `dist/` directories and verify that all four are empty before
+  Summon, MCP, and TUI `dist/` directories and verify that all five are empty before
   starting any ordinary release build. Do this for every release target so an
   unselected package cannot retain stale release artifacts. Then build each
   selected package's artifacts with an explicit source and its matching fixed
@@ -2404,10 +2454,10 @@ Helper obligations:
   any artifact or cause creation of a root lockfile. Ordinary package builds
   disable workspace source resolution so they use publishable metadata rather
   than local workspace overrides. The Summon and MCP locks have already been
-  reconciled during preparation. Core/Summon retain their separate
-  paired-wheel compatibility proof; selecting MCP adds its ordinary package
-  build without changing that paired boundary. Dry-run reports the cleanup
-  without changing any directory.
+  reconciled during preparation. Core/Summon retain their separate paired-wheel
+  compatibility proof; core/TUI add a paired installed-command and headless-app
+  proof. Selecting MCP adds its ordinary package build without changing those
+  paired boundaries. Dry-run reports the cleanup without changing any directory.
 - Keep branch pushes, tag creation or replacement, tag pushes, and publication
   after prechecks, normal artifact builds, and the paired core/Summon wheel
   check. Immediately before remote action, verify that the branch and `HEAD`
@@ -2420,8 +2470,8 @@ Helper obligations:
 
 Before any real tag push, the helper requires GitHub immutable releases to be
 enabled and the `pypi` environment to exist with custom tag deployment
-policies admitting exactly `v*`, `taut_pg/v*`, `taut_summon/v*`, and
-`taut_mcp/v*`. A read-only settings-check mode reports each mismatch. PyPI
+policies admitting exactly `v*`, `taut_pg/v*`, `taut_summon/v*`,
+`taut_mcp/v*`, and `taut_tui/v*`. A read-only settings-check mode reports each mismatch. PyPI
 pending Trusted Publishers are an operator-owned prerequisite that cannot be
 verified through the GitHub API: owner `VanL`, repository `taut`, environment
 `pypi`, and the exact corresponding top-level release-gate filename for each
@@ -2433,9 +2483,10 @@ Workflow obligations:
   `.github/workflows/test-pg-extension.yml`, and
   `.github/workflows/test-mcp-extension.yml` are the test evidence for a
   release SHA. On canonical `main`/`master` pushes, the root workflow remains
-  the sole release-byte owner: it builds core, Summon, PG, and MCP, runs the
-  existing paired and PG wheel checks plus a fresh core/MCP wheel installation
-  and `taut-mcp` console smoke, and uploads four separate immutable provenance
+  the sole release-byte owner: it builds core, Summon, PG, MCP, and TUI, runs
+  the existing paired and PG wheel checks plus fresh core/MCP and core/TUI
+  wheel installations, `taut-mcp` console smoke, and a headless TUI smoke, and
+  uploads five separate immutable provenance
   bundles. The PG workflow remains real database evidence for the shared PG
   surface; the MCP workflow runs its complete suite with a real PostgreSQL
   service plus its quality gates. Neither extension workflow produces release
@@ -2444,7 +2495,7 @@ Workflow obligations:
   public distribution name and version, file allowlist, and SHA-256 digests,
   and its name identifies the workflow attempt that produced it. The core
   bundle and artifact prefix use `taut-chat`; the extension prefixes remain
-  `taut-pg`, `taut-summon`, and `taut-mcp`.
+  `taut-pg`, `taut-summon`, `taut-mcp`, and `taut-tui`.
 - For a publishing invocation, the local helper pushes the prepared canonical
   branch commit before creating, deleting, replacing, or pushing any release
   tag. It then uses the shared exact-SHA workflow selector to wait for
@@ -2463,7 +2514,7 @@ Workflow obligations:
   repository, latest attempt, and `push` event. It normalizes API `path@ref`
   values rather than trusting display names or path strings. Every package tag
   requires successful root Test, PostgreSQL Test, and MCP Test evidence for the
-  exact peeled tag commit. The four tag gates observe those canonical workflows
+  exact peeled tag commit. The five tag gates observe those canonical workflows
   and never invoke them. Each observer makes one repository-wide
   runs-list request per poll and filters workflow files locally. A
   rate-limit-signature 403 or 429 respects the server reset within the bounded
@@ -2485,7 +2536,8 @@ Workflow obligations:
   name/version, file hashes, tag family, and current remote tag all verified.
   Tag-family verification is exactly `vX.Y.Z` for `taut-chat`,
   `taut_pg/vX.Y.Z` for `taut-pg`, `taut_summon/vX.Y.Z` for `taut-summon`,
-  and `taut_mcp/vX.Y.Z` for `taut-mcp`. The workflow does not rebuild. It
+  `taut_mcp/vX.Y.Z` for `taut-mcp`, and `taut_tui/vX.Y.Z` for `taut-tui`.
+  The workflow does not rebuild. It
   stages the exact wheel and sdist as a draft GitHub Release and carries the
   verified inner bundle forward as a same-run Actions artifact. The
   already-existing, separately verified tag is the commit binding. The release
@@ -2493,7 +2545,7 @@ Workflow obligations:
   the tag SHA so GitHub's `GITHUB_TOKEN` can publish the draft after later
   workflow-file changes on that branch; the token cannot be granted GitHub's
   separate Workflows-write permission.
-- Each of the four top-level tag gates then runs its own `publish-to-pypi` job
+- Each of the five top-level tag gates then runs its own `publish-to-pypi` job
   with environment `pypi`, `actions: read`, `id-token: write`, no
   `contents: write`, and a commit-pinned PyPI publish action. The job
   re-verifies the carried bundle before upload. Existing PyPI files may be
@@ -2522,16 +2574,14 @@ Workflow obligations:
 
 Core and `taut-summon` reactor changes ship as a paired release. The release
 helper synchronizes every extension's `taut-chat>=` floor to the exact new core
-version, refreshes every retained lock, and rejects any resolved
-`simplebroker<7.1.0` or `simplebroker-pg<3.6.0`. Release evidence includes an
+version and refreshes every retained lock. Package tooling owns third-party
+constraint satisfaction and lock consistency; release tests do not repeat
+third-party floors or selected versions. Release evidence includes an
 installed-artifact canary built from the current paired wheels. Core may
 publish first only as the extensions' immediate dependency; the coordinated
-release is not announced until all four PyPI and GitHub publications pass.
+release is not announced until all five PyPI and GitHub publications pass.
 
-New core wheel metadata has normalized project name `taut-chat` and contains
-one unmarked
-`simplebroker>=X.Y.Z` requirement with `X.Y.Z >= 7.1.0`; other operators,
-compound specifiers, markers, and weaker floors fail closed. New Summon
+New core wheel metadata has normalized project name `taut-chat`. New Summon
 metadata contains exactly one unmarked
 `taut-chat>=<new-core-version>` requirement, so the supplied current core wheel
 is admitted exactly.
@@ -2556,8 +2606,9 @@ that fact with `--no-deps` or by installing both distributions. The current
 matrix proves: current core alone; current core plus each current extension;
 current core and current Summon live control behavior; rejection of current
 Summon with an older `taut-chat` core when such a published baseline exists;
-exact current package names and dependency floors; and a diagnostic historical
-probe recording that old Summon requires the unrelated `taut` distribution.
+exact current first-party package names and dependency relations; and a
+diagnostic historical probe recording that old Summon requires the unrelated
+`taut` distribution.
 Users migrating from GitHub-installed `taut` must uninstall it before
 installing `taut-chat`.
 

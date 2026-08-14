@@ -6,7 +6,7 @@ This document explains how one top-level `taut` verb becomes a command without
 turning the core CLI into a plugin framework for arbitrary subsystem behavior.
 It covers the version-1 command interface, static and installed discovery,
 dispatch ownership, lazy imports, the temporary Summon compatibility bridge,
-and the boundary a future rich TUI should use.
+and the installed-command seam used by the rich `taut-tui` extension.
 
 The governing contracts are `docs/specs/02-taut-core.md` [TAUT-8.6] and
 [TAUT-12.4], plus `docs/specs/04-summon.md` [SUM-13]. Summon's internal
@@ -297,12 +297,14 @@ subsystem failure to first use; it does not hide the failure. Diagnostics must
 still name the selected distribution, entry point, implementation target, and
 original cause where those values are available.
 
-Raw-stdio commands remain ordinary for root help, command help, usage errors,
-and discovery diagnostics. On successful execution only, the dispatcher skips
-description escaping and human-output-policy preflight, then the adapter owns
-ambient stdio. This narrow exception lets `taut mcp` preserve the MCP SDK's fd
-claiming and stray-output diversion. It is explicit manifest metadata rather
-than a command-name special case; ordinary adapters still use context streams.
+Ambient-stdio commands remain ordinary for root help, command help, usage
+errors, and discovery diagnostics. On successful execution only, the
+dispatcher skips description escaping and human-output-policy preflight, then
+the adapter owns ambient stdio. This narrow exception lets `taut mcp` preserve
+the MCP SDK's fd claiming and stray-output diversion and lets `taut tui` hand
+the process terminal to Textual. It is explicit manifest metadata through the
+legacy-named `raw_stdio_transport` field rather than a command-name special
+case; ordinary adapters still use context streams.
 
 The package facades and command factories solve different problems. Facades
 preserve convenient typed Python imports. Factories prevent one CLI verb from
@@ -341,12 +343,13 @@ surface. An extension should call its own public controller. If an operation
 cannot be expressed without importing another package's private state, the
 missing piece is a domain interface, not another command-context field.
 
-## Rich TUI Boundary
+## Rich TUI Extension Seam
 
-A future first-party TUI may be richer than the command interface. It should
-be a composition root that depends directly on `TautClient`, `TautWatcher`,
-and public extension controllers. It need not render argparse forms or reduce
-all capabilities to generic command manifests.
+The first-party `taut-tui` distribution is richer than the command interface.
+It is a composition root that depends directly on `TautClient`, `TautWatcher`,
+and public extension controllers. Only its lightweight launch adapter uses the
+command interface; the UI does not render argparse forms or reduce all
+capabilities to generic command manifests.
 
 For direct messages, the TUI obtains the actor-scoped directory from
 `TautClient.list_direct_messages()` and opens history or live views through
@@ -359,11 +362,10 @@ availability and grant a scoped input/output fd lease. Summon still owns PTY
 bytes, the attach transition, driver state, and cleanup. The TUI must not read
 Summon tables, synthesize control JSON, or duplicate PTY lifecycle.
 
-The current controller's foreground run is blocking. This release does not
-choose the TUI's process model, screen suspension, log routing, release
-handshake, exit/orphan policy, or the fate of TUI-launched drivers when the TUI
-exits. Those are product and process-lifecycle decisions for the TUI's own
-specification. Adding them here would be speculative coupling.
+The TUI's process model, screen suspension, log routing, release handshake,
+exit policy, and TUI-started driver ownership live in
+`docs/specs/10-taut-tui.md`. They do not become generic command-registry
+semantics.
 
 ## Where to Edit
 
@@ -377,6 +379,7 @@ specification. Adding them here would be speculative coupling.
 | Maintained documentation command claims | `tests/test_cli_claims.py` and `bin/check-cli-claims` |
 | Absent-Summon install hint | `taut/commands/_summon_compat.py` |
 | Native Summon manifests/adapters | `extensions/taut_summon/taut_summon/command_manifest.py` and `commands/` |
+| Native TUI manifest/adapter | `extensions/taut_tui/taut_tui/command_manifest.py` and `command.py` |
 | Reusable Summon operations | `extensions/taut_summon/taut_summon/controller.py`, `models.py`, and `interaction.py` |
 | Fresh-wheel compatibility | `bin/check-core-summon-wheel-matrix.py` and `bin/build-and-check-release-wheels.py` |
 

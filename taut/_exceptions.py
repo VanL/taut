@@ -51,5 +51,14 @@ class AmbiguousMessageError(TautError):
     """Raised when a message-id suffix matches more than one message."""
 
 
+class WatcherRejected(Exception):
+    """Stop a live watcher after rejecting an item without acknowledging it.
+
+    Watch handlers raise this control-flow exception when they cannot accept an
+    item into their destination. Taut stops the watcher after the first
+    rejection and does not advance the rejected chat message's cursor.
+    """
+
+
 class TokenError(IdentityError):
     """Raised when a presented continuity token does not match a member."""

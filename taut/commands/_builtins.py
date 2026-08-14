@@ -18,6 +18,7 @@ def _spec(
     summary: str,
     *,
     globals_: frozenset[GlobalOption] = _COMMON_GLOBALS,
+    raw_stdio_transport: bool = False,
 ) -> CommandSpec:
     return CommandSpec(
         command_api_version=1,
@@ -25,6 +26,7 @@ def _spec(
         summary=summary,
         post_verb_globals=globals_,
         implementation=f"taut.commands.{name}:create_command",
+        raw_stdio_transport=raw_stdio_transport,
     )
 
 

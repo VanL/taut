@@ -41,11 +41,16 @@ MCP_EXTENSION_DIR: Final[Path] = PROJECT_ROOT / "extensions" / "taut_mcp"
 MCP_PYPROJECT_PATH: Final[Path] = MCP_EXTENSION_DIR / "pyproject.toml"
 MCP_README_PATH: Final[Path] = MCP_EXTENSION_DIR / "README.md"
 MCP_UV_LOCK_PATH: Final[Path] = MCP_EXTENSION_DIR / "uv.lock"
+TUI_EXTENSION_DIR: Final[Path] = PROJECT_ROOT / "extensions" / "taut_tui"
+TUI_PYPROJECT_PATH: Final[Path] = TUI_EXTENSION_DIR / "pyproject.toml"
+TUI_README_PATH: Final[Path] = TUI_EXTENSION_DIR / "README.md"
+TUI_UV_LOCK_PATH: Final[Path] = TUI_EXTENSION_DIR / "uv.lock"
 RELEASE_DIST_PATHS: Final[tuple[Path, ...]] = (
     PROJECT_ROOT / "dist",
     PG_EXTENSION_DIR / "dist",
     SUMMON_EXTENSION_DIR / "dist",
     MCP_EXTENSION_DIR / "dist",
+    TUI_EXTENSION_DIR / "dist",
 )
 RELEASE_WHEEL_SET_CHECKER: Final[Path] = (
     PROJECT_ROOT / "bin" / "build-and-check-release-wheels.py"
@@ -63,6 +68,7 @@ ROOT_RELEASE_WORKFLOW: Final[str] = ".github/workflows/release-gate.yml"
 PG_RELEASE_WORKFLOW: Final[str] = ".github/workflows/release-gate-pg.yml"
 SUMMON_RELEASE_WORKFLOW: Final[str] = ".github/workflows/release-gate-summon.yml"
 MCP_RELEASE_WORKFLOW: Final[str] = ".github/workflows/release-gate-mcp.yml"
+TUI_RELEASE_WORKFLOW: Final[str] = ".github/workflows/release-gate-tui.yml"
 GITHUB_API_BASE: Final[str] = "https://api.github.com"
 GITHUB_API_VERSION: Final[str] = "2026-03-10"
 PYPI_API_BASE: Final[str] = "https://pypi.org/pypi"
@@ -74,6 +80,7 @@ PYPI_ENVIRONMENT_TAG_PATTERNS: Final[tuple[tuple[str, str], ...]] = (
     ("tag", "taut_pg/v*"),
     ("tag", "taut_summon/v*"),
     ("tag", "taut_mcp/v*"),
+    ("tag", "taut_tui/v*"),
 )
 
 Command = tuple[str, ...]
@@ -116,6 +123,9 @@ SUMMON_WHEEL_PATTERN: Final[re.Pattern[str]] = re.compile(
 )
 MCP_WHEEL_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"taut_mcp-\d+\.\d+\.\d+-py3-none-any\.whl"
+)
+TUI_WHEEL_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"taut_tui-\d+\.\d+\.\d+-py3-none-any\.whl"
 )
 
 UV_RUN_PREFIX: Final[Command] = ("uv", "run", "--no-sync")
@@ -194,6 +204,21 @@ MCP_TEST_COMMAND: Final[Command] = (
     "extensions/taut_mcp/tests",
     "-m",
     "not pg_only",
+    "-n",
+    "0",
+)
+TUI_TEST_COMMAND: Final[Command] = (
+    *UV_RUN_PREFIX,
+    "--project",
+    "extensions/taut_tui",
+    "--extra",
+    "dev",
+    "--with-editable",
+    ".",
+    "--with-editable",
+    "extensions/taut_tui",
+    "pytest",
+    "extensions/taut_tui/tests",
     "-n",
     "0",
 )
@@ -288,6 +313,41 @@ MCP_MYPY_COMMAND: Final[Command] = (
     "extensions/taut_mcp/tests",
     "--config-file",
     "extensions/taut_mcp/pyproject.toml",
+)
+TUI_RUFF_CHECK_COMMAND: Final[Command] = (
+    *UV_RUN_PREFIX,
+    "--project",
+    "extensions/taut_tui",
+    "--extra",
+    "dev",
+    "ruff",
+    "check",
+    "extensions/taut_tui/taut_tui",
+    "extensions/taut_tui/tests",
+)
+TUI_RUFF_FORMAT_COMMAND: Final[Command] = (
+    *UV_RUN_PREFIX,
+    "--project",
+    "extensions/taut_tui",
+    "--extra",
+    "dev",
+    "ruff",
+    "format",
+    "--check",
+    "extensions/taut_tui/taut_tui",
+    "extensions/taut_tui/tests",
+)
+TUI_MYPY_COMMAND: Final[Command] = (
+    *UV_RUN_PREFIX,
+    "--project",
+    "extensions/taut_tui",
+    "--extra",
+    "dev",
+    "mypy",
+    "extensions/taut_tui/taut_tui",
+    "extensions/taut_tui/tests",
+    "--config-file",
+    "extensions/taut_tui/pyproject.toml",
 )
 PRECHECK_ENV_OVERRIDES: Final[dict[str, str]] = {
     "PYTEST_ADDOPTS": "-x --maxfail=1",
@@ -422,6 +482,15 @@ MCP_TARGET: Final[ReleaseTarget] = ReleaseTarget(
     tag_namespace="taut_mcp",
     release_workflow=MCP_RELEASE_WORKFLOW,
 )
+TUI_TARGET: Final[ReleaseTarget] = ReleaseTarget(
+    name="tui",
+    package_name="taut-tui",
+    package_dir=Path("extensions/taut_tui"),
+    pyproject_path=TUI_PYPROJECT_PATH,
+    constants_path=None,
+    tag_namespace="taut_tui",
+    release_workflow=TUI_RELEASE_WORKFLOW,
+)
 TARGETS: Final[dict[str, ReleaseTarget]] = {
     "core": ROOT_TARGET,
     "root": ROOT_TARGET,
@@ -429,17 +498,20 @@ TARGETS: Final[dict[str, ReleaseTarget]] = {
     "pg": PG_TARGET,
     "summon": SUMMON_TARGET,
     "mcp": MCP_TARGET,
+    "tui": TUI_TARGET,
 }
 CANONICAL_TARGETS: Final[dict[str, ReleaseTarget]] = {
     "core": ROOT_TARGET,
     "pg": PG_TARGET,
     "summon": SUMMON_TARGET,
     "mcp": MCP_TARGET,
+    "tui": TUI_TARGET,
 }
 BATCH_RELEASE_TARGETS: Final[tuple[ReleaseTarget, ...]] = (
     PG_TARGET,
     SUMMON_TARGET,
     MCP_TARGET,
+    TUI_TARGET,
     ROOT_TARGET,
 )
 
@@ -555,6 +627,7 @@ def sync_readme_version_examples(
     pg_readme_path: Path = PG_README_PATH,
     summon_readme_path: Path = SUMMON_README_PATH,
     mcp_readme_path: Path = MCP_README_PATH,
+    tui_readme_path: Path = TUI_README_PATH,
 ) -> None:
     normalized = validate_version(version)
     if target == ROOT_TARGET:
@@ -563,23 +636,22 @@ def sync_readme_version_examples(
             pg_readme_path,
             summon_readme_path,
             mcp_readme_path,
+            tui_readme_path,
         ):
             _replace_existing_examples(path, CORE_README_TAG_PATTERN, f"@v{normalized}")
         return
-    if target == PG_TARGET:
-        replacement = f"taut_pg-{normalized}-py3-none-any.whl"
-        for path in (root_readme_path, pg_readme_path):
-            _replace_existing_examples(path, PG_WHEEL_PATTERN, replacement)
+    artifact = {
+        PG_TARGET: (PG_WHEEL_PATTERN, "taut_pg", pg_readme_path),
+        SUMMON_TARGET: (SUMMON_WHEEL_PATTERN, "taut_summon", summon_readme_path),
+        MCP_TARGET: (MCP_WHEEL_PATTERN, "taut_mcp", mcp_readme_path),
+        TUI_TARGET: (TUI_WHEEL_PATTERN, "taut_tui", tui_readme_path),
+    }.get(target)
+    if artifact is None:
         return
-    if target == SUMMON_TARGET:
-        replacement = f"taut_summon-{normalized}-py3-none-any.whl"
-        for path in (root_readme_path, summon_readme_path):
-            _replace_existing_examples(path, SUMMON_WHEEL_PATTERN, replacement)
-        return
-    if target == MCP_TARGET:
-        replacement = f"taut_mcp-{normalized}-py3-none-any.whl"
-        for path in (root_readme_path, mcp_readme_path):
-            _replace_existing_examples(path, MCP_WHEEL_PATTERN, replacement)
+    pattern, wheel_prefix, extension_readme_path = artifact
+    replacement = f"{wheel_prefix}-{normalized}-py3-none-any.whl"
+    for path in (root_readme_path, extension_readme_path):
+        _replace_existing_examples(path, pattern, replacement)
 
 
 def sync_readme_simplebroker_requirement(
@@ -626,12 +698,18 @@ def write_version_files(version: str, target: ReleaseTarget = ROOT_TARGET) -> No
             rf'\g<1>"{normalized}"',
             display_path(target.constants_path),
         )
-    if target in {ROOT_TARGET, PG_TARGET, SUMMON_TARGET, MCP_TARGET}:
+    if target in {ROOT_TARGET, PG_TARGET, SUMMON_TARGET, MCP_TARGET, TUI_TARGET}:
         sync_readme_version_examples(target, normalized)
-    if target in (PG_TARGET, SUMMON_TARGET, MCP_TARGET) or target.package_name in {
+    if target in (
+        PG_TARGET,
+        SUMMON_TARGET,
+        MCP_TARGET,
+        TUI_TARGET,
+    ) or target.package_name in {
         "taut-pg",
         "taut-summon",
         "taut-mcp",
+        "taut-tui",
     }:
         root_version = read_manifest_version(ROOT_TARGET)
         _replace_version(
@@ -673,6 +751,34 @@ def sync_root_summon_dev_dependency(
         return None
     root_pyproject_path.write_text(updated, encoding="utf-8")
     return summon_version
+
+
+def sync_root_tui_dependencies(
+    *,
+    root_pyproject_path: Path = PYPROJECT_PATH,
+    tui_pyproject_path: Path = TUI_PYPROJECT_PATH,
+) -> dict[str, str]:
+    """Set root TUI convenience and development floors from ``taut-tui``."""
+
+    version = _read_version(
+        tui_pyproject_path,
+        PYPROJECT_VERSION_PATTERN,
+        display_path(tui_pyproject_path),
+    )
+    text = root_pyproject_path.read_text(encoding="utf-8")
+    updated_extras: dict[str, str] = {}
+    for extra in ("dev", "tui"):
+        text, changed = _replace_optional_dependency_floor(
+            text,
+            extra=extra,
+            package="taut-tui",
+            version=version,
+        )
+        if changed:
+            updated_extras[extra] = version
+    if updated_extras:
+        root_pyproject_path.write_text(text, encoding="utf-8")
+    return updated_extras
 
 
 def _replace_optional_dependency_floor(
@@ -720,6 +826,7 @@ def sync_root_all_dependencies(
     pg_pyproject_path: Path = PG_PYPROJECT_PATH,
     summon_pyproject_path: Path = SUMMON_PYPROJECT_PATH,
     mcp_pyproject_path: Path = MCP_PYPROJECT_PATH,
+    tui_pyproject_path: Path = TUI_PYPROJECT_PATH,
 ) -> dict[str, str]:
     """Set each root all-extra floor from its owning extension manifest."""
 
@@ -727,6 +834,7 @@ def sync_root_all_dependencies(
         ("taut-pg", pg_pyproject_path),
         ("taut-summon", summon_pyproject_path),
         ("taut-mcp", mcp_pyproject_path),
+        ("taut-tui", tui_pyproject_path),
     )
     text = root_pyproject_path.read_text(encoding="utf-8")
     updated_packages: dict[str, str] = {}
@@ -818,6 +926,20 @@ def sync_mcp_core_dependency(
     )
 
 
+def sync_tui_core_dependency(
+    *,
+    root_pyproject_path: Path = PYPROJECT_PATH,
+    tui_pyproject_path: Path = TUI_PYPROJECT_PATH,
+) -> str | None:
+    """Set TUI's taut floor to the exact local core version."""
+
+    return sync_extension_core_dependency(
+        root_pyproject_path=root_pyproject_path,
+        extension_pyproject_path=tui_pyproject_path,
+        extension_label="taut-tui",
+    )
+
+
 def sync_mcp_pg_dev_dependency(
     *,
     pg_pyproject_path: Path = PG_PYPROJECT_PATH,
@@ -843,6 +965,81 @@ def sync_mcp_pg_dev_dependency(
         return None
     mcp_pyproject_path.write_text(updated, encoding="utf-8")
     return pg_version
+
+
+def sync_mcp_summon_dev_dependency(
+    *,
+    summon_pyproject_path: Path = SUMMON_PYPROJECT_PATH,
+    mcp_pyproject_path: Path = MCP_PYPROJECT_PATH,
+) -> str | None:
+    """Set MCP's development-only Summon floor to the local version."""
+
+    summon_version = _read_version(
+        summon_pyproject_path,
+        PYPROJECT_VERSION_PATTERN,
+        display_path(summon_pyproject_path),
+    )
+    text = mcp_pyproject_path.read_text(encoding="utf-8")
+    updated, changed = _replace_optional_dependency_floor(
+        text,
+        extra="dev",
+        package="taut-summon",
+        version=summon_version,
+    )
+    if not changed:
+        return None
+    mcp_pyproject_path.write_text(updated, encoding="utf-8")
+    return summon_version
+
+
+def sync_tui_summon_dev_dependency(
+    *,
+    summon_pyproject_path: Path = SUMMON_PYPROJECT_PATH,
+    tui_pyproject_path: Path = TUI_PYPROJECT_PATH,
+) -> str | None:
+    """Set TUI's development-only Summon floor to the local version."""
+
+    summon_version = _read_version(
+        summon_pyproject_path,
+        PYPROJECT_VERSION_PATTERN,
+        display_path(summon_pyproject_path),
+    )
+    text = tui_pyproject_path.read_text(encoding="utf-8")
+    updated, changed = _replace_optional_dependency_floor(
+        text,
+        extra="dev",
+        package="taut-summon",
+        version=summon_version,
+    )
+    if not changed:
+        return None
+    tui_pyproject_path.write_text(updated, encoding="utf-8")
+    return summon_version
+
+
+def sync_pg_tui_dev_dependency(
+    *,
+    pg_pyproject_path: Path = PG_PYPROJECT_PATH,
+    tui_pyproject_path: Path = TUI_PYPROJECT_PATH,
+) -> str | None:
+    """Set PG's development-only TUI floor to the local version."""
+
+    tui_version = _read_version(
+        tui_pyproject_path,
+        PYPROJECT_VERSION_PATTERN,
+        display_path(tui_pyproject_path),
+    )
+    text = pg_pyproject_path.read_text(encoding="utf-8")
+    updated, changed = _replace_optional_dependency_floor(
+        text,
+        extra="dev",
+        package="taut-tui",
+        version=tui_version,
+    )
+    if not changed:
+        return None
+    pg_pyproject_path.write_text(updated, encoding="utf-8")
+    return tui_version
 
 
 def sync_extension_core_dependency(
@@ -883,7 +1080,7 @@ def prepare_release_metadata(
     requested_versions = {
         target.key: validate_version(version) for target, version in target_versions
     }
-    ordered_targets = (ROOT_TARGET, PG_TARGET, SUMMON_TARGET, MCP_TARGET)
+    ordered_targets = (ROOT_TARGET, PG_TARGET, SUMMON_TARGET, MCP_TARGET, TUI_TARGET)
     versions = {
         target.key: (
             requested_versions[target.key]
@@ -1636,7 +1833,7 @@ def repository_settings_issues(repo_slug: str, token: str) -> tuple[str, ...]:
     ):
         issues.append(
             "pypi environment tag policies must be exactly v*, taut_pg/v*, "
-            "taut_summon/v*, and taut_mcp/v*"
+            "taut_summon/v*, taut_mcp/v*, and taut_tui/v*"
         )
 
     return tuple(issues)
@@ -1744,15 +1941,19 @@ def build_precheck_commands_for_targets(
         PG_TEST_COMMAND,
         *SUMMON_TEST_COMMANDS,
         MCP_TEST_COMMAND,
+        TUI_TEST_COMMAND,
         _ruff_check_command((".",)),
         RUFF_SUPPRESSION_CHECK_COMMAND,
         _ruff_format_command(format_paths),
         MCP_RUFF_CHECK_COMMAND,
         MCP_RUFF_FORMAT_COMMAND,
+        TUI_RUFF_CHECK_COMMAND,
+        TUI_RUFF_FORMAT_COMMAND,
         _mypy_command(ROOT_MYPY_PATHS),
         _mypy_command(PG_MYPY_PATHS),
         _mypy_command(SUMMON_MYPY_PATHS),
         MCP_MYPY_COMMAND,
+        TUI_MYPY_COMMAND,
     )
 
 
@@ -1792,6 +1993,11 @@ def build_preparation_steps_for_targets(
             ("uv", "lock"),
             "Reconcile retained taut-mcp dependencies",
             cwd=MCP_EXTENSION_DIR,
+        ),
+        CommandStep(
+            ("uv", "lock"),
+            "Reconcile retained taut-tui dependencies",
+            cwd=TUI_EXTENSION_DIR,
         ),
     )
 
@@ -1851,6 +2057,20 @@ def build_postupdate_steps_for_targets(
                     MCP_TARGET.package_dir.as_posix(),
                 ),
                 "Build taut-mcp source and wheel",
+            )
+        )
+    if TUI_TARGET.key in target_keys:
+        steps.append(
+            CommandStep(
+                (
+                    "uv",
+                    "build",
+                    "--no-sources",
+                    "--out-dir",
+                    (TUI_TARGET.package_dir / "dist").as_posix(),
+                    TUI_TARGET.package_dir.as_posix(),
+                ),
+                "Build taut-tui source and wheel",
             )
         )
     if target_keys & {ROOT_TARGET.key, SUMMON_TARGET.key}:
@@ -1993,11 +2213,15 @@ def _release_file_paths(_target: ReleaseTarget) -> tuple[Path, ...]:
         SUMMON_README_PATH,
         MCP_PYPROJECT_PATH,
         MCP_README_PATH,
+        TUI_PYPROJECT_PATH,
+        TUI_README_PATH,
     ]
     if SUMMON_UV_LOCK_PATH.exists():
         paths.append(SUMMON_UV_LOCK_PATH)
     if MCP_UV_LOCK_PATH.exists():
         paths.append(MCP_UV_LOCK_PATH)
+    if TUI_UV_LOCK_PATH.exists():
+        paths.append(TUI_UV_LOCK_PATH)
     return tuple(paths)
 
 
@@ -2404,22 +2628,36 @@ def _print_dry_run_root_dependency_notes(
         print(f"dry-run: taut-summon {summon_version} would be released in this batch")
     all_floors = ", ".join(
         f"{target.package_name}>={read_manifest_version(target)}"
-        for target in (PG_TARGET, SUMMON_TARGET, MCP_TARGET)
+        for target in (PG_TARGET, SUMMON_TARGET, MCP_TARGET, TUI_TARGET)
     )
     print(f"dry-run: would ensure root all extra requires {all_floors}")
 
 
+def _report_dependency_sync(
+    version: str | None,
+    *,
+    current: str,
+    updated: str,
+) -> None:
+    if version is None:
+        print(current)
+    else:
+        print(f"{updated}{version}")
+
+
 def _sync_root_release_dependencies() -> None:
     summon_dependency_version = sync_root_summon_dev_dependency()
-    if summon_dependency_version is None:
-        print("Root dev dependency already matches taut-summon")
-    else:
-        print(f"Updated root dev dependency: taut-summon>={summon_dependency_version}")
+    _report_dependency_sync(
+        summon_dependency_version,
+        current="Root dev dependency already matches taut-summon",
+        updated="Updated root dev dependency: taut-summon>=",
+    )
     pg_runtime_floor = sync_root_pg_dev_dependency()
-    if pg_runtime_floor is None:
-        print("Root dev dependency already matches simplebroker-pg")
-    else:
-        print(f"Updated root dev dependency: simplebroker-pg>={pg_runtime_floor}")
+    _report_dependency_sync(
+        pg_runtime_floor,
+        current="Root dev dependency already matches simplebroker-pg",
+        updated="Updated root dev dependency: simplebroker-pg>=",
+    )
     all_updates = sync_root_all_dependencies()
     if not all_updates:
         print("Root all extra already matches first-party extension versions")
@@ -2428,26 +2666,62 @@ def _sync_root_release_dependencies() -> None:
             f"{package}>={version}" for package, version in all_updates.items()
         )
         print(f"Updated root all extra: {updates}")
+    tui_root_updates = sync_root_tui_dependencies()
+    if not tui_root_updates:
+        print("Root TUI and dev extras already match taut-tui")
+    else:
+        extras = ", ".join(sorted(tui_root_updates))
+        print(
+            f"Updated root {extras} extras: taut-tui>={next(iter(tui_root_updates.values()))}"
+        )
     pg_dependency_version = sync_pg_core_dependency()
-    if pg_dependency_version is None:
-        print("taut-pg dependency already matches taut-chat")
-    else:
-        print(f"Updated taut-pg dependency: taut-chat>={pg_dependency_version}")
+    _report_dependency_sync(
+        pg_dependency_version,
+        current="taut-pg dependency already matches taut-chat",
+        updated="Updated taut-pg dependency: taut-chat>=",
+    )
     core_dependency_version = sync_summon_core_dependency()
-    if core_dependency_version is None:
-        print("taut-summon dependency already matches taut-chat")
-    else:
-        print(f"Updated taut-summon dependency: taut-chat>={core_dependency_version}")
+    _report_dependency_sync(
+        core_dependency_version,
+        current="taut-summon dependency already matches taut-chat",
+        updated="Updated taut-summon dependency: taut-chat>=",
+    )
     mcp_core_version = sync_mcp_core_dependency()
-    if mcp_core_version is None:
-        print("taut-mcp dependency already matches taut-chat")
-    else:
-        print(f"Updated taut-mcp dependency: taut-chat>={mcp_core_version}")
+    _report_dependency_sync(
+        mcp_core_version,
+        current="taut-mcp dependency already matches taut-chat",
+        updated="Updated taut-mcp dependency: taut-chat>=",
+    )
+    tui_core_version = sync_tui_core_dependency()
+    _report_dependency_sync(
+        tui_core_version,
+        current="taut-tui dependency already matches taut-chat",
+        updated="Updated taut-tui dependency: taut-chat>=",
+    )
     mcp_pg_version = sync_mcp_pg_dev_dependency()
-    if mcp_pg_version is None:
-        print("taut-mcp development dependency already matches taut-pg")
-    else:
-        print(f"Updated taut-mcp development dependency: taut-pg>={mcp_pg_version}")
+    _report_dependency_sync(
+        mcp_pg_version,
+        current="taut-mcp development dependency already matches taut-pg",
+        updated="Updated taut-mcp development dependency: taut-pg>=",
+    )
+    mcp_summon_version = sync_mcp_summon_dev_dependency()
+    _report_dependency_sync(
+        mcp_summon_version,
+        current="taut-mcp development dependency already matches taut-summon",
+        updated="Updated taut-mcp development dependency: taut-summon>=",
+    )
+    tui_summon_version = sync_tui_summon_dev_dependency()
+    _report_dependency_sync(
+        tui_summon_version,
+        current="taut-tui development dependency already matches taut-summon",
+        updated="Updated taut-tui development dependency: taut-summon>=",
+    )
+    pg_tui_version = sync_pg_tui_dev_dependency()
+    _report_dependency_sync(
+        pg_tui_version,
+        current="taut-pg development dependency already matches taut-tui",
+        updated="Updated taut-pg development dependency: taut-tui>=",
+    )
 
 
 def _require_command(name: str) -> None:
@@ -2464,8 +2738,9 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         choices=target_choices,
         default=None,
         help=(
-            "Package to release: core, pg, summon, mcp, or all current unpublished "
-            "versions. Defaults to core. The root/taut aliases also select core."
+            "Package to release: core, pg, summon, mcp, tui, or all current "
+            "unpublished versions. Defaults to core. The root/taut aliases also "
+            "select core."
         ),
     )
     parser.add_argument(
@@ -2480,7 +2755,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         help=(
             "Target version in X.Y.Z form. Defaults to the current package "
             "version when it has not been published yet. With all, coordinates "
-            "all four package manifests."
+            "all five package manifests."
         ),
     )
     execution_mode = parser.add_mutually_exclusive_group()

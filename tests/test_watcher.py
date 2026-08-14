@@ -15,8 +15,15 @@ from typing import IO, Any, TypeVar, cast
 
 import pytest
 from simplebroker import Queue
-from simplebroker.ext import OperationalError, PollingStrategy, StopWatching
+from simplebroker.ext import (
+    OperationalError,
+    PollingStrategy,
+)
+from simplebroker.ext import (
+    StopWatching as BrokerStopWatching,
+)
 
+from taut import WatcherRejected
 from taut._exceptions import EmptyResultError, MembershipError
 from taut.client import Message, Notification, TautClient
 from taut.client._watching import _watch_runtime_for_client
@@ -541,7 +548,7 @@ def test_base_reactor_stop_watching_returns_normally_without_prior_stop_request(
         _context: QueueMessageContext,
     ) -> None:
         stop_state_at_handler.append(watcher._stop_requested)
-        raise StopWatching
+        raise BrokerStopWatching
 
     watcher = BaseReactor(
         queue_configs={"stop.input": {"handler": stop_handler}},
@@ -2493,7 +2500,7 @@ def test_stop_watching_from_refreshed_chat_queue_does_not_poison_advance(
             return
         if item.text == "terminal sink probe":
             attempted.append(item)
-            raise StopWatching
+            raise WatcherRejected
 
     watcher = _white_box_watcher(
         van,
@@ -2526,7 +2533,7 @@ def test_stop_watching_from_refreshed_chat_queue_does_not_poison_advance(
             lambda: not thread.is_alive(),
             timeout=3.0,
             interval=0.01,
-            description="StopWatching from the late chat handler stops the watcher",
+            description="WatcherRejected from the late chat handler stops the watcher",
             snapshot=lambda: {
                 "thread_alive": thread.is_alive(),
                 "attempted_count": len(attempted),
@@ -2557,7 +2564,7 @@ def test_stop_watching_from_notification_queue_stops_reactor(tmp_path: Path) -> 
     def closed_sink(item: Message | Notification) -> None:
         if isinstance(item, Notification):
             attempted.append(item)
-            raise StopWatching
+            raise WatcherRejected
 
     watcher = _white_box_watcher(van, closed_sink)
     thread = watcher.start()
@@ -2573,7 +2580,7 @@ def test_stop_watching_from_notification_queue_stops_reactor(tmp_path: Path) -> 
             lambda: not thread.is_alive(),
             timeout=3.0,
             interval=0.01,
-            description="StopWatching from the notification handler stops the watcher",
+            description="WatcherRejected from the notification handler stops the watcher",
             snapshot=lambda: {
                 "thread_alive": thread.is_alive(),
                 "attempted_count": len(attempted),

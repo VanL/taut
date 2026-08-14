@@ -69,9 +69,9 @@ filesystem error surfaces. Core rejects those paths before constructing
 `Queue`; it does not broaden this into a portable filename policy, so POSIX
 acceptance and non-SQLite targets remain unchanged.
 
-The load-bearing supported SimpleBroker floor is `simplebroker>=7.3.2`, aligned
-with
-`simplebroker-pg>=3.6.0`. Version 7.0.0 supplies the public message-id formatter
+The current SimpleBroker minimum is `simplebroker>=7.3.2`, aligned with the
+current `simplebroker-pg>=3.8.0` minimum and their owning lock selections.
+Version 7.0.0 supplies the public message-id formatter
 and the exact-string JSON boundary while leaving Python and backend values as
 integers. Version 7.3.2 supplies the immutable ambient-free resolved-config
 marker that Taut preserves across lower layers. Version 5.6.1 remains the
@@ -110,15 +110,16 @@ Release tooling lives in `bin/release.py`. Its boundary is repository hygiene,
 not runtime behavior. Each package manifest owns its version. A target-specific
 release changes only that selected version, while every normal invocation
 reconciles all derived copies: the core constant, any README tags and wheel
-names that remain present, all three extension core floors, the root Summon and
-SimpleBroker PG dev floors, MCP's development-only `taut-pg` floor, every root
-README SimpleBroker requirement, and the retained Summon and MCP locks. The
+names that remain present, all four extension core floors, the root Summon and
+SimpleBroker PG dev floors, MCP's development-only `taut-pg` and
+`taut-summon` floors, every root
+README SimpleBroker requirement, and the retained Summon, MCP, and TUI locks. The
 Summon lock refresh is selective (`uv lock --upgrade-package simplebroker`);
-the MCP project uses a plain `uv lock` because its local core/PG sources and SDK
-range must reconcile without a targeted dependency upgrade. The helper stages
+the root, MCP, and TUI projects use plain `uv lock` reconciliation for their
+local first-party sources and owned ranges. The helper stages
 only that fixed metadata allowlist and creates a local preparation commit
 before pytest, type, lint, and build gates. Immediately before ordinary release
-builds, it preserves and empties all four package `dist/` directories, rejects
+builds, it preserves and empties all five package `dist/` directories, rejects
 a symlink or non-directory at any fixed boundary, and verifies each directory
 is empty. This happens even for a single-package release so unselected-package
 artifacts cannot linger. Every ordinary build names both its source and that
@@ -128,14 +129,15 @@ prevents local workspace source resolution and unintended lockfile rewrites.
 A later gate failure therefore leaves a clean, unpushed commit that
 can be inspected or reused on a rerun.
 
-The helper accepts `core`/`pg`/`summon`/`mcp` targets plus `all`;
-`all --version X.Y.Z` coordinates all four manifests, while target-specific
+The helper accepts `core`/`pg`/`summon`/`mcp`/`tui` targets plus `all`;
+`all --version X.Y.Z` coordinates all five manifests, while target-specific
 versions remain independent. A real publishing run is allowed only from
 `main` or `master`, checked once before any preparation mutation; dry-run and
 checks-only remain branch-independent. By default, every target and `all` run
 one identical universal precheck sequence: root, PostgreSQL, all four Summon
-lanes, the explicit MCP `not pg_only` lane, root/PG/Summon lint/format,
-package-local MCP lint/format, and four collision-safe mypy owners. The local
+lanes, the explicit MCP `not pg_only` lane, the TUI suite at both the retained
+and exact framework floor, root/PG/Summon lint/format, package-local MCP and
+TUI lint/format, and five collision-safe mypy owners. The local
 MCP lane is a fast gate, not PostgreSQL evidence. Target selection controls
 metadata, ordinary builds, tags, and publication, not default verification
 scope. `--checks-only` runs that one sequence without mutation. `--skip-checks`
@@ -275,10 +277,10 @@ alias from `taut` to `taut-chat`, and the two distributions must not coexist
 because both own the same `taut/` files. Core and Summon local release paths
 run the build-owning proof after the local preparation commit, prechecks, and
 ordinary builds, but before any branch push, tag mutation, tag push, or
-publication, including `--skip-checks`; a PG-only release does not run it. The
-same owner checks the retained Summon lock's resolved SimpleBroker version and
-compiles the PG manifest into its temporary artifact root to prove the resolved
-`simplebroker-pg` floor. The repository does not retain a PG lockfile.
+publication, including `--skip-checks`; a PG-only release does not run it.
+Package tooling checks third-party ranges and retained-lock consistency. The
+repository does not retain a PG lockfile; its development dependency selections
+come from the root lock.
 
 All production taut-owned relational state flows through `taut/state/`.
 `taut/state/__init__.py` exposes the internal `TautState` interface,
@@ -424,6 +426,16 @@ access, searches only the acting member's current chat memberships, and uses
 SimpleBroker's exact public peek. A successful show advances that membership's
 high-water cursor through the message, so earlier unread rows become seen while
 later rows remain unread. The broker row is never claimed.
+
+`history_around` shares the exact validator but binds the lookup to one
+`log`-visible canonical thread and deliberately performs no cursor or activity
+write. The anchor uses public exact peek. The following side uses bounded
+`peek_many(after_timestamp=...)`; because SimpleBroker's public bounded peek is
+oldest-first, the preceding side streams a public
+`peek_generator(before_timestamp=...)` through a bounded deque to retain the
+nearest rows without retaining the full history. This stays backend-neutral and
+caps returned/decode-retained state at 1,000 even though finding the nearest
+predecessors may scan older history.
 
 `delete_message` uses the same exact validation but searches all registered
 chat threads, which lets an author delete after leaving a channel. It exposes
@@ -581,14 +593,16 @@ the peek behavior at the taut boundary for chat queues: fetch uses
 `has_pending(after_timestamp=cursor)`, and cursor advancement happens inside the
 taut handler wrapper after the user handler returns. For `taut watch`, that
 return means a complete record has also been flushed to stdout. A closed output
-pipe becomes `StopWatching`: the default error policy stops notification,
-initial-chat, and refresh-added queues immediately, while the chat wrapper keeps
-the cursor in place and does not count the sink as poison content. Ordinary
-handler exceptions retain the three-strike poison rule. Notification queues are
-a separate consumable inbox path and must not be forced through chat-history
-cursor semantics. The vendored multi-queue watcher installs its fan-in activity
-waiter through SimpleBroker's watcher lifecycle hook rather than cloning the
-base retry loop. Membership refresh is wired both to SimpleBroker's data-version
+pipe becomes Taut's public `WatcherRejected`; the Taut error policy translates
+that sentinel to SimpleBroker's internal `StopWatching` mechanism. It stops
+notification, initial-chat, and refresh-added queues immediately, while the
+chat wrapper keeps the cursor in place and does not count the sink as poison
+content. Ordinary handler exceptions retain the three-strike poison rule.
+Notification queues are a separate consumable inbox path and must not be forced
+through chat-history cursor semantics. The vendored multi-queue watcher installs
+its fan-in activity waiter through SimpleBroker's watcher lifecycle hook rather
+than cloning the base retry loop. Membership refresh is wired both to
+SimpleBroker's data-version
 callback and to a timer that deliberately counts as pending work, so an idle
 watcher still reaches the refresh code on backends whose native waiters only wake
 for queue writes. The copied watcher primitive is not edited for Taut cursor semantics;
@@ -762,6 +776,8 @@ queue high-water mark.
   independent of queue message presence; moving it behind a message-pending gate
   breaks non-SQLite forward compatibility.
 
+## Key Files
+
 Configuration crosses the SimpleBroker boundary as a complete immutable
 `ResolvedConfig`. `taut/_constants.py` first lists the few named defaults that
 encode Taut behavior: storage, project discovery, SQLite selection, and load
@@ -771,8 +787,6 @@ ambient `BROKER_*`. The nominal mapping matters as much as completeness because
 broker lower layers resolve config repeatedly; an ordinary dictionary would
 resume ambient environment reads. Client and watcher ownership boundaries
 therefore recreate the public marker through the ambient-free resolver.
-
-## Key Files
 
 | Path | Owner |
 |---|---|
@@ -815,11 +829,11 @@ requirement or auditing implementation coverage.
 | [TAUT-6], message envelopes and sender snapshots | `taut/envelope.py`, `taut/client/_codec.py::message_from_body`, `message_from_decoded`, `taut/client/_messaging.py::MessagingMixin._write_message` | `tests/test_envelope.py`, `tests/test_client.py::test_set_name_changes_current_name_without_changing_member_id` |
 | [TAUT-6.5], blank user messages and exact accepted text | `taut/_message_text.py::is_blank_message_text`, `taut/_exceptions.py::BlankMessageError`, `taut/client/_messaging.py::MessagingMixin.say`, `reply`, and `taut/commands/_dispatch.py::_render_execution_error` | `tests/test_message_text.py`; blank, precedence, historical-read, and exact-text cases in `tests/test_client.py`, `tests/test_cli.py`, and `tests/test_shared_contract.py`; paired import proof in `tests/test_core_summon_wheel_matrix.py` |
 | [TAUT-6.4], [TAUT-8.3], [TAUT-8.6], [TAUT-9], terminal text safety and exact-data boundaries | `taut/terminal.py::escape_terminal_text`, `taut/defaults.toml`, `taut/commands/_rendering.py::write_human_line`, dispatcher/parser diagnostics, and the Summon command/log adapters | `tests/test_terminal_text.py`, terminal-control cases in `tests/test_cli.py` and `tests/test_command_registry.py`, `tests/test_architecture_boundaries.py::test_first_party_terminal_sink_inventory_is_explicit`, and the touched Summon CLI/driver/PTY tests |
-| [TAUT-7], read cursors, exact show/delete/react, bounded per-call unread pages, and chat-history peek discipline | `taut/client/_messaging.py::MessagingMixin.read`, `read_unread`, `show_message`, `delete_message`, `react_to_message`, `_implicit_subthread_membership`; `taut/client/_threads.py::_thread_from_row`, `_unread_count`; `taut/state/_sql.py` membership and cursor helpers | `tests/test_client.py` exact-id, ownership, reaction audience/failure, visibility, cursor, race, limit, decode-failure, caught-up-list, saturation, and list-race cases; `tests/test_client_stateful.py`; `tests/test_state_contract.py`; `tests/test_shared_contract.py::test_project_read_limit_paginates_without_skipping`, `test_project_exact_show_and_delete_contract`, and `test_project_message_reaction_contract` on SQLite and PostgreSQL |
+| [TAUT-7], read cursors, exact show/delete/react/context, bounded per-call unread/context pages, and chat-history peek discipline | `taut/client/_messaging.py::MessagingMixin.read`, `read_unread`, `show_message`, `history_around`, `delete_message`, `react_to_message`, `_implicit_subthread_membership`; `taut/client/_threads.py::_thread_from_row`, `_unread_count`; `taut/state/_sql.py` membership and cursor helpers | `tests/test_client.py` exact-id, ownership, reaction audience/failure, visibility, cursor, history-context, race, limit, decode-failure, caught-up-list, saturation, and list-race cases; `tests/test_client_stateful.py`; `tests/test_state_contract.py`; `tests/test_shared_contract.py::test_project_read_limit_paginates_without_skipping`, `test_project_exact_show_and_delete_contract`, `test_project_history_around_is_cursor_neutral_across_sql_backends`, and `test_project_message_reaction_contract` on SQLite and PostgreSQL |
 | [TAUT-8.1], [TAUT-8.2], CLI behavior, rendering, JSON, help, and exit codes | `taut/cli.py`, `taut/commands/_dispatch.py`, `taut/commands/channel.py`, and the other per-verb command adapters | `tests/test_cli.py` parser-inventory, channel-topic/rename, help-phrase, explicit-argv, subprocess, rendering, blank-input, and exit-class tests; `tests/test_public_api.py` |
 | [TAUT-8.6], command manifests, installed discovery, dispatch, parser/context policy, and lazy loading | `taut/commands/` | `tests/test_command_registry.py`, `tests/test_lazy_imports.py`, `tests/test_architecture_boundaries.py`, installed-wheel cases in `tests/test_core_summon_wheel_matrix.py` |
 | [TAUT-8.3], Python API objects, `Channel`, `MessageDeletion`, `MessageReaction`, notification peek, and verb semantics | `taut/client/__init__.py::TautClient`, `taut/client/_models.py`, `taut/client/_notifications.py::NotificationsMixin.peek_inbox`, the other client mixins, and lazy root exports | `tests/test_public_api.py`, `tests/test_client.py` channel, exact-message, reaction, notification-peek, and other client contracts, shared channel/exact-message/reaction/notification contracts in `tests/test_shared_contract.py` on SQLite and PostgreSQL, `tests/test_terminal_text.py`, `tests/test_lazy_imports.py` |
-| [TAUT-8.4], [TAUT-8.5], watcher behavior and shared reactor lifecycle | `taut/watcher.py::BaseReactor`, `taut/watcher.py::TautWatcher`, `taut/_watch_runtime.py`, `taut/client/_watching.py`, `taut/client/__init__.py::TautClient.watch`, `taut/commands/watch.py` | `tests/test_watcher.py` ownership, stop, wake, cursor replay, construction cleanup, explicit-target resolution, terminal-stop, poison, ordering, and same-instance tests; `tests/test_cli.py::test_cli_watch_json_flushes_records_while_live`, `test_cli_watch_closed_pipe_exits_0_without_advancing_cursor`, `test_cli_watch_policy_failure_stops_without_advancing_cursor`; `tests/test_architecture_boundaries.py::test_first_party_reactors_inherit_guarded_lifecycle_templates`; `tests/test_shared_contract.py::test_project_watcher_receives_cli_write`; `extensions/taut_pg/tests/test_reactor.py` native-waiter rebind and forced polling-fallback tests |
+| [TAUT-8.4], [TAUT-8.5], watcher behavior, public `WatcherRejected`, and shared reactor lifecycle | `taut/_exceptions.py::WatcherRejected`, `taut/watcher.py::BaseReactor`, `taut/watcher.py::TautWatcher`, `taut/_watch_runtime.py`, `taut/client/_watching.py`, `taut/client/__init__.py::TautClient.watch`, `taut/commands/watch.py` | `tests/test_watcher.py` ownership, stop, wake, cursor replay, construction cleanup, explicit-target resolution, terminal rejection, poison, ordering, and same-instance tests; `tests/test_cli.py::test_cli_watch_json_flushes_records_while_live`, `test_cli_watch_closed_pipe_exits_0_without_advancing_cursor`, `test_cli_watch_policy_failure_stops_without_advancing_cursor`; `tests/test_public_api.py`; `tests/test_architecture_boundaries.py::test_first_party_reactors_inherit_guarded_lifecycle_templates`; `tests/test_shared_contract.py::test_project_watcher_receives_cli_write`; `extensions/taut_pg/tests/test_reactor.py` native-waiter rebind and forced polling-fallback tests |
 | [IAN-4], alias/name route namespace | `taut/state/_sql.py` member and alias helpers, `taut/_constants.py::route_key`, `validate_member_name` | `tests/test_state_contract.py`, `tests/test_client.py::test_set_name_changes_current_name_without_changing_member_id`, PostgreSQL create/rename-versus-alias races in `extensions/taut_pg/tests/test_pg_sidecar.py` |
 | [IAN-5], [IAN-6], addressing, stable existing-DM send, and special queue names | `taut/addressing.py`, `taut/client/_base.py::_resolve_direct_message`, `taut/client/_messaging.py::MessagingMixin.say`, `_say_existing_dm`, `_say_dm`; `taut/client/_threads.py::_thread_from_row` | `tests/test_addressing.py`; direct selection, corruption, nonhealing, and blank-order cases in `tests/test_direct_messages.py` and `tests/test_client.py`; full valid/miss/name-reassignment matrix in `tests/test_shared_contract.py` on SQLite and PostgreSQL; CLI/registry cases in `tests/test_cli.py` and `tests/test_command_registry.py` |
 | [IAN-7], notification and reaction payloads, observational peek, claiming, and stale pointers after message deletion | `taut/client/_messaging.py::_write_mention_notifications`, `react_to_message`, `delete_message`; `taut/client/_codec.py::notification_from_body`; `taut/client/_notifications.py::_write_notification`, `peek_inbox`, `inbox`; `taut/commands/_rendering.py`; `taut/watcher.py` notification path | notification/reaction peek, consuming-inbox, audience, broadcast-failure, and deletion-without-cascade cases in `tests/test_client.py`; notification rendering in `tests/test_cli.py`; shared notification/reaction contracts in `tests/test_shared_contract.py`; `tests/test_watcher.py` |

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "taut-chat"
-version = "0.8.7"
+version = "0.9.0"
 
 description = "Private, no-config chat with agents and humans in your terminal"
 readme = "README.md"
@@ -16,7 +16,7 @@ authors = [
 ]
 keywords = ["chat", "sqlite", "cli", "agents", "simplebroker"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Environment :: Console",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
@@ -32,29 +32,34 @@ classifiers = [
 ]
 dependencies = [
     "simplebroker>=7.3.2",
-    "psutil>=6.0",
+    "psutil>=7.2.2",
 ]
 
 [project.optional-dependencies]
 all = [
-    "taut-pg>=0.8.7",
-    "taut-summon>=0.8.7",
-    "taut-mcp>=0.8.7",
+    "taut-pg>=0.9.0",
+    "taut-summon>=0.9.0",
+    "taut-mcp>=0.9.0",
+    "taut-tui>=0.9.0",
+]
+tui = [
+    "taut-tui>=0.9.0",
 ]
 dev = [
-    "build>=1.2",
-    "hypothesis>=6.100",
-    "mypy>=1.0",
-    "pytest>=7.0",
-    "pytest-cov>=4.0",
+    "build>=1.5.0",
+    "hypothesis>=6.165.5",
+    "mypy>=2.3.0",
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
     "pytest-timeout>=2.4.0",
-    "pytest-xdist>=3.0",
-    "pyyaml>=6.0",
-    "ruff==0.16.1",
-    "simplebroker-pg>=3.6.0",
-    "taut-summon>=0.8.7",
-    "types-psutil>=6.0",
-    "types-PyYAML>=6.0",
+    "pytest-xdist>=3.8.0",
+    "pyyaml>=6.0.3",
+    "ruff>=0.16.3",
+    "simplebroker-pg>=3.8.0",
+    "taut-summon>=0.9.0",
+    "taut-tui>=0.9.0",
+    "types-psutil>=7.2.2.20260518",
+    "types-PyYAML>=6.0.12.20260724",
 ]
 
 [project.scripts]
@@ -70,6 +75,7 @@ Issues = "https://github.com/VanL/taut/issues"
 taut-pg = { path = "./extensions/taut_pg", editable = true }
 taut-summon = { path = "./extensions/taut_summon", editable = true }
 taut-mcp = { path = "./extensions/taut_mcp", editable = true }
+taut-tui = { path = "./extensions/taut_tui", editable = true }
 
 [tool.hatch.build]
 include = [

@@ -39,7 +39,7 @@ replacement required by the shared core reactor; 5.3.2 made cancellation
 interrupt locked watcher bootstrap; and 5.3.3 added the cleanup and metric
 properties Summon requires. Version 5.6.1 added core reaction fanout; the
 repository-wide supported floor is now `simplebroker>=7.3.2`, aligned with
-`simplebroker-pg>=3.6.0`. Summon does not use the SimpleBroker command layer
+`simplebroker-pg>=3.8.0`. Summon does not use the SimpleBroker command layer
 whose option binding changed in 6.0.0 and still relies on the earlier reactor
 guarantees. The 5.2.0 reactor example remains the ownership-model provenance,
 not the supported runtime floor.
@@ -111,6 +111,27 @@ and restores every installed disposition in `finally`, including
 `BaseException` exits. A restoration error becomes the public operation error
 only when no earlier failure exists; otherwise the driver logs it as secondary
 cleanup evidence and preserves the primary failure.
+
+Rich hosts may pass `on_ready` to the same blocking foreground call
+([SUM-13.1]). The callback does not move lifecycle ownership out of Summon.
+It receives an opaque `SummonRunHandle` only after the first provider
+generation has completed watcher initial drain and the control owner has
+opened and installed its broker handles. The driver creates the control-ready
+event only for callback-bearing runs, so the existing callback-absent command
+path adds no readiness wait. Its bounded owner-thread wait also watches
+shutdown, first-generation death, watcher failure, and fatal control state.
+
+The handle freezes the collision-resolved bootstrap identity and applies the
+same provider-session precedence as STATUS initialization: the live adapter
+handle's non-`None` session id wins, otherwise the bootstrap or resumed id is
+retained. Its only authority is a closure over that exact driver's existing
+thread-safe `request_stop()`. The driver sets the handle's private completion
+event in `run()`'s outer `finally`; later stop requests therefore cannot resolve
+a renamed member or affect a replacement run. Callback failure remains inside
+the first generation's watcher and provider cleanup scopes. Ordinary
+exceptions become `SummonOperationError` with the host failure as direct
+cause; host cancellation outside `Exception` propagates only after the same
+watcher, provider, control, evidence-release, and completion cleanup.
 
 Rich-host identity is object-local rather than process-global. Driver and
 control-loop `TautClient` instances pass
@@ -708,7 +729,7 @@ require a separately drained subprocess pipe.
 | [SUM-8], [PIO-5.3], durable session persistence and live-lease exclusion | `extensions/taut_summon/taut_summon/persistence_manifest.py`, `persistence.py`, `_state.py::persistence_records`, `persistence_is_fresh`, `load_persistence_records` | `extensions/taut_summon/tests/test_persistence.py`; cross-backend component coverage in `extensions/taut_pg/tests/test_persistence_io.py` |
 | [SUM-9], [SUM-10], [SUM-11], control lifecycle, backstop, recovery, and fatal supervision | `extensions/taut_summon/taut_summon/_control.py::_ControlReactor`, `extensions/taut_summon/taut_summon/_control.py::ControlLoop`, `extensions/taut_summon/taut_summon/_driver.py::SummonDriver._run_control_loop`, `_report_control_failure`, `_raise_if_control_failed` | `extensions/taut_summon/tests/test_control.py` fixed topology, ownership, native wake, inter-turn recovery, audit, partial-bundle, and close tests; `extensions/taut_summon/tests/test_driver.py` publication-race, request ordering, physical STOP signal-count, fatal-control, and PING cases |
 | [SUM-12], conformance | (all of the above), `bin/combine-coverage.py` | `extensions/taut_summon/tests/test_conformance.py`, `extensions/taut_summon/tests/test_driver.py` real child-boundary signal-count cases, `extensions/taut_summon/tests/test_live_harness.py`, `extensions/taut_summon/tests/test_live_local_llm.py`, `tests/test_combine_coverage.py`, `tests/test_github_workflows.py` |
-| [SUM-13], typed embedding and lazy host boundary | `extensions/taut_summon/taut_summon/__init__.py`, `extensions/taut_summon/taut_summon/models.py`, `extensions/taut_summon/taut_summon/controller.py`, `extensions/taut_summon/taut_summon/interaction.py`, `extensions/taut_summon/taut_summon/_driver.py`, `extensions/taut_summon/taut_summon/_control.py`, `extensions/taut_summon/taut_summon/commands/summon.py` | `extensions/taut_summon/tests/test_controller.py`, `extensions/taut_summon/tests/test_interaction.py` real environment and signal-boundary cases, `extensions/taut_summon/tests/test_summon_cli.py` explicit CLI opt-in, controller-backed CLI and real-process driver cases |
+| [SUM-13], [SUM-13.1], typed embedding, exact-run readiness, and lazy host boundary | `extensions/taut_summon/taut_summon/__init__.py`, `extensions/taut_summon/taut_summon/models.py`, `extensions/taut_summon/taut_summon/controller.py`, `extensions/taut_summon/taut_summon/interaction.py`, `extensions/taut_summon/taut_summon/_driver.py`, `extensions/taut_summon/taut_summon/_control.py`, `extensions/taut_summon/taut_summon/commands/summon.py` | `extensions/taut_summon/tests/test_controller.py` real scripted readiness, control, resume, rename, replacement, and callback-failure cases; `extensions/taut_summon/tests/test_driver.py` readiness timeout/session precedence and callback-absent gate; `extensions/taut_summon/tests/test_control.py` control-open publication ordering; `extensions/taut_summon/tests/test_interaction.py` real environment and signal-boundary cases; `extensions/taut_summon/tests/test_summon_cli.py` explicit CLI opt-in, controller-backed CLI and real-process driver cases |
 
 ## Change Guidance
 

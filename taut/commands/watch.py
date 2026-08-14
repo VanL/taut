@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from typing import TYPE_CHECKING
 
+from taut._exceptions import WatcherRejected
 from taut.commands._protocol import CommandArgumentParser, CommandContext
 from taut.commands._rendering import (
     _TerminalOutputPolicyError,
@@ -35,8 +36,6 @@ class WatchCommand:
         )
 
     def run(self, context: CommandContext, args: argparse.Namespace) -> int:
-        from simplebroker.ext import StopWatching
-
         if not context.json and not context.quiet:
             preflight_human_output_policy()
         client = context.client()
@@ -46,7 +45,7 @@ class WatchCommand:
         def handle(item: Message | Notification) -> None:
             nonlocal policy_failure, sink_closed
             if sink_closed:
-                raise StopWatching
+                raise WatcherRejected
             try:
                 emit_watch_item(
                     item,
@@ -63,10 +62,10 @@ class WatchCommand:
                 # failure, not poison queue content. Stop before cursor advance
                 # and carry the bootstrap-safe signal out of the reactor.
                 policy_failure = exc
-                raise StopWatching from None
+                raise WatcherRejected from None
             except BrokenPipeError:
                 sink_closed = True
-                raise StopWatching from None
+                raise WatcherRejected from None
 
         watcher = client.watch(handle, threads=args.threads or None)
         try:

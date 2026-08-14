@@ -190,6 +190,156 @@ def test_show_message_returns_exact_row_and_advances_high_water_cursor(
     assert reader.queue("general").peek_one(exact_timestamp=target.ts) is not None
 
 
+def test_history_around_returns_nearest_context_without_moving_cursor(
+    tmp_path: Path,
+) -> None:
+    reader = client(tmp_path, "reader")
+    reader.join("general")
+    writer = existing_client(tmp_path, "writer")
+    writer.join("general")
+    reader.read("general")
+    older = writer.say("general", "older")
+    previous = writer.say("general", "previous")
+    target = writer.say("general", "target")
+    following = writer.say("general", "following")
+    newer = writer.say("general", "newer")
+    reader_id = reader.whoami().member_id
+    before = reader._state.get_membership(thread="general", member_id=reader_id)
+    assert before is not None
+
+    context = reader.history_around(
+        "general",
+        str(target.ts),
+        before=1,
+        after=1,
+    )
+
+    assert context == [previous, target, following]
+    assert older not in context
+    assert newer not in context
+    assert reader._state.get_membership(thread="general", member_id=reader_id) == before
+
+
+def test_history_around_supports_anchor_only_and_reports_exact_miss(
+    tmp_path: Path,
+) -> None:
+    viewer = client(tmp_path, "viewer")
+    viewer.join("general")
+    viewer.join("other")
+    target = viewer.say("general", "target")
+
+    assert viewer.history_around(
+        "general",
+        str(target.ts),
+        before=0,
+        after=0,
+    ) == [target]
+    with pytest.raises(
+        NotFoundError,
+        match=rf"^message not found in other: {target.ts}$",
+    ):
+        viewer.history_around("other", str(target.ts))
+
+
+def test_history_around_uses_actor_scoped_direct_message_visibility(
+    tmp_path: Path,
+) -> None:
+    alice = client(tmp_path, "alice")
+    alice.join("general")
+    bob = existing_client(tmp_path, "bob")
+    bob.join("general")
+    outsider = existing_client(tmp_path, "outsider")
+    outsider.join("general")
+    previous = alice.say("@bob", "previous")
+    target = bob.say("@alice", "target")
+    following = alice.say("@bob", "following")
+    bob_id = bob.whoami().member_id
+    member_before = bob._state.get_member(bob_id)
+    assert member_before is not None
+
+    assert bob.history_around(
+        target.thread,
+        str(target.ts),
+        before=1,
+        after=1,
+    ) == [previous, target, following]
+    assert bob._state.get_member(bob_id) == member_before
+    with pytest.raises(NotFoundError):
+        outsider.history_around(target.thread, str(target.ts))
+
+
+def test_history_around_uses_log_visibility_for_unjoined_channel(
+    tmp_path: Path,
+) -> None:
+    author = client(tmp_path, "author")
+    author.join("general")
+    target = author.say("general", "visible storage history")
+    viewer = existing_client(tmp_path, "viewer")
+    viewer.join("other")
+    viewer_id = viewer.whoami().member_id
+
+    assert viewer.history_around(
+        "general",
+        str(target.ts),
+        before=0,
+        after=0,
+    ) == [target]
+    assert viewer._state.get_membership(thread="general", member_id=viewer_id) is None
+
+
+@pytest.mark.parametrize(
+    ("value", "exception", "message"),
+    [
+        (None, TypeError, "msg_id must be a string"),
+        ("1234", ValueError, "msg_id must be a full 19-digit message id"),
+    ],
+)
+def test_history_around_validates_exact_id_before_state_work(
+    tmp_path: Path,
+    value: object,
+    exception: type[Exception],
+    message: str,
+) -> None:
+    viewer = client(tmp_path, "viewer")
+    initial_threads = viewer._state.list_threads(include_internal=True)
+
+    with pytest.raises(exception, match=rf"^{message}$"):
+        viewer.history_around("general", value)  # type: ignore[arg-type]
+
+    assert viewer._state.list_threads(include_internal=True) == initial_threads
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "exception", "message"),
+    [
+        (True, 0, TypeError, "before must be an integer"),
+        (0, False, TypeError, "after must be an integer"),
+        (-1, 0, ValueError, "before must be between 0 and 999"),
+        (0, 1000, ValueError, "after must be between 0 and 999"),
+        (500, 500, ValueError, "before and after must total at most 999"),
+    ],
+)
+def test_history_around_validates_bounds_before_state_work(
+    tmp_path: Path,
+    before: object,
+    after: object,
+    exception: type[Exception],
+    message: str,
+) -> None:
+    viewer = client(tmp_path, "viewer")
+    initial_threads = viewer._state.list_threads(include_internal=True)
+
+    with pytest.raises(exception, match=rf"^{message}$"):
+        viewer.history_around(
+            "general",
+            "1234567890123456789",
+            before=before,  # type: ignore[arg-type]
+            after=after,  # type: ignore[arg-type]
+        )
+
+    assert viewer._state.list_threads(include_internal=True) == initial_threads
+
+
 def test_react_to_message_broadcasts_to_current_members_and_advances_cursor(
     tmp_path: Path,
 ) -> None:

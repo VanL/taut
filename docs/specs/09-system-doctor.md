@@ -48,8 +48,9 @@ Doctor obeys all of these rules:
    SQLite connection enumeration, PostgreSQL activity catalogs, exclusive-lock
    attempts, busy-time heuristics, or last-handle claims.
 4. **No dump/load safety claim.** Passing doctor is not a precondition or
-   certificate for persistence I/O. [PIO-2.4] and [PIO-7.4] still require the
-   operator to stop writers for dump/load.
+   certificate for persistence I/O. Doctor neither authorizes nor gates
+   [PIO-2.4]'s live logical dump. [PIO-7.4] still requires the operator to stop
+   writers for load.
 5. **No fake queue-divergence detection.** SimpleBroker does not durably
    distinguish an empty registered queue from a deleted or never-populated one.
    Doctor reports registered-thread count and observable public statistics but

@@ -35,6 +35,7 @@ if TYPE_CHECKING:
         SummonedMember,
         SummonOperationError,
         SummonRequest,
+        SummonRunHandle,
         SummonStatus,
     )
 
@@ -56,6 +57,7 @@ __all__ = [
     "SummonInteraction",
     "SummonOperationError",
     "SummonRequest",
+    "SummonRunHandle",
     "SummonStatus",
     "SummonedMember",
     "TerminalAvailability",
@@ -97,6 +99,7 @@ _LAZY_EXPORTS = {
     "SummonedMember": ("taut_summon.models", "SummonedMember"),
     "SummonOperationError": ("taut_summon.models", "SummonOperationError"),
     "SummonRequest": ("taut_summon.models", "SummonRequest"),
+    "SummonRunHandle": ("taut_summon.models", "SummonRunHandle"),
     "SummonStatus": ("taut_summon.models", "SummonStatus"),
 }
 

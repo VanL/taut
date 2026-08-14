@@ -176,6 +176,33 @@ def test_project_exact_show_and_delete_contract(taut_project: Path) -> None:
         reader.show_message(str(message.ts))
 
 
+def test_project_history_around_is_cursor_neutral_across_sql_backends(
+    taut_project: Path,
+) -> None:
+    TautClient.init()
+    author = TautClient(as_name="author")
+    reader = TautClient(as_name="reader")
+    author.join("general")
+    reader.join("general")
+    previous = author.say("general", "previous")
+    target = author.say("general", "target")
+    following = author.say("general", "following")
+
+    window = reader.history_around(
+        "general",
+        str(target.ts),
+        before=1,
+        after=1,
+    )
+
+    assert window == [previous, target, following]
+    assert [message.ts for message in reader.read("general")] == [
+        previous.ts,
+        target.ts,
+        following.ts,
+    ]
+
+
 def test_project_message_reaction_contract(taut_project: Path) -> None:
     TautClient.init()
     alice = TautClient(as_name="alice")

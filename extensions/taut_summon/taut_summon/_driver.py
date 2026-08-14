@@ -47,6 +47,7 @@ import signal
 import sys
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -107,7 +108,12 @@ from taut_summon.interaction import (
     TerminalIntent,
     TerminalLease,
 )
-from taut_summon.models import SummonOperationError, SummonRequest
+from taut_summon.models import (
+    SummonedMember,
+    SummonOperationError,
+    SummonRequest,
+    SummonRunHandle,
+)
 
 logger = logging.getLogger("taut_summon.driver")
 
@@ -120,6 +126,7 @@ _PUMP_JOIN_TIMEOUT_SECONDS = 10.0
 _SHUTDOWN_PUMP_JOIN_TIMEOUT_SECONDS = 5.0
 _HALT_ACK_TIMEOUT_SECONDS = 30.0
 _WATCHER_JOIN_TIMEOUT_SECONDS = 30.0
+_FOREGROUND_READINESS_TIMEOUT_SECONDS = 30.0
 _NAME_RETRY_ATTEMPTS = 5
 _WATCHER_RESTART_BACKOFF = (0.2, 0.5, 1.0, 2.0, 4.0, 8.0, 8.0, 8.0)
 
@@ -298,6 +305,7 @@ class SummonDriver:
         interaction: SummonInteraction,
         db_path: str | None = None,
         install_signal_handlers: bool = False,
+        on_ready: Callable[[SummonRunHandle], None] | None = None,
     ) -> None:
         if request.attach and request.detach:
             raise SummonOperationError("--attach and --detach cannot be used together")
@@ -305,6 +313,10 @@ class SummonDriver:
         self._interaction = interaction
         self._db_path = db_path
         self._install_signal_handlers = install_signal_handlers
+        self._on_ready = on_ready
+        self._ready_callback_invoked = False
+        self._control_ready = threading.Event() if on_ready is not None else None
+        self._run_completion = threading.Event() if on_ready is not None else None
         self._backoff = _resume_backoff_from_env()
         self._shutdown = threading.Event()
         self._harness_dead = threading.Event()
@@ -375,15 +387,19 @@ class SummonDriver:
             primary_failure = exc
             raise
         finally:
-            if previous_signals:
-                try:
-                    self._restore_signals(previous_signals)
-                except SummonOperationError:
-                    if primary_failure is None:
-                        raise
-                    logger.exception(
-                        "could not restore summon signal handlers after primary failure"
-                    )
+            try:
+                if previous_signals:
+                    try:
+                        self._restore_signals(previous_signals)
+                    except SummonOperationError:
+                        if primary_failure is None:
+                            raise
+                        logger.exception(
+                            "could not restore summon signal handlers after primary failure"
+                        )
+            finally:
+                if self._run_completion is not None:
+                    self._run_completion.set()
 
     def request_stop(self) -> None:
         self._shutdown.set()
@@ -432,6 +448,7 @@ class SummonDriver:
                 self._audit_start_ts = self._queue.generate_timestamp()
                 return self._supervise(boot, db_display, db_path=db_env_path)
             finally:
+                inherited = sys.exception()
                 # Ownership-checked release covering EVERY post-claim fatal
                 # path, including a bootstrap failure after member_id becomes
                 # known. Release BEFORE letting the control thread ack a STOP,
@@ -443,6 +460,20 @@ class SummonDriver:
                 self._control_stop.set()
                 if self._control_thread is not None:
                     self._control_thread.join(timeout=_HALT_ACK_TIMEOUT_SECONDS)
+                    if self._control_thread.is_alive():
+                        cleanup = DriverError(
+                            "Summon control owner did not stop within "
+                            "the cleanup budget"
+                        )
+                        if inherited is not None:
+                            self._add_cleanup_note(inherited, cleanup)
+                        # The public foreground run is the exact ownership
+                        # boundary. Keep it live after the cleanup budget is
+                        # exhausted so hosts can classify this run as
+                        # unresolved until the control owner actually exits.
+                        self._control_thread.join()
+                        if inherited is None:
+                            raise cleanup
                 self._control_loop = None
         finally:
             self._close_owned_clients()
@@ -752,9 +783,10 @@ class SummonDriver:
                 first_generation=first_generation,
             )
             if running is None:
+                self._raise_if_foreground_readiness_pending()
                 return 0
             if self._shutdown.is_set():
-                return self._shutdown_running_generation(running, boot)
+                return self._shutdown_before_or_after_readiness(running, boot)
             first_generation = False
             if self._orient_running_generation(running, adapter, system_prompt):
                 return self._shutdown_running_generation(running, boot)
@@ -918,7 +950,9 @@ class SummonDriver:
         try:
             self._watch_until_wake(boot)
             self._raise_if_pump_failed(running.generation)
-        except Exception:
+            if self._on_ready is not None and not self._ready_callback_invoked:
+                self._raise_if_readiness_aborted(running.generation.harness_dead)
+        except BaseException:
             self._teardown_generation(running.generation, running.handle, running.pump)
             raise
 
@@ -928,6 +962,19 @@ class SummonDriver:
         return self._shutdown_current_generation(
             running.generation, running.handle, running.pump, boot
         )
+
+    def _shutdown_before_or_after_readiness(
+        self, running: _RunningGeneration, boot: _BootstrapResult
+    ) -> int:
+        result = self._shutdown_running_generation(running, boot)
+        self._raise_if_foreground_readiness_pending()
+        return result
+
+    def _raise_if_foreground_readiness_pending(self) -> None:
+        if getattr(self, "_on_ready", None) is not None and not getattr(
+            self, "_ready_callback_invoked", False
+        ):
+            raise DriverError("foreground readiness aborted by driver shutdown")
 
     def _resume_after_harness_exit(
         self,
@@ -1683,6 +1730,16 @@ class SummonDriver:
                 self._join_watcher_attempt(watcher_thread)
                 raise DriverError("cannot watch chat: watcher did not become ready")
             if watcher_ready.is_set():
+                if getattr(self, "_on_ready", None) is not None and not getattr(
+                    self, "_ready_callback_invoked", False
+                ):
+                    try:
+                        self._await_control_and_publish_ready(boot, harness_dead)
+                    except BaseException:
+                        self._halt_ack.set()
+                        self._request_watcher_attempt_stop(attempt_stop)
+                        self._join_watcher_attempt(watcher_thread)
+                        raise
                 logger.info(
                     "summoned '%s' (member %s, provider %s, threads %s)",
                     boot.member_name,
@@ -1731,6 +1788,71 @@ class SummonDriver:
                 continue
             return
         self._raise_if_control_failed()
+
+    def _await_control_and_publish_ready(
+        self,
+        boot: _BootstrapResult,
+        harness_dead: threading.Event,
+    ) -> None:
+        """Join first-generation identity, watcher, and public-control readiness."""
+
+        callback = self._on_ready
+        control_ready = self._control_ready
+        completion = self._run_completion
+        if callback is None or self._ready_callback_invoked:
+            return
+        assert control_ready is not None
+        assert completion is not None
+
+        deadline = time.monotonic() + _FOREGROUND_READINESS_TIMEOUT_SECONDS
+        while not control_ready.is_set():
+            self._raise_if_readiness_aborted(harness_dead)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self.request_stop()
+                raise DriverError(
+                    "control loop did not become ready within "
+                    f"{_FOREGROUND_READINESS_TIMEOUT_SECONDS:.1f}s"
+                )
+            control_ready.wait(timeout=min(0.05, remaining))
+
+        self._raise_if_readiness_aborted(harness_dead)
+
+        live_handle = self._handle
+        if live_handle is None:
+            raise DriverError("provider handle disappeared before foreground readiness")
+        member = SummonedMember(
+            member_id=boot.member_id,
+            name=boot.member_name,
+            provider=boot.provider,
+            provider_session_id=(
+                live_handle.session_id
+                if live_handle.session_id is not None
+                else boot.provider_session_id
+            ),
+        )
+        run_handle = SummonRunHandle(
+            member,
+            _request_stop=self.request_stop,
+            _completion=completion,
+        )
+        self._ready_callback_invoked = True
+        try:
+            callback(run_handle)
+        except Exception as exc:
+            raise SummonOperationError("summon readiness callback failed") from exc
+
+    def _raise_if_readiness_aborted(self, harness_dead: threading.Event) -> None:
+        self._raise_if_control_failed()
+        if self._shutdown.is_set():
+            raise DriverError("foreground readiness aborted by driver shutdown")
+        if harness_dead.is_set():
+            raise DriverError("provider generation exited before foreground readiness")
+        if self._watcher_failed.is_set():
+            detail = (
+                f": {self._watcher_error}" if self._watcher_error is not None else ""
+            )
+            raise DriverError(f"watcher exited before foreground readiness{detail}")
 
     def _request_watcher_attempt_stop(
         self,
@@ -1795,6 +1917,7 @@ class SummonDriver:
             driver_start_time=driver_start_time,
             provider_session_id=provider_session_id,
             audit_start_ts=self._audit_start_ts,
+            ready=self._control_ready,
         )
         self._control_loop = loop
         thread = threading.Thread(
@@ -2087,6 +2210,7 @@ def run_driver(
     *,
     db_path: str | None = None,
     install_signal_handlers: bool = False,
+    on_ready: Callable[[SummonRunHandle], None] | None = None,
 ) -> None:
     """Controller entry: run one summon driver in the foreground."""
 
@@ -2095,4 +2219,5 @@ def run_driver(
         interaction=interaction,
         db_path=db_path,
         install_signal_handlers=install_signal_handlers,
+        on_ready=on_ready,
     ).run()

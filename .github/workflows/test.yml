@@ -148,6 +148,52 @@ jobs:
           taut --version
           taut-summon --help
 
+  tui-retained:
+    name: taut-tui retained (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python-version: "3.11"
+          - os: ubuntu-latest
+            python-version: "3.13"
+          - os: ubuntu-latest
+            python-version: "3.14"
+          - os: macos-latest
+            python-version: "3.13"
+          - os: windows-latest
+            python-version: "3.13"
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        timeout-minutes: 5
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        timeout-minutes: 5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        timeout-minutes: 5
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            extensions/taut_summon/pyproject.toml
+            extensions/taut_tui/pyproject.toml
+            extensions/taut_tui/uv.lock
+
+      - name: Run taut-tui suite against retained lock
+        timeout-minutes: 10
+        run: |
+          uv run --project extensions/taut_tui --extra dev --locked pytest extensions/taut_tui/tests -v --tb=short -n 0
+
   summon-process:
     name: taut-summon process (${{ matrix.os }}, py${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
@@ -543,6 +589,11 @@ jobs:
         run: |
           uv build --out-dir release-dist/mcp extensions/taut_mcp
 
+      - name: Build taut-tui extension package
+        timeout-minutes: 10
+        run: |
+          uv build --out-dir release-dist/tui extensions/taut_tui
+
       - name: Check paired release wheels
         if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
         shell: bash
@@ -591,6 +642,15 @@ jobs:
           python -m pip install release-dist/core/*.whl release-dist/mcp/*.whl
           taut-mcp --version
 
+      - name: Smoke test taut-tui wheel with paired core
+        shell: bash
+        timeout-minutes: 10
+        run: |
+          python -m venv /tmp/taut-tui-wheel-smoke
+          source /tmp/taut-tui-wheel-smoke/bin/activate
+          python -m pip install release-dist/core/*.whl release-dist/tui/*.whl
+          taut tui --help
+
       - name: Create release provenance bundles
         if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
         timeout-minutes: 5
@@ -599,6 +659,7 @@ jobs:
           python bin/release-artifact.py create --package-dir extensions/taut_summon --dist-dir release-dist/summon --output-dir release-bundles/taut-summon --commit "${{ github.sha }}"
           python bin/release-artifact.py create --package-dir extensions/taut_pg --dist-dir release-dist/pg --output-dir release-bundles/taut-pg --commit "${{ github.sha }}"
           python bin/release-artifact.py create --package-dir extensions/taut_mcp --dist-dir release-dist/mcp --output-dir release-bundles/taut-mcp --commit "${{ github.sha }}"
+          python bin/release-artifact.py create --package-dir extensions/taut_tui --dist-dir release-dist/tui --output-dir release-bundles/taut-tui --commit "${{ github.sha }}"
 
       - name: Upload core release evidence
         if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
@@ -633,6 +694,15 @@ jobs:
         with:
           name: release-taut-mcp-attempt-${{ github.run_attempt }}
           path: release-bundles/taut-mcp/
+          if-no-files-found: error
+          include-hidden-files: true
+
+      - name: Upload TUI release evidence
+        if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-taut-tui-attempt-${{ github.run_attempt }}
+          path: release-bundles/taut-tui/
           if-no-files-found: error
           include-hidden-files: true
 

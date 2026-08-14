@@ -423,6 +423,70 @@ class MessagingMixin(_ClientBase):
             raise EmptyResultError("empty")
         return messages
 
+    def history_around(
+        self,
+        thread: str,
+        msg_id: str,
+        *,
+        before: int = 25,
+        after: int = 25,
+    ) -> list[Message]:
+        """Return bounded cursor-neutral history around one exact message."""
+
+        _validate_history_bound("before", before)
+        _validate_history_bound("after", after)
+        if before + after > 999:
+            raise ValueError("before and after must total at most 999")
+        exact = _validate_exact_message_id(msg_id)
+        self.last_thread_display_names.clear()
+        dm_selector = addressing.parse_dm_selector(thread)
+        self._ensure_no_incomplete_channel_rename()
+        if dm_selector is not None:
+            resolved = self._resolve_member(create=False, _touch_activity=False)
+            member = self._require_member(resolved)
+            context = self._resolve_direct_message(thread, member)
+            thread = context.thread["name"]
+            row = context.thread
+        else:
+            thread = addressing.validate_chat_thread_name(thread, allow_subthread=True)
+            existing_row = self._state.get_thread(thread)
+            if existing_row is None:
+                raise NotFoundError(f"thread not found: {thread}")
+            row = existing_row
+        if row["kind"] == "notification":
+            raise ThreadNameError("notification queues are read with inbox")
+
+        queue = self.queue(thread)
+        found = queue.peek_one(exact_timestamp=exact, with_timestamps=True)
+        if found is None:
+            raise NotFoundError(f"message not found in {thread}: {msg_id}")
+        anchor_body, anchor_ts = cast(tuple[str, int], found)
+        anchor = message_from_body(thread, anchor_body, anchor_ts)
+
+        earlier: deque[Message] = deque(maxlen=before)
+        if before:
+            for result in queue.peek_generator(
+                with_timestamps=True,
+                before_timestamp=exact,
+            ):
+                body, timestamp = cast(tuple[str, int], result)
+                earlier.append(message_from_body(thread, body, timestamp))
+
+        later: list[Message] = []
+        if after:
+            rows = cast(
+                list[tuple[str, int]],
+                queue.peek_many(
+                    after,
+                    with_timestamps=True,
+                    after_timestamp=exact,
+                ),
+            )
+            later = [
+                message_from_body(thread, body, timestamp) for body, timestamp in rows
+            ]
+        return [*earlier, anchor, *later]
+
     def _say_chat_thread(
         self,
         thread: str,
@@ -777,6 +841,13 @@ def _validate_exact_message_id(msg_id: str) -> int:
         return TimestampGenerator.validate(msg_id, exact=True)
     except TimestampError as exc:
         raise ValueError("msg_id must be a full 19-digit message id") from exc
+
+
+def _validate_history_bound(name: str, value: int) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer")
+    if not 0 <= value <= 999:
+        raise ValueError(f"{name} must be between 0 and 999")
 
 
 def _validate_reaction(reaction: str, allowed: tuple[str, ...]) -> None:

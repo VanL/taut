@@ -872,7 +872,7 @@ durable conversation; the harness session is an optimization of it.
   Version 5.6.1 supplies core reaction fanout's full-requested-set exact-name
   broadcast; `simplebroker>=7.3.2` is the repository-wide supported floor,
   aligned with
-  `simplebroker-pg>=3.6.0`. Summon does not call the SimpleBroker command layer,
+  `simplebroker-pg>=3.8.0`. Summon does not call the SimpleBroker command layer,
   so 6.0.0's keyword-only command-option binding does not alter the control
   reactor path.
   Operation release ends only the active lease; the owner thread retains its
@@ -1241,7 +1241,8 @@ JSON, evidence predicates, adapter handles, and driver mutable state. `status`
 proves a live correlated control response; a session row alone is not live
 status. `stop` succeeds only after correlated ACK and evidence-relative release
 confirmation.
-`run_foreground(request, interaction, *, install_signal_handlers=False)`
+`run_foreground(request, interaction, *, install_signal_handlers=False,
+on_ready: Callable[[SummonRunHandle], None] | None = None)`
 remains blocking and owns exactly one foreground driver lifecycle; it never
 silently daemonizes or detaches. The default is the rich-host boundary: it
 does not inspect, install, or replace process signal handlers. Command
@@ -1270,16 +1271,71 @@ A host interaction reports terminal availability and grants a scoped lease
 containing input/output fds. Summon owns provider PTY bytes, calls the attach
 bridge itself, interprets its finite result, and owns lifecycle. Shell and
 future TUI adapters may present different experiences while using the same
-attach transition. A future TUI that wants a nonblocking managed driver must
+attach transition. A rich TUI host that wants a nonblocking managed driver must
 define process supervision, terminal-release handshake, log routing, exit
-policy, and rollback in its own spec; [SUM-13] does not guess those behaviors.
+policy, and rollback in its own spec; Taut's first such host is governed by
+`docs/specs/10-taut-tui.md` [TUI-11] rather than by guessed Summon behavior.
+
+### Foreground readiness for rich hosts [SUM-13.1]
+
+`run_foreground` accepts an optional keyword-only
+`on_ready: Callable[[SummonRunHandle], None] | None = None`. Existing callers
+that omit it retain the same blocking behavior, timing, and result contract.
+When supplied, Summon invokes it exactly once on the foreground-run owner
+thread, after the first provider generation is live and its control loop has
+installed its broker handles and is consuming correlated public `status()`
+and `stop()` operations from other threads, and before entering long-running
+supervision. The owner waits only when a callback was supplied; that wait is
+bounded to 30 seconds and aborts early on control failure, shutdown, or first-
+generation death. A timeout or aborted readiness wait follows the normal
+failing-startup cleanup path. Provider-generation resume does not invoke the
+callback again.
+
+The `SummonRunHandle` contains the actual `SummonedMember`: member id,
+collision-resolved current name, provider, and the live handle's provider
+session id when it is not `None`, otherwise the resumed bootstrap session id.
+It exposes that value as immutable field `member: SummonedMember` and one
+method, `request_stop() -> None`. That method is thread-safe, nonblocking,
+idempotent, and bound to this exact foreground run; it requests the existing
+driver-owned shutdown path without resolving a mutable member name or
+affecting a replacement driver. The driver marks the handle completed in the
+foreground run's outer `finally`, after which `request_stop()` is a no-op. The
+blocking `run_foreground` return or error, not `request_stop()`, remains the
+host's teardown and release result.
+
+The callback runs inline and must return promptly. It may store the handle or
+call its nonblocking `request_stop()`, but it must not call a blocking
+controller operation that waits for this same foreground owner to complete.
+The callback is not invoked when startup fails before readiness. If it raises
+an `Exception`, Summon tears down the live generation, stops the control lane,
+releases its evidence-owned session row through the normal driver path, and
+raises `SummonOperationError` with the callback failure as its cause. A
+`BaseException` outside `Exception` receives the same cleanup before the
+existing host-cancellation propagation policy applies.
+
+Once invoked, the callback does not promise that the driver remains live after
+it returns; rich hosts must reconcile readiness with the blocking foreground
+call's completion. The handle grants only exact-run stop request authority. It
+does not transfer driver, terminal, signal, process, ledger, teardown, or
+release ownership.
+
+Verification uses the public controller with a real scripted child and real
+control exchange. It proves exact once-only delivery across provider crash and
+resume, actual auto-renamed and re-summoned identity, the exact provider
+session-id precedence, concurrent status at the readiness boundary, run-scoped
+stop after post-readiness member rename, idempotent stop before and after
+completion, bounded control-open failure, callback-failure teardown and
+evidence release, no callback before startup failure, and unchanged CLI
+behavior and timing when the callback is absent. A host must not derive
+foreground ownership by diffing `list_live()` snapshots.
 
 `SummonController` is bound to one optional database path. It exposes sorted
 provider names through `provider_names()` without constructing adapters; live
 session summaries through `list_live()`; one correlated live status; one
 confirmed stop result; and a blocking foreground run with keyword-only
-`install_signal_handlers: bool = False` that returns no value on clean
-completion. `list_live()` returns an empty tuple when no database or no
+`install_signal_handlers: bool = False` and
+`on_ready: Callable[[SummonRunHandle], None] | None = None` that returns no
+value on clean completion. `list_live()` returns an empty tuple when no database or no
 live rows exist; command adapters, not embedders, translate that empty result to
 the nothing-summoned exit class. The request model contains `name`, `threads`, `terminal`,
 `persona`, `system_prompt_file`, `rate_limit`, `attach`, `detach`,
@@ -1319,6 +1375,8 @@ thread do not satisfy this boundary by themselves.
 
 ## Related Plans
 
+- `docs/plans/2026-08-12-taut-tui-implementation-plan.md` — adds the
+  human-first TUI rich-host lifecycle and this exact-run readiness handle.
 - `docs/plans/2026-08-10-test-quality-remediation-plan.md` — replaces
   scheduler-sensitive and fail-open Summon tests with deterministic lifecycle,
   process, PTY, observation, and coverage-preserving proof.

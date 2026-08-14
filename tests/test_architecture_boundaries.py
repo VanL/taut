@@ -19,6 +19,7 @@ PACKAGE_ROOTS = (
     PROJECT_ROOT / "taut",
     PROJECT_ROOT / "extensions" / "taut_pg" / "taut_pg",
     PROJECT_ROOT / "extensions" / "taut_summon" / "taut_summon",
+    PROJECT_ROOT / "extensions" / "taut_tui" / "taut_tui",
 )
 
 pytestmark = pytest.mark.shared
@@ -420,12 +421,36 @@ class _RuntimeImportVisitor(ast.NodeVisitor):
         ),
         (
             Path("taut/commands/watch.py"),
-            {"taut.commands._protocol", "taut.commands._rendering"},
-            {"simplebroker.ext"},
+            {
+                "taut._exceptions",
+                "taut.commands._protocol",
+                "taut.commands._rendering",
+            },
+            set(),
         ),
         (
             Path("taut/commands/_summon_compat.py"),
             {"taut.commands._protocol"},
+            set(),
+        ),
+        (
+            Path("extensions/taut_tui/taut_tui/command_manifest.py"),
+            {"taut.commands"},
+            set(),
+        ),
+        (
+            Path("extensions/taut_tui/taut_tui/command.py"),
+            {"taut.commands"},
+            {"taut_tui"},
+        ),
+        (
+            Path("extensions/taut_tui/taut_tui/__init__.py"),
+            set(),
+            {"taut_tui._launch"},
+        ),
+        (
+            Path("extensions/taut_tui/taut_tui/_launch.py"),
+            {"taut_tui"},
             set(),
         ),
         (

@@ -27,3 +27,4 @@ read order stay aligned instead of competing.
 9. `09-search-architecture.md`
 10. `10-persistence-io.md`
 11. `11-system-doctor.md`
+12. `12-taut-tui.md`

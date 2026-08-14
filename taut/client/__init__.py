@@ -131,7 +131,7 @@ class TautClient(
         output: str | Path,
         db_path: str | Path | None = None,
     ) -> DumpReport:
-        """Write a composite logical backup of a quiescent workspace."""
+        """Write a live, H-bounded composite logical backup."""
 
         from taut.persistence._operations import dump_workspace
 

@@ -16,19 +16,7 @@ from bin.ruff_suppression_index import REGISTRY_HEADING, run
 
 ROOT = Path(__file__).resolve().parent.parent
 pytestmark = pytest.mark.sqlite_only
-RUFF_VERSION = "0.16.1"
 RULE_FIXTURE = ROOT / "tests" / "fixtures" / "ruff-enabled-rules.txt"
-MANIFESTS = (
-    ROOT / "pyproject.toml",
-    ROOT / "extensions" / "taut_pg" / "pyproject.toml",
-    ROOT / "extensions" / "taut_summon" / "pyproject.toml",
-    ROOT / "extensions" / "taut_mcp" / "pyproject.toml",
-)
-LOCKS = (
-    ROOT / "uv.lock",
-    ROOT / "extensions" / "taut_summon" / "uv.lock",
-    ROOT / "extensions" / "taut_mcp" / "uv.lock",
-)
 EXTENSIONLESS_PYTHON = {
     "bin/check-cli-claims",
     "bin/check-doc-paths",
@@ -40,8 +28,8 @@ EXTENSIONLESS_PYTHON = {
 REVIEWED_FAMILIES = ["E", "W", "F", "I", "B", "C901", "C4", "UP"]
 GLOBAL_IGNORES = ["E501", "B008"]
 RAW_RULE_COUNTS = {
-    "BLE001": 92,
-    "C901": 37,
+    "BLE001": 119,
+    "C901": 38,
     "DTZ006": 1,
     "F401": 1,
     "FLY002": 16,
@@ -50,6 +38,7 @@ RAW_RULE_COUNTS = {
     "N999": 6,
     "PYI041": 1,
     "RUF015": 2,
+    "S110": 3,
     "SIM115": 3,
     "SIM117": 7,
     "TRY004": 15,
@@ -83,39 +72,6 @@ RETIRED_GROUP_NUMBERS = {
     59,
     62,
 }
-
-
-def _manifest_ruff_pin(path: Path) -> str:
-    with path.open("rb") as stream:
-        dev = tomllib.load(stream)["project"]["optional-dependencies"]["dev"]
-    pins = [item for item in dev if item.startswith("ruff")]
-    assert len(pins) == 1, path
-    pin = pins[0]
-    assert isinstance(pin, str)
-    return pin
-
-
-def _locked_ruff_version(path: Path) -> str:
-    with path.open("rb") as stream:
-        packages = tomllib.load(stream)["package"]
-    matches = [package["version"] for package in packages if package["name"] == "ruff"]
-    assert len(matches) == 1, path
-    version = matches[0]
-    assert isinstance(version, str)
-    return version
-
-
-def _ruff_version() -> str:
-    result = subprocess.run(
-        (sys.executable, "-m", "ruff", "--version"),
-        cwd=ROOT,
-        text=True,
-        capture_output=True,
-        check=True,
-    )
-    prefix, version = result.stdout.strip().split()
-    assert prefix == "ruff"
-    return version
 
 
 def _enabled_rules(*, source: str) -> set[str]:
@@ -171,7 +127,7 @@ def _tracked_python_files() -> set[str]:
             continue
         relative = raw_path.decode()
         path = ROOT / relative
-        if relative.endswith((".py", ".pyi")):
+        if relative.endswith((".py", ".pyi")) and path.is_file():
             paths.add(relative)
         elif path.is_file():
             with path.open("rb") as stream:
@@ -179,19 +135,6 @@ def _tracked_python_files() -> set[str]:
             if first_line.startswith(b"#!") and b"python" in first_line.lower():
                 paths.add(relative)
     return paths
-
-
-def test_all_development_manifests_pin_the_same_exact_ruff() -> None:
-    assert {_manifest_ruff_pin(path) for path in MANIFESTS} == {f"ruff=={RUFF_VERSION}"}
-
-
-def test_retained_locks_resolve_the_exact_ruff_pin() -> None:
-    assert not (ROOT / "extensions" / "taut_pg" / "uv.lock").exists()
-    assert {_locked_ruff_version(path) for path in LOCKS} == {RUFF_VERSION}
-
-
-def test_running_ruff_binary_matches_the_pin() -> None:
-    assert _ruff_version() == RUFF_VERSION
 
 
 def test_tracked_python_inventory_includes_all_six_extensionless_tools() -> None:
@@ -324,7 +267,7 @@ def test_raw_active_rule_inventory_and_registry_are_exact() -> None:
     )
     assert [group.group_id for group in snapshot.groups] == [
         f"RUFF-SUP-{number:03d}"
-        for number in range(1, 85)
+        for number in range(1, 89)
         if number not in RETIRED_GROUP_NUMBERS
     ]
 

@@ -25,7 +25,7 @@ from simplebroker import (
     target_for_directory,
 )
 
-from taut._constants import META_QUEUE_NAME, load_config
+from taut._constants import MESSAGE_ID_RE, META_QUEUE_NAME, load_config
 from taut._exceptions import TautError
 from taut._maintenance import resolve_existing_target
 from taut.client._models import DumpReport, LoadReport, PersistenceComponentReport
@@ -183,9 +183,33 @@ def _extension_payload(records: list[dict[str, Any]]) -> Iterable[bytes]:
         yield _canonical(record)
 
 
-def _broker_payload(broker: Any, queue_names: tuple[str, ...]) -> Iterable[bytes]:
-    allowed = set(queue_names)
-    for line in dump_lines(broker, include=queue_names):
+def _broker_header(line: str) -> int:
+    try:
+        header = json.loads(line)
+        header_last_ts = header["last_ts"]
+        if (
+            not isinstance(header_last_ts, str)
+            or MESSAGE_ID_RE.fullmatch(header_last_ts) is None
+        ):
+            raise ValueError
+        high_water = int(format_message_id(header_last_ts))
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        raise TautError("SimpleBroker emitted an invalid dump header") from exc
+    if header.get("type") != "header":
+        raise TautError("SimpleBroker emitted an invalid dump header")
+    return high_water
+
+
+def _selected_broker_lines(
+    lines: Iterable[str],
+    *,
+    header_line: str,
+    allowed: set[str],
+    high_water: int,
+) -> Iterable[bytes]:
+    seen_ids: set[int] = set()
+    yield header_line.encode("utf-8") + b"\n"
+    for line in lines:
         try:
             record = json.loads(line)
         except json.JSONDecodeError as exc:  # pragma: no cover - upstream contract
@@ -193,23 +217,59 @@ def _broker_payload(broker: Any, queue_names: tuple[str, ...]) -> Iterable[bytes
         kind = record.get("type")
         if kind == "alias":
             continue
-        if kind == "message" and record.get("queue") not in allowed:
-            raise TautError("SimpleBroker emitted a message outside the Taut registry")
-        if kind not in {"header", "message"}:
+        if kind != "message":
             raise TautError(f"SimpleBroker emitted unsupported dump record {kind!r}")
+        if record.get("queue") not in allowed:
+            raise TautError("SimpleBroker emitted a message outside the Taut registry")
+        try:
+            raw_message_id = record["id"]
+            if (
+                not isinstance(raw_message_id, str)
+                or MESSAGE_ID_RE.fullmatch(raw_message_id) is None
+            ):
+                raise ValueError
+            message_id = int(format_message_id(raw_message_id))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise TautError("SimpleBroker emitted an invalid message ID") from exc
+        if message_id > high_water:
+            raise TautError(
+                "SimpleBroker emitted a message above its snapshot boundary"
+            )
+        if message_id in seen_ids:
+            continue
+        seen_ids.add(message_id)
         yield line.encode("utf-8") + b"\n"
 
 
-def _broker_sample(broker: Any, queue_names: tuple[str, ...]) -> tuple[Any, ...]:
-    allowed = set(queue_names)
-    stats = tuple(
-        sorted(
-            (item.queue, item.pending, item.claimed, item.total)
-            for item in broker.list_queue_stats()
-            if item.queue in allowed
-        )
+def _broker_payload(
+    broker: Any,
+    queue_names: tuple[str, ...],
+) -> tuple[int, Iterable[bytes]]:
+    lines = iter(dump_lines(broker, include=queue_names or ("\0",)))
+    try:
+        header_line = next(lines)
+    except StopIteration as exc:  # pragma: no cover - upstream contract
+        raise TautError("SimpleBroker emitted a dump without a header") from exc
+    high_water = _broker_header(header_line)
+    return high_water, _selected_broker_lines(
+        lines,
+        header_line=header_line,
+        allowed=set(queue_names),
+        high_water=high_water,
     )
-    return tuple(sorted(broker.get_meta().items())), stats
+
+
+def _clamp_core_cursors(
+    records: list[dict[str, Any]],
+    high_water: int,
+) -> list[dict[str, Any]]:
+    projected: list[dict[str, Any]] = []
+    for record in records:
+        copied = dict(record)
+        if copied.get("type") == "membership":
+            copied["last_seen_ts"] = min(copied["last_seen_ts"], high_water)
+        projected.append(copied)
+    return projected
 
 
 def dump_workspace(
@@ -240,14 +300,9 @@ def dump_workspace(
         active_components = tuple(
             item for item in registered if item.spec.schema_keys & set(meta)
         )
-        extension_records = {
-            item.spec.name: item.component.dump_records(queue)
-            for item in active_components
-        }
         queue_names = tuple(
             record["name"] for record in core_records if record["type"] == "thread"
         )
-        second_core_records: list[dict[str, Any]]
         try:
             fd, temp_name = tempfile.mkstemp(
                 prefix=f".{output_path.name}.",
@@ -265,8 +320,17 @@ def dump_workspace(
             os.fdopen(fd, "wb") as stream,
             open_broker(target, config=config) as broker,
         ):
-            before = _broker_sample(broker, queue_names)
-            claimed = sum(item[2] for item in before[1])
+            high_water, broker_payload = _broker_payload(broker, queue_names)
+            core_records = _clamp_core_cursors(core_records, high_water)
+            extension_records = {
+                item.spec.name: item.component.dump_records(queue)
+                for item in active_components
+            }
+            claimed = sum(
+                item.claimed
+                for item in broker.list_queue_stats()
+                if item.queue in set(queue_names)
+            )
             final_hasher = hashlib.sha256()
             header = _canonical(
                 {
@@ -292,7 +356,7 @@ def dump_workspace(
                 final_hasher,
                 name="simplebroker",
                 version=1,
-                payload=_broker_payload(broker, queue_names),
+                payload=broker_payload,
             )
             core_count, _unused = _component(
                 stream,
@@ -316,18 +380,6 @@ def dump_workspace(
                         extension_count,
                     )
                 )
-            after = _broker_sample(broker, queue_names)
-            second_core_records = state.persistence_records()
-            second_extension_records = {
-                item.spec.name: item.component.dump_records(queue)
-                for item in active_components
-            }
-            if (
-                before != after
-                or core_records != second_core_records
-                or extension_records != second_extension_records
-            ):
-                raise TautError("workspace changed during dump; stop writers and retry")
             stream.write(
                 _canonical(
                     {
@@ -490,7 +542,7 @@ def load_workspace(
     with open_broker(target, config=config) as broker:
         broker_lines = parsed.component_lines("simplebroker")
         try:
-            result = load_lines(broker, broker_lines)
+            result = load_lines(broker, broker_lines, config=config)
         finally:
             broker_lines.close()
         if result.aliases != 0 or result.messages != parsed.messages:

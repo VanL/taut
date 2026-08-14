@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TypeAlias
 
@@ -32,6 +34,42 @@ class SummonedMember:
     name: str
     provider: str
     provider_session_id: str | None
+
+
+class SummonRunHandle:
+    """Opaque authority to request stop of one exact foreground run.
+
+    The public value is deliberately narrower than the driver: callers may
+    retain its immutable member projection and request cancellation, but they
+    do not gain access to mutable driver, process, control, or release state.
+    """
+
+    __slots__ = ("__completion", "__request_stop", "member")
+
+    __completion: threading.Event
+    __request_stop: Callable[[], None]
+    member: SummonedMember
+
+    def __init__(
+        self,
+        member: SummonedMember,
+        *,
+        _request_stop: Callable[[], None],
+        _completion: threading.Event,
+    ) -> None:
+        object.__setattr__(self, "member", member)
+        object.__setattr__(self, "_SummonRunHandle__request_stop", _request_stop)
+        object.__setattr__(self, "_SummonRunHandle__completion", _completion)
+
+    def __setattr__(self, _name: str, _value: object) -> None:
+        raise AttributeError("SummonRunHandle is immutable")
+
+    def request_stop(self) -> None:
+        """Request this run's existing nonblocking, idempotent stop path."""
+
+        if self.__completion.is_set():
+            return
+        self.__request_stop()
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +116,7 @@ __all__ = [
     "StopResult",
     "SummonOperationError",
     "SummonRequest",
+    "SummonRunHandle",
     "SummonStatus",
     "SummonedMember",
 ]

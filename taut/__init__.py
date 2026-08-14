@@ -23,6 +23,7 @@ from taut._exceptions import (
     TautError,
     ThreadNameError,
     TokenError,
+    WatcherRejected,
 )
 
 if TYPE_CHECKING:
@@ -92,6 +93,7 @@ __all__ = [
     "Thread",
     "ThreadNameError",
     "TokenError",
+    "WatcherRejected",
     "__version__",
     "escape_terminal_text",
 ]

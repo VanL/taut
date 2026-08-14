@@ -41,7 +41,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
-from simplebroker import Queue
+from simplebroker import Queue, ResolvedConfig
 from simplebroker.ext import BrokerError, StopWatching
 
 from taut import TautClient, TautError
@@ -300,7 +300,7 @@ class _ControlReactor(BaseReactor):
         owner: ControlLoop,
         *,
         db: Any,
-        config: dict[str, Any],
+        config: ResolvedConfig,
     ) -> None:
         self._owner = owner
         self._queue_name = control_in_queue_name(owner._member_id)
@@ -384,6 +384,7 @@ class ControlLoop:
         driver_start_time: str,
         provider_session_id: str | None = None,
         audit_start_ts: int = 0,
+        ready: threading.Event | None = None,
     ) -> None:
         self._member_id = member_id
         self._db_path = db_path
@@ -402,6 +403,7 @@ class ControlLoop:
         self._status_lock = threading.Lock()
         self._provider_session_id = provider_session_id
         self._audit_start_ts = audit_start_ts
+        self._ready = ready
         # The control/audit cadence. Kept gentle by default so the audit's
         # peeks do not add db contention; tests that exercise stop/status
         # latency or the rate backstop lower it via the env var.
@@ -445,6 +447,7 @@ class ControlLoop:
     def run(self) -> None:
         try:
             self._open()
+            self._publish_ready()
             while not self._shutdown.is_set() and not self._pending_stop_seen:
                 if self._pending_control_fault is not None:
                     self._recover_control_fault_or_backoff()
@@ -476,6 +479,12 @@ class ControlLoop:
                 self._reply_to_pending_stop()
         finally:
             self._close()
+
+    def _publish_ready(self) -> None:
+        """Fence initial handle installation for an awaiting foreground host."""
+
+        if self._ready is not None:
+            self._ready.set()
 
     def _recover_control_fault_or_backoff(self) -> None:
         if self._recover_pending_control_fault():

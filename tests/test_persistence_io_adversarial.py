@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from collections.abc import Callable, Generator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier
-from typing import Any, cast
+from typing import Any
 
 import pytest
 from simplebroker import Queue, open_broker
@@ -274,8 +275,12 @@ def test_failure_after_real_broker_load_closes_handles_and_leaves_guard(
     destination = tmp_path / "failed.db"
     real_load_lines = operations.load_lines
 
-    def fail_after_load(broker: object, lines: object) -> object:
-        real_load_lines(broker, lines)  # type: ignore[arg-type]
+    def fail_after_load(
+        broker: object,
+        lines: object,
+        **kwargs: object,
+    ) -> object:
+        real_load_lines(broker, lines, **kwargs)  # type: ignore[arg-type]
         raise RuntimeError("fault after real broker load")
 
     monkeypatch.setattr(operations, "load_lines", fail_after_load)
@@ -314,9 +319,9 @@ def test_failure_after_real_first_broker_batch_leaves_partial_target_guarded(
     client.close()
     queue = Queue("general", db_path=str(source))
     try:
+        first_timestamp = time.time_ns() - 1_000_000_000
         queue.insert_messages(
-            (f"bulk-{index}", 3_000_000_000_000_000_000 + index)
-            for index in range(1001)
+            (f"bulk-{index}", first_timestamp + index) for index in range(1001)
         )
     finally:
         queue.close()
@@ -393,7 +398,7 @@ def test_competing_loads_cannot_both_apply_to_one_fresh_target(
     restored.close()
 
 
-def test_dump_rejects_observed_broker_movement_and_keeps_old_output(
+def test_dump_allows_broker_write_after_snapshot_boundary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -405,32 +410,121 @@ def test_dump_rejects_observed_broker_movement_and_keeps_old_output(
     client.join("general")
     client.close()
     output = tmp_path / "backup.taut.jsonl"
-    output.write_bytes(b"older complete dump")
     real_payload = operations._broker_payload
 
     def moving_payload(broker: object, queue_names: tuple[str, ...]):  # type: ignore[no-untyped-def]
-        lines = cast(Generator[bytes, None, None], real_payload(broker, queue_names))
-        try:
-            yield next(iter(lines))
-            queue = Queue("general", db_path=str(source))
+        high_water, payload = real_payload(broker, queue_names)
+
+        def move_during_iteration() -> Generator[bytes, None, None]:
+            lines = iter(payload)
             try:
-                queue.write("concurrent foreign write")
+                yield next(lines)
+                queue = Queue("general", db_path=str(source))
+                try:
+                    queue.write("concurrent foreign write")
+                finally:
+                    queue.close()
+                yield from lines
             finally:
-                queue.close()
-            yield from lines
-        finally:
-            lines.close()
+                close = getattr(lines, "close", None)
+                if close is not None:
+                    close()
+
+        return high_water, move_during_iteration()
 
     monkeypatch.setattr(operations, "_broker_payload", moving_payload)
 
-    with pytest.raises(TautError, match="workspace changed during dump"):
-        TautClient.dump(output=output, db_path=source)
+    report = TautClient.dump(output=output, db_path=source)
 
-    assert output.read_bytes() == b"older complete dump"
+    assert report.messages >= 0
+    restored = tmp_path / "restored.db"
+    TautClient.load(input_path=output, db_path=restored)
+    restored_client = TautClient(db_path=restored, as_name="owner")
+    assert all(
+        message.text != "concurrent foreign write"
+        for message in restored_client.log("general")
+    )
+    restored_client.close()
     assert list(tmp_path.glob(".backup.taut.jsonl.*.tmp")) == []
 
 
-def test_dump_rejects_observed_sidecar_movement(
+def test_dump_rejects_broker_record_above_sampled_high_water(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import taut.persistence._operations as operations
+
+    def invalid_dump_lines(
+        *args: object, **kwargs: object
+    ) -> Generator[str, None, None]:
+        del args, kwargs
+        yield json.dumps(
+            {
+                "backend": "sqlite",
+                "format": "simplebroker-dump",
+                "last_ts": "0000000000000000100",
+                "type": "header",
+                "version": 1,
+            }
+        )
+        yield json.dumps(
+            {
+                "body": "future",
+                "id": "0000000000000000101",
+                "queue": "general",
+                "type": "message",
+            }
+        )
+
+    monkeypatch.setattr(operations, "dump_lines", invalid_dump_lines)
+
+    _high_water, payload = operations._broker_payload(object(), ("general",))
+    with pytest.raises(TautError, match="message above its snapshot boundary"):
+        list(payload)
+
+
+def test_dump_retains_exact_boundary_once_across_racing_duplicate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from simplebroker.db import BrokerDB
+
+    source = tmp_path / "source.db"
+    TautClient.init(db_path=source)
+    client = TautClient(db_path=source, as_name="owner")
+    client.join("alpha")
+    client.join("beta")
+    moved = client.say("alpha", "move during dump")
+    client.close()
+    original = BrokerDB.peek_generator
+    move_count = 0
+
+    def move_after_alpha(self: BrokerDB, queue_name: str, **kwargs: object):  # type: ignore[no-untyped-def]
+        nonlocal move_count
+        yield from original(self, queue_name, **kwargs)  # type: ignore[arg-type]
+        if queue_name == "alpha":
+            queue = Queue("alpha", db_path=str(source))
+            try:
+                result = queue.move("beta", message_id=moved.ts)
+            finally:
+                queue.close()
+            assert result is not None
+            move_count += 1
+
+    monkeypatch.setattr(BrokerDB, "peek_generator", move_after_alpha)
+    output = tmp_path / "backup.taut.jsonl"
+
+    TautClient.dump(output=output, db_path=source)
+
+    retained = [
+        record
+        for record in map(json.loads, output.read_text().splitlines())
+        if record.get("type") == "message" and int(record["id"]) == moved.ts
+    ]
+    assert move_count == 1
+    assert len(retained) == 1
+
+
+def test_dump_allows_sidecar_movement_after_its_projection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -439,21 +533,77 @@ def test_dump_rejects_observed_sidecar_movement(
     source = tmp_path / "source.db"
     TautClient.init(db_path=source)
     original = SqlSidecarTautState.persistence_records
-    calls = 0
 
     def moving_records(state: SqlSidecarTautState) -> list[dict[str, Any]]:
-        nonlocal calls
-        calls += 1
-        if calls == 2:
-            client = TautClient(db_path=source, as_name="late-writer")
-            client.join("late")
-            client.close()
-        return original(state)
+        records = original(state)
+        client = TautClient(db_path=source, as_name="late-writer")
+        client.join("late")
+        client.close()
+        return records
 
     monkeypatch.setattr(SqlSidecarTautState, "persistence_records", moving_records)
 
-    with pytest.raises(TautError, match="workspace changed during dump"):
-        TautClient.dump(output=tmp_path / "backup.taut.jsonl", db_path=source)
+    output = tmp_path / "backup.taut.jsonl"
+    TautClient.dump(output=output, db_path=source)
+    restored = tmp_path / "restored.db"
+    TautClient.load(input_path=output, db_path=restored)
+
+
+def test_dump_clamps_copied_membership_cursor_to_broker_high_water(
+    tmp_path: Path,
+) -> None:
+    from taut.state import SqlSidecarTautState, dialect_for_taut_target
+
+    source = tmp_path / "source.db"
+    TautClient.init(db_path=source)
+    client = TautClient(db_path=source, as_name="owner")
+    client.join("general")
+    member = client.last_created_member
+    assert member is not None
+    client.close()
+    future_cursor = 9_223_372_036_854_775_807
+    queue = Queue("taut_meta", db_path=str(source))
+    try:
+        state = SqlSidecarTautState(queue, dialect_for_taut_target(str(source)))
+        state.advance_cursor(
+            thread="general",
+            member_id=member.member_id,
+            seen_ts=future_cursor,
+        )
+    finally:
+        queue.close()
+    output = tmp_path / "backup.taut.jsonl"
+    TautClient.dump(output=output, db_path=source)
+
+    component: str | None = None
+    high_water: int | None = None
+    membership_cursors: list[int] = []
+    for raw in output.read_text().splitlines():
+        record = json.loads(raw)
+        if record.get("type") == "component_start":
+            component = record["name"]
+        elif record.get("type") == "component_end":
+            component = None
+        elif component == "simplebroker" and record.get("type") == "header":
+            high_water = int(record["last_ts"])
+        elif component == "taut-core" and record.get("type") == "membership":
+            membership_cursors.append(int(record["last_seen_ts"]))
+
+    assert high_water is not None
+    assert membership_cursors
+    assert all(cursor <= high_water for cursor in membership_cursors)
+    queue = Queue("taut_meta", db_path=str(source))
+    try:
+        live = SqlSidecarTautState(
+            queue, dialect_for_taut_target(str(source))
+        ).get_membership(
+            thread="general",
+            member_id=member.member_id,
+        )
+    finally:
+        queue.close()
+    assert live is not None
+    assert live["last_seen_ts"] == future_cursor
 
 
 @pytest.mark.parametrize(

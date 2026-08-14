@@ -15,10 +15,11 @@ The governing contract is [DOM-10.2] and [DOM-10.2.1] in
 
 The root and MCP Ruff configurations retain Ruff's stable defaults through
 `extend-select` and add the same reviewed families. Both ignore only `E501` and
-`B008`; preview rules remain opt-in. All four development manifests pin the
-same Ruff version. `tests/fixtures/ruff-enabled-rules.txt` owns the exact
-reviewed 453-rule inventory for that version, and `tests/test_ruff_policy.py`
-proves both real environments resolve it. Root CI owns repository-wide
+`B008`; preview rules remain opt-in. Development manifests declare a Ruff
+range whose minimum tracks their owning retained lock selection.
+`tests/fixtures/ruff-enabled-rules.txt` owns the exact reviewed 453-rule
+inventory for the locked version, and `tests/test_ruff_policy.py` proves both
+real configurations expose it. Root CI owns repository-wide
 `ruff check .` and suppression reconciliation; PG and MCP jobs keep their
 scoped extension checks as independent environment proof. Formatting retains
 its prior explicit paths.
@@ -49,13 +50,14 @@ layout before it creates a same-directory temporary file and calls
 anticipated tool, decoding, source-read, and replacement failures exit 2 with
 one diagnostic and no traceback; unexpected defects retain their traceback.
 
-The repository retains root, Summon, and MCP lockfiles; the PostgreSQL extension
-has no separate lock. Commands that verify an already prepared development or
+The repository retains root, Summon, MCP, and TUI lockfiles; the PostgreSQL
+extension has no separate lock and follows the root development resolution.
+Commands that verify an already prepared development or
 release environment use `uv run --no-sync`: they must not resolve dependencies,
-join an ambient parent workspace, or rewrite lock state. Exact manifest pins and
-all three retained locks prove configuration. The Ruff module in the canonical
-root pytest interpreter proves its installed pin; static lock checks cover the
-other prepared environments without redundant runtime binary comparisons.
+join an ambient parent workspace, or rewrite lock state. Manifest ranges state
+the current minimum; retained locks provide reproducibility. Ruff policy tests
+exercise the installed locked tool's rule inventory and behavior without
+repeating its selected version.
 
 ## Required workflow
 
@@ -78,7 +80,7 @@ Never use a threshold increase, per-file ignore, blanket file directive, or
 baseline allowlist to absorb a new finding. Refactor at a real ownership seam
 or add a reviewed narrow group with firing behavioral proof.
 
-When the Ruff pin changes, review the stable-default delta before updating the
+When the locked Ruff selection changes, review the stable-default delta before updating the
 fixture. Re-run normal Ruff and the raw `--ignore-noqa` audit, re-evaluate every
 affected suppression rather than grandfathering it, update both configurations
 together, and regenerate the derived index only after explicit approval of any
