@@ -17,12 +17,34 @@ def _iterations(name: str, default: int) -> int:
     return int(os.environ.get(name, default))
 
 
+def _print_reports(diagnostic_name: str, reports: list[dict[str, object]]) -> None:
+    """Keep every GitHub log record below its single-line truncation boundary."""
+
+    for report in reports:
+        bodies = report.get("bodies")
+        if not isinstance(bodies, list):
+            raise TypeError(f"diagnostic report bodies are not a list: {report!r}")
+        summary = {key: value for key, value in report.items() if key != "bodies"}
+        print(
+            json.dumps(
+                {"diagnostic": diagnostic_name, "summary": summary}, sort_keys=True
+            )
+        )
+        for body in bodies:
+            print(
+                json.dumps(
+                    {"body_result": body, "diagnostic": diagnostic_name},
+                    sort_keys=True,
+                )
+            )
+
+
 def test_exact_mcp_body_budget_lane() -> None:
     reports = diagnostic.run_diagnostic(
         lane="budget",
         iterations=_iterations("TAUT_MCP_DIAGNOSTIC_BUDGET_ITERATIONS", 24),
     )
-    print(json.dumps({"diagnostic": "budget", "reports": reports}, sort_keys=True))
+    _print_reports("budget", reports)
 
 
 def test_exact_mcp_body_phase_lane() -> None:
@@ -30,7 +52,7 @@ def test_exact_mcp_body_phase_lane() -> None:
         lane="phase",
         iterations=_iterations("TAUT_MCP_DIAGNOSTIC_PHASE_ITERATIONS", 2),
     )
-    print(json.dumps({"diagnostic": "phase", "reports": reports}, sort_keys=True))
+    _print_reports("phase", reports)
 
 
 def _isolated_sleeper() -> subprocess.Popen[str]:
@@ -79,6 +101,31 @@ def _active_observation(
         parent_entered=parent_entered,
         child_entered=child_entered,
     )
+
+
+def test_report_output_is_one_bounded_record_per_body(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    report: dict[str, object] = {
+        "aggregate_progress_evidence": False,
+        "body": "tools",
+        "bodies": [
+            {"duration_seconds": 1.0, "iteration": 0},
+            {"duration_seconds": 2.0, "iteration": 1},
+        ],
+        "iterations": 2,
+        "lane": "budget",
+    }
+
+    _print_reports("budget", [report])
+
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 3
+    assert json.loads(lines[0])["summary"]["iterations"] == 2
+    assert [json.loads(line)["body_result"]["iteration"] for line in lines[1:]] == [
+        0,
+        1,
+    ]
 
 
 def test_aggregate_pressure_predicate_is_per_body_and_budget_only() -> None:

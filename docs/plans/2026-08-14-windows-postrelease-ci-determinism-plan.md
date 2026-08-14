@@ -302,3 +302,11 @@ separate root tests retain that contract.
   canonical MCP workflow contract test is intentionally red only on this
   disposable diagnostic branch because its registered workflow is temporarily
   narrowed; exact restoration is required before any landing commit.
+- Exact-SHA hosted run `31843304093`, job `94904571578`, passed both Windows
+  3.13 lanes at `bdb8a38a7a920964e3d69cbe12f3eb8121b425f2`. The detailed lane returned
+  all 255 tools commits / 545 closes, all 165 stdio-driver commits / 420 closes,
+  and all five MCP create/stop pairs; its slowest stdio body was 10.31 seconds.
+  The budget step passed, but GitHub dropped its one oversized JSON output line,
+  so that green is not accepted as classification evidence. The output was
+  split into bounded summary and per-body records with a firing serialization
+  test; a fresh changed-SHA dispatch is required.
