@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import io
 import json
 import logging
+import os
 import queue
 import signal
 import subprocess
@@ -45,6 +47,103 @@ _BASE_REACTOR_SIGINT_PROBE_MODULE = "tests.helpers.base_reactor_sigint_probe"
 _BASE_REACTOR_SIGINT_PROBE_STARTUP_TIMEOUT = 15.0
 _BASE_REACTOR_SIGINT_PROBE_TIMEOUT = 3.0
 _BASE_REACTOR_SIGINT_PROBE_GROUP = pytest.mark.xdist_group("base-reactor-sigint-probe")
+_COVERAGE_SUBPROCESS_ENV_KEYS = (
+    "COVERAGE_PROCESS_START",
+    "COVERAGE_PROCESS_CONFIG",
+    "COVERAGE_FILE",
+)
+_FORCED_TERMINATION_PROBE_MODES = frozenset(("hang", "startup-hang"))
+
+
+def _base_reactor_sigint_probe_env(mode: str) -> dict[str, str]:
+    child_env = os.environ.copy()
+    if mode in _FORCED_TERMINATION_PROBE_MODES:
+        for key in _COVERAGE_SUBPROCESS_ENV_KEYS:
+            child_env.pop(key, None)
+    return child_env
+
+
+@pytest.mark.parametrize(
+    "mode",
+    tuple(sorted(_FORCED_TERMINATION_PROBE_MODES)),
+)
+def test_base_reactor_forced_termination_probe_does_not_create_coverage_shards(
+    mode: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("COVERAGE_PROCESS_START", "/coverage/start")
+    monkeypatch.setenv("COVERAGE_PROCESS_CONFIG", "serialized coverage config")
+    monkeypatch.setenv("COVERAGE_FILE", "/coverage/data")
+
+    child_env = _base_reactor_sigint_probe_env(mode)
+
+    assert "COVERAGE_PROCESS_START" not in child_env
+    assert "COVERAGE_PROCESS_CONFIG" not in child_env
+    assert "COVERAGE_FILE" not in child_env
+    assert child_env["PATH"] == os.environ["PATH"]
+
+
+@pytest.mark.parametrize(
+    "mode",
+    ("probe", "early-exit", "invalid-startup", "unexpected-startup"),
+)
+def test_base_reactor_normally_exiting_probe_retains_coverage_environment(
+    mode: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = {
+        "COVERAGE_PROCESS_START": "/coverage/start",
+        "COVERAGE_PROCESS_CONFIG": "serialized coverage config",
+        "COVERAGE_FILE": "/coverage/data",
+    }
+    for key, value in expected.items():
+        monkeypatch.setenv(key, value)
+
+    child_env = _base_reactor_sigint_probe_env(mode)
+
+    assert {key: child_env[key] for key in expected} == expected
+
+
+def test_base_reactor_forced_probe_strips_coverage_at_spawn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "COVERAGE_PROCESS_START",
+        str(tmp_path / "missing-coverage-config.toml"),
+    )
+    monkeypatch.delenv("COVERAGE_PROCESS_CONFIG", raising=False)
+
+    with pytest.raises(AssertionError, match="did not report startup readiness"):
+        _run_base_reactor_sigint_probe(mode="startup-hang", startup_timeout=0.2)
+
+
+@pytest.mark.parametrize(
+    ("mode", "error_pattern"),
+    (
+        ("invalid-startup", "emitted invalid startup status"),
+        ("unexpected-startup", "emitted unexpected startup status"),
+    ),
+)
+def test_base_reactor_malformed_probe_exits_with_populated_coverage(
+    mode: str,
+    error_pattern: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "COVERAGE_PROCESS_START",
+        str(Path(__file__).resolve().parents[1] / "pyproject.toml"),
+    )
+    monkeypatch.delenv("COVERAGE_PROCESS_CONFIG", raising=False)
+    monkeypatch.setenv("COVERAGE_FILE", str(tmp_path / ".coverage.probe"))
+
+    with pytest.raises(AssertionError, match=error_pattern):
+        _run_base_reactor_sigint_probe(mode=mode)
+
+    shards = tuple(tmp_path.glob(".coverage.probe.*"))
+    assert len(shards) == 1
+    assert shards[0].stat().st_size > 0
 
 
 def _spawn_cli(cwd: Path, *args: object) -> subprocess.Popen[str]:
@@ -90,19 +189,136 @@ class _ProbeOutputCapture:
     def finish(self, *, kill: bool) -> tuple[str, str]:
         if kill and self.process.poll() is None:
             self.process.kill()
+        missed_graceful_exit = False
+        killed_after_grace = False
+        termination_failure: tuple[str, BaseException] | None = None
         try:
             self.process.wait(timeout=5.0)
         except subprocess.TimeoutExpired as exc:
-            raise AssertionError(
-                "BaseReactor SIGINT probe did not terminate after it was killed"
-            ) from exc
+            if not kill:
+                missed_graceful_exit = True
+                if self.process.poll() is None:
+                    killed_after_grace = True
+                    self.process.kill()
+                    try:
+                        self.process.wait(timeout=5.0)
+                    except subprocess.TimeoutExpired as kill_exc:
+                        termination_failure = (
+                            "BaseReactor SIGINT probe did not terminate after it was killed",
+                            kill_exc,
+                        )
+            else:
+                termination_failure = (
+                    "BaseReactor SIGINT probe did not terminate after it was killed",
+                    exc,
+                )
         self.stdout_reader.join(timeout=1.0)
         self.stderr_reader.join(timeout=1.0)
-        if self.stdout_reader.is_alive() or self.stderr_reader.is_alive():
-            raise AssertionError("BaseReactor SIGINT probe output reader did not stop")
+        readers_alive = self.stdout_reader.is_alive() or self.stderr_reader.is_alive()
         self.stdout_pipe.close()
         self.stderr_pipe.close()
+        if termination_failure is not None:
+            message, cause = termination_failure
+            raise AssertionError(message) from cause
+        if readers_alive:
+            raise AssertionError("BaseReactor SIGINT probe output reader did not stop")
+        if missed_graceful_exit:
+            message = "BaseReactor SIGINT probe missed the 5.0s graceful-exit cap"
+            if killed_after_grace:
+                message += " and was killed"
+            raise AssertionError(message)
         return "".join(self.stdout_lines), "".join(self.stderr_lines)
+
+
+def test_probe_output_graceful_timeout_kills_and_reaps_child() -> None:
+    class TimeoutThenKilledProcess:
+        def __init__(self) -> None:
+            self.stdout = io.StringIO("")
+            self.stderr = io.StringIO("")
+            self.returncode: int | None = None
+            self.kill_calls = 0
+            self.wait_calls: list[float] = []
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def kill(self) -> None:
+            self.kill_calls += 1
+            self.returncode = -9
+
+        def wait(self, timeout: float) -> int:
+            self.wait_calls.append(timeout)
+            if self.returncode is None:
+                raise subprocess.TimeoutExpired(("probe",), timeout)
+            return self.returncode
+
+    process = TimeoutThenKilledProcess()
+    capture = _ProbeOutputCapture(cast(Any, process))
+
+    with pytest.raises(AssertionError, match="missed.*graceful-exit cap.*was killed"):
+        capture.finish(kill=False)
+
+    assert process.kill_calls == 1
+    assert process.wait_calls == [5.0, 5.0]
+    assert process.stdout.closed
+    assert process.stderr.closed
+
+
+def test_probe_output_post_kill_timeout_still_closes_pipes() -> None:
+    class UnkillableProcess:
+        def __init__(self) -> None:
+            self.stdout = io.StringIO("")
+            self.stderr = io.StringIO("")
+            self.returncode: int | None = None
+            self.kill_calls = 0
+
+        def poll(self) -> None:
+            return None
+
+        def kill(self) -> None:
+            self.kill_calls += 1
+
+        def wait(self, timeout: float) -> int:
+            raise subprocess.TimeoutExpired(("probe",), timeout)
+
+    process = UnkillableProcess()
+    capture = _ProbeOutputCapture(cast(Any, process))
+
+    with pytest.raises(AssertionError, match="did not terminate after it was killed"):
+        capture.finish(kill=True)
+
+    assert process.kill_calls == 1
+    assert process.stdout.closed
+    assert process.stderr.closed
+
+
+def test_probe_output_exit_between_timeout_and_poll_closes_without_kill() -> None:
+    class ExitedAfterTimeoutProcess:
+        def __init__(self) -> None:
+            self.stdout = io.StringIO("")
+            self.stderr = io.StringIO("")
+            self.returncode: int | None = None
+            self.kill_calls = 0
+
+        def poll(self) -> int:
+            self.returncode = 0
+            return self.returncode
+
+        def kill(self) -> None:
+            self.kill_calls += 1
+
+        def wait(self, timeout: float) -> int:
+            raise subprocess.TimeoutExpired(("probe",), timeout)
+
+    process = ExitedAfterTimeoutProcess()
+    capture = _ProbeOutputCapture(cast(Any, process))
+
+    with pytest.raises(AssertionError, match="missed.*graceful-exit cap$"):
+        capture.finish(kill=False)
+
+    assert process.kill_calls == 0
+    assert process.stdout.closed
+    assert process.stderr.closed
 
 
 def _run_base_reactor_sigint_probe(
@@ -120,6 +336,7 @@ def _run_base_reactor_sigint_probe(
             mode,
         ],
         cwd=Path(__file__).resolve().parents[1],
+        env=_base_reactor_sigint_probe_env(mode),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -148,13 +365,13 @@ def _run_base_reactor_sigint_probe(
     try:
         startup_payload = json.loads(startup_line)
     except json.JSONDecodeError as exc:
-        stdout, stderr = capture.finish(kill=True)
+        stdout, stderr = capture.finish(kill=False)
         raise AssertionError(
             "BaseReactor SIGINT probe emitted invalid startup status; "
             f"stdout={stdout!r}; stderr={stderr!r}"
         ) from exc
     if startup_payload != {"status": expected_startup_status}:
-        stdout, stderr = capture.finish(kill=True)
+        stdout, stderr = capture.finish(kill=False)
         raise AssertionError(
             "BaseReactor SIGINT probe emitted unexpected startup status; "
             f"stdout={stdout!r}; stderr={stderr!r}"

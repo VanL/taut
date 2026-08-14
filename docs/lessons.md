@@ -727,6 +727,15 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   Keep external observers and all product assertions unchanged, and do not
   claim that the refactor excludes a rarer production race.
 
+- 2026-08-14: Automatic subprocess coverage assumes normal process exit. A test
+  that deliberately kills a child can race coverage database creation and
+  leave a zero-byte shard even though its assertion passes. Do not teach the
+  combiner to ignore that evidence. Exclude only modes whose successful
+  assertion requires forced termination. Let malformed-but-normally-exiting
+  children reap and save coverage before reporting their protocol failure;
+  retain coverage on the successful product-path child, and keep raw-shard
+  validation fail-closed.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

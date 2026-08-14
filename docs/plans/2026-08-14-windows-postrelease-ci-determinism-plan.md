@@ -22,6 +22,7 @@ blindly rerunning unchanged code.
 - `docs/program-theory.md` [THEORY-2] and [THEORY-3]
 - `docs/specs/10-taut-tui.md` [TUI-6], [TUI-7], and [TUI-10]
 - `docs/specs/07-taut-mcp.md` [MCP-4], [MCP-5], and [MCP-8]
+- `docs/implementation/05-taut-summon-architecture.md`
 - `docs/implementation/07-taut-mcp-architecture.md`
 - `docs/implementation/12-taut-tui.md`
 - `docs/agent-context/runbooks/testing-patterns.md`
@@ -86,6 +87,12 @@ Baseline: `73b56a0d5242f5a0353ecbf8f409d4013b155088`.
   assertions, and every currently exercised command.
 - No timeout, busy-timeout, retry-count, or sleep increase. No automatic CI
   rerun and no ignored failure.
+- Keep zero-byte coverage evidence fatal. Do not filter, delete, or normalize a
+  shard after upload. A child may opt out of automatic coverage only when its
+  successful asserted behavior requires forced termination and a separate
+  successful child retains the real product-path coverage. A malformed child
+  expected to exit normally must retain coverage and receive a graceful reap
+  opportunity before fail-closed kill cleanup.
 
 ## Rollback, Rollout, and One-Way Doors
 
@@ -204,6 +211,22 @@ separate root tests retain that contract.
    Do not claim a production race fixed. This is not permission to change
    product defaults, remove the 15-second deadlock valve, or make reactor-owned
    reads replace external observer assertions.
+7. Treat the landing-SHA root coverage failure as a new producer-lifecycle
+   defect, not as permission to rerun. Compare the failed raw artifact with the
+   prior green artifact. Require that the failed artifact exceeds the prior
+   green shard count by exactly one zero-byte file, then reproduce that artifact
+   shape by amplifying an intentionally terminated watcher negative probe
+   before changing ownership. Add a red enumerable contract for every
+   forced-termination mode and a real-spawn proof. Remove
+   `COVERAGE_PROCESS_START`, `COVERAGE_PROCESS_CONFIG`, and `COVERAGE_FILE` only
+   from `hang` and `startup-hang`. Preserve the variables for `probe`,
+   `early-exit`, `invalid-startup`, and `unexpected-startup`; allow the malformed
+   modes to exit and save normally. A missed cleanup cap fails, kills only a
+   child still live after the timeout/poll boundary, and always closes its
+   pipes. Keep the raw-shard combiner unchanged and fail closed on any
+   future zero-byte file. Re-run the
+   focused watcher protocol cases, root coverage producer, combiner, and full
+   canonical root workflow at a new exact SHA.
 
 ## Stop Gates and Out of Scope
 
@@ -213,6 +236,9 @@ separate root tests retain that contract.
   transition nor the firing setup-pressure predicate in slice 6. A terminal
   stack sampled at 15 seconds, total batch duration, or a nearby synthetic lock
   failure is not a substitute for either discriminator.
+- Stop if the zero-byte shard cannot be tied to a deliberately terminated
+  negative child, or if disabling automatic coverage would remove the only
+  proof of product behavior. Do not weaken the combiner or delete evidence.
 - Stop before changing SimpleBroker, SQLite pragmas, Taut public semantics,
   reactor command ordering, or dependency floors; each requires an explicit
   ownership decision and likely a spec delta.
@@ -376,3 +402,32 @@ separate root tests retain that contract.
   mypy lanes pass across 132 root, 12 PostgreSQL, 40 Summon, 21 MCP, and 31 TUI
   source files. Documentation paths pass for 63 sources and 1,271 claims; the
   plan status index and `git diff --check` pass.
+- Commit `582b19b` passed canonical MCP run `31845340371`, including the
+  uninstrumented Windows Python 3.13 job. Root run `31845342506` passed all 20
+  producer/test jobs, including its configured local-LLM smoke and every
+  Windows version, but correctly failed its coverage combiner. Prior green run
+  `31832783433` uploaded 875 root/unit shards; artifact `9235852365` from the
+  failed run uploaded 876, of which exactly one was zero-byte:
+  `.coverage.root-unit.runnervmzvulz.pid8823.XyRinNex`. No app or pytest
+  assertion failed.
+- Coverage.py 7.15.4 propagates serialized subprocess configuration and saves
+  child data at normal exit. The watcher negative protocol probes may kill a
+  child after reading its malformed startup line while that child is exiting.
+  A Linux container amplification against the pre-fix tree made this race
+  deterministic: after 242 malformed-status children, 243 raw shard files
+  existed and 113 were zero-byte. The identical post-fix boundary ran 100
+  children and produced only the normally exited parent's one populated
+  53,248-byte shard, with zero zero-byte files. The refined post-fix run retained
+  coverage for 100 malformed, normally exiting children and produced 101
+  populated 53,248-byte shards with zero empty files. The red enumerable unit
+  contract initially failed all six cases; after implementation, only `hang`
+  and `startup-hang` remove Coverage's process-start/config/data variables.
+  `probe`, `early-exit`, `invalid-startup`, and `unexpected-startup` preserve
+  them; real malformed children produce populated coverage, and forced cleanup
+  still kills and reaps a live child and closes pipes on a missed graceful cap.
+  A firing exit-between-timeout-and-poll case closes without sending a stale
+  kill. The full watcher suite then passed all 91 tests under real subprocess
+  coverage, produced eight nonempty shards and no empty shard, and combined
+  successfully. The combiner remains unchanged and fail-closed. Focused Ruff,
+  format, mypy, documentation-path, plan-index, and diff checks pass; the final
+  changed-SHA hosted producer and combiner remain the rollout gate.
