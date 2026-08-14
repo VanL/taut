@@ -58,3 +58,7 @@ leave every release tag untouched.
   waits for the semantic target, focus, and pointer-release states. The latter
   uses an event fired after the real navigation result applies the reply
   marker, with a bounded fail-safe rather than repeated sleeps.
+- 2026-08-14: The next run found a search-result race on Ubuntu 3.14. Its wait
+  observed a message row that was already present before the action, then
+  asserted the still-pending history anchor. The completion condition now
+  requires the exact search-result anchor as well as the row.

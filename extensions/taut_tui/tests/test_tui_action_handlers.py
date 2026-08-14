@@ -449,7 +449,10 @@ async def _search_open_result(context: HandlerContext) -> None:
     await _select_palette(context, ActionId.SEARCH_OPEN_RESULT)
     await _eventually(
         context.pilot,
-        lambda: any(row.ts == context.message_ts for row in context.app._message_rows),
+        lambda: (
+            any(row.ts == context.message_ts for row in context.app._message_rows)
+            and context.app.visual_state.scroll_anchor.message_id == context.message_ts
+        ),
     )
     assert context.app.visual_state.active_conversation == "general"
     assert context.app.visual_state.scroll_anchor.message_id == context.message_ts
