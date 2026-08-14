@@ -157,6 +157,8 @@ SUMMON_UNIT_TEST_COMMAND: Final[Command] = (
     "extensions/taut_summon/tests",
     "-m",
     "not xdist_group",
+    "-n",
+    "0",
 )
 SUMMON_PROCESS_TEST_COMMAND: Final[Command] = (
     *PYTEST_PREFIX,

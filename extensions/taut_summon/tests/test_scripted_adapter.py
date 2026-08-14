@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import select
 import signal
 import subprocess
 import sys
@@ -581,8 +582,15 @@ def test_interrupt_cancels_full_pipe_and_real_child_accepts_next_turn() -> None:
         buffered = b""
         while b"\\n" not in buffered:
             buffered += os.read(0, 65536)
-        for line in sys.stdin:
-            payload = json.loads(line)
+        _, buffered = buffered.split(b"\\n", 1)
+        while True:
+            while b"\\n" not in buffered:
+                chunk = os.read(0, 65536)
+                if not chunk:
+                    raise SystemExit(0)
+                buffered += chunk
+            line, buffered = buffered.split(b"\\n", 1)
+            payload = json.loads(line.decode())
             text = payload["message"]["content"][0]["text"]
             print(text, flush=True)
         """
@@ -631,6 +639,8 @@ def test_interrupt_cancels_full_pipe_and_real_child_accepts_next_turn() -> None:
                 assert time.monotonic() < deadline
                 time.sleep(0.01)
         handle.inject("after interrupt")
+        ready, _, _ = select.select([proc.stdout], [], [], 2.0)
+        assert ready, "child did not echo the post-interrupt turn"
         assert proc.stdout.readline() == "after interrupt\n"
     finally:
         os.close(control_w)

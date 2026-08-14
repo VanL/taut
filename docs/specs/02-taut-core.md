@@ -2362,11 +2362,13 @@ Helper obligations:
   plus a fresh serial `not slow and installed_wheel` invocation,
   `bin/pytest-pg --fast`, a second PostgreSQL-harness invocation selecting
   `extensions/taut_mcp/tests/test_pg_conformance.py`, the four isolated Summon
-  lanes, one explicit MCP `not pg_only` lane under the MCP project, the complete
-  package-local TUI lane against its retained lock, existing root/PG/Summon Ruff
-  paths, package-local MCP and TUI Ruff lint/format, and five collision-safe
-  mypy owners including explicit MCP and TUI project-local commands with their
-  package configs. The local non-PostgreSQL MCP lane never treats excluded
+  lanes (a serial `not xdist_group` unit lane, the fixed-width process lane,
+  and the two single-worker live lanes), one explicit MCP `not pg_only` lane
+  under the MCP project, the complete package-local TUI lane against its
+  retained lock, existing root/PG/Summon Ruff paths, package-local MCP and TUI
+  Ruff lint/format, and five collision-safe mypy owners including explicit MCP
+  and TUI project-local commands with their package configs. The local
+  non-PostgreSQL MCP lane never treats excluded
   PostgreSQL cases as evidence; the selected MCP PostgreSQL invocation and the
   required canonical MCP workflow both supply live-backend proof. Target
   selection controls metadata, ordinary package builds, tags, and publication,

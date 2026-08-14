@@ -2155,6 +2155,8 @@ def test_every_target_set_plans_one_literal_universal_precheck_sequence(
             "extensions/taut_summon/tests",
             "-m",
             "not xdist_group",
+            "-n",
+            "0",
         ),
         (
             "uv",
@@ -2411,6 +2413,7 @@ def test_summon_precheck_commands_include_extension_gate() -> None:
     assert release.SUMMON_PROCESS_TEST_COMMAND in commands
     assert release.SUMMON_LIVE_HARNESS_TEST_COMMAND in commands
     assert release.SUMMON_LOCAL_LLM_TEST_COMMAND in commands
+    assert release.SUMMON_UNIT_TEST_COMMAND[-2:] == ("-n", "0")
     assert (
         "xdist_group and not requires_live_harness and not requires_local_llm"
         in release.SUMMON_PROCESS_TEST_COMMAND
