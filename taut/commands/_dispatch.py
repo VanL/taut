@@ -34,7 +34,7 @@ from taut.commands._registry import (
 class _RootValues:
     db_path: str | None = None
     as_name: str | None = None
-    auth_token: str | None = None
+    continuity_token: str | None = None
     json: bool = False
     timestamps: bool = False
     quiet: bool = False
@@ -238,7 +238,7 @@ def _prepare_invocation(
     context = CommandContext(
         db_path=merged.db_path,
         as_name=merged.as_name,
-        auth_token=merged.auth_token,
+        continuity_token=merged.continuity_token,
         json=merged.json,
         timestamps=merged.timestamps,
         quiet=merged.quiet,
@@ -415,7 +415,7 @@ def _consume_global(
     value_options = (
         (GlobalOption.DB, "--db", "db_path"),
         (GlobalOption.AS, "--as", "as_name"),
-        (GlobalOption.TOKEN, "--token", "auth_token"),
+        (GlobalOption.TOKEN, "--token", "continuity_token"),
     )
     for option, spelling, destination in value_options:
         if option not in allowed:
@@ -453,8 +453,10 @@ def _merge_globals(before: _RootValues, after: _RootValues) -> _RootValues:
     return _RootValues(
         db_path=after.db_path if after.db_path is not None else before.db_path,
         as_name=after.as_name if after.as_name is not None else before.as_name,
-        auth_token=(
-            after.auth_token if after.auth_token is not None else before.auth_token
+        continuity_token=(
+            after.continuity_token
+            if after.continuity_token is not None
+            else before.continuity_token
         ),
         json=before.json or after.json,
         timestamps=before.timestamps or after.timestamps,

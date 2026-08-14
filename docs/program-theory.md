@@ -10,8 +10,10 @@ adopted durable alternatives in [THEORY-5]. Later revisions gate on
 the human owner.
 Owner: Taut product owner
 Boundary: Conceptual identity and design judgment, not exact current
-behavior. The winning product contract owns exact behavior; until
-[THEORY-7]'s registry exists, the README is the contract of record.
+behavior. The winning product contract owns exact behavior;
+`docs/specs/product-section-registry.md` names the owning contract for each
+registered concern, while the README remains authoritative only for its
+explicitly recorded README-owned promises.
 Verification: Owner and independent semantic review; consistency with
 the README and the exact owning product-spec sections named in
 [THEORY-3].
@@ -45,8 +47,9 @@ It should feel like:
 - **loud about its weak trust model** — saying it loudly is part of
   the design, not an apology,
 - **equally usable by a person at a prompt and a script in a loop** —
-  every command has `--json`; agents join with three shell commands
-  and zero setup.
+  record-oriented CLI commands expose `--json`; rich terminal hosts and
+  protocol commands use their native human or machine transport. Agents join
+  with three shell commands and zero setup.
 
 "Simple" for Taut means **a small use surface and operational model**
 — no server, no required daemon, no config, one file — not a small
@@ -87,7 +90,9 @@ messages mean.
   `taut-pg` swaps the storage substrate under identical commands;
   `taut-summon` hosts an existing agent harness as an ordinary
   workspace member (ears, mouth, adapters, session ledger, control
-  plane, persona); `taut-mcp` exposes the workspace to MCP clients.
+  plane, persona); `taut-mcp` exposes the workspace to MCP clients through
+  an agent-first protocol; `taut-tui` is the human-first interactive
+  reflection over the same public domain capabilities.
 
 ## Core concepts and ownership [THEORY-3]
 
@@ -104,12 +109,15 @@ messages mean.
 | Durable queue mechanics | Queue ordering, persistence, and activity-wait primitives | SimpleBroker (upstream; not re-specified here) | SimpleBroker's own contracts |
 | Live chat watcher | Burst-then-backoff following of joined threads | Core (scheduling base attributed to Weft) | [TAUT-8.4] |
 | Summoned member | A hosted harness acting as an ordinary member | Summon; the member model stays core's | [SUM-2], [SUM-4] |
+| Human-first terminal UI | Interactive reflection over core and loaded extension capabilities | `taut-tui` composition root; domain semantics stay with their owners | [TUI-1]–[TUI-14] |
 | Terminal escape policy | Display-time safety control against accidental relay; `.taut.toml` is the operator policy input | Core presentation | [TAUT-6.4] |
 
 ## Durable principles [THEORY-4]
 
-1. **Humans and agents are both first-class.** Every surface serves
-   both; `--json` is not an afterthought.
+1. **Humans and agents are both first-class.** Record-oriented CLI
+   commands expose `--json`; rich terminal and protocol surfaces use
+   their own native machine or human transport rather than pretending to
+   be record streams.
 2. **Zero configuration by default; explicit, project-visible doors
    otherwise.**
 3. **Storage access is the only boundary.** Identity claims make
@@ -282,11 +290,12 @@ the way down").
 **Contract mechanism (owner-ratified 2026-08-07):** Taut adopts the
 product-section registry mechanism — a per-section table naming the
 winning contract (README section or spec) for each behavior area, as
-practiced in SimpleBroker. Until the registry exists, the README
-remains the contract of record as declared in its own header;
-creating `docs/specs/product-section-registry.md` and re-homing the
-README's contract sections to their owning specs is the named
-follow-up work.
+practiced in SimpleBroker. The active table is
+`docs/specs/product-section-registry.md`; its `canonical-spec` rows own
+the exact behavior they name, while its recorded README-owned promises
+remain in the README until a spec absorbs them. The registry and its
+promise-granular conflict rule are now the contract-resolution mechanism,
+not a future follow-up.
 
 ## Revisions [THEORY-8]
 

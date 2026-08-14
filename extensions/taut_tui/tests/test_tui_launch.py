@@ -91,9 +91,9 @@ def test_supported_identity_and_storage_globals_reach_launch(
         *,
         db_path: str | None,
         as_name: str | None,
-        auth_token: str | None,
+        continuity_token: str | None,
     ) -> int:
-        captured.append((db_path, as_name, auth_token))
+        captured.append((db_path, as_name, continuity_token))
         return 0
 
     monkeypatch.setattr(taut_tui, "launch", capture_launch)
@@ -176,7 +176,7 @@ def test_each_ambient_terminal_is_required(
     monkeypatch.setattr(_launch.sys, non_tty_name, StringIO())
 
     with pytest.raises(TuiLaunchError, match="interactive input and output"):
-        _launch.run_tui(db_path=None, as_name=None, auth_token=None)
+        _launch.run_tui(db_path=None, as_name=None, continuity_token=None)
 
 
 def test_missing_textual_dependency_has_one_actionable_install_hint(
@@ -203,7 +203,7 @@ def test_missing_textual_dependency_has_one_actionable_install_hint(
         _launch.run_tui(
             db_path=None,
             as_name=None,
-            auth_token=None,
+            continuity_token=None,
         )
 
     assert type(caught.value).__name__ == "MissingTuiDependencyError"
@@ -236,7 +236,7 @@ def test_installed_tui_extension_wheel_runs_real_headless_app(
         "import asyncio\n"
         "from taut_tui.app import TautApp\n"
         "async def probe():\n"
-        " app=TautApp(db_path=None, as_name=None, auth_token=None)\n"
+        " app=TautApp(db_path=None, as_name=None, continuity_token=None)\n"
         " async with app.run_test(size=(80, 24)) as pilot:\n"
         "  await pilot.pause()\n"
         "  assert app.query_one('#conversation').display is True\n"
@@ -263,7 +263,7 @@ def test_broken_textual_transitive_import_preserves_original_failure(
     monkeypatch.setattr(_launch.sys, "stdout", _TTYStringIO())
 
     with pytest.raises(ModuleNotFoundError) as caught:
-        _launch.run_tui(db_path=None, as_name=None, auth_token=None)
+        _launch.run_tui(db_path=None, as_name=None, continuity_token=None)
 
     assert caught.value is failure
 
@@ -290,7 +290,7 @@ def test_broken_installed_textual_is_not_mislabelled_as_missing_dependency(
         _launch.run_tui(
             db_path=None,
             as_name=None,
-            auth_token=None,
+            continuity_token=None,
         )
 
     assert caught.value is failure

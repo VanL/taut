@@ -48,7 +48,7 @@ def test_postgres_tui_navigation_send_live_search_and_doctor(
     session = TuiSession(
         db_path=None,
         as_name="alice",
-        auth_token=None,
+        continuity_token=None,
         accept_delivery=accept_delivery,
     )
     system = TuiSystemOperations(db_path=None)

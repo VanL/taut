@@ -1761,13 +1761,16 @@ order; a declared boolean flag combines as logical OR across both positions.
 global. The selected adapter runs exactly once and returns only exit class 0,
 1, or 2.
 
-The execution context contains the resolved database path, acting name,
-continuity token, JSON/timestamp/quiet flags, and stdin/stdout/stderr streams.
-Its `client()` method creates at most one core `TautClient` lazily, and the
-dispatcher closes that client in `finally` without replacing a primary command
-failure. Context streams are authoritative for command input/output; adapters
-and shared renderers do not use ambient process streams directly. Root/command
-help, usage, and registry diagnostics use the same dispatcher streams.
+The execution context contains the resolved `db_path`, `as_name`, and
+`continuity_token` values, JSON/timestamp/quiet flags, and stdin/stdout/stderr
+streams. The root `--token` selector maps to `continuity_token`; it preserves
+the identity model's continuity-token semantics and is not an authentication
+credential. Its `client()` method creates at most one core `TautClient`
+lazily, and the dispatcher closes that client in `finally` without replacing a
+primary command failure. Context streams are authoritative for command
+input/output; adapters and shared renderers do not use ambient process streams
+directly. Root/command help, usage, and registry diagnostics use the same
+dispatcher streams.
 Extension-specific domain APIs remain on their owning package; the context is
 not a service locator.
 
@@ -2634,6 +2637,9 @@ installing `taut-chat`.
 
 ## Related Plans
 
+- `docs/plans/2026-08-14-command-context-continuity-token-plan.md` — aligns
+  the public command-context identity-selector name with the continuity-token
+  identity model and documents the active registry/TUI transport boundaries.
 - `docs/plans/2026-08-14-review-findings-remediation-plan.md` — restores the
   self-contained MCP PostgreSQL release precheck alongside lifecycle and
   contract-proof remediation for the coordinated 0.9.0 candidate.

@@ -56,7 +56,7 @@ class TuiSession:
         *,
         db_path: str | None,
         as_name: str | None,
-        auth_token: str | None,
+        continuity_token: str | None,
         commit_conversation: Callable[[ConversationSnapshot], bool] | None = None,
         accept_delivery: Callable[[int, Delivery], bool] | None = None,
         report_watcher_degraded: Callable[[int, str], None] | None = None,
@@ -65,7 +65,7 @@ class TuiSession:
     ) -> None:
         self._db_path = db_path
         self._as_name = as_name
-        self._auth_token = auth_token
+        self._continuity_token = continuity_token
         self._commit_conversation = commit_conversation or (lambda _snapshot: True)
         self._accept_delivery = accept_delivery or (lambda _generation, _item: True)
         self._report_watcher_degraded = report_watcher_degraded or (
@@ -199,7 +199,7 @@ class TuiSession:
             self._client = TautClient(
                 db_path=self._db_path,
                 as_name=self._as_name,
-                token=self._auth_token,
+                token=self._continuity_token,
                 persistent=True,
             )
         return self._client

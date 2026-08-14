@@ -228,7 +228,7 @@ that verb and show in command help:
 |---|---|---|---|
 | `DB` | `--db PATH`, `--db=PATH` | `db_path` | Later post-verb value wins; default `None` |
 | `AS` | `--as NAME`, `--as=NAME` | `as_name` | Later post-verb value wins; default `None` |
-| `TOKEN` | `--token TOKEN`, `--token=TOKEN` | `auth_token` | Later post-verb value wins; default `None` |
+| `TOKEN` | `--token TOKEN`, `--token=TOKEN` | `continuity_token` | Later post-verb value wins; default `None` |
 | `JSON` | `--json` | `json` | Boolean OR; default `False` |
 | `TIMESTAMPS` | `-t`, `--timestamps` | `timestamps` | Boolean OR; default `False` |
 | `QUIET` | `-q`, `--quiet` | `quiet` | Boolean OR; default `False` |

@@ -309,12 +309,12 @@ class TautApp(App[None]):
         *,
         db_path: str | None,
         as_name: str | None,
-        auth_token: str | None,
+        continuity_token: str | None,
     ) -> None:
         super().__init__()
         self.db_path = db_path
         self.as_name = as_name
-        self.auth_token = auth_token
+        self.continuity_token = continuity_token
         self.visual_state = VisualState()
         self.layout_mode = LayoutMode.MEDIUM
         self._accepted_size = TerminalSize(80, 24)
@@ -392,7 +392,7 @@ class TautApp(App[None]):
         self._session = TuiSession(
             db_path=self.db_path,
             as_name=self.as_name,
-            auth_token=self.auth_token,
+            continuity_token=self.continuity_token,
             commit_conversation=self._commit_conversation_from_worker,
             accept_delivery=self._accept_delivery_from_worker,
             report_watcher_degraded=self._report_watcher_degraded_from_worker,

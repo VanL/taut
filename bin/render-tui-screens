@@ -58,7 +58,7 @@ async def _render(output_dir: Path) -> None:
     app = TautApp(
         db_path=str(output_dir / "nonexistent-preview.db"),
         as_name="preview",
-        auth_token=None,
+        continuity_token=None,
     )
     async with app.run_test(size=_SIZES[0]) as pilot:
         await pilot.pause()

@@ -818,7 +818,7 @@ def test_every_action_reaches_a_concrete_handler(
         app = TautApp(
             db_path=str(db_path),
             as_name=None if action_id is ActionId.WORKSPACE_INITIALIZE else "alice",
-            auth_token=None,
+            continuity_token=None,
         )
         focus_probe = FocusProbe()
         async with app.run_test(

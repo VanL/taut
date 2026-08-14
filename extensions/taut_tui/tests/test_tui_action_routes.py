@@ -226,7 +226,7 @@ def test_every_declared_route_reaches_the_central_dispatcher_through_its_real_pr
     message = bob.say("general", "route-matrix-needle")
 
     async def exercise() -> None:
-        app = TautApp(db_path=str(db_path), as_name="alice", auth_token=None)
+        app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
         observations: list[ActionInvocation] = []
         async with app.run_test(size=(130, 34)) as pilot:
             await _pause_until(pilot, lambda: app._domain is not None)

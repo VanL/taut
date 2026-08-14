@@ -243,7 +243,7 @@ def test_protected_display_text_is_not_rescanned_by_owned_sink(
     monkeypatch.chdir(tmp_path)
 
     async def exercise() -> None:
-        app = TautApp(db_path=None, as_name=None, auth_token=None)
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(80, 24)):
             SummonLogBridge(app._apply_summon_log).accept("\x1b")
             rendered = str(app.query_one("#inspector-body", Static).render())
@@ -264,7 +264,7 @@ def test_taut_app_owns_terminal_safe_notification_boundary(
 
     monkeypatch.setattr(App, "notify", capture)
     payload = "PAY\x1b]8;;https://evil.invalid\x07LOAD"
-    app = TautApp(db_path=None, as_name=None, auth_token=None)
+    app = TautApp(db_path=None, as_name=None, continuity_token=None)
     app.notify(payload, title=payload, markup=True)
 
     assert captured == [

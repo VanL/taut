@@ -46,7 +46,7 @@ def test_navigation_uses_public_joined_channels_and_actor_scoped_dms(
     db_path = tmp_path / "chat.db"
     alice, bob = _seed(db_path)
     alice.say("@bob", "hello")
-    session = TuiSession(db_path=str(db_path), as_name="alice", auth_token=None)
+    session = TuiSession(db_path=str(db_path), as_name="alice", continuity_token=None)
     try:
         navigation = session.refresh_navigation().result(timeout=5)
     finally:
@@ -84,7 +84,7 @@ def test_only_active_conversation_advances_while_inactive_stays_unread(
     session = TuiSession(
         db_path=str(db_path),
         as_name="alice",
-        auth_token=None,
+        continuity_token=None,
         commit_conversation=commit,
         accept_delivery=accept,
     )
@@ -134,7 +134,7 @@ def test_latest_switch_wins_and_stops_old_watcher_before_replacement(
     session = TuiSession(
         db_path=str(db_path),
         as_name="alice",
-        auth_token=None,
+        continuity_token=None,
         commit_conversation=commit,
         accept_delivery=accept,
     )
@@ -177,7 +177,7 @@ def test_shutdown_rejection_does_not_acknowledge_chat_message(tmp_path: Path) ->
     session = TuiSession(
         db_path=str(db_path),
         as_name="alice",
-        auth_token=None,
+        continuity_token=None,
         accept_delivery=reject,
     )
     try:
@@ -214,7 +214,7 @@ def test_current_delivery_rejection_reports_visible_degradation_owner_event(
     session = TuiSession(
         db_path=str(db_path),
         as_name="alice",
-        auth_token=None,
+        continuity_token=None,
         accept_delivery=reject,
         report_watcher_degraded=report,
     )
@@ -250,7 +250,7 @@ def test_close_attempts_client_cleanup_when_watcher_stop_times_out() -> None:
         def close(self) -> None:
             self.closed = True
 
-    session = TuiSession(db_path=None, as_name=None, auth_token=None)
+    session = TuiSession(db_path=None, as_name=None, continuity_token=None)
     client = ClosingClient()
     session._watcher = (StuckWatcher(), StuckThread())  # type: ignore[assignment]
     session._client = client  # type: ignore[assignment]
@@ -284,7 +284,7 @@ def test_explicit_reply_open_commits_claimed_history_and_watches_both_surfaces(
     session = TuiSession(
         db_path=str(db_path),
         as_name="alice",
-        auth_token=None,
+        continuity_token=None,
         commit_conversation=commit,
         accept_delivery=accept,
     )

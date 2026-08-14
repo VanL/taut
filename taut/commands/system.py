@@ -80,7 +80,7 @@ class SystemCommand:
         )
 
     def run(self, context: CommandContext, args: argparse.Namespace) -> int:
-        if context.as_name is not None or context.auth_token is not None:
+        if context.as_name is not None or context.continuity_token is not None:
             raise CommandError("taut system does not accept --as or --token")
         if context.timestamps:
             raise CommandError("taut system does not accept --timestamps")

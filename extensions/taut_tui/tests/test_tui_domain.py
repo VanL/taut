@@ -53,7 +53,7 @@ def test_native_identity_channel_message_search_and_context_flow(
 
     db_path = tmp_path / "chat.db"
     alice, bob = _seed(db_path)
-    session = TuiSession(db_path=str(db_path), as_name="alice", auth_token=None)
+    session = TuiSession(db_path=str(db_path), as_name="alice", continuity_token=None)
     system = TuiSystemOperations(db_path=str(db_path))
     actions = TuiDomainActions(
         session=session,
@@ -96,7 +96,7 @@ def test_direct_message_and_reply_flows_keep_core_target_semantics(
     db_path = tmp_path / "chat.db"
     alice, bob = _seed(db_path)
     origin = bob.say("general", "please review")
-    session = TuiSession(db_path=str(db_path), as_name="alice", auth_token=None)
+    session = TuiSession(db_path=str(db_path), as_name="alice", continuity_token=None)
     system = TuiSystemOperations(db_path=str(db_path))
     actions = TuiDomainActions(
         session=session,
@@ -127,7 +127,7 @@ def test_empty_real_search_returns_the_domain_empty_collection(tmp_path: Path) -
 
     db_path = tmp_path / "empty-search.db"
     alice, bob = _seed(db_path)
-    session = TuiSession(db_path=str(db_path), as_name="alice", auth_token=None)
+    session = TuiSession(db_path=str(db_path), as_name="alice", continuity_token=None)
     system = TuiSystemOperations(db_path=str(db_path))
     actions = TuiDomainActions(
         session=session,

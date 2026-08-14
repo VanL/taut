@@ -18,7 +18,7 @@ def run_tui(
     *,
     db_path: str | None,
     as_name: str | None,
-    auth_token: str | None,
+    continuity_token: str | None,
 ) -> int:
     """Launch the TUI after proving terminal and dependency availability."""
 
@@ -31,7 +31,7 @@ def run_tui(
     app = app_type(
         db_path=db_path,
         as_name=as_name,
-        auth_token=auth_token,
+        continuity_token=continuity_token,
     )
     app.run()
     return 0

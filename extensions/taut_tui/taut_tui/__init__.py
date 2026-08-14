@@ -15,7 +15,7 @@ def launch(
     *,
     db_path: str | None,
     as_name: str | None,
-    auth_token: str | None,
+    continuity_token: str | None,
 ) -> int:
     """Validate and launch the optional TUI without eager framework imports."""
 
@@ -24,7 +24,7 @@ def launch(
     return run_tui(
         db_path=db_path,
         as_name=as_name,
-        auth_token=auth_token,
+        continuity_token=continuity_token,
     )
 
 

@@ -36,7 +36,7 @@ class _TuiCommand:
         return launch(
             db_path=context.db_path,
             as_name=context.as_name,
-            auth_token=context.auth_token,
+            continuity_token=context.continuity_token,
         )
 
 

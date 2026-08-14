@@ -132,7 +132,7 @@ class CommandContext:
         "_client_factory",
         "_client_instance",
         "as_name",
-        "auth_token",
+        "continuity_token",
         "db_path",
         "json",
         "quiet",
@@ -147,7 +147,7 @@ class CommandContext:
         *,
         db_path: str | None,
         as_name: str | None,
-        auth_token: str | None,
+        continuity_token: str | None,
         json: bool,
         timestamps: bool,
         quiet: bool,
@@ -158,7 +158,7 @@ class CommandContext:
     ) -> None:
         self.db_path = db_path
         self.as_name = as_name
-        self.auth_token = auth_token
+        self.continuity_token = continuity_token
         self.json = json
         self.timestamps = timestamps
         self.quiet = quiet
@@ -180,7 +180,7 @@ class CommandContext:
             self._client_instance = factory(
                 db_path=self.db_path,
                 as_name=self.as_name,
-                token=self.auth_token,
+                token=self.continuity_token,
             )
         return self._client_instance
 

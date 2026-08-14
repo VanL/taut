@@ -55,7 +55,7 @@ def test_real_app_exposes_low_chrome_surfaces_and_mode_status() -> None:
     from taut_tui.app import TautApp
 
     async def exercise() -> None:
-        app = TautApp(db_path=None, as_name="van", auth_token=None)
+        app = TautApp(db_path=None, as_name="van", continuity_token=None)
         async with app.run_test(size=(130, 34)) as pilot:
             await pilot.pause()
             assert app.layout_mode is LayoutMode.WIDE
@@ -73,7 +73,7 @@ def test_watched_future_drops_result_if_shutdown_starts_after_queueing(
 ) -> None:
     from taut_tui.app import TautApp
 
-    app = TautApp(db_path=None, as_name=None, auth_token=None)
+    app = TautApp(db_path=None, as_name=None, continuity_token=None)
     queued: list[tuple[Callable[..., None], tuple[object, ...]]] = []
     applied: list[Future[None]] = []
 
@@ -100,7 +100,7 @@ def test_watched_future_contains_missing_widget_during_screen_teardown(
 
     from taut_tui.app import TautApp
 
-    app = TautApp(db_path=None, as_name=None, auth_token=None)
+    app = TautApp(db_path=None, as_name=None, continuity_token=None)
     queued: list[tuple[Callable[..., None], tuple[object, ...]]] = []
 
     def queue(callback: Callable[..., None], *args: object) -> None:
@@ -144,7 +144,7 @@ def test_token_only_rejoin_form_reaches_the_real_public_client(tmp_path: Path) -
             self.error = message
 
     async def exercise() -> None:
-        app = TautApp(db_path=str(db_path), as_name=None, auth_token=None)
+        app = TautApp(db_path=str(db_path), as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             assert app._domain is not None
             screen = ScreenProbe()
@@ -173,7 +173,7 @@ def test_help_teaches_consumable_shared_notification_pointers() -> None:
     from taut_tui.app import TautApp
 
     async def exercise() -> None:
-        app = TautApp(db_path=None, as_name=None, auth_token=None)
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)):
             app.action_open_help()
             rendered = str(app.query_one("#inspector-body").render())
@@ -197,7 +197,7 @@ def test_real_empty_search_renders_no_matches_in_the_native_screen(
     setup.close()
 
     async def exercise() -> None:
-        app = TautApp(db_path=str(db_path), as_name="alice", auth_token=None)
+        app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             app.action_open_search()
             await pilot.pause()
@@ -216,7 +216,7 @@ def test_vi_and_conventional_keys_share_mode_actions_without_stealing_text() -> 
     from taut_tui.app import TautApp
 
     async def exercise() -> None:
-        app = TautApp(db_path=None, as_name=None, auth_token=None)
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             await pilot.press("i")
             assert app.visual_state.mode is InteractionMode.COMPOSE
@@ -239,7 +239,7 @@ def test_real_resize_reflows_without_replacing_visual_state() -> None:
     from taut_tui.app import TautApp
 
     async def exercise() -> None:
-        app = TautApp(db_path=None, as_name=None, auth_token=None)
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(130, 34)) as pilot:
             await pilot.press("i", "d", "r", "a", "f", "t")
             await pilot.resize_terminal(64, 34)
@@ -263,7 +263,7 @@ def test_app_can_start_at_too_small_and_recover_to_the_base_screen() -> None:
     from taut_tui.app import TautApp, TerminalTooSmallScreen
 
     async def exercise() -> None:
-        app = TautApp(db_path=None, as_name=None, auth_token=None)
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(40, 15)) as pilot:
             assert app.layout_mode is LayoutMode.TOO_SMALL
             assert isinstance(app.screen, TerminalTooSmallScreen)
@@ -287,7 +287,7 @@ def test_too_small_hides_active_modal_and_restores_its_typed_input(
     TautClient.init(db_path=db_path)
 
     async def exercise() -> None:
-        app = TautApp(db_path=str(db_path), as_name=None, auth_token=None)
+        app = TautApp(db_path=str(db_path), as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             await pilot.press("ctrl+p", *"doctor")
             query = app.screen.query_one("#palette-query", Input)
@@ -321,7 +321,7 @@ def test_too_small_shields_a_nested_modal_stack_and_restores_exact_focus(
     TautClient.init(db_path=db_path)
 
     async def exercise() -> None:
-        app = TautApp(db_path=str(db_path), as_name=None, auth_token=None)
+        app = TautApp(db_path=str(db_path), as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             form = NativeFormScreen(form_spec(ActionId.IDENTITY_SET_NAME))
             app.push_screen(form)
@@ -364,7 +364,7 @@ def test_real_transcript_viewport_anchor_survives_width_reflow(
         )
 
     async def exercise() -> None:
-        app = TautApp(db_path=str(db_path), as_name="alice", auth_token=None)
+        app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
         async with app.run_test(size=(100, 24)) as pilot:
             navigation = app.query_one("#navigation-list", TautOptionList)
             await _pause_until(
@@ -432,7 +432,7 @@ def test_mouse_click_focuses_composer() -> None:
     from taut_tui.app import TautApp
 
     async def exercise() -> None:
-        app = TautApp(db_path=None, as_name=None, auth_token=None)
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             assert await pilot.click("#composer") is True
             assert app.query_one("#composer").has_focus
@@ -445,7 +445,7 @@ def test_mouse_command_affordance_dispatches_the_native_palette() -> None:
     from taut_tui.app import TautApp
 
     async def exercise() -> None:
-        app = TautApp(db_path=None, as_name=None, auth_token=None)
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             assert await pilot.click("#commands-affordance") is True
             assert app.visual_state.mode is InteractionMode.COMMAND
@@ -464,7 +464,7 @@ def test_command_palette_excludes_command_open_action() -> None:
     from taut_tui.widgets import TautOptionList
 
     async def exercise() -> None:
-        app = TautApp(db_path=None, as_name=None, auth_token=None)
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             await pilot.press("ctrl+p")
             results = app.screen.query_one("#palette-results", TautOptionList)
@@ -504,7 +504,7 @@ def test_empty_state_actions_use_the_navigation_route(
 
     async def exercise(db_path: str | None, expected: ActionId) -> None:
         seen: list[ActionInvocation] = []
-        app = TautApp(db_path=db_path, as_name=None, auth_token=None)
+        app = TautApp(db_path=db_path, as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             navigation = app.query_one("#navigation-list", TautOptionList)
             await _pause_until(
@@ -541,7 +541,7 @@ def test_explicit_mouse_controls_use_the_typed_action_dispatcher(
     seen: list[ActionInvocation] = []
 
     async def exercise() -> None:
-        app = TautApp(db_path=str(db_path), as_name="alice", auth_token=None)
+        app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
         async with app.run_test(size=(130, 34)) as pilot:
             navigation = app.query_one("#navigation-list", TautOptionList)
             await _pause_until(
@@ -606,7 +606,7 @@ def test_context_mouse_controls_fit_inside_the_visible_inspector(
     TautClient.init(db_path=db_path)
 
     async def exercise() -> None:
-        app = TautApp(db_path=str(db_path), as_name=None, auth_token=None)
+        app = TautApp(db_path=str(db_path), as_name=None, continuity_token=None)
         async with app.run_test(size=(width, 34)):
             app.visual_state = replace(
                 app.visual_state,
@@ -657,7 +657,7 @@ def test_composer_enter_uses_the_typed_keyboard_action_dispatcher(
     seen: list[ActionInvocation] = []
 
     async def exercise() -> None:
-        app = TautApp(db_path=None, as_name=None, auth_token=None)
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             composer = app.query_one("#composer", Input)
             composer.value = "route this send"
@@ -718,7 +718,7 @@ def test_summon_internal_tokens_never_render_as_human_identity() -> None:
     token = "0123456789abcdef"
 
     async def exercise() -> None:
-        app = TautApp(db_path=None, as_name=None, auth_token=None)
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)):
             app._owned_summon_tokens.add(token)
             app._summon_names[token] = "requested-agent"
@@ -763,7 +763,7 @@ def test_broken_summon_startup_and_sync_operations_stay_visible(
 
     async def startup() -> None:
         monkeypatch.setattr(app_module, "TuiSummonOperations", BrokenStartup)
-        app = TautApp(db_path=str(db_path), as_name=None, auth_token=None)
+        app = TautApp(db_path=str(db_path), as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)):
             assert app._summon is None
             assert "summon controller startup failed" in str(
@@ -784,7 +784,7 @@ def test_broken_summon_startup_and_sync_operations_stay_visible(
 
     async def synchronous() -> None:
         monkeypatch.undo()
-        app = TautApp(db_path=str(db_path), as_name=None, auth_token=None)
+        app = TautApp(db_path=str(db_path), as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)):
             app._summon = BrokenOperations()  # type: ignore[assignment]
             app._dispatch_tui_action(
@@ -829,7 +829,7 @@ def test_palette_entries_report_current_scope_gestures_and_disabled_reasons(
     TautClient.init(db_path=db_path)
 
     async def exercise() -> None:
-        app = TautApp(db_path=str(db_path), as_name=None, auth_token=None)
+        app = TautApp(db_path=str(db_path), as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)):
             target = "dm.d_example"
             app._target_labels[target] = "DM with bob"
@@ -867,7 +867,7 @@ def test_navigation_single_click_selects_while_enter_and_double_click_activate(
     setup.close()
 
     async def exercise() -> None:
-        app = TautApp(db_path=str(db_path), as_name="alice", auth_token=None)
+        app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             navigation = app.query_one("#navigation-list", TautOptionList)
             await _pause_until(
@@ -886,7 +886,7 @@ def test_navigation_single_click_selects_while_enter_and_double_click_activate(
                     break
             assert app.visual_state.active_conversation == "general"
 
-        second = TautApp(db_path=str(db_path), as_name="alice", auth_token=None)
+        second = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
         async with second.run_test(size=(100, 34)) as pilot:
             navigation = second.query_one("#navigation-list", TautOptionList)
             await _pause_until(
@@ -916,7 +916,7 @@ def test_navigation_drag_out_does_not_swallow_next_keyboard_enter(
     setup.close()
 
     async def exercise() -> None:
-        app = TautApp(db_path=str(db_path), as_name="alice", auth_token=None)
+        app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             navigation = app.query_one("#navigation-list", TautOptionList)
             await _pause_until(
@@ -956,7 +956,7 @@ def test_direct_message_header_and_composer_use_actor_scoped_label(
     alice.say("@bob", "hello")
 
     async def exercise() -> None:
-        app = TautApp(db_path=str(db_path), as_name="alice", auth_token=None)
+        app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             navigation = app.query_one("#navigation-list", TautOptionList)
             await _pause_until(
@@ -998,7 +998,7 @@ def test_help_and_errors_open_a_visible_inspector_at_medium_and_compact_sizes(
     async def exercise() -> None:
         db_path = tmp_path / "help.db"
         TautClient.init(db_path=db_path)
-        app = TautApp(db_path=str(db_path), as_name=None, auth_token=None)
+        app = TautApp(db_path=str(db_path), as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             await pilot.press("f1")
             assert app.query_one("#inspector").display is True
@@ -1029,7 +1029,7 @@ def test_system_findings_and_failures_render_without_escaping_the_app() -> None:
     from taut_tui.app import TautApp
 
     async def exercise() -> None:
-        app = TautApp(db_path=None, as_name=None, auth_token=None)
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)):
             findings: Future[DoctorReport] = Future()
             findings.set_result(
@@ -1074,7 +1074,7 @@ def test_compose_send_failure_is_visible_and_preserves_the_draft(
     TautClient.init(db_path=db_path)
 
     async def exercise() -> None:
-        app = TautApp(db_path=str(db_path), as_name=None, auth_token=None)
+        app = TautApp(db_path=str(db_path), as_name=None, continuity_token=None)
         async with app.run_test(size=(64, 34)) as pilot:
             composer = app.query_one("#composer", Input)
             composer.value = "keep me"
@@ -1106,7 +1106,7 @@ def test_retired_summon_readiness_cannot_resurrect_visual_state() -> None:
     from taut_tui.summon import OwnedSummonRun
 
     async def exercise() -> None:
-        app = TautApp(db_path=None, as_name=None, auth_token=None)
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)):
             app._render_inspector("newer state")
             retired = OwnedSummonRun(
@@ -1142,7 +1142,7 @@ def test_live_reply_notification_refreshes_the_contextual_reply_marker(
     root = alice.say("general", "root awaiting a reply")
 
     async def exercise() -> None:
-        app = TautApp(db_path=str(db_path), as_name="alice", auth_token=None)
+        app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             navigation = app.query_one("#navigation-list", TautOptionList)
             await _pause_until(
@@ -1203,7 +1203,7 @@ def test_notification_delivery_preserves_non_notification_inspector_content() ->
     )
 
     async def exercise() -> None:
-        app = TautApp(db_path=None, as_name=None, auth_token=None)
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)):
             for kind, content in (
                 (InspectorKind.MESSAGE, "selected message details"),
@@ -1234,7 +1234,7 @@ def test_deletion_refresh_preserves_open_reply_surface(
     opened: list[tuple[str, str | None, int | None]] = []
 
     async def exercise() -> None:
-        app = TautApp(db_path=str(db_path), as_name=None, auth_token=None)
+        app = TautApp(db_path=str(db_path), as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)):
             assert app._session is not None
 
@@ -1294,7 +1294,7 @@ def test_superseding_navigation_clears_and_rejects_stale_search(
     pending: Future[list[Message]] = Future()
 
     async def exercise() -> None:
-        app = TautApp(db_path=str(db_path), as_name="alice", auth_token=None)
+        app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             assert app._domain is not None
             monkeypatch.setattr(
@@ -1342,7 +1342,7 @@ def test_current_watcher_degradation_is_visible_in_the_status_line() -> None:
     from taut_tui.app import TautApp
 
     async def exercise() -> None:
-        app = TautApp(db_path=None, as_name=None, auth_token=None)
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)):
             app.visual_state = replace(app.visual_state, model_generation=7)
 
@@ -1372,7 +1372,7 @@ def test_unmount_contains_session_cleanup_failure_without_skipping_system_close(
             self.closed = True
 
     async def exercise() -> None:
-        app = TautApp(db_path=None, as_name=None, auth_token=None)
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
         system = SystemProbe()
         async with app.run_test(size=(100, 34)):
             assert app._session is not None
@@ -1395,7 +1395,7 @@ def test_summon_worker_base_exception_and_presentation_failure_stay_visible_or_c
     from taut_tui.summon import OwnedSummonRun
 
     async def exercise() -> None:
-        app = TautApp(db_path=None, as_name=None, auth_token=None)
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)):
             app._owned_summon_tokens.add("failed-token")
             failed: Future[None] = Future()
@@ -1432,7 +1432,7 @@ def test_compact_mouse_pane_affordance_reaches_each_logical_surface(
     async def exercise() -> None:
         db_path = tmp_path / "panes.db"
         TautClient.init(db_path=db_path)
-        app = TautApp(db_path=str(db_path), as_name=None, auth_token=None)
+        app = TautApp(db_path=str(db_path), as_name=None, continuity_token=None)
         async with app.run_test(size=(64, 34)) as pilot:
             app._render_inspector("context", kind=InspectorKind.SYSTEM)
             await pilot.pause()
@@ -1463,7 +1463,7 @@ def test_real_app_opens_active_conversation_and_sends_through_public_client(
         client.join("general")
 
     async def exercise() -> None:
-        app = TautApp(db_path=str(db_path), as_name="alice", auth_token=None)
+        app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             navigation = app.query_one("#navigation-list", OptionList)
             for _ in range(100):
@@ -1514,7 +1514,7 @@ def test_command_palette_opens_native_form_and_applies_public_identity_change(
     alice.join("general")
 
     async def exercise() -> None:
-        app = TautApp(db_path=str(db_path), as_name="alice", auth_token=None)
+        app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             await pilot.press("ctrl+p")
             assert app.visual_state.mode is InteractionMode.COMMAND
@@ -1553,7 +1553,7 @@ def test_native_form_keeps_values_and_renders_domain_error_inline(
     alice.join("general")
 
     async def exercise() -> None:
-        app = TautApp(db_path=str(db_path), as_name="alice", auth_token=None)
+        app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             app._dispatch_tui_action(
                 ActionId.IDENTITY_SET_NAME,
@@ -1587,7 +1587,7 @@ def test_stale_search_failure_cannot_replace_newer_ui_state(tmp_path: Path) -> N
     TautClient.init(db_path=db_path)
 
     async def exercise() -> None:
-        app = TautApp(db_path=str(db_path), as_name=None, auth_token=None)
+        app = TautApp(db_path=str(db_path), as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)):
             app._render_inspector("newer state")
             app._conversation_intent = 2
@@ -1630,7 +1630,7 @@ def test_open_search_result_anchors_exact_hit_without_advancing_cursor(
     hit = alice.search("exact anchor needle")[0]
 
     async def exercise() -> None:
-        app = TautApp(db_path=str(db_path), as_name="alice", auth_token=None)
+        app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
         async with app.run_test(size=(100, 24)) as pilot:
             app._selected_search_hit = hit
             app._open_selected_search_result()
@@ -1672,7 +1672,7 @@ def test_delete_refresh_cannot_supersede_newer_navigation_intent(
             return future
 
     async def exercise() -> None:
-        app = TautApp(db_path=str(db_path), as_name=None, auth_token=None)
+        app = TautApp(db_path=str(db_path), as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)):
             real_session = app._session
             recording = RecordingSession()
@@ -1709,7 +1709,7 @@ def test_overlapping_send_completion_only_clears_its_own_draft(
             return future
 
     async def exercise() -> None:
-        app = TautApp(db_path=str(db_path), as_name="alice", auth_token=None)
+        app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             navigation = app.query_one("#navigation-list", TautOptionList)
             await _pause_until(
@@ -1767,7 +1767,7 @@ def test_reply_markers_and_close_restore_conversation_focus(tmp_path: Path) -> N
     bob.reply("general", str(origin.ts), "first reply")
 
     async def exercise() -> None:
-        app = TautApp(db_path=str(db_path), as_name="alice", auth_token=None)
+        app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             navigation = app.query_one("#navigation-list", TautOptionList)
             await _pause_until(
@@ -1835,7 +1835,7 @@ def test_terminal_controls_are_escaped_at_every_app_text_projection(
         assert r"\a" in text
 
     async def exercise() -> None:
-        app = TautApp(db_path=str(db_path), as_name=None, auth_token=None)
+        app = TautApp(db_path=str(db_path), as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)):
             message = Message(
                 thread="general",

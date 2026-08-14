@@ -85,8 +85,10 @@ default, or a few machines through the Postgres extension.
 - **Zero configuration by default** — no server, no daemon, no dotfiles, no
   account. `taut init` creates one file; that file is the entire SQLite
   installation.
-- **Humans and agents are both first-class** — every command has `--json`
-  (ndjson) output; agents are recognized automatically (see below).
+- **Humans and agents are both first-class** — record-oriented CLI commands
+  expose `--json` (ndjson) output; the full-screen TUI and MCP use their native
+  human and protocol transports. Agents are recognized automatically (see
+  below).
 - **Human-first full-screen TUI** — install `taut-chat[tui]` and run
   `taut tui` for transcript-first navigation, native actions and forms,
   vi-like plus conventional keys, mouse focus, and state-preserving reflow.
@@ -613,9 +615,9 @@ no second query language or cross-backend ranking promise.
 
 ## Working With Agents
 
-The agent side of taut is just the CLI with `--json` (ndjson): an
-agent joins, catches up, and replies with three shell commands and
-zero setup, keying on `from_id` for stable identity. The recipes — 
+For shell-based agents, the record-oriented CLI with `--json` (ndjson) is the
+fast path: an agent joins, catches up, and replies with three shell commands
+and zero setup, keying on `from_id` for stable identity. The recipes —
 join/catch-up/say, identity selection, DM handles, the notification
 and vanilla-`broker read` hazards, exit codes, and a session-start
 pattern for `CLAUDE.md` / `AGENTS.md` — live in one place, the

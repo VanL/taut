@@ -256,7 +256,7 @@ def test_native_summon_command_owns_safe_logging_without_replacing_host_handlers
         context = CommandContext(
             db_path="project.db",
             as_name=None,
-            auth_token=None,
+            continuity_token=None,
             json=False,
             timestamps=False,
             quiet=False,
@@ -383,7 +383,7 @@ def test_native_command_records_escape_stop_results_and_fault_diagnostics(
     context = CommandContext(
         db_path=probe,
         as_name=None,
-        auth_token=None,
+        continuity_token=None,
         json=False,
         timestamps=False,
         quiet=False,

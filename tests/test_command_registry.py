@@ -29,6 +29,25 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.sqlite_only
 
 
+def test_command_context_exposes_continuity_token_as_public_selector() -> None:
+    from taut.commands import CommandContext
+
+    context = CommandContext(
+        db_path=None,
+        as_name=None,
+        continuity_token="continuity-secret",
+        json=False,
+        timestamps=False,
+        quiet=False,
+        stdin=StringIO(),
+        stdout=StringIO(),
+        stderr=StringIO(),
+    )
+
+    assert context.continuity_token == "continuity-secret"
+    assert not hasattr(context, "auth_token")
+
+
 def test_installed_fixture_declares_command_protocol_core_floor() -> None:
     fixture_manifest = (
         Path(__file__).parent / "fixtures" / "taut_command_plugin" / "pyproject.toml"
@@ -55,7 +74,7 @@ class _EchoCommand:
     def run(self, context: Any, args: argparse.Namespace) -> int:
         context.stdout.write(
             f"{args.value}|{context.db_path}|{context.as_name}|"
-            f"{context.auth_token}|{context.json}|{context.timestamps}|"
+            f"{context.continuity_token}|{context.json}|{context.timestamps}|"
             f"{context.quiet}\n"
         )
         return 0
@@ -751,7 +770,7 @@ def test_reserved_summon_hint_fails_loud_without_dispatch_separator() -> None:
     context = CommandContext(
         db_path=None,
         as_name=None,
-        auth_token=None,
+        continuity_token=None,
         json=False,
         timestamps=False,
         quiet=False,
@@ -2405,7 +2424,7 @@ def test_generic_dispatcher_does_not_add_command_specific_error_hints() -> None:
     context = CommandContext(
         db_path=None,
         as_name=None,
-        auth_token=None,
+        continuity_token=None,
         json=False,
         timestamps=False,
         quiet=False,
