@@ -275,6 +275,7 @@ class CommandPaletteScreen(_TautModalScreen[ActionId | None]):
         super().__init__()
         self._entries = tuple(entries)
         self._visible: tuple[PaletteEntry, ...] = ()
+        self._dismissed = False
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="taut-modal"):
@@ -297,7 +298,7 @@ class CommandPaletteScreen(_TautModalScreen[ActionId | None]):
         for index, entry in enumerate(self._visible):
             if entry.enabled:
                 options.highlighted = index
-                self.dismiss(entry.action.action_id)
+                self._dismiss_once(entry.action.action_id)
                 return
 
     def on_taut_option_list_activated(self, event: OptionList.Activated) -> None:
@@ -305,10 +306,16 @@ class CommandPaletteScreen(_TautModalScreen[ActionId | None]):
             return
         entry = self._visible[event.option_index]
         if entry.enabled:
-            self.dismiss(entry.action.action_id)
+            self._dismiss_once(entry.action.action_id)
 
     def action_cancel(self) -> None:
-        self.dismiss(None)
+        self._dismiss_once(None)
+
+    def _dismiss_once(self, result: ActionId | None) -> None:
+        if self._dismissed:
+            return
+        self._dismissed = True
+        self.dismiss(result)
 
     def _render_results(self, query: str) -> None:
         self._visible = tuple(
