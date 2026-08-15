@@ -169,7 +169,7 @@ class DoctorCheck:
 
 @dataclass(frozen=True, slots=True)
 class DoctorReport:
-    """Complete result of the six fixed workspace checks."""
+    """Complete result of the seven fixed workspace checks."""
 
     db: str
     healthy: bool

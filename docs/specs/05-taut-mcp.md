@@ -1330,6 +1330,14 @@ returns the fixed `workspace attachment failed; use list_workspaces before
 retrying` result and enters the shared
 retiring cleanup/reap path. Later terminal or outcome events for an already settled
 command/generation are coalesced or ignored.
+
+When [TAUT-13] capture is enabled, every workspace-reactor path that converts an
+unexpected `Exception` into `WorkspaceCrashed` first calls the core capture
+handler with that resident owner's frozen `BrokerTarget` and `ResolvedConfig`.
+Stable phase labels distinguish command execution, command refresh, periodic
+snapshot, and outer reactor-loop failure. Resolution failures before both
+values exist are not captured. Capture never adds exception content to the
+terminal event and never changes cleanup or parent wake ordering.
 The phase latches in [MCP-4] apply the same rule to resolution, validation,
 detach, and their deadlines: event drains and timer callbacks enter the one
 master serial point, the first current transition settles the phase and its
@@ -1630,10 +1638,17 @@ for its canonical path may start while that failed entry remains. Once
 exit does not upgrade it to `reactor_failed`; it may settle an occupied
 command id under [MCP-5] but otherwise leaves the recovery instruction and
 public status unchanged until detach.
+An eligible uncaught child `Exception` is offered to [TAUT-13] before its
+content-free crash conversion. Capture failure is ignored. Identity loss,
+ordinary tool/domain errors, request cancellation, pre-resolution attachment
+failure, and direct non-`Exception` `BaseException` values retain their current
+paths and are not debug events.
 Only a process-reactor invariant failure, unrecoverable protocol construction
 failure, or whole-process shutdown failure is process-fatal and exits 1 after
 [MCP-3] teardown or its hard-exit escalation. A malformed request the SDK
 rejects without ending the stdio process is not such a failure.
+The process-fatal boundary has no single workspace whose persisted setting can
+govern it and remains uncaptured.
 
 An unsupported MCP subscription, unavailable host callback, dropped channel
 event, or reactor wake coalescing is degraded delivery, not data loss; the
@@ -1848,6 +1863,12 @@ Required proof includes:
   same/different fingerprints, ordinary access to a hidden candidate,
   identity-lost attach, second detach during `detaching`, and retry-detach for
   every `reactor_failed` origin
+- real workspace-reactor command, refresh, snapshot, and outer-loop unexpected
+  failures with debug disabled, enabled, enabled after attach, disabled after
+  attach, and capture itself failing. Each case retains a content-free
+  `WorkspaceCrashed`, unchanged parent lifecycle, one capture at most, and no
+  reactor restart to observe the setting change. Pre-resolution and
+  process-fatal paths remain uncaptured
 - parity probes showing each MCP tool calls the named public Python behavior
   after the required workspace/token ensure and returns its declared record type without
   parsing CLI text
@@ -2221,6 +2242,9 @@ wheel to register its `mcp` manifest.
 
 ## Related Plans
 
+- `docs/plans/2026-08-14-debug-failure-capture-plan.md` — captures eligible
+  resident workspace reactor failures through the core seam while preserving
+  content-free MCP crash events and process-level isolation.
 - `docs/plans/2026-08-12-extension-main-path-and-all-extra-plan.md` — adds the
   protocol-clean main `taut mcp` launch path while retaining the standalone
   script and one shared process runner.

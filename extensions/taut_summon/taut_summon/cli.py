@@ -272,6 +272,26 @@ def main(argv: Sequence[str] | None = None) -> int:
 def _main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(list(argv) if argv is not None else sys.argv[1:])
+    try:
+        return _run_parsed(parser, args)
+    except Exception as exc:
+        if isinstance(exc, RuntimeError) and str(exc) == _POLICY_ERROR_MESSAGE:
+            raise
+        from taut.debug import capture_exception
+
+        capture_exception(
+            exc,
+            db_path=getattr(args, "db_path", None),
+            surface="summon",
+            operation=f"summon.{getattr(args, 'command', 'unknown')}",
+        )
+        raise
+
+
+def _run_parsed(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+) -> int:
     if not hasattr(args, "func") and not hasattr(args, "command_factory"):
         parser.print_help(sys.stderr)
         return 1

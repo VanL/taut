@@ -423,6 +423,11 @@ Core-owned unregistered system queues use the reserved `taut.*` namespace.
 Search owns `taut.search_index`, `taut.search_index.claimed`, and
 `taut.search_index.failed` under [SRCH-8]. They are invisible to every chat
 route and listing surface; only the owning core subsystem consumes them.
+Debug failure capture owns `taut.debug` under [TAUT-13]. It is an unregistered
+operational queue, never a channel, sub-thread, direct message, notification
+inbox, persistence thread, or search-work queue. Taut chat enumeration does not
+expose it; operators inspect and consume it only through ordinary SimpleBroker
+commands.
 
 ### [IAN-6.2] Channel names
 
@@ -911,6 +916,9 @@ Required proofs:
 
 ## Related Plans
 
+- `docs/plans/2026-08-14-debug-failure-capture-plan.md` — reserves the
+  core-owned `taut.debug` operational queue and defines its retention and
+  visibility contract.
 - `docs/plans/2026-08-10-stable-dm-send-plan.md` — accepts an exact stable
   existing-DM handle for `say` without widening person-addressed creation or
   repair behavior.

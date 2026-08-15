@@ -25,11 +25,17 @@ from simplebroker import (
 from taut import addressing
 from taut._constants import (
     META_QUEUE_NAME,
+    NO_DATABASE_MESSAGE,
     load_config,
 )
-from taut._exceptions import MembershipError, TautError
-from taut._maintenance import backend_install_hint_error
-from taut.state import MemberRow, SqlSidecarTautState, dialect_for_taut_target
+from taut._exceptions import MembershipError, NotInitializedError, TautError
+from taut._maintenance import backend_install_hint_error, resolve_existing_target
+from taut.state import (
+    CoreSchemaInspectionError,
+    MemberRow,
+    SqlSidecarTautState,
+    dialect_for_taut_target,
+)
 
 from ._base import (
     _ClientBase,
@@ -111,6 +117,32 @@ class TautClient(
 
     The CLI is a renderer over this class; command semantics live here.
     """
+
+    @classmethod
+    def set_debug_capture(
+        cls,
+        enabled: bool,
+        *,
+        db_path: str | Path | None = None,
+    ) -> None:
+        """Enable or disable workspace-scoped debug failure capture."""
+
+        if type(enabled) is not bool:
+            raise TypeError("enabled must be a bool")
+        target, config = resolve_existing_target(db_path)
+        queue = Queue(META_QUEUE_NAME, db_path=target, config=config)
+        try:
+            state = SqlSidecarTautState(queue, dialect_for_taut_target(target))
+            try:
+                meta = state.probe_persistence_meta()
+            except CoreSchemaInspectionError as exc:
+                raise NotInitializedError(NO_DATABASE_MESSAGE) from exc
+            if "schema_version" not in meta:
+                raise NotInitializedError(NO_DATABASE_MESSAGE)
+            state.ensure_schema()
+            state.set_debug_capture(enabled)
+        finally:
+            queue.close()
 
     @classmethod
     def doctor(

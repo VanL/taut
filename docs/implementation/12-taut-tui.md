@@ -179,6 +179,17 @@ algorithm lives in the TUI extension. Load stays CLI-only. The native help form
 quotes the selected paths into an exact command but never invokes load or a
 subprocess.
 
+Textual 8.2.8 renders a fatal callback exception, retains it on the app, and
+returns from `App.run()` instead of raising it through the command adapter.
+`_launch.py` therefore performs one narrow post-return compatibility check for
+that retained `Exception` and passes it to core capture as `tui.fatal`. It does
+not catch widget callbacks or replace Textual's rich traceback. If `App.run()`
+actually raises, the post-return bridge is not reached and the root command
+dispatcher is the sole owner. Disabled capture and capture-sink failure leave
+Textual's return code and terminal behavior unchanged. The private retained
+attribute is a reviewed framework seam pinned by a real failing-app test at the
+retained Textual floor.
+
 Summon is discovered only through the public `taut_summon` facade. The native
 start screen constructs every `SummonRequest` field and obtains provider names
 from the controller. Each foreground run disables Summon's process signal

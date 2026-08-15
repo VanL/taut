@@ -185,6 +185,17 @@ to one fixed content-free `TautError`, so provider failure is a tool error and
 does not retire the workspace. `EmptyResultError` still reaches the existing
 empty-result handler and returns an empty `search_hit` success envelope.
 
+Unexpected exceptions that do retire a resident workspace pass through one
+`_workspace_reactor.py` helper before conversion to content-free
+`WorkspaceCrashed`. The child uses the frozen target and resolved config it
+already owns, so debug capture never re-resolves ambient cwd, `TAUT_DB`, or
+project configuration. Command, refresh, snapshot, and outer-loop failures
+have stable operation labels and one terminal capture attempt per reactor.
+Pre-resolution failures have no workspace authority and remain uncaptured.
+Because core reads `debug_capture` for every call, enable or disable takes
+effect without restarting the MCP process. No debug body, fingerprint, sink
+error, or traceback crosses the parent queue or MCP protocol boundary.
+
 Before each domain command, the child clears both notification and search
 warning lists. It returns notification warnings first, then search warnings.
 This preserves successful source results when derived-index enqueue fails and
@@ -315,6 +326,9 @@ Configuring this path is not evidence that a PyPI version has been published.
   hints. Correctness depends only on Taut state and resource reread.
 - A live stuck child is never force-detached in-process. Restart is safer than
   allowing a second client to overlap unknown backend ownership.
+- Debug capture runs only in the workspace child and only with its frozen
+  target/config pair. The master never resolves a target or opens
+  `taut.debug`.
 
 ## Key Files and Verification
 

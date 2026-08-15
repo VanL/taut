@@ -275,6 +275,7 @@ class _WorkspaceReactor:
         self.next_backstop_at = time.monotonic() + NOTIFICATION_BACKSTOP_SECONDS
         self.last_native_snapshot_at = float("-inf")
         self.native_snapshot_pending = False
+        self.crash_capture_attempted = False
 
     def _emit(self, event: WorkspaceEvent) -> None:
         self.outbound.put_nowait(event)
@@ -469,7 +470,8 @@ class _WorkspaceReactor:
         except (TautError, TypeError, ValueError) as exc:
             command_record_type = RECORD_TYPE_BY_TOOL[command.name]
             command_error = str(exc)
-        except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-066] exception
+        except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-066] exception
+            self._capture_crash(exc, operation=f"workspace.command:{command.name}")
             self._emit(WorkspaceCrashed(self.generation))
             return False
         refresh_outcome = self._refresh_after_command(command.name)
@@ -507,7 +509,8 @@ class _WorkspaceReactor:
             self.degraded = True
             self._emit(WorkspaceIdentityLost(self.generation))
             return _RefreshOutcome.IDENTITY_LOST
-        except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-066] exception
+        except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-066] exception
+            self._capture_crash(exc, operation="workspace.refresh")
             self._emit(WorkspaceCrashed(self.generation))
             return _RefreshOutcome.CRASHED
         self.previous_snapshot = pending[:100]
@@ -571,7 +574,8 @@ class _WorkspaceReactor:
             self.degraded = True
             self._emit(WorkspaceIdentityLost(self.generation))
             return True
-        except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-066] exception
+        except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-066] exception
+            self._capture_crash(exc, operation="workspace.snapshot")
             self._emit(WorkspaceCrashed(self.generation))
             return False
         snapshot = pending[:100]
@@ -619,11 +623,31 @@ class _WorkspaceReactor:
         if self.generation >= 0:
             self._emit(WorkspaceStopped(self.generation))
 
+    def _capture_crash(self, exc: Exception, *, operation: str) -> None:
+        """Capture at most one terminal failure for this workspace generation."""
+
+        if self.crash_capture_attempted:
+            return
+        self.crash_capture_attempted = True
+        if self.target is None or self.config is None:
+            return
+        from taut.debug import capture_exception
+
+        capture_exception(
+            exc,
+            broker_target=self.target,
+            broker_config=self.config,
+            surface="mcp",
+            operation=operation,
+        )
+
     def run(self) -> None:
         try:
             self._run_loop()
-        except BaseException:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-066] exception
+        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-066] exception
             if self.generation >= 0:
+                if isinstance(exc, Exception):
+                    self._capture_crash(exc, operation="workspace.run")
                 self._emit(WorkspaceCrashed(self.generation))
         finally:
             self._cleanup()

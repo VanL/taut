@@ -22,6 +22,7 @@ models specified in `docs/specs/02-taut-core.md` and
 - `docs/specs/02-taut-core.md` [TAUT-8] CLI, Python API, and watcher
 - `docs/specs/02-taut-core.md` [TAUT-10] compound-operation ordering
 - `docs/specs/02-taut-core.md` [TAUT-12] forward-compatibility obligations
+- `docs/specs/02-taut-core.md` [TAUT-13] debug failure capture
 - `docs/specs/03-identity-addressing-notifications.md` [IAN-3] member ids and
   identity claims
 - `docs/specs/03-identity-addressing-notifications.md` [IAN-4] mutable names
@@ -92,6 +93,48 @@ helper at each owned timestamp field. The import stays lazy so root help and
 unrelated extension help retain their no-backend-import startup contract.
 Public value objects, state methods, SQL rows, notification bodies, and search
 work items remain integer-valued; the string is an output representation only.
+
+### Debug failure capture is one deep core module
+
+`taut/debug.py` owns the complete debug-capture policy behind one total
+operation: `capture_exception()`. Callers name only the surface, operation, and
+workspace selector. They do not select a sink, build JSON, search a queue, run
+an action, or recover from capture failure. Keeping that failure-prone sequence
+inside one deep module matters because it runs while another exception is
+already primary. Target resolution, metadata reads, object rendering, queue
+search/write/close, subprocess work, and cleanup are all contained so they
+cannot replace the original diagnostic or exit behavior.
+
+The workspace setting is core operational metadata in `taut_meta`, not logical
+workspace content. Absent means disabled; exact `1` means enabled; disable
+deletes the key. `TautClient.set_debug_capture()` requires an initialized
+workspace and is the Python owner behind the silent actor-free
+`taut system debug enable|disable` commands. Capture reads the value on every
+eligible call. Long-running TUI and MCP processes therefore observe later
+changes without restart. Logical dump omits both the setting and the
+unregistered `taut.debug` queue; load preserves a valid destination setting
+and rejects retained debug rows as non-fresh broker state.
+
+That dynamic read has a small deliberate cost: even a disabled workspace opens
+the core metadata queue and performs one sidecar read when an eligible boundary
+exception occurs. Disabled capture never opens `taut.debug` or starts an action.
+
+The local sink writes bounded UTF-8 JSON containing the exception chain,
+head-and-tail frame evidence, bounded locals, runtime metadata, a deterministic
+fingerprint, and `taut-debug:<fingerprint>`. The payload can contain secrets and
+is intentionally not a stable compatibility schema. Under one process lock,
+the module searches the ordinary SimpleBroker queue for that literal sentinel,
+including claimed rows, before writing. This closes the same-process race but
+not the cross-process search/write race. Duplicates across processes are an
+accepted best-effort result. Removing the retained message permits recurrence.
+
+Presence of `TAUT_DEBUG_ACTION` replaces the local sink. The value is parsed
+with one POSIX argv grammar on every platform and executed without a shell;
+the JSON line is stdin, child output is discarded, and a two-second timeout
+requests termination. `TAUT_DEBUG_ACTION_ACTIVE=1` is inherited by the child
+and suppresses capture in descendants. Parse, spawn, timeout, signal, and
+nonzero-exit failure lose that event without local fallback. `TAUT_DEBUG`
+remains the separate SimpleBroker debug setting.
 
 `taut-pg` is a separate project under `extensions/taut_pg`; it installs
 `simplebroker-pg` beside Taut but does not add a root runtime dependency.

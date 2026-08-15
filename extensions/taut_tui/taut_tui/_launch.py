@@ -34,6 +34,16 @@ def run_tui(
         continuity_token=continuity_token,
     )
     app.run()
+    retained_fatal = _retained_textual_fatal(app)
+    if retained_fatal is not None:
+        from taut.debug import capture_exception
+
+        capture_exception(
+            retained_fatal,
+            db_path=db_path,
+            surface="tui",
+            operation="tui.fatal",
+        )
     return 0
 
 
@@ -51,6 +61,16 @@ def _import_textual() -> None:
         if exc.name != "textual":
             raise
         raise MissingTuiDependencyError(_INSTALL_HINT) from None
+
+
+def _retained_textual_fatal(app: Any) -> Exception | None:
+    """Return Textual's retained callback failure without affecting launch."""
+
+    try:
+        failure = getattr(app, "_exception", None)
+    except BaseException:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-090] exception
+        return None
+    return failure if isinstance(failure, Exception) else None
 
 
 __all__ = ["run_tui"]

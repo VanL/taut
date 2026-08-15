@@ -1,6 +1,6 @@
 # System Doctor Implementation
 
-The system doctor implements [DOCT-1]–[DOCT-7] as six ordered passive
+The system doctor implements [DOCT-1]–[DOCT-7] as seven ordered passive
 observations. It is intentionally narrower than a health framework: a complete
 report describes selected Taut-owned logical evidence, while target access or
 framework failure raises without returning a partial report.
@@ -20,7 +20,7 @@ project without `taut-pg` fails before report construction with the same
 actionable install hint as normal client construction; doctor never returns a
 partial finding set for that framework failure.
 
-The six observations use these owners:
+The seven observations use these owners:
 
 1. `taut/state/_sql.py` reads metadata and issues portable zero-row projections
    over every required core column. It never calls schema setup.
@@ -34,10 +34,15 @@ The six observations use these owners:
    may run only `validate_live_schema`, `dump_records`, and `validate_records`.
 6. A later public broker-stat snapshot supplies the three exact search-work
    queue totals. No search provider is loaded.
+7. The already-open core state owner reads `debug_capture`. Absent means
+   disabled, exact `1` means enabled, and any other value is a finding. When
+   enabled, sink is advisory: it is `action` when `TAUT_DEBUG_ACTION` is
+   present in the doctor process and `local` otherwise. Doctor never opens
+   `taut.debug`, runs the action, or inspects retained event bodies.
 
 This ordering matters. The report is not one database snapshot, so search is
 observed after extension state rather than cached earlier and merely rendered
-last.
+last. Debug status is deliberately last and remains a passive metadata read.
 
 ## Findings Versus Framework Failure
 
@@ -84,7 +89,8 @@ target, so PostgreSQL credentials remain redacted.
 surfaces, all exit classes, dependency shapes, schema and logical corruption,
 broker/search totals, contributor containment, forbidden-call tripwires,
 non-mutation, missing-PostgreSQL installation guidance, and safe framework
-failure. `extensions/taut_summon/tests/
+failure. `tests/test_debug_capture.py` adds exact setting-state and advisory
+sink coverage. `extensions/taut_summon/tests/
 test_persistence.py` covers active, incompatible, and missing-table Summon
 state without migration. The shared backend contract in
 `tests/test_shared_contract.py` runs healthy and failed-search reports against

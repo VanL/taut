@@ -380,8 +380,8 @@ because they are already consumed/deletion-pending, not restorable pending
 stock. The success report states their count for selected queues.
 
 Foreign queues, unregistered `sys.*` control queues, search work queues,
-extension runtime queues, and SimpleBroker aliases are excluded even when they
-exist in the same backend.
+extension runtime queues, the unregistered `taut.debug` operational queue, and
+SimpleBroker aliases are excluded even when they exist in the same backend.
 
 SimpleBroker `include` values are fnmatch globs [SB-IO-3], not exact-name
 selectors. Taut's registered queue grammars exclude the glob metacharacters
@@ -403,6 +403,7 @@ The following are always excluded:
 - Summon `sys.ctl_*` and `sys.rsp_*` queues
 - member live-anchor fields and Summon driver pid/start-time fields
 - any temporary dump file or load-guard value
+- the core `debug_capture` operational setting and every `taut.debug` event
 
 Exclusion is semantic, not prefix-only. An extension contributor must classify
 each owned state family as durable or transient in its component contract.
@@ -431,11 +432,12 @@ to an integer before the Summon sidecar write. The same invalid token forms as
 
 Every extension-owned durable sidecar schema that participates in Taut backup
 must own a version key in `taut_meta` and register one persistence component.
-Core reads every `taut_meta` key. It recognizes its own schema and load-guard
-keys and requires every other key to be claimed by exactly one installed
-component manifest. An unclaimed key, a duplicate claim, an unavailable
-component, or a component that cannot read its stored schema fails dump before
-the final output is replaced.
+Core reads every `taut_meta` key. It recognizes its own schema, load-guard, and
+[TAUT-13] `debug_capture` operational keys and requires every other key to be
+claimed by exactly one installed component manifest. An unclaimed key, a
+duplicate claim, an unavailable component, or a component that cannot read its
+stored schema fails dump before the final output is replaced. A malformed
+`debug_capture` value also fails dump; a valid value is recognized but omitted.
 
 This rule prevents a successful-looking backup from silently omitting durable
 state left by an uninstalled or incompatible extension. Search uses its own
@@ -539,6 +541,13 @@ component for that owner, a destination carrying its schema key is non-fresh
 even when the extension's other tables are empty. This prevents an
 extension-less load from certifying or merging state it does not represent.
 
+The absent or valid `debug_capture` operational key does not make an otherwise
+fresh destination non-fresh. Load neither imports nor changes it. A destination
+therefore preserves its pre-load debug setting. Malformed values fail
+eligibility. Any retained pending or claimed `taut.debug` message is still a
+broker message and makes the destination non-fresh; the operator must consume,
+delete, or replace the target before retrying.
+
 There is no merge, replace, force, or selective-component escape hatch. A
 nonempty or previously failed target exits 1 before applying the file. The
 operator must choose a fresh target or recreate the failed one.
@@ -550,8 +559,9 @@ Actual load requires quiescence, then:
 1. creates or validates the current core schema and required extension schemas
 2. checks broker and contributor destination eligibility, then atomically
    inserts a unique `taut_meta` load-guard record while rechecking core
-   sidecar emptiness and metadata-key eligibility; concurrent loads cannot both
-   acquire it
+   sidecar emptiness and metadata-key eligibility. The absent or exact-`1`
+   `debug_capture` key is allowed and preserved; all other unowned or malformed
+   values fail. Concurrent loads cannot both acquire the guard
 3. loads core and extension logical records in dependency order in one sidecar
    transaction
 4. passes the unchanged nested SimpleBroker lines to `load_lines()` so exact
@@ -757,6 +767,10 @@ At minimum, firing tests cover:
   no configuration or credential bytes
 - incomplete rename, source load guard, illegal component projection, unknown
   `taut_meta` key, and missing component importer
+- source debug setting and `taut.debug` omission; destination debug setting
+  preservation; malformed setting refusal; retained pending or claimed debug
+  event non-freshness; and raw SimpleBroker dump inclusion distinct from Taut
+  logical dump exclusion
 - active broker append and coherent sidecar or extension mutation with
   successful before-or-after inclusion; broker-wide duplicate-id containment
   under a racing move; copied-cursor clamp without live source mutation; final
@@ -798,6 +812,9 @@ run through a guard blocks release.
 
 ## Related Plans
 
+- `docs/plans/2026-08-14-debug-failure-capture-plan.md` — defines the
+  operational setting/event exclusions, destination-preservation asymmetry,
+  and retained-debug-message freshness rule.
 - `docs/plans/2026-08-12-live-point-in-time-dump-plan.md` — replaces dump
   quiescence and movement-abort with the live H-bounded logical projection.
 - `docs/plans/2026-08-10-test-quality-remediation-plan.md` — replaces

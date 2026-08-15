@@ -40,6 +40,7 @@ from taut.client import (
     TautClient,
     Thread,
 )
+from taut.debug import capture_exception
 from taut.envelope import encode_envelope
 from taut.search._jobs import FAILED_QUEUE_NAME
 from taut.state import SqlDialect, dialect_for_taut_target
@@ -77,6 +78,7 @@ def test_system_doctor_is_passive_and_portable_across_sql_backends(
             "broker_state",
             "extension_state",
             "search_work",
+            "debug_capture",
         ]
         assert healthy.db == target.display_target
         if target.backend_name == "postgres":
@@ -98,6 +100,54 @@ def test_system_doctor_is_passive_and_portable_across_sql_backends(
     assert finding.healthy is False
     assert search.status == "fail"
     assert search.data["failed"] == 1
+
+
+def test_debug_capture_setting_and_queue_are_portable_across_sql_backends(
+    taut_project: Path,
+) -> None:
+    """[TAUT-13.1] [TAUT-13.3] State and local events share the SQL seam."""
+
+    TautClient.init()
+    TautClient.set_debug_capture(True)
+    config = load_config()
+    target = resolve_broker_target(taut_project, config=config)
+    assert target is not None
+
+    def capture() -> None:
+        portable_local = "portable debug evidence"
+        _ = portable_local
+        del _
+        try:
+            raise RuntimeError("portable debug failure")
+        except RuntimeError as exc:
+            capture_exception(
+                exc,
+                surface="test",
+                operation="debug.portable",
+            )
+
+    capture()
+    capture()
+    TautClient.set_debug_capture(False)
+    capture()
+
+    queue = Queue("taut.debug", db_path=target, config=config)
+    try:
+        messages = queue.peek(all_messages=True, include_claimed=True)
+        assert messages is not None
+        payloads = [cast(str, message) for message in messages]
+    finally:
+        queue.close()
+    assert len(payloads) == 1
+    event = json.loads(payloads[0])
+    assert event["surface"] == "test"
+    assert event["operation"] == "debug.portable"
+    assert event["target"] == target.display_target
+    assert any(
+        "portable debug evidence" in value
+        for frame in event["frames"]
+        for value in frame["locals"].values()
+    )
 
 
 def _downgrade_summon_claim_schema_to_v2(queue: Queue) -> None:

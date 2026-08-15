@@ -51,6 +51,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 
 | Plan | Status | Exemplar | Note |
 |------|--------|----------|------|
+| `2026-08-14-debug-failure-capture-plan.md` | completed | no | Class 5 hardened implementation of opt-in outer-boundary exception capture, operational metadata, local SimpleBroker retention with best-effort dedup, action stdin delivery, and cross-surface containment without changing the original failure; full SQLite/PostgreSQL and extension gates plus independent review passed before owner-authorized close-out. |
 | `2026-08-14-taut-tui-action-applicability-authority-plan.md` | completed | no | Class 5 hardened contract correction making ordered non-Summon input requirements authoritative across palette, mouse controls, and central dispatch; implementation, verification, and independent review passed. |
 | `2026-08-14-command-context-continuity-token-plan.md` | completed | no | Class 5 contract correction aligning program theory, registry/TUI account, and the public command-context identity-selector name; local verification passed. |
 | `2026-08-14-windows-postrelease-ci-determinism-plan.md` | active | no | Class 5 diagnosis and event-based correction for independent Windows TUI callback and MCP SQLite/reactor failures. |

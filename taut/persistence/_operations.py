@@ -29,7 +29,7 @@ from taut._constants import MESSAGE_ID_RE, META_QUEUE_NAME, load_config
 from taut._exceptions import TautError
 from taut._maintenance import backend_install_hint_error, resolve_existing_target
 from taut.client._models import DumpReport, LoadReport, PersistenceComponentReport
-from taut.state import SqlSidecarTautState, dialect_for_taut_target
+from taut.state import DEBUG_CAPTURE_KEY, SqlSidecarTautState, dialect_for_taut_target
 
 from ._components import RegisteredPersistenceComponent, discover_components
 from ._format import (
@@ -288,9 +288,14 @@ def dump_workspace(
         state = SqlSidecarTautState(queue, dialect_for_taut_target(target))
         state.ensure_schema()
         meta = state.persistence_meta()
+        debug_capture = meta.get(DEBUG_CAPTURE_KEY)
+        if debug_capture is not None and debug_capture != "1":
+            raise TautError("debug capture setting is malformed")
         registered = discover_components()
         key_owners = {key: item for item in registered for key in item.spec.schema_keys}
-        unknown_meta = set(meta) - {"schema_version"} - set(key_owners)
+        unknown_meta = (
+            set(meta) - {"schema_version", DEBUG_CAPTURE_KEY} - set(key_owners)
+        )
         if unknown_meta:
             raise TautError(
                 "unrecognized durable extension metadata: "
@@ -526,7 +531,7 @@ def load_workspace(
                 raise TautError("load destination is not fresh")
         allowed_meta_keys = frozenset(
             key for item in file_components for key in item.spec.schema_keys
-        )
+        ) | {DEBUG_CAPTURE_KEY}
         state.acquire_load_guard(allowed_meta_keys=allowed_meta_keys)
         with queue.sidecar(transaction=True) as session:
             state.load_persistence_records_in(session, core_records)

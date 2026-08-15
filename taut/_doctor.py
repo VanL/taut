@@ -1,10 +1,11 @@
 """Bounded passive workspace diagnosis.
 
-Spec reference: docs/specs/09-system-doctor.md [DOCT-1] through [DOCT-6].
+Spec reference: docs/specs/09-system-doctor.md [DOCT-1] through [DOCT-7].
 """
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Literal
@@ -29,6 +30,7 @@ from taut.search._jobs import (
     PENDING_QUEUE_NAME,
 )
 from taut.state import (
+    DEBUG_CAPTURE_KEY,
     CoreSchemaInspectionError,
     SqlSidecarTautState,
     dialect_for_taut_target,
@@ -189,7 +191,7 @@ def _inspect_core(
 
 
 def doctor_workspace(*, db_path: str | Path | None) -> DoctorReport:
-    """Run and return the complete fixed six-check diagnostic report."""
+    """Run and return the complete fixed seven-check diagnostic report."""
 
     try:
         return _doctor_workspace(db_path=db_path)
@@ -286,6 +288,7 @@ def _doctor_workspace(*, db_path: str | Path | None) -> DoctorReport:
                 search_data,
             )
         )
+        checks.append(_debug_capture_check(meta))
     finally:
         queue.close()
 
@@ -294,6 +297,38 @@ def _doctor_workspace(*, db_path: str | Path | None) -> DoctorReport:
         db=display_target(target),
         healthy=all(check.status == "pass" for check in result),
         checks=result,
+    )
+
+
+def _debug_capture_check(meta: dict[str, str] | None) -> DoctorCheck:
+    if meta is None:
+        return _check(
+            "debug_capture",
+            "skip",
+            "core metadata unavailable",
+            {"enabled": None, "sink": None},
+        )
+    raw = meta.get(DEBUG_CAPTURE_KEY)
+    if raw is None:
+        return _check(
+            "debug_capture",
+            "pass",
+            "debug capture is disabled",
+            {"enabled": False, "sink": "disabled"},
+        )
+    if raw != "1":
+        return _check(
+            "debug_capture",
+            "fail",
+            "debug capture setting is malformed; run system debug enable or disable",
+            {"enabled": None, "sink": None},
+        )
+    sink = "action" if "TAUT_DEBUG_ACTION" in os.environ else "local"
+    return _check(
+        "debug_capture",
+        "pass",
+        f"debug capture is enabled with the {sink} sink",
+        {"enabled": True, "sink": sink},
     )
 
 
@@ -315,7 +350,9 @@ def _extension_check(
         raise TautError("persistence contributor discovery failed") from exc
     installed = [item.spec.name for item in registered]
     owners = {key: item for item in registered for key in item.spec.schema_keys}
-    unknown = sorted(set(meta) - {"schema_version", "load_guard"} - set(owners))
+    unknown = sorted(
+        set(meta) - {"schema_version", "load_guard", DEBUG_CAPTURE_KEY} - set(owners)
+    )
     active = [item for item in registered if item.spec.schema_keys & set(meta)]
     data: dict[str, object] = {
         "active": [item.spec.name for item in active],

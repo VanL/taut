@@ -354,6 +354,182 @@ def test_standalone_project_policy_failure_preflights_before_controller(
     assert "Traceback" not in captured.err
 
 
+def test_standalone_unexpected_exception_is_captured_then_reraised_same_object(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """[SUM-11] Standalone owns one outer unexpected-exception boundary."""
+
+    import json
+    from typing import cast
+
+    import taut_summon.commands.summon as summon_command
+    from taut_summon.cli import main
+
+    db_path = tmp_path / "workspace.db"
+    failure = RuntimeError("standalone summon exploded")
+    TautClient.init(db_path=db_path)
+    TautClient.set_debug_capture(True, db_path=db_path)
+    monkeypatch.delenv("TAUT_DEBUG_ACTION", raising=False)
+    monkeypatch.delenv("TAUT_DEBUG_ACTION_ACTIVE", raising=False)
+
+    class FailingCommand:
+        def run(self, context: object, args: argparse.Namespace) -> int:
+            standalone_local = "summon boundary evidence"
+            _ = standalone_local
+            del _
+            raise failure
+
+    monkeypatch.setattr(
+        summon_command,
+        "create_command",
+        lambda: FailingCommand(),
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        main(
+            [
+                "run",
+                "reviewer",
+                "--provider",
+                "scripted",
+                "--db",
+                str(db_path),
+            ]
+        )
+
+    assert caught.value is failure
+    queue = Queue("taut.debug", db_path=str(db_path))
+    try:
+        messages = queue.peek(all_messages=True, include_claimed=True)
+        assert messages is not None
+        events = [json.loads(cast(str, message)) for message in messages]
+    finally:
+        queue.close()
+    assert len(events) == 1
+    assert events[0]["surface"] == "summon"
+    assert events[0]["operation"] == "summon.run"
+    assert any(
+        "summon boundary evidence" in value
+        for frame in events[0]["frames"]
+        for value in frame["locals"].values()
+    )
+
+
+def test_standalone_handled_command_error_is_not_a_debug_event(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """[SUM-11] Expected command outcomes stay below the outer boundary."""
+
+    import taut_summon.commands.summon as summon_command
+    from taut_summon.cli import main
+
+    from taut.commands import CommandError
+
+    db_path = tmp_path / "workspace.db"
+    TautClient.init(db_path=db_path)
+    TautClient.set_debug_capture(True, db_path=db_path)
+
+    class HandledCommand:
+        def run(self, context: object, args: argparse.Namespace) -> int:
+            raise CommandError("expected summon outcome", exit_code=2)
+
+    monkeypatch.setattr(summon_command, "create_command", lambda: HandledCommand())
+
+    result = main(
+        [
+            "run",
+            "reviewer",
+            "--provider",
+            "scripted",
+            "--db",
+            str(db_path),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert result == 2
+    assert captured.out == ""
+    assert captured.err == "expected summon outcome\n"
+    queue = Queue("taut.debug", db_path=str(db_path))
+    try:
+        messages = queue.peek(all_messages=True, include_claimed=True)
+        assert messages is not None
+        assert list(messages) == []
+    finally:
+        queue.close()
+
+
+def test_installed_summon_failure_is_captured_only_by_core_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """[SUM-11] The installed route does not enter standalone containment."""
+
+    import json
+    from io import StringIO
+    from typing import cast
+
+    from taut_summon.command_manifest import summon as summon_manifest
+    from taut_summon.controller import SummonController
+
+    from taut.commands._dispatch import dispatch
+    from taut.commands._registry import CommandRegistry
+    from tests.test_command_registry import _Distribution, _EntryPoint
+
+    db_path = tmp_path / "workspace.db"
+    TautClient.init(db_path=db_path)
+    TautClient.set_debug_capture(True, db_path=db_path)
+
+    def fail_run(self: SummonController, *args: object, **kwargs: object) -> None:
+        installed_local = "installed summon evidence"
+        _ = installed_local
+        del _
+        raise RuntimeError("installed summon exploded")
+
+    monkeypatch.setattr(SummonController, "run_foreground", fail_run)
+    stderr = StringIO()
+
+    result = dispatch(
+        [
+            "--db",
+            str(db_path),
+            "summon",
+            "reviewer",
+            "--provider",
+            "scripted",
+        ],
+        registry=CommandRegistry(
+            entry_points=(
+                _EntryPoint(
+                    "summon",
+                    "taut_summon.command_manifest:summon",
+                    summon_manifest,
+                    _Distribution("taut-summon"),
+                ),
+            )
+        ),
+        stderr=stderr,
+        stdin=StringIO(),
+        stdout=StringIO(),
+    )
+
+    assert result == 1
+    assert stderr.getvalue().endswith("installed summon exploded\n")
+    queue = Queue("taut.debug", db_path=str(db_path))
+    try:
+        messages = queue.peek(all_messages=True, include_claimed=True)
+        assert messages is not None
+        events = [json.loads(cast(str, message)) for message in messages]
+    finally:
+        queue.close()
+    assert len(events) == 1
+    assert events[0]["surface"] == "cli"
+    assert events[0]["operation"] == "command.run:summon"
+
+
 def test_native_command_records_escape_stop_results_and_fault_diagnostics(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -218,6 +218,11 @@ def _prepare_invocation(
     except BaseException as exc:
         if isinstance(exc, KeyboardInterrupt):
             raise
+        _capture_boundary_exception(
+            exc,
+            db_path=merged.db_path,
+            operation=f"command.load:{verb}",
+        )
         from taut.commands._rendering import _TerminalOutputPolicyError
 
         if isinstance(exc, _TerminalOutputPolicyError):
@@ -275,6 +280,11 @@ def _run_prepared_invocation(prepared: _PreparedInvocation) -> int:
         if isinstance(exc, KeyboardInterrupt):
             raise
         primary = exc
+        _capture_boundary_exception(
+            exc,
+            db_path=context.db_path,
+            operation=f"command.run:{prepared.verb}",
+        )
         from taut.commands._rendering import _TerminalOutputPolicyError
 
         if isinstance(exc, _TerminalOutputPolicyError):
@@ -287,8 +297,35 @@ def _run_prepared_invocation(prepared: _PreparedInvocation) -> int:
             if isinstance(exc, KeyboardInterrupt):
                 raise
             if primary is None:
+                _capture_boundary_exception(
+                    exc,
+                    db_path=context.db_path,
+                    operation=f"command.cleanup:{prepared.verb}",
+                )
                 result = _render_execution_error(context, exc)
     return result
+
+
+def _capture_boundary_exception(
+    exc: BaseException,
+    *,
+    db_path: str | None,
+    operation: str,
+) -> None:
+    if not isinstance(exc, Exception) or isinstance(exc, BrokenPipeError):
+        return
+    from taut.commands._rendering import _TerminalOutputPolicyError
+
+    if isinstance(exc, _TerminalOutputPolicyError):
+        return
+    from taut.debug import capture_exception
+
+    capture_exception(
+        exc,
+        db_path=db_path,
+        surface="cli",
+        operation=operation,
+    )
 
 
 def _default_registry() -> CommandRegistry:

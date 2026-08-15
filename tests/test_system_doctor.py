@@ -141,9 +141,10 @@ def test_doctor_reports_exact_healthy_initialized_workspace(tmp_path: Path) -> N
         "broker_state",
         "extension_state",
         "search_work",
+        "debug_capture",
     ]
     assert all(isinstance(check, DoctorCheck) for check in report.checks)
-    assert [check.status for check in report.checks] == ["pass"] * 6
+    assert [check.status for check in report.checks] == ["pass"] * 7
     assert [check.data for check in report.checks] == [
         {"version": 2},
         {"present": False},
@@ -163,6 +164,7 @@ def test_doctor_reports_exact_healthy_initialized_workspace(tmp_path: Path) -> N
         },
         {"active": [], "installed": ["taut-summon"], "records": {}},
         {"claimed": 0, "failed": 0, "pending": 0},
+        {"enabled": False, "sink": "disabled"},
     ]
     assert all(check.detail and "\n" not in check.detail for check in report.checks)
 
@@ -222,7 +224,7 @@ def test_doctor_cli_finding_exits_two_with_complete_report(tmp_path: Path) -> No
     assert err == ""
     payload = json.loads(out)
     assert payload["healthy"] is False
-    assert len(payload["checks"]) == 6
+    assert len(payload["checks"]) == 7
     assert payload["checks"][1]["name"] == "load_guard"
     assert payload["checks"][1]["status"] == "fail"
     quiet_rc, quiet_out, quiet_err = run_cli(
@@ -554,7 +556,7 @@ def test_doctor_does_not_initialize_extensions_or_change_logical_state(
     assert not any(name.startswith("taut_summon") for name in after_tables)
 
 
-def test_doctor_human_output_is_seven_escaped_lines(tmp_path: Path) -> None:
+def test_doctor_human_output_is_eight_escaped_lines(tmp_path: Path) -> None:
     """[DOCT-3.3] Human findings cannot inject terminal controls or rows."""
 
     db_path = tmp_path / "workspace.db"
@@ -565,7 +567,7 @@ def test_doctor_human_output_is_seven_escaped_lines(tmp_path: Path) -> None:
 
     assert rc == 2
     assert err == ""
-    assert len(out.splitlines()) == 7
+    assert len(out.splitlines()) == 8
     assert out.splitlines()[-1] == "workspace has findings"
     assert "\x1b" not in out
     assert r"\x1b" in out

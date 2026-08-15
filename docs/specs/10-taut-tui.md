@@ -642,6 +642,19 @@ failure. A successful domain mutation remains successful even if an auxiliary
 presentation update fails; the TUI refreshes from public state and reports the
 presentation failure separately.
 
+When enabled under [TAUT-13], an `Exception` raised out of `TautApp.run()`
+reaches the installed command's core dispatch boundary. Textual 8.2.8 instead
+consumes an unhandled callback `Exception`, renders its fatal output, stores the
+first exception on the completed application, and returns from `run()`. The TUI
+launch adapter inspects that retained first exception after `run()` returns and
+calls the same core capture handler once. An exception raised by `run()` cannot
+also take the post-return path, so the two containment points do not duplicate
+an event. Recoverable action, worker, controller, and presentation failures
+that stay below Textual's fatal handling retain their existing treatment and
+are not recaptured. The capture handler does not change Textual's rich fatal
+output, primary-error priority, return result, or terminal restoration. The TUI
+adds no sink or serialization policy.
+
 ### [TUI-12.2] Terminal text and untrusted content
 
 Message bodies, names, topics, personas, diagnostics, extension logs, paths,
@@ -721,6 +734,13 @@ unwritable dump output, malformed child/log text, closed output, and worker
 failure. Each applicable case has an honest error class, no traceback, no
 terminal-state leak, and no partial domain result invented by the TUI.
 
+A real failing Textual application proves that a fatal callback `Exception` is
+retained after `App.run()` returns, reaches the TUI launch bridge once, retains
+bounded frame locals when debug capture is enabled, and preserves the same
+Textual fatal output, terminal restoration, and return result when capture is
+disabled, enabled, or itself fails. A separate raised-from-`run()` case proves
+core dispatch remains the sole owner of that path and no event is duplicated.
+
 ## 14. Explicitly Out of Scope [TUI-14]
 
 Version 1 does not include:
@@ -741,6 +761,10 @@ Version 1 does not include:
 
 ## Related Plans
 
+- `docs/plans/2026-08-14-debug-failure-capture-plan.md` — uses core dispatch for
+  exceptions raised from TUI launch and one post-run bridge for fatal callback
+  exceptions that Textual retains instead of raising, without creating
+  TUI-owned sink policy.
 - `docs/plans/2026-08-14-taut-tui-action-applicability-authority-plan.md` —
   plans the Class 5 promotion of ordered action-input context requirements into
   the sole semantic applicability authority across TUI routes.

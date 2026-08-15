@@ -31,7 +31,7 @@ def test_doctor_runs_on_background_owner_and_returns_typed_report(
 
     assert report.db == str(db_path)
     assert report.healthy is True
-    assert len(report.checks) == 6
+    assert len(report.checks) == 7
 
 
 def test_doctor_findings_and_framework_failures_cross_the_background_boundary(

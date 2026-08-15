@@ -101,9 +101,12 @@ default, or a few machines through the Postgres extension.
 - **Portable workspace dump/load** — `taut system dump --output backup.jsonl`
   writes a live H-bounded logical projection plus authoritative sidecar state;
   `taut system load` restores exact ids into a fresh SQLite or PostgreSQL target.
-- **Passive workspace diagnosis** — `taut system doctor` runs six fixed,
+- **Passive workspace diagnosis** — `taut system doctor` runs seven fixed,
   read-only checks over core, broker, extension, and search state without
   claiming work or repairing anything.
+- **Opt-in failure capture** — `taut system debug enable` retains bounded
+  exception evidence from Taut-owned outer boundaries in an ordinary broker
+  queue; it is disabled by default and may contain sensitive process data.
 - **Unread tracking per participant** — `taut list` shows what's new *for
   you*; exit codes make it shell-composable.
 - **Live following** — `taut watch` streams every thread you're in, and
@@ -378,6 +381,39 @@ $ taut system doctor
 Its snapshot can become stale immediately. A healthy report does not certify
 quiescence or load safety. Dump does not use doctor as a safety gate.
 
+Debug failure capture is also actor-free and is disabled by default:
+
+```bash
+$ taut system debug enable
+$ taut system doctor                 # reports debug_capture and its sink
+$ broker -f .taut.db peek --all taut.debug
+$ broker -f .taut.db read --all taut.debug
+$ taut system debug disable
+```
+
+Capture is best effort. Only exceptions that reach a named Taut-owned outer
+boundary qualify. Events include traceback frame locals and may contain
+credentials, messages, prompts, tokens, and paths. The payload is diagnostic
+data, not a stable API. Taut adds no retention or debug-event management
+command; use normal SimpleBroker commands to inspect or remove the
+`taut.debug` queue. Logical `taut system dump` and `load` omit the setting and
+events.
+
+If `TAUT_DEBUG_ACTION` is present, it replaces local storage. Taut parses its
+value as POSIX-style argv on every platform, runs it without a shell, and sends
+one JSON event plus a newline on stdin. For example:
+
+```bash
+TAUT_DEBUG_ACTION='broker -f /absolute/path/debug.db write debug_action -' \
+  taut tui
+```
+
+Action stdout and stderr are suppressed, execution requests termination after
+two seconds, and action failure has no local fallback. Quote executable and
+argument paths with POSIX shell quoting, including on Windows. The older
+`TAUT_DEBUG` variable remains SimpleBroker debug configuration; it does not
+enable failure capture.
+
 Dry-run validates the complete file without opening or checking the selected
 destination. A failed load after its guard is acquired leaves that fresh target
 unusable; recreate it and retry the same dump. Load refuses a broker watermark
@@ -520,7 +556,8 @@ pass `TAUT_AS` or `TAUT_TOKEN` through.
 | `taut search QUERY... [--channel CHANNEL] [--dm @NAME] [--dms]` | Search visible channel and DM history without moving cursors; add `--from`, `--kind`, `--before`, `--limit`, or `--reindex` to refine or rebuild |
 | `taut system dump --output FILE` | Write an owner-only live H-bounded logical dump of registered pending messages, core authority, and installed durable extension state |
 | `taut system load --input FILE [--dry-run]` | Validate or restore a dump into a fresh target; maintenance requires quiescence |
-| `taut system doctor` | Passively run six fixed workspace checks; no repair, work claims, or provider loading |
+| `taut system doctor` | Passively run seven fixed workspace checks, including debug-capture status; no repair, work claims, or provider loading |
+| `taut system debug enable\|disable` | Silently enable or disable workspace-scoped best-effort failure capture |
 | `taut tui` | Launch the optional human-first full-screen reflection over core and loaded first-party extensions |
 | `taut list [--all \| --dms]` | Your threads with unread state; `--all` = every thread; `--dms` = every accessible DM, including read and empty conversations |
 | `taut watch [THREAD_OR_DM ...]` | Follow selected channels/sub-threads or existing DMs; default = everything you're in plus your notification inbox |
@@ -701,6 +738,10 @@ report: DoctorReport = TautClient.doctor()
 for check in report.checks:
     assert isinstance(check, DoctorCheck)
     print(check.name, check.status, check.detail)
+
+# Operational setting; requires an initialized workspace and returns None.
+TautClient.set_debug_capture(True)
+TautClient.set_debug_capture(False)
 ```
 
 ## Trust Model (Read This Before Filing the Issue)
@@ -731,6 +772,10 @@ the design. The exact boundary is [TAUT-9] in the
   effect, or run the harness with separately constrained tools. Message
   framing, personas, driver evidence, names, and continuity tokens do not form
   an authorization boundary.
+- **Debug capture retains raw failure context.** After opt-in, traceback frame
+  locals can contain credentials, message bodies, prompts, tokens, paths, and
+  other process data. Protect the local queue or action destination as tightly
+  as the workspace itself; inspect events before sharing them.
 
 Untrusted content can still arrive indirectly. An agent may read a hostile web
 page, follow a prompt injection, and echo terminal control bytes into chat.
@@ -933,8 +978,8 @@ Docs-first: everything ships behind its own spec.
   reflow, system reports, and supervised Summon terminal handoff
   ([`docs/specs/10-taut-tui.md`](https://github.com/VanL/taut/blob/main/docs/specs/10-taut-tui.md)).
 
-**Shipped:** portable dump/load maintenance and the passive six-check system
-doctor.
+**Shipped:** portable dump/load maintenance, the passive seven-check system
+doctor, and opt-in best-effort debug failure capture.
 
 **Ahead, in order:**
 

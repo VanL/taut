@@ -118,6 +118,12 @@ taut dismiss NAME
   re-summon case: `taut summon reviewer` just works after
   `taut summon reviewer --provider claude`); (3) the name itself when
   it matches a registered adapter (the first-summon convenience);
+
+  For [TAUT-13] debug capture, the installed `taut summon` and `taut dismiss`
+  paths use the core command-dispatch containment point. The standalone
+  `taut-summon` process calls the same core handler only for an unexpected
+  `Exception` escaping its existing handled-error paths. Neither console calls
+  the handler for a normal typed operation result.
   (4) otherwise an error naming the known adapters. Name-collision
   behavior depends on whether the name was chosen or implied
   ([SUM-4] states the rule; summarized): the convenience form
@@ -1063,6 +1069,14 @@ exits and preserve release-before-ACK ordering.
   watcher rebuild or harness generation N+1.
 - Driver crash: cursors and ledger make restart safe (at-least-once
   injection); the stale ledger claim is reclaimable by evidence.
+- An unexpected `Exception` escaping the standalone `taut-summon` outer
+  adapter is offered once to [TAUT-13] with its parsed subcommand and database
+  selector, then the same exception re-raises. Expected `CommandError`, policy,
+  nothing-summoned, unresponsive-driver, signal, provider, watcher, control,
+  and supervised teardown outcomes retain their existing handling and are not
+  promoted to debug events. The installed command path relies only on core
+  dispatch, so driver internals and extension adapters must not capture the
+  same exception again.
 - Unroutable output ([SUM-6]) → driver log only.
 - Slow harness → backpressure via cursor lag ([SUM-5.4]); STATUS reports
   it.
@@ -1107,6 +1121,11 @@ exits and preserve release-before-ACK ordering.
   gates, or it belongs in the live lanes below.
 - Driver tests run real multi-process flows (a second CLI process
   writing to the watched thread), matching [TAUT-11] discipline.
+- Standalone and installed-console tests prove one outer debug capture for an
+  unexpected exception, no capture for every named handled class, dynamic
+  enable/disable observation, the same re-raised exception and cleanup order,
+  and no duplicate capture inside driver supervision. The setting and local
+  queue remain real.
 - A real scripted-provider process emits a blank assistant event followed by
   visible text in terminal mode. Against a real broker and driver, the blank
   event creates no message or error log, the visible event posts exactly, and
@@ -1384,6 +1403,9 @@ thread do not satisfy this boundary by themselves.
 
 ## Related Plans
 
+- `docs/plans/2026-08-14-debug-failure-capture-plan.md` — assigns one debug
+  containment owner to each Summon console path without changing driver
+  supervision or cleanup priority.
 - `docs/plans/2026-08-14-summon-stream-close-race-plan.md` — narrows
   close-induced stream EOF normalization without hiding open-stream, decoding,
   framing, or translation failures.

@@ -128,13 +128,14 @@ Quick pointers to the key guidance documents in this repository.
 |------|---------|
 | `taut/_constants.py` | Taut constants, config translation, name validation, and identity name pools |
 | `taut/_message_text.py` | Small built-in Unicode classifier for user-authored `say` and `reply` text |
-| `taut/_maintenance.py`, `taut/_doctor.py` | Shared existing-target resolution and the actor-free six-check passive diagnostic orchestrator |
+| `taut/_maintenance.py`, `taut/_doctor.py` | Shared existing-target resolution and the actor-free seven-check passive diagnostic orchestrator |
+| `taut/debug.py` | Deep best-effort failure capture owner: setting read, bounded event construction, local retention-scoped deduplication, and no-shell action transport |
 | `taut/terminal.py`, `taut/defaults.toml` | Lightweight public terminal-text display transform, CWD `.taut.toml` presentation discovery, and packaged baseline regex policy |
 | `taut/_broker_retry.py` | Import-only, fail-closed compatibility shim for the immutable prior Summon artifact; no retry policy |
 | `taut/addressing.py` | Channel, sub-thread, DM, mention, and notification addressing helpers |
 | `taut/_scripts.py` | Importable developer-script helper logic, currently for `bin/pytest-pg` |
 | `taut/envelope.py` | Message envelope encode/decode and foreign-message fallback |
-| `taut/state/` | Internal Taut state interface, SQL dialect marker, sidecar SQL adapter, and passive core schema/record inspection |
+| `taut/state/` | Internal Taut state interface, SQL dialect marker, sidecar SQL adapter, passive core schema/record inspection, and operational debug-setting persistence |
 | `taut/identity.py` | Process fingerprint capture, anchor selection, presence checks |
 | `taut/client/` | Public Python API package: facade plus identity, actor-scoped DM selection/directory, messaging (including exact show/delete/react), notification, thread mixins, and plain SimpleBroker queue ownership |
 | `taut/search/` | Core search projection, SQLite FTS5 provider, strict PostgreSQL provider discovery, durable invalidation jobs, and worker state machine |

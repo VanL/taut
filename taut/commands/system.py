@@ -72,11 +72,37 @@ class SystemCommand:
 
         subparsers.add_parser(
             "doctor",
-            help="Run six fixed passive workspace checks.",
+            help="Run seven fixed passive workspace checks.",
             description=(
                 "Passively inspect bounded core, broker, extension, and search "
                 "state. This does not repair state or certify quiescence."
             ),
+        )
+
+        debug_parser = subparsers.add_parser(
+            "debug",
+            help="Enable or disable best-effort failure capture.",
+            description=(
+                "Set the workspace-scoped debug failure-capture flag. Successful "
+                "changes are silent; system doctor reports the current state."
+            ),
+        )
+        debug_subparsers = debug_parser.add_subparsers(
+            dest="debug_command",
+            required=True,
+            title="operations",
+            metavar="OPERATION",
+            help="Setting operation; use 'taut system debug OPERATION --help'.",
+        )
+        debug_subparsers.add_parser(
+            "enable",
+            help="Enable debug failure capture.",
+            description="Enable workspace-scoped debug failure capture.",
+        )
+        debug_subparsers.add_parser(
+            "disable",
+            help="Disable debug failure capture.",
+            description="Disable workspace-scoped debug failure capture.",
         )
 
     def run(self, context: CommandContext, args: argparse.Namespace) -> int:
@@ -120,6 +146,12 @@ class SystemCommand:
                 stdout=context.stdout,
             )
             return 0 if report.healthy else 2
+        if args.system_command == "debug":
+            TautClient.set_debug_capture(
+                args.debug_command == "enable",
+                db_path=context.db_path,
+            )
+            return 0
         raise RuntimeError(f"unsupported system operation: {args.system_command}")
 
 

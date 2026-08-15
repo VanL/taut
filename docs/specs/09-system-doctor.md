@@ -28,6 +28,7 @@ specified expectation. It does not mean that:
 
 Owner: core owns the fixed report and command. Persistence contributors supply
 only their already-owned durable state to the fixed `extension_state` check.
+Core operational metadata supplies the fixed `debug_capture` check.
 Boundary: observable Taut logical state and public broker statistics.
 Verification: [DOCT-7]. Required action: treat findings as remediation evidence,
 never as a quiescence or dump/load certificate.
@@ -260,7 +261,8 @@ integrity rule.
 ### [DOCT-4.5] `extension_state`
 
 Discover persistence contributors and map their declared schema keys. Ignore
-core `schema_version` and `load_guard`. Fail on malformed or duplicate
+core `schema_version`, `load_guard`, and the recognized [TAUT-13]
+`debug_capture` operational key. Fail on malformed or duplicate
 manifests, unknown durable metadata keys, an active contributor without passive
 live-schema inspection, an active contributor whose installed implementation
 rejects the stored live schema, read-only export failure, or invalid exported
@@ -312,6 +314,28 @@ of the pending-work queue. Pending and claimed depth are informational and
 pass. Nonzero failed depth fails because [SRCH-8.2] and [SRCH-9] quarantine work
 there without automatic retry. No count implies expiration, provider health,
 index completeness, or freshness.
+
+### [DOCT-4.7] `debug_capture`
+
+Read `debug_capture` from the already-open core metadata snapshot. Absent is
+disabled and passes. Exact `1` is enabled and passes. Any other stored value
+fails. The sink is `disabled` when off, `local` when enabled and
+`TAUT_DEBUG_ACTION` is absent, and `action` when enabled and the environment
+variable is present. Doctor never emits or validates the action string and
+never opens `taut.debug`.
+
+```json
+{"enabled": false, "sink": "disabled"}
+```
+
+`enabled` is `bool | null`; `sink` is
+`"disabled" | "local" | "action" | null`. Both are null on prerequisite skip
+or malformed stored state.
+
+The reported sink reflects the doctor process's environment at observation
+time. It is advisory for a TUI, MCP server, Summon process, or other process
+whose environment can differ. Enabled capture is operational state, not a
+health finding.
 
 ## 5. Contributor and Search Boundaries [DOCT-5]
 
@@ -380,6 +404,9 @@ At minimum, firing tests cover:
   `load_records`;
 - empty, pending, claimed, and failed search-work queues, with no provider load,
   schema initialization, move, reclaim, decode, or rebuild;
+- disabled, enabled local, enabled action, malformed, and prerequisite-skipped
+  debug capture with exact seventh-check order, data shape, human line, JSON
+  fields, healthy semantics, and no queue open or action execution;
 - nonexistent SQLite remains nonexistent; inactive extension and search schemas
   remain absent; and every Taut-owned handle closes under success, findings,
   framework failure, and renderer failure;
@@ -404,5 +431,7 @@ seams in `taut/persistence/`, public values in `taut/client/_models.py`, and the
 
 ## Related Plans
 
+- `docs/plans/2026-08-14-debug-failure-capture-plan.md` adds the seventh fixed
+  passive check and separates operational debug state from extension ownership.
 - `docs/plans/2026-08-10-system-doctor-plan.md` defines promotion,
   implementation slices, no-repair proof, and independent review.

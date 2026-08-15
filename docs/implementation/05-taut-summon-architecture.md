@@ -151,6 +151,16 @@ driver, provider, or PTY implementation. Accessing a public export loads only
 its owning module. This keeps help and embedding discovery cheap without a
 general lazy-loader framework.
 
+The standalone console also owns one outer debug boundary. After argument
+parsing, an unexpected `Exception` escaping the selected command is passed to
+core `capture_exception()` with `summon.<command>`, then the same exception
+object is re-raised. Expected `CommandError` outcomes, terminal-policy errors,
+signals, and driver-internal supervised failures keep their existing owners
+and do not become standalone debug events. The installed `taut summon` route
+does not enter `cli.main`; its unexpected adapter failure is captured once by
+the core command dispatcher. This split prevents duplicate events while
+keeping the standalone executable useful outside the root CLI.
+
 ### Terminal, not runtime: ears and mouth ([SUM-2])
 
 Summon does not build an agent loop. The harness (Claude Code, Codex CLI,
@@ -727,7 +737,7 @@ require a separately drained subprocess pipe.
 | `extensions/taut_summon/taut_summon/models.py` | Public request/result/status values and operation-error hierarchy ([SUM-13]) |
 | `extensions/taut_summon/taut_summon/controller.py` | CLI-independent provider/list/status/stop/foreground-run orchestration ([SUM-13]) |
 | `extensions/taut_summon/taut_summon/interaction.py` | Stdlib-only public terminal availability/lease protocol and shell adapter ([SUM-7.4]/[SUM-13]) |
-| `extensions/taut_summon/taut_summon/cli.py` | Lightweight `run`/`stop`/`status` argparse, human rendering, and exit-code mapping |
+| `extensions/taut_summon/taut_summon/cli.py` | Lightweight `run`/`stop`/`status` argparse, human rendering, exit-code mapping, and standalone unexpected-exception capture boundary |
 | `extensions/taut_summon/taut_summon/_driver.py` | Bootstrap ([SUM-4]), ears watch handler, event pump, resume, nonblocking terminal-close request, foreground finalization; `format_injection` ([SUM-5.2]) |
 | `extensions/taut_summon/taut_summon/_state.py` | The two-table ledger, claim/session helpers, single-driver guard evidence ([SUM-8]) |
 | `extensions/taut_summon/taut_summon/_control.py` | Fixed `_ControlReactor`, between-turn replacement supervisor, client, `sys.*` queue derivation, rate backstop ([SUM-9]/[SUM-10]/[SUM-11]) |

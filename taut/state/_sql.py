@@ -40,6 +40,7 @@ from taut.state._types import (
 
 SCHEMA_VERSION_KEY = "schema_version"
 LOAD_GUARD_KEY = "load_guard"
+DEBUG_CAPTURE_KEY = "debug_capture"
 LOAD_GUARD_MESSAGE = (
     "load incomplete; recreate the target before running ordinary Taut operations"
 )
@@ -178,6 +179,9 @@ class SqlSidecarTautState:
 
     def get_schema_version(self) -> int | None:
         return get_schema_version(self.queue)
+
+    def set_debug_capture(self, enabled: bool) -> None:
+        set_debug_capture(self.queue, enabled=enabled)
 
     def insert_member(
         self,
@@ -546,13 +550,16 @@ def acquire_load_guard(
     with queue.sidecar(transaction=True) as session:
         meta_rows = _all(
             session,
-            "SELECT key FROM taut_meta WHERE key != ? ORDER BY key",
+            "SELECT key, value FROM taut_meta WHERE key != ? ORDER BY key",
             (SCHEMA_VERSION_KEY,),
         )
         unexpected_meta = {
             str(row[0]) for row in meta_rows if str(row[0]) not in allowed_meta_keys
         }
-        if unexpected_meta:
+        malformed_debug_capture = any(
+            str(row[0]) == DEBUG_CAPTURE_KEY and str(row[1]) != "1" for row in meta_rows
+        )
+        if unexpected_meta or malformed_debug_capture:
             raise TautError("load destination is not fresh")
         for table in tables:
             count = _one(session, f"SELECT COUNT(*) FROM {table}")
@@ -588,6 +595,25 @@ def get_schema_version(queue: Queue) -> int | None:
             (SCHEMA_VERSION_KEY,),
         )
     return None if row is None else int(row[0])
+
+
+def set_debug_capture(queue: Queue, *, enabled: bool) -> None:
+    """Set or remove the core operational debug-capture flag."""
+
+    with queue.sidecar(transaction=True) as session:
+        if enabled:
+            session.run(
+                """
+                INSERT INTO taut_meta (key, value) VALUES (?, ?)
+                ON CONFLICT (key) DO UPDATE SET value = excluded.value
+                """,
+                (DEBUG_CAPTURE_KEY, "1"),
+            )
+        else:
+            session.run(
+                "DELETE FROM taut_meta WHERE key = ?",
+                (DEBUG_CAPTURE_KEY,),
+            )
 
 
 def insert_member(

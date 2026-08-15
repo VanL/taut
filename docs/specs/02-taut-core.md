@@ -141,6 +141,12 @@ storage project file under its existing contract. `[terminal_text]` remains
 the separate current-directory `.taut.toml` presentation policy defined by
 [TAUT-6.4]; storage selectors do not relocate it.
 
+`TAUT_DEBUG_ACTION` and the internal `TAUT_DEBUG_ACTION_ACTIVE` descendant
+loop marker are Taut-owned operational inputs outside the closed
+Taut-to-SimpleBroker configuration translation. The existing `TAUT_DEBUG`
+setting continues to translate only to SimpleBroker `BROKER_DEBUG`; it does
+not enable [TAUT-13] failure capture.
+
 Packaged reaction defaults are `values = ["ack", "blocked"]`. A
 storage-authoritative selected Taut project file may replace that ordered
 list; a missing table or key inherits the packaged values, while an explicit
@@ -1286,7 +1292,7 @@ exit classes apply equally to built-in and extension command adapters.
     body never uses stdout. Dry-run emits a normal success record with
     `dry_run: true`, `destination_checked: false`, and `applied: false`.
   - `system doctor` emits the one aggregate `system_doctor` record defined by
-    [DOCT-3.3]. Its six ordered checks, exact stable data keys, nullable
+    [DOCT-3.3]. Its seven ordered checks, exact stable data keys, nullable
     unavailable values, and findings derivation are [DOCT-4].
 
   These field names are the current contract. Because the project is still in
@@ -2625,6 +2631,112 @@ diagnostic historical probe recording that old Summon requires the unrelated
 Users migrating from GitHub-installed `taut` must uninstall it before
 installing `taut-chat`.
 
+## 13. Debug Failure Capture [TAUT-13]
+
+### [TAUT-13.1] Setting and command
+
+Debug failure capture is workspace-scoped, absent and disabled by default, and
+stored as core operational metadata under the `taut_meta` key
+`debug_capture`. Enabled is the exact value `1`; disable deletes the key. Other
+values are malformed operational state. Enable replaces a malformed value with
+`1`; disable removes it. Those commands are the supported repair path for this
+one operational key.
+
+The actor-free commands are `taut system debug enable` and
+`taut system debug disable`. They accept the existing system globals, reject
+identity and timestamp globals, and emit no success record in human, JSON, or
+quiet mode. Repeating either command is a successful no-op. The corresponding
+class operation is:
+
+```python
+TautClient.set_debug_capture(
+    enabled: bool,
+    *,
+    db_path: str | Path | None = None,
+) -> None
+```
+
+### [TAUT-13.2] Capture event and containment boundary
+
+A debug event is an `Exception` that reaches a named Taut-owned outermost
+containment point before that boundary converts it to a CLI exit, TUI fatal
+exit, MCP workspace crash, or standalone Summon process failure. Exceptions
+already converted to normal domain, tool, worker, or recoverable UI results
+below that point are handled outcomes and are not debug events.
+`KeyboardInterrupt`, `SystemExit`, cancellation implemented outside
+`Exception`, and other direct `BaseException` subclasses are not captured.
+
+The boundary calls the core handler before rendering or discarding the
+exception and otherwise preserves its existing behavior. The handler reads the
+setting from durable state on every call not suppressed by the inherited
+action-descendant loop marker; long-running processes do not cache it.
+
+### [TAUT-13.3] Local event and deduplication
+
+The local sink writes one UTF-8 JSON object to the core-owned, unregistered,
+reserved queue `taut.debug`. The version-1 event contains a type and version,
+UTC capture time, display-safe target, stable surface and operation labels,
+exception type and message, formatted traceback, bounded frame locals,
+bounded runtime/process metadata, a deterministic SHA-256 fingerprint, and
+the literal sentinel `taut-debug:<fingerprint>`. It may contain credentials,
+message bodies, paths, prompts, tokens, and other sensitive process data. Its
+schema is exceptional diagnostic data, not a compatibility contract; later
+readers must tolerate added, removed, truncated, or changed metadata.
+
+Before a local write, the handler searches `taut.debug` for the exact sentinel
+with the public literal-substring search, limit one, including claimed rows. A
+retained match skips the write. A process-local lock closes the same-process
+search/write race. Search failure still attempts the write. Cross-process
+search/write remains non-atomic and duplicate events are permitted.
+Deduplication lasts only while a matching message is retained: `peek`
+preserves it; `read` claims it, and claimed inclusion continues to suppress a
+duplicate while that row is retained. Explicit deletion or broker vacuum of
+the claimed row permits later capture. Users manage the queue only through
+ordinary SimpleBroker commands.
+
+### [TAUT-13.4] Action sink
+
+Presence of `TAUT_DEBUG_ACTION`, including an empty or malformed value,
+replaces local storage for that event. Taut parses the string into an argv with
+one documented POSIX-style quoting grammar on every platform and without a
+shell. It runs the argv with inherited environment and working directory, adds
+the internal `TAUT_DEBUG_ACTION_ACTIVE=1` loop marker, sends the event plus one
+newline on stdin, suppresses stdout and stderr, and requests termination after
+two seconds. A handler that inherits that marker returns without capture,
+preventing a failing action or its descendants from recursively invoking the
+action.
+
+Parse, spawn, write, timeout, termination, signal, and nonzero-exit failures
+are ignored. There is no local fallback. Core does not search or deduplicate an
+action-owned destination; the payload fingerprint and sentinel let the action
+do so if desired. `TAUT_DEBUG_ACTION` is separate from the existing
+`TAUT_DEBUG` translation to SimpleBroker `BROKER_DEBUG`.
+
+### [TAUT-13.5] Best-effort and lifecycle contract
+
+Event construction, local representation, target resolution, setting read,
+queue search/write/close, action execution, and debug cleanup never raise to
+the caller and never replace the original failure. Action execution requests
+termination after the fixed timeout, then permits only the operating system's
+child-termination wait.
+
+Debug state is operational, not logical workspace content. The setting and
+`taut.debug` messages are omitted from Taut logical dump/load. A raw
+SimpleBroker dump remains outside that projection and may include the
+unregistered queue. Captured events persist until an operator reads or deletes
+them; Taut adds no retention, export, repair, or report-management command.
+
+### [TAUT-13.6] Verification
+
+Tests use real SQLite sidecar metadata and real SimpleBroker queues for setting
+reads, local writes, literal search, claimed-row search, retention, and handle
+closure. Action tests run a real fixture executable and inspect its stdin and
+exit behavior. Boundary tests prove the original exception result and
+diagnostic with capture disabled, enabled, and failing. Fakes may control time,
+process metadata, and local-value representation, but may not replace the
+state read, queue search/write, subprocess transport, or outer boundary under
+test.
+
 ## Implementation Mapping
 
 - `docs/implementation/04-taut-architecture.md` explains the core runtime and
@@ -2637,6 +2749,9 @@ installing `taut-chat`.
 
 ## Related Plans
 
+- `docs/plans/2026-08-14-debug-failure-capture-plan.md` defines the opt-in
+  operational setting, local and action sinks, containment points, persistence
+  exclusions, sensitive-data lifecycle, and cross-surface proof.
 - `docs/plans/2026-08-14-command-context-continuity-token-plan.md` — aligns
   the public command-context identity-selector name with the continuity-token
   identity model and documents the active registry/TUI transport boundaries.

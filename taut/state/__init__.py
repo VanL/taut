@@ -22,6 +22,7 @@ from taut.state._dialect import (
     dialect_for_taut_target,
 )
 from taut.state._sql import (
+    DEBUG_CAPTURE_KEY,
     SCHEMA_VERSION_KEY,
     CoreSchemaInspectionError,
     CoreStateInspectionError,
@@ -189,6 +190,7 @@ class TautState(Protocol):
 
 
 __all__ = [
+    "DEBUG_CAPTURE_KEY",
     "PORTABLE_SQL_DIALECT",
     "POSTGRES_SQL_DIALECT",
     "SCHEMA_VERSION_KEY",

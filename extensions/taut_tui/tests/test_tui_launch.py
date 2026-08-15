@@ -6,11 +6,12 @@ Spec references:
 
 from __future__ import annotations
 
+import os
 import sys
 from importlib.metadata import EntryPoint
 from io import StringIO
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -20,6 +21,48 @@ pytestmark = pytest.mark.sqlite_only
 class _TTYStringIO(StringIO):
     def isatty(self) -> bool:
         return True
+
+
+def _configure_debug_capture_mode(
+    *,
+    db_path: Path,
+    capture_mode: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from simplebroker import Queue
+
+    from taut import TautClient
+
+    if capture_mode != "disabled":
+        TautClient.set_debug_capture(True, db_path=db_path)
+    if capture_mode != "write-failure":
+        return
+    real_write = Queue.write
+
+    def fail_debug_write(queue: Queue, message: str, **kwargs: object) -> object:
+        if queue.name == "taut.debug":
+            raise RuntimeError("debug sink failed")
+        return real_write(queue, message, **kwargs)
+
+    monkeypatch.setattr(Queue, "write", fail_debug_write)
+
+
+def _assert_textual_debug_events(
+    events: list[dict[str, Any]],
+    *,
+    capture_mode: str,
+) -> None:
+    if capture_mode != "enabled":
+        assert events == []
+        return
+    assert len(events) == 1
+    assert events[0]["surface"] == "tui"
+    assert events[0]["operation"] == "tui.fatal"
+    assert any(
+        "textual callback evidence" in value
+        for frame in events[0]["frames"]
+        for value in frame["locals"].values()
+    )
 
 
 def _dispatch_static(argv: list[str]) -> tuple[int, str, str]:
@@ -295,3 +338,118 @@ def test_broken_installed_textual_is_not_mislabelled_as_missing_dependency(
 
     assert caught.value is failure
     assert "pip install 'taut-tui'" not in str(caught.value)
+
+
+@pytest.mark.parametrize("capture_mode", ["disabled", "enabled", "write-failure"])
+def test_real_textual_fatal_callback_reaches_post_run_debug_bridge(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capture_mode: str,
+) -> None:
+    """[TUI-12.1] Textual fatal behavior survives every capture state."""
+
+    import json
+    from types import SimpleNamespace
+
+    from simplebroker import Queue
+
+    from taut import TautClient
+    from taut_tui import _launch
+    from taut_tui.app import TautApp
+
+    db_path = tmp_path / "workspace.db"
+    instances: list[TautApp] = []
+    for key in tuple(os.environ):
+        if key.startswith(("TAUT_", "BROKER_")) and key != "BROKER_TEST_BACKEND":
+            monkeypatch.delenv(key, raising=False)
+    TautClient.init(db_path=db_path)
+    _configure_debug_capture_mode(
+        db_path=db_path,
+        capture_mode=capture_mode,
+        monkeypatch=monkeypatch,
+    )
+
+    class FailingTautApp(TautApp):
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            instances.append(self)
+
+        def on_mount(self) -> None:
+            callback_local = "textual callback evidence"
+            _ = callback_local
+            del _
+            raise RuntimeError("textual callback exploded")
+
+        def run(self, **kwargs: Any) -> None:
+            super().run(headless=True)
+
+    real_import = _launch.importlib.import_module
+
+    def import_failing_app(name: str) -> object:
+        if name == "taut_tui.app":
+            return SimpleNamespace(TautApp=FailingTautApp)
+        return real_import(name)
+
+    monkeypatch.setattr(_launch.importlib, "import_module", import_failing_app)
+    monkeypatch.setattr(_launch.sys, "stdin", _TTYStringIO())
+    monkeypatch.setattr(_launch.sys, "stdout", _TTYStringIO())
+
+    result = _launch.run_tui(
+        db_path=str(db_path),
+        as_name=None,
+        continuity_token=None,
+    )
+
+    assert result == 0
+    assert len(instances) == 1
+    assert instances[0].return_code == 1
+    queue = Queue("taut.debug", db_path=str(db_path))
+    try:
+        messages = queue.peek(all_messages=True, include_claimed=True)
+        assert messages is not None
+        events = [json.loads(cast(str, message)) for message in messages]
+    finally:
+        queue.close()
+    _assert_textual_debug_events(events, capture_mode=capture_mode)
+
+
+def test_tui_run_exception_bypasses_post_run_bridge_and_is_captured_by_core(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[TUI-13.3] A raised launch failure has one core-dispatch owner."""
+
+    import json
+
+    from simplebroker import Queue
+
+    from taut import TautClient
+    from taut_tui import _launch
+
+    db_path = tmp_path / "workspace.db"
+    TautClient.init(db_path=db_path)
+    TautClient.set_debug_capture(True, db_path=db_path)
+
+    def fail_run_tui(**kwargs: object) -> int:
+        launch_local = "raised TUI launch evidence"
+        _ = launch_local, kwargs
+        del _
+        raise RuntimeError("TUI launch exploded")
+
+    monkeypatch.setattr(_launch, "run_tui", fail_run_tui)
+
+    result, stdout, stderr = _dispatch_static(["--db", str(db_path), "tui"])
+
+    assert result == 1
+    assert stdout == ""
+    assert stderr == "TUI launch exploded\n"
+    queue = Queue("taut.debug", db_path=str(db_path))
+    try:
+        messages = queue.peek(all_messages=True, include_claimed=True)
+        assert messages is not None
+        events = [json.loads(cast(str, message)) for message in messages]
+    finally:
+        queue.close()
+    assert len(events) == 1
+    assert events[0]["surface"] == "cli"
+    assert events[0]["operation"] == "command.run:tui"

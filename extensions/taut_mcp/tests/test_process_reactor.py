@@ -13,9 +13,10 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
+from simplebroker import Queue
 from tests.helpers.eventually import async_eventually
 
 import taut_mcp._process_reactor as process_reactor
@@ -46,6 +47,16 @@ def _create_workspace(tmp_path: Path, name: str) -> tuple[Path, str, str]:
     assert member.token is not None
     client.close()
     return workspace, member.token, member.member_id
+
+
+def _debug_events(workspace: Path) -> list[dict[str, Any]]:
+    queue = Queue("taut.debug", db_path=str(workspace / ".taut.db"))
+    try:
+        messages = queue.peek(all_messages=True, include_claimed=True)
+        assert messages is not None
+        return [json.loads(cast(str, message)) for message in messages]
+    finally:
+        queue.close()
 
 
 class _FingerprintAuditedCandidates(dict[int, Any]):
@@ -488,6 +499,7 @@ def test_unexpected_resolution_crash_clears_hidden_candidate_fingerprint(
     """[MCP-4] Dead-owner fallback clears a hidden digest before removal."""
 
     workspace, token, _ = _create_workspace(tmp_path, "selected")
+    TautClient.set_debug_capture(True, db_path=workspace / ".taut.db")
 
     def crash_resolution(_: str) -> Any:
         raise OSError("synthetic unexpected resolution crash")
@@ -508,6 +520,8 @@ def test_unexpected_resolution_crash_clears_hidden_candidate_fingerprint(
             await reactor.aclose()
 
     asyncio.run(scenario())
+
+    assert _debug_events(workspace) == []
 
 
 @pytest.mark.sqlite_only
@@ -1293,6 +1307,7 @@ def test_child_fault_is_isolated_and_reported_once(
 
     failed_workspace, failed_token, _ = _create_workspace(tmp_path, "failed")
     healthy_workspace, healthy_token, _ = _create_workspace(tmp_path, "healthy")
+    TautClient.set_debug_capture(True, db_path=failed_workspace / ".taut.db")
     real_execute = workspace_reactor.execute_command
 
     def selective_crash(client: TautClient, name: str, arguments: Any) -> Any:
@@ -1337,6 +1352,185 @@ def test_child_fault_is_isolated_and_reported_once(
             await reactor.aclose()
 
     asyncio.run(scenario())
+
+    events = _debug_events(failed_workspace)
+    assert len(events) == 1
+    assert events[0]["surface"] == "mcp"
+    assert events[0]["operation"] == "workspace.command:say"
+    assert events[0]["exception"]["message"] == "participant-controlled secret"
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(10)
+def test_refresh_crash_captures_after_runtime_enable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[MCP-8] Resident workspaces read capture state at failure time."""
+
+    workspace, token, _ = _create_workspace(tmp_path, "selected")
+    fail_refresh = threading.Event()
+    real_peek = workspace_reactor.TautClient.peek_inbox
+
+    def failing_peek(self: TautClient, *, limit: int = 1000) -> Any:
+        if fail_refresh.is_set():
+            raise RuntimeError("refresh failed")
+        return real_peek(self, limit=limit)
+
+    monkeypatch.setattr(workspace_reactor.TautClient, "peek_inbox", failing_peek)
+
+    async def scenario() -> None:
+        reactor = ProcessReactor(asyncio.get_running_loop())
+        try:
+            attached = await reactor.attach_workspace(str(workspace), token)
+            TautClient.set_debug_capture(True, db_path=workspace / ".taut.db")
+            fail_refresh.set()
+            with _tool_error("workspace reactor failed; detach and reattach"):
+                await reactor._execute_ready_tool(
+                    str(attached["workspace"]),
+                    "whoami",
+                    {},
+                )
+        finally:
+            await reactor.aclose()
+
+    asyncio.run(scenario())
+
+    events = _debug_events(workspace)
+    assert len(events) == 1
+    assert events[0]["operation"] == "workspace.refresh"
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(10)
+def test_snapshot_crash_is_captured_before_content_free_workspace_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[MCP-8] Periodic snapshot failure has its own stable operation label."""
+
+    workspace, token, _ = _create_workspace(tmp_path, "selected")
+    TautClient.set_debug_capture(True, db_path=workspace / ".taut.db")
+    fail_snapshot = threading.Event()
+    real_peek = workspace_reactor.TautClient.peek_inbox
+
+    def failing_peek(self: TautClient, *, limit: int = 1000) -> Any:
+        if fail_snapshot.is_set():
+            raise RuntimeError("snapshot failed")
+        return real_peek(self, limit=limit)
+
+    monkeypatch.setattr(workspace_reactor.TautClient, "peek_inbox", failing_peek)
+
+    async def scenario() -> None:
+        reactor = ProcessReactor(asyncio.get_running_loop())
+        try:
+            await reactor.attach_workspace(str(workspace), token)
+            fail_snapshot.set()
+            await async_eventually(
+                lambda: (
+                    reactor.list_workspaces()["records"][0]["status"]
+                    == "reactor_failed"
+                ),
+                timeout=3.0,
+                description="snapshot crash publication",
+            )
+        finally:
+            await reactor.aclose()
+
+    asyncio.run(scenario())
+
+    events = _debug_events(workspace)
+    assert len(events) == 1
+    assert events[0]["operation"] == "workspace.snapshot"
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(10)
+def test_outer_workspace_loop_crash_is_captured_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[MCP-8] Unexpected reactor-loop failures retain workspace evidence."""
+
+    workspace, token, _ = _create_workspace(tmp_path, "selected")
+    TautClient.set_debug_capture(True, db_path=workspace / ".taut.db")
+    real_run_cycle = workspace_reactor._WorkspaceReactor._run_cycle
+
+    def crash_after_ready(self: workspace_reactor._WorkspaceReactor) -> bool:
+        result = real_run_cycle(self)
+        if self.ready:
+            outer_local = "outer loop evidence"
+            _ = outer_local
+            del _
+            raise RuntimeError("outer loop failed")
+        return result
+
+    monkeypatch.setattr(
+        workspace_reactor._WorkspaceReactor,
+        "_run_cycle",
+        crash_after_ready,
+    )
+
+    async def scenario() -> None:
+        reactor = ProcessReactor(asyncio.get_running_loop())
+        try:
+            await reactor.attach_workspace(str(workspace), token)
+            await async_eventually(
+                lambda: (
+                    reactor.list_workspaces()["records"][0]["status"]
+                    == "reactor_failed"
+                ),
+                timeout=3.0,
+                description="outer workspace crash publication",
+            )
+        finally:
+            await reactor.aclose()
+
+    asyncio.run(scenario())
+
+    events = _debug_events(workspace)
+    assert len(events) == 1
+    assert events[0]["operation"] == "workspace.run"
+    assert any(
+        "outer loop evidence" in value
+        for frame in events[0]["frames"]
+        for value in frame["locals"].values()
+    )
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(10)
+def test_workspace_crash_observes_runtime_disable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[MCP-8] Disabling capture takes effect without a reactor restart."""
+
+    workspace, token, _ = _create_workspace(tmp_path, "selected")
+    TautClient.set_debug_capture(True, db_path=workspace / ".taut.db")
+
+    def crash_command(client: TautClient, name: str, arguments: Any) -> Any:
+        raise RuntimeError("disabled crash")
+
+    monkeypatch.setattr(workspace_reactor, "execute_command", crash_command)
+
+    async def scenario() -> None:
+        reactor = ProcessReactor(asyncio.get_running_loop())
+        try:
+            attached = await reactor.attach_workspace(str(workspace), token)
+            TautClient.set_debug_capture(False, db_path=workspace / ".taut.db")
+            with _tool_error("workspace reactor failed; detach and reattach"):
+                await reactor._execute_ready_tool(
+                    str(attached["workspace"]),
+                    "whoami",
+                    {},
+                )
+        finally:
+            await reactor.aclose()
+
+    asyncio.run(scenario())
+
+    assert _debug_events(workspace) == []
 
 
 @pytest.mark.sqlite_only

@@ -451,7 +451,7 @@ class _RuntimeImportVisitor(ast.NodeVisitor):
         (
             Path("extensions/taut_tui/taut_tui/_launch.py"),
             {"taut_tui"},
-            set(),
+            {"taut.debug"},
         ),
         (
             Path("taut/commands/_rendering.py"),
@@ -480,6 +480,7 @@ class _RuntimeImportVisitor(ast.NodeVisitor):
                 "taut_summon.commands.dismiss",
                 "taut_summon.commands.summon",
                 "taut_summon.controller",
+                "taut.debug",
             },
         ),
         (
