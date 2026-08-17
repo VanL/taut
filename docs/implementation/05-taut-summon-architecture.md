@@ -818,8 +818,24 @@ the separate owner of named execution-path evidence. Do not add private
 Coverage schema checks, file-name filtering, or per-shard line requirements to
 the integrity step.
 
+Automatic subprocess coverage belongs only to children expected to exit
+normally and save their evidence. The watcher `hang` and `startup-hang` probes,
+whose successful assertion requires forced termination, remove Coverage's three
+subprocess-control variables before spawn. The `probe`, `early-exit`,
+`invalid-startup`, and `unexpected-startup` modes retain coverage. Malformed
+startup modes are allowed to exit and save normally after their output is
+captured. A missed cleanup cap fails; kill-and-reap runs only if the child is
+still live after the timeout/poll boundary. Otherwise a
+parent kill can race the coverage SQLite file's creation and leave a validly
+named zero-byte shard. The healthy watcher probe owns the real `BaseReactor`
+execution path. The aggregator must still reject every zero-byte shard.
+Producer lifecycle, not post-upload filtering, prevents a green test cleanup
+from manufacturing invalid evidence.
+
 ## Related Plans
 
+- `docs/plans/2026-08-14-windows-postrelease-ci-determinism-plan.md` — exact
+  callback/MCP ownership diagnosis and killed negative-probe coverage lifecycle.
 - `docs/plans/2026-08-14-review-findings-remediation-plan.md` — bounded
   stream-write cancellation, one-budget PTY settle, primary-error teardown,
   C1 sanitization, Claude startup, and final confirmation polling.

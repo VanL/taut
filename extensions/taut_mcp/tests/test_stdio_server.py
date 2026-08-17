@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 import tomllib
+from contextlib import ExitStack
 from pathlib import Path
 from typing import IO, Any, cast
 
@@ -327,18 +328,27 @@ def test_modern_discovery_lazy_identity_and_subscription_share_one_server(
     workspace.mkdir()
     database = workspace / ".taut.db"
     TautClient.init(db_path=database)
-    selected = TautClient(db_path=database, as_name="selected")
-    selected.join("general")
-    member = selected.last_created_member
-    assert member is not None and member.token is not None
-    sent = selected.say("general", "modern stdio needle café")
-    other = TautClient(db_path=database, as_name="other")
-    other.join("general")
-    other_member = other.last_created_member
-    assert other_member is not None
-    direct = selected.say("@other", "modern stdio private needle")
-    selected.close()
-    other.close()
+    with ExitStack() as seed_clients:
+        selected = TautClient(
+            db_path=database,
+            as_name="selected",
+            persistent=True,
+        )
+        seed_clients.callback(selected.close)
+        selected.join("general")
+        member = selected.last_created_member
+        assert member is not None and member.token is not None
+        sent = selected.say("general", "modern stdio needle café")
+        other = TautClient(
+            db_path=database,
+            as_name="other",
+            persistent=True,
+        )
+        seed_clients.callback(other.close)
+        other.join("general")
+        other_member = other.last_created_member
+        assert other_member is not None
+        direct = selected.say("@other", "modern stdio private needle")
 
     async def scenario() -> None:
         parameters = StdioServerParameters(

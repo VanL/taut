@@ -362,6 +362,16 @@ explicit MCP PG conformance selection immediately after its ordinary PG gate;
 the package-local non-PG MCP suite cannot stand in for that proof. A skipped
 live lane is a reported residual, not backend-conformance evidence.
 
+MCP integration tests may keep seed-only `TautClient` instances persistent
+when the asserted contract is MCP behavior rather than default client
+lifecycle. Those seeds must have bounded `ExitStack` ownership and close before
+the reactor or stdio scenario begins. Cross-client observers remain ephemeral
+so they still prove process/session independence. Root client tests separately
+own the default-ephemeral contract and fire a real operation through completed
+SimpleBroker cleanup. This split keeps an integration deadlock cap focused on
+the behavior it owns instead of spending most of that cap repeatedly creating
+and destroying setup-only runners.
+
 ## Change Guidance
 
 Read [MCP-4], [MCP-5], [MCP-8], and [MCP-11] before changing reactor state.
@@ -381,6 +391,7 @@ changelog, and plan evidence whenever ownership or rationale changes.
 
 ## Related Plans
 
+- `docs/plans/2026-08-14-windows-postrelease-ci-determinism-plan.md`
 - `docs/plans/2026-08-14-review-findings-remediation-plan.md`
 - `docs/plans/2026-08-12-extension-main-path-and-all-extra-plan.md`
 - `docs/plans/2026-08-10-stable-dm-send-plan.md`

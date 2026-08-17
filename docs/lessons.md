@@ -718,6 +718,24 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   own bounded semantic convergence. Retry only exact pending states; malformed
   responses, unexpected files, and digest mismatches remain immediately fatal.
 
+- 2026-08-14: A timeout stack samples the operation that happened to own the
+  thread at the deadline; it does not prove that operation is stuck. In a broad
+  integration test, measure each body and each entered/returned phase before
+  assigning production ownership. If unrelated fixture setup consumes most of
+  the deadlock budget, give that setup a bounded public lifecycle suited to the
+  test and move the default-lifecycle contract to its own real-operation test.
+  Keep external observers and all product assertions unchanged, and do not
+  claim that the refactor excludes a rarer production race.
+
+- 2026-08-14: Automatic subprocess coverage assumes normal process exit. A test
+  that deliberately kills a child can race coverage database creation and
+  leave a zero-byte shard even though its assertion passes. Do not teach the
+  combiner to ignore that evidence. Exclude only modes whose successful
+  assertion requires forced termination. Let malformed-but-normally-exiting
+  children reap and save coverage before reporting their protocol failure;
+  retain coverage on the successful product-path child, and keep raw-shard
+  validation fail-closed.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent
