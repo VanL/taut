@@ -3944,6 +3944,7 @@ def test_dry_run_publish_explains_tag_workflow_publication(
     output = capsys.readouterr().out
     assert "--publish is ignored" in output
     assert "PyPI and an immutable GitHub Release" in output
+    assert "root, PG, MCP, and TUI producer workflows" in output
     assert "v0.1.1" in output
 
 

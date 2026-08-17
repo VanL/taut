@@ -2922,8 +2922,8 @@ def _run_dry_batch_release(
         head_commit=PENDING_RELEASE_COMMIT,
     )
     print(
-        "dry-run: would resolve GitHub auth, wait for exact-SHA root, PG, and "
-        "MCP producer workflows, then recheck repository settings and the full "
+        "dry-run: would resolve GitHub auth, wait for exact-SHA root, PG, MCP, "
+        "and TUI producer workflows, then recheck repository settings and the full "
         "release fence"
     )
     for candidate in plan.candidates:
@@ -3129,8 +3129,8 @@ def _run_single_release(
             head_commit=PENDING_RELEASE_COMMIT,
         )
         print(
-            "dry-run: would resolve GitHub auth, wait for exact-SHA root, PG, and "
-            "MCP producer workflows, then recheck repository settings and the "
+            "dry-run: would resolve GitHub auth, wait for exact-SHA root, PG, MCP, "
+            "and TUI producer workflows, then recheck repository settings and the "
             "full release fence"
         )
         prepare_tag(tag_action, dry_run=True)
