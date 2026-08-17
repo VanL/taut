@@ -511,7 +511,7 @@ class _RuntimeImportVisitor(ast.NodeVisitor):
         (
             Path("extensions/taut_summon/taut_summon/interaction.py"),
             set(),
-            set(),
+            {"taut"},
         ),
     ],
 )
