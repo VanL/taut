@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any, Final
 if TYPE_CHECKING:
     from simplebroker import ResolvedConfig
 
-__version__: Final[str] = "0.9.0"
+__version__: Final[str] = "0.9.1"
 
 DEFAULT_DB_NAME: Final[str] = ".taut.db"
 PROJECT_CONFIG_NAME: Final[str] = ".taut.toml"
