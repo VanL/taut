@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+## 0.9.1 - 2026-08-17
+
+- Added opt-in, workspace-scoped failure capture through
+  `taut system debug enable` and `taut system debug disable`. Captures preserve
+  bounded traceback, frame-local, runtime, and operation evidence in the
+  inspectable `taut.debug` broker queue, or send the same JSON to
+  `TAUT_DEBUG_ACTION` over stdin. Capture remains disabled by default and
+  best-effort so it cannot replace the original failure or exit behavior.
+- Added a textual TUI command mirror: `:` now accepts the supported Taut
+  command grammar without spawning the CLI, dispatches supported commands
+  through native typed handlers, and discovers the first-party Summon syntax
+  provider. The grouped command browser remains available, unsupported paths
+  report inline, and terminal-owning Summon commands retain the existing lease
+  boundary.
+- Made declared TUI action-input requirements authoritative across palette,
+  mouse, keyboard, and programmatic dispatch. Disabled reasons now follow the
+  declared requirement order, stale dispatch cannot bypass applicability, and
+  command-palette dismissal is single-flight.
+- Renamed the public command execution-context identity-selector field from
+  `auth_token` to `continuity_token`, matching its non-authentication role.
+  The CLI `--token` spelling is unchanged; no Python compatibility alias is
+  retained.
+- Reduced MCP integration-test setup churn by bounding seed clients under
+  persistent public lifecycles while keeping external observers independent
+  and every product assertion unchanged. Hosted Windows maximum duration for
+  the affected tools case fell from 12.781 seconds to 2.331 seconds, with the
+  same logical database work.
+- Fixed watcher probe cleanup so only tests whose success requires forced
+  termination opt out of automatic subprocess coverage. Normally exiting
+  malformed children are reaped gracefully and retain populated coverage;
+  zero-byte shards remain fatal to aggregation.
+- Made each independent GitHub release finalizer perform its own bounded exact
+  PyPI convergence check before immutable publication, preserving immediate
+  failure for malformed state, unexpected files, or digest mismatches.
+
 ## 0.9.0 - 2026-08-14
 
 - Isolated Taut's complete SimpleBroker configuration under mechanical
