@@ -184,6 +184,12 @@ framework floor is Textual 8.2.8, selected by the retained TUI lock. There is
 no separate older-Textual compatibility lane. This floor supplies the click
 event metadata used for reliable select-versus-activate semantics.
 
+Real viewport tests observe the exact anchor-restore callback caused by a
+resize and then the following framework refresh. A generic event-loop pause is
+not completion evidence because resize rendering and anchor restoration occupy
+nested after-refresh callbacks. The observer delegates to production behavior;
+its deadline is only a missing-callback cap.
+
 The checked visual fixtures are:
 
 - `docs/implementation/artifacts/tui/taut-tui-130x34.svg`
@@ -287,6 +293,8 @@ it without eager Textual import.
 
 ## Related Plans
 
+- `docs/plans/2026-08-17-tui-scroll-anchor-test-synchronization-plan.md` —
+  event-based completion proof for the nested viewport-anchor restore refresh.
 - `docs/plans/2026-08-17-tui-command-mirror-plan.md` — implements the shared
   command syntax contract, grouped browser, textual `:` mirror, native core
   bindings, and typed `taut-summon` provider/binding boundary.

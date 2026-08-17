@@ -28,7 +28,8 @@
   persistent public lifecycles while keeping external observers independent
   and every product assertion unchanged. Hosted Windows maximum duration for
   the affected tools case fell from 12.781 seconds to 2.331 seconds, with the
-  same logical database work.
+  same logical database work. High-volume resource fixtures now use the same
+  bounded seed ownership instead of rebuilding a runner for every pointer.
 - Fixed watcher probe cleanup so only tests whose success requires forced
   termination opt out of automatic subprocess coverage. Normally exiting
   malformed children are reaped gracefully and retain populated coverage;
@@ -42,6 +43,9 @@
   unchanged command deadline, with bounded descendant-tree cleanup and an
   out-of-band traceback for genuine post-readiness stalls. Debug-action tests
   now decode the UTF-8 stdin protocol independently of the Windows locale.
+- Made the real TUI viewport-reflow test await the exact anchor restoration
+  caused by resize, rather than treating one generic event-loop turn as proof
+  that nested Textual refresh callbacks had completed.
 
 ## 0.9.0 - 2026-08-14
 

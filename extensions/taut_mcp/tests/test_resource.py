@@ -4,6 +4,7 @@ import asyncio
 import json
 import queue
 import threading
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
@@ -21,20 +22,31 @@ def _workspace(
     *,
     selected_name: str,
     other_name: str,
+    other_persistent: bool = False,
 ) -> tuple[Path, str, TautClient]:
     workspace = root / name
     workspace.mkdir()
     db = workspace / ".taut.db"
     TautClient.init(db_path=db)
     selected = TautClient(db_path=db, as_name=selected_name)
-    selected.join("general")
-    member = selected.last_created_member
-    assert member is not None
-    assert member.token is not None
-    token = member.token
-    selected.close()
-    other = TautClient(db_path=db, as_name=other_name)
-    other.join("general")
+    try:
+        selected.join("general")
+        member = selected.last_created_member
+        assert member is not None
+        assert member.token is not None
+        token = member.token
+    finally:
+        selected.close()
+    other = TautClient(
+        db_path=db,
+        as_name=other_name,
+        persistent=other_persistent,
+    )
+    try:
+        other.join("general")
+    except Exception:
+        other.close()
+        raise
     return workspace, token, other
 
 
@@ -217,33 +229,36 @@ def test_resource_sorts_workspaces_and_bounds_each_notification_snapshot(
 ) -> None:
     """[MCP-7] Each ready child contributes at most its oldest 100 pointers."""
 
-    later, later_token, later_other = _workspace(
-        tmp_path,
-        "z-workspace",
-        selected_name="later_selected",
-        other_name="later_other",
-    )
-    earlier, earlier_token, earlier_other = _workspace(
-        tmp_path,
-        "a-workspace",
-        selected_name="earlier_selected",
-        other_name="earlier_other",
-    )
-    later_actor = later_other.whoami()
-    earlier_actor = earlier_other.whoami()
-    later_selected = TautClient(db_path=later / ".taut.db", token=later_token)
-    earlier_selected = TautClient(db_path=earlier / ".taut.db", token=earlier_token)
-    try:
+    with ExitStack() as seed_stack:
+        later, later_token, later_other = _workspace(
+            tmp_path,
+            "z-workspace",
+            selected_name="later_selected",
+            other_name="later_other",
+            other_persistent=True,
+        )
+        seed_stack.callback(later_other.close)
+        earlier, earlier_token, earlier_other = _workspace(
+            tmp_path,
+            "a-workspace",
+            selected_name="earlier_selected",
+            other_name="earlier_other",
+            other_persistent=True,
+        )
+        seed_stack.callback(earlier_other.close)
+        later_actor = later_other.whoami()
+        earlier_actor = earlier_other.whoami()
+        later_selected = TautClient(db_path=later / ".taut.db", token=later_token)
+        seed_stack.callback(later_selected.close)
+        earlier_selected = TautClient(db_path=earlier / ".taut.db", token=earlier_token)
+        seed_stack.callback(earlier_selected.close)
         later_selected_id = later_selected.whoami().member_id
         earlier_selected_id = earlier_selected.whoami().member_id
-    finally:
-        later_selected.close()
-        earlier_selected.close()
-    later_messages = [
-        later_other.say("general", f"pointer-{index:03d} @later_selected")
-        for index in range(101)
-    ]
-    earlier_message = earlier_other.say("general", "one @earlier_selected")
+        later_messages = [
+            later_other.say("general", f"pointer-{index:03d} @later_selected")
+            for index in range(101)
+        ]
+        earlier_message = earlier_other.say("general", "one @earlier_selected")
 
     def expected_notification(
         message_ts: int,
@@ -320,11 +335,7 @@ def test_resource_sorts_workspaces_and_bounds_each_notification_snapshot(
         finally:
             await reactor.aclose()
 
-    try:
-        asyncio.run(scenario())
-    finally:
-        later_other.close()
-        earlier_other.close()
+    asyncio.run(scenario())
 
 
 @pytest.mark.sqlite_only

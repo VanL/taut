@@ -361,6 +361,7 @@ def test_too_small_shields_a_nested_modal_stack_and_restores_exact_focus(
 
 def test_real_transcript_viewport_anchor_survives_width_reflow(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from taut_tui.app import TautApp
     from taut_tui.widgets import TautOptionList
@@ -428,8 +429,42 @@ def test_real_transcript_viewport_anchor_survives_width_reflow(
             compact_anchor = app.visual_state.scroll_anchor
             assert compact_anchor.message_id == after.message_id
 
+            restored = asyncio.Event()
+            restore_anchor = app._restore_transcript_anchor
+            render_latest_resize = app._render_latest_resize
+            expected_resize_generation = app._resize_generation + 1
+
+            def observe_render(generation: int) -> None:
+                if generation != expected_resize_generation:
+                    render_latest_resize(generation)
+                    return
+
+                def observe_target_restore(
+                    messages: tuple[Any, ...],
+                    anchor_index: int,
+                    intra_row_offset: int,
+                ) -> None:
+                    restore_anchor(messages, anchor_index, intra_row_offset)
+                    if messages[anchor_index].ts == compact_anchor.message_id:
+                        app.call_after_refresh(restored.set)
+
+                monkeypatch.setattr(
+                    app,
+                    "_restore_transcript_anchor",
+                    observe_target_restore,
+                )
+                try:
+                    render_latest_resize(generation)
+                finally:
+                    monkeypatch.setattr(
+                        app,
+                        "_restore_transcript_anchor",
+                        restore_anchor,
+                    )
+
+            monkeypatch.setattr(app, "_render_latest_resize", observe_render)
             await pilot.resize_terminal(100, 24)
-            await pilot.pause()
+            await asyncio.wait_for(restored.wait(), timeout=5)
             app._capture_scroll_anchor()
             widened = app.visual_state.scroll_anchor
             assert widened.message_id == compact_anchor.message_id

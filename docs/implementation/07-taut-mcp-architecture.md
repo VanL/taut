@@ -372,6 +372,12 @@ SimpleBroker cleanup. This split keeps an integration deadlock cap focused on
 the behavior it owns instead of spending most of that cap repeatedly creating
 and destroying setup-only runners.
 
+The same rule applies to bounded resource fixtures that generate large pointer
+sets before reactor startup. Persistence must be explicit at the fixture call,
+limited to the seed actors, and closed in `finally` before the reactor is
+constructed. Message count, payload, workspace separation, and all resource
+ordering, truncation, and claim assertions remain unchanged.
+
 ## Change Guidance
 
 Read [MCP-4], [MCP-5], [MCP-8], and [MCP-11] before changing reactor state.
@@ -391,6 +397,7 @@ changelog, and plan evidence whenever ownership or rationale changes.
 
 ## Related Plans
 
+- `docs/plans/2026-08-17-mcp-resource-seed-lifecycle-plan.md`
 - `docs/plans/2026-08-14-windows-postrelease-ci-determinism-plan.md`
 - `docs/plans/2026-08-14-review-findings-remediation-plan.md`
 - `docs/plans/2026-08-12-extension-main-path-and-all-extra-plan.md`
