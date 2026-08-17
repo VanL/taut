@@ -49,6 +49,15 @@ class TuiSystemOperations:
             self._ensure_open()
         return self._executor.submit(TautClient.init, db_path=self._db_path)
 
+    def submit_debug(self, enabled: bool) -> Future[None]:
+        with self._lock:
+            self._ensure_open()
+        return self._executor.submit(
+            TautClient.set_debug_capture,
+            enabled,
+            db_path=self._db_path,
+        )
+
     def submit_dump(
         self,
         output: str | Path,

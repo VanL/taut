@@ -26,6 +26,9 @@ taut-summon = "taut_summon.cli:main"
 summon = "taut_summon.command_manifest:summon"
 dismiss = "taut_summon.command_manifest:dismiss"
 
+[project.entry-points."taut.command_syntax"]
+taut-summon = "taut_summon.command_syntax:provide_syntax"
+
 [project.entry-points."taut.persistence_components"]
 taut-summon = "taut_summon.persistence_manifest:summon"
 

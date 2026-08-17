@@ -11,7 +11,7 @@ Spec references:
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from types import MappingProxyType
 
@@ -66,6 +66,18 @@ class ActionFamily(StrEnum):
     SUMMON = "summon"
 
 
+_DISPLAY_GROUPS = {
+    ActionFamily.WORKSPACE_IDENTITY: "Workspace & identity",
+    ActionFamily.NAVIGATION: "Conversations",
+    ActionFamily.CHANNEL_CONTEXT: "Channels",
+    ActionFamily.MESSAGES: "Messages",
+    ActionFamily.RETRIEVAL: "Search",
+    ActionFamily.SYSTEM: "System",
+    ActionFamily.APPLICATION: "System",
+    ActionFamily.SUMMON: "Summon",
+}
+
+
 class ActionRoute(StrEnum):
     """Discoverable routes, all converging on the same action id."""
 
@@ -93,6 +105,8 @@ class ActionSpec:
     confirmation: ConfirmationPolicy = ConfirmationPolicy.NEVER
     confirmation_prompt: str | None = None
     requires_summon: bool = False
+    display_group: str = ""
+    display_order: int = 0
 
     def __post_init__(self) -> None:
         if not self.label:
@@ -107,6 +121,10 @@ class ActionSpec:
             or "{target}" not in self.confirmation_prompt
         ):
             raise ValueError("destructive confirmation must name {target}")
+        if not self.display_group:
+            raise ValueError("action display group must not be empty")
+        if self.display_order < 0:
+            raise ValueError("action display order must not be negative")
 
 
 def _spec(
@@ -118,6 +136,8 @@ def _spec(
     confirmation: ConfirmationPolicy = ConfirmationPolicy.NEVER,
     prompt: str | None = None,
     requires_summon: bool = False,
+    display_group: str | None = None,
+    display_order: int = 0,
 ) -> ActionSpec:
     return ActionSpec(
         action_id=action_id,
@@ -127,6 +147,8 @@ def _spec(
         confirmation=confirmation,
         confirmation_prompt=prompt,
         requires_summon=requires_summon,
+        display_group=display_group or _DISPLAY_GROUPS[family],
+        display_order=display_order,
     )
 
 
@@ -136,7 +158,7 @@ _C = ActionRoute.CONTEXT
 _K = ActionRoute.KEYBOARD
 _M = ActionRoute.MOUSE
 
-ACTION_SPECS = (
+_ACTION_SPECS = (
     _spec(
         ActionId.WORKSPACE_INITIALIZE,
         ActionFamily.WORKSPACE_IDENTITY,
@@ -313,6 +335,13 @@ ACTION_SPECS = (
     ),
 )
 
+# Keep declaration order as the explicit within-group presentation order. The
+# browser may sort/filter the registry, but it does not depend on enum values
+# or internal action ids for its visual arrangement.
+ACTION_SPECS = tuple(
+    replace(spec, display_order=index) for index, spec in enumerate(_ACTION_SPECS)
+)
+
 ACTION_REGISTRY: Mapping[ActionId, ActionSpec] = MappingProxyType(
     {spec.action_id: spec for spec in ACTION_SPECS}
 )
@@ -390,6 +419,7 @@ class InteractionIntent(StrEnum):
     SCROLL_UP = "scroll.up"
     SCROLL_DOWN = "scroll.down"
     DISPATCH_ACTION = "action.dispatch"
+    OPEN_COMMAND_LINE = "command.open-line"
 
 
 @dataclass(frozen=True, slots=True)
@@ -440,8 +470,13 @@ NORMAL_GESTURE_PAIRS = (
     _pair(InteractionIntent.ACTIVATE_SELECTION, "enter", "enter"),
     _pair(InteractionIntent.LEAVE_TRANSIENT, "escape", "escape"),
     _pair(
-        InteractionIntent.DISPATCH_ACTION,
+        InteractionIntent.OPEN_COMMAND_LINE,
         ":",
+        "colon",
+    ),
+    _pair(
+        InteractionIntent.DISPATCH_ACTION,
+        "ctrl+p",
         "ctrl+p",
         action_id=ActionId.COMMAND_OPEN,
     ),

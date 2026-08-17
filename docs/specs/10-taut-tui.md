@@ -251,7 +251,7 @@ Exactly four interaction modes are visible in the status line:
 
 - `NORMAL`: navigate, select, open, and invoke actions;
 - `COMPOSE`: edit the single-line, target-labelled message composer;
-- `COMMAND`: search the native action registry;
+- `COMMAND`: browse grouped native actions or enter the textual command mirror;
 - `SEARCH`: search visible Taut history through `TautClient.search()`.
 
 Modal forms are owned transient surfaces layered on these modes. A mode change
@@ -439,7 +439,7 @@ In `NORMAL` mode the following pairs dispatch the same semantic actions:
 | Enter compose | `i` | Tab or click to composer; palette `Compose` |
 | Activate/open | Enter | Enter |
 | Leave transient mode | Escape | Escape |
-| Open command palette | `:` | Ctrl-P or clickable command affordance |
+| Open command mode | `:` | Ctrl-P or clickable command affordance |
 | Search history | `/` | Ctrl-F or clickable search affordance |
 | Open help | `?` | F1 or clickable help affordance |
 | Quit | `q` | Ctrl-Q or palette `Quit` |

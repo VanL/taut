@@ -124,6 +124,31 @@ the owner completes or returns an inline domain error; a second Enter cannot
 duplicate a mutation. Search generations are invalidated on dismissal, so a
 late result never queries an unmounted screen.
 
+### Command mirror boundary
+
+`taut.commands.syntax` is the shared grammar owner for the textual mirror. It
+contains typed command paths, nested nodes, positionals, options, quoting,
+choices, exclusive groups, root globals, root actions, and provider discovery.
+It does not import Textual or command adapters. Installed extensions contribute
+syntax through `taut.command_syntax`; the `taut-summon` provider contributes
+`summon` and `dismiss` syntax only.
+
+The TUI has two command affordances. `:` opens `CommandLineScreen`, which
+displays the leading colon, completion/help feedback, and `Enter run · Tab
+complete · Esc close`. Ctrl-P and the Commands button open the grouped native
+action browser. `CommandPaletteScreen` derives labels and grouping from
+`ActionSpec`; group headings are presentation metadata, not command namespaces.
+
+`command_bindings.py` is the second half of the boundary. A syntax provider
+only makes a path recognizable. `TuiCommandBinding` records whether the TUI
+has an explicit native owner or must report `CLI-only in TUI`. Native command
+dispatch passes typed values to `TuiDomainActions`, `TuiSystemOperations`, or
+the existing `TuiSummonOperations`; it never calls the CLI dispatcher, starts
+a subprocess, or forwards CLI output. Explicit command targets are never
+replaced by the current visual selection. The screen owns text and parse
+feedback, while `TautApp` owns applicability, confirmation, worker submission,
+and result rendering.
+
 Search results remain public hydrated `SearchHit` values. Opening one calls
 `TautClient.history_around()` for exact bounded, cursor-neutral context, then
 uses that page as the active transcript and starts the ordinary filtered live
@@ -262,6 +287,9 @@ it without eager Textual import.
 
 ## Related Plans
 
+- `docs/plans/2026-08-17-tui-command-mirror-plan.md` — implements the shared
+  command syntax contract, grouped browser, textual `:` mirror, native core
+  bindings, and typed `taut-summon` provider/binding boundary.
 - `docs/plans/2026-08-14-taut-tui-action-applicability-authority-plan.md` —
   plans one ordered applicability authority in the action-input contracts with
   thin palette, control, and central-dispatch consumers.

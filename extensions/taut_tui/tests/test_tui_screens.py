@@ -180,6 +180,57 @@ def test_command_palette_filters_and_returns_the_same_action_id() -> None:
     assert selected == [ActionId.SYSTEM_DOCTOR]
 
 
+def test_command_line_screen_shows_colon_affordance_and_returns_typed_input() -> None:
+    from taut.commands.syntax import core_command_syntax
+    from taut_tui.screens import CommandLineScreen, CommandLineSubmission
+
+    results: list[CommandLineSubmission | None] = []
+
+    class CommandHost(App[None]):
+        def on_mount(self) -> None:
+            self.push_screen(CommandLineScreen(core_command_syntax()), results.append)
+
+    async def exercise() -> None:
+        app = CommandHost()
+        async with app.run_test(size=(80, 24)) as pilot:
+            assert str(app.screen.query_one("#command-marker", Static).render()) == ":"
+            field = app.screen.query_one("#command-line", Input)
+            await pilot.click(field)
+            await pilot.press(*"channel topic general focus")
+            await pilot.press("enter")
+            await pilot.pause()
+
+    asyncio.run(exercise())
+    assert results[0] is not None
+    assert results[0].invocation.path == ("channel", "topic")
+    assert results[0].invocation.values["topic"] == "focus"
+
+
+def test_command_line_screen_accepts_summon_provider_syntax() -> None:
+    from taut_summon.command_syntax import provide_syntax
+
+    from taut.commands.syntax import core_command_syntax, merge_command_syntax
+    from taut_tui.screens import CommandLineScreen, CommandLineSubmission
+
+    results: list[CommandLineSubmission | None] = []
+
+    class CommandHost(App[None]):
+        def on_mount(self) -> None:
+            syntax = merge_command_syntax(core_command_syntax(), (provide_syntax(),))
+            self.push_screen(CommandLineScreen(syntax), results.append)
+
+    async def exercise() -> None:
+        app = CommandHost()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.press(*"summon grok", "enter")
+            await pilot.pause()
+
+    asyncio.run(exercise())
+    assert results[0] is not None
+    assert results[0].invocation.path == ("summon",)
+    assert results[0].invocation.values["name"] == "grok"
+
+
 def test_summon_start_screen_collects_every_typed_request_field() -> None:
     from taut_tui.screens import SummonStartScreen, SummonStartSubmission
 

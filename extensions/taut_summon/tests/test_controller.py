@@ -914,6 +914,37 @@ def test_extension_metadata_registers_both_official_command_manifests() -> None:
         "summon": "taut_summon.command_manifest:summon",
         "dismiss": "taut_summon.command_manifest:dismiss",
     }
+    assert metadata["project"]["entry-points"]["taut.command_syntax"] == {
+        "taut-summon": "taut_summon.command_syntax:provide_syntax",
+    }
+
+
+def test_summon_syntax_provider_is_typed_and_execution_free() -> None:
+    from taut_summon.command_syntax import provide_syntax
+
+    from taut.commands.syntax import (
+        core_command_syntax,
+        merge_command_syntax,
+        parse_command_line,
+    )
+
+    provider = provide_syntax()
+    assert provider.provider_name == "taut-summon"
+    assert tuple(command.path for command in provider.commands) == (
+        ("summon",),
+        ("dismiss",),
+    )
+    assert all(
+        command.path not in {("taut",), ("taut-summon",)}
+        for command in provider.commands
+    )
+    invocation = parse_command_line(
+        "summon grok --provider scripted",
+        syntax=merge_command_syntax(core_command_syntax(), (provider,)),
+    )
+    assert invocation.path == ("summon",)
+    assert invocation.values["name"] == "grok"
+    assert invocation.values["provider"] == "scripted"
 
 
 @pytest.mark.parametrize(

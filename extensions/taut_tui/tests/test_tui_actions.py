@@ -84,8 +84,14 @@ EXPECTED_NORMAL_GESTURES = (
     (InteractionIntent.ACTIVATE_SELECTION, ("enter",), ("enter",), None),
     (InteractionIntent.LEAVE_TRANSIENT, ("escape",), ("escape",), None),
     (
-        InteractionIntent.DISPATCH_ACTION,
+        InteractionIntent.OPEN_COMMAND_LINE,
         (":",),
+        ("colon",),
+        None,
+    ),
+    (
+        InteractionIntent.DISPATCH_ACTION,
+        ("ctrl+p",),
         ("ctrl+p",),
         ActionId.COMMAND_OPEN,
     ),

@@ -88,8 +88,10 @@ class TuiDomainActions:
             lambda client: client.rejoin(name_or_alias, token=token)
         )
 
-    def show_identity(self) -> Future[Member]:
-        return self._session.submit_client_operation(lambda client: client.whoami())
+    def show_identity(self, *, explain: bool = False) -> Future[Member]:
+        return self._session.submit_client_operation(
+            lambda client: client.whoami(explain=explain)
+        )
 
     def set_name(self, name: str) -> Future[Member]:
         return self._session.submit_client_operation(
@@ -166,10 +168,15 @@ class TuiDomainActions:
             lambda client: client.say(target, text)
         )
 
+    def show_message(self, message_id: str) -> Future[Message]:
+        return self._session.submit_client_operation(
+            lambda client: client.show_message(message_id)
+        )
+
     def reply_message(
         self,
         channel: str,
-        message_id: int,
+        message_id: str | int,
         text: str,
     ) -> Future[Message]:
         return self._session.submit_client_operation(
@@ -178,17 +185,50 @@ class TuiDomainActions:
 
     def react_message(
         self,
-        message_id: int,
+        message_id: str | int,
         reaction: str,
     ) -> Future[MessageReaction]:
         return self._session.submit_client_operation(
             lambda client: client.react_to_message(str(message_id), reaction)
         )
 
-    def delete_message(self, message_id: int) -> Future[MessageDeletion]:
+    def delete_message(self, message_id: str | int) -> Future[MessageDeletion]:
         return self._session.submit_client_operation(
             lambda client: client.delete_message(str(message_id))
         )
+
+    def read_messages(self, thread: str | None = None) -> Future[list[Message]]:
+        return self._session.submit_client_operation(lambda client: client.read(thread))
+
+    def inbox(self) -> Future[list[Notification]]:
+        return self._session.submit_client_operation(lambda client: client.inbox())
+
+    def log_messages(
+        self,
+        thread: str,
+        *,
+        since: str | int | None = None,
+        limit: int | None = None,
+    ) -> Future[list[Message]]:
+        return self._session.submit_client_operation(
+            lambda client: client.log(thread, since=since, limit=limit)
+        )
+
+    def list_threads(
+        self,
+        *,
+        all_threads: bool = False,
+        direct_messages: bool = False,
+    ) -> Future[list[Thread]]:
+        operation = (
+            (lambda client: client.list_direct_messages())
+            if direct_messages
+            else (lambda client: client.list_threads(all_threads=all_threads))
+        )
+        return self._session.submit_client_operation(operation)
+
+    def members_for_thread(self, thread: str | None = None) -> Future[list[Member]]:
+        return self._session.submit_client_operation(lambda client: client.who(thread))
 
     def search(self, query: str, *, limit: int = 50) -> Future[list[SearchHit]]:
         def search_visible(client: TautClient) -> list[SearchHit]:

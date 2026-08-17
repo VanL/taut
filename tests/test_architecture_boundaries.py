@@ -465,7 +465,7 @@ class _RuntimeImportVisitor(ast.NodeVisitor):
         ),
         (
             Path("taut/commands/__init__.py"),
-            {"taut.commands._protocol"},
+            {"taut.commands._protocol", "taut.commands.syntax"},
             set(),
         ),
         (

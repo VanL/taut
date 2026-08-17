@@ -39,6 +39,15 @@ from taut.client import (
     SearchHit,
     Thread,
 )
+from taut.commands.syntax import (
+    CommandInvocation,
+    RootCommandSyntax,
+    command_nodes,
+    core_command_syntax,
+    discover_command_syntax,
+    format_command_syntax,
+    merge_command_syntax,
+)
 from taut_tui.actions import (
     ActionContext,
     ActionId,
@@ -53,6 +62,7 @@ from taut_tui.actions import (
     resolve_gesture,
     resolve_mouse,
 )
+from taut_tui.command_bindings import binding_for
 from taut_tui.domain import TuiDomainActions
 from taut_tui.forms import (
     FORM_SPECS,
@@ -75,6 +85,8 @@ from taut_tui.models import (
     VisualState,
 )
 from taut_tui.screens import (
+    CommandLineScreen,
+    CommandLineSubmission,
     CommandPaletteScreen,
     ConfirmationScreen,
     FormSubmission,
@@ -263,7 +275,7 @@ class TautApp(App[None]):
     """
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("i", "enter_compose", "Compose", show=False),
-        Binding("colon", "open_command", "Commands", show=False),
+        Binding("colon", "open_command_line", "Command line", show=False),
         Binding("slash", "open_search", "Search", show=False),
         Binding("question_mark", "open_help", "Help", show=False),
         Binding("q", "quit_tui", "Quit", show=False),
@@ -688,6 +700,11 @@ class TautApp(App[None]):
         if interaction.intent is InteractionIntent.LEAVE_TRANSIENT:
             self._leave_transient_from_key(event)
             return
+        if interaction.intent is InteractionIntent.OPEN_COMMAND_LINE:
+            event.prevent_default()
+            event.stop()
+            self.action_open_command_line()
+            return
         if self.visual_state.mode is not InteractionMode.NORMAL:
             return
         if interaction.intent is InteractionIntent.DISPATCH_ACTION:
@@ -728,6 +745,14 @@ class TautApp(App[None]):
             self.push_screen(
                 CommandPaletteScreen(self._palette_entries()),
                 self._complete_palette,
+            )
+
+    def action_open_command_line(self) -> None:
+        if self.visual_state.mode is InteractionMode.NORMAL:
+            self._set_mode(InteractionMode.COMMAND)
+            self.push_screen(
+                CommandLineScreen(self._command_syntax()),
+                self._complete_command_line,
             )
 
     def action_open_search(self) -> None:
@@ -808,6 +833,7 @@ class TautApp(App[None]):
         normal_only = {
             "enter_compose",
             "open_command",
+            "open_command_line",
             "open_search",
             "quit_tui",
         }
@@ -926,6 +952,377 @@ class TautApp(App[None]):
         else:
             return False
         return True
+
+    def _command_syntax(self) -> RootCommandSyntax:
+        syntax = core_command_syntax()
+        discovery = discover_command_syntax()
+        providers = list(discovery.providers)
+        if self._summon is not None and not any(
+            provider.provider_name == "taut-summon" for provider in providers
+        ):
+            try:
+                from taut_summon.command_syntax import provide_syntax
+
+                providers.append(provide_syntax())
+            except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-085] exception
+                self._operation_state = f"syntax unavailable: {exc}"
+        if discovery.diagnostics:
+            self._operation_state = discovery.diagnostics[0]
+        return merge_command_syntax(syntax, tuple(providers))
+
+    def _complete_command_line(
+        self,
+        submission: CommandLineSubmission | None,
+    ) -> None:
+        self._set_mode(InteractionMode.NORMAL)
+        if submission is not None:
+            self._dispatch_command_invocation(submission.invocation)
+
+    def _dispatch_command_invocation(self, invocation: CommandInvocation) -> None:
+        if invocation.action is not None:
+            self._render_command_action(invocation)
+            return
+        policy_error = self._command_policy_error(invocation)
+        if policy_error is not None:
+            self._show_error(policy_error)
+            return
+        binding = binding_for(invocation.path)
+        if binding is None or binding.cli_only:
+            self._show_error("CLI-only in TUI: " + " ".join(invocation.path))
+            return
+        if invocation.path in {("summon",), ("dismiss",)}:
+            self._dispatch_summon_command(invocation)
+            return
+        domain = self._domain
+        if domain is None:
+            self._show_error("The Taut session is still starting.")
+            return
+        handlers = (
+            self._dispatch_identity_command,
+            self._dispatch_conversation_command,
+            self._dispatch_message_command,
+            self._dispatch_channel_command,
+            self._dispatch_system_command,
+        )
+        for handler in handlers:
+            if handler(invocation, domain):
+                return
+        self._show_error("CLI-only in TUI: " + " ".join(invocation.path))
+
+    def _render_command_action(self, invocation: CommandInvocation) -> None:
+        if invocation.action == "version":
+            from taut import __version__
+
+            self._render_inspector(f"taut {__version__}\nTUI command mirror")
+            return
+        syntax = self._command_syntax()
+        if not invocation.path:
+            text = "Commands\n" + "\n".join(
+                format_command_syntax(node) for node in command_nodes(syntax)
+            )
+        else:
+            node = next(
+                (
+                    candidate
+                    for candidate in command_nodes(syntax)
+                    if candidate.path == invocation.path
+                ),
+                None,
+            )
+            text = (
+                format_command_syntax(node)
+                if node is not None
+                else "Unknown command syntax"
+            )
+        self._render_inspector(text)
+
+    def _command_policy_error(self, invocation: CommandInvocation) -> str | None:
+        values = invocation.values
+        requested_db = values.get("db_path")
+        if requested_db is not None:
+            if self.db_path is None:
+                return "--db is unavailable in TUI command mode; use the active session target."
+            if str(requested_db) != str(self.db_path):
+                return "--db must match the active TUI session target."
+        if (
+            values.get("as_name") is not None
+            or values.get("continuity_token") is not None
+        ):
+            return "TUI identity is fixed for this session; omit --as and --token."
+        for option in ("json", "timestamps", "quiet"):
+            if values.get(option):
+                spelling = {
+                    "json": "--json",
+                    "timestamps": "--timestamps",
+                    "quiet": "--quiet",
+                }[option]
+                return f"{spelling} is CLI-only in the TUI result surface."
+        return None
+
+    def _dispatch_identity_command(
+        self,
+        invocation: CommandInvocation,
+        domain: TuiDomainActions,
+    ) -> bool:
+        values = invocation.values
+        if invocation.path == ("init",):
+            self._run_action(domain.initialize_workspace(), refresh_navigation=True)
+        elif invocation.path == ("set", "name"):
+            self._run_action(domain.set_name(str(values["name"])))
+        elif invocation.path == ("rejoin",):
+            self._run_action(
+                domain.rejoin_identity(
+                    cast(str | None, values.get("name_or_alias") or None),
+                    token=cast(str | None, values.get("rejoin_token") or None),
+                ),
+                refresh_navigation=True,
+            )
+        elif invocation.path == ("whoami",):
+            self._run_action(domain.show_identity(explain=bool(values.get("explain"))))
+        else:
+            return False
+        return True
+
+    def _dispatch_conversation_command(
+        self,
+        invocation: CommandInvocation,
+        domain: TuiDomainActions,
+    ) -> bool:
+        values = invocation.values
+        if invocation.path == ("join",):
+            self._run_action(
+                domain.join_channel(
+                    str(values["thread"]),
+                    persona=cast(str | None, values.get("persona")),
+                    new=bool(values.get("new")),
+                ),
+                refresh_navigation=True,
+            )
+        elif invocation.path == ("leave",):
+            target = str(values["thread"])
+            self._confirm_command(
+                f"Leave {target}?",
+                lambda: self._run_action(
+                    domain.leave_channel(target), refresh_navigation=True
+                ),
+            )
+        else:
+            return False
+        return True
+
+    def _dispatch_message_command(
+        self,
+        invocation: CommandInvocation,
+        domain: TuiDomainActions,
+    ) -> bool:
+        path = invocation.path
+        if path in {("say",), ("reply",)}:
+            self._dispatch_send_command(invocation, domain)
+            return True
+        if path[:1] == ("message",):
+            self._dispatch_message_operation(invocation, domain)
+            return True
+        if path in {("read",), ("inbox",), ("log",), ("search",)}:
+            self._dispatch_history_command(invocation, domain)
+            return True
+        return False
+
+    def _dispatch_send_command(
+        self,
+        invocation: CommandInvocation,
+        domain: TuiDomainActions,
+    ) -> None:
+        values = invocation.values
+        text = values.get("text")
+        if not isinstance(text, str) or text == "-":
+            self._show_error(
+                "CLI-only in TUI: " + " ".join(invocation.path) + " with stdin"
+            )
+        elif invocation.path == ("say",):
+            self._run_action(domain.send_message(str(values["target"]), text))
+        else:
+            self._run_action(
+                domain.reply_message(str(values["thread"]), str(values["msg_id"]), text)
+            )
+
+    def _dispatch_message_operation(
+        self,
+        invocation: CommandInvocation,
+        domain: TuiDomainActions,
+    ) -> None:
+        values = invocation.values
+        if invocation.path == ("message", "show"):
+            self._run_action(domain.show_message(str(values["msg_id"])))
+        elif invocation.path == ("message", "delete"):
+            message_id = str(values["msg_id"])
+            self._confirm_command(
+                f"Delete message {message_id}?",
+                lambda: self._run_action(domain.delete_message(message_id)),
+            )
+        else:
+            self._run_action(
+                domain.react_message(str(values["msg_id"]), str(values["reaction"]))
+            )
+
+    def _dispatch_history_command(
+        self,
+        invocation: CommandInvocation,
+        domain: TuiDomainActions,
+    ) -> None:
+        values = invocation.values
+        if invocation.path == ("read",):
+            self._run_action(
+                domain.read_messages(cast(str | None, values.get("thread")))
+            )
+        elif invocation.path == ("inbox",):
+            self._run_action(domain.inbox())
+        elif invocation.path == ("log",):
+            self._run_action(
+                domain.log_messages(
+                    str(values["thread"]),
+                    since=cast(str | int | None, values.get("since")),
+                    limit=cast(int | None, values.get("limit")),
+                )
+            )
+        else:
+            unsupported = next(
+                (
+                    option
+                    for option in (
+                        "channel",
+                        "dm",
+                        "dms",
+                        "from_member",
+                        "kind",
+                        "before",
+                        "reindex",
+                    )
+                    if values.get(option)
+                ),
+                None,
+            )
+            if unsupported is not None:
+                self._show_error(
+                    f"--{unsupported.replace('_', '-')} is CLI-only in the TUI."
+                )
+                return
+            query = " ".join(cast(list[str], values["query"]))
+            self._run_action(domain.search(query, limit=cast(int, values["limit"])))
+
+    def _dispatch_channel_command(
+        self,
+        invocation: CommandInvocation,
+        domain: TuiDomainActions,
+    ) -> bool:
+        values = invocation.values
+        path = invocation.path
+        if path == ("channel", "show"):
+            self._run_action(domain.show_topic(str(values["channel"])))
+        elif path == ("channel", "topic"):
+            channel = str(values["channel"])
+            if values.get("clear"):
+                self._run_action(domain.clear_topic(channel))
+            else:
+                self._run_action(domain.set_topic(channel, str(values["topic"])))
+        elif path == ("channel", "rename"):
+            old_name = str(values["old_name"])
+            self._confirm_command(
+                f"Rename {old_name}?",
+                lambda: self._run_action(
+                    domain.rename_channel(old_name, str(values["new_name"])),
+                    refresh_navigation=True,
+                ),
+            )
+        elif path == ("who",):
+            self._run_action(
+                domain.members_for_thread(cast(str | None, values.get("thread")))
+            )
+        elif path == ("list",):
+            self._run_action(
+                domain.list_threads(
+                    all_threads=bool(values.get("all_threads")),
+                    direct_messages=bool(values.get("dms")),
+                )
+            )
+        else:
+            return False
+        return True
+
+    def _dispatch_system_command(
+        self,
+        invocation: CommandInvocation,
+        domain: TuiDomainActions,
+    ) -> bool:
+        path = invocation.path
+        values = invocation.values
+        if path == ("system", "doctor"):
+            self._run_action(domain.doctor())
+        elif path == ("system", "debug", "enable"):
+            assert self._system is not None
+            self._run_action(self._system.submit_debug(True))
+        elif path == ("system", "debug", "disable"):
+            assert self._system is not None
+            self._run_action(self._system.submit_debug(False))
+        elif path == ("system", "dump"):
+            output = Path(str(values["output"]))
+            self._run_command_dump(domain, output)
+        else:
+            return False
+        return True
+
+    def _run_command_dump(self, domain: TuiDomainActions, output: Path) -> None:
+        if output.exists():
+            self._confirm_command(
+                f"Replace existing dump {output}?",
+                lambda: self._run_action(domain.dump(output, replace_confirmed=True)),
+            )
+        else:
+            self._run_action(domain.dump(output))
+
+    def _dispatch_summon_command(self, invocation: CommandInvocation) -> None:
+        summon = self._summon
+        interaction = self._summon_interaction
+        values = invocation.values
+        if summon is None or interaction is None:
+            self._show_error(
+                "Summon command syntax is known, but Summon is not installed."
+            )
+            return
+        if invocation.path == ("dismiss",):
+            name = str(values["name"])
+            self._confirm_command(
+                f"Dismiss {name}?",
+                lambda: self._run_action(summon.submit_stop(name)),
+            )
+            return
+        try:
+            request = summon.build_request(
+                name=str(values["name"]),
+                threads=tuple(cast(list[str], values.get("threads") or ["general"])),
+                terminal=bool(values.get("terminal")),
+                persona=cast(str | None, values.get("persona")),
+                system_prompt_file=cast(str | None, values.get("system_prompt_file")),
+                rate_limit=cast(int | None, values.get("rate_limit")),
+                attach=bool(values.get("attach")),
+                detach=bool(values.get("detach")),
+                provider_flag=cast(str | None, values.get("provider")),
+                takeover=bool(values.get("takeover")),
+            )
+            token, future = summon.start(request, interaction)
+        except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-085] exception
+            self._show_error(str(exc) or type(exc).__name__)
+            return
+        self._owned_summon_tokens.add(token)
+        self._summon_names[token] = str(values["name"])
+        self._operation_state = f"summon {values['name']} starting"
+        self._update_status()
+        self._watch_future(future, lambda done: self._apply_summon_return(token, done))
+
+    def _confirm_command(self, prompt: str, action: Callable[[], None]) -> None:
+        self.push_screen(
+            ConfirmationScreen(prompt),
+            lambda confirmed: action() if confirmed else None,
+        )
 
     def _dispatch_simple_domain_action(
         self,

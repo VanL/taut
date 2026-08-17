@@ -92,6 +92,26 @@ The registry is the convergence point, not a second domain layer. It decides
 which manifest owns a name and records availability/provenance. It does not
 run commands, resolve implementation targets, or initialize their subsystems.
 
+## Syntax-Only Providers
+
+[TAUT-8.7] adds a second, deliberately narrower entry-point group:
+`taut.command_syntax`. A provider returns a versioned
+`CommandSyntaxProvider`, whose values describe command paths, nested nodes,
+typed positionals, options, and completion/help shape. It does not return a
+`CommandSpec`, implementation target, adapter, or renderer. Core's
+`discover_command_syntax()` loads providers in deterministic order and keeps
+provider failures as diagnostics; `merge_command_syntax()` rejects duplicate
+paths before a surface can execute anything.
+
+The CLI manifest and adapter contract remain version 1. The typed syntax tree
+is the source consumed by an approved textual mirror, while the existing CLI
+adapter remains responsible for CLI rendering and exit behavior during the
+compatibility migration. The TUI owns a separate `TuiCommandBinding` registry:
+syntax makes an extension path recognizable, but only an explicit native TUI
+binding can execute it. This is why the `taut-summon` provider can publish
+`summon` and `dismiss` without giving the TUI permission to call the Summon
+CLI adapter or take over terminal ownership.
+
 ## Version-1 Manifest and Adapter Contract
 
 `taut.commands` is the public extension-author import surface. A manifest is a

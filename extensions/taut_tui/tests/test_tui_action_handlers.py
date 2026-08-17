@@ -21,6 +21,7 @@ from taut_tui.actions import ActionContext, ActionId, ActionRoute, action_spec
 from taut_tui.app import TautApp
 from taut_tui.models import InspectorKind, InteractionMode, LogicalSurface
 from taut_tui.screens import (
+    CommandLineScreen,
     CommandPaletteScreen,
     ConfirmationScreen,
     NamedActionScreen,
@@ -593,7 +594,7 @@ async def _system_load_help(context: HandlerContext) -> None:
 
 
 async def _command_open(context: HandlerContext) -> None:
-    await context.pilot.press(":")
+    await context.pilot.press("ctrl+p")
     await context.pilot.pause()
     assert isinstance(context.app.screen, CommandPaletteScreen)
     assert context.app.visual_state.mode is InteractionMode.COMMAND
@@ -786,6 +787,56 @@ HANDLER_CASES: dict[ActionId, HandlerCase] = {
 def test_handler_case_registry_is_exact() -> None:
     assert set(HANDLER_CASES) == set(ActionId)
     assert len(HANDLER_CASES) == len(ActionId)
+
+
+def test_colon_command_line_executes_a_typed_native_core_path(tmp_path: Path) -> None:
+    async def exercise() -> None:
+        db_path = tmp_path / "command-line.db"
+        app = TautApp(db_path=str(db_path), as_name=None, continuity_token=None)
+        async with app.run_test(size=(120, 36)) as pilot:
+            await _eventually(pilot, lambda: app._domain is not None)
+            await pilot.press(":")
+            assert isinstance(app.screen, CommandLineScreen)
+            await pilot.press(*"init", "enter")
+            await _eventually(
+                pilot,
+                lambda: (
+                    app._operation_state == "idle"
+                    and "created"
+                    in str(app.query_one("#inspector-body").render()).lower()
+                ),
+            )
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize(
+    "command",
+    (
+        "system load --input backup.json",
+        "watch general",
+        "search --channel general phrase",
+    ),
+)
+def test_colon_command_line_reports_cli_only_paths_and_options(
+    command: str,
+    tmp_path: Path,
+) -> None:
+    async def exercise() -> None:
+        app = TautApp(
+            db_path=str(tmp_path / "command-line.db"),
+            as_name=None,
+            continuity_token=None,
+        )
+        async with app.run_test(size=(120, 36)) as pilot:
+            await _eventually(pilot, lambda: app._domain is not None)
+            await pilot.press(":", *command, "enter")
+            await _eventually(
+                pilot,
+                lambda: "CLI-only" in str(app.query_one("#inspector-body").render()),
+            )
+
+    asyncio.run(exercise())
 
 
 @pytest.mark.parametrize("action_id", tuple(ActionId), ids=lambda item: item.value)

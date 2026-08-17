@@ -21,6 +21,16 @@ from textual.message import Message as TextualMessage
 from textual.screen import ModalScreen
 from textual.widgets.option_list import Option
 
+from taut.commands.syntax import (
+    CommandInput,
+    CommandInvocation,
+    CommandSyntax,
+    CommandSyntaxError,
+    RootCommandSyntax,
+    command_nodes,
+    format_command_syntax,
+    parse_command_line,
+)
 from taut_tui.actions import ActionId, ActionSpec
 from taut_tui.forms import FieldKind, FormSpec, validate_visual_input
 from taut_tui.widgets import TautButton as Button
@@ -51,6 +61,11 @@ class PaletteEntry:
             raise ValueError("enabled palette entries cannot have a disabled reason")
         if not self.enabled and not self.reason:
             raise ValueError("disabled palette entries require a reason")
+
+
+@dataclass(frozen=True, slots=True)
+class CommandLineSubmission:
+    invocation: CommandInvocation
 
 
 @dataclass(frozen=True, slots=True)
@@ -265,7 +280,7 @@ class ConfirmationScreen(_TautModalScreen[bool]):
 
 
 class CommandPaletteScreen(_TautModalScreen[ActionId | None]):
-    """Search only the native semantic action registry."""
+    """Browse the grouped native semantic action registry."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Cancel", show=False),
@@ -275,12 +290,20 @@ class CommandPaletteScreen(_TautModalScreen[ActionId | None]):
         super().__init__()
         self._entries = tuple(entries)
         self._visible: tuple[PaletteEntry, ...] = ()
+        self._rendered_entries: tuple[PaletteEntry | None, ...] = ()
         self._dismissed = False
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="taut-modal"):
             yield Static("Commands", classes="modal-title")
-            yield Input(placeholder="Find a native action", id="palette-query")
+            yield Static(
+                "Type to filter · Up/Down select · Enter run · Click run · Esc close",
+                classes="command-instructions",
+            )
+            yield Input(
+                placeholder="Find a native action",
+                id="palette-query",
+            )
             yield OptionList(id="palette-results")
 
     def on_mount(self) -> None:
@@ -295,8 +318,8 @@ class CommandPaletteScreen(_TautModalScreen[ActionId | None]):
         if event.input.id != "palette-query":
             return
         options = self.query_one("#palette-results", OptionList)
-        for index, entry in enumerate(self._visible):
-            if entry.enabled:
+        for index, entry in enumerate(self._rendered_entries):
+            if entry is not None and entry.enabled:
                 options.highlighted = index
                 self._dismiss_once(entry.action.action_id)
                 return
@@ -304,8 +327,10 @@ class CommandPaletteScreen(_TautModalScreen[ActionId | None]):
     def on_taut_option_list_activated(self, event: OptionList.Activated) -> None:
         if event.chain == 1:
             return
-        entry = self._visible[event.option_index]
-        if entry.enabled:
+        if not (0 <= event.option_index < len(self._rendered_entries)):
+            return
+        entry = self._rendered_entries[event.option_index]
+        if entry is not None and entry.enabled:
             self._dismiss_once(entry.action.action_id)
 
     def action_cancel(self) -> None:
@@ -328,17 +353,184 @@ class CommandPaletteScreen(_TautModalScreen[ActionId | None]):
         )
         options = self.query_one("#palette-results", OptionList)
         options.clear_options()
+        rendered: list[PaletteEntry | None] = []
+        entries_by_group: dict[str, list[PaletteEntry]] = {}
         for entry in self._visible:
-            suffix = "" if entry.enabled else f"  ({entry.reason})"
-            context = "" if entry.scope is None else f"  [{entry.scope}]"
-            gesture = "" if entry.gesture_hint is None else f"  {entry.gesture_hint}"
-            options.add_option(
-                Option(
-                    f"{entry.action.label}{context}{gesture}{suffix}",
-                    id=entry.action.action_id.value,
-                    disabled=not entry.enabled,
+            entries_by_group.setdefault(entry.action.display_group, []).append(entry)
+        grouped = not query.strip() and len(entries_by_group) > 1
+        for group, entries in _ordered_groups(entries_by_group):
+            if grouped:
+                options.add_option(
+                    Option(f"{group}", id=f"group:{group}", disabled=True)
                 )
+                rendered.append(None)
+            for entry in entries:
+                self._add_palette_option(options, entry)
+                rendered.append(entry)
+        self._rendered_entries = tuple(rendered)
+
+    @staticmethod
+    def _add_palette_option(options: OptionList, entry: PaletteEntry) -> None:
+        suffix = "" if entry.enabled else f"  ({entry.reason})"
+        context = "" if entry.scope is None else f"  [{entry.scope}]"
+        gesture = "" if entry.gesture_hint is None else f"  {entry.gesture_hint}"
+        options.add_option(
+            Option(
+                f"{entry.action.label}{context}{gesture}{suffix}",
+                id=entry.action.action_id.value,
+                disabled=not entry.enabled,
             )
+        )
+
+
+def _ordered_groups(
+    groups: dict[str, list[PaletteEntry]],
+) -> tuple[tuple[str, tuple[PaletteEntry, ...]], ...]:
+    order = {
+        "Workspace & identity": 0,
+        "Conversations": 1,
+        "Channels": 2,
+        "Messages": 3,
+        "Search": 4,
+        "System": 5,
+        "Summon": 6,
+    }
+    return tuple(
+        (
+            group,
+            tuple(
+                sorted(
+                    entries,
+                    key=lambda entry: (
+                        entry.action.display_order,
+                        entry.action.label.casefold(),
+                    ),
+                )
+            ),
+        )
+        for group, entries in sorted(
+            groups.items(),
+            key=lambda item: (order.get(item[0], len(order)), item[0]),
+        )
+    )
+
+
+class CommandLineScreen(_TautModalScreen[CommandLineSubmission | None]):
+    """Textual mirror input over the public typed command syntax."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("escape", "cancel", "Cancel", show=False),
+        Binding("tab", "complete", "Complete", show=False),
+    ]
+
+    def __init__(self, syntax: RootCommandSyntax) -> None:
+        super().__init__()
+        self._syntax = syntax
+        self._dismissed = False
+        self._completions: tuple[str, ...] = ()
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="taut-modal"):
+            yield Static("Command line", classes="modal-title")
+            yield Static(
+                "Enter run · Tab complete · Esc close",
+                classes="command-instructions",
+            )
+            with Horizontal(id="command-entry"):
+                yield Static(":", id="command-marker")
+                yield Input(
+                    placeholder="command [options]",
+                    id="command-line",
+                )
+            yield Static(id="command-errors")
+            yield OptionList(id="command-completions")
+
+    def on_mount(self) -> None:
+        self.query_one("#command-line", Input).focus()
+        self._render_feedback("")
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "command-line":
+            self._render_feedback(event.value)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "command-line":
+            self._submit(event.value)
+
+    def action_cancel(self) -> None:
+        self._dismiss_once(None)
+
+    def action_complete(self) -> None:
+        if not self._completions:
+            return
+        query = self.query_one("#command-line", Input)
+        query.value = self._completions[0]
+        query.cursor_position = len(query.value)
+
+    def _submit(self, text: str) -> None:
+        try:
+            invocation = parse_command_line(CommandInput(text), syntax=self._syntax)
+        except CommandSyntaxError as exc:
+            self._show_error(str(exc))
+            return
+        self._dismiss_once(CommandLineSubmission(invocation))
+
+    def _render_feedback(self, text: str) -> None:
+        completions = _command_completions(text, self._syntax)
+        self._completions = completions
+        options = self.query_one("#command-completions", OptionList)
+        options.clear_options()
+        for completion in completions:
+            options.add_option(Option(completion))
+        try:
+            invocation = parse_command_line(CommandInput(text), syntax=self._syntax)
+        except CommandSyntaxError as exc:
+            self._show_error(str(exc) if text.strip() else "Type a command")
+        else:
+            if invocation.action is not None:
+                self._show_error(f"Ready: {invocation.action} help")
+            else:
+                self._show_error(
+                    "Ready: "
+                    + format_command_syntax(_syntax_node(invocation, self._syntax))
+                )
+
+    def _show_error(self, message: str) -> None:
+        self.query_one("#command-errors", Static).update(message)
+
+    def _dismiss_once(self, result: CommandLineSubmission | None) -> None:
+        if self._dismissed:
+            return
+        self._dismissed = True
+        self.dismiss(result)
+
+
+def _command_completions(text: str, syntax: RootCommandSyntax) -> tuple[str, ...]:
+    stripped = text.strip()
+    if not stripped:
+        return tuple(" ".join(node.path) for node in command_nodes(syntax))
+    prefix = stripped.split()
+    if text.endswith(" "):
+        prefix.append("")
+    candidates = [
+        " ".join(node.path)
+        for node in command_nodes(syntax)
+        if all(
+            part.startswith(expected)
+            for part, expected in zip(node.path, prefix, strict=False)
+        )
+    ]
+    return tuple(candidates[:8])
+
+
+def _syntax_node(
+    invocation: CommandInvocation,
+    syntax: RootCommandSyntax,
+) -> CommandSyntax:
+    for node in command_nodes(syntax):
+        if node.path == invocation.path:
+            return node
+    raise ValueError(f"unknown syntax path: {invocation.path}")
 
 
 class SearchScreen(_TautModalScreen[object | None]):

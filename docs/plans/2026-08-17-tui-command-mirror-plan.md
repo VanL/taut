@@ -168,6 +168,14 @@ Record answers in the execution log before editing code:
   `extensions/taut_tui/taut_tui/summon.py`, which calls the public
   `SummonController` boundary. CLI dispatch and `ShellSummonInteraction`
   remain forbidden paths.
+- 2026-08-17: The shared typed syntax tree, parser, provider discovery, and
+  TUI command-line screen were implemented. Core paths are mirror-recognized;
+  native execution is selected by the explicit TUI binding matrix. The grouped
+  browser remains on `Ctrl-P`, while `:` opens the textual mirror.
+- 2026-08-17: `taut-summon` now publishes a `taut.command_syntax` provider.
+  The TUI fallback-loads that provider only when the existing Summon owner is
+  available, then dispatches through `TuiSummonOperations` and the public
+  controller boundary.
 
 ## Product and interaction contract
 
@@ -308,6 +316,8 @@ before implementation continues.
 
 | Spec ref | Planned behavior | Actual behavior | Rationale | Spec proposal |
 |----------|------------------|-----------------|-----------|---------------|
+| TAUT-8.7 / task 3 | Migrate every CLI `configure_parser()` grammar to the shared AST in this slice. | The typed AST is complete for the released core mirror grammar, but existing argparse adapters remain the CLI compatibility owner. | Preserves exact CLI help, usage errors, exit classes, and lazy adapter loading while the new TUI contract lands. | Follow-up migration should add an AST-to-argparse compatibility builder and compare the released CLI matrix before removing adapter-owned parser declarations. |
+| TUI-7.1 / task 7 | Treat `watch` as a native live-view binding. | `watch` is syntax-recognized and explicitly CLI-only in this slice. Search filter options are likewise explicit CLI-only; basic query and limit are native. | The TUI does not approximate watcher lifecycle, filter, or search-scope semantics with a one-shot dispatch. | Revisit only with a separate watcher/search binding plan and lifecycle tests. |
 
 ## Spec baseline and proposed delta
 
@@ -542,13 +552,13 @@ initial disposition is:
 | `read` | native typed read | session/client cursor owner and transcript/inspector sink |
 | `inbox` | native typed claim/report | notification owner and inspector sink |
 | `log` | native cursor-neutral report | public history owner and inspector sink |
-| `search` | native search state | existing search owner, with command values prefilled |
+| `search` | native typed query; unsupported filters are explicit CLI-only | existing search owner for query and limit; filter options are not silently ignored |
 | `system doctor` | native typed report | `TuiSystemOperations` and system inspector |
 | `system dump` | native form/worker | `TuiSystemOperations` and existing dump flow |
 | `system debug enable/disable` | native typed operation | actor-free public debug owner and status sink |
 | `system load` | explicit CLI-only | current [TUI-10.3] maintenance boundary |
 | `list` | native typed report | public list owner and inspector sink |
-| `watch` | native live-view binding | `TuiSession` watcher owner; exact filter values must be implemented before claiming support |
+| `watch` | explicit CLI-only in this slice | the TUI watcher lifecycle and filter semantics are not approximated by a one-shot command dispatch |
 | `who` | native typed report | public member/presence owner and inspector sink |
 | `whoami` | native typed report | public identity owner and inspector sink |
 | `rejoin` | native typed identity flow | public rejoin owner and navigation refresh |
@@ -909,13 +919,44 @@ architectural blocker. Its residuals are now explicit in the plan:
   and root actions such as `--help` and `--version`.
 - `say` and `reply` stdin/omitted-text forms are syntax-recognized but CLI-only
   in the TUI; explicit text is native.
-- `TuiCommandBinding.validate` receives typed values and closed TUI facts, so
-  explicit targets do not silently fall back to visual selection; confirmation
-  remains exact-target and owner-specific.
+- The TUI command dispatcher receives typed values and applies closed session
+  policy before dispatch, so explicit targets do not silently fall back to
+  visual selection; confirmation remains exact-target and owner-specific.
 - The full syntax-recognition guarantee covers core commands and installed
   syntax providers. Missing optional Summon syntax is reported as unavailable,
   not treated as a core command.
 
-The plan remains `draft` until owner approval is complete. The promotion SHA,
-implementation evidence, final verification commands, and residual risks
-remain pending.
+## Implementation verification appendix
+
+Implementation evidence for the 2026-08-17 slice:
+
+- `uv run pytest -q -n 0 extensions/taut_tui/tests` — passed.
+- `uv run pytest -q -n 0 extensions/taut_summon/tests` — passed; two documented
+  live lanes skipped because the local `kimi` binary and Ollama model were not
+  available.
+- `uv run pytest -q -n 0 tests/test_command_syntax.py tests/test_cli.py tests/test_cli_probes.py` — passed; the documented Windows filename case was skipped.
+- `uv run pytest -q -n 0 tests/test_architecture_boundaries.py tests/test_command_registry.py tests/test_ruff_policy.py` — passed.
+- `uv run ruff check taut extensions/taut_tui/taut_tui extensions/taut_tui/tests extensions/taut_summon/taut_summon extensions/taut_summon/tests tests/test_command_syntax.py` — passed.
+- `uv run mypy extensions/taut_tui/taut_tui` and
+  `uv run mypy extensions/taut_summon/taut_summon` — passed.
+- `uv build --project extensions/taut_summon --out-dir /tmp/taut-summon-build-check` — passed; the wheel contains the `taut.command_syntax` entry point.
+- `bin/check-plan-status-index`, `uv run bin/check-doc-paths`, and
+  `uv run bin/check-cli-claims` — passed.
+
+The repository-wide `uv run pytest -q -n 0 tests` run has one unrelated
+environment-sensitive failure: the release test intentionally refuses the
+publishing path on `codex/windows-ci-diagnostics` and requires `main` or
+`master`. The full run also caught three expected-contract updates for the new
+syntax public surface and grouped headings; those were corrected and their
+targeted suites pass.
+
+The remaining architectural residual is deliberate: existing CLI
+`configure_parser()` adapters remain the compatibility owner for exact CLI help,
+usage errors, and exit behavior. The shared AST/parser is the mirror grammar
+owner in this slice. An AST-to-argparse migration needs its own compatibility
+matrix and should land separately.
+
+The plan was approved by the owner on 2026-08-17. The promotion SHA is
+`9888b38ceb4de509fad153c1b2970d4ca2832bb3`. The implementation slice is
+complete and committed, with the CLI-adapter migration residual recorded in
+the deviation log and verification appendix below.

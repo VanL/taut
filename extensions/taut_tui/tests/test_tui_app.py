@@ -483,6 +483,7 @@ def test_command_palette_excludes_command_open_action() -> None:
             visible_ids = {
                 results.get_option_at_index(index).id
                 for index in range(results.option_count)
+                if not str(results.get_option_at_index(index).id).startswith("group:")
             }
             expected_ids = {
                 spec.action_id.value
@@ -504,7 +505,7 @@ def test_command_palette_double_click_dismisses_only_once() -> None:
         app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             await pilot.press("ctrl+p")
-            assert await pilot.click("#palette-results", offset=(1, 0), times=2)
+            assert await pilot.click("#palette-results", offset=(1, 1), times=2)
             await pilot.pause()
             assert app.screen is app._base_screen
             assert app.visual_state.mode is InteractionMode.NORMAL
