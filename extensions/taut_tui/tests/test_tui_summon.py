@@ -6,6 +6,7 @@ Spec references:
 
 from __future__ import annotations
 
+import time
 from contextlib import contextmanager
 from threading import Event, Lock, Thread
 from typing import Any
@@ -450,8 +451,15 @@ def test_native_request_builder_populates_every_public_field() -> None:
 
 
 class _LeaseApp:
-    def __init__(self, *, accept: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        accept: bool = True,
+        confirmation_decision: bool | None = True,
+    ) -> None:
         self.accept = accept
+        self.confirmation_decision = confirmation_decision
+        self.messages: list[Any] = []
         self.suspended = Event()
         self.restored = Event()
         self.refreshed = Event()
@@ -472,6 +480,13 @@ class _LeaseApp:
     def post_message(self, message: Any) -> bool:
         if not self.accept:
             return False
+        from taut_tui.summon import TerminalAttachConfirmationRequest
+
+        self.messages.append(message)
+        if isinstance(message, TerminalAttachConfirmationRequest):
+            if self.confirmation_decision is not None:
+                message.resolve(self.confirmation_decision)
+            return True
         self._handler = Thread(target=message.hold, args=(self,))
         self._handler.start()
         return True
@@ -480,6 +495,176 @@ class _LeaseApp:
         if self._handler is not None:
             self._handler.join(timeout=5)
             assert not self._handler.is_alive()
+
+
+def _confirm_attach(interaction: Any) -> None:
+    from taut_summon import TerminalAttachNotice
+
+    assert interaction.confirm_terminal_attach(
+        TerminalAttachNotice(
+            member="grok",
+            provider="grok",
+            detach_hint="Ctrl-\\ Ctrl-\\",
+        )
+    )
+
+
+def test_terminal_attach_confirmation_is_exclusive_and_precedes_lease(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut_summon import (
+        TerminalAttachNotice,
+        TerminalAvailability,
+        TerminalIntent,
+    )
+
+    from taut_tui import summon as tui_summon
+
+    monkeypatch.setattr(tui_summon, "_standard_terminal_is_suitable", lambda: True)
+    app = _LeaseApp(confirmation_decision=None)
+    interaction = tui_summon.TuiSummonInteraction(app, timeout=2.0)
+    lease_granted = Event()
+    leave_lease = Event()
+    failures: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            assert interaction.confirm_terminal_attach(
+                TerminalAttachNotice(
+                    member="grok",
+                    provider="grok",
+                    detach_hint="Ctrl-\\ Ctrl-\\",
+                )
+            )
+            with interaction.terminal_lease():
+                lease_granted.set()
+                assert leave_lease.wait(timeout=2.0)
+        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
+            failures.append(exc)
+
+    worker = Thread(target=run, daemon=True)
+    worker.start()
+    try:
+        deadline = time.monotonic() + 2.0
+        while not app.messages and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert len(app.messages) == 1
+        request = app.messages[0]
+        assert isinstance(request, tui_summon.TerminalAttachConfirmationRequest)
+        assert not app.suspended.is_set()
+        assert (
+            interaction.terminal_availability(TerminalIntent.PREFERRED)
+            is TerminalAvailability.UNAVAILABLE
+        )
+        with pytest.raises(RuntimeError, match="another Summon terminal interaction"):
+            interaction.confirm_terminal_attach(request.notice)
+        with (
+            pytest.raises(RuntimeError, match="not acknowledged by this worker"),
+            interaction.terminal_lease(),
+        ):
+            pass
+        assert len(app.messages) == 1
+
+        request.resolve(True)
+        assert lease_granted.wait(timeout=2.0)
+        assert app.suspended.is_set()
+        assert len(app.messages) == 2
+    finally:
+        leave_lease.set()
+        worker.join(timeout=5.0)
+        app.join_handler()
+    assert not worker.is_alive()
+    assert failures == []
+    assert app.restored.is_set()
+
+
+def test_terminal_attach_confirmation_close_and_post_failure_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut_summon import TerminalAttachNotice
+
+    from taut_tui import summon as tui_summon
+
+    monkeypatch.setattr(tui_summon, "_standard_terminal_is_suitable", lambda: True)
+    notice = TerminalAttachNotice(
+        member="grok",
+        provider="grok",
+        detach_hint="Ctrl-\\ Ctrl-\\",
+    )
+    app = _LeaseApp(confirmation_decision=None)
+    interaction = tui_summon.TuiSummonInteraction(app, timeout=2.0)
+    decisions: list[bool] = []
+    worker = Thread(
+        target=lambda: decisions.append(interaction.confirm_terminal_attach(notice)),
+        daemon=True,
+    )
+    worker.start()
+    deadline = time.monotonic() + 2.0
+    while not app.messages and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert len(app.messages) == 1
+
+    interaction.close()
+    worker.join(timeout=2.0)
+    assert not worker.is_alive()
+    assert decisions == [False]
+    assert not app.suspended.is_set()
+
+    rejected = _LeaseApp(accept=False)
+    recoverable = tui_summon.TuiSummonInteraction(rejected, timeout=0.1)
+    with pytest.raises(RuntimeError, match="not accepting attach confirmations"):
+        recoverable.confirm_terminal_attach(notice)
+    rejected.accept = True
+    assert recoverable.confirm_terminal_attach(notice) is True
+    recoverable.release_current_worker()
+
+
+def test_foreground_return_releases_confirmed_prelease_reservation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut_summon import (
+        TerminalAttachNotice,
+        TerminalAvailability,
+        TerminalIntent,
+    )
+
+    from taut_tui import summon as tui_summon
+
+    class FailingAfterConfirmationController(_Controller):
+        def run_foreground(
+            self,
+            request: object,
+            interaction: object,
+            *,
+            install_signal_handlers: bool,
+            on_ready: object,
+        ) -> None:
+            del request, install_signal_handlers, on_ready
+            assert interaction.confirm_terminal_attach(  # type: ignore[attr-defined]
+                TerminalAttachNotice(
+                    member="grok",
+                    provider="grok",
+                    detach_hint="Ctrl-\\ Ctrl-\\",
+                )
+            )
+            raise RuntimeError("provider failed before lease")
+
+    monkeypatch.setattr(tui_summon, "_standard_terminal_is_suitable", lambda: True)
+    app = _LeaseApp()
+    interaction = tui_summon.TuiSummonInteraction(app, timeout=1.0)
+    operations = tui_summon.TuiSummonOperations(
+        controller=FailingAfterConfirmationController()
+    )
+    try:
+        _token, worker = operations.start(object(), interaction)
+        with pytest.raises(RuntimeError, match="provider failed before lease"):
+            worker.result(timeout=5.0)
+        assert (
+            interaction.terminal_availability(TerminalIntent.PREFERRED)
+            is TerminalAvailability.AVAILABLE
+        )
+    finally:
+        operations.close()
 
 
 def test_terminal_lease_handoff_is_exclusive_and_restores(
@@ -503,6 +688,7 @@ def test_terminal_lease_handoff_is_exclusive_and_restores(
         interaction.terminal_availability(TerminalIntent.PREFERRED)
         is TerminalAvailability.AVAILABLE
     )
+    _confirm_attach(interaction)
     with interaction.terminal_lease() as lease:
         assert app.suspended.is_set()
         assert (lease.input_fd, lease.output_fd) == (0, 1)
@@ -532,6 +718,9 @@ def test_terminal_lease_rejected_post_fails_fast_and_recovers(
     app = _LeaseApp(accept=False)
     interaction = tui_summon.TuiSummonInteraction(app, timeout=0.01)
 
+    app.accept = True
+    _confirm_attach(interaction)
+    app.accept = False
     with (
         pytest.raises(RuntimeError, match="not accepting"),
         interaction.terminal_lease(),
@@ -539,6 +728,7 @@ def test_terminal_lease_rejected_post_fails_fast_and_recovers(
         pytest.fail("rejected lease body must not run")
 
     app.accept = True
+    _confirm_attach(interaction)
     with interaction.terminal_lease():
         pass
     app.join_handler()
@@ -561,6 +751,7 @@ def test_terminal_suspension_failure_never_yields_and_fails_closed(
     app = BrokenSuspendApp()
     interaction = tui_summon.TuiSummonInteraction(app, timeout=1.0)
 
+    _confirm_attach(interaction)
     with (
         pytest.raises(RuntimeError, match="terminal suspension failed"),
         interaction.terminal_lease(),
@@ -590,6 +781,7 @@ def test_terminal_restoration_failure_is_visible_and_fails_closed(
     app = BrokenRefreshApp()
     interaction = tui_summon.TuiSummonInteraction(app, timeout=1.0)
 
+    _confirm_attach(interaction)
     with (
         pytest.raises(RuntimeError, match="terminal lease failed"),
         interaction.terminal_lease(),

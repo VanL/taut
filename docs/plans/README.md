@@ -51,6 +51,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 
 | Plan | Status | Exemplar | Note |
 |------|--------|----------|------|
+| `2026-08-17-summon-first-attach-handoff-plan.md` | completed | no | Class 5 hardened shell-first Summon attach handoff and TUI compatibility plan; implementation, verification, final review, and owner-authorized closeout passed. |
 | `2026-08-17-tui-command-entry-correction-plan.md` | completed | no | Class 5 hardened correction for composer-known-command promotion and interactive argument-ready command completion; implementation, verification, final review, and owner-authorized close-out passed. |
 | `2026-08-17-tui-multiline-whitespace-plan.md` | completed | no | Class 5 hardened TUI contract revision for multiline compose input, modified-key fallbacks, exact whitespace presentation, transcript gaps, and scroll-safe variable-height rows; implementation, PTY acceptance, final review, and owner-authorized close-out passed. |
 | `2026-08-17-tui-scroll-anchor-test-synchronization-plan.md` | completed | no | Class 4 event-based correction for the nested Textual refresh boundary; local exact-event proof and all-five-job hosted TUI evidence passed at `56e8235`. |

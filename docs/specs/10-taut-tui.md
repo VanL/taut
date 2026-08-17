@@ -622,6 +622,11 @@ bindings for `summon` and `dismiss` through the public controller boundary.
 foreground ownership, readiness, terminal lease, logging, and shutdown rules
 remain authoritative.
 
+Both the native start form and textual `:summon` binding pass the same
+`TuiSummonInteraction`. If the driver resolves an actual terminal attach,
+that interaction requests one native acknowledgement; neither entry route
+precomputes `wired`, bypasses the acknowledgement, or owns terminal bytes.
+
 ### [TUI-11.2] Driver ownership and shutdown
 
 Each TUI-started foreground run executes
@@ -661,24 +666,35 @@ controller has no detached ownership transfer.
 
 ### [TUI-11.3] Terminal handoff
 
-The TUI supplies a cooperative `SummonInteraction`. It reports terminal
-availability without changing terminal state. It reports `AVAILABLE` only
-when both standard streams are suitable, no other lease is active, and the
-framework can suspend safely.
+The TUI supplies one cooperative `SummonInteraction`. It reports terminal
+availability without changing terminal state and returns `AVAILABLE` only
+when both standard streams are suitable, no acknowledgement or lease owner
+conflicts, and the framework can suspend safely.
 
-For one terminal lease, the interaction marshals a handshake to the UI loop,
-where one handler enters Textual's supported synchronous `App.suspend()`
-context and remains inside it while waiting on a thread-safe release event. The
-Textual event loop is intentionally paused for the lease; it does not keep
-processing or rendering a suspended app. After suspension succeeds, the
-handler signals acquisition to the Summon worker, which receives only input fd
-0 and output fd 1 and owns byte-transparent PTY attachment. The worker signals
-release in its context-manager `finally`; the same UI handler exits
-`App.suspend()`, restores the terminal, forces a complete redraw, restores
-logical focus/mode/draft state, and signals restoration complete. Lease
-acquisition or restoration failure is fatal to that foreground run and visible
-after safe restoration; it never falls through to concurrent terminal
-ownership.
+When Summon resolves that an attach will actually occur, the foreground
+worker posts a typed acknowledgement request to the active Textual loop
+before provider spawn. The UI handler opens the existing native confirmation
+screen and returns; it never blocks the event loop waiting for the person.
+The prompt explains provider-only setup, the Summon-supplied detach hint, and
+that Textual resumes and continues owning the run after detach. Confirmation
+resolves the worker request; cancellation ends that foreground run without a
+provider child or terminal lease. Host shutdown resolves any pending prompt
+as cancelled so a non-daemon worker cannot be stranded. One coordinator
+excludes concurrent acknowledgement and lease owners.
+
+Only after confirmation and provider bootstrap does the interaction marshal
+a separate lease handshake to the UI loop. One handler enters Textual's
+supported synchronous `App.suspend()` context and remains inside it while
+waiting on a thread-safe release event. The Textual event loop is
+intentionally paused for the lease; it does not process prompts, logging, or
+rendering while suspended. After suspension succeeds, the handler signals
+acquisition to the Summon worker, which receives only input fd 0 and output
+fd 1 and owns byte-transparent PTY attachment. Worker release lets the same
+UI handler exit `App.suspend()`, restore the terminal, force a complete
+redraw, restore logical focus/mode/draft state, and signal restoration
+complete. Prompt-post, lease-acquisition, or restoration failure is fatal to
+that foreground run and visible through the existing safe presentation path;
+none falls through to concurrent terminal ownership.
 
 ### [TUI-11.4] Log routing
 
@@ -689,6 +705,11 @@ the active full-screen terminal, and buffers display updates during a terminal
 lease. It does not modify the root logger. The TUI saves and restores the
 namespace logger's prior handlers, level, and propagation state on every exit,
 including startup and Summon failures.
+
+The pre-attach confirmation runs before the raw lease and may render normally.
+Once the lease begins, Summon logs remain buffered until terminal restoration
+and redraw complete. The post-detach setup-complete diagnostic and eventual
+readiness projection therefore appear only on the restored TUI.
 
 ## 12. Failure, Safety, and Cleanup [TUI-12]
 
@@ -797,11 +818,14 @@ The following enumerable matrices have firing tests:
   ordering, notification claim presentation, and shutdown non-acknowledgment;
 - doctor pass/findings/framework error, dump success/replacement/failure/quit
   gate, and load-help non-execution;
-- Summon absent/present, start/status/dismiss, external versus owned exit,
-  pending startup, actual-name readiness after auto-rename, one readiness over
-  provider resume, post-readiness rename, readiness/worker return races,
-  run-scoped stop, failed stop/return, terminal availability/lease/restore,
-  logging restoration, and host signal non-ownership; and
+- Summon absent/present, native-form and textual-command start, status/dismiss,
+  external versus owned exit, pending startup, actual-name readiness after
+  auto-rename, one readiness over provider resume, post-readiness rename,
+  readiness/worker return races, run-scoped stop, failed stop/return,
+  pre-spawn attach acknowledgement confirm/cancel/host-close/concurrent
+  exclusion, acknowledgement-before-suspension, terminal
+  availability/lease/restore, logging restoration, and host signal
+  non-ownership; and
 - terminal-control payloads in every user/extension text-bearing widget.
 
 Representative wide, medium, compact, and too-small screens receive a manual
@@ -843,6 +867,9 @@ Version 1 does not include:
 
 ## Related Plans
 
+- `docs/plans/2026-08-17-summon-first-attach-handoff-plan.md` — repairs the
+  shell-first attach handoff and then adapts the pre-attach acknowledgement
+  and raw lease as distinct TUI transitions.
 - `docs/plans/2026-08-17-tui-command-entry-correction-plan.md` — promotes
   leading known-command composer drafts into command input and makes command
   completion selection argument-ready through keyboard and mouse routes.

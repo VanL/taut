@@ -7,13 +7,16 @@ Spec references:
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
+import threading
 from collections.abc import Callable
 from concurrent.futures import Future
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
-from textual.widgets import Button, Input
+from textual.widgets import Button, Input, Select
 
 from taut.client import TautClient
 from taut_tui.models import InteractionMode, LayoutMode
@@ -1056,6 +1059,170 @@ def test_broken_summon_startup_and_sync_operations_stay_visible(
             )
 
     asyncio.run(synchronous())
+
+
+def test_native_and_textual_summon_routes_share_confirmation_before_suspend(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut_tui import summon as tui_summon
+    from taut_tui.app import TautApp
+    from taut_tui.screens import ConfirmationScreen, SummonStartScreen
+    from taut_tui.widgets import TautOptionList
+
+    db_path = tmp_path / "summon-confirmation-routes.db"
+    TautClient.init(db_path=db_path)
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_tui = (
+        Path(__file__).parents[2] / "taut_summon" / "tests" / "fixtures" / "fake_tui.py"
+    )
+    grok = fake_bin / "grok"
+    grok.write_text(
+        f"#!{sys.executable}\n"
+        "import runpy\n"
+        f"runpy.run_path({str(fake_tui)!r}, run_name='__main__')\n",
+        encoding="utf-8",
+    )
+    grok.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(tui_summon, "_standard_terminal_is_suitable", lambda: True)
+    provider_log = tmp_path / "provider.jsonl"
+    monkeypatch.setenv("TAUT_FAKE_TUI_LOG", str(provider_log))
+
+    async def exercise() -> None:
+        app = TautApp(db_path=str(db_path), as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 34)) as pilot:
+            assert app._summon_interaction is not None
+            assert app._summon is not None
+            suspend_calls: list[str] = []
+            real_suspend = app.suspend
+
+            def observed_suspend() -> object:
+                suspend_calls.append("suspend")
+                return real_suspend()
+
+            monkeypatch.setattr(app, "suspend", observed_suspend)
+            await pilot.press("ctrl+p")
+            query = app.screen.query_one("#palette-query", Input)
+            await _pause_until(pilot, lambda: query.has_focus)
+            await pilot.press(*"Start summoned member")
+            results = app.screen.query_one("#palette-results", TautOptionList)
+            assert results.option_count == 1
+            assert await pilot.click("#palette-results", offset=(1, 0), times=2)
+            await _pause_until(pilot, lambda: isinstance(app.screen, SummonStartScreen))
+            app.screen.query_one("#summon-name", Input).value = "native-grok"
+            app.screen.query_one("#summon-provider", Select).value = "grok"
+            app.screen.query_one("#summon-submit", Button).press()
+            await _pause_until(
+                pilot,
+                lambda: isinstance(app.screen, ConfirmationScreen),
+                attempts=500,
+            )
+            confirmation = cast(ConfirmationScreen, app.screen)
+            assert "provider setup" in confirmation.prompt
+            assert "Ctrl-\\ Ctrl-\\" in confirmation.prompt
+            assert suspend_calls == []
+            await pilot.press("escape")
+            await _pause_until(
+                pilot,
+                lambda: app._summon is not None and app._summon.owned_runs() == (),
+                attempts=500,
+            )
+
+            composer = app.query_one("#composer", TautComposer)
+            composer.focus()
+            await _pause_until(pilot, lambda: composer.has_focus)
+            await pilot.press(*":summon", "space", *"grok", "enter")
+            await _pause_until(
+                pilot,
+                lambda: isinstance(app.screen, ConfirmationScreen),
+                attempts=500,
+            )
+            confirmation = cast(ConfirmationScreen, app.screen)
+            assert "provider setup" in confirmation.prompt
+            assert suspend_calls == []
+            await pilot.press("escape")
+            await _pause_until(
+                pilot,
+                lambda: app._summon is not None and app._summon.owned_runs() == (),
+                attempts=500,
+            )
+            assert not provider_log.exists()
+
+    asyncio.run(exercise())
+
+
+def test_tui_unmount_cancels_pending_attach_confirmation(tmp_path: Path) -> None:
+    from taut_summon import TerminalAttachNotice
+
+    from taut_tui.app import TautApp
+    from taut_tui.screens import ConfirmationScreen
+
+    db_path = tmp_path / "summon-confirmation-unmount.db"
+    TautClient.init(db_path=db_path)
+    decisions: list[bool] = []
+    worker: threading.Thread | None = None
+
+    async def exercise() -> None:
+        nonlocal worker
+        app = TautApp(db_path=str(db_path), as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 34)) as pilot:
+            interaction = app._summon_interaction
+            assert interaction is not None
+            worker = threading.Thread(
+                target=lambda: decisions.append(
+                    interaction.confirm_terminal_attach(
+                        TerminalAttachNotice(
+                            member="grok",
+                            provider="grok",
+                            detach_hint="Ctrl-\\ Ctrl-\\",
+                        )
+                    )
+                ),
+                daemon=True,
+            )
+            worker.start()
+            await _pause_until(
+                pilot, lambda: isinstance(app.screen, ConfirmationScreen)
+            )
+            assert decisions == []
+
+    asyncio.run(exercise())
+    assert worker is not None
+    worker.join(timeout=5.0)
+    assert not worker.is_alive()
+    assert decisions == [False]
+
+
+def test_resolved_attach_confirmation_never_opens_stale_modal(
+    tmp_path: Path,
+) -> None:
+    from taut_summon import TerminalAttachNotice
+
+    from taut_tui.app import TautApp
+    from taut_tui.screens import ConfirmationScreen
+    from taut_tui.summon import TerminalAttachConfirmationRequest
+
+    db_path = tmp_path / "resolved-summon-confirmation.db"
+    TautClient.init(db_path=db_path)
+    request = TerminalAttachConfirmationRequest(
+        TerminalAttachNotice(
+            member="agent",
+            provider="grok",
+            detach_hint="Ctrl-\\ Ctrl-\\",
+        )
+    )
+    request.resolve(False)
+
+    async def exercise() -> None:
+        app = TautApp(db_path=str(db_path), as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 34)) as pilot:
+            assert app.post_message(request)
+            await pilot.pause()
+            assert not isinstance(app.screen, ConfirmationScreen)
+
+    asyncio.run(exercise())
 
 
 def test_palette_entries_report_current_scope_gestures_and_disabled_reasons(

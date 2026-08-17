@@ -1926,6 +1926,126 @@ def test_attach_bridges_and_split_chord_detaches_with_reset(
         os.close(user_slave)
 
 
+def test_attach_passively_retains_output_and_bracketed_paste_mode(
+    tmp_path: Path,
+) -> None:
+    handle, log = _spawn_fake(
+        tmp_path,
+        {"queries": False, "modes": True, "redraw": False},
+    )
+    user_master, user_slave = pty.openpty()
+    wake = threading.Event()
+    shutdown = threading.Event()
+    result: list[str] = []
+    thread = threading.Thread(
+        target=lambda: result.append(
+            handle.attach(
+                wake=wake,
+                shutdown=shutdown,
+                input_fd=user_slave,
+                output_fd=user_slave,
+            )
+        ),
+        daemon=True,
+        name="passive-mode-attach",
+    )
+    thread.start()
+    try:
+        assert b"ready" in _read_fd_until(user_master, b"ready")
+        os.write(user_master, b"\x1c\x1c")
+        _read_fd_until(user_master, b"\x1b[?2004l", timeout=1.0)
+        thread.join(timeout=5.0)
+
+        assert result == ["detached"]
+        assert handle._seen_output.is_set()
+        assert handle._bracketed_paste is True
+
+        handle.inject("first line\nsecond line")
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            inputs = [entry for entry in _entries(log) if entry["event"] == "input"]
+            if inputs:
+                assert inputs[-1]["raw"] == (
+                    "\x1b[200~first line\nsecond line\x1b[201~\r"
+                )
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError(f"no bracketed input after attach: {_entries(log)!r}")
+    finally:
+        handle.close()
+        os.close(user_master)
+        os.close(user_slave)
+
+
+def test_passive_input_mode_tracker_carries_split_enable_and_disable() -> None:
+    tracker = _pty_module._TerminalInputModeTracker()
+
+    tracker.feed(b"screen\x1b[?20")
+    assert tracker.bracketed_paste is False
+    tracker.feed(b"04h")
+    assert tracker.bracketed_paste is True
+    tracker.feed(b"\x1b[")
+    tracker.feed(b"?2004l")
+    assert tracker.bracketed_paste is False
+
+
+def test_attach_passive_observation_emits_no_query_reply_or_diagnostic(
+    tmp_path: Path,
+) -> None:
+    handle, log = _spawn_fake(
+        tmp_path,
+        {
+            "queries": False,
+            "modes": False,
+            "redraw": False,
+            "unknown_query": "[?15n",
+            "unknown_blocks": True,
+        },
+        stall_s=0.1,
+    )
+    user_master, user_slave = pty.openpty()
+    wake = threading.Event()
+    shutdown = threading.Event()
+    result: list[str] = []
+    thread = threading.Thread(
+        target=lambda: result.append(
+            handle.attach(
+                wake=wake,
+                shutdown=shutdown,
+                input_fd=user_slave,
+                output_fd=user_slave,
+            )
+        ),
+        daemon=True,
+        name="passive-query-attach",
+    )
+    thread.start()
+    pump: EventPump | None = None
+    try:
+        assert b"\x1b[?15n" in _read_fd_until(user_master, b"\x1b[?15n")
+        _wait_for(log, "unknown_reply_window")
+        window = [
+            entry for entry in _entries(log) if entry["event"] == "unknown_reply_window"
+        ][-1]
+        assert window["got"] == ""
+
+        os.write(user_master, b"\x1c\x1c")
+        _read_fd_until(user_master, b"\x1b[?2004l", timeout=1.0)
+        thread.join(timeout=5.0)
+        assert result == ["detached"]
+
+        pump = EventPump(handle)
+        time.sleep(0.25)
+        assert "awaiting_query" not in handle.status_fields()
+    finally:
+        handle.close()
+        if pump is not None:
+            assert isinstance(pump.drain_until_exit(), ExitEvent)
+        os.close(user_master)
+        os.close(user_slave)
+
+
 def test_attach_forwards_escape_prefixed_input(
     tmp_path: Path,
 ) -> None:

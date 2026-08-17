@@ -279,11 +279,26 @@ queued readiness callback cannot resurrect a finished run. Scheduled logging
 and readiness projection contain their own presentation failures; scheduling
 alone is not a sufficient exception boundary.
 
-Terminal attachment uses a two-event owner split. A Summon worker posts one
-`TerminalLeaseRequest`; the UI handler enters and remains inside
-`App.suspend()`, then signals acquisition. Only then does the worker receive
-fd 0 and fd 1. Worker release lets the same UI handler exit suspension, force
-a redraw, and signal full restoration. One lock excludes concurrent leases.
+Terminal attachment uses a pre-spawn confirmation followed by the existing
+two-event lease handoff. Both the native Summon form and textual `:summon`
+route pass the same `TuiSummonInteraction` to the public controller; neither
+route guesses whether attachment will occur. When the driver selects an actual
+attach, the worker posts one `TerminalAttachConfirmationRequest` while Textual
+is still active. The app escapes the typed notice fields and opens the ordinary
+native confirmation screen. Cancellation fails closed without suspending or
+spawning the provider.
+
+A confirmed request reserves terminal ownership for that exact worker across
+provider startup. Only it may post the later `TerminalLeaseRequest`; the UI
+handler then enters and remains inside `App.suspend()` and signals acquisition.
+Only then does the worker receive fd 0 and fd 1. Worker release lets the same UI
+handler exit suspension, force a redraw, and signal full restoration. One lock
+excludes concurrent confirmations and leases. Worker return releases a
+confirmed pre-lease reservation, so a provider failure cannot wedge future
+Summon runs. App unmount closes the interaction before the operations pool and
+wakes an outstanding confirmation; request resolution is idempotent so a late
+modal callback cannot revive cancelled work.
+
 The scoped `taut_summon` logging bridge saves and restores the namespace
 logger exactly, escapes displayed records, bounds them, and buffers them while
 Summon owns the raw terminal. A failed restoration latches the lease boundary
@@ -331,6 +346,9 @@ it without eager Textual import.
 
 ## Related Plans
 
+- `docs/plans/2026-08-17-summon-first-attach-handoff-plan.md` — separates the
+  native pre-attach confirmation from the later raw terminal lease for both
+  Summon entry routes.
 - `docs/plans/2026-08-17-tui-command-entry-correction-plan.md` — leading
   known-command composer promotion, exact originating-draft ownership, and
   argument-ready keyboard/mouse completion activation.

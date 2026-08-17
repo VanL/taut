@@ -383,29 +383,42 @@ later calls.
 
 First PTY use is not guessed from output. The session row carries a durable
 `wired` boolean (`SUMMON_SCHEMA_VERSION` 3; introduced in version 2). A
-not-yet-wired first generation
-with a real tty attaches the human terminal to the harness; the human answers
-trust/login/model prompts and detaches with the non-`ESC` chord
-`Ctrl-\ Ctrl-\`. Only that explicit detach sets `wired=True`. Future summons
-go detached. `--attach` forces setup, while `--detach` forces detached mode.
+not-yet-wired first generation with a real tty first asks the host to confirm
+the exact attach transition. The notice says that the provider screen is setup,
+not Taut chat; limits the task to trust/login/model or equivalent prompts;
+names the non-`ESC` detach chord `Ctrl-\ Ctrl-\`; and explains that the
+foreground Summon run stays active afterward. Cancellation returns before a
+child, terminal lease, or readiness callback exists and leaves the durable row
+unwired. After confirmation, the human completes provider setup and detaches.
+Only that explicit detach sets `wired=True`. Future summons go detached.
+`--attach` forces setup, while `--detach` forces detached mode.
 
-`interaction.py` is the stdlib-only public host seam. It separates a pure
-availability probe from a scoped terminal lease. The driver samples one
+`interaction.py` is the Textual-free public host seam. Importing it remains
+lightweight; the shell confirmation lazily imports core's terminal-text escape
+policy only when it renders a notice. The seam separates a pure availability
+probe and typed pre-spawn confirmation from a scoped terminal lease. The driver
+samples one
 availability value before provider bootstrap for every attach-capable run
 except forced detach, then reuses it across crash generations and after the
-durable `wired` row becomes known. `AVAILABLE` and `NO_TTY` retain the delayed
-pump path; `NESTED_HOST` and generic `UNAVAILABLE` start the pump early. A lease
-is entered only for the actual first-generation attach transition. The driver,
-not the host, calls the provider bridge with the lease fds and interprets
+durable `wired` row becomes known. It computes one immutable first-generation
+attach decision from those facts and asks for confirmation before spawning the
+provider. Crash generations never prompt again. `AVAILABLE` and `NO_TTY`
+retain the delayed pump path; `NESTED_HOST` and generic `UNAVAILABLE` start the
+pump early. A lease is entered only for the confirmed first-generation attach
+transition. The driver, not the host, calls the provider bridge with the lease
+fds and interprets
 `detached`, `eof`, or `shutdown`; the host never receives an adapter handle or
 state/control access. Lease acquisition and restoration failures are fatal, so
 a failed restore cannot mark the member wired.
 
 `ShellSummonInteraction` preserves historical shell behavior. It tests stdin
 only, allows redirected stdout, gives no-tty diagnostics precedence over the
-nested marker, and grants fds 0/1 without changing terminal state. A rich host
-may pause rendering and grant other real tty fds inside its lease, then restore
-and redraw on exit.
+nested marker, reads confirmation from the command context's authoritative
+stdin, writes the escaped notice to its authoritative stderr, and grants fds
+0/1 without changing terminal state. A blank Enter confirms; EOF, other input,
+or cancellation declines before spawn. A rich host may render a native
+confirmation while its UI remains active, then pause rendering and grant other
+real tty fds only inside the later lease before restoring and redrawing.
 
 The bridge is a single select loop over the human tty, PTY master, and a
 shutdown waker pipe. It is not two blocking copy threads, because STOP must be
@@ -414,6 +427,13 @@ writes a fixed reset blast to the local tty and restores termios, because the
 harness keeps running and will not clean up the user's terminal after detach.
 PTY test peers must drain that blast before joining the bridge: the deliberate
 `TCSADRAIN` restore may wait until the peer consumes pending terminal output.
+Provider bytes observed by the attach loop also update the handle's quiet-time
+evidence and a narrow persistent input-mode tracker. That tracker recognizes
+split bracketed-paste control sequences but emits no replies and owns no
+terminal-query diagnostics. The later event pump is still the only active
+terminal responder. This passive handoff lets post-detach settling use output
+already seen during attach and preserves bracketed multiline orientation when
+the provider does not redraw after detach.
 `TAUT_HOST_TUI=1` is the fallback marker for an uncooperative nested shell-out.
 A cooperative in-process host supplies its own interaction instead.
 
@@ -736,7 +756,7 @@ require a separately drained subprocess pipe.
 | `extensions/taut_summon/taut_summon/__init__.py` | Lazy, typed public facade and stable export inventory |
 | `extensions/taut_summon/taut_summon/models.py` | Public request/result/status values and operation-error hierarchy ([SUM-13]) |
 | `extensions/taut_summon/taut_summon/controller.py` | CLI-independent provider/list/status/stop/foreground-run orchestration ([SUM-13]) |
-| `extensions/taut_summon/taut_summon/interaction.py` | Stdlib-only public terminal availability/lease protocol and shell adapter ([SUM-7.4]/[SUM-13]) |
+| `extensions/taut_summon/taut_summon/interaction.py` | Textual-free public acknowledgement/terminal-lease protocol and lazily core-dependent shell adapter ([SUM-7.4]/[SUM-13]) |
 | `extensions/taut_summon/taut_summon/cli.py` | Lightweight `run`/`stop`/`status` argparse, human rendering, exit-code mapping, and standalone unexpected-exception capture boundary |
 | `extensions/taut_summon/taut_summon/_driver.py` | Bootstrap ([SUM-4]), ears watch handler, event pump, resume, nonblocking terminal-close request, foreground finalization; `format_injection` ([SUM-5.2]) |
 | `extensions/taut_summon/taut_summon/_state.py` | The two-table ledger, claim/session helpers, single-driver guard evidence ([SUM-8]) |
@@ -834,6 +854,8 @@ from manufacturing invalid evidence.
 
 ## Related Plans
 
+- `docs/plans/2026-08-17-summon-first-attach-handoff-plan.md` — pre-spawn
+  host acknowledgement plus passive PTY state transfer across attach/detach.
 - `docs/plans/2026-08-14-windows-postrelease-ci-determinism-plan.md` — exact
   callback/MCP ownership diagnosis and killed negative-probe coverage lifecycle.
 - `docs/plans/2026-08-14-review-findings-remediation-plan.md` — bounded

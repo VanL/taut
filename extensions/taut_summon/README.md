@@ -76,9 +76,14 @@ standalone consoles use the same parser configuration and controller adapters;
 neither console invokes the other. `taut-summon status` remains the standalone
 control-plane listing and inspection command.
 
-On first PTY use, summon attaches your terminal so you can answer trust,
-login, or model prompts in the real harness UI. Detach with `Ctrl-\ Ctrl-\`.
-After detach the member is marked wired and future summons run detached.
+On first PTY use, summon first explains the handoff and waits for a blank
+Enter before it starts the provider. The provider screen is setup, not Taut
+chat: answer only trust, login, model, or equivalent prompts there. Detach with
+`Ctrl-\ Ctrl-\`. After detach, keep the foreground Summon command running and
+use another terminal for Taut chat. Summon then starts its listener; the
+`summoned ...` line is the readiness marker. The member is marked wired and
+future summons run detached. EOF, cancellation, or any nonblank response at
+the acknowledgement exits before spawning the provider and leaves it unwired.
 Use `taut summon --attach NAME` to re-enter setup, or `--detach` for an
 explicit detached run. PTY output is never parsed as speech; the agent speaks
 by running `taut say`.

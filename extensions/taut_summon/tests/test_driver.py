@@ -68,6 +68,7 @@ from taut_summon._driver import (
     DriverError,
     SummonDriver,
     _BootstrapResult,
+    _GenerationAttachDecision,
     _InjectionHalted,
     format_injection,
 )
@@ -261,12 +262,20 @@ class _RecordingInteraction:
         self.acquire_error = acquire_error
         self.restore_error = restore_error
         self.availability_calls: list[TerminalIntent] = []
+        self.confirmation_calls: list[Any] = []
         self.lease_calls = 0
         self.lease_events: list[str] = []
 
     def terminal_availability(self, intent: TerminalIntent) -> TerminalAvailability:
         self.availability_calls.append(intent)
         return self.availability
+
+    def confirm_terminal_attach(
+        self, notice: Any, *, cancel: threading.Event | None = None
+    ) -> bool:
+        del cancel
+        self.confirmation_calls.append(notice)
+        return True
 
     @contextmanager
     def terminal_lease(self) -> Iterator[TerminalLease]:
@@ -289,12 +298,16 @@ class _RecordingAttachHandle:
         self.result = result
         self.attach_error = attach_error
         self.attach_calls: list[dict[str, Any]] = []
+        self.awaiting_onboarding_calls = 0
 
     def attach(self, **kwargs: Any) -> str:
         self.attach_calls.append(kwargs)
         if self.attach_error is not None:
             raise self.attach_error
         return self.result
+
+    def mark_awaiting_onboarding(self) -> None:
+        self.awaiting_onboarding_calls += 1
 
 
 def _run_request(*, attach: bool = False, detach: bool = False) -> SummonRequest:
@@ -437,13 +450,7 @@ def test_attach_uses_one_host_lease_and_forwards_its_fds() -> None:
     )
     handle = _RecordingAttachHandle()
 
-    result = driver._attach_if_needed(
-        cast(Any, handle),
-        boot=_attach_boot(),
-        wired=False,
-        first_generation=True,
-        availability=TerminalAvailability.AVAILABLE,
-    )
+    result = driver._run_terminal_attach(cast(Any, handle))
 
     assert result == "detached"
     assert interaction.lease_calls == 1
@@ -468,14 +475,7 @@ def test_attach_preserves_other_finite_provider_results(result: str) -> None:
     )
 
     assert (
-        driver._attach_if_needed(
-            cast(Any, _RecordingAttachHandle(result)),
-            boot=_attach_boot(),
-            wired=False,
-            first_generation=True,
-            availability=TerminalAvailability.AVAILABLE,
-        )
-        == result
+        driver._run_terminal_attach(cast(Any, _RecordingAttachHandle(result))) == result
     )
     assert interaction.lease_events == ["acquire", "restore"]
 
@@ -489,13 +489,7 @@ def test_attach_rejects_provider_result_outside_finite_contract() -> None:
     )
 
     with pytest.raises(DriverError, match="invalid attach result"):
-        driver._attach_if_needed(
-            cast(Any, _RecordingAttachHandle("surprise")),
-            boot=_attach_boot(),
-            wired=False,
-            first_generation=True,
-            availability=TerminalAvailability.AVAILABLE,
-        )
+        driver._run_terminal_attach(cast(Any, _RecordingAttachHandle("surprise")))
 
     assert interaction.lease_events == ["acquire", "restore"]
 
@@ -519,15 +513,14 @@ def test_non_attach_paths_never_acquire_host_lease(
     )
     handle = _RecordingAttachHandle()
 
-    result = driver._attach_if_needed(
+    decision = _GenerationAttachDecision(wired=wired, should_attach=False)
+    result = driver._prepare_generation_attach(
         cast(Any, handle),
         boot=_attach_boot(),
-        wired=wired,
-        first_generation=first_generation,
-        availability=(None if detach else TerminalAvailability.AVAILABLE),
+        attach_decision=decision,
     )
 
-    assert result is None
+    assert result is False
     assert interaction.lease_calls == 0
     assert handle.attach_calls == []
 
@@ -557,13 +550,7 @@ def test_required_unavailable_terminal_is_fatal_before_lease(
     )
 
     with pytest.raises(DriverError, match=re.escape(message)):
-        driver._attach_if_needed(
-            cast(Any, _RecordingAttachHandle()),
-            boot=_attach_boot(),
-            wired=False,
-            first_generation=True,
-            availability=availability,
-        )
+        driver._require_attach_available(availability)
 
     assert interaction.lease_calls == 0
 
@@ -608,13 +595,8 @@ def test_preferred_unavailable_terminal_keeps_reason_specific_warning(
     )
     caplog.set_level("WARNING", logger="taut_summon.driver")
 
-    result = driver._attach_if_needed(
-        cast(Any, _RecordingAttachHandle()),
-        boot=_attach_boot(),
-        wired=False,
-        first_generation=True,
-        availability=availability,
-    )
+    driver._warn_unwired_without_attach(_attach_boot(), availability)
+    result = None
 
     assert result is None
     assert caplog.messages == [message]
@@ -652,13 +634,7 @@ def test_terminal_lease_acquire_and_restore_failures_are_fatal(
     handle = _RecordingAttachHandle()
 
     with pytest.raises(DriverError, match="terminal interaction failed"):
-        driver._attach_if_needed(
-            cast(Any, handle),
-            boot=_attach_boot(),
-            wired=False,
-            first_generation=True,
-            availability=TerminalAvailability.AVAILABLE,
-        )
+        driver._run_terminal_attach(cast(Any, handle))
 
     assert len(handle.attach_calls) == attach_calls
     assert interaction.lease_events == events
@@ -677,13 +653,7 @@ def test_terminal_restore_failure_does_not_replace_attach_failure() -> None:
     handle = _RecordingAttachHandle(attach_error=AdapterError("provider attach failed"))
 
     with pytest.raises(AdapterError, match="provider attach failed"):
-        driver._attach_if_needed(
-            cast(Any, handle),
-            boot=_attach_boot(),
-            wired=False,
-            first_generation=True,
-            availability=TerminalAvailability.AVAILABLE,
-        )
+        driver._run_terminal_attach(cast(Any, handle))
 
     assert interaction.lease_events == ["acquire", "restore"]
 
@@ -698,12 +668,8 @@ def test_raw_attach_io_failure_becomes_driver_error_after_lease_restore() -> Non
     failure = OSError("host output closed")
 
     with pytest.raises(DriverError, match="terminal attach failed") as caught:
-        driver._attach_if_needed(
-            cast(Any, _RecordingAttachHandle(attach_error=failure)),
-            boot=_attach_boot(),
-            wired=False,
-            first_generation=True,
-            availability=TerminalAvailability.AVAILABLE,
+        driver._run_terminal_attach(
+            cast(Any, _RecordingAttachHandle(attach_error=failure))
         )
 
     assert caught.value.__cause__ is failure
@@ -3013,7 +2979,7 @@ def test_pty_detached_pre_pump_failure_reaps_child(
 
 
 @PTY_XDIST_GROUP
-def test_pty_first_run_attaches_until_chord_and_sets_wired(
+def test_pty_first_run_acknowledges_before_spawn_then_detaches_and_sets_wired(
     summon_db: Path, tmp_path: Path
 ) -> None:
     pty_log = tmp_path / "pty-attach-driver.jsonl"
@@ -3021,9 +2987,12 @@ def test_pty_first_run_attaches_until_chord_and_sets_wired(
     env.update(
         _fake_pty_env(
             pty_log,
-            {"queries": False, "modes": False, "redraw": False, "onboarding": True},
+            {"queries": False, "modes": True, "redraw": False, "onboarding": True},
         )
     )
+    env["TAUT_SUMMON_PTY_MAX_SETTLE_S"] = "5.0"
+    prompt_path = tmp_path / "first-attach-orientation.txt"
+    prompt_path.write_text("orientation-first\norientation-second", encoding="utf-8")
     user_master, user_slave = pty.openpty()
     stderr_path = tmp_path / "pty-attach-driver.err"
     stderr_file = open(stderr_path, "w", encoding="utf-8")  # noqa: SIM115 approved [DOM-10.2.1] [RUFF-SUP-076] exception
@@ -3039,6 +3008,8 @@ def test_pty_first_run_attaches_until_chord_and_sets_wired(
             "pty",
             "--db",
             str(summon_db),
+            "--system-prompt-file",
+            str(prompt_path),
         ],
         cwd=tmp_path,
         env=env,
@@ -3048,6 +3019,15 @@ def test_pty_first_run_attaches_until_chord_and_sets_wired(
         text=False,
     )
     try:
+        wait_until(
+            lambda: (
+                "provider setup, not Taut chat"
+                in stderr_path.read_text(encoding="utf-8")
+            ),
+            message=f"pre-spawn attach notice; stderr={stderr_path.read_text(encoding='utf-8')}",
+        )
+        assert not pty_log.exists()
+        os.write(user_master, b"\r")
         assert b"Trust this directory" in _read_pty_until(
             user_master, b"Trust this directory"
         )
@@ -3077,6 +3057,28 @@ def test_pty_first_run_attaches_until_chord_and_sets_wired(
 
         os.write(user_master, b"\x1c\x1c")
         assert b"\x1b[?2004l" in _read_pty_until(user_master, b"\x1b[?2004l")
+        wait_until(
+            lambda: any(
+                entry.get("event") == "input"
+                and "orientation-first" in entry.get("raw", "")
+                for entry in _fake_tui_entries(pty_log)
+            ),
+            timeout=2.0,
+            message=(
+                "bracketed orientation from attach-retained output; "
+                f"entries={_fake_tui_entries(pty_log)!r}; "
+                f"stderr={stderr_path.read_text(encoding='utf-8')}"
+            ),
+        )
+        orientation = next(
+            entry["raw"]
+            for entry in _fake_tui_entries(pty_log)
+            if entry.get("event") == "input"
+            and "orientation-first" in entry.get("raw", "")
+        )
+        assert orientation == (
+            "\x1b[200~orientation-first\norientation-second\x1b[201~\r"
+        )
         wait_until(
             lambda: bool(
                 (_session_row(summon_db, member.member_id) or {}).get("wired")

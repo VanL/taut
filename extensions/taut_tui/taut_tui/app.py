@@ -109,6 +109,7 @@ from taut_tui.summon import (
     OwnedSummonShutdown,
     SummonLogBridge,
     SummonUnavailable,
+    TerminalAttachConfirmationRequest,
     TerminalLeaseRequest,
     TuiSummonInteraction,
     TuiSummonOperations,
@@ -451,6 +452,10 @@ class TautApp(App[None]):
     def on_unmount(self) -> None:
         self._shutting_down = True
         try:
+            if self._summon_interaction is not None:
+                close_interaction = getattr(self._summon_interaction, "close", None)
+                if close_interaction is not None:
+                    close_interaction()
             if self._summon is not None:
                 self._summon.close()
             self._summon = None
@@ -707,6 +712,32 @@ class TautApp(App[None]):
 
     def on_terminal_lease_request(self, event: TerminalLeaseRequest) -> None:
         event.hold(self)
+
+    def on_terminal_attach_confirmation_request(
+        self,
+        event: TerminalAttachConfirmationRequest,
+    ) -> None:
+        if self._shutting_down or event.resolved.is_set():
+            event.resolve(False)
+            return
+        notice = event.notice
+        try:
+            member = escape_display_text(str(notice.member))
+            provider = escape_display_text(str(notice.provider))
+            detach_hint = escape_display_text(str(notice.detach_hint))
+            prompt = (
+                f"Open provider setup for {member} with {provider}?\n\n"
+                "This is provider setup, not Taut chat. Complete only trust, "
+                "login, model, or equivalent setup.\n"
+                f"Return to Taut with {detach_hint}. The TUI will resume and "
+                "keep this Summon run active."
+            )
+            self.push_screen(
+                ConfirmationScreen(prompt),
+                lambda decision: event.resolve(bool(decision)),
+            )
+        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-085] exception
+            event.fail(exc)
 
     def on_key(self, event: events.Key) -> None:
         gesture = self._normalized_gesture(event)

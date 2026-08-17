@@ -104,6 +104,7 @@ from taut_summon._state import (
 )
 from taut_summon.interaction import (
     SummonInteraction,
+    TerminalAttachNotice,
     TerminalAvailability,
     TerminalIntent,
     TerminalLease,
@@ -260,6 +261,14 @@ class _RunningGeneration:
     handle: AdapterHandle
     generation: _GenerationContext
     pump: threading.Thread
+
+
+@dataclass(frozen=True, slots=True)
+class _GenerationAttachDecision:
+    """One immutable attach-policy result shared across ack, spawn, and lease."""
+
+    wired: bool
+    should_attach: bool
 
 
 def _resume_backoff_from_env() -> tuple[float, ...]:
@@ -748,6 +757,48 @@ class SummonDriver:
         terminal_availability = self._terminal_availability(request, adapter)
         env = _harness_environment(boot, db_path=db_path)
         system_prompt = self._system_prompt(boot, db_display)
+        terminal_thread = self._terminal_thread(adapter)
+        session_id = boot.provider_session_id
+        consecutive_crashes = 0
+        first_generation = True
+        while True:
+            attach_decision = self._prepare_generation_start(
+                boot=boot,
+                adapter=adapter,
+                availability=terminal_availability,
+                first_generation=first_generation,
+            )
+            if attach_decision is None:
+                return 0
+            running = self._start_live_generation(
+                boot=boot,
+                adapter=adapter,
+                env=env,
+                system_prompt=system_prompt,
+                session_id=session_id,
+                terminal_thread=terminal_thread,
+                terminal_availability=terminal_availability,
+                attach_decision=attach_decision,
+            )
+            if running is None:
+                self._raise_if_foreground_readiness_pending()
+                return 0
+            if self._shutdown.is_set():
+                return self._shutdown_before_or_after_readiness(running, boot)
+            first_generation = False
+            if self._orient_running_generation(running, adapter, system_prompt):
+                return self._shutdown_running_generation(running, boot)
+            self._await_running_generation(running, boot)
+            if self._shutdown.is_set():
+                return self._shutdown_running_generation(running, boot)
+            consecutive_crashes, session_id = self._resume_after_harness_exit(
+                running, boot, consecutive_crashes
+            )
+            if self._shutdown.is_set():
+                return 0
+
+    def _terminal_thread(self, adapter: ProviderAdapter) -> str | None:
+        request = self._request
         terminal_thread = (
             request.threads[0]
             if (
@@ -768,36 +819,7 @@ class SummonDriver:
                 "--terminal requires exactly one thread; assistant text "
                 "will go to the log"
             )
-        session_id = boot.provider_session_id
-        consecutive_crashes = 0
-        first_generation = True
-        while True:
-            running = self._start_live_generation(
-                boot=boot,
-                adapter=adapter,
-                env=env,
-                system_prompt=system_prompt,
-                session_id=session_id,
-                terminal_thread=terminal_thread,
-                terminal_availability=terminal_availability,
-                first_generation=first_generation,
-            )
-            if running is None:
-                self._raise_if_foreground_readiness_pending()
-                return 0
-            if self._shutdown.is_set():
-                return self._shutdown_before_or_after_readiness(running, boot)
-            first_generation = False
-            if self._orient_running_generation(running, adapter, system_prompt):
-                return self._shutdown_running_generation(running, boot)
-            self._await_running_generation(running, boot)
-            if self._shutdown.is_set():
-                return self._shutdown_running_generation(running, boot)
-            consecutive_crashes, session_id = self._resume_after_harness_exit(
-                running, boot, consecutive_crashes
-            )
-            if self._shutdown.is_set():
-                return 0
+        return terminal_thread
 
     def _start_live_generation(
         self,
@@ -809,7 +831,7 @@ class SummonDriver:
         session_id: str | None,
         terminal_thread: str | None,
         terminal_availability: TerminalAvailability | None,
-        first_generation: bool,
+        attach_decision: _GenerationAttachDecision,
     ) -> _RunningGeneration | None:
         started_at = time.monotonic()
         handle = self._spawn(adapter, session_id, system_prompt, env)
@@ -829,10 +851,8 @@ class SummonDriver:
             self._ensure_generation_threads(boot)
             if self._prepare_generation_attach(
                 handle,
-                adapter=adapter,
                 boot=boot,
-                availability=terminal_availability,
-                first_generation=first_generation,
+                attach_decision=attach_decision,
             ):
                 self._teardown_generation(generation, handle, pump)
                 return None
@@ -891,20 +911,12 @@ class SummonDriver:
         self,
         handle: AdapterHandle,
         *,
-        adapter: ProviderAdapter,
         boot: _BootstrapResult,
-        availability: TerminalAvailability | None,
-        first_generation: bool,
+        attach_decision: _GenerationAttachDecision,
     ) -> bool:
-        if not adapter.supports_attach:
-            return False
-        wired = get_wired(self._ledger(), boot.member_id)
-        result = self._attach_if_needed(
-            handle,
-            boot=boot,
-            wired=wired,
-            first_generation=first_generation,
-            availability=availability,
+        wired = attach_decision.wired
+        result = (
+            self._run_terminal_attach(handle) if attach_decision.should_attach else None
         )
         if result == "shutdown":
             return True
@@ -916,6 +928,11 @@ class SummonDriver:
                 updated_ts=self._ledger().generate_timestamp(),
             )
             wired = True
+            logger.info(
+                "provider setup ended for '%s'; starting the Taut listener; "
+                "keep this command running and chat from another terminal",
+                boot.member_name,
+            )
         if not wired:
             handle.mark_awaiting_onboarding()
         return False
@@ -1500,18 +1517,20 @@ class SummonDriver:
         logger.info("dismissed '%s' cleanly", boot.member_name)
         return 0
 
-    def _attach_if_needed(
+    def _resolve_generation_attach(
         self,
-        handle: AdapterHandle,
         *,
         boot: _BootstrapResult,
-        wired: bool,
-        first_generation: bool,
+        adapter: ProviderAdapter,
         availability: TerminalAvailability | None,
-    ) -> str | None:
+        first_generation: bool,
+    ) -> _GenerationAttachDecision:
+        if not adapter.supports_attach:
+            return _GenerationAttachDecision(wired=True, should_attach=False)
         request = self._request
         if request.attach:
             self._require_attach_available(availability)
+        wired = get_wired(self._ledger(), boot.member_id)
         should_attach = first_generation and (
             request.attach
             or (
@@ -1520,12 +1539,54 @@ class SummonDriver:
                 and not request.detach
             )
         )
-        if not should_attach:
-            if not wired:
-                self._warn_unwired_without_attach(boot, availability)
+        if not should_attach and not wired:
+            self._warn_unwired_without_attach(boot, availability)
+        return _GenerationAttachDecision(wired=wired, should_attach=should_attach)
+
+    def _prepare_generation_start(
+        self,
+        *,
+        boot: _BootstrapResult,
+        adapter: ProviderAdapter,
+        availability: TerminalAvailability | None,
+        first_generation: bool,
+    ) -> _GenerationAttachDecision | None:
+        decision = self._resolve_generation_attach(
+            boot=boot,
+            adapter=adapter,
+            availability=availability,
+            first_generation=first_generation,
+        )
+        if not decision.should_attach:
+            return decision
+        if not self._confirm_terminal_attach(boot):
+            logger.info("cancelled provider setup for '%s'", boot.member_name)
             return None
-        logger.info("attaching '%s'; detach with Ctrl-\\ Ctrl-\\", boot.member_name)
-        return self._run_terminal_attach(handle)
+        if self._shutdown.is_set():
+            return None
+        return decision
+
+    def _confirm_terminal_attach(self, boot: _BootstrapResult) -> bool:
+        notice = TerminalAttachNotice(
+            member=boot.member_name,
+            provider=boot.provider,
+            detach_hint="Ctrl-\\ Ctrl-\\",
+        )
+        try:
+            proceed = self._interaction.confirm_terminal_attach(
+                notice,
+                cancel=self._shutdown,
+            )
+        except Exception as exc:
+            raise DriverError(f"terminal acknowledgement failed: {exc}") from exc
+        if type(proceed) is not bool:
+            raise DriverError("terminal interaction returned invalid acknowledgement")
+        if proceed:
+            logger.info(
+                "attaching '%s'; detach with Ctrl-\\ Ctrl-\\",
+                boot.member_name,
+            )
+        return proceed
 
     @staticmethod
     def _require_attach_available(

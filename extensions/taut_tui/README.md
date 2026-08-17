@@ -29,6 +29,14 @@ known command such as `:summon grok` moves into that input instead of being
 sent as chat. Command completions retain focus for required arguments.
 Workspace load remains a CLI-only maintenance action.
 
+When a first `:summon grok` or native Summon form will actually attach to a
+provider, the TUI shows a native confirmation before the provider starts. It
+explains that the next screen is provider setup rather than Taut chat and names
+the `Ctrl-\ Ctrl-\` return chord. Confirming reserves the handoff for that run;
+Textual suspends only while the raw provider terminal is attached, then redraws
+and continues supervising the foreground run. Cancelling or closing the TUI
+before confirmation does not start the provider.
+
 The governing behavior is in
 [`docs/specs/10-taut-tui.md`](../../docs/specs/10-taut-tui.md). Architecture
 and ownership rationale are in

@@ -55,6 +55,17 @@ class _TerminalLease(Protocol):
     output_fd: int
 
 
+class _TerminalAttachNotice(Protocol):
+    @property
+    def member(self) -> str: ...
+
+    @property
+    def provider(self) -> str: ...
+
+    @property
+    def detach_hint(self) -> str: ...
+
+
 class _Controller(Protocol):
     def provider_names(self) -> tuple[str, ...]: ...
 
@@ -236,6 +247,9 @@ class TuiSummonOperations:
                     on_ready=on_ready,
                 )
             finally:
+                release_worker = getattr(interaction, "release_current_worker", None)
+                if callable(release_worker):
+                    release_worker()
                 with self._lock:
                     if self._owned.get(token) is record:
                         self._owned.pop(token, None)
@@ -379,6 +393,32 @@ class TerminalLeaseRequest(TextualMessage):
             self.restored.set()
 
 
+class TerminalAttachConfirmationRequest(TextualMessage):
+    """Thread-safe pre-spawn decision rendered while Textual remains active."""
+
+    def __init__(self, notice: _TerminalAttachNotice) -> None:
+        super().__init__()
+        self.notice = notice
+        self.resolved = threading.Event()
+        self.decision: bool | None = None
+        self.error: BaseException | None = None
+        self._lock = threading.Lock()
+
+    def resolve(self, decision: bool) -> None:
+        with self._lock:
+            if self.resolved.is_set():
+                return
+            self.decision = bool(decision)
+            self.resolved.set()
+
+    def fail(self, error: BaseException) -> None:
+        with self._lock:
+            if self.resolved.is_set():
+                return
+            self.error = error
+            self.resolved.set()
+
+
 class TuiSummonInteraction:
     """Cooperative public Summon interaction over Textual's suspend seam."""
 
@@ -393,6 +433,9 @@ class TuiSummonInteraction:
         self._log_bridge = log_bridge
         self._timeout = timeout
         self._lock = threading.Lock()
+        self._closed = False
+        self._terminal_owner: int | None = None
+        self._pending_confirmation: TerminalAttachConfirmationRequest | None = None
         self._lease_active = False
         self._lease_broken = False
 
@@ -404,20 +447,95 @@ class TuiSummonInteraction:
         if not _framework_can_suspend(self._app):
             return api.TerminalAvailability.UNAVAILABLE
         with self._lock:
-            if self._lease_active or self._lease_broken:
+            if self._closed or self._terminal_owner is not None or self._lease_broken:
                 return api.TerminalAvailability.UNAVAILABLE
         return api.TerminalAvailability.AVAILABLE
 
-    @contextmanager
-    def terminal_lease(self) -> Iterator[_TerminalLease]:  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-088] exception
-        api = load_summon_api()
+    def confirm_terminal_attach(
+        self,
+        notice: _TerminalAttachNotice,
+        *,
+        cancel: threading.Event | None = None,
+    ) -> bool:
+        owner = threading.get_ident()
+        request = TerminalAttachConfirmationRequest(notice)
         with self._lock:
-            if self._lease_active:
-                raise RuntimeError("another Summon terminal lease is active")
+            if self._closed:
+                return False
             if self._lease_broken:
                 raise RuntimeError(
                     "Summon terminal is unavailable after a failed lease"
                 )
+            if self._terminal_owner is not None:
+                raise RuntimeError("another Summon terminal interaction is active")
+            self._terminal_owner = owner
+            self._pending_confirmation = request
+        try:
+            if not self._app.post_message(request):
+                raise RuntimeError(
+                    "Textual application is not accepting attach confirmations"
+                )
+            self._wait_for_confirmation(request, cancel)
+            if request.error is not None:
+                raise RuntimeError(
+                    "Textual attach confirmation failed"
+                ) from request.error
+            decision = request.decision
+            if decision is None:
+                raise RuntimeError("Textual attach confirmation returned no decision")
+            if not decision:
+                self._release_owner(owner)
+            return decision
+        except BaseException:
+            self._release_owner(owner)
+            raise
+        finally:
+            with self._lock:
+                if self._pending_confirmation is request:
+                    self._pending_confirmation = None
+
+    @staticmethod
+    def _wait_for_confirmation(
+        request: TerminalAttachConfirmationRequest,
+        cancel: threading.Event | None,
+    ) -> None:
+        while not request.resolved.wait(timeout=0.05):
+            if cancel is not None and cancel.is_set():
+                request.resolve(False)
+                return
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            pending = self._pending_confirmation
+        if pending is not None:
+            pending.resolve(False)
+
+    def release_current_worker(self) -> None:
+        self._release_owner(threading.get_ident())
+
+    def _release_owner(self, owner: int) -> None:
+        with self._lock:
+            if self._terminal_owner == owner and not self._lease_active:
+                self._terminal_owner = None
+
+    @contextmanager
+    def terminal_lease(self) -> Iterator[_TerminalLease]:  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-088] exception
+        api = load_summon_api()
+        owner = threading.get_ident()
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("Summon terminal interaction is closed")
+            if self._lease_broken:
+                raise RuntimeError(
+                    "Summon terminal is unavailable after a failed lease"
+                )
+            if self._terminal_owner != owner:
+                raise RuntimeError(
+                    "Summon terminal attach was not acknowledged by this worker"
+                )
+            if self._lease_active:
+                raise RuntimeError("another Summon terminal lease is active")
             self._lease_active = True
         request = TerminalLeaseRequest(self._log_bridge)
         posted = False
@@ -458,6 +576,8 @@ class TuiSummonInteraction:
                     cleanup_error.__cause__ = request.error
             with self._lock:
                 self._lease_active = False
+                if self._terminal_owner == owner:
+                    self._terminal_owner = None
                 if cleanup_error is not None:
                     self._lease_broken = True
             if cleanup_error is not None:
@@ -594,6 +714,7 @@ __all__ = [
     "OwnedSummonShutdown",
     "SummonLogBridge",
     "SummonUnavailable",
+    "TerminalAttachConfirmationRequest",
     "TerminalLeaseRequest",
     "TuiSummonInteraction",
     "TuiSummonOperations",

@@ -141,6 +141,55 @@ class PtyAdapter:
         )
 
 
+class _TerminalInputModeTracker:
+    """Passively retain the bounded terminal input modes needed for injection."""
+
+    def __init__(self) -> None:
+        self._buffer = b""
+        self.bracketed_paste = False
+
+    def feed(self, data: bytes) -> None:
+        self._buffer += data
+        while (sequence := self._take_csi()) is not None:
+            body = sequence[2:-1]
+            final = sequence[-1:]
+            if b"?2004" not in body:
+                continue
+            if final == b"h":
+                self.bracketed_paste = True
+            elif final == b"l":
+                self.bracketed_paste = False
+
+    def _take_csi(self) -> bytes | None:
+        while True:
+            start = self._buffer.find(ESC)
+            if start < 0:
+                self._buffer = b""
+                return None
+            if start > 0:
+                self._buffer = self._buffer[start:]
+            if len(self._buffer) < 2:
+                return None
+            if self._buffer[1:2] != b"[":
+                self._buffer = self._buffer[2:]
+                continue
+            final_index = next(
+                (
+                    index
+                    for index in range(2, len(self._buffer))
+                    if 0x40 <= self._buffer[index] <= 0x7E
+                ),
+                None,
+            )
+            if final_index is None:
+                if len(self._buffer) > _TERMINAL_RESPONSE_BUFFER_LIMIT:
+                    self._buffer = self._buffer[-_TERMINAL_RESPONSE_BUFFER_LIMIT:]
+                return None
+            sequence = self._buffer[: final_index + 1]
+            self._buffer = self._buffer[final_index + 1 :]
+            return sequence
+
+
 class PtyHandle:
     """Live PTY child; satisfies ``AdapterHandle`` for [SUM-7.4]."""
 
@@ -163,6 +212,7 @@ class PtyHandle:
         self._quiet_s = quiet_ms / 1000.0
         self._max_settle_s = max_settle_s
         self._responder = _TerminalResponder(rows=rows, cols=cols)
+        self._input_modes = _TerminalInputModeTracker()
         self._lifecycle_lock = threading.RLock()
         self._events_lock = threading.Lock()
         self._normal_writer_lock = threading.Lock()
@@ -290,6 +340,7 @@ class PtyHandle:
                     if not data:
                         result = "eof"
                         break
+                    self._observe_output(data)
                     os.write(output_fd, data)
                 if input_fd in ready:
                     data = os.read(input_fd, 4096)
@@ -448,7 +499,8 @@ class PtyHandle:
     def _event_stream(self) -> Iterator[AdapterEvent]:  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-031] exception
         with self._lifecycle_lock:
             self._reader_started = True
-            self._last_output_ts = time.monotonic()
+            if not self._seen_output.is_set():
+                self._last_output_ts = time.monotonic()
             self._reader_started_event.set()
             self._settle_wake.set()
             if self._master_closed:
@@ -476,11 +528,8 @@ class PtyHandle:
                     break
                 if not data:
                     break
-                self._last_output_ts = time.monotonic()
-                self._seen_output.set()
-                self._settle_wake.set()
+                self._observe_output(data)
                 replies = self._responder.feed(data)
-                self._bracketed_paste = self._responder.bracketed_paste
                 for reply in replies:
                     self._write_best_effort(reply)
                 now = time.monotonic()
@@ -492,6 +541,15 @@ class PtyHandle:
                 if not self._master_closed:
                     self._close_master_unlocked()
             yield from self._emit_exit()
+
+    def _observe_output(self, data: bytes) -> None:
+        """Retain passive handoff state without answering terminal queries."""
+
+        self._last_output_ts = time.monotonic()
+        self._seen_output.set()
+        self._settle_wake.set()
+        self._input_modes.feed(data)
+        self._bracketed_paste = self._input_modes.bracketed_paste
 
     def _drain_pending(self) -> Iterator[AdapterEvent]:
         while True:
@@ -752,7 +810,6 @@ class _TerminalResponder:
         # byte-inspection evidence, not a wall-clock performance metric.
         self._scan_steps = 0
         self._outstanding_query: str | None = None
-        self.bracketed_paste = False
 
     @property
     def outstanding_query(self) -> str | None:
@@ -865,7 +922,6 @@ class _TerminalResponder:
         body = seq[2:-1]
         final = seq[-1:]
         self._track_cursor(body, final)
-        self._track_modes(body, final)
         if final == b"n":
             if body == b"6":
                 return f"\x1b[{self._row};{self._col}R".encode()
@@ -933,14 +989,6 @@ class _TerminalResponder:
             self._row, self._col = self._clamp(
                 self._row - _parse_int(body, default=1), self._col
             )
-
-    def _track_modes(self, body: bytes, final: bytes) -> None:
-        if b"?2004" not in body:
-            return
-        if final == b"h":
-            self.bracketed_paste = True
-        elif final == b"l":
-            self.bracketed_paste = False
 
     def _clamp(self, row: int, col: int) -> tuple[int, int]:
         return max(1, min(self._rows, row)), max(1, min(self._cols, col))

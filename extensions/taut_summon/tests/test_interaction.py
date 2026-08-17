@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import dataclasses
 import inspect
+import io
 import json
 import os
 import select
@@ -13,7 +14,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager, suppress
 from pathlib import Path
 from typing import Any
@@ -42,6 +43,7 @@ class _PtyHostInteraction:
     def __init__(self, *, input_fd: int, output_fd: int) -> None:
         self._lease = (input_fd, output_fd)
         self.availability_calls: list[Any] = []
+        self.confirmation_notices: list[Any] = []
         self.lease_events: list[str] = []
 
     def terminal_availability(self, intent: Any) -> Any:
@@ -49,6 +51,13 @@ class _PtyHostInteraction:
 
         self.availability_calls.append(intent)
         return TerminalAvailability.AVAILABLE
+
+    def confirm_terminal_attach(
+        self, notice: Any, *, cancel: threading.Event | None = None
+    ) -> bool:
+        del cancel
+        self.confirmation_notices.append(notice)
+        return True
 
     @contextmanager
     def terminal_lease(self) -> Iterator[Any]:
@@ -77,6 +86,37 @@ class _GatedPtyHostInteraction(_PtyHostInteraction):
         return availability
 
 
+class _GatedAttachDecisionInteraction(_PtyHostInteraction):
+    """Hold the real foreground run at its pre-spawn attach decision."""
+
+    def __init__(
+        self,
+        *,
+        input_fd: int,
+        output_fd: int,
+        decision: bool | BaseException,
+    ) -> None:
+        super().__init__(input_fd=input_fd, output_fd=output_fd)
+        self.decision = decision
+        self.confirmation_entered = threading.Event()
+        self.allow_confirmation = threading.Event()
+
+    def confirm_terminal_attach(
+        self, notice: Any, *, cancel: threading.Event | None = None
+    ) -> bool:
+        self.confirmation_notices.append(notice)
+        self.confirmation_entered.set()
+        deadline = time.monotonic() + 10.0
+        while not self.allow_confirmation.wait(timeout=0.05):
+            if cancel is not None and cancel.is_set():
+                return False
+            if time.monotonic() >= deadline:
+                raise RuntimeError("test did not release terminal confirmation")
+        if isinstance(self.decision, BaseException):
+            raise self.decision
+        return self.decision
+
+
 def _read_pty_until(fd: int, needle: bytes, *, timeout: float = 10.0) -> bytes:
     deadline = time.monotonic() + timeout
     output = b""
@@ -91,7 +131,11 @@ def _read_pty_until(fd: int, needle: bytes, *, timeout: float = 10.0) -> bytes:
 
 
 def _start_foreground_run(
-    *, db: Path, request: Any, interaction: _PtyHostInteraction
+    *,
+    db: Path,
+    request: Any,
+    interaction: _PtyHostInteraction,
+    on_ready: Callable[[Any], None] | None = None,
 ) -> tuple[threading.Thread, list[BaseException]]:
     from taut_summon import SummonController
 
@@ -99,7 +143,11 @@ def _start_foreground_run(
 
     def run() -> None:
         try:
-            SummonController(db_path=db).run_foreground(request, interaction)
+            SummonController(db_path=db).run_foreground(
+                request,
+                interaction,
+                on_ready=on_ready,
+            )
         except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
             failures.append(exc)
 
@@ -128,6 +176,7 @@ def _configure_fake_pty(monkeypatch: pytest.MonkeyPatch, *, tmp_path: Path) -> N
 def test_public_interaction_models_have_exact_stable_shape() -> None:
     from taut_summon import (
         SummonInteraction,
+        TerminalAttachNotice,
         TerminalAvailability,
         TerminalIntent,
         TerminalLease,
@@ -147,10 +196,112 @@ def test_public_interaction_models_have_exact_stable_shape() -> None:
         "input_fd",
         "output_fd",
     ]
+    assert [field.name for field in dataclasses.fields(TerminalAttachNotice)] == [
+        "member",
+        "provider",
+        "detach_hint",
+    ]
+    notice = TerminalAttachNotice(
+        member="grok",
+        provider="grok",
+        detach_hint="Ctrl-\\ Ctrl-\\",
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        notice.member = "other"  # type: ignore[misc]
     lease = TerminalLease(input_fd=7, output_fd=9)
     with pytest.raises(dataclasses.FrozenInstanceError):
         lease.input_fd = 11  # type: ignore[misc]
     assert SummonInteraction.__module__ == "taut_summon.interaction"
+
+
+def test_shell_interaction_requires_enter_after_explaining_attach(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut_summon import ShellSummonInteraction, TerminalAttachNotice
+
+    input_stream = io.StringIO("\n")
+    output_stream = io.StringIO()
+    monkeypatch.setattr(sys, "stdin", input_stream)
+    monkeypatch.setattr(sys, "stderr", output_stream)
+
+    proceeded = ShellSummonInteraction().confirm_terminal_attach(
+        TerminalAttachNotice(
+            member="grok\x1b]0;member\a",
+            provider="grok\x1b[31m",
+            detach_hint="Ctrl-\\ Ctrl-\\",
+        )
+    )
+
+    assert proceeded is True
+    rendered = output_stream.getvalue()
+    assert "provider setup, not Taut chat" in rendered
+    assert "trust, login, model, or equivalent setup" in rendered
+    assert "Ctrl-\\ Ctrl-\\" in rendered
+    assert "keeps running" in rendered
+    assert "another terminal" in rendered
+    assert "Press Enter to continue" in rendered
+    assert "\x1b" not in rendered
+    assert r"\x1b" in rendered
+
+
+def test_shell_interaction_eof_cancels_attach(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut_summon import ShellSummonInteraction, TerminalAttachNotice
+
+    monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+    monkeypatch.setattr(sys, "stderr", io.StringIO())
+
+    assert (
+        ShellSummonInteraction().confirm_terminal_attach(
+            TerminalAttachNotice(
+                member="grok",
+                provider="grok",
+                detach_hint="Ctrl-\\ Ctrl-\\",
+            )
+        )
+        is False
+    )
+
+
+def test_shell_interaction_cancel_event_interrupts_pending_acknowledgement() -> None:
+    from taut_summon import ShellSummonInteraction, TerminalAttachNotice
+
+    read_fd, write_fd = os.pipe()
+    input_stream = os.fdopen(read_fd, "r", encoding="utf-8")
+    output_stream = io.StringIO()
+    cancel = threading.Event()
+    decisions: list[bool] = []
+    thread = threading.Thread(
+        target=lambda: decisions.append(
+            ShellSummonInteraction(
+                input_stream=input_stream,
+                output_stream=output_stream,
+            ).confirm_terminal_attach(
+                TerminalAttachNotice(
+                    member="grok",
+                    provider="grok",
+                    detach_hint="Ctrl-\\ Ctrl-\\",
+                ),
+                cancel=cancel,
+            )
+        ),
+        daemon=True,
+    )
+    thread.start()
+    try:
+        wait_until(
+            lambda: "Press Enter to continue" in output_stream.getvalue(),
+            message="shell acknowledgement prompt",
+        )
+        cancel.set()
+        thread.join(timeout=2.0)
+        assert not thread.is_alive()
+        assert decisions == [False]
+    finally:
+        cancel.set()
+        os.close(write_fd)
+        input_stream.close()
 
 
 @pytest.mark.parametrize(
@@ -753,6 +904,106 @@ def test_controller_rejects_attach_and_detach_as_typed_request_error() -> None:
             ),
             ShellSummonInteraction(),
         )
+
+
+@pytest.mark.xdist_group("process")
+@pytest.mark.sqlite_only
+@pytest.mark.parametrize(
+    "decision",
+    [False, RuntimeError("prompt failed")],
+    ids=["cancel", "failure"],
+)
+def test_rich_host_attach_decision_ends_before_real_pty_spawn(
+    summon_db: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    decision: bool | BaseException,
+) -> None:
+    from taut_summon import SummonOperationError, SummonRequest
+    from taut_summon._driver import SummonDriver
+
+    pty = pytest.importorskip("pty", reason="host interaction requires a POSIX PTY")
+    _configure_fake_pty(monkeypatch, tmp_path=tmp_path)
+    user_master, user_slave = pty.openpty()
+    interaction = _GatedAttachDecisionInteraction(
+        input_fd=user_slave,
+        output_fd=user_slave,
+        decision=decision,
+    )
+    request = SummonRequest(
+        name="cancelled-host",
+        threads=("general",),
+        terminal=False,
+        persona=None,
+        system_prompt_file=None,
+        rate_limit=None,
+        provider_flag="pty",
+    )
+    drivers: list[SummonDriver] = []
+    real_driver_init = SummonDriver.__init__
+
+    def observed_driver_init(driver: SummonDriver, *args: Any, **kwargs: Any) -> None:
+        real_driver_init(driver, *args, **kwargs)
+        drivers.append(driver)
+
+    monkeypatch.setattr(SummonDriver, "__init__", observed_driver_init)
+    readiness: list[Any] = []
+    thread, failures = _start_foreground_run(
+        db=summon_db,
+        request=request,
+        interaction=interaction,
+        on_ready=readiness.append,
+    )
+    try:
+        fake_log = tmp_path / "host-fake-tui.jsonl"
+        wait_until(
+            lambda: (
+                interaction.confirmation_entered.is_set()
+                or bool(fake_log.exists() and fake_log.read_text(encoding="utf-8"))
+            ),
+            timeout=5.0,
+            message="pre-spawn confirmation or forbidden provider spawn",
+        )
+        assert interaction.confirmation_entered.is_set()
+        assert not fake_log.exists()
+
+        interaction.allow_confirmation.set()
+        thread.join(timeout=10.0)
+
+        assert not thread.is_alive()
+        if isinstance(decision, BaseException):
+            assert len(failures) == 1
+            assert isinstance(failures[0], SummonOperationError)
+            assert "terminal acknowledgement failed: prompt failed" in str(failures[0])
+        else:
+            assert failures == []
+        assert readiness == []
+        assert len(interaction.confirmation_notices) == 1
+        notice = interaction.confirmation_notices[0]
+        assert (notice.member, notice.provider, notice.detach_hint) == (
+            "cancelled-host",
+            "pty",
+            "Ctrl-\\ Ctrl-\\",
+        )
+        assert interaction.lease_events == []
+        member = _member_by_name(summon_db, "cancelled-host")
+        assert member is not None
+        row = _session_row(summon_db, member.member_id)
+        assert row is not None
+        assert row["wired"] is False
+        assert row["driver_pid"] is None
+    finally:
+        interaction.allow_confirmation.set()
+        for driver in drivers:
+            driver.request_stop()
+        if thread.is_alive():
+            try:
+                os.write(user_master, b"\x1c\x1c")
+            except OSError:
+                pass
+            thread.join(timeout=10.0)
+        os.close(user_master)
+        os.close(user_slave)
 
 
 @pytest.mark.xdist_group("process")

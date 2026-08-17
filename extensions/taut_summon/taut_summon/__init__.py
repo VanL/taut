@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from taut_summon.interaction import (
         ShellSummonInteraction,
         SummonInteraction,
+        TerminalAttachNotice,
         TerminalAvailability,
         TerminalIntent,
         TerminalLease,
@@ -60,6 +61,7 @@ __all__ = [
     "SummonRunHandle",
     "SummonStatus",
     "SummonedMember",
+    "TerminalAttachNotice",
     "TerminalAvailability",
     "TerminalIntent",
     "TerminalLease",
@@ -87,6 +89,10 @@ _LAZY_EXPORTS = {
     ),
     "SummonController": ("taut_summon.controller", "SummonController"),
     "SummonInteraction": ("taut_summon.interaction", "SummonInteraction"),
+    "TerminalAttachNotice": (
+        "taut_summon.interaction",
+        "TerminalAttachNotice",
+    ),
     "TerminalAvailability": (
         "taut_summon.interaction",
         "TerminalAvailability",

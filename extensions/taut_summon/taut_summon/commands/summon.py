@@ -141,7 +141,10 @@ class SummonCommand:
         try:
             SummonController(db_path=context.db_path).run_foreground(
                 request_from_args(args),
-                ShellSummonInteraction(),
+                ShellSummonInteraction(
+                    input_stream=context.stdin,
+                    output_stream=context.stderr,
+                ),
                 install_signal_handlers=True,
             )
         except NothingSummoned as exc:

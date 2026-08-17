@@ -693,31 +693,61 @@ ownership path, and raises `AdapterError` after best-effort cleanup. Cleanup
 errors do not replace an existing primary exception; interrupt after retirement
 is a no-op and cannot touch a reused fd.
 
+**Pre-attach acknowledgement.** After resolving that the first provider
+generation will actually attach, but before spawning that generation, Summon
+asks the host interaction to present a typed terminal-attach notice and
+return an explicit proceed/cancel decision. The notice identifies the member
+and provider and supplies the Summon-owned detach hint. Every host must make
+four facts clear: this screen is provider setup rather than Taut chat; the
+user should complete only trust, login, model, or equivalent setup; the user
+returns with `Ctrl-\ Ctrl-\`; and the foreground Summon run continues after
+detach. The shell requires an Enter acknowledgement. A rich host may use a
+native confirmation that was opened by this exact attach decision.
+
+Cancellation is a normal pre-spawn end. It starts no provider child, terminal
+lease, event pump, control loop, watcher, or readiness callback and never
+marks the session wired. The already-bootstrapped member and durable unwired
+session remain available for a later summon, as they do after an interrupted
+first attach; Summon performs no destructive identity rollback. A host error
+while presenting or collecting the decision is fatal to this foreground run
+and follows normal ownership-checked cleanup. Forced detach, a wired
+automatic run, unsupported attach, and later crash generations never request
+acknowledgement.
+
 Startup order per generation is fixed around PTY master ownership. When policy
 rules out attach before bootstrap (`--detach`, `NESTED_HOST`, or generic
 `UNAVAILABLE`), the driver starts the pump immediately after spawn, before
 `rejoin` and `ensure_threads`, so the terminal-query responder is live while
 bootstrap work runs:
 `spawn → pump.start → rejoin → ensure_threads → settle → inject orientation →
-watcher`. In a real first-run attach path, the human bridge owns the PTY master
-until detach, so the pump starts only after the bridge hands ownership back:
-`spawn → rejoin → ensure_threads → attach → detach → set_wired(True) →
-pump.start → settle → inject orientation → watcher`. `--attach` follows the
-attach path when the terminal is available. `NO_TTY` and `AVAILABLE` preserve
-the historical delayed-pump path: after `rejoin` and `ensure_threads`, the
-driver either attaches or records the reason-specific detached outcome, then
-starts the pump. The same cached availability and ordering are reused after a
-provider crash; no later generation reacquires a host lease. `rejoin` still
-anchors the member to the child before onboarding or detached operation; the
-watcher starts only after orientation is injected. Early-pump refusal paths are
-required because TUIs may emit DSR, XTVERSION, or kitty queries immediately
-after spawn and time out while the driver is doing SQLite or thread bootstrap
-work.
-Settling must not treat pre-output silence as readiness: when a PTY reader has
-started but has not yet observed any child output, the driver waits for first
-output or the bounded settle deadline before injecting orientation. This keeps
-cold-start PTY children from losing orientation during process startup while
-still bounding harnesses that never print a prompt.
+watcher`. For a first-generation attach, the driver first computes one attach
+decision from request, adapter capability, cached host availability, and
+durable `wired` state, then obtains host acknowledgement before provider
+spawn. After acknowledgement, the human bridge owns the PTY master until
+detach:
+`acknowledge → spawn → rejoin → ensure_threads → attach → detach →
+set_wired(True) → pump.start → settle → inject orientation → watcher`.
+`--attach` follows that path when the terminal is available. `NO_TTY` and
+`AVAILABLE` preserve their reason-specific detached or acknowledged-attach
+outcomes. The same cached availability is reused after a provider crash; no
+later generation reacquires a host lease or requests acknowledgement.
+`rejoin` still anchors the member to the child before raw onboarding or
+detached operation, and the watcher starts only after orientation is
+injected. Early-pump refusal paths remain required because TUIs may emit DSR,
+XTVERSION, or kitty queries immediately after spawn and time out while the
+driver is doing SQLite or thread bootstrap work.
+
+Settling must not treat genuine pre-output silence as readiness. In a
+detached cold start, when the PTY reader has started but no Summon owner has
+observed provider output, the driver waits for first output or the bounded
+settle deadline. During human attach, the byte-transparent bridge may
+passively retain that provider output was observed, its latest timestamp, and
+input-mode state such as bracketed paste. Passive observation emits no
+terminal replies and retains no attach-era unanswered-query diagnostic,
+because the real host terminal owns query responses until detach. The pump
+inherits that bounded state when it becomes the sole reader. Output consumed
+during attach therefore satisfies the first-output condition, while a
+provider that emitted nothing still receives the existing cold-start bound.
 
 **Ears and orientation.** In detached driver mode, `inject(text)` writes to
 the master under an inject lock. Payloads are canonicalized and sanitized
@@ -730,13 +760,14 @@ collapse to spaces and exactly one turn is submitted with trailing `\r`.
 Embedded 7-bit or Unicode C1 paste delimiters cannot survive this
 Unicode-to-terminal encoding path because `ESC` and C1 controls are removed.
 
-Before the first injected chat turn, the pump-owned reader publishes
-`last_output_ts`; settle polls that timestamp until quiet for `quiet_ms`
-(default 500ms) or `max_settle_s` (default 10s), then injects the
-orientation. Settle never reads the master and is not a readiness signal.
-Orientation is an explicit driver step gated by `orientation_via_inject`;
-PTY sets it true, structured adapters set it false and receive the
-persona at spawn.
+Before the first injected chat turn, the current PTY reader publishes
+`last_output_ts`; settle waits until observed output has been quiet for
+`quiet_ms` (default 500ms) or spends one aggregate `max_settle_s` deadline
+(default 10s). Starting the pump after attach does not erase prior observed
+output or terminal input modes. Settle never reads the master and is not a
+readiness signal. Orientation remains an explicit driver step gated by
+`orientation_via_inject`; PTY sets it true, while structured adapters set it
+false and receive the persona at spawn.
 
 Output is never parsed as speech. The PTY reader exists for liveness,
 diagnostics, query response, and attach bridging only. Terminal mode is
@@ -1295,13 +1326,19 @@ installation rolls back earlier installations before the lifecycle begins.
 The temporary opt-in does not grant ownership of unrelated signals, logging,
 terminal policy, or host environment.
 
-A host interaction reports terminal availability and grants a scoped lease
-containing input/output fds. Summon owns provider PTY bytes, calls the attach
-bridge itself, interprets its finite result, and owns lifecycle. Shell and
-future TUI adapters may present different experiences while using the same
-attach transition. A rich TUI host that wants a nonblocking managed driver must
-define process supervision, terminal-release handshake, log routing, exit
-policy, and rollback in its own spec; Taut's first such host is governed by
+A host interaction reports terminal availability, presents one typed
+pre-spawn acknowledgement only when the driver has resolved an actual attach,
+and grants a later scoped lease containing input/output fds. The notice owns
+semantic fields, including member, provider, and detach hint; hosts own their
+presentation and must escape dynamic text outside the raw lease. A cancelled
+decision is a normal pre-spawn result. A presentation failure is fatal and
+never falls through to attach. Summon owns the attach decision, provider PTY
+bytes, bridge invocation, finite detach result, and lifecycle. Shell and rich
+TUI adapters present different host-appropriate wording while preserving the
+same transition; neither inspects Summon persistence or provider screens. A
+rich TUI host that wants a nonblocking managed driver must define process
+supervision, terminal-release handshake, log routing, exit policy, and
+rollback in its own spec; Taut's first such host is governed by
 `docs/specs/10-taut-tui.md` [TUI-11] rather than by guessed Summon behavior.
 
 A rich host may publish a typed command-syntax provider for the extension's
@@ -1397,6 +1434,12 @@ shipped adapter families; and unchanged CLI SIGINT/STOP release. Tests that
 clear ambient identity, disable signal installation, or run only off the main
 thread do not satisfy this boundary by themselves.
 
+The shell-first attach matrix additionally proves acknowledgement precedes
+provider spawn, cancel and prompt failure spawn no child or lease, attach
+output survives the reader handoff without duplicate terminal replies,
+bracketed-paste framing survives detach, and listener readiness follows the
+retained quiet interval rather than the no-output maximum.
+
 ## Implementation Mapping
 
 - `docs/implementation/05-taut-summon-architecture.md` explains controller,
@@ -1411,6 +1454,9 @@ thread do not satisfy this boundary by themselves.
 
 ## Related Plans
 
+- `docs/plans/2026-08-17-summon-first-attach-handoff-plan.md` — repairs the
+  shell-first attach handoff, then adapts and proves the same public
+  interaction through the TUI host.
 - `docs/plans/2026-08-17-tui-command-mirror-plan.md` — adds typed Summon
   syntax discovery and a separate TUI-native binding over the public
   controller without reusing the CLI adapter or terminal owner.

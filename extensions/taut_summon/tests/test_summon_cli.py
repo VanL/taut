@@ -289,6 +289,80 @@ def test_native_summon_command_owns_safe_logging_without_replacing_host_handlers
     assert host_output.getvalue() == ""
 
 
+def test_native_summon_command_uses_authoritative_context_streams_for_attach_notice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from io import StringIO
+
+    import taut_summon.controller as controller_module
+    from taut_summon import TerminalAttachNotice
+    from taut_summon.commands.summon import SummonCommand
+
+    from taut.commands import CommandContext
+
+    context_input = StringIO("\n")
+    context_error = StringIO()
+    ambient_input = StringIO("")
+    ambient_error = StringIO()
+    decisions: list[bool] = []
+
+    class Controller:
+        def __init__(self, *, db_path: str | None) -> None:
+            assert db_path == "project.db"
+
+        def run_foreground(
+            self,
+            request: object,
+            interaction: object,
+            *,
+            install_signal_handlers: bool = False,
+        ) -> None:
+            assert request is not None
+            assert install_signal_handlers is True
+            decisions.append(
+                interaction.confirm_terminal_attach(  # type: ignore[attr-defined]
+                    TerminalAttachNotice(
+                        member="reviewer",
+                        provider="grok",
+                        detach_hint="Ctrl-\\ Ctrl-\\",
+                    )
+                )
+            )
+
+    monkeypatch.setattr(controller_module, "SummonController", Controller)
+    monkeypatch.setattr(sys, "stdin", ambient_input)
+    monkeypatch.setattr(sys, "stderr", ambient_error)
+    context = CommandContext(
+        db_path="project.db",
+        as_name=None,
+        continuity_token=None,
+        json=False,
+        timestamps=False,
+        quiet=False,
+        stdin=context_input,
+        stdout=StringIO(),
+        stderr=context_error,
+    )
+    args = argparse.Namespace(
+        name="reviewer",
+        threads=["general"],
+        terminal=False,
+        persona=None,
+        system_prompt_file=None,
+        rate_limit=None,
+        attach=False,
+        detach=True,
+        provider=None,
+        takeover=False,
+    )
+
+    assert SummonCommand().run(context, args) == 0
+    assert decisions == [True]
+    assert "provider setup, not Taut chat" in context_error.getvalue()
+    assert ambient_error.getvalue() == ""
+    assert ambient_input.read() == ""
+
+
 def test_standalone_policy_failure_is_one_fixed_exit_one_diagnostic(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -54,6 +54,7 @@ EXPECTED_PUBLIC_EXPORTS = [
     "SummonRunHandle",
     "SummonStatus",
     "SummonedMember",
+    "TerminalAttachNotice",
     "TerminalAvailability",
     "TerminalIntent",
     "TerminalLease",
@@ -798,7 +799,11 @@ def test_package_facade_preserves_exact_public_exports_and_object_identity() -> 
     import taut_summon
     from taut_summon import _adapter, _scripted
     from taut_summon.controller import SummonController
-    from taut_summon.interaction import ShellSummonInteraction, TerminalLease
+    from taut_summon.interaction import (
+        ShellSummonInteraction,
+        TerminalAttachNotice,
+        TerminalLease,
+    )
     from taut_summon.models import SummonRequest
 
     assert (
@@ -814,6 +819,7 @@ def test_package_facade_preserves_exact_public_exports_and_object_identity() -> 
     assert taut_summon.SummonController is SummonController
     assert taut_summon.SummonRequest is SummonRequest
     assert taut_summon.ShellSummonInteraction is ShellSummonInteraction
+    assert taut_summon.TerminalAttachNotice is TerminalAttachNotice
     assert taut_summon.TerminalLease is TerminalLease
     missing_name = "missing_public_name"
     with pytest.raises(AttributeError, match="missing_public_name"):

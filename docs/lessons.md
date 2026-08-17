@@ -458,6 +458,13 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   bounded settle deadline before orientation, then keep the local-LLM settle
   window generous enough to cover image/model cold start side effects.
 
+- 2026-08-17: A terminal reader handoff must classify state by ownership, not
+  discard everything observed by the earlier reader. Carry passive facts such
+  as output time and input modes across the boundary, including partial control
+  sequences. Do not carry active responder state or emit replies while the real
+  terminal owns them. Test the full handoff because isolated attach and settle
+  tests can both pass while their transition loses state.
+
 - 2026-07-12: Developer-facing path identifiers should be serialized with an
   explicit separator contract. Interpolating `Path` directly makes diagnostics
   and their tests host-dependent; use `as_posix()` when the identifier belongs
