@@ -432,6 +432,7 @@ review, but the contract must contain equivalent typed shapes:
 ```python
 CommandPath = tuple[str, ...]
 
+
 @dataclass(frozen=True, slots=True)
 class CommandSyntax:
     path: CommandPath
@@ -443,15 +444,18 @@ class CommandSyntax:
     intermixed: bool = False
     accepts_remainder: bool = False
 
+
 @dataclass(frozen=True, slots=True)
 class RootCommandSyntax:
     globals: tuple[GlobalOptionSyntax, ...]
     commands: tuple[CommandSyntax, ...]
     root_actions: tuple[str, ...]
 
+
 @dataclass(frozen=True, slots=True)
 class CommandInput:
     text: str
+
 
 @dataclass(frozen=True, slots=True)
 class CommandInvocation:

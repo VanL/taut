@@ -308,9 +308,7 @@ def format_command_syntax(command: CommandSyntax) -> str:
             spelling = f"[{spelling}]"
         parts.append(spelling)
     if command.children:
-        parts.append(
-            "{" + "|".join(child.path[-1] for child in command.children) + "}"
-        )
+        parts.append("{" + "|".join(child.path[-1] for child in command.children) + "}")
     return " ".join(parts)
 
 
