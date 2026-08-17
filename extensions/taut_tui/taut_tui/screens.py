@@ -491,7 +491,7 @@ class CommandLineScreen(_TautModalScreen[CommandLineSubmission | None]):
         self._submit(event.value)
 
     def on_taut_option_list_activated(self, event: OptionList.Activated) -> None:
-        if event.option_list.id != "command-completions" or event.chain == 1:
+        if event.option_list.id != "command-completions":
             return
         if 0 <= event.option_index < len(self._completions):
             self._apply_completion(self._completions[event.option_index])

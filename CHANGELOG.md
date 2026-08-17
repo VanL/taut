@@ -10,8 +10,8 @@
   tabs at stable four-column stops.
 - Made leading-colon TUI command entry argument-ready. Exact known root
   commands move into the editable command line, completion inserts the command
-  with its argument separator, and unknown leading-colon text remains an
-  ordinary chat message.
+  with its argument separator through keyboard selection or one click, and
+  unknown leading-colon text remains an ordinary chat message.
 - Clarified Summon's first provider attach with an explicit acknowledgement,
   detach instructions, and foreground/chat-terminal handoff. The TUI uses its
   native confirmation boundary before leasing the terminal and restores the

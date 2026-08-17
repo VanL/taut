@@ -301,7 +301,6 @@ def test_command_line_mouse_activation_keeps_argument_input_active() -> None:
             assert await pilot.click(
                 "#command-completions",
                 offset=(2, 1),
-                times=2,
             )
             await pilot.pause()
 

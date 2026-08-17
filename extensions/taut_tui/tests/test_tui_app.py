@@ -538,6 +538,34 @@ def test_known_command_prefix_in_composer_promotes_to_argument_input() -> None:
     asyncio.run(exercise())
 
 
+def test_direct_command_completion_click_keeps_argument_input_active() -> None:
+    from taut_tui.app import TautApp
+    from taut_tui.screens import CommandLineScreen
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 34)) as pilot:
+            await pilot.press(":", *"sum")
+            await pilot.pause()
+
+            assert isinstance(app.screen, CommandLineScreen)
+            assert await pilot.click(
+                "#command-completions",
+                offset=(2, 0),
+            )
+            await pilot.pause()
+
+            command = app.screen.query_one("#command-line", Input)
+            assert command.value == "summon "
+            assert command.has_focus
+            assert command.region.width >= 20
+
+            await pilot.press(*"grok")
+            assert command.value == "summon grok"
+
+    asyncio.run(exercise())
+
+
 def test_enter_delimits_full_command_without_capturing_shorter_root() -> None:
     from taut_tui.app import TautApp
     from taut_tui.screens import CommandLineScreen

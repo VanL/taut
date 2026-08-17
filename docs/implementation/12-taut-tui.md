@@ -172,10 +172,10 @@ therefore leaves the composer untouched and restores `COMPOSE`; a parsed
 submission clears only the still-matching draft before typed dispatch and also
 returns to the focused composer. Command lines opened from `NORMAL` return to
 `NORMAL` instead. The screen's completion rows
-are active input aids: Tab, explicit Up/Down selection plus Enter, and pointer
-activation insert the path with a trailing argument separator, refocus the
-field, and do not dismiss or dispatch. The separate native-action browser
-continues to open its typed forms for argument-bearing actions.
+are active input aids: Tab, explicit Up/Down selection plus Enter, and a
+single pointer click insert the path with a trailing argument separator,
+refocus the field, and do not dismiss or dispatch. The separate native-action
+browser continues to open its typed forms for argument-bearing actions.
 
 `command_bindings.py` is the second half of the boundary. A syntax provider
 only makes a path recognizable. `TuiCommandBinding` records whether the TUI

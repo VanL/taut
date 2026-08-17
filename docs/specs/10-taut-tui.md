@@ -416,11 +416,11 @@ composer draft; successful command submission clears only that unchanged
 originating draft.
 
 Command completions are interactive, not display-only. Tab, keyboard
-selection, or mouse activation inserts the selected command path followed by
-an argument-ready space, keeps the command line open, and focuses the command
-field. Selecting an action from the separate grouped native-action browser
-continues through its typed action binding and opens the existing native form
-when that action requires arguments.
+selection, or a single click on a completion row inserts the selected command
+path followed by an argument-ready space, keeps the command line open, and
+focuses the command field. Selecting an action from the separate grouped
+native-action browser continues through its typed action binding and opens the
+existing native form when that action requires arguments.
 
 Enter executes a complete command only through a registered native TUI
 binding. The binding may invoke an existing action, open a deliberately chosen
@@ -499,9 +499,11 @@ visible, so a key does not depend on invisible state.
 Mouse use is optional and never the sole route to an action. A single click
 focuses a pane or field and selects the clicked row/message. A double click or
 single click on an explicit action control activates where Textual can report
-it reliably. The scroll wheel scrolls the surface under the pointer. Clicking
-the composer focuses it and positions the editing cursor when the terminal and
-framework expose a position.
+it reliably. Command-completion rows are insertion controls under [TUI-7.1],
+so their first click inserts the command and returns focus to argument input.
+The scroll wheel scrolls the surface under the pointer. Clicking the composer
+focuses it and positions the editing cursor when the terminal and framework
+expose a position.
 
 There is no hover-only information or action. Help documents the terminal's
 modified-drag escape for native text selection (commonly Shift-drag), and the

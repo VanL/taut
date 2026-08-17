@@ -26,7 +26,8 @@ terminal handoff to `taut-summon` when that extension is available. Tab and
 Shift-Tab remain focus navigation. `:` opens the textual command input from
 normal mode; a composer draft beginning with a whitespace- or Enter-delimited
 known command such as `:summon grok` moves into that input instead of being
-sent as chat. Command completions retain focus for required arguments.
+sent as chat. Tab, keyboard selection, or one click inserts a command
+completion and retains focus for required arguments.
 Workspace load remains a CLI-only maintenance action.
 
 When a first `:summon grok` or native Summon form will actually attach to a
