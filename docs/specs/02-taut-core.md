@@ -2516,6 +2516,12 @@ verified through the GitHub API: owner `VanL`, repository `taut`, environment
 `pypi`, and the exact corresponding top-level release-gate filename for each
 distribution.
 
+Repository-setting reads retry only GitHub's transient 502, 503, and 504
+responses with bounded 0.5, 1, and 2 second delays. Authentication failures,
+other HTTP failures, network failures, malformed responses, and observed
+setting mismatches remain immediately fatal. The same policy applies to the
+early preflight and the post-workflow settings fence.
+
 Workflow obligations:
 
 - Canonical `push` runs of `.github/workflows/test.yml`,

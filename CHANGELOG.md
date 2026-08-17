@@ -35,7 +35,9 @@
   zero-byte shards remain fatal to aggregation.
 - Made each independent GitHub release finalizer perform its own bounded exact
   PyPI convergence check before immutable publication, preserving immediate
-  failure for malformed state, unexpected files, or digest mismatches.
+  failure for malformed state, unexpected files, or digest mismatches. Release
+  settings preflights now also retry only bounded GitHub 502/503/504 responses
+  while keeping every policy and authentication mismatch fatal.
 
 ## 0.9.0 - 2026-08-14
 

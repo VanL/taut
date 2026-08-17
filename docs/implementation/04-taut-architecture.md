@@ -265,7 +265,9 @@ Before any real tag push, `bin/release.py` checks twice that immutable GitHub
 Releases are enabled and that environment `pypi` admits exactly the five
 release-tag families: once as an early preflight and again after exact-SHA
 producer observation. Its explicit read-only settings mode runs the same check
-without preparing a release. PyPI Trusted Publisher records are a separate
+without preparing a release. Those read-only requests use a short bounded
+retry only for GitHub 502/503/504 responses; credentials, response shape, and
+the policy itself stay fail-closed. PyPI Trusted Publisher records are a separate
 operator-owned prerequisite because the GitHub API cannot verify them.
 
 The five tag gates call the artifact-selecting mode of

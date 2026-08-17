@@ -1640,6 +1640,51 @@ def test_repository_settings_accept_exact_release_policy(
     assert release.repository_settings_issues("VanL/taut", "token") == ()
 
 
+def test_repository_settings_retry_transient_github_unavailability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _load_release_module()
+    attempts = 0
+    sleeps: list[float] = []
+
+    def flaky_urlopen(request: object, timeout: float) -> _JsonResponse:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise urllib.error.HTTPError("url", 503, "unavailable", Message(), None)
+        return _JsonResponse({"enabled": True})
+
+    monkeypatch.setattr(release.urllib.request, "urlopen", flaky_urlopen)
+    monkeypatch.setattr(release.time, "sleep", sleeps.append)
+
+    assert release._github_api_json("/settings", "token") == {"enabled": True}
+    assert attempts == 3
+    assert sleeps == [0.5, 1.0]
+
+
+def test_repository_settings_do_not_retry_nontransient_http_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _load_release_module()
+    attempts = 0
+
+    def forbidden(request: object, timeout: float) -> object:
+        nonlocal attempts
+        attempts += 1
+        raise urllib.error.HTTPError("url", 403, "forbidden", Message(), None)
+
+    monkeypatch.setattr(release.urllib.request, "urlopen", forbidden)
+    monkeypatch.setattr(
+        release.time,
+        "sleep",
+        lambda _delay: pytest.fail("HTTP 403 must remain immediately fatal"),
+    )
+
+    with pytest.raises(RuntimeError, match="HTTP 403"):
+        release._github_api_json("/settings", "token")
+    assert attempts == 1
+
+
 @pytest.mark.parametrize(
     ("path_suffix", "replacement", "message"),
     (

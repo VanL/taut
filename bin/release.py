@@ -74,6 +74,8 @@ GITHUB_API_BASE: Final[str] = "https://api.github.com"
 GITHUB_API_VERSION: Final[str] = "2026-03-10"
 PYPI_API_BASE: Final[str] = "https://pypi.org/pypi"
 HTTP_TIMEOUT_SECONDS: Final[float] = 15.0
+GITHUB_SETTINGS_RETRY_DELAYS: Final[tuple[float, ...]] = (0.5, 1.0, 2.0)
+GITHUB_SETTINGS_RETRYABLE_HTTP_CODES: Final[frozenset[int]] = frozenset((502, 503, 504))
 PENDING_RELEASE_COMMIT: Final[str] = "<pending release commit>"
 ALL_RELEASE_TARGET_KEY: Final[str] = "all"
 PYPI_ENVIRONMENT_TAG_PATTERNS: Final[tuple[tuple[str, str], ...]] = (
@@ -1743,21 +1745,32 @@ def _github_api_json(path: str, token: str) -> object:
             "X-GitHub-Api-Version": GITHUB_API_VERSION,
         },
     )
-    try:
-        with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
-            return json.load(response)
-    except urllib.error.HTTPError as exc:
-        raise RuntimeError(
-            f"GitHub API request failed for {path}: HTTP {exc.code}"
-        ) from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(
-            f"GitHub API request failed for {path}: {exc.reason}"
-        ) from exc
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise RuntimeError(
-            f"GitHub API request failed for {path}: invalid JSON"
-        ) from exc
+    retry_delays = iter((*GITHUB_SETTINGS_RETRY_DELAYS, None))
+    for retry_delay in retry_delays:
+        try:
+            with urllib.request.urlopen(
+                request, timeout=HTTP_TIMEOUT_SECONDS
+            ) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as exc:
+            if (
+                exc.code in GITHUB_SETTINGS_RETRYABLE_HTTP_CODES
+                and retry_delay is not None
+            ):
+                time.sleep(retry_delay)
+                continue
+            raise RuntimeError(
+                f"GitHub API request failed for {path}: HTTP {exc.code}"
+            ) from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(
+                f"GitHub API request failed for {path}: {exc.reason}"
+            ) from exc
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                f"GitHub API request failed for {path}: invalid JSON"
+            ) from exc
+    raise AssertionError("GitHub settings retry loop exhausted without a result")
 
 
 def _setting_payload(
