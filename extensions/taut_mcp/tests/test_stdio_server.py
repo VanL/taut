@@ -101,8 +101,14 @@ class _RawStdioProcess:
         self.received.put_nowait(self.eof)
 
     def send(self, frame: dict[str, object]) -> None:
+        self.send_batch([frame])
+
+    def send_batch(self, frames: list[dict[str, object]]) -> None:
         self.stdin.write(
-            json.dumps(frame, sort_keys=True, separators=(",", ":")) + "\n"
+            "".join(
+                json.dumps(frame, sort_keys=True, separators=(",", ":")) + "\n"
+                for frame in frames
+            )
         )
         self.stdin.flush()
 
@@ -280,6 +286,60 @@ def test_empty_stdio_server_initializes_with_fixed_manifest() -> None:
             env=os.environ.copy(),
         )
     )
+
+
+@pytest.mark.timeout(10)
+def test_legacy_stdio_lists_tools_without_post_initialize_pause() -> None:
+    """[MCP-3] A ready client may pipeline its notification and first request."""
+
+    probe = _RawStdioProcess("from taut_mcp.cli import main\nmain([])\n")
+    try:
+        probe.send(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "clientInfo": {
+                        "name": "fast-client-probe",
+                        "version": "1",
+                    },
+                },
+            }
+        )
+        initialized = probe.receive_until_id(1)
+        assert initialized["result"]["protocolVersion"] == "2025-11-25"  # type: ignore[index]
+
+        probe.send_batch(
+            [
+                {
+                    "jsonrpc": "2.0",
+                    "method": "notifications/initialized",
+                },
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/list",
+                    "params": {},
+                },
+            ]
+        )
+        response = probe.receive_until_id(2)
+        result = response.get("result")
+        assert isinstance(result, dict)
+        tools = result.get("tools")
+        assert isinstance(tools, list)
+        assert all(isinstance(tool, dict) for tool in tools)
+        tool_records = cast(list[dict[str, object]], tools)
+        assert {tool.get("name") for tool in tool_records} == EXPECTED_TOOL_NAMES
+
+        probe.close_input_and_collect()
+        assert probe.stderr.read() == ""
+    finally:
+        if probe.process.poll() is None:
+            probe.terminate_and_read_stderr()
 
 
 @pytest.mark.timeout(10)
