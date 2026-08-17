@@ -250,7 +250,7 @@ history backfill, and search never move a cursor.
 Exactly four interaction modes are visible in the status line:
 
 - `NORMAL`: navigate, select, open, and invoke actions;
-- `COMPOSE`: edit the single-line, target-labelled message composer;
+- `COMPOSE`: edit the multiline, target-labelled message composer;
 - `COMMAND`: browse grouped native actions or enter the textual command mirror;
 - `SEARCH`: search visible Taut history through `TautClient.search()`.
 
@@ -296,6 +296,11 @@ At wide and medium widths, ordinary messages use aligned timestamp and author
 metadata with a hanging body indent. At compact widths, metadata stacks above
 the body. Notices, warnings, unread boundaries, selected messages, and thread
 origins remain structurally distinct without relying on color.
+
+One empty terminal row separates adjacent transcript messages. Message bodies
+preserve actual LF as line breaks, including consecutive blank lines, and
+render horizontal tabs as four-column tab-stop whitespace. Literal backslash
+sequences remain literal message content and are never decoded as layout.
 
 Direct messages use actor-scoped human labels. Internal queue names never
 replace those labels in ordinary navigation. The composer always shows the
@@ -348,6 +353,14 @@ re-delivery guarantee.
 calls `reply()` with the selected message's full id and parent conversation.
 The draft clears only after a successful returned message is committed to the
 model. A blank draft is a no-op under core's blank-message contract.
+
+The composer accepts multiline paste. Terminal and Textual paste handling may
+normalize recognized line boundaries to LF and remove NUL; apart from that
+boundary normalization, the composer preserves the pasted nonblank text.
+Plain Enter sends through `message.send`. Ctrl-Enter inserts LF without
+sending; Ctrl-J is the legacy-terminal newline fallback. Ctrl-Tab inserts a
+literal horizontal tab while Tab and Shift-Tab retain focus navigation. The
+inserted LF and tab remain exact message content through the public send path.
 
 Starting a new direct message selects a public member and sends the first
 message through the public `@route` target; existing DMs reopen through their
@@ -444,7 +457,14 @@ In `NORMAL` mode the following pairs dispatch the same semantic actions:
 | Open help | `?` | F1 or clickable help affordance |
 | Quit | `q` | Ctrl-Q or palette `Quit` |
 
-Tab and Shift-Tab always move among focusable visible surfaces or form fields.
+In `COMPOSE`, Enter dispatches `message.send`, Ctrl-Enter or Ctrl-J inserts a
+newline, and Ctrl-Tab inserts a literal tab. Tab and Shift-Tab continue to move
+among focusable visible surfaces. Ctrl-Enter and Ctrl-Tab require a terminal
+that reports modified Enter/Tab distinctly; Ctrl-J and multiline paste are
+the portable newline path, and paste is the portable literal-tab path.
+
+Tab and Shift-Tab always move among focusable visible surfaces or form fields;
+only the explicit Ctrl-Tab compose gesture inserts a tab.
 Bindings that would insert text are disabled outside `NORMAL`; for example,
 typing `q`, `i`, `:`, or `/` in a text field edits text rather than invoking a
 global action. Escape has priority for leaving `COMPOSE`, `COMMAND`, `SEARCH`,
@@ -684,6 +704,14 @@ and foreign envelopes are untrusted terminal text. Widgets render them as text
 or through core's public escape policy and never as markup. Raw bytes exist
 only inside the scoped Summon terminal lease.
 
+TUI message-body display sinks treat LF and horizontal tab as structural
+layout: LF remains a line boundary and horizontal tab expands to spaces at
+four-column stops before rendering. This applies consistently to transcript,
+selected-message, and reply-inspector bodies. These two TUI presentation
+exceptions do not decode printable escape notation and do not change stored
+content. Every other selected terminal control still passes through the
+configured public escape policy.
+
 ### [TUI-12.3] Cleanup order
 
 Normal shutdown stops accepting new actions, resolves active dump and owned
@@ -724,6 +752,15 @@ The following enumerable matrices have firing tests:
   visual facts; and each existing mouse action control unable to bypass a
   disabled result;
 - every gesture/equivalent row in [TUI-8.1] and mouse parity in [TUI-8.2];
+- multiline compose typing and paste; Enter send; Ctrl-Enter, Ctrl-J, and
+  Ctrl-Tab insertion; Tab/Shift-Tab focus movement; exact send/failure/resize/
+  target-switch draft preservation; actual LF versus literal `\n` and actual
+  TAB versus literal `\t`; consecutive blank lines, leading/trailing/repeated
+  spaces, four-column tab expansion before escape-notation generation;
+  consistent transcript/selected-message/reply-inspector bodies; one-row
+  inter-message spacing; sender names and reply-thread labels retaining the
+  configured control-escape policy beside structural bodies; and scroll-anchor
+  preservation across those variable-height rows;
 - width boundaries 49/50, 79/80, 119/120 and height boundaries 19/20;
 - wide to medium to compact to too-small and reverse reflow with the preserved
   state named in [TUI-9.2];
@@ -776,13 +813,15 @@ Version 1 does not include:
   transfer;
 - durable drafts, layout preferences, key remapping, themes, or per-device
   notification state;
-- multiline message composition;
 - a new definition of read/unread, viewport-seen cursors, presence, or
   notification delivery; or
 - a direct port of the historical PR implementation.
 
 ## Related Plans
 
+- `docs/plans/2026-08-17-tui-multiline-whitespace-plan.md` — revises the
+  composer, modified-key, transcript spacing, and structural whitespace
+  contracts with exact-content and scroll-height proof.
 - `docs/plans/2026-08-17-tui-command-mirror-plan.md` — adds the shared typed
   command mirror, grouped native-action browser, textual `:` command line,
   and TUI-owned native bindings for core and installed extensions.

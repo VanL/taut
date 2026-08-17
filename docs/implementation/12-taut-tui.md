@@ -113,6 +113,30 @@ invocation as keys, navigation activation, and palette selection.
 Option lists capture the pointer from press through release so a drag-out can
 clear pointer activation without misclassifying the next keyboard Enter.
 
+`TautComposer` is the one TextArea adapter for message drafting. It owns
+priority Enter submission, Ctrl-Enter/Ctrl-J LF insertion, Ctrl-Tab literal-tab
+insertion, multiline paste, terminal-safe placeholder text, and conversion
+between TextArea's row/column cursor and `DraftState`'s framework-neutral
+scalar offset. Tab behavior remains focus navigation. The adapter uses public
+bindings, document text, and cursor movement rather than overriding Textual's
+private key handler. Textual requests the enhanced keyboard protocol, but a
+legacy terminal may not distinguish modified Enter or Tab; Ctrl-J, paste, and
+the Send control are the declared fallback paths.
+
+Message whitespace is presentation, never a stored-content rewrite. At every
+message-body projection (transcript, selected-message inspector, and reply
+inspector), the owned adapter expands actual tabs to four-column stops before
+applying the terminal escape policy; literal `\t` remains printable text.
+Actual LF is retained as layout while literal `\n` remains printable text.
+Inspector renderers assemble metadata and bodies as separate trusted segments:
+names and reply-thread labels keep core control escape notation, so body layout
+rules cannot widen their display boundary. Each transcript prompt owns one
+trailing structural LF, so Rich, Textual's `OptionList`, and Taut's
+scroll-anchor height calculation count the same inter-message row. Separator
+options would break the one-option-to-one-message index, and Textual 8.2.8
+renders CSS vertical option padding without including it in cached option
+heights, so neither mechanism owns spacing.
+
 `screens.py` renders the searchable native palette, labelled forms,
 confirmation, cursor-neutral search, and typed Summon controls. Continuity
 tokens are masked and cleared when their screen closes. User and extension
@@ -293,6 +317,9 @@ it without eager Textual import.
 
 ## Related Plans
 
+- `docs/plans/2026-08-17-tui-multiline-whitespace-plan.md` — multiline
+  composer ownership, exact structural whitespace, and scroll-safe transcript
+  spacing.
 - `docs/plans/2026-08-17-tui-scroll-anchor-test-synchronization-plan.md` —
   event-based completion proof for the nested viewport-anchor restore refresh.
 - `docs/plans/2026-08-17-tui-command-mirror-plan.md` — implements the shared

@@ -78,7 +78,7 @@ class FocusTarget:
 
 @dataclass(frozen=True, slots=True)
 class DraftState:
-    """One target-keyed single-line draft and editing cursor."""
+    """One target-keyed multiline draft and scalar editing cursor."""
 
     target: str
     text: str = ""

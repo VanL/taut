@@ -10,7 +10,7 @@ from pathlib import Path
 from taut_tui.app import TautApp
 from taut_tui.models import LayoutMode
 from taut_tui.session import ConversationSnapshot
-from textual.widgets import Input
+from taut_tui.widgets import TautComposer
 
 from taut.client import Message
 
@@ -38,7 +38,7 @@ _MESSAGES = (
         from_id="member-agent",
         from_name="reviewer",
         kind="message",
-        text="Resize keeps the conversation, draft, selection, and scroll intent.",
+        text="Resize keeps:\n\tthe draft\n\tthe selection\n\tthe scroll intent",
     ),
 )
 
@@ -74,7 +74,7 @@ async def _render(output_dir: Path) -> None:
             )
         )
         app._select_message(2)
-        app.query_one("#composer", Input).value = "A target-scoped draft"
+        app.query_one("#composer", TautComposer).text = "A target-scoped\ndraft"
         for width, height in _SIZES:
             await pilot.resize_terminal(width, height)
             await pilot.pause()

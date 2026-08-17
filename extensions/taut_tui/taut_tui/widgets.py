@@ -3,19 +3,30 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Any, Self
+from typing import Any, ClassVar, Self
 
 from rich.console import RenderableType
 from rich.text import Text
+from textual.binding import Binding, BindingType
 from textual.content import Content, ContentText
 from textual.message import Message
 from textual.visual import VisualType
-from textual.widgets import Button, Checkbox, Input, Label, OptionList, Select, Static
+from textual.widgets import (
+    Button,
+    Checkbox,
+    Input,
+    Label,
+    OptionList,
+    Select,
+    Static,
+    TextArea,
+)
 from textual.widgets.option_list import Option
 
 from taut import escape_terminal_text
 
 _DISPLAY_TOKEN = object()
+_MESSAGE_TAB_SIZE = 4
 
 
 class EscapedDisplayText(str):
@@ -42,6 +53,21 @@ def escape_display_text(value: str) -> EscapedDisplayText:
             escape_terminal_text(line, inherit_defaults=True)
             for line in value.split("\n")
         ),
+        _token=_DISPLAY_TOKEN,
+    )
+
+
+def escape_message_body(value: str) -> EscapedDisplayText:
+    """Expand structural message tabs before applying terminal escape policy."""
+
+    return escape_display_text(value.expandtabs(_MESSAGE_TAB_SIZE))
+
+
+def escape_inline_text(value: str) -> EscapedDisplayText:
+    """Escape controls in metadata that must remain on its owned display line."""
+
+    return EscapedDisplayText(
+        escape_terminal_text(value, inherit_defaults=True),
         _token=_DISPLAY_TOKEN,
     )
 
@@ -137,6 +163,67 @@ class TautInput(Input):
 
     def validate_placeholder(self, placeholder: str) -> str:
         return str(escape_display_text(placeholder))
+
+
+class TautComposer(TextArea):
+    """Multiline composer with explicit structural-input and submit keys."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        *TextArea.BINDINGS,
+        Binding("enter", "submit", priority=True),
+        Binding("ctrl+enter,ctrl+j", "insert_newline", priority=True),
+        Binding("ctrl+tab", "insert_tab", priority=True),
+    ]
+
+    class Submitted(Message):
+        """Posted when the composer requests submission without changing text."""
+
+        def __init__(self, composer: TautComposer) -> None:
+            super().__init__()
+            self.composer = composer
+            self.value = composer.text
+
+    def __init__(self, text: str = "", **kwargs: Any) -> None:
+        kwargs["tab_behavior"] = "focus"
+        kwargs["show_line_numbers"] = False
+        placeholder = kwargs.get("placeholder", "")
+        if not isinstance(placeholder, str):
+            raise TypeError("Taut composer placeholders must be strings")
+        kwargs["placeholder"] = str(escape_display_text(placeholder))
+        super().__init__(text, **kwargs)
+
+    def validate_placeholder(self, placeholder: str | Content) -> str:
+        if not isinstance(placeholder, str):
+            raise TypeError("Taut composer placeholders must be strings")
+        return str(escape_display_text(placeholder))
+
+    @property
+    def cursor_position(self) -> int:
+        """Expose the cursor as a scalar code-point offset for draft state."""
+
+        row, column = self.cursor_location
+        lines = self.text.split("\n")
+        return sum(len(line) + 1 for line in lines[:row]) + min(
+            column,
+            len(lines[row]),
+        )
+
+    @cursor_position.setter
+    def cursor_position(self, position: int) -> None:
+        bounded = min(max(position, 0), len(self.text))
+        prefix = self.text[:bounded]
+        row = prefix.count("\n")
+        column = len(prefix.rsplit("\n", 1)[-1])
+        self.move_cursor((row, column))
+
+    def action_submit(self) -> None:
+        self.post_message(self.Submitted(self))
+
+    def action_insert_newline(self) -> None:
+        self.insert("\n")
+
+    def action_insert_tab(self) -> None:
+        self.insert("\t")
 
 
 class TautSelect(Select[Any]):
@@ -263,6 +350,7 @@ __all__ = [
     "EscapedDisplayText",
     "TautButton",
     "TautCheckbox",
+    "TautComposer",
     "TautInput",
     "TautLabel",
     "TautOptionList",
@@ -270,4 +358,6 @@ __all__ = [
     "TautStatic",
     "display_text",
     "escape_display_text",
+    "escape_inline_text",
+    "escape_message_body",
 ]

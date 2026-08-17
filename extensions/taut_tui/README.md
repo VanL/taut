@@ -18,11 +18,13 @@ The extension publishes `tui` through the `taut.commands` entry-point group.
 There is intentionally no separate `taut-tui` console script. Without this
 distribution installed, core does not claim the `tui` command.
 
-The interface provides transcript-first navigation, native typed actions and
-forms, vi-like and conventional keys, mouse controls, state-preserving terminal
-reflow, actor-free system reports, and supervised terminal handoff to
-`taut-summon` when that extension is available. Workspace load remains a
-CLI-only maintenance action.
+The interface provides transcript-first navigation, a multiline composer
+(Enter sends; Ctrl-Enter or Ctrl-J inserts a newline; Ctrl-Tab inserts a tab),
+native typed actions and forms, vi-like and conventional keys, mouse controls,
+state-preserving terminal reflow, actor-free system reports, and supervised
+terminal handoff to `taut-summon` when that extension is available. Tab and
+Shift-Tab remain focus navigation. Workspace load remains a CLI-only
+maintenance action.
 
 The governing behavior is in
 [`docs/specs/10-taut-tui.md`](../../docs/specs/10-taut-tui.md). Architecture

@@ -128,6 +128,7 @@ def test_owned_display_sinks_escape_initial_and_updated_content() -> None:
         DisplayText,
         TautButton,
         TautCheckbox,
+        TautComposer,
         TautInput,
         TautLabel,
         TautOptionList,
@@ -146,6 +147,7 @@ def test_owned_display_sinks_escape_initial_and_updated_content() -> None:
             yield TautStatic(styled, id="display")
             yield TautOptionList(Option(payload, id="first"), id="options")
             yield TautInput(placeholder=payload, id="input")
+            yield TautComposer(placeholder=payload, id="composer")
             yield TautSelect(((payload, "provider-id"),), id="select")
             yield TautLabel(payload, id="label")
             yield TautButton(payload, id="button")
@@ -182,6 +184,11 @@ def test_owned_display_sinks_escape_initial_and_updated_content() -> None:
             assert input_widget.placeholder == escaped
             input_widget.value = payload
             assert input_widget.value == payload
+
+            composer = app.query_one("#composer", TautComposer)
+            assert str(composer.placeholder) == escaped
+            composer.placeholder = payload
+            assert str(composer.placeholder) == escaped
 
             label = app.query_one("#label", Label)
             assert str(label.render()) == escaped
@@ -228,6 +235,94 @@ def test_owned_display_sinks_escape_initial_and_updated_content() -> None:
                 display.update(object())  # type: ignore[arg-type]
 
     asyncio.run(exercise())
+
+
+def test_composer_modified_keys_insert_structure_without_submitting() -> None:
+    from taut_tui.widgets import TautComposer, TautInput
+
+    class ProbeApp(App[None]):
+        def __init__(self) -> None:
+            super().__init__()
+            self.submissions: list[str] = []
+
+        def compose(self) -> ComposeResult:
+            yield TautComposer(id="composer")
+            yield TautInput(id="next-field")
+
+        def on_taut_composer_submitted(
+            self,
+            event: TautComposer.Submitted,
+        ) -> None:
+            self.submissions.append(event.value)
+
+    async def exercise() -> None:
+        app = ProbeApp()
+        async with app.run_test(size=(40, 10)) as pilot:
+            composer = app.query_one(TautComposer)
+            composer.focus()
+
+            await pilot.press(
+                "o",
+                "n",
+                "e",
+                "ctrl+enter",
+                "t",
+                "w",
+                "o",
+                "ctrl+j",
+                "t",
+                "h",
+                "r",
+                "e",
+                "e",
+                "ctrl+tab",
+                "x",
+            )
+
+            assert composer.text == "one\ntwo\nthree\tx"
+            assert app.submissions == []
+
+            await pilot.press("tab")
+            assert app.query_one("#next-field", TautInput).has_focus
+            await pilot.press("shift+tab")
+            assert composer.has_focus
+
+            await pilot.press("enter")
+
+            assert composer.text == "one\ntwo\nthree\tx"
+            assert app.submissions == ["one\ntwo\nthree\tx"]
+
+    asyncio.run(exercise())
+
+
+def test_composer_preserves_multiline_paste() -> None:
+    from taut_tui.widgets import TautComposer
+
+    class ProbeApp(App[None]):
+        def compose(self) -> ComposeResult:
+            yield TautComposer(id="composer")
+
+    async def exercise() -> None:
+        app = ProbeApp()
+        async with app.run_test(size=(40, 10)) as pilot:
+            composer = app.query_one(TautComposer)
+            composer.focus()
+            app.post_message(events.Paste("one\n\ttwo"))
+            await pilot.pause()
+
+            assert composer.text == "one\n\ttwo"
+
+    asyncio.run(exercise())
+
+
+def test_message_body_tabs_expand_before_escape_notation() -> None:
+    from taut_tui.widgets import escape_message_body
+
+    actual = str(escape_message_body("a\tb\n12\tc"))
+    literal = str(escape_message_body(r"a\tb"))
+
+    assert actual == "a   b\n12  c"
+    assert literal == r"a\tb"
 
 
 def test_protected_display_text_is_not_rescanned_by_owned_sink(

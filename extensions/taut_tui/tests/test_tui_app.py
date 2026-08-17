@@ -17,6 +17,7 @@ from textual.widgets import Button, Input
 
 from taut.client import TautClient
 from taut_tui.models import InteractionMode, LayoutMode
+from taut_tui.widgets import TautComposer
 
 pytestmark = pytest.mark.sqlite_only
 
@@ -226,10 +227,10 @@ def test_vi_and_conventional_keys_share_mode_actions_without_stealing_text() -> 
             )
             await pilot.press("i")
             assert app.visual_state.mode is InteractionMode.COMPOSE
-            composer = app.query_one("#composer", Input)
+            composer = app.query_one("#composer", TautComposer)
             assert composer.has_focus
             await pilot.press("q", "/", ":")
-            assert composer.value == "q/:"
+            assert composer.text == "q/:"
             assert app.visual_state.mode is InteractionMode.COMPOSE
             await pilot.press("escape")
             assert app.visual_state.mode is InteractionMode.NORMAL
@@ -253,12 +254,14 @@ def test_real_resize_reflows_without_replacing_visual_state() -> None:
                 app.visual_state,
                 active_conversation="general",
             )
-            await pilot.press("i", "d", "r", "a", "f", "t")
+            await pilot.press("i", *"draft", "ctrl+enter", "ctrl+tab", *"line")
             await pilot.resize_terminal(64, 34)
             assert app.layout_mode is LayoutMode.COMPACT
             assert app.query_one("#navigation").display is False
             assert app.query_one("#conversation").display is True
-            assert app.query_one("#composer", Input).value == "draft"
+            composer = app.query_one("#composer", TautComposer)
+            assert composer.text == "draft\n\tline"
+            assert composer.cursor_position == len(composer.text)
 
             await pilot.resize_terminal(40, 15)
             assert app.layout_mode is LayoutMode.TOO_SMALL
@@ -266,7 +269,9 @@ def test_real_resize_reflows_without_replacing_visual_state() -> None:
 
             await pilot.resize_terminal(130, 34)
             assert app.layout_mode is LayoutMode.WIDE
-            assert app.query_one("#composer", Input).value == "draft"
+            composer = app.query_one("#composer", TautComposer)
+            assert composer.text == "draft\n\tline"
+            assert composer.cursor_position == len(composer.text)
 
     asyncio.run(exercise())
 
@@ -373,7 +378,8 @@ def test_real_transcript_viewport_anchor_survives_width_reflow(
     for index in range(30):
         alice.say(
             "general",
-            f"message {index:02d} " + ("wrap this transcript row " * 8),
+            f"message {index:02d}\n\n\tcontinuation "
+            + ("wrap this transcript row " * 8),
         )
 
     async def exercise() -> None:
@@ -722,8 +728,8 @@ def test_composer_enter_uses_the_typed_keyboard_action_dispatcher(
     async def exercise() -> None:
         app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
-            composer = app.query_one("#composer", Input)
-            composer.value = "route this send"
+            composer = app.query_one("#composer", TautComposer)
+            composer.text = "route this send"
             composer.focus()
             monkeypatch.setattr(app, "_dispatch_action_invocation", seen.append)
 
@@ -1221,7 +1227,8 @@ def test_direct_message_header_and_composer_use_actor_scoped_label(
                     break
             assert "DM with bob" in str(app.query_one("#target-header").render())
             assert (
-                app.query_one("#composer", Input).placeholder == "Message DM with bob"
+                app.query_one("#composer", TautComposer).placeholder
+                == "Message DM with bob"
             )
 
     try:
@@ -1250,6 +1257,8 @@ def test_help_and_errors_open_a_visible_inspector_at_medium_and_compact_sizes(
                 "Ctrl-U / PageUp",
                 "Ctrl-D / PageDown",
                 "Tab / Shift-Tab",
+                "Ctrl-Enter or Ctrl-J",
+                "Ctrl-Tab",
                 "g i",
                 "Pane",
                 "Replies",
@@ -1317,13 +1326,15 @@ def test_compose_send_failure_is_visible_and_preserves_the_draft(
     async def exercise() -> None:
         app = TautApp(db_path=str(db_path), as_name=None, continuity_token=None)
         async with app.run_test(size=(64, 34)) as pilot:
-            composer = app.query_one("#composer", Input)
-            composer.value = "keep me"
+            composer = app.query_one("#composer", TautComposer)
+            composer.text = "keep\n\tme"
+            composer.cursor_position = 6
             composer.focus()
+            await pilot.pause()
             app.visual_state = replace(
                 app.visual_state,
                 active_conversation="general",
-                drafts=(DraftState("general", "keep me", 7, 3),),
+                drafts=(DraftState("general", "keep\n\tme", 6, 3),),
                 mode=InteractionMode.COMPOSE,
             )
             app._pending_sends[1] = ("general", 3)
@@ -1335,9 +1346,62 @@ def test_compose_send_failure_is_visible_and_preserves_the_draft(
 
             assert app.query_one("#conversation").display is True
             assert "send failed visibly" in str(app.query_one("#status-line").render())
-            assert app.query_one("#composer", Input).has_focus
-            assert app.visual_state.draft_for("general") is not None
-            assert app.visual_state.draft_for("general").text == "keep me"  # type: ignore[union-attr]
+            assert app.query_one("#composer", TautComposer).has_focus
+            assert app.visual_state.draft_for("general") == DraftState(
+                "general", "keep\n\tme", 6, 3
+            )
+            assert composer.cursor_position == 6
+
+    asyncio.run(exercise())
+
+
+def test_target_switch_restores_multiline_draft_and_scalar_cursor() -> None:
+    from taut_tui.app import TautApp
+    from taut_tui.models import DraftState
+    from taut_tui.session import ConversationSnapshot
+
+    general = DraftState("general", "one\n\ttwo", 6, 1)
+    random = DraftState("random", "other", 3, 1)
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 34)):
+            app.visual_state = app.visual_state.with_draft(general)
+            app.visual_state = app.visual_state.with_draft(random)
+
+            app._apply_conversation(
+                ConversationSnapshot(
+                    1,
+                    "general",
+                    (),
+                    intent_token=app._conversation_intent,
+                )
+            )
+            composer = app.query_one("#composer", TautComposer)
+            assert composer.text == general.text
+            assert composer.cursor_position == general.cursor_position
+
+            app._apply_conversation(
+                ConversationSnapshot(
+                    2,
+                    "random",
+                    (),
+                    intent_token=app._conversation_intent,
+                )
+            )
+            assert composer.text == random.text
+            assert composer.cursor_position == random.cursor_position
+
+            app._apply_conversation(
+                ConversationSnapshot(
+                    3,
+                    "general",
+                    (),
+                    intent_token=app._conversation_intent,
+                )
+            )
+            assert composer.text == general.text
+            assert composer.cursor_position == general.cursor_position
 
     asyncio.run(exercise())
 
@@ -1695,6 +1759,7 @@ def test_real_app_opens_active_conversation_and_sends_through_public_client(
     from textual.widgets import OptionList
 
     from taut_tui.app import TautApp
+    from taut_tui.widgets import TautComposer
 
     db_path = tmp_path / "chat.db"
     TautClient.init(db_path=db_path)
@@ -1727,18 +1792,24 @@ def test_real_app_opens_active_conversation_and_sends_through_public_client(
                 pytest.fail("conversation did not open")
 
             await pilot.press("i")
-            await pilot.press(*"hello from tui")
+            await pilot.press(
+                *"hello",
+                "ctrl+enter",
+                *"from",
+                "ctrl+tab",
+                *"tui",
+            )
             await pilot.press("enter")
             for _ in range(100):
                 await pilot.pause(0.01)
-                if app.query_one("#composer", Input).value == "":
+                if app.query_one("#composer", TautComposer).text == "":
                     break
             else:
                 pytest.fail("send did not complete")
 
     try:
         asyncio.run(exercise())
-        assert any(message.text == "hello from tui" for message in bob.log("general"))
+        assert any(message.text == "hello\nfrom\ttui" for message in bob.log("general"))
     finally:
         alice.close()
         bob.close()
@@ -1966,26 +2037,32 @@ def test_overlapping_send_completion_only_clears_its_own_draft(
             )
 
             app._domain = DeferredDomain()  # type: ignore[assignment]
-            composer = app.query_one("#composer", Input)
-            composer.value = "first"
+            composer = app.query_one("#composer", TautComposer)
+            composer.text = "first\nbody"
+            composer.cursor_position = 3
             await pilot.pause()
-            app._submit_composer("first")
-            composer.value = "second"
+            app._submit_composer("first\nbody")
+            composer.text = "second\nbody"
+            composer.cursor_position = 4
             await pilot.pause()
-            app._submit_composer("second")
+            app._submit_composer("second\nbody")
+            expected = app.visual_state.draft_for("general")
+            assert expected is not None
 
-            first = alice.say("general", "first")
+            first = alice.say("general", "first\nbody")
             sends[0].set_result(first)
             await pilot.pause()
-            assert composer.value == "second"
+            assert app.visual_state.draft_for("general") == expected
+            assert composer.text == "second\nbody"
+            assert composer.cursor_position == 4
 
-            second = alice.say("general", "second")
+            second = alice.say("general", "second\nbody")
             sends[1].set_result(second)
             for _ in range(100):
                 await pilot.pause(0.01)
-                if composer.value == "":
+                if composer.text == "":
                     break
-            assert composer.value == ""
+            assert composer.text == ""
 
     try:
         asyncio.run(exercise())
@@ -2056,6 +2133,96 @@ def test_reply_markers_and_close_restore_conversation_focus(tmp_path: Path) -> N
         bob.close()
 
 
+def test_transcript_preserves_whitespace_and_adds_message_gap() -> None:
+    from taut.client import Message
+    from taut_tui.app import TautApp
+    from taut_tui.widgets import TautOptionList
+
+    messages = (
+        Message(
+            "general",
+            1,
+            "m_alice",
+            "alice",
+            "message",
+            "a\tb\n\n  third  ",
+        ),
+        Message(
+            "general",
+            2,
+            "m_bob",
+            "bob",
+            "message",
+            r"literal\n\t",
+        ),
+    )
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 34)):
+            app._render_messages(messages)
+            transcript = app.query_one("#transcript", TautOptionList)
+            first = str(transcript.get_option_at_index(0).prompt)
+            second = str(transcript.get_option_at_index(1).prompt)
+
+            assert first == "1  alice  a   b\n\n  third  \n"
+            assert second == r"2  bob  literal\n\t" + "\n"
+            assert transcript.option_count == len(app._message_rows) == 2
+            assert app._message_rows[1] is messages[1]
+            assert app._message_row_height(messages[0], 100) == 4
+
+    asyncio.run(exercise())
+
+
+def test_message_body_structure_does_not_widen_metadata_controls() -> None:
+    from taut.client import Message
+    from taut_tui.app import TautApp
+    from taut_tui.session import ConversationSnapshot
+    from taut_tui.widgets import TautOptionList
+
+    message = Message(
+        "general",
+        1,
+        "m_alice",
+        "ali\nce\tname",
+        "message",
+        "body\nnext\tcolumn",
+    )
+    snapshot = ConversationSnapshot(
+        generation=1,
+        target="general",
+        messages=(message,),
+        reply_thread="root\nthread\tlabel",
+        reply_messages=(message,),
+    )
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 34)):
+            app._render_messages((message,))
+            transcript = str(
+                app.query_one("#transcript", TautOptionList)
+                .get_option_at_index(0)
+                .prompt
+            )
+            assert transcript.startswith(r"1  ali\nce\tname  body" + "\n")
+            assert "next    column\n" in transcript
+
+            app._message_rows = (message,)
+            app._select_message(0)
+            selected = str(app.query_one("#inspector-body").render())
+            assert selected.startswith(r"ali\nce\tname  1" + "\n")
+            assert "body\nnext    column" in selected
+
+            app._render_reply_inspector(snapshot)
+            replies = str(app.query_one("#inspector-body").render())
+            assert replies.startswith(r"Replies to root\nthread\tlabel" + "\n")
+            assert r"1  ali\nce\tname  " in replies
+            assert "body\nnext    column" in replies
+
+    asyncio.run(exercise())
+
+
 def test_terminal_controls_are_escaped_at_every_app_text_projection(
     tmp_path: Path,
 ) -> None:
@@ -2096,7 +2263,7 @@ def test_terminal_controls_are_escaped_at_every_app_text_projection(
                 )
             )
             assert_safe(app.query_one("#target-header").render())
-            assert_safe(app.query_one("#composer", Input).placeholder)
+            assert_safe(app.query_one("#composer", TautComposer).placeholder)
             transcript = app.query_one("#transcript", TautOptionList)
             assert_safe(transcript.get_option_at_index(0).prompt)
 

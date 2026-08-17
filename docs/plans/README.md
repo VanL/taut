@@ -51,6 +51,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 
 | Plan | Status | Exemplar | Note |
 |------|--------|----------|------|
+| `2026-08-17-tui-multiline-whitespace-plan.md` | completed | no | Class 5 hardened TUI contract revision for multiline compose input, modified-key fallbacks, exact whitespace presentation, transcript gaps, and scroll-safe variable-height rows; implementation, PTY acceptance, final review, and owner-authorized close-out passed. |
 | `2026-08-17-tui-scroll-anchor-test-synchronization-plan.md` | completed | no | Class 4 event-based correction for the nested Textual refresh boundary; local exact-event proof and all-five-job hosted TUI evidence passed at `56e8235`. |
 | `2026-08-17-mcp-resource-seed-lifecycle-plan.md` | completed | no | Class 4 correction removing per-message runner teardown from a 102-message MCP resource seed phase; canonical Windows/macOS MCP evidence passed at `56e8235`. |
 | `2026-08-17-cli-subprocess-readiness-plan.md` | completed | no | Class 5 correction separating real CLI child readiness from the unchanged application deadline; full exact-SHA producer and 0.9.1 publication evidence passed at `56e8235`. |

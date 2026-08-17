@@ -31,6 +31,7 @@ from taut_tui.screens import (
 )
 from taut_tui.session import ConversationSnapshot
 from taut_tui.summon import TuiSummonOperations
+from taut_tui.widgets import TautComposer
 
 pytestmark = pytest.mark.sqlite_only
 
@@ -438,13 +439,13 @@ async def _compose_enter(context: HandlerContext) -> None:
     await _open_general(context)
     await _select_palette(context, ActionId.COMPOSE_ENTER)
     assert context.app.visual_state.mode is InteractionMode.COMPOSE
-    assert context.app.query_one("#composer", Input).has_focus
-    assert context.app.query_one("#composer", Input).value == ""
+    assert context.app.query_one("#composer", TautComposer).has_focus
+    assert context.app.query_one("#composer", TautComposer).text == ""
 
 
 async def _message_send(context: HandlerContext) -> None:
     await _open_general(context)
-    composer = context.app.query_one("#composer", Input)
+    composer = context.app.query_one("#composer", TautComposer)
     composer.focus()
     await _eventually(
         context.pilot,
@@ -454,7 +455,7 @@ async def _message_send(context: HandlerContext) -> None:
         ),
     )
     await context.pilot.press(*"handler-send")
-    assert composer.value == "handler-send"
+    assert composer.text == "handler-send"
     await context.pilot.press("escape")
     await _select_palette(context, ActionId.MESSAGE_SEND)
     await _eventually(

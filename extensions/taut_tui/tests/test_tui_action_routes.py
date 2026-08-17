@@ -22,6 +22,7 @@ from taut_tui.actions import (
     ActionInvocation,
     ActionRoute,
 )
+from taut_tui.widgets import TautComposer
 
 pytestmark = pytest.mark.sqlite_only
 
@@ -172,8 +173,8 @@ async def _drive_keyboard(
 ) -> None:
     del observations
     if action_id is ActionId.MESSAGE_SEND:
-        composer = app.query_one("#composer", Input)
-        composer.value = "route-matrix-send"
+        composer = app.query_one("#composer", TautComposer)
+        composer.text = "route-matrix-send"
         composer.focus()
         await pilot.press("enter")
         return
@@ -241,7 +242,7 @@ def test_every_declared_route_reaches_the_central_dispatcher_through_its_real_pr
                 selected_navigation="general",
                 selected_message_id=message.ts,
             )
-            app.query_one("#composer", Input).value = "route-matrix-send"
+            app.query_one("#composer", TautComposer).text = "route-matrix-send"
             app._update_context_affordances()
             await pilot.pause()
 

@@ -117,11 +117,13 @@ from taut_tui.system import TuiSystemOperations
 from taut_tui.widgets import (
     DisplayText,
     TautButton,
-    TautInput,
+    TautComposer,
     TautOptionList,
     TautStatic,
     display_text,
     escape_display_text,
+    escape_inline_text,
+    escape_message_body,
 )
 
 _ResultT = TypeVar("_ResultT")
@@ -219,13 +221,13 @@ class TautApp(App[None]):
     }
 
     #composer {
-        height: 3;
+        height: 5;
         width: 1fr;
         border: none;
         background: $background;
     }
 
-    #composer-controls { height: 3; }
+    #composer-controls { height: 5; }
     #composer-send { width: 9; min-width: 9; }
 
     #context-actions {
@@ -372,7 +374,7 @@ class TautApp(App[None]):
                 )
                 yield TautOptionList(id="transcript")
                 with Horizontal(id="composer-controls"):
-                    yield TautInput(
+                    yield TautComposer(
                         placeholder="Message selected target", id="composer"
                     )
                     yield TautButton("Send", id="composer-send")
@@ -528,25 +530,28 @@ class TautApp(App[None]):
         if snapshot is not None:
             self._render_messages(snapshot.messages)
 
-    def on_input_changed(self, event: TautInput.Changed) -> None:
-        if event.input.id != "composer":
+    def on_text_area_changed(self, event: TautComposer.Changed) -> None:
+        if not isinstance(event.text_area, TautComposer):
             return
+        if event.text_area.id != "composer":
+            return
+        composer = event.text_area
         target = self.visual_state.active_conversation or "__unselected__"
         self.visual_state = self.visual_state.with_draft(
             DraftState(
                 target=target,
-                text=event.value,
-                cursor_position=min(event.input.cursor_position, len(event.value)),
+                text=composer.text,
+                cursor_position=min(composer.cursor_position, len(composer.text)),
                 revision=(
                     0
                     if (prior := self.visual_state.draft_for(target)) is None
-                    else prior.revision + (prior.text != event.value)
+                    else prior.revision + (prior.text != composer.text)
                 ),
             )
         )
 
-    def on_input_submitted(self, event: TautInput.Submitted) -> None:
-        if event.input.id != "composer" or not event.value.strip():
+    def on_taut_composer_submitted(self, event: TautComposer.Submitted) -> None:
+        if event.composer.id != "composer" or not event.value.strip():
             return
         self._dispatch_tui_action(
             ActionId.MESSAGE_SEND,
@@ -578,15 +583,15 @@ class TautApp(App[None]):
         if target is None:
             return
         try:
-            composer = self._query_base("#composer", TautInput)
+            composer = self._query_base("#composer", TautComposer)
         except NoMatches:
             return
         draft = self.visual_state.draft_for(target)
         self.visual_state = self.visual_state.with_draft(
             DraftState(
                 target=target,
-                text=composer.value,
-                cursor_position=min(composer.cursor_position, len(composer.value)),
+                text=composer.text,
+                cursor_position=min(composer.cursor_position, len(composer.text)),
                 revision=0 if draft is None else draft.revision,
             )
         )
@@ -773,6 +778,8 @@ class TautApp(App[None]):
             "Keys: j/k or Down/Up move; h/l or Left/Right change panes; "
             "gg / Home and G / End jump; Ctrl-U / PageUp and Ctrl-D / PageDown "
             "page; Tab / Shift-Tab move focus; Enter opens; i composes; "
+            "in compose, Enter sends, Ctrl-Enter or Ctrl-J inserts a newline, "
+            "and Ctrl-Tab inserts a tab; "
             ": / Ctrl-P commands; / / Ctrl-F search; ? / F1 help; "
             "g i opens notifications; q / Ctrl-Q quits. "
             "Notification pointers are consumable and shared by sessions; "
@@ -940,7 +947,7 @@ class TautApp(App[None]):
     def _dispatch_shell_action(self, action_id: ActionId) -> bool:
         if action_id is ActionId.COMPOSE_ENTER:
             self._set_mode(InteractionMode.COMPOSE)
-            self._query_base("#composer", TautInput).focus()
+            self._query_base("#composer", TautComposer).focus()
         elif action_id is ActionId.COMMAND_OPEN:
             self.action_open_command()
         elif action_id is ActionId.SEARCH_OPEN:
@@ -1350,9 +1357,9 @@ class TautApp(App[None]):
         elif action_id is ActionId.MEMBERS_OPEN:
             self._run_action(domain.members(self.visual_state.active_conversation))
         elif action_id is ActionId.MESSAGE_SEND:
-            composer = self._query_base("#composer", TautInput)
-            if composer.value.strip():
-                self._submit_composer(composer.value)
+            composer = self._query_base("#composer", TautComposer)
+            if composer.text.strip():
+                self._submit_composer(composer.text)
         elif action_id is ActionId.SEARCH_OPEN_RESULT:
             self._open_selected_search_result()
         else:
@@ -1633,9 +1640,9 @@ class TautApp(App[None]):
         )
         self._query_base("#inspector-body", TautStatic).update(
             display_text(
-                (message.from_name, "bold"),
+                (escape_inline_text(message.from_name), "bold"),
                 f"  {message.ts}\n",
-                message.text,
+                escape_message_body(message.text),
                 "\n\nReply · React · Delete",
             )
         )
@@ -1696,15 +1703,26 @@ class TautApp(App[None]):
         )
 
     def _render_reply_inspector(self, snapshot: ConversationSnapshot) -> None:
-        lines = [f"Replies to {snapshot.reply_thread}"]
+        parts: list[str] = [
+            "Replies to ",
+            escape_inline_text(snapshot.reply_thread or ""),
+            "\n",
+        ]
         if not snapshot.reply_messages:
-            lines.append("No replies yet.")
+            parts.append("No replies yet.")
         else:
-            lines.extend(
-                f"{message.ts}  {message.from_name}  {message.text}"
-                for message in snapshot.reply_messages
-            )
-        self._render_inspector("\n".join(lines), kind=InspectorKind.REPLIES)
+            for index, message in enumerate(snapshot.reply_messages):
+                if index:
+                    parts.append("\n")
+                parts.extend(
+                    (
+                        f"{message.ts}  ",
+                        escape_inline_text(message.from_name),
+                        "  ",
+                        escape_message_body(message.text),
+                    )
+                )
+        self._render_inspector(display_text(*parts), kind=InspectorKind.REPLIES)
 
     def _palette_entries(self) -> tuple[PaletteEntry, ...]:
         summon_available = self._summon is not None
@@ -2542,7 +2560,7 @@ class TautApp(App[None]):
         snapshot = session.commit_returned_message(message) if session else None
         if snapshot is not None:
             self._apply_conversation(snapshot)
-        composer = self._query_base("#composer", TautInput)
+        composer = self._query_base("#composer", TautComposer)
         if pending is not None:
             target, revision = pending
             draft = self.visual_state.draft_for(target)
@@ -2555,7 +2573,7 @@ class TautApp(App[None]):
                     DraftState(target=target, revision=revision + 1)
                 )
                 if self.visual_state.active_conversation == target:
-                    composer.value = ""
+                    composer.text = ""
         self._operation_state = "sending" if self._pending_sends else "idle"
         self._update_status()
 
@@ -2590,9 +2608,9 @@ class TautApp(App[None]):
             self._apply_placement(self._accepted_size)
             self._focus_visual_target()
         draft = self.visual_state.draft_for(snapshot.target)
-        composer = self._query_base("#composer", TautInput)
+        composer = self._query_base("#composer", TautComposer)
         composer.placeholder = f"Message {target_label}"
-        composer.value = "" if draft is None else draft.text
+        composer.text = "" if draft is None else draft.text
         if draft is not None:
             composer.cursor_position = draft.cursor_position
         self._update_status()
@@ -2698,19 +2716,21 @@ class TautApp(App[None]):
         )
         if self.layout_mode is LayoutMode.COMPACT:
             return display_text(
-                (message.from_name, "bold"),
+                (escape_inline_text(message.from_name), "bold"),
                 f"  {message.ts}",
                 (reply_marker, "italic"),
                 "\n",
-                message.text,
+                escape_message_body(message.text),
+                "\n",
             )
         return display_text(
             (str(message.ts), "dim"),
             "  ",
-            (message.from_name, "bold"),
+            (escape_inline_text(message.from_name), "bold"),
             "  ",
-            message.text,
+            escape_message_body(message.text),
             (reply_marker, "italic"),
+            "\n",
         )
 
     def _message_row_height(self, message: Message, width: int) -> int:
