@@ -5,7 +5,7 @@ Date: 2026-08-17
 Class: 5. This changes the cross-platform subprocess-test lifecycle and its
 timeout/cleanup boundary after hosted Windows exposed ambiguous child timeouts.
 
-Status: active.
+Status: completed at `56e82359119ea1fefea55aeb29e82022127d3b36`.
 
 ## Goal
 
@@ -133,3 +133,17 @@ Windows boundary and every normal producer is green.
   scheduling. The focused CLI/debug/harness selection passed with one documented
   POSIX-only skip. Repository-wide Ruff and all five mypy lanes passed (138,
   12, 41, 21, and 33 source files); doc-path, plan-index, and diff checks passed.
+- The normal coordinated helper reran every local release gate at `56e8235`:
+  root source `2080 passed, 1 skipped`, installed wheels `28 passed`, real
+  PostgreSQL `287 + 37 + 7 passed`, Summon `307 + 244 passed`, eight strict
+  external harnesses, the disposable-Ollama smoke, MCP `269 passed`, and TUI
+  `322 passed`. Repository-wide Ruff and all five mypy lanes were clean.
+- Exact-SHA root run `32045890002` passed on its first attempt, including every
+  Windows job and the coverage producer/combiner. PG `32045889985`, MCP
+  `32045889952`, and TUI `32045889971` also passed on their first attempts
+  before tag mutation.
+- All five 0.9.1 tags resolve to `56e8235`. All five GitHub Releases are public
+  and immutable, PyPI has exactly each wheel and sdist with matching hashes,
+  and all ten files have exact Sigstore workflow/tag/commit provenance. The
+  root release gate `32047186181` completed on attempt 2 after attempt 1 hit a
+  GitHub artifact-service outage before publication; no bytes were rebuilt.

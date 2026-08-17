@@ -5,7 +5,7 @@ Date: 2026-08-17
 Class: 4. This changes an async test-observation lifecycle at the deferred
 Textual refresh boundary after a hosted release gate exposed a false failure.
 
-Status: active.
+Status: completed at `56e82359119ea1fefea55aeb29e82022127d3b36`.
 
 ## Goal
 
@@ -103,6 +103,14 @@ reread.
   pause captured the successor message. The other four TUI matrix jobs passed.
 - The event-based real-app test passed 10 consecutive focused runs, then the
   complete retained-lock TUI suite passed all 322 tests locally.
+- Independent final review confirmed that only the exact final resize
+  generation's production render can install the observed restore callback;
+  stale resize, watcher, wrong-anchor, exception, and missing-callback paths
+  cannot pass. Exact-SHA TUI run `32045889971` passed all five retained-lock
+  jobs on its first attempt, including the formerly failing macOS lane.
+- Release gate `32047185459` published the exact wheel and sdist on its first
+  attempt. GitHub/PyPI hashes match and both Sigstore statements bind the exact
+  workflow, tag, commit, filenames, and digests.
 
 ## Related Plans
 

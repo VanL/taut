@@ -6,7 +6,7 @@ Class: 4. This changes test-owned SimpleBroker session lifecycles after a hosted
 Windows native SQLite close stalled during a release gate. It does not change a
 normative product contract.
 
-Status: active.
+Status: completed at `56e82359119ea1fefea55aeb29e82022127d3b36`.
 
 ## Goal
 
@@ -130,6 +130,11 @@ text is reread.
 - Local proof: the exact 102-message resource case passed in 0.48 seconds; the
   complete non-PG MCP suite passed 269 tests with 7 PG-only cases deselected.
   Repository-wide Ruff and all five mypy lanes passed before review.
+- Independent final review found no P1/P2 blocker. Exact-SHA canonical MCP run
+  `32045889952` passed on its first attempt, including Windows and macOS SQLite
+  lanes. Release gate `32047183218` published the exact wheel and sdist on its
+  first attempt; GitHub/PyPI SHA-256 values match and both Sigstore statements
+  bind the exact filenames, digests, tag, workflow, and `56e8235` commit.
 
 ## Related Plans
 

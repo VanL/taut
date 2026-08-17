@@ -2,7 +2,7 @@
 
 Date: 2026-08-17
 
-Status: active; implementation authorized by the owner on 2026-08-17 after
+Status: completed at `56e82359119ea1fefea55aeb29e82022127d3b36`; implementation authorized by the owner on 2026-08-17 after
 independent review and approval of the spec-promotion gate
 
 Owner: Taut maintainers
@@ -965,3 +965,9 @@ The plan was approved by the owner on 2026-08-17. The promotion SHA is
 complete in commit `ba3088c1bb39737d48dee1fe71dd532459e5bba7`, with the
 CLI-adapter migration residual recorded in the deviation log and verification
 appendix above.
+
+The coordinated 0.9.1 completion signal passed at `56e8235`: exact-SHA TUI run
+`32045889971` passed all five retained-lock jobs, the root producer and all
+other extension producers were green before tags, and release gate
+`32047185459` published an immutable `taut_tui/v0.9.1` GitHub Release plus the
+matching PyPI wheel and sdist. Both files have exact Sigstore provenance.
