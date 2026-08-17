@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
+import tempfile
+import time
+import uuid
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import psutil
 import pytest
 
 from taut._constants import PROJECT_CONFIG_NAME
@@ -21,6 +27,13 @@ BACKEND_MARKERS = ("shared", "sqlite_only", "pg_only")
 INSTALLED_COMMAND_FIXTURE = "installed_command_fixture"
 INSTALLED_WHEEL_XDIST_GROUP = "installed-wheel"
 SOURCE_SHARD_OPTION = "--taut-source-shard"
+CLI_READY_FIXTURE = PROJECT_ROOT / "tests" / "fixtures" / "cli_ready.py"
+CLI_READY_HOST_ENV = "TAUT_TEST_CLI_READY_HOST"
+CLI_READY_PORT_ENV = "TAUT_TEST_CLI_READY_PORT"
+CLI_READY_TOKEN_ENV = "TAUT_TEST_CLI_READY_TOKEN"
+CLI_DIAGNOSTIC_ENV = "TAUT_TEST_CLI_DIAGNOSTIC"
+CLI_CONNECT_TIMEOUT_ENV = "TAUT_TEST_CLI_CONNECT_TIMEOUT"
+CLI_DIAGNOSTIC_DELAY_ENV = "TAUT_TEST_CLI_DIAGNOSTIC_DELAY"
 
 
 def _parse_source_shard(value: str | None) -> tuple[int, int] | None:
@@ -445,6 +458,228 @@ def build_cli_env(
     return full_env
 
 
+def _await_cli_readiness(
+    process: subprocess.Popen[Any],
+    listener: socket.socket,
+    *,
+    token: str,
+    startup_started: float,
+    startup_timeout: float,
+) -> None:
+    try:
+        connection, _address = listener.accept()
+        with connection:
+            remaining = max(
+                0.001, startup_timeout - (time.monotonic() - startup_started)
+            )
+            connection.settimeout(remaining)
+            with connection.makefile("rb") as phases:
+                spawned = phases.readline().decode("ascii", errors="replace").strip()
+                expected_spawned = f"spawned {token}"
+                if spawned != expected_spawned:
+                    raise RuntimeError(
+                        "CLI readiness child did not acknowledge spawn: "
+                        f"expected {expected_spawned!r}, got {spawned!r}"
+                    )
+                remaining = max(
+                    0.001, startup_timeout - (time.monotonic() - startup_started)
+                )
+                connection.settimeout(remaining)
+                ready = phases.readline().decode("ascii", errors="replace").strip()
+                expected_ready = f"ready {token}"
+                if ready != expected_ready:
+                    raise RuntimeError(
+                        "CLI readiness child exited before application readiness: "
+                        f"expected {expected_ready!r}, got {ready!r}"
+                    )
+    except BaseException:
+        _kill_cli_process_tree(process)
+        raise
+
+
+def _cli_process_tree(process: subprocess.Popen[Any]) -> list[psutil.Process]:
+    try:
+        owner = psutil.Process(process.pid)
+        return [*owner.children(recursive=True), owner]
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return []
+
+
+def _kill_and_wait_psutil_processes(
+    targets: list[psutil.Process],
+    *,
+    timeout: float,
+) -> None:
+    for target in targets:
+        try:
+            target.kill()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    _gone, alive = psutil.wait_procs(targets, timeout=timeout)
+    for target in alive:
+        try:
+            target.kill()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    if alive:
+        psutil.wait_procs(alive, timeout=1.0)
+
+
+def _normalize_timeout_streams(
+    process: subprocess.Popen[Any],
+    stdout: Any,
+    stderr: Any,
+) -> tuple[Any, Any]:
+    if isinstance(process.stdout, io.TextIOBase):
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", errors="replace")
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", errors="replace")
+    else:
+        if isinstance(stdout, str):
+            stdout = stdout.encode("utf-8")
+        if isinstance(stderr, str):
+            stderr = stderr.encode("utf-8")
+    return stdout, stderr
+
+
+def _kill_cli_process_tree(
+    process: subprocess.Popen[Any],
+    *,
+    collection_timeout: float = 5.0,
+) -> tuple[Any, Any]:
+    targets = _cli_process_tree(process)
+    _kill_and_wait_psutil_processes(targets, timeout=collection_timeout)
+    if process.poll() is None:
+        process.kill()
+
+    try:
+        return process.communicate(timeout=collection_timeout)
+    except subprocess.TimeoutExpired as exc:
+        for stream in (process.stdin, process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
+        try:
+            process.wait(timeout=1.0)
+        except subprocess.TimeoutExpired as wait_exc:
+            raise RuntimeError(
+                f"CLI readiness child {process.pid} could not be reaped after kill"
+            ) from wait_exc
+        return _normalize_timeout_streams(process, exc.output, exc.stderr)
+
+
+def _communicate_ready_cli(
+    process: subprocess.Popen[Any],
+    command: list[str],
+    *,
+    input_value: str | bytes | None,
+    timeout: float,
+    binary: bool,
+    diagnostic: Path,
+) -> tuple[Any, Any]:
+    try:
+        return process.communicate(input=input_value, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        stdout, stderr = _kill_cli_process_tree(process)
+        diagnostic_text = (
+            diagnostic.read_text(encoding="utf-8", errors="replace")
+            if diagnostic.exists()
+            else "no child traceback was produced"
+        )
+        combined_stderr = (
+            (stderr or b"") + b"\n" + diagnostic_text.encode("utf-8")
+            if binary
+            else (stderr or "") + "\n" + diagnostic_text
+        )
+        raise subprocess.TimeoutExpired(
+            command,
+            timeout,
+            output=stdout,
+            stderr=combined_stderr,
+        ) from exc
+
+
+def _new_cli_diagnostic() -> Path:
+    diagnostic_fd, diagnostic_name = tempfile.mkstemp(
+        prefix="taut-cli-diagnostic-",
+        suffix=".log",
+    )
+    os.close(diagnostic_fd)
+    return Path(diagnostic_name)
+
+
+def _invoke_ready_cli(
+    args: tuple[object, ...],
+    *,
+    cwd: Path,
+    stdin: str | None = None,
+    stdin_bytes: bytes | None = None,
+    full_env: dict[str, str],
+    timeout: float = 20.0,
+    startup_timeout: float = 60.0,
+) -> tuple[int, str, str]:
+    command = [sys.executable, str(CLI_READY_FIXTURE), *map(str, args)]
+    token = uuid.uuid4().hex
+    diagnostic = _new_cli_diagnostic()
+    binary = stdin_bytes is not None
+    input_value: str | bytes | None = stdin_bytes if binary else stdin
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(1)
+            listener.settimeout(startup_timeout)
+            host, port = listener.getsockname()
+            full_env.update(
+                {
+                    CLI_READY_HOST_ENV: str(host),
+                    CLI_READY_PORT_ENV: str(port),
+                    CLI_READY_TOKEN_ENV: token,
+                    CLI_DIAGNOSTIC_ENV: str(diagnostic),
+                    CLI_CONNECT_TIMEOUT_ENV: str(startup_timeout),
+                    CLI_DIAGNOSTIC_DELAY_ENV: str(min(15.0, max(0.001, timeout / 4.0))),
+                }
+            )
+            popen_kwargs: dict[str, Any] = {
+                "cwd": cwd,
+                "env": full_env,
+                "stdin": subprocess.PIPE,
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.PIPE,
+                "text": not binary,
+            }
+            if not binary:
+                popen_kwargs.update(encoding="utf-8", errors="replace")
+            process = subprocess.Popen(command, **popen_kwargs)
+            startup_started = time.monotonic()
+            _await_cli_readiness(
+                process,
+                listener,
+                token=token,
+                startup_started=startup_started,
+                startup_timeout=startup_timeout,
+            )
+
+        stdout, stderr = _communicate_ready_cli(
+            process,
+            command,
+            input_value=input_value,
+            timeout=timeout,
+            binary=binary,
+            diagnostic=diagnostic,
+        )
+
+        if binary:
+            return (
+                process.returncode,
+                stdout.decode("utf-8", errors="replace").strip(),
+                stderr.decode("utf-8", errors="replace").strip(),
+            )
+        return process.returncode, stdout.strip(), stderr.strip()
+    finally:
+        diagnostic.unlink(missing_ok=True)
+
+
 def run_cli(
     *args: object,
     cwd: Path,
@@ -452,7 +687,13 @@ def run_cli(
     stdin_bytes: bytes | None = None,
     env: dict[str, str] | None = None,
     timeout: float = 20.0,
+    startup_timeout: float = 60.0,
 ) -> tuple[int, str, str]:
+    """Run the real CLI with separate startup and post-readiness deadlines.
+
+    Startup failures retain their socket/``TimeoutError`` class; only a command
+    that acknowledged readiness can raise ``subprocess.TimeoutExpired``.
+    """
     if stdin is not None and stdin_bytes is not None:
         raise ValueError("stdin and stdin_bytes are mutually exclusive")
     full_env = build_cli_env(env)
@@ -467,32 +708,14 @@ def run_cli(
         ) or postgres_schema_for_worker("master")
         config_root = cwd.resolve()
         ensure_taut_project_config(config_root, dsn=dsn, schema=schema)
-    cmd = [sys.executable, "-m", "taut", *map(str, args)]
-    kwargs: dict[str, Any] = {
-        "cwd": cwd,
-        "env": full_env,
-        "capture_output": True,
-        "timeout": timeout,
-    }
-    if stdin_bytes is not None:
-        # Binary-stdin branch: carries bytes the text-mode pipe cannot
-        # (e.g. invalid UTF-8 probes). Output is decoded back to str here
-        # so the (int, str, str) return contract is identical.
-        kwargs["input"] = stdin_bytes
-        completed = subprocess.run(cmd, text=False, check=False, **kwargs)
-        return (
-            completed.returncode,
-            completed.stdout.decode("utf-8", errors="replace").strip(),
-            completed.stderr.decode("utf-8", errors="replace").strip(),
-        )
-    kwargs.update(text=True, encoding="utf-8", errors="replace")
-    if stdin is not None:
-        kwargs["input"] = stdin
-    completed = subprocess.run(cmd, check=False, **kwargs)
-    return (
-        completed.returncode,
-        completed.stdout.strip(),
-        completed.stderr.strip(),
+    return _invoke_ready_cli(
+        args,
+        cwd=cwd,
+        stdin=stdin,
+        stdin_bytes=stdin_bytes,
+        full_env=full_env,
+        timeout=timeout,
+        startup_timeout=startup_timeout,
     )
 
 

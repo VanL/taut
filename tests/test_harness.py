@@ -353,12 +353,12 @@ def test_run_cli_writes_pg_config_with_worker_schema(
     )
     monkeypatch.setenv("SIMPLEBROKER_PG_TEST_SCHEMA", "taut_pytest_gw0")
 
-    def fake_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        assert cmd[:3] == [harness.sys.executable, "-m", "taut"]
+    def fake_invoke(args: tuple[object, ...], **kwargs: Any) -> tuple[int, str, str]:
+        assert args == ("init",)
         assert kwargs["cwd"] == tmp_path
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+        return 0, "", ""
 
-    monkeypatch.setattr(harness.subprocess, "run", fake_run)
+    monkeypatch.setattr(harness, "_invoke_ready_cli", fake_invoke)
 
     rc, out, err = harness.run_cli("init", cwd=tmp_path)
 
@@ -382,6 +382,32 @@ def test_run_cli_stdin_bytes_branch_returns_decoded_str(tmp_path: Path) -> None:
     assert rc == 0
     assert isinstance(out, str) and isinstance(err, str)
     assert out.startswith("taut ")
+
+
+@pytest.mark.parametrize("args", [("--help",), ("--definitely-invalid",)])
+def test_run_cli_wrapper_preserves_python_module_contract(
+    tmp_path: Path,
+    args: tuple[str, ...],
+) -> None:
+    direct = subprocess.run(
+        [harness.sys.executable, "-m", "taut", *args],
+        cwd=tmp_path,
+        env=harness.build_cli_env(),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=20,
+        check=False,
+    )
+
+    wrapped = harness.run_cli(*args, cwd=tmp_path)
+
+    assert wrapped == (
+        direct.returncode,
+        direct.stdout.strip(),
+        direct.stderr.strip(),
+    )
 
 
 def test_shared_contract_filenames_require_shared_marker() -> None:

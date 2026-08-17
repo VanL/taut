@@ -13,7 +13,10 @@ def main() -> int:
     output = Path(sys.argv[1])
     if sys.argv[2:] == ["sleep"]:
         time.sleep(30)
-    payload = sys.stdin.read()
+    # The action transport is a UTF-8 byte protocol.  Decode the pipe by that
+    # contract instead of inheriting the child process's locale-dependent text
+    # encoding (notably a Windows ANSI code page).
+    payload = sys.stdin.buffer.read().decode("utf-8")
     output.write_text(payload, encoding="utf-8")
     output.with_suffix(".marker").write_text(
         os.environ.get("TAUT_DEBUG_ACTION_ACTIVE", ""),

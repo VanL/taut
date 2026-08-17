@@ -243,6 +243,22 @@ installed artifacts across every Python version on Ubuntu and one
 representative for each other supported OS, reducing ten identical-style wheel
 lanes to six without dropping either version or OS coverage.
 
+Real CLI subprocess assertions use a test-only loopback readiness channel in
+`tests/conftest.py::run_cli`. The child acknowledges process startup, imports
+the real `taut.cli.main`, arms a separate traceback file, and only then
+acknowledges application readiness. The unchanged 20-second command deadline
+starts at that second event; interpreter/import startup has its own bound. A
+post-readiness timeout remains fatal, kills and reaps the child, and includes
+the armed traceback. Cleanup kills and verifies the whole descendant tree
+before bounded output collection, so a grandchild cannot keep inherited pipes
+open indefinitely. The traceback delay is derived from the exact behavior
+deadline rather than a fixed default. The control socket closes before command execution and
+never shares stdout, stderr, stdin, argv, storage, or coverage ownership with
+the application. A direct `python -m taut` parity probe and the per-version
+Windows workflow smoke retain the module-entry contract. Loopback TCP is an
+explicit test-runner assumption; inability to bind or connect is a fatal
+harness failure, not a skipped test or fallback to elapsed-time polling.
+
 On canonical branch pushes, the Test packaging job builds core, Summon, PG,
 MCP, and TUI once. It passes the explicit core/Summon wheel paths to the paired checker,
 installs PG with the exact core wheel in one clean venv, and installs MCP with

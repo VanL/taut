@@ -695,6 +695,9 @@ def test_action_sink_receives_json_and_replaces_local_storage(
     fixture = Path(__file__).parent / "fixtures" / "debug_action.py"
     TautClient.init(db_path=db_path)
     TautClient.set_debug_capture(True, db_path=db_path)
+    # Force the Windows failure mode on every platform. The action transport is
+    # UTF-8 even when a Python action inherits a non-UTF-8 text-codec default.
+    monkeypatch.setenv("PYTHONIOENCODING", "cp1252")
     monkeypatch.setenv(
         "TAUT_DEBUG_ACTION",
         " ".join(

@@ -38,6 +38,10 @@
   failure for malformed state, unexpected files, or digest mismatches. Release
   settings preflights now also retry only bounded GitHub 502/503/504 responses
   while keeping every policy and authentication mismatch fatal.
+- Made real CLI subprocess tests separate interpreter/import readiness from the
+  unchanged command deadline, with bounded descendant-tree cleanup and an
+  out-of-band traceback for genuine post-readiness stalls. Debug-action tests
+  now decode the UTF-8 stdin protocol independently of the Windows locale.
 
 ## 0.9.0 - 2026-08-14
 

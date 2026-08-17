@@ -51,6 +51,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 
 | Plan | Status | Exemplar | Note |
 |------|--------|----------|------|
+| `2026-08-17-cli-subprocess-readiness-plan.md` | active | no | Class 5 correction separating real CLI child readiness from the unchanged application deadline after an ambiguous hosted Windows release-gate timeout. |
 | `2026-08-14-debug-failure-capture-plan.md` | completed | no | Class 5 hardened implementation of opt-in outer-boundary exception capture, operational metadata, local SimpleBroker retention with best-effort dedup, action stdin delivery, and cross-surface containment without changing the original failure; full SQLite/PostgreSQL and extension gates plus independent review passed before owner-authorized close-out. |
 | `2026-08-14-cross-surface-command-capability-plan.md` | status-review | no | Owner-deferred after Grok and Claude Fable 5 blocked command paths as the universal semantic seam; reconsider only when the first-party root registry reaches 25 verbs (five beyond the checked 20-verb baseline). `status-review` is the closed-vocabulary quarantine for this deferred plan. |
 | `2026-08-17-tui-command-mirror-plan.md` | active | no | Owner-authorized implementation began 2026-08-17 after independent review; Class 5 plan for a textual TUI mirror of the Taut command language, with native dispatch, grouped action browsing, and typed `taut-summon` extension support. |

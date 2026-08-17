@@ -13,16 +13,180 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 
+import psutil
 import pytest
 from simplebroker import Queue
 
 from taut._constants import META_QUEUE_NAME
 from taut.state import SQLITE_SQL_DIALECT, SqlSidecarTautState
+from tests import conftest as harness
 from tests.conftest import run_cli
 
 pytestmark = [pytest.mark.sqlite_only, pytest.mark.usefixtures("clean_env")]
+
+
+def _pin_cli_diagnostic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Path:
+    diagnostic = tmp_path / "cli-diagnostic.log"
+
+    def create() -> Path:
+        diagnostic.touch()
+        return diagnostic
+
+    monkeypatch.setattr(harness, "_new_cli_diagnostic", create)
+    return diagnostic
+
+
+def test_run_cli_starts_behavior_deadline_after_real_import_readiness(
+    tmp_path: Path,
+) -> None:
+    rc, out, err = run_cli(
+        "--version",
+        cwd=tmp_path,
+        env={"TAUT_TEST_CLI_STARTUP_DELAY": "6"},
+        startup_timeout=60,
+        timeout=5,
+    )
+
+    assert rc == 0
+    assert out.startswith("taut ")
+    assert err == ""
+
+
+def test_run_cli_fails_immediately_when_child_exits_before_readiness(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    diagnostic = _pin_cli_diagnostic(tmp_path, monkeypatch)
+
+    with pytest.raises(
+        RuntimeError,
+        match="child exited before application readiness",
+    ):
+        run_cli(
+            "--version",
+            cwd=tmp_path,
+            env={"TAUT_TEST_CLI_EXIT_BEFORE_READY": "1"},
+            startup_timeout=2,
+        )
+
+    assert not diagnostic.exists()
+
+
+def test_run_cli_startup_watchdog_is_separate_and_fatal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in ("COVERAGE_PROCESS_START", "COVERAGE_FILE", "COVERAGE_RCFILE"):
+        monkeypatch.delenv(name, raising=False)
+    diagnostic = _pin_cli_diagnostic(tmp_path, monkeypatch)
+
+    with pytest.raises(TimeoutError):
+        run_cli(
+            "--version",
+            cwd=tmp_path,
+            env={"TAUT_TEST_CLI_STARTUP_DELAY": "2"},
+            startup_timeout=0.1,
+            timeout=2,
+        )
+
+    assert not diagnostic.exists()
+
+
+def test_run_cli_post_readiness_timeout_reaps_child_and_reports_stack(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in ("COVERAGE_PROCESS_START", "COVERAGE_FILE", "COVERAGE_RCFILE"):
+        monkeypatch.delenv(name, raising=False)
+    diagnostic = _pin_cli_diagnostic(tmp_path, monkeypatch)
+
+    with pytest.raises(subprocess.TimeoutExpired) as raised:
+        run_cli(
+            "--version",
+            cwd=tmp_path,
+            env={
+                "TAUT_TEST_CLI_AFTER_READY_DELAY": "5",
+            },
+            startup_timeout=30,
+            timeout=2,
+        )
+
+    assert "cli_ready.py" in str(raised.value.stderr)
+    assert not diagnostic.exists()
+
+
+def test_run_cli_timeout_kills_inherited_pipe_descendant(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in ("COVERAGE_PROCESS_START", "COVERAGE_FILE", "COVERAGE_RCFILE"):
+        monkeypatch.delenv(name, raising=False)
+    diagnostic = _pin_cli_diagnostic(tmp_path, monkeypatch)
+    descendant_pid_path = tmp_path / "descendant.pid"
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        run_cli(
+            "--version",
+            cwd=tmp_path,
+            env={
+                "TAUT_TEST_CLI_AFTER_READY_DELAY": "2",
+                "TAUT_TEST_CLI_DESCENDANT_PID_PATH": str(descendant_pid_path),
+            },
+            startup_timeout=30,
+            timeout=0.3,
+        )
+
+    descendant_pid = int(descendant_pid_path.read_text(encoding="ascii"))
+    assert not psutil.pid_exists(descendant_pid)
+    assert not diagnostic.exists()
+
+
+def test_run_cli_completed_after_diagnostic_dump_keeps_stderr_clean(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    diagnostic = _pin_cli_diagnostic(tmp_path, monkeypatch)
+
+    rc, out, err = run_cli(
+        "--version",
+        cwd=tmp_path,
+        env={"TAUT_TEST_CLI_AFTER_READY_DELAY": "2"},
+        startup_timeout=30,
+        timeout=4,
+    )
+
+    assert rc == 0
+    assert out.startswith("taut ")
+    assert err == ""
+    assert not diagnostic.exists()
+
+
+@pytest.mark.parametrize("failure", ["listener", "spawn"])
+def test_run_cli_cleans_diagnostic_when_setup_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    diagnostic = _pin_cli_diagnostic(tmp_path, monkeypatch)
+
+    def fail(*_args: object, **_kwargs: object) -> None:
+        raise OSError(f"synthetic {failure} failure")
+
+    if failure == "listener":
+        monkeypatch.setattr(harness.socket, "socket", fail)
+    else:
+        monkeypatch.setattr(harness.subprocess, "Popen", fail)
+
+    with pytest.raises(OSError, match=f"synthetic {failure} failure"):
+        run_cli("--version", cwd=tmp_path)
+
+    assert not diagnostic.exists()
 
 
 def _assert_clean_failure(rc: int, out: str, err: str, *, expected_rc: int) -> None:
