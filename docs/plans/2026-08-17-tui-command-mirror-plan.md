@@ -958,5 +958,6 @@ matrix and should land separately.
 
 The plan was approved by the owner on 2026-08-17. The promotion SHA is
 `9888b38ceb4de509fad153c1b2970d4ca2832bb3`. The implementation slice is
-complete and committed, with the CLI-adapter migration residual recorded in
-the deviation log and verification appendix below.
+complete in commit `ba3088c1bb39737d48dee1fe71dd532459e5bba7`, with the
+CLI-adapter migration residual recorded in the deviation log and verification
+appendix above.
