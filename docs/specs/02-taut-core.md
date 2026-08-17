@@ -1673,6 +1673,32 @@ Nested parsing remains owned by the selected top-level adapter. Version 1 has
 no aliases, override priority, cross-package nested namespace, dependency
 graph, or hot reload.
 
+### [TAUT-8.7] Shared command syntax for surface mirrors
+
+Taut command syntax is a typed, surface-neutral contract adjacent to the
+version-1 `CommandSpec` manifest. It describes canonical command paths,
+nested subcommands, positional values, options, value kinds, quoting,
+literal `--` separator behavior, and deterministic completion metadata. It
+does not describe a surface's renderer, form layout, gesture, lifecycle, or
+output transport.
+
+The CLI parser and an approved textual command mirror consume this contract.
+A mirror may dispatch to a surface-native typed owner, but it must not invoke
+the `taut` executable, call the root CLI dispatcher, or treat the syntax as a
+shell command. The existing version-1 command manifest remains unchanged;
+syntax providers are separately versioned and discovered through the typed
+command-syntax provider interface.
+
+Core owns syntax for every built-in command. An extension may publish syntax
+for its own command through the provider interface. Syntax discovery does not
+grant any surface permission to execute the command or reflect its
+implementation target. A surface must register a native binding before it
+executes a mirrored command. A rich host may recognize an extension command
+without executing it when no native binding has been installed for that host.
+The root syntax wrapper owns pre-verb global options, post-verb declarations,
+root actions such as `--help` and `--version`, and the released precedence
+rules. These are part of the shared grammar rather than ad hoc surface logic.
+
 Ordinary command parsers use argparse's ordered parsing policy. An adapter
 whose top-level grammar has variable-length positionals on both sides of local
 options may call `CommandArgumentParser.enable_intermixed_args()` during parser
@@ -2749,6 +2775,9 @@ test.
 
 ## Related Plans
 
+- `docs/plans/2026-08-17-tui-command-mirror-plan.md` — promotes the shared
+  typed command syntax contract for the TUI textual mirror and installed
+  extension syntax providers without changing the version-1 command manifest.
 - `docs/plans/2026-08-14-debug-failure-capture-plan.md` defines the opt-in
   operational setting, local and action sinks, containment points, persistence
   exclusions, sensitive-data lifecycle, and cross-surface proof.

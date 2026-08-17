@@ -60,6 +60,12 @@ conversation handles remain opaque model values even when diagnostic views can
 copy them. Sub-thread origin parsing, when needed for an inline affordance,
 uses core's public addressing parser rather than TUI string rules.
 
+The TUI may consume the public typed command-syntax contract for its textual
+mirror. It must not invoke the CLI executable or root CLI dispatcher, inspect
+command implementation targets, run command adapters for their CLI output, or
+generate native forms from parser metadata. Native command bindings remain
+TUI-owned adapters over public typed interfaces.
+
 ### [TUI-2.2] Native action registry
 
 The TUI has one internal registry of semantic actions. Keyboard, conventional
@@ -77,6 +83,11 @@ visibility remains presentation policy and cannot bypass central dispatch.
 Summon package availability remains capability filtering rather than a context
 requirement. Handler checks may defend against stale state or domain races,
 but they must not define a broader applicability policy.
+
+A first-party extension may publish a typed command-syntax provider and a
+separate TUI-owned native binding for its command paths. Syntax discovery alone
+does not create a handler, form, or permission to execute the command. The TUI
+does not provide a generic extension widget or rich-view protocol.
 
 The registry's route set is authoritative composition data. A route names the
 production boundary that emits an action:
@@ -371,30 +382,35 @@ reply surface changes no cursor by itself.
 
 ## 7. Native Command and Form Behavior [TUI-7]
 
-### [TUI-7.1] Command palette
+### [TUI-7.1] Native command surfaces
 
-`COMMAND` mode is a fuzzy/searchable palette over currently applicable native
-actions. Results show a human label, target or scope where relevant, and the
-conventional and vi-like gesture when one exists. Disabled actions state the
-reason. Selecting an action either performs it or opens its native form.
+`COMMAND` mode contains a grouped native-action browser and a textual command
+line. The browser lists currently available native actions by stable
+human-facing groups, shows disabled reasons, and has visible selection and
+activation instructions. The command line is opened with `:` and mirrors the
+Taut command language after the `taut` executable name. It accepts command
+paths, nested paths, positionals, options, quoted values, and literal `--`
+according to the shared syntax contract. `:` is not part of the command.
 
-Context requirements are evaluated in declared order. The closed visual facts
-are: selected navigation target, active conversation, active channel, selected
-current message, selected search result, and nonblank draft for the active
-conversation. `message.send` requires an active conversation followed by a
-nonblank draft; channel-context actions require an active channel. The first
-unmet requirement supplies the disabled reason. Layout visibility and
-mode-specific binding eligibility are presentation concerns and do not
-redefine semantic applicability.
+Enter executes a complete command only through a registered native TUI
+binding. The binding may invoke an existing action, open a deliberately chosen
+native form, or schedule a typed public operation and render its typed result
+in a native inspector. It never starts the CLI, passes input to a subprocess,
+forwards CLI output, or generates an argparse form. A known command without a
+native binding remains typeable and reports an explicit CLI-only result.
+Escape cancels without mutation; pending execution is single-flight; parse and
+domain errors remain inline and actionable.
 
-Palette entries are exactly the currently available native action specs whose
-declared routes include `PALETTE`; applicability controls whether such an entry
-is enabled, not whether an action from another route is inserted.
-`command.open` is intentionally absent from the palette it opens and remains
-reachable through its direct keyboard and mouse routes.
+The mirror recognizes the released global option spellings. `--help` and
+command help render native syntax; `--version` renders a native version
+receipt; `--db` must resolve to the active session target; `--as` and `--token`
+report that TUI identity is fixed for the session; and `--json`, `-t`,
+`--timestamps`, and `-q` report that CLI output modes are unavailable in the
+native result surface. These options are not silently ignored.
 
-The palette is not a shell, accepts no arbitrary argv, does not interpolate
-text into a command line, and never invokes `taut` as a subprocess.
+The CLI's omitted-text and `-` stdin forms for `say` and `reply` are
+syntax-recognized but CLI-only in the TUI. The TUI has no process-stdin command
+source; users enter explicit text in the command line or composer.
 
 ### [TUI-7.2] Forms and validation
 
@@ -559,6 +575,12 @@ reusing the CLI parser; the selected provider populates `provider_flag`.
 Status calls the controller and displays correlated live status. Dismiss calls
 confirmed `stop()`. Chat member presence and live
 driver status are separate labelled observations.
+
+When `taut-summon` is available, the TUI registers native textual mirror
+bindings for `summon` and `dismiss` through the public controller boundary.
+`:summon grok` is a typed request, not a CLI invocation. The existing
+foreground ownership, readiness, terminal lease, logging, and shutdown rules
+remain authoritative.
 
 ### [TUI-11.2] Driver ownership and shutdown
 
@@ -761,6 +783,9 @@ Version 1 does not include:
 
 ## Related Plans
 
+- `docs/plans/2026-08-17-tui-command-mirror-plan.md` — adds the shared typed
+  command mirror, grouped native-action browser, textual `:` command line,
+  and TUI-owned native bindings for core and installed extensions.
 - `docs/plans/2026-08-14-debug-failure-capture-plan.md` — uses core dispatch for
   exceptions raised from TUI launch and one post-run bridge for fatal callback
   exceptions that Textual retains instead of raising, without creating

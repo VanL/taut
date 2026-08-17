@@ -1304,6 +1304,14 @@ define process supervision, terminal-release handshake, log routing, exit
 policy, and rollback in its own spec; Taut's first such host is governed by
 `docs/specs/10-taut-tui.md` [TUI-11] rather than by guessed Summon behavior.
 
+A rich host may publish a typed command-syntax provider for the extension's
+CLI command paths and a separate native host binding. The provider may parse
+`summon` and `dismiss` mirror input into typed request values, but it never
+invokes the CLI adapter or owns the host terminal. A TUI host continues to
+call the public controller and to supply the [SUM-13] interaction adapter.
+Provider absence, malformed input, unavailable provider, and terminal-lease
+failure remain distinct user-visible outcomes.
+
 ### Foreground readiness for rich hosts [SUM-13.1]
 
 `run_foreground` accepts an optional keyword-only
@@ -1403,6 +1411,9 @@ thread do not satisfy this boundary by themselves.
 
 ## Related Plans
 
+- `docs/plans/2026-08-17-tui-command-mirror-plan.md` — adds typed Summon
+  syntax discovery and a separate TUI-native binding over the public
+  controller without reusing the CLI adapter or terminal owner.
 - `docs/plans/2026-08-14-debug-failure-capture-plan.md` — assigns one debug
   containment owner to each Summon console path without changing driver
   supervision or cleanup priority.
