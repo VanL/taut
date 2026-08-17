@@ -94,8 +94,9 @@ worktree at plan start. The governing files at that baseline are:
 - `docs/specs/10-taut-tui.md`
 
 No code may cite the new requirement identifiers until the spec-promotion
-slice has landed. The promotion baseline is pending and must be recorded here
-after promotion.
+slice has landed. The promotion baseline is commit
+`9888b38ceb4de509fad153c1b2970d4ca2832bb3` (2026-08-17). Runtime code may
+now cite [TAUT-8.7], [TUI-7.1], and the related extension requirements.
 
 ## Current state and key files
 
@@ -156,6 +157,17 @@ Record answers in the execution log before editing code:
    Expected answer: `TuiSummonOperations` must build and run the public
    `SummonController` operation; invoking the root CLI dispatcher or
    `ShellSummonInteraction` is forbidden.
+
+### Execution log
+
+- 2026-08-17: The `CommandSpec` insufficiency was confirmed by inspection of
+  `taut/commands/_protocol.py`; nested grammar is still distributed across
+  adapter `configure_parser()` methods. The promoted [TAUT-8.7] contract now
+  gives those forms one surface-neutral syntax owner.
+- 2026-08-17: The TUI Summon owner was confirmed as
+  `extensions/taut_tui/taut_tui/summon.py`, which calls the public
+  `SummonController` boundary. CLI dispatch and `ShellSummonInteraction`
+  remain forbidden paths.
 
 ## Product and interaction contract
 
