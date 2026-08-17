@@ -400,10 +400,27 @@ reply surface changes no cursor by itself.
 `COMMAND` mode contains a grouped native-action browser and a textual command
 line. The browser lists currently available native actions by stable
 human-facing groups, shows disabled reasons, and has visible selection and
-activation instructions. The command line is opened with `:` and mirrors the
-Taut command language after the `taut` executable name. It accepts command
-paths, nested paths, positionals, options, quoted values, and literal `--`
-according to the shared syntax contract. `:` is not part of the command.
+activation instructions. The command line is opened with `:` in `NORMAL` and
+mirrors the Taut command language after the `taut` executable name. In
+`COMPOSE`, a draft whose first character is `:` transitions to the command
+line when the token after the colon exactly matches a root command in the
+merged shared syntax and is followed by whitespace or Enter. Matching never
+occurs against a still-growing prefix, so a shorter command such as `who` does
+not capture `whoami`. The recognized command text prepopulates the command
+field and subsequent input supplies its arguments. Unknown leading-colon
+tokens and colons after the first character remain message text. The command
+line accepts command paths, nested paths, positionals, options, quoted values,
+and literal `--` according to the shared syntax contract. `:` is an entry
+affordance and is not part of the command. Cancel preserves an originating
+composer draft; successful command submission clears only that unchanged
+originating draft.
+
+Command completions are interactive, not display-only. Tab, keyboard
+selection, or mouse activation inserts the selected command path followed by
+an argument-ready space, keeps the command line open, and focuses the command
+field. Selecting an action from the separate grouped native-action browser
+continues through its typed action binding and opens the existing native form
+when that action requires arguments.
 
 Enter executes a complete command only through a registered native TUI
 binding. The binding may invoke an existing action, open a deliberately chosen
@@ -466,9 +483,12 @@ the portable newline path, and paste is the portable literal-tab path.
 Tab and Shift-Tab always move among focusable visible surfaces or form fields;
 only the explicit Ctrl-Tab compose gesture inserts a tab.
 Bindings that would insert text are disabled outside `NORMAL`; for example,
-typing `q`, `i`, `:`, or `/` in a text field edits text rather than invoking a
-global action. Escape has priority for leaving `COMPOSE`, `COMMAND`, `SEARCH`,
-or a modal.
+typing `q`, `i`, or `/` in a text field edits text rather than invoking a
+global action. The narrow exception is a composer draft beginning at offset
+zero with `:` plus a whitespace- or Enter-delimited exact known root command,
+which promotes that prefix to the command line under [TUI-7.1]. Unknown and
+still-growing leading-colon tokens and all other colons remain text. Escape
+has priority for leaving `COMPOSE`, `COMMAND`, `SEARCH`, or a modal.
 
 Inbox is not bound to bare `i`; it is available from navigation, the command
 palette, and the optional `g i` normal-mode sequence. Mode and focus are always
@@ -751,7 +771,11 @@ The following enumerable matrices have firing tests:
   palette enabled/reason state and central dispatch agreeing for the same
   visual facts; and each existing mouse action control unable to bypass a
   disabled result;
-- every gesture/equivalent row in [TUI-8.1] and mouse parity in [TUI-8.2];
+- every gesture/equivalent row in [TUI-8.1] and mouse parity in [TUI-8.2],
+  including leading known-command composer promotion versus unknown-colon
+  message retention; originating-draft preservation on command cancel and
+  exact-draft clearing on submission; and command completion through Tab,
+  keyboard selection, and mouse activation retaining editable argument focus;
 - multiline compose typing and paste; Enter send; Ctrl-Enter, Ctrl-J, and
   Ctrl-Tab insertion; Tab/Shift-Tab focus movement; exact send/failure/resize/
   target-switch draft preservation; actual LF versus literal `\n` and actual
@@ -819,6 +843,9 @@ Version 1 does not include:
 
 ## Related Plans
 
+- `docs/plans/2026-08-17-tui-command-entry-correction-plan.md` — promotes
+  leading known-command composer drafts into command input and makes command
+  completion selection argument-ready through keyboard and mouse routes.
 - `docs/plans/2026-08-17-tui-multiline-whitespace-plan.md` — revises the
   composer, modified-key, transcript spacing, and structural whitespace
   contracts with exact-content and scroll-height proof.

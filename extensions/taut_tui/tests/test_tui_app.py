@@ -507,6 +507,147 @@ def test_mouse_command_affordance_dispatches_the_native_palette() -> None:
     asyncio.run(exercise())
 
 
+def test_known_command_prefix_in_composer_promotes_to_argument_input() -> None:
+    from taut_tui.app import TautApp
+    from taut_tui.screens import CommandLineScreen
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 34)) as pilot:
+            composer = app.query_one("#composer", TautComposer)
+            composer.focus()
+            await _pause_until(pilot, lambda: composer.has_focus)
+            await pilot.press(*":summon")
+            assert composer.text == ":summon"
+            assert app.screen is app._base_screen
+
+            await pilot.press("space")
+
+            assert isinstance(app.screen, CommandLineScreen)
+            command = app.screen.query_one("#command-line", Input)
+            assert command.value == "summon "
+            assert command.has_focus
+            assert composer.text == ":summon "
+
+            await pilot.press(*"grok")
+            assert command.value == "summon grok"
+
+    asyncio.run(exercise())
+
+
+def test_enter_delimits_full_command_without_capturing_shorter_root() -> None:
+    from taut_tui.app import TautApp
+    from taut_tui.screens import CommandLineScreen
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 34)) as pilot:
+            composer = app.query_one("#composer", TautComposer)
+            composer.focus()
+            await _pause_until(pilot, lambda: composer.has_focus)
+
+            await pilot.press(*":whoami")
+            assert composer.text == ":whoami"
+            assert app.screen is app._base_screen
+
+            await pilot.press("enter")
+
+            assert isinstance(app.screen, CommandLineScreen)
+            command = app.screen.query_one("#command-line", Input)
+            assert command.value == "whoami"
+            assert command.has_focus
+            assert composer.text == ":whoami"
+
+    asyncio.run(exercise())
+
+
+def test_unknown_colon_text_stays_message_and_command_cancel_preserves_draft() -> None:
+    from taut_tui.app import TautApp
+    from taut_tui.screens import CommandLineScreen
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 34)) as pilot:
+            composer = app.query_one("#composer", TautComposer)
+            composer.focus()
+            await _pause_until(pilot, lambda: composer.has_focus)
+
+            await pilot.press(*":summonship", "space")
+            assert app.screen is app._base_screen
+            assert composer.text == ":summonship "
+
+            composer.text = ""
+            await pilot.press(*":summon", "space")
+            assert isinstance(app.screen, CommandLineScreen)
+            await pilot.press("escape")
+            await pilot.pause()
+
+            assert app.screen is app._base_screen
+            assert composer.text == ":summon "
+            assert composer.has_focus
+            assert app.visual_state.mode is InteractionMode.COMPOSE
+            draft = app.visual_state.draft_for("__unselected__")
+            assert draft is not None and draft.text == ":summon "
+
+            await pilot.press("ctrl+q")
+            await pilot.pause()
+            assert app.is_running
+            assert app.visual_state.mode is InteractionMode.COMPOSE
+
+    asyncio.run(exercise())
+
+
+def test_successful_promoted_command_clears_unchanged_originating_draft() -> None:
+    from taut_tui.app import TautApp
+    from taut_tui.screens import CommandLineScreen
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 34)) as pilot:
+            composer = app.query_one("#composer", TautComposer)
+            composer.focus()
+            await _pause_until(pilot, lambda: composer.has_focus)
+
+            await pilot.press(*":whoami", "enter")
+            assert isinstance(app.screen, CommandLineScreen)
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert app.screen is app._base_screen
+            assert composer.text == ""
+            draft = app.visual_state.draft_for("__unselected__")
+            assert draft is not None and draft.text == ""
+
+    asyncio.run(exercise())
+
+
+def test_promoted_command_does_not_clear_a_newer_originating_draft() -> None:
+    from taut_tui.app import TautApp
+    from taut_tui.screens import CommandLineScreen
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 34)) as pilot:
+            composer = app.query_one("#composer", TautComposer)
+            composer.focus()
+            await _pause_until(pilot, lambda: composer.has_focus)
+
+            await pilot.press(*":whoami", "enter")
+            assert isinstance(app.screen, CommandLineScreen)
+
+            composer.text = "newer draft"
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert app.screen is app._base_screen
+            assert composer.text == "newer draft"
+            draft = app.visual_state.draft_for("__unselected__")
+            assert draft is not None and draft.text == "newer draft"
+
+    asyncio.run(exercise())
+
+
 def test_command_palette_excludes_command_open_action() -> None:
     from taut_tui.actions import (
         ActionId,
@@ -535,6 +676,37 @@ def test_command_palette_excludes_command_open_action() -> None:
             }
             assert visible_ids == expected_ids
             assert ActionId.COMMAND_OPEN.value not in visible_ids
+
+    asyncio.run(exercise())
+
+
+def test_command_palette_mouse_activation_opens_summon_argument_form() -> None:
+    from taut_tui.app import TautApp
+    from taut_tui.screens import SummonStartScreen
+    from taut_tui.widgets import TautOptionList
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 34)) as pilot:
+            await pilot.press("ctrl+p")
+            query = app.screen.query_one("#palette-query", Input)
+            await _pause_until(pilot, lambda: query.has_focus)
+            await pilot.press(*"Start summoned member")
+            await pilot.pause()
+
+            results = app.screen.query_one("#palette-results", TautOptionList)
+            assert results.option_count == 1
+            assert await pilot.click(
+                "#palette-results",
+                offset=(1, 0),
+                times=2,
+            )
+            await _pause_until(pilot, lambda: isinstance(app.screen, SummonStartScreen))
+
+            name = app.screen.query_one("#summon-name", Input)
+            assert name.has_focus
+            await pilot.press(*"grok")
+            assert name.value == "grok"
 
     asyncio.run(exercise())
 

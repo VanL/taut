@@ -421,13 +421,34 @@ class CommandLineScreen(_TautModalScreen[CommandLineSubmission | None]):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Cancel", show=False),
         Binding("tab", "complete", "Complete", show=False),
+        Binding(
+            "down",
+            "select_next_completion",
+            "Next completion",
+            show=False,
+            priority=True,
+        ),
+        Binding(
+            "up",
+            "select_previous_completion",
+            "Previous completion",
+            show=False,
+            priority=True,
+        ),
     ]
 
-    def __init__(self, syntax: RootCommandSyntax) -> None:
+    def __init__(
+        self,
+        syntax: RootCommandSyntax,
+        *,
+        initial_text: str = "",
+    ) -> None:
         super().__init__()
         self._syntax = syntax
+        self._initial_text = initial_text
         self._dismissed = False
         self._completions: tuple[str, ...] = ()
+        self._completion_selection_active = False
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="taut-modal"):
@@ -439,23 +460,41 @@ class CommandLineScreen(_TautModalScreen[CommandLineSubmission | None]):
             with Horizontal(id="command-entry"):
                 yield Static(":", id="command-marker")
                 yield Input(
+                    value=self._initial_text,
                     placeholder="command [options]",
                     id="command-line",
+                    select_on_focus=False,
                 )
             yield Static(id="command-errors")
             yield OptionList(id="command-completions")
 
     def on_mount(self) -> None:
-        self.query_one("#command-line", Input).focus()
-        self._render_feedback("")
+        command_line = self.query_one("#command-line", Input)
+        command_line.focus()
+        command_line.cursor_position = len(command_line.value)
+        self._render_feedback(self._initial_text)
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == "command-line":
+            self._completion_selection_active = False
             self._render_feedback(event.value)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        if event.input.id == "command-line":
-            self._submit(event.value)
+        if event.input.id != "command-line":
+            return
+        if self._completion_selection_active:
+            options = self.query_one("#command-completions", OptionList)
+            index = options.highlighted
+            if index is not None and 0 <= index < len(self._completions):
+                self._apply_completion(self._completions[index])
+                return
+        self._submit(event.value)
+
+    def on_taut_option_list_activated(self, event: OptionList.Activated) -> None:
+        if event.option_list.id != "command-completions" or event.chain == 1:
+            return
+        if 0 <= event.option_index < len(self._completions):
+            self._apply_completion(self._completions[event.option_index])
 
     def action_cancel(self) -> None:
         self._dismiss_once(None)
@@ -463,8 +502,31 @@ class CommandLineScreen(_TautModalScreen[CommandLineSubmission | None]):
     def action_complete(self) -> None:
         if not self._completions:
             return
+        self._apply_completion(self._completions[0])
+
+    def action_select_next_completion(self) -> None:
+        self._select_completion(1)
+
+    def action_select_previous_completion(self) -> None:
+        self._select_completion(-1)
+
+    def _select_completion(self, direction: int) -> None:
+        if not self._completions:
+            return
+        options = self.query_one("#command-completions", OptionList)
+        highlighted = options.highlighted
+        if not self._completion_selection_active or highlighted is None:
+            highlighted = 0 if direction > 0 else len(self._completions) - 1
+        else:
+            highlighted = (highlighted + direction) % len(self._completions)
+        options.highlighted = highlighted
+        self._completion_selection_active = True
+
+    def _apply_completion(self, completion: str) -> None:
+        self._completion_selection_active = False
         query = self.query_one("#command-line", Input)
-        query.value = self._completions[0]
+        query.value = completion.rstrip() + " "
+        query.focus()
         query.cursor_position = len(query.value)
 
     def _submit(self, text: str) -> None:

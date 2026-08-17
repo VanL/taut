@@ -23,8 +23,11 @@ The interface provides transcript-first navigation, a multiline composer
 native typed actions and forms, vi-like and conventional keys, mouse controls,
 state-preserving terminal reflow, actor-free system reports, and supervised
 terminal handoff to `taut-summon` when that extension is available. Tab and
-Shift-Tab remain focus navigation. Workspace load remains a CLI-only
-maintenance action.
+Shift-Tab remain focus navigation. `:` opens the textual command input from
+normal mode; a composer draft beginning with a whitespace- or Enter-delimited
+known command such as `:summon grok` moves into that input instead of being
+sent as chat. Command completions retain focus for required arguments.
+Workspace load remains a CLI-only maintenance action.
 
 The governing behavior is in
 [`docs/specs/10-taut-tui.md`](../../docs/specs/10-taut-tui.md). Architecture

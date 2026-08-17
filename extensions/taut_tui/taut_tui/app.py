@@ -549,9 +549,22 @@ class TautApp(App[None]):
                 ),
             )
         )
+        command_text = self._composer_command_text(composer.text, submitted=False)
+        if command_text is not None:
+            self.action_open_command_line(
+                initial_text=command_text,
+                originating_draft=self._current_draft_identity(),
+            )
 
     def on_taut_composer_submitted(self, event: TautComposer.Submitted) -> None:
         if event.composer.id != "composer" or not event.value.strip():
+            return
+        command_text = self._composer_command_text(event.value, submitted=True)
+        if command_text is not None:
+            self.action_open_command_line(
+                initial_text=command_text,
+                originating_draft=self._current_draft_identity(),
+            )
             return
         self._dispatch_tui_action(
             ActionId.MESSAGE_SEND,
@@ -752,13 +765,51 @@ class TautApp(App[None]):
                 self._complete_palette,
             )
 
-    def action_open_command_line(self) -> None:
-        if self.visual_state.mode is InteractionMode.NORMAL:
+    def action_open_command_line(
+        self,
+        *,
+        initial_text: str = "",
+        originating_draft: tuple[str, int] | None = None,
+    ) -> None:
+        if self.visual_state.mode is InteractionMode.NORMAL or (
+            self.visual_state.mode is InteractionMode.COMPOSE and initial_text
+        ):
             self._set_mode(InteractionMode.COMMAND)
             self.push_screen(
-                CommandLineScreen(self._command_syntax()),
-                self._complete_command_line,
+                CommandLineScreen(
+                    self._command_syntax(),
+                    initial_text=initial_text,
+                ),
+                lambda submission: self._complete_command_line(
+                    submission,
+                    originating_draft=originating_draft,
+                ),
             )
+
+    def _current_draft_identity(self) -> tuple[str, int] | None:
+        target = self.visual_state.active_conversation or "__unselected__"
+        draft = self.visual_state.draft_for(target)
+        return None if draft is None else (target, draft.revision)
+
+    def _composer_command_text(self, text: str, *, submitted: bool) -> str | None:
+        if not text.startswith(":"):
+            return None
+        body = text[1:]
+        boundary = next(
+            (index for index, character in enumerate(body) if character.isspace()),
+            None,
+        )
+        if boundary is None:
+            if not submitted:
+                return None
+            root = body
+            command_text = body
+        else:
+            root = body[:boundary]
+            remainder = body[boundary:].lstrip()
+            command_text = root + " " + remainder
+        roots = {node.path[0] for node in command_nodes(self._command_syntax())}
+        return command_text if root in roots else None
 
     def action_open_search(self) -> None:
         if self.visual_state.mode is InteractionMode.NORMAL:
@@ -980,10 +1031,31 @@ class TautApp(App[None]):
     def _complete_command_line(
         self,
         submission: CommandLineSubmission | None,
+        *,
+        originating_draft: tuple[str, int] | None = None,
     ) -> None:
-        self._set_mode(InteractionMode.NORMAL)
+        return_mode = (
+            InteractionMode.COMPOSE
+            if originating_draft is not None
+            else InteractionMode.NORMAL
+        )
+        self._set_mode(return_mode)
         if submission is not None:
+            if originating_draft is not None:
+                self._clear_originating_command_draft(originating_draft)
             self._dispatch_command_invocation(submission.invocation)
+
+    def _clear_originating_command_draft(self, origin: tuple[str, int]) -> None:
+        target, revision = origin
+        draft = self.visual_state.draft_for(target)
+        if draft is None or draft.revision != revision:
+            return
+        self.visual_state = self.visual_state.with_draft(
+            DraftState(target=target, revision=revision + 1)
+        )
+        active_target = self.visual_state.active_conversation or "__unselected__"
+        if active_target == target:
+            self._query_base("#composer", TautComposer).text = ""
 
     def _dispatch_command_invocation(self, invocation: CommandInvocation) -> None:
         if invocation.action is not None:

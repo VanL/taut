@@ -231,6 +231,91 @@ def test_command_line_screen_accepts_summon_provider_syntax() -> None:
     assert results[0].invocation.values["name"] == "grok"
 
 
+def test_command_line_tab_completion_keeps_argument_input_active() -> None:
+    from taut_summon.command_syntax import provide_syntax
+
+    from taut.commands.syntax import core_command_syntax, merge_command_syntax
+    from taut_tui.screens import CommandLineScreen
+
+    class CommandHost(App[None]):
+        def on_mount(self) -> None:
+            syntax = merge_command_syntax(core_command_syntax(), (provide_syntax(),))
+            self.push_screen(CommandLineScreen(syntax))
+
+    async def exercise() -> None:
+        app = CommandHost()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.press(*"sum", "tab")
+            command = app.screen.query_one("#command-line", Input)
+            assert command.value == "summon "
+            assert command.has_focus
+            assert isinstance(app.screen, CommandLineScreen)
+
+            await pilot.press(*"grok")
+            assert command.value == "summon grok"
+
+    asyncio.run(exercise())
+
+
+def test_command_line_keyboard_selection_keeps_argument_input_active() -> None:
+    from taut_summon.command_syntax import provide_syntax
+
+    from taut.commands.syntax import core_command_syntax, merge_command_syntax
+    from taut_tui.screens import CommandLineScreen
+
+    class CommandHost(App[None]):
+        def on_mount(self) -> None:
+            syntax = merge_command_syntax(core_command_syntax(), (provide_syntax(),))
+            self.push_screen(CommandLineScreen(syntax))
+
+    async def exercise() -> None:
+        app = CommandHost()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.press(*"sum", "down", "enter")
+            command = app.screen.query_one("#command-line", Input)
+            assert command.value == "summon "
+            assert command.has_focus
+            assert isinstance(app.screen, CommandLineScreen)
+
+            await pilot.press(*"grok")
+            assert command.value == "summon grok"
+
+    asyncio.run(exercise())
+
+
+def test_command_line_mouse_activation_keeps_argument_input_active() -> None:
+    from taut_summon.command_syntax import provide_syntax
+
+    from taut.commands.syntax import core_command_syntax, merge_command_syntax
+    from taut_tui.screens import CommandLineScreen
+
+    class CommandHost(App[None]):
+        def on_mount(self) -> None:
+            syntax = merge_command_syntax(core_command_syntax(), (provide_syntax(),))
+            self.push_screen(CommandLineScreen(syntax))
+
+    async def exercise() -> None:
+        app = CommandHost()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.press(*"sum")
+            assert await pilot.click(
+                "#command-completions",
+                offset=(2, 1),
+                times=2,
+            )
+            await pilot.pause()
+
+            command = app.screen.query_one("#command-line", Input)
+            assert command.value == "summon "
+            assert command.has_focus
+            assert isinstance(app.screen, CommandLineScreen)
+
+            await pilot.press(*"grok")
+            assert command.value == "summon grok"
+
+    asyncio.run(exercise())
+
+
 def test_summon_start_screen_collects_every_typed_request_field() -> None:
     from taut_tui.screens import SummonStartScreen, SummonStartSubmission
 

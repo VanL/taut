@@ -163,6 +163,20 @@ complete · Esc close`. Ctrl-P and the Commands button open the grouped native
 action browser. `CommandPaletteScreen` derives labels and grouping from
 `ActionSpec`; group headings are presentation metadata, not command namespaces.
 
+The message composer also recognizes a delimited leading root command through
+that same merged syntax. It waits for whitespace or Enter before promotion so
+`who` cannot capture the still-growing `whoami`; unknown colon-prefixed text
+remains a message draft. `TautApp` records the originating target and draft
+revision, while `CommandLineScreen` owns the promoted transient buffer. Cancel
+therefore leaves the composer untouched and restores `COMPOSE`; a parsed
+submission clears only the still-matching draft before typed dispatch and also
+returns to the focused composer. Command lines opened from `NORMAL` return to
+`NORMAL` instead. The screen's completion rows
+are active input aids: Tab, explicit Up/Down selection plus Enter, and pointer
+activation insert the path with a trailing argument separator, refocus the
+field, and do not dismiss or dispatch. The separate native-action browser
+continues to open its typed forms for argument-bearing actions.
+
 `command_bindings.py` is the second half of the boundary. A syntax provider
 only makes a path recognizable. `TuiCommandBinding` records whether the TUI
 has an explicit native owner or must report `CLI-only in TUI`. Native command
@@ -317,6 +331,9 @@ it without eager Textual import.
 
 ## Related Plans
 
+- `docs/plans/2026-08-17-tui-command-entry-correction-plan.md` — leading
+  known-command composer promotion, exact originating-draft ownership, and
+  argument-ready keyboard/mouse completion activation.
 - `docs/plans/2026-08-17-tui-multiline-whitespace-plan.md` — multiline
   composer ownership, exact structural whitespace, and scroll-safe transcript
   spacing.
