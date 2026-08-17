@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## 0.9.2 - 2026-08-17
+
+- Added multiline TUI message composition. `Ctrl-Enter` or `Ctrl-J` inserts a
+  newline, `Ctrl-Tab` inserts a literal tab, and Enter sends the exact composed
+  text. Transcript rendering now preserves meaningful whitespace and renders
+  tabs at stable four-column stops.
+- Made leading-colon TUI command entry argument-ready. Exact known root
+  commands move into the editable command line, completion inserts the command
+  with its argument separator, and unknown leading-colon text remains an
+  ordinary chat message.
+- Clarified Summon's first provider attach with an explicit acknowledgement,
+  detach instructions, and foreground/chat-terminal handoff. The TUI uses its
+  native confirmation boundary before leasing the terminal and restores the
+  interface after detach while the summoned run continues.
+
 ## 0.9.1 - 2026-08-17
 
 - Added opt-in, workspace-scoped failure capture through
