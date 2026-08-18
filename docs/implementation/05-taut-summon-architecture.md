@@ -420,6 +420,21 @@ or cancellation declines before spawn. A rich host may render a native
 confirmation while its UI remains active, then pause rendering and grant other
 real tty fds only inside the later lease before restoring and redrawing.
 
+Cancellation keeps the platform's real line reader authoritative. POSIX waits
+for fd readiness before the existing `readline()`. Windows cannot use that
+path because `select()` accepts sockets, not console or anonymous-pipe handles.
+Instead, one method-owned non-daemon thread performs exactly one synchronous
+`readline()`. That reader opens and publishes a handle to its own exact native
+thread before the owner releases a start/abort barrier. The owner arbitrates
+line completion against cancellation under one lock and uses
+`CancelSynchronousIo` only after cancellation owns the terminal action.
+`ERROR_NOT_FOUND` is the read-entry race and retries while the same reader
+lives. An aborted read is normal only after a successful cancellation request
+for that reader; other read or Win32 errors remain fatal. Every path joins the
+reader before closing its native handle, and cleanup preserves the first
+failure. The 100 ms wait is an event-observation cadence, never a success
+condition or substitute for line/cancel evidence.
+
 The bridge is a single select loop over the human tty, PTY master, and a
 shutdown waker pipe. It is not two blocking copy threads, because STOP must be
 observable during attach. It never intercepts `ESC` sequences. In `finally`, it
@@ -854,6 +869,8 @@ from manufacturing invalid evidence.
 
 ## Related Plans
 
+- `docs/plans/2026-08-17-summon-shell-cancel-portability-plan.md` — Windows
+  synchronous-reader cancellation ownership without socket-only `select()`.
 - `docs/plans/2026-08-17-summon-first-attach-handoff-plan.md` — pre-spawn
   host acknowledgement plus passive PTY state transfer across attach/detach.
 - `docs/plans/2026-08-14-windows-postrelease-ci-determinism-plan.md` — exact

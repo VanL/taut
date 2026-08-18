@@ -51,6 +51,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 
 | Plan | Status | Exemplar | Note |
 |------|--------|----------|------|
+| `2026-08-17-summon-shell-cancel-portability-plan.md` | active | no | Class 4 Windows shell acknowledgement correction after socket-only `select()` rejected an ordinary input pipe during cancellation. |
 | `2026-08-17-mcp-tools-seed-lifecycle-plan.md` | active | no | Class 4 correction bounding the two-member MCP tools fixture's persistent seed ownership after a Windows native SQLite close stall during setup. |
 | `2026-08-17-tui-ci-bounded-parallelism-plan.md` | active | no | Class 4+P plan for fixed two-worker, file-scoped TUI CI execution after a continuously progressing Windows suite exhausted the unchanged step cap; plan review passed and implementation is active. |
 | `2026-08-17-tui-search-anchor-test-synchronization-plan.md` | active | no | Class 4 exact-intent event-based correction for deferred search-result anchor restoration; local proof is green and fresh hosted exact-SHA evidence is pending. |

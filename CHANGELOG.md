@@ -20,6 +20,10 @@
   detach instructions, and foreground/chat-terminal handoff. The TUI uses its
   native confirmation boundary before leasing the terminal and restores the
   interface after detach while the summoned run continues.
+- Fixed cancellation of Summon's shell acknowledgement on Windows console and
+  pipe input. Cancellation now owns one exact synchronous reader, preserves
+  complete-line decisions, and reaps the reader before provider spawn without
+  applying socket-only `select()` to ordinary input handles.
 
 ## 0.9.1 - 2026-08-17
 

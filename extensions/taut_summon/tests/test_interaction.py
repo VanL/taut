@@ -33,6 +33,104 @@ class _TTYStream:
         return self._is_tty
 
 
+class _BlockingReadStream:
+    """Real blocking readline boundary with test-owned completion."""
+
+    def __init__(self, *, line: str = "", error: BaseException | None = None) -> None:
+        self.line = line
+        self.error = error
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.read_calls = 0
+
+    def readline(self) -> str:
+        self.read_calls += 1
+        self.started.set()
+        if not self.release.wait(timeout=5.0):
+            raise RuntimeError("test did not release blocking readline")
+        if self.error is not None:
+            raise self.error
+        return self.line
+
+
+class _ReleaseHookLock:
+    def __init__(self, *, trigger_release: int, trigger: Callable[[], None]) -> None:
+        self._lock = threading.Lock()
+        self._trigger_release = trigger_release
+        self._trigger = trigger
+        self.release_count = 0
+
+    def __enter__(self) -> None:
+        self._lock.acquire()
+
+    def __exit__(self, *exc: object) -> None:
+        del exc
+        self.release_count += 1
+        self._lock.release()
+        if self.release_count == self._trigger_release:
+            self._trigger()
+
+
+class _InterruptingEvent:
+    def __init__(self, error: BaseException) -> None:
+        self._event = threading.Event()
+        self._error = error
+        self.wait_calls = 0
+
+    def wait(self, timeout: float | None = None) -> bool:
+        self.wait_calls += 1
+        if self.wait_calls == 1:
+            raise self._error
+        return self._event.wait(timeout)
+
+    def is_set(self) -> bool:
+        return self._event.is_set()
+
+    def set(self) -> None:
+        self._event.set()
+
+
+class _InterruptingLock:
+    def __init__(self, error: BaseException) -> None:
+        self._lock = threading.Lock()
+        self._error = error
+        self.enter_calls = 0
+
+    def __enter__(self) -> None:
+        self.enter_calls += 1
+        if self.enter_calls == 1:
+            raise self._error
+        self._lock.acquire()
+
+    def __exit__(self, *exc: object) -> None:
+        del exc
+        self._lock.release()
+
+
+class _InterruptingSetEvent:
+    def __init__(self, error: BaseException) -> None:
+        self._event = threading.Event()
+        self._error = error
+        self.set_calls = 0
+
+    def wait(self, timeout: float | None = None) -> bool:
+        return self._event.wait(timeout)
+
+    def set(self) -> None:
+        self.set_calls += 1
+        if self.set_calls == 1:
+            raise self._error
+        self._event.set()
+
+
+def _set_cancel_after_read_starts(
+    stream: _BlockingReadStream, cancel: threading.Event
+) -> None:
+    if not stream.started.wait(timeout=5.0):
+        raise RuntimeError("test reader did not start")
+    cancel.set()
+
+
 class _HostAbort(BaseException):
     pass
 
@@ -264,6 +362,31 @@ def test_shell_interaction_eof_cancels_attach(
     )
 
 
+def test_shell_interaction_uses_complete_partial_pipe_line_after_writer_close() -> None:
+    from taut_summon import ShellSummonInteraction, TerminalAttachNotice
+
+    read_fd, write_fd = os.pipe()
+    os.write(write_fd, b"not-enter")
+    os.close(write_fd)
+    input_stream = os.fdopen(read_fd, "r", encoding="utf-8")
+    try:
+        assert (
+            ShellSummonInteraction(
+                input_stream=input_stream,
+                output_stream=io.StringIO(),
+            ).confirm_terminal_attach(
+                TerminalAttachNotice(
+                    member="grok",
+                    provider="grok",
+                    detach_hint="Ctrl-\\ Ctrl-\\",
+                )
+            )
+            is False
+        )
+    finally:
+        input_stream.close()
+
+
 def test_shell_interaction_cancel_event_interrupts_pending_acknowledgement() -> None:
     from taut_summon import ShellSummonInteraction, TerminalAttachNotice
 
@@ -302,6 +425,581 @@ def test_shell_interaction_cancel_event_interrupts_pending_acknowledgement() -> 
         cancel.set()
         os.close(write_fd)
         input_stream.close()
+
+
+def test_shell_interaction_windows_pipe_uses_owned_reader_not_select(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import taut_summon.interaction as interaction_module
+    from taut_summon import ShellSummonInteraction, TerminalAttachNotice
+
+    cancel = threading.Event()
+    input_stream = io.StringIO("")
+    observed: list[tuple[object, threading.Event]] = []
+
+    def cancelable_readline(stream: object, event: threading.Event) -> str | None:
+        observed.append((stream, event))
+        return None
+
+    monkeypatch.setattr(interaction_module, "_is_windows", lambda: True)
+    monkeypatch.setattr(
+        interaction_module, "_windows_cancelable_readline", cancelable_readline
+    )
+    monkeypatch.setattr(
+        interaction_module.select,
+        "select",
+        lambda *_args: pytest.fail("Windows ordinary handles are not sockets"),
+    )
+
+    assert (
+        ShellSummonInteraction(
+            input_stream=input_stream,
+            output_stream=io.StringIO(),
+        ).confirm_terminal_attach(
+            TerminalAttachNotice(
+                member="grok",
+                provider="grok",
+                detach_hint="Ctrl-\\ Ctrl-\\",
+            ),
+            cancel=cancel,
+        )
+        is False
+    )
+    assert observed == [(input_stream, cancel)]
+
+
+def test_windows_cancelable_readline_returns_completed_line_and_closes_handle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import taut_summon.interaction as interaction_module
+
+    stream = _BlockingReadStream(line="\n")
+    stream.release.set()
+    events: list[tuple[str, int]] = []
+
+    def open_thread(native_id: int) -> int:
+        events.append(("open", native_id))
+        return 41
+
+    def cancel_read(handle: int) -> bool:
+        events.append(("cancel", handle))
+        return True
+
+    def close_handle(handle: int) -> None:
+        assert not any(
+            thread.name == "taut-summon-shell-input" and thread.is_alive()
+            for thread in threading.enumerate()
+        )
+        events.append(("close", handle))
+
+    monkeypatch.setattr(
+        interaction_module,
+        "_open_windows_thread",
+        open_thread,
+    )
+    monkeypatch.setattr(
+        interaction_module,
+        "_cancel_windows_synchronous_io",
+        cancel_read,
+    )
+    monkeypatch.setattr(
+        interaction_module,
+        "_close_windows_handle",
+        close_handle,
+    )
+
+    assert (
+        interaction_module._windows_cancelable_readline(stream, threading.Event())
+        == "\n"
+    )
+    assert stream.read_calls == 1
+    assert events[0][0] == "open"
+    assert events[-1] == ("close", 41)
+    assert not any(event == ("cancel", 41) for event in events)
+
+
+def test_windows_cancelable_readline_terminal_action_is_first_wins() -> None:
+    import taut_summon.interaction as interaction_module
+
+    line_first = interaction_module._WindowsReadState()
+    assert interaction_module._claim_windows_terminal_action(line_first, "line")
+    assert not interaction_module._claim_windows_terminal_action(line_first, "cancel")
+
+    cancel_first = interaction_module._WindowsReadState()
+    assert interaction_module._claim_windows_terminal_action(cancel_first, "cancel")
+    assert not interaction_module._claim_windows_terminal_action(cancel_first, "line")
+
+
+def test_windows_cancelable_readline_line_publication_is_atomic_with_ownership(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import taut_summon.interaction as interaction_module
+
+    cancel = threading.Event()
+    stream = _BlockingReadStream(line="\n")
+    stream.release.set()
+    owner = interaction_module._WindowsCancelableReadOwner(stream, cancel)
+    lock = _ReleaseHookLock(trigger_release=5, trigger=cancel.set)
+    owner._state.lock = lock  # type: ignore[assignment]
+    monkeypatch.setattr(interaction_module, "_open_windows_thread", lambda _id: 51)
+    monkeypatch.setattr(
+        interaction_module,
+        "_cancel_windows_synchronous_io",
+        lambda _handle: pytest.fail("published line must own the action"),
+    )
+    monkeypatch.setattr(interaction_module, "_close_windows_handle", lambda _h: None)
+
+    assert owner.run() == "\n"
+    assert cancel.is_set()
+    assert lock.release_count >= 5
+
+
+def test_windows_cancelable_readline_cancels_before_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import taut_summon.interaction as interaction_module
+
+    stream = _BlockingReadStream()
+    cancel = threading.Event()
+    cancel.set()
+    closed: list[int] = []
+    monkeypatch.setattr(interaction_module, "_open_windows_thread", lambda _id: 42)
+    monkeypatch.setattr(
+        interaction_module,
+        "_cancel_windows_synchronous_io",
+        lambda _handle: pytest.fail("no read exists to cancel"),
+    )
+    monkeypatch.setattr(interaction_module, "_close_windows_handle", closed.append)
+
+    assert interaction_module._windows_cancelable_readline(stream, cancel) is None
+    assert stream.read_calls == 0
+    assert closed == [42]
+
+
+def test_windows_cancelable_readline_owns_aborted_read_and_joins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import taut_summon.interaction as interaction_module
+
+    aborted = OSError("operation aborted")
+    aborted.winerror = 995  # type: ignore[attr-defined]
+    stream = _BlockingReadStream(error=aborted)
+    cancel = threading.Event()
+    cancel_calls: list[int] = []
+    closed: list[int] = []
+
+    def cancel_read(handle: int) -> bool:
+        cancel_calls.append(handle)
+        stream.release.set()
+        return True
+
+    monkeypatch.setattr(interaction_module, "_open_windows_thread", lambda _id: 43)
+    monkeypatch.setattr(
+        interaction_module, "_cancel_windows_synchronous_io", cancel_read
+    )
+    monkeypatch.setattr(interaction_module, "_close_windows_handle", closed.append)
+    setter = threading.Thread(
+        target=_set_cancel_after_read_starts, args=(stream, cancel)
+    )
+    setter.start()
+    try:
+        assert interaction_module._windows_cancelable_readline(stream, cancel) is None
+    finally:
+        setter.join(timeout=5.0)
+
+    assert not setter.is_alive()
+    assert cancel_calls == [43]
+    assert closed == [43]
+    assert not any(
+        thread.name == "taut-summon-shell-input" and thread.is_alive()
+        for thread in threading.enumerate()
+    )
+
+
+def test_windows_cancelable_readline_does_not_swallow_unowned_abort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import taut_summon.interaction as interaction_module
+
+    aborted = OSError("operation aborted")
+    aborted.winerror = 995  # type: ignore[attr-defined]
+    stream = _BlockingReadStream(error=aborted)
+    stream.release.set()
+    monkeypatch.setattr(interaction_module, "_open_windows_thread", lambda _id: 44)
+    monkeypatch.setattr(
+        interaction_module,
+        "_cancel_windows_synchronous_io",
+        lambda _handle: pytest.fail("completed read must win"),
+    )
+    monkeypatch.setattr(interaction_module, "_close_windows_handle", lambda _h: None)
+
+    with pytest.raises(OSError, match="operation aborted"):
+        interaction_module._windows_cancelable_readline(stream, threading.Event())
+
+
+def test_windows_cancelable_readline_retries_read_entry_race(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import taut_summon.interaction as interaction_module
+
+    aborted = OSError("operation aborted")
+    aborted.winerror = 995  # type: ignore[attr-defined]
+    stream = _BlockingReadStream(error=aborted)
+    cancel = threading.Event()
+    attempts = 0
+
+    def cancel_read(_handle: int) -> bool:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return False
+        stream.release.set()
+        return True
+
+    monkeypatch.setattr(interaction_module, "_open_windows_thread", lambda _id: 45)
+    monkeypatch.setattr(
+        interaction_module, "_cancel_windows_synchronous_io", cancel_read
+    )
+    monkeypatch.setattr(interaction_module, "_close_windows_handle", lambda _h: None)
+    setter = threading.Thread(
+        target=_set_cancel_after_read_starts, args=(stream, cancel)
+    )
+    setter.start()
+    try:
+        assert interaction_module._windows_cancelable_readline(stream, cancel) is None
+    finally:
+        setter.join(timeout=5.0)
+    assert attempts == 2
+
+
+def test_windows_cancelable_readline_preserves_first_cancel_error_after_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import taut_summon.interaction as interaction_module
+
+    aborted = OSError("operation aborted")
+    aborted.winerror = 995  # type: ignore[attr-defined]
+    primary = OSError("cancel failed")
+    stream = _BlockingReadStream(error=aborted)
+    cancel = threading.Event()
+    attempts = 0
+
+    def cancel_read(_handle: int) -> bool:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise primary
+        stream.release.set()
+        return True
+
+    monkeypatch.setattr(interaction_module, "_open_windows_thread", lambda _id: 46)
+    monkeypatch.setattr(
+        interaction_module, "_cancel_windows_synchronous_io", cancel_read
+    )
+    monkeypatch.setattr(interaction_module, "_close_windows_handle", lambda _h: None)
+    setter = threading.Thread(
+        target=_set_cancel_after_read_starts, args=(stream, cancel)
+    )
+    setter.start()
+    try:
+        with pytest.raises(OSError, match="cancel failed") as caught:
+            interaction_module._windows_cancelable_readline(stream, cancel)
+    finally:
+        setter.join(timeout=5.0)
+    assert caught.value is primary
+    assert attempts == 2
+    assert not any(
+        thread.name == "taut-summon-shell-input" and thread.is_alive()
+        for thread in threading.enumerate()
+    )
+
+
+def test_windows_cancelable_readline_open_failure_aborts_before_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import taut_summon.interaction as interaction_module
+
+    primary = OSError("open failed")
+    stream = _BlockingReadStream()
+    closed: list[int] = []
+
+    def fail_open(_native_id: int) -> int:
+        raise primary
+
+    monkeypatch.setattr(interaction_module, "_open_windows_thread", fail_open)
+    monkeypatch.setattr(
+        interaction_module,
+        "_cancel_windows_synchronous_io",
+        lambda _handle: pytest.fail("no handle was opened"),
+    )
+    monkeypatch.setattr(interaction_module, "_close_windows_handle", closed.append)
+
+    with pytest.raises(OSError, match="open failed") as caught:
+        interaction_module._windows_cancelable_readline(stream, threading.Event())
+    assert caught.value is primary
+    assert stream.read_calls == 0
+    assert closed == []
+
+
+def test_windows_cancelable_readline_interruption_after_start_reaps_and_closes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import taut_summon.interaction as interaction_module
+
+    primary = KeyboardInterrupt("interrupted after start")
+    abort_lock_error = KeyboardInterrupt("abort lock interrupted")
+    abort_start_error = SystemExit("abort start interrupted")
+    join_error = SystemExit("abort join interrupted")
+    stream = _BlockingReadStream()
+    owner = interaction_module._WindowsCancelableReadOwner(stream, threading.Event())
+    events: list[str] = []
+    wait_calls = 0
+    original_wait_until_ready = owner._wait_until_ready
+    abort_lock = _InterruptingLock(abort_lock_error)
+    start_event = _InterruptingSetEvent(abort_start_error)
+    owner._state.start = start_event  # type: ignore[assignment]
+    original_abort_before_read = owner._abort_before_read
+
+    def interrupt_after_start() -> None:
+        nonlocal wait_calls
+        wait_calls += 1
+        if wait_calls == 1:
+            raise primary
+        original_wait_until_ready()
+
+    def interrupt_abort_lock() -> None:
+        owner._state.lock = abort_lock  # type: ignore[assignment]
+        original_abort_before_read()
+
+    join_calls = 0
+    original_join = owner._reader.join
+
+    def interrupt_join(timeout: float | None = None) -> None:
+        nonlocal join_calls
+        join_calls += 1
+        if join_calls == 1:
+            raise join_error
+        original_join(timeout)
+
+    original_is_alive = owner._reader.is_alive
+    forced_alive = True
+
+    def is_alive_after_done() -> bool:
+        nonlocal forced_alive
+        if owner._state.done.is_set() and forced_alive:
+            forced_alive = False
+            return True
+        return original_is_alive()
+
+    def close_handle(_handle: int) -> None:
+        assert owner._state.done.is_set()
+        assert not original_is_alive()
+        events.append("close")
+
+    monkeypatch.setattr(interaction_module, "_open_windows_thread", lambda _id: 52)
+    monkeypatch.setattr(owner, "_wait_until_ready", interrupt_after_start)
+    monkeypatch.setattr(owner, "_abort_before_read", interrupt_abort_lock)
+    monkeypatch.setattr(owner._reader, "join", interrupt_join)
+    monkeypatch.setattr(owner._reader, "is_alive", is_alive_after_done)
+    monkeypatch.setattr(interaction_module, "_close_windows_handle", close_handle)
+
+    with pytest.raises(KeyboardInterrupt, match="interrupted after start") as caught:
+        owner.run()
+    assert caught.value is primary
+    assert stream.read_calls == 0
+    assert wait_calls == 2
+    assert abort_lock.enter_calls >= 2
+    assert start_event.set_calls >= 2
+    assert join_calls >= 1
+    assert events == ["close"]
+
+
+@pytest.mark.parametrize("line", ["", "not-enter\n"])
+def test_windows_cancelable_readline_preserves_nonblank_and_eof(
+    monkeypatch: pytest.MonkeyPatch,
+    line: str,
+) -> None:
+    import taut_summon.interaction as interaction_module
+
+    stream = _BlockingReadStream(line=line)
+    stream.release.set()
+    monkeypatch.setattr(interaction_module, "_open_windows_thread", lambda _id: 47)
+    monkeypatch.setattr(
+        interaction_module,
+        "_cancel_windows_synchronous_io",
+        lambda _handle: pytest.fail("completed line owns the decision"),
+    )
+    monkeypatch.setattr(interaction_module, "_close_windows_handle", lambda _h: None)
+
+    assert (
+        interaction_module._windows_cancelable_readline(stream, threading.Event())
+        == line
+    )
+
+
+def test_windows_cancelable_readline_preserves_reader_error_over_close_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import taut_summon.interaction as interaction_module
+
+    read_error = UnicodeError("read failed")
+    close_error = OSError("close failed")
+    stream = _BlockingReadStream(error=read_error)
+    stream.release.set()
+    monkeypatch.setattr(interaction_module, "_open_windows_thread", lambda _id: 48)
+    monkeypatch.setattr(
+        interaction_module,
+        "_cancel_windows_synchronous_io",
+        lambda _handle: pytest.fail("completed reader owns the decision"),
+    )
+
+    def fail_close(_handle: int) -> None:
+        raise close_error
+
+    monkeypatch.setattr(interaction_module, "_close_windows_handle", fail_close)
+
+    with pytest.raises(UnicodeError, match="read failed") as caught:
+        interaction_module._windows_cancelable_readline(stream, threading.Event())
+    assert caught.value is read_error
+
+
+def test_windows_cancelable_readline_close_failure_is_fatal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import taut_summon.interaction as interaction_module
+
+    close_error = OSError("close failed")
+    stream = _BlockingReadStream(line="\n")
+    stream.release.set()
+    monkeypatch.setattr(interaction_module, "_open_windows_thread", lambda _id: 49)
+    monkeypatch.setattr(
+        interaction_module,
+        "_cancel_windows_synchronous_io",
+        lambda _handle: pytest.fail("completed line owns the decision"),
+    )
+
+    def fail_close(_handle: int) -> None:
+        raise close_error
+
+    monkeypatch.setattr(interaction_module, "_close_windows_handle", fail_close)
+
+    with pytest.raises(OSError, match="close failed") as caught:
+        interaction_module._windows_cancelable_readline(stream, threading.Event())
+    assert caught.value is close_error
+
+
+def test_windows_cancelable_readline_owner_error_cancels_and_joins_before_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import taut_summon.interaction as interaction_module
+
+    owner_error = KeyboardInterrupt("owner interrupted")
+    aborted = OSError("operation aborted")
+    aborted.winerror = 995  # type: ignore[attr-defined]
+    stream = _BlockingReadStream(error=aborted)
+    events: list[str] = []
+    wait_error = SystemExit("cleanup wait interrupted")
+    join_error = KeyboardInterrupt("cleanup join interrupted")
+    done = _InterruptingEvent(wait_error)
+    owner = interaction_module._WindowsCancelableReadOwner(stream, threading.Event())
+    owner._state.done = done  # type: ignore[assignment]
+
+    def fail_observe(_handle: int) -> str | None:
+        owner._state.start.set()
+        if not stream.started.wait(timeout=5.0):
+            raise RuntimeError("reader did not start")
+        raise owner_error
+
+    def cancel_read(_handle: int) -> bool:
+        events.append("cancel")
+        stream.release.set()
+        return True
+
+    def close_handle(_handle: int) -> None:
+        assert not any(
+            thread.name == "taut-summon-shell-input" and thread.is_alive()
+            for thread in threading.enumerate()
+        )
+        events.append("close")
+
+    original_join = owner._reader.join
+    join_calls = 0
+
+    def interrupt_join(timeout: float | None = None) -> None:
+        nonlocal join_calls
+        join_calls += 1
+        if join_calls == 1:
+            raise join_error
+        original_join(timeout)
+
+    original_is_alive = owner._reader.is_alive
+    forced_alive = True
+
+    def is_alive_after_done() -> bool:
+        nonlocal forced_alive
+        if done.is_set() and forced_alive:
+            forced_alive = False
+            return True
+        return original_is_alive()
+
+    monkeypatch.setattr(interaction_module, "_open_windows_thread", lambda _id: 50)
+    monkeypatch.setattr(owner, "_observe", fail_observe)
+    monkeypatch.setattr(owner._reader, "join", interrupt_join)
+    monkeypatch.setattr(owner._reader, "is_alive", is_alive_after_done)
+    monkeypatch.setattr(
+        interaction_module, "_cancel_windows_synchronous_io", cancel_read
+    )
+    monkeypatch.setattr(interaction_module, "_close_windows_handle", close_handle)
+
+    with pytest.raises(KeyboardInterrupt, match="owner interrupted") as caught:
+        owner.run()
+    assert caught.value is owner_error
+    assert done.wait_calls >= 2
+    assert join_calls >= 1
+    assert events == ["cancel", "close"]
+
+
+def test_windows_cancelable_readline_cleanup_claim_retries_interrupted_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import taut_summon.interaction as interaction_module
+
+    primary = KeyboardInterrupt("owner interrupted")
+    claim_error = SystemExit("cancel claim interrupted")
+    aborted = OSError("operation aborted")
+    aborted.winerror = 995  # type: ignore[attr-defined]
+    stream = _BlockingReadStream(error=aborted)
+    owner = interaction_module._WindowsCancelableReadOwner(stream, threading.Event())
+    lock = _InterruptingLock(claim_error)
+    events: list[str] = []
+
+    def cancel_read(_handle: int) -> bool:
+        events.append("cancel")
+        stream.release.set()
+        return True
+
+    def close_handle(_handle: int) -> None:
+        assert owner._state.done.is_set()
+        assert not owner._reader.is_alive()
+        events.append("close")
+
+    monkeypatch.setattr(interaction_module, "_open_windows_thread", lambda _id: 53)
+    monkeypatch.setattr(
+        interaction_module, "_cancel_windows_synchronous_io", cancel_read
+    )
+    monkeypatch.setattr(interaction_module, "_close_windows_handle", close_handle)
+
+    owner._reader.start()
+    owner._wait_until_ready()
+    owner._state.start.set()
+    assert stream.started.wait(timeout=5.0)
+    owner._primary_error = primary
+    owner._state.lock = lock  # type: ignore[assignment]
+
+    assert owner._finish_reader(53) is None
+    assert owner._primary_error is primary
+    assert lock.enter_calls >= 2
+    assert events == ["cancel", "close"]
 
 
 @pytest.mark.parametrize(
