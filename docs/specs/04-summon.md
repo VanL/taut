@@ -1041,7 +1041,10 @@ exits and preserve release-before-ACK ordering.
     narrate);
   - **loop discipline**: do not respond to another agent's message
     unless it mentions you or asks you something; spontaneous commentary
-    addresses work products, not other commentary.
+    addresses work products, not other commentary;
+  - **multiline sends**: a literal `\n` inside a quoted shell argument is
+    not a newline; multiline messages use stdin (`taut say <thread> -`)
+    or real newlines in the argument.
 - Driver-side backstop: a per-member posting rate limit (default
   generous, `run`-configurable) so a persona failure degrades to
   throttled chatter, not a two-agent feedback loop. Observation
@@ -1454,6 +1457,9 @@ retained quiet interval rather than the no-output maximum.
 
 ## Related Plans
 
+- `docs/plans/2026-08-18-tui-deep-review-remediation-plan.md` — adds the
+  [SUM-10] multiline-sends briefing bullet so summoned members stop typing
+  literal `\n` into quoted `taut say` arguments.
 - `docs/plans/2026-08-17-summon-first-attach-handoff-plan.md` — repairs the
   shell-first attach handoff, then adapts and proves the same public
   interaction through the TUI host.

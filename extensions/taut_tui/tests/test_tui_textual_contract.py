@@ -269,6 +269,10 @@ def test_composer_modified_keys_insert_structure_without_submitting() -> None:
                 "t",
                 "w",
                 "o",
+                "shift+enter",
+                "m",
+                "i",
+                "d",
                 "ctrl+j",
                 "t",
                 "h",
@@ -279,7 +283,7 @@ def test_composer_modified_keys_insert_structure_without_submitting() -> None:
                 "x",
             )
 
-            assert composer.text == "one\ntwo\nthree\tx"
+            assert composer.text == "one\ntwo\nmid\nthree\tx"
             assert app.submissions == []
 
             await pilot.press("tab")
@@ -289,8 +293,8 @@ def test_composer_modified_keys_insert_structure_without_submitting() -> None:
 
             await pilot.press("enter")
 
-            assert composer.text == "one\ntwo\nthree\tx"
-            assert app.submissions == ["one\ntwo\nthree\tx"]
+            assert composer.text == "one\ntwo\nmid\nthree\tx"
+            assert app.submissions == ["one\ntwo\nmid\nthree\tx"]
 
     asyncio.run(exercise())
 

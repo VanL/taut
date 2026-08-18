@@ -1998,7 +1998,7 @@ def test_help_and_errors_open_a_visible_inspector_at_medium_and_compact_sizes(
                 "PageDown pages down",
                 "Ctrl-C / Ctrl-D quits",
                 "Tab / Shift-Tab",
-                "Ctrl-Enter or Ctrl-J",
+                "Ctrl-Enter, Shift-Enter, or Ctrl-J",
                 "Ctrl-Tab",
                 "g i",
                 "Pane",

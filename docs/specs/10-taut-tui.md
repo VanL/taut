@@ -299,8 +299,31 @@ origins remain structurally distinct without relying on color.
 
 One empty terminal row separates adjacent transcript messages. Message bodies
 preserve actual LF as line breaks, including consecutive blank lines, and
-render horizontal tabs as four-column tab-stop whitespace. Literal backslash
-sequences remain literal message content and are never decoded as layout.
+render horizontal tabs as four-column tab-stop whitespace. Message bodies
+additionally pass through a closed display-decode allowlist before sink
+escaping: the exact escape forms `\a`, `\b`, `\t`, `\n`, `\v`, `\f`, `\r`,
+`\xNN`, `\uNNNN`, and `\UNNNNNNNN` — the closed inverse of the terminal
+escape policy's output language under [TAUT-6.4], plus the numeric
+`\xNN`/`\uNNNN`/`\UNNNNNNNN` forms for the code points the policy writes as
+short escapes, so the short form and the numeric form of the same code point
+decode identically — decode to the characters they denote. Hex digits are
+lowercase (`0-9`, `a-f`), matching the policy's output exactly; a sequence
+containing uppercase hex remains literal text. Decoding runs before the
+terminal-escape sink, so any decoded control character other than LF and TAB
+is immediately re-escaped by the unchanged display policy; the decode
+introduces no new terminal injection surface. Decoded LF is an actual line
+break, decoded TAB is tab-stop whitespace, and decoded printable characters
+(including code points above U+FFFF) display as themselves. Sequences
+outside the allowlist, malformed hex or Unicode forms, and a trailing lone
+backslash remain literal text; `\\` is not in the allowlist and is not
+decoded, so no sequence exists for suppressing the decode. This decode is
+TUI-message-body display only: the stored record, search-hit previews,
+inline metadata such as author names, and every CLI surface keep exact
+stored bytes. Rationale: the CLI display dialect renders a real LF as the
+glyphs `\n` and never escapes backslashes, so the two variants are already
+indistinguishable in every record-stream surface; the TUI decodes toward
+the sender's intent instead of preserving a distinction no other display
+surface makes.
 
 Direct messages use actor-scoped human labels. Internal queue names never
 replace those labels in ordinary navigation. The composer always shows the
@@ -357,9 +380,10 @@ model. A blank draft is a no-op under core's blank-message contract.
 The composer accepts multiline paste. Terminal and Textual paste handling may
 normalize recognized line boundaries to LF and remove NUL; apart from that
 boundary normalization, the composer preserves the pasted nonblank text.
-Plain Enter sends through `message.send`. Ctrl-Enter inserts LF without
-sending; Ctrl-J is the legacy-terminal newline fallback. Ctrl-Tab inserts a
-literal horizontal tab while Tab and Shift-Tab retain focus navigation. The
+Plain Enter sends through `message.send`. Ctrl-Enter or Shift-Enter inserts
+LF without sending; Ctrl-J is the legacy-terminal newline fallback. Ctrl-Tab
+inserts a literal horizontal tab while Tab and Shift-Tab retain focus
+navigation. The
 inserted LF and tab remain exact message content through the public send path.
 
 Starting a new direct message selects a public member and sends the first
@@ -400,13 +424,31 @@ reply surface changes no cursor by itself.
 `COMMAND` mode contains a grouped native-action browser and a textual command
 line. The browser lists currently available native actions by stable
 human-facing groups, shows disabled reasons, and has visible selection and
-activation instructions. The command line is opened with `:` in `NORMAL` and
+activation instructions. It opens with the first enabled action row visibly
+highlighted. While the query field owns focus, Up and Down move the result
+highlight without moving text focus, and Enter activates exactly the
+highlighted enabled action — never an implicit first match. A query matching
+no actions shows an explicit empty state that names the `:` command line for
+commands taking arguments, and Enter with no highlighted action does
+nothing. When the query's first whitespace-delimited token exactly matches a
+root command in the merged shared syntax, the browser offers one "Run as
+command" row; activating it closes the browser and opens the command line
+prefilled with the query. The command line is opened with `:` in `NORMAL` and
 mirrors the Taut command language after the `taut` executable name. In
 `COMPOSE`, a draft whose first character is `:` transitions to the command
 line when the token after the colon exactly matches a root command in the
 merged shared syntax and is followed by whitespace or Enter. Matching never
 occurs against a still-growing prefix, so a shorter command such as `who` does
-not capture `whoami`. The recognized command text prepopulates the command
+not capture `whoami`. Promotion evaluates only direct user editing of the
+composer. Programmatic draft restoration — conversation switches,
+send-failure restores, and resize reflow — never promotes, regardless of
+draft content. When promotion opens the command line, on mount the command
+line reads the composer's current text — not the promotion-time snapshot —
+replaces its field with that text (colon stripped), and advances the
+originating draft identity, so keystrokes that raced into the composer after
+the promotion boundary are carried into the command field and no part of
+that text can survive as a hidden sendable chat draft. The recognized
+command text prepopulates the command
 field and subsequent input supplies its arguments. Unknown leading-colon
 tokens and colons after the first character remain message text. The command
 line accepts command paths, nested paths, positionals, options, quoted values,
@@ -415,14 +457,23 @@ affordance and is not part of the command. Cancel preserves an originating
 composer draft; successful command submission clears only that unchanged
 originating draft.
 
-Command completions are interactive, passive input aids. The completion list
-cannot own focus; ordinary typing always remains in the command field and
-never inserts or selects a completion. Tab, explicit Up/Down selection plus
-Enter, or a single click on a completion row inserts the selected command path
-followed by an argument-ready space, keeps the command line open, and restores
-focus to the command field. Selecting an action from the separate grouped
-native-action browser continues through its typed action binding and opens the
-existing native form when that action requires arguments.
+The command line is a vi-like, deliberately minimal surface: the `:` marker,
+one editable command field, and one feedback line, docked at the bottom of
+the screen. It owns keyboard focus while open, but it does not block the
+interface: the conversation view stays fully visible and continues rendering
+live deliveries behind it, and Escape closes it. It never presents a
+browsable completion list and never engages the grouped action browser.
+Command completions are inline, passive input aids: a dimmed shadow after
+the caret shows one available completion of the current input to a command
+path; Up and Down change which matching path the shadow shows; Tab accepts
+the shadow, inserting the completed command path followed by an
+argument-ready space with focus kept in the command field. When more than
+one path matches, the feedback line compactly names the available matches
+alongside the existing readiness and syntax feedback. Ordinary typing always
+edits the command field and never inserts or selects a completion. Selecting
+an action from the separate grouped native-action browser continues through
+its typed action binding and opens the existing native form when that action
+requires arguments.
 
 The TUI adds `q` and `quit` as shell-local textual aliases; they are not core
 CLI commands and do not appear in `core_command_syntax()`. Typing either alias
@@ -486,11 +537,12 @@ In `NORMAL` mode the following pairs dispatch the same semantic actions:
 | Quit in `NORMAL` | `q` | Ctrl-Q or palette `Quit` |
 | Guarded quit while the TUI owns input | none | Ctrl-C / Ctrl-D |
 
-In `COMPOSE`, Enter dispatches `message.send`, Ctrl-Enter or Ctrl-J inserts a
-newline, and Ctrl-Tab inserts a literal tab. Tab and Shift-Tab continue to move
-among focusable visible surfaces. Ctrl-Enter and Ctrl-Tab require a terminal
-that reports modified Enter/Tab distinctly; Ctrl-J and multiline paste are
-the portable newline path, and paste is the portable literal-tab path.
+In `COMPOSE`, Enter dispatches `message.send`, Ctrl-Enter, Shift-Enter, or
+Ctrl-J inserts a newline, and Ctrl-Tab inserts a literal tab. Tab and
+Shift-Tab continue to move among focusable visible surfaces. Ctrl-Enter,
+Shift-Enter, and Ctrl-Tab require a terminal that reports modified Enter/Tab
+distinctly; Ctrl-J and multiline paste are the portable newline path, and
+paste is the portable literal-tab path.
 
 Tab and Shift-Tab always move among focusable visible surfaces or form fields;
 only the explicit Ctrl-Tab compose gesture inserts a tab.
@@ -669,10 +721,19 @@ The TUI records the worker as pending-owned before it starts. The readiness
 callback synchronously replaces that pending record with the exact run handle
 in a thread-safe registry keyed by a unique worker token, before posting any
 display update. Worker return atomically retires either form. A late display
-message for an already retired token is a no-op. Normal exit remains blocked
-while a worker is pending because an auto-renamed live member does not yet have
-an exact run handle. Callback and worker-return races cannot resurrect a stale
-ownership record.
+message for an already retired token is a no-op. While a worker is pending,
+normal exit requires a decision rather than a silent block: the owned-run
+exit confirmation names the pending members and offers cancel-and-quit.
+Confirmed exit cancels every pending worker that has not yet entered the
+foreground controller run, and for workers already inside provider bootstrap
+waits a bounded interval for worker return exactly as for live owned runs; a
+worker that still does not return keeps the TUI open with the exact members
+and public errors visible. Cancellation targets the pending worker, never a
+member name, because an auto-renamed live member does not yet have an exact
+run handle. Cooperative in-bootstrap cancellation is a Summon contract
+enhancement ([SUM-7]) that this section adopts if and when Summon provides
+it; until then the bounded wait is the contract. Callback and worker-return
+races cannot resurrect a stale ownership record.
 
 Summon retains driver, control, PTY, child, and release ownership. The TUI does
 not install Summon's process signal handlers.
@@ -719,7 +780,14 @@ UI handler exit `App.suspend()`, restore the terminal, force a complete
 redraw, restore logical focus/mode/draft state, and signal restoration
 complete. Prompt-post, lease-acquisition, or restoration failure is fatal to
 that foreground run and visible through the existing safe presentation path;
-none falls through to concurrent terminal ownership.
+none falls through to concurrent terminal ownership. If the suspend context
+exits by exception — including a KeyboardInterrupt delivered while the
+terminal is in cooked mode around attach or detach — the interruption is a
+fatal lease failure: the same UI handler records it, releases the worker,
+and exits the TUI through normal teardown without re-entering application
+mode and without the guarded-quit confirmation. The terminal is left
+restored for the shell. The TUI never continues running outside application
+mode.
 
 While the provider owns the raw terminal lease, Ctrl-C and Ctrl-D are provider
 input and cannot be TUI quit chords. Any-mode TUI quit resumes when Textual
@@ -834,8 +902,8 @@ The following enumerable matrices have firing tests:
   terminal-too-small surface; blocked-modal preservation; repeated owned-run
   quit requests producing at most one confirmation; and real-PTY `0x03`/`0x04`
   translation into guarded `application.quit` while the TUI owns the terminal;
-- multiline compose typing and paste; Enter send; Ctrl-Enter, Ctrl-J, and
-  Ctrl-Tab insertion; Tab/Shift-Tab focus movement; exact send/failure/resize/
+- multiline compose typing and paste; Enter send; Ctrl-Enter, Shift-Enter,
+  Ctrl-J, and Ctrl-Tab insertion; Tab/Shift-Tab focus movement; exact send/failure/resize/
   target-switch draft preservation; actual LF versus literal `\n` and actual
   TAB versus literal `\t`; consecutive blank lines, leading/trailing/repeated
   spaces, four-column tab expansion before escape-notation generation;
@@ -904,6 +972,13 @@ Version 1 does not include:
 
 ## Related Plans
 
+- `docs/plans/2026-08-18-tui-deep-review-remediation-plan.md` — remediates
+  the 2026-08-18 deep-review findings: message-body escape decoding
+  ([TUI-5.3]), palette selection/empty-state/handoff and the vi-like
+  non-blocking command line ([TUI-7.1]), Shift-Enter compose alias
+  ([TUI-6.3], [TUI-8.1]), pending-run cancel-and-quit ([TUI-11.2]),
+  lease-exception full exit ([TUI-11.3]), and async/transcript state
+  repairs.
 - `docs/plans/2026-08-17-tui-text-command-alias-plan.md` — keeps textual
   command entry focus-owned, adds TUI-local `q`/`quit`, and makes Ctrl-C and
   Ctrl-D guarded quit chords whenever Textual owns terminal input.

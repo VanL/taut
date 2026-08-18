@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Added `Shift-Enter` as a newline insertion key in the TUI composer,
+  matching the common chat-composer convention alongside `Ctrl-Enter` and the
+  portable `Ctrl-J`. Like `Ctrl-Enter`, it requires a terminal that reports
+  modified Enter distinctly.
+
 ## 0.9.2 - 2026-08-17
 
 - Kept TUI `:` entry text-owned with passive completions, added guarded `:q`

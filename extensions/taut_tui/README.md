@@ -19,7 +19,8 @@ There is intentionally no separate `taut-tui` console script. Without this
 distribution installed, core does not claim the `tui` command.
 
 The interface provides transcript-first navigation, a multiline composer
-(Enter sends; Ctrl-Enter or Ctrl-J inserts a newline; Ctrl-Tab inserts a tab),
+(Enter sends; Ctrl-Enter, Shift-Enter, or Ctrl-J inserts a newline; Ctrl-Tab
+inserts a tab),
 native typed actions and forms, vi-like and conventional keys, mouse controls,
 state-preserving terminal reflow, actor-free system reports, and supervised
 terminal handoff to `taut-summon` when that extension is available. Tab and

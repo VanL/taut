@@ -114,7 +114,8 @@ Option lists capture the pointer from press through release so a drag-out can
 clear pointer activation without misclassifying the next keyboard Enter.
 
 `TautComposer` is the one TextArea adapter for message drafting. It owns
-priority Enter submission, Ctrl-Enter/Ctrl-J LF insertion, Ctrl-Tab literal-tab
+priority Enter submission, Ctrl-Enter/Shift-Enter/Ctrl-J LF insertion,
+Ctrl-Tab literal-tab
 insertion, multiline paste, terminal-safe placeholder text, and conversion
 between TextArea's row/column cursor and `DraftState`'s framework-neutral
 scalar offset. Tab behavior remains focus navigation. The adapter uses public

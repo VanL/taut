@@ -171,7 +171,7 @@ class TautComposer(TextArea):
     BINDINGS: ClassVar[list[BindingType]] = [
         *TextArea.BINDINGS,
         Binding("enter", "submit", priority=True),
-        Binding("ctrl+enter,ctrl+j", "insert_newline", priority=True),
+        Binding("ctrl+enter,shift+enter,ctrl+j", "insert_newline", priority=True),
         Binding("ctrl+tab", "insert_tab", priority=True),
     ]
 
