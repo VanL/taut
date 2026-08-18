@@ -59,4 +59,4 @@ jobs:
       - name: Run taut-tui suite against retained lock
         timeout-minutes: 10
         run: |
-          uv run --project extensions/taut_tui --extra dev --locked pytest extensions/taut_tui/tests -v --tb=short -n 0
+          uv run --project extensions/taut_tui --extra dev --locked pytest extensions/taut_tui/tests -v --tb=short -n 2 --dist loadfile

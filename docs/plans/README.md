@@ -51,6 +51,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 
 | Plan | Status | Exemplar | Note |
 |------|--------|----------|------|
+| `2026-08-17-tui-ci-bounded-parallelism-plan.md` | active | no | Class 4+P plan for fixed two-worker, file-scoped TUI CI execution after a continuously progressing Windows suite exhausted the unchanged step cap; plan review passed and implementation is active. |
 | `2026-08-17-tui-search-anchor-test-synchronization-plan.md` | active | no | Class 4 exact-intent event-based correction for deferred search-result anchor restoration; local proof is green and fresh hosted exact-SHA evidence is pending. |
 | `2026-08-17-tui-text-command-alias-plan.md` | completed | no | Class 4 hardened correction keeping textual command entry focus-owned, adding guarded TUI-local `q`/`quit`, and making Ctrl-C/Ctrl-D any-mode guarded quit chords; implementation, full TUI/static/doc verification, and independent completed-work review passed. |
 | `2026-08-17-summon-first-attach-handoff-plan.md` | completed | no | Class 5 hardened shell-first Summon attach handoff and TUI compatibility plan; implementation, verification, final review, and owner-authorized closeout passed. |

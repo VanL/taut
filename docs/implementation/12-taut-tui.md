@@ -358,8 +358,18 @@ PostgreSQL uses the shared contract and focused TUI smoke; installed-wheel
 probes prove plain core omits the command and paired core-plus-TUI wheels expose
 it without eager Textual import.
 
+The canonical retained-lock TUI workflow uses exactly two pytest workers with
+`--dist loadfile`. File-scoped ownership keeps every module indivisible,
+including `test_tui_launch.py` and its session-scoped installed-wheel fixture,
+while independent modules run concurrently. The fixed worker count bounds
+SQLite, Textual, and subprocess pressure; `auto` is not permitted. All five
+OS/Python rows, every collected test, and the existing timeout caps remain
+unchanged.
+
 ## Related Plans
 
+- `docs/plans/2026-08-17-tui-ci-bounded-parallelism-plan.md` — fixed-width,
+  file-scoped retained-lock CI execution without timeout or coverage changes.
 - `docs/plans/2026-08-17-tui-search-anchor-test-synchronization-plan.md` —
   exact-intent completion proof for deferred search-result anchor restoration.
 - `docs/plans/2026-08-17-tui-text-command-alias-plan.md` — passive textual

@@ -288,11 +288,14 @@ def test_tui_workflow_runs_extension_suite_against_retained_lock() -> None:
         {"os": "macos-latest", "python-version": "3.13"},
         {"os": "windows-latest", "python-version": "3.13"},
     ]
+    assert job["timeout-minutes"] == 20
     steps = _named_steps(job)
     cache_glob = steps["Install uv"]["with"]["cache-dependency-glob"]
     assert "extensions/taut_tui/pyproject.toml" in cache_glob
     assert "extensions/taut_tui/uv.lock" in cache_glob
-    assert steps["Run taut-tui suite against retained lock"]["run"].split() == [
+    suite = steps["Run taut-tui suite against retained lock"]
+    assert suite["timeout-minutes"] == 10
+    assert suite["run"].split() == [
         "uv",
         "run",
         "--project",
@@ -305,7 +308,9 @@ def test_tui_workflow_runs_extension_suite_against_retained_lock() -> None:
         "-v",
         "--tb=short",
         "-n",
-        "0",
+        "2",
+        "--dist",
+        "loadfile",
     ]
 
 

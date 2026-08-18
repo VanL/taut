@@ -751,6 +751,13 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   result as well as the host callback so an early transport failure is reported
   causally instead of becoming a generic polling timeout.
 
+- 2026-08-17: When a complete CI suite makes continuous passing progress but
+  exhausts a fixed hosted-runner wall-time cap, reduce aggregate exposure with
+  bounded parallelism rather than extending the cap. Choose the scheduler by
+  fixture ownership: when all consumers of a session-scoped expensive fixture
+  live in one file, `loadfile` keeps them on one worker and avoids duplicate
+  fixture construction. A fixed worker count avoids host-dependent pressure.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent
