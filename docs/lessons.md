@@ -765,6 +765,24 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   live in one file, `loadfile` keeps them on one worker and avoids duplicate
   fixture construction. A fixed worker count avoids host-dependent pressure.
 
+- 2026-08-18: Textual widget events carry no input-source discrimination: a
+  programmatic `TextArea.text` assignment posts the same `Changed` event as
+  typing, and assigning `OptionList.highlighted` for scroll restoration
+  posts the same `OptionHighlighted` as user navigation. Any handler that
+  triggers behavior from such events (promotion, selection tracking) must
+  discriminate the source itself — count expected programmatic edits, or
+  never route restoration through the state the handler owns. Relatedly,
+  capture view state (scroll anchors) when *leaving* a surface, never on
+  arrival: a hidden widget's geometry is stale and capture-on-arrival
+  destroys the stored truth.
+
+- 2026-08-18: Every direct worker-to-UI apply path needs the same teardown
+  attachment guard as the future-watching path, and a UI-loop caller must
+  never block on a cleanup future that a worker parked in a UI marshal is
+  ahead of — the loop cannot service the marshal while blocked, so the wait
+  can only time out. Give session cleanup a `wait=False` shape for loop
+  callers and let the non-daemon executor drain at interpreter exit.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

@@ -126,9 +126,20 @@ the Send control are the declared fallback paths.
 
 Message whitespace is presentation, never a stored-content rewrite. At every
 message-body projection (transcript, selected-message inspector, and reply
-inspector), the owned adapter expands actual tabs to four-column stops before
-applying the terminal escape policy; literal `\t` remains printable text.
-Actual LF is retained as layout while literal `\n` remains printable text.
+inspector), the owned adapter first decodes the closed [TUI-5.3] escape
+allowlist toward sender intent (`decode_message_escapes`: the short escapes
+plus lowercase-hex `\xNN`/`\uNNNN`/`\UNNNNNNNN`, exactly the inverse of the
+terminal escape policy's output language; surrogate and beyond-Unicode code
+points, uppercase hex, and malformed forms stay literal, and `\\` is not a
+suppression sequence), then expands actual tabs to four-column stops, then
+applies the terminal escape policy — the decode-before-sink ordering is what
+keeps decoded control characters other than LF/TAB from opening an injection
+surface, because the unchanged sink re-escapes them. Rationale for decoding
+at all: the CLI display dialect renders a real LF as the glyphs `\n` and
+never escapes backslashes, so the record's distinction between a real
+newline and a typed backslash-n is invisible in every record-stream surface;
+the TUI displays the intent instead of preserving a distinction no other
+display makes. Names, metadata, and search previews never decode.
 Inspector renderers assemble metadata and bodies as separate trusted segments:
 names and reply-thread labels keep core control escape notation, so body layout
 rules cannot widen their display boundary. Each transcript prompt owns one
@@ -158,26 +169,44 @@ It does not import Textual or command adapters. Installed extensions contribute
 syntax through `taut.command_syntax`; the `taut-summon` provider contributes
 `summon` and `dismiss` syntax only.
 
-The TUI has two command affordances. `:` opens `CommandLineScreen`, which
-displays the leading colon, completion/help feedback, and `Enter run · Tab
-complete · Esc close`. Ctrl-P and the Commands button open the grouped native
-action browser. `CommandPaletteScreen` derives labels and grouping from
-`ActionSpec`; group headings are presentation metadata, not command namespaces.
+The TUI has two command affordances with deliberately distinct identities
+([TUI-7.1] as revised 2026-08-18). `:` opens `CommandLineScreen`, a vi-like
+bottom-docked bar: the `:` marker, one editable field, and one feedback line
+over a transparent, non-dimming backdrop, so the conversation view stays
+visible and keeps rendering live deliveries while the bar owns focus.
+Completion is an inline ghost shadow supplied through a
+`textual.suggester.Suggester` subclass that computes matches from the live
+value (the suggester worker can run before the `Input.Changed` handler, so
+screen state is not trusted for it); Up/Down cycle which match the shadow
+shows (the refresh pins the private Textual 8.2.8 `Input._suggestion`
+reactive — worst-case degradation is a shadow that updates on the next
+keystroke), and Tab accepts the shadow with an argument-ready space. There
+is no browsable completion list. Ctrl-P and the Actions button open the
+grouped native action browser: it opens with the first activatable row
+highlighted, priority Up/Down bindings move the highlight from the query
+field, Enter activates exactly the highlighted row, a no-match query shows a
+disabled empty state naming the `:` line, and a query whose first token is
+an exact known command root offers a "Run as command" row that dismisses
+into the command line prefilled (`PaletteCommandHandoff`). The palette gains
+no parser; root membership is tested against the same `command_nodes` set
+the composer promotion uses, independent of the fuzzy action matcher.
 
 The message composer also recognizes a delimited leading root command through
 that same merged syntax. It waits for whitespace or Enter before promotion so
 `who` cannot capture the still-growing `whoami`; unknown colon-prefixed text
-remains a message draft. `TautApp` records the originating target and draft
-revision, while `CommandLineScreen` owns the promoted transient buffer. Cancel
-therefore leaves the composer untouched and restores `COMPOSE`; a parsed
-submission clears only the still-matching draft before typed dispatch and also
-returns to the focused composer. Command lines opened from `NORMAL` return to
-`NORMAL` instead. The screen's completion rows
-are passive input aids and cannot own focus: ordinary typing remains in the
-field. Tab, explicit Up/Down selection plus Enter, and a single pointer click
-insert the path with a trailing argument separator, refocus the field, and do
-not dismiss or dispatch. The separate native-action browser continues to open
-its typed forms for argument-bearing actions.
+remains a message draft. Promotion evaluates only direct user editing:
+programmatic composer restores (conversation switches, send-failure
+restores) are counted by `_suppress_promotion_edits` via
+`_set_composer_text` and never promote, because a `TextArea.Changed` event
+carries no source discrimination. On mount the promoted command line
+reconciles against the composer's current draft
+(`TautApp._reconcile_promotion`), carrying raced keystrokes into the field
+and advancing the originating-draft identity so no raced suffix survives as
+a hidden sendable chat draft. Cancel leaves the composer untouched and
+restores `COMPOSE`; a parsed submission clears only the still-matching draft
+before typed dispatch. Command lines opened from `NORMAL` return to `NORMAL`
+instead. The separate native-action browser continues to open its typed
+forms for argument-bearing actions.
 
 `command_syntax.py` contributes only the TUI shell aliases `q` and `quit`;
 core CLI syntax does not claim them. Both bindings rejoin central
@@ -308,11 +337,24 @@ provider startup. Only it may post the later `TerminalLeaseRequest`; the UI
 handler then enters and remains inside `App.suspend()` and signals acquisition.
 Only then does the worker receive fd 0 and fd 1. Worker release lets the same UI
 handler exit suspension, force a redraw, and signal full restoration. One lock
-excludes concurrent confirmations and leases. Worker return releases a
-confirmed pre-lease reservation, so a provider failure cannot wedge future
-Summon runs. App unmount closes the interaction before the operations pool and
-wakes an outstanding confirmation; request resolution is idempotent so a late
-modal callback cannot revive cancelled work.
+excludes concurrent confirmations and leases; losing the confirmation race
+degrades to a graceful decline rather than failing the run. Worker return
+releases a confirmed pre-lease reservation, so a provider failure cannot
+wedge future Summon runs. App unmount closes the interaction before the
+operations pool and wakes an outstanding confirmation; request resolution is
+idempotent, notifies an `on_resolved` hook so a worker-cancelled
+confirmation dismisses its stale modal, and a late modal callback cannot
+revive cancelled work. Stale or shutting-down lease requests are refused
+without suspending. Exception exit from the suspend scope — including
+KeyboardInterrupt in the cooked-mode windows around attach/detach — is a
+fatal lease failure that exits the TUI completely through normal teardown
+([TUI-11.3]): Textual 8.2.8's `App.suspend` cannot re-enter application
+mode after an exception, and exiting cleanly beats a dead screen. Pending
+owned runs reach the same cancel-and-quit confirmation as live runs
+([TUI-11.2]): pre-start cancellation uses a per-record event consumed
+before `run_foreground`, in-bootstrap workers get a bounded wait, and
+foreground workers run on daemon threads so a hung provider bootstrap
+cannot pin interpreter exit.
 
 The scoped `taut_summon` logging bridge saves and restores the namespace
 logger exactly, escapes displayed records, bounds them, and buffers them while
@@ -369,6 +411,11 @@ unchanged.
 
 ## Related Plans
 
+- `docs/plans/2026-08-18-tui-deep-review-remediation-plan.md` — display
+  escape decoding, the vi-like non-blocking command line and action-browser
+  input contract, promotion source discrimination, Summon lease/quit
+  lifecycle hardening, teardown-safe worker marshalling, and transcript
+  state integrity.
 - `docs/plans/2026-08-17-tui-ci-bounded-parallelism-plan.md` — fixed-width,
   file-scoped retained-lock CI execution without timeout or coverage changes.
 - `docs/plans/2026-08-17-tui-search-anchor-test-synchronization-plan.md` —

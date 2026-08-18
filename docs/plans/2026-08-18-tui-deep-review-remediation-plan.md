@@ -998,7 +998,37 @@ check-doc-paths, K1 test suites green.
   `_apply_conversation` against a detached screen). One prior stub
   updated to the new `close(wait=...)` contract.
 - Gates: ruff clean; full `extensions/taut_tui/tests` lane (minus the
-  wheel-building packaging suite, exercised in CI) green.
+  wheel-building packaging suite, exercised in CI) green. Landed at
+  `8b76352`.
+
+### Slice 7 — 2026-08-18 — traceability closeout and final review
+
+- `docs/implementation/12-taut-tui.md` updated: display decode ordering
+  and rationale, the two-surface command contract (vi bottom line +
+  action browser), promotion source discrimination and mount
+  reconciliation, lease exception exit, pending-run cancel-and-quit,
+  and the confirmation/lease guard changes; Related Plans backlink
+  added. Two durable lessons recorded in `docs/lessons.md` (Textual
+  events carry no input-source discrimination / capture-on-departure;
+  teardown attachment guards and `close(wait=False)` for loop callers).
+- Deviation Log closed (single row, resolved — no `pending`).
+- Final independent review: Kimi (kimi-code/k3), completed-work pass
+  over `588dc44..8b76352` plus this closeout. Verdict: implementation
+  faithful to the promoted deltas; tests pin the promoted contracts; no
+  escaping, lifecycle, or teardown regressions found. Findings and
+  dispositions: (P1) completion claim must land with the status-index
+  flip and a Slice 7 log entry — this entry and the closeout commit are
+  that disposition; the index flips to `completed` only when the hosted
+  TUI lanes pass, per the Completion Gate. (P2) palette instruction
+  said "Click run" while rows activate on double-click per [TUI-8.2] —
+  accepted, instruction now reads "Double-click run".
+- Local final gates: full `extensions/taut_tui/tests` 409 passed (Kimi
+  rerun, includes persona suite), ruff clean, `check-doc-paths`,
+  `check-plan-status-index`, `coalesce-check` all OK.
+- Outstanding for the completion claim: hosted TUI CI lanes on the
+  landing branch. Land instruction: push main, let
+  `test-tui-extension.yml` run, then flip the status-index row and this
+  header to `completed` in the same change as the claim.
 
 ## Completion Gate
 

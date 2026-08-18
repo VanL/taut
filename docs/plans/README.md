@@ -51,7 +51,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 
 | Plan | Status | Exemplar | Note |
 |------|--------|----------|------|
-| `2026-08-18-tui-deep-review-remediation-plan.md` | active | no | Class 5 umbrella remediation of the 2026-08-18 TUI deep-review findings: display escape decoding, vi-like non-blocking command line, palette input contract, promotion guard, Summon lease/quit lifecycle, async teardown, and transcript state integrity. Kimi plan review dispositioned; owner decisions recorded; strategy-A spec promotion applied; code slices in progress. |
+| `2026-08-18-tui-deep-review-remediation-plan.md` | active | no | Class 5 umbrella remediation of the 2026-08-18 TUI deep-review findings: display escape decoding, vi-like non-blocking command line, palette input contract, promotion guard, Summon lease/quit lifecycle, async teardown, and transcript state integrity. All seven slices implemented (`588dc44`..closeout); Kimi plan and final completed-work reviews dispositioned; local gates green. Flips to `completed` when the hosted TUI lanes pass on the landing branch. |
 | `2026-08-17-scripted-provider-ready-signal-plan.md` | completed | no | Completed at `99995cc`; scripted-provider readiness publication is inside its bounded physical-SIGINT cleanup owner. |
 | `2026-08-17-summon-shell-cancel-portability-plan.md` | completed | no | Completed at `99995cc`; Windows shell acknowledgement uses exact owned synchronous-read cancellation for console and pipe inputs. |
 | `2026-08-17-mcp-tools-seed-lifecycle-plan.md` | completed | no | Completed at `99995cc`; the two-member MCP tools fixture bounds persistent seed ownership before reactor work. |

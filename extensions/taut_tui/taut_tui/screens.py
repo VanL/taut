@@ -323,7 +323,8 @@ class CommandPaletteScreen(
         with Vertical(classes="taut-modal"):
             yield Static("Actions", classes="modal-title")
             yield Static(
-                "Type to filter · Up/Down select · Enter run · Click run · Esc close",
+                "Type to filter · Up/Down select · Enter run · "
+                "Double-click run · Esc close",
                 classes="command-instructions",
             )
             yield Input(
