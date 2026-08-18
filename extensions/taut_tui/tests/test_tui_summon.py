@@ -944,11 +944,11 @@ def test_pending_worker_cancelled_before_start_never_runs_controller() -> None:
     try:
         _token, _worker = operations.start(object(), object())
         shutdown = operations.stop_owned_and_wait(timeout=1.0)
-        (run, future), = captured
+        ((run, future),) = captured
         future.set_running_or_notify_cancel()
         try:
             run()
-        except BaseException as exc:  # noqa: BLE001 - test surface
+        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
             future.set_exception(exc)
         else:
             future.set_result(None)
@@ -986,9 +986,7 @@ def test_quit_with_pending_run_offers_cancel_and_quit_dialog() -> None:
             self.stop_calls += 1
             done: Future[OwnedSummonShutdown] = Future()
             done.set_result(
-                OwnedSummonShutdown(
-                    completed_tokens=("t",), unresolved=(), errors=()
-                )
+                OwnedSummonShutdown(completed_tokens=("t",), unresolved=(), errors=())
             )
             return done
 
@@ -1073,9 +1071,7 @@ def test_confirm_owner_contention_declines_instead_of_raising() -> None:
 
         Thread(target=cancel_soon).start()
         try:
-            results.append(
-                interaction.confirm_terminal_attach(notice, cancel=cancel)
-            )
+            results.append(interaction.confirm_terminal_attach(notice, cancel=cancel))
         finally:
             first_done.set()
 

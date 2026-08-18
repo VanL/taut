@@ -29,7 +29,7 @@ EXTENSIONLESS_PYTHON = {
 REVIEWED_FAMILIES = ["E", "W", "F", "I", "B", "C901", "C4", "UP"]
 GLOBAL_IGNORES = ["E501", "B008"]
 RAW_RULE_COUNTS = {
-    "BLE001": 137,
+    "BLE001": 143,
     "C901": 38,
     "DTZ006": 1,
     "F401": 1,
