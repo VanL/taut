@@ -406,6 +406,97 @@ def test_retained_textual_pilot_click_focus_and_resize() -> None:
     asyncio.run(exercise())
 
 
+@pytest.mark.parametrize(
+    ("control_byte", "label"),
+    ((b"\x03", "Ctrl-C"), (b"\x04", "Ctrl-D")),
+)
+def test_shipped_tui_translates_real_pty_quit_control_bytes(
+    control_byte: bytes,
+    label: str,
+) -> None:
+    if os.name == "nt":
+        pytest.skip("stdlib PTY proof is POSIX-only")
+
+    fcntl = pytest.importorskip("fcntl")
+    pty = pytest.importorskip("pty")
+    termios = pytest.importorskip("termios")
+    child_source = textwrap.dedent(
+        r"""
+        import os
+
+        import taut_tui.app as app_module
+        from taut_tui._launch import run_tui
+        from taut_tui.actions import ActionId
+
+
+        class ProbeApp(app_module.TautApp):
+            def _dispatch_action_invocation(self, invocation) -> None:
+                if invocation.action_id is ActionId.APPLICATION_QUIT:
+                    os.write(1, b"GUARDED-QUIT")
+                super()._dispatch_action_invocation(invocation)
+
+
+        app_module.TautApp = ProbeApp
+        raise SystemExit(
+            run_tui(db_path=None, as_name=None, continuity_token=None)
+        )
+        """
+    )
+
+    master_fd, slave_fd = pty.openpty()
+    process: subprocess.Popen[bytes] | None = None
+    output = bytearray()
+    sent = False
+    try:
+        fcntl.ioctl(
+            slave_fd,
+            termios.TIOCSWINSZ,
+            struct.pack("HHHH", 24, 80, 0, 0),
+        )
+        process = subprocess.Popen(
+            [sys.executable, "-c", child_source],
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            close_fds=True,
+        )
+        os.close(slave_fd)
+        slave_fd = -1
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            readable, _, _ = select.select([master_fd], [], [], 0.1)
+            if readable:
+                try:
+                    chunk = os.read(master_fd, 65_536)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                output.extend(chunk)
+                if not sent:
+                    os.write(master_fd, control_byte)
+                    sent = True
+                continue
+            if process.poll() is not None:
+                break
+        else:
+            process.kill()
+            pytest.fail(f"{label} shipped-TUI PTY probe timed out")
+        returncode = process.wait(timeout=3)
+    finally:
+        if slave_fd >= 0:
+            os.close(slave_fd)
+        os.close(master_fd)
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.wait(timeout=3)
+
+    captured = bytes(output)
+    assert sent, captured.decode(errors="replace")
+    assert returncode == 0, captured.decode(errors="replace")
+    assert b"GUARDED-QUIT" in captured
+
+
 def test_real_textual_pty_never_emits_untrusted_terminal_control_payload() -> None:
     if os.name == "nt":
         pytest.skip("stdlib PTY proof is POSIX-only")

@@ -444,12 +444,12 @@ class GesturePair:
 
 def _pair(
     intent: InteractionIntent,
-    vi: str,
+    vi: str | None,
     conventional: str,
     *,
     action_id: ActionId | None = None,
 ) -> GesturePair:
-    return GesturePair(intent, (vi,), (conventional,), action_id)
+    return GesturePair(intent, () if vi is None else (vi,), (conventional,), action_id)
 
 
 NORMAL_GESTURE_PAIRS = (
@@ -460,7 +460,7 @@ NORMAL_GESTURE_PAIRS = (
     _pair(InteractionIntent.ITEM_FIRST, "gg", "home"),
     _pair(InteractionIntent.ITEM_LAST, "G", "end"),
     _pair(InteractionIntent.PAGE_UP, "ctrl+u", "pageup"),
-    _pair(InteractionIntent.PAGE_DOWN, "ctrl+d", "pagedown"),
+    _pair(InteractionIntent.PAGE_DOWN, None, "pagedown"),
     _pair(
         InteractionIntent.DISPATCH_ACTION,
         "i",

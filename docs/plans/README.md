@@ -51,6 +51,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 
 | Plan | Status | Exemplar | Note |
 |------|--------|----------|------|
+| `2026-08-17-tui-text-command-alias-plan.md` | completed | no | Class 4 hardened correction keeping textual command entry focus-owned, adding guarded TUI-local `q`/`quit`, and making Ctrl-C/Ctrl-D any-mode guarded quit chords; implementation, full TUI/static/doc verification, and independent completed-work review passed. |
 | `2026-08-17-summon-first-attach-handoff-plan.md` | completed | no | Class 5 hardened shell-first Summon attach handoff and TUI compatibility plan; implementation, verification, final review, and owner-authorized closeout passed. |
 | `2026-08-17-tui-command-entry-correction-plan.md` | completed | no | Class 5 hardened correction for composer-known-command promotion and interactive argument-ready command completion; implementation, verification, final review, and owner-authorized close-out passed. |
 | `2026-08-17-tui-multiline-whitespace-plan.md` | completed | no | Class 5 hardened TUI contract revision for multiline compose input, modified-key fallbacks, exact whitespace presentation, transcript gaps, and scroll-safe variable-height rows; implementation, PTY acceptance, final review, and owner-authorized close-out passed. |

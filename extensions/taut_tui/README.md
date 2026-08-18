@@ -27,7 +27,10 @@ Shift-Tab remain focus navigation. `:` opens the textual command input from
 normal mode; a composer draft beginning with a whitespace- or Enter-delimited
 known command such as `:summon grok` moves into that input instead of being
 sent as chat. Tab, keyboard selection, or one click inserts a command
-completion and retains focus for required arguments.
+completion, but the passive completion list never takes typing focus. `:q`
+and `:quit` use the guarded TUI quit path. Ctrl-C and Ctrl-D request that same
+quit from any mode or modal while Textual owns the terminal; PageDown remains
+the page-down key.
 Workspace load remains a CLI-only maintenance action.
 
 When a first `:summon grok` or native Summon form will actually attach to a

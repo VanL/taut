@@ -55,6 +55,27 @@ def _has_option_containing(option_list: Any, text: str) -> bool:
     )
 
 
+def _quit_test_screen(surface: str, app: Any) -> Any:
+    from taut_tui.actions import ActionId
+    from taut_tui.app import TerminalTooSmallScreen
+    from taut_tui.forms import FORM_SPECS
+    from taut_tui.screens import (
+        ConfirmationScreen,
+        NamedActionScreen,
+        NativeFormScreen,
+        SummonStartScreen,
+    )
+
+    factories: dict[str, Callable[[], Any]] = {
+        "native-form": lambda: NativeFormScreen(FORM_SPECS[ActionId.CHANNEL_JOIN]),
+        "confirmation": lambda: ConfirmationScreen("Keep working?"),
+        "summon-start": lambda: SummonStartScreen(()),
+        "named-action": lambda: NamedActionScreen(ActionId.SUMMON_STATUS, "Status"),
+        "terminal-too-small": TerminalTooSmallScreen,
+    }
+    return factories[surface]()
+
+
 def test_real_app_exposes_low_chrome_surfaces_and_mode_status() -> None:
     from taut_tui.app import TautApp
 
@@ -562,6 +583,279 @@ def test_direct_command_completion_click_keeps_argument_input_active() -> None:
 
             await pilot.press(*"grok")
             assert command.value == "summon grok"
+
+    asyncio.run(exercise())
+
+
+def test_direct_command_typing_keeps_completion_list_passive() -> None:
+    from taut_tui.app import TautApp
+    from taut_tui.screens import CommandLineScreen
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 34)) as pilot:
+            await pilot.press(":", *"summon")
+            await pilot.pause()
+
+            assert isinstance(app.screen, CommandLineScreen)
+            command = app.screen.query_one("#command-line", Input)
+            completions = app.screen.query_one("#command-completions")
+            assert not completions.can_focus
+            assert app.focused is command
+            assert command.value == "summon"
+
+            await pilot.press("space", *"grok")
+            assert app.focused is command
+            assert command.value == "summon grok"
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("alias", ("q", "quit"))
+def test_text_command_quit_alias_uses_guarded_tui_quit(alias: str) -> None:
+    from taut_tui.app import TautApp
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 34)) as pilot:
+            await pilot.press(":", *alias)
+            assert app.is_running
+            command = app.screen.query_one("#command-line", Input)
+            assert command.value == alias
+            assert command.has_focus
+
+            await pilot.press("enter")
+            await pilot.pause()
+            assert not app.is_running
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("alias", ("q", "quit"))
+def test_composer_quit_alias_promotes_before_guarded_execution(alias: str) -> None:
+    from taut_tui.app import TautApp
+    from taut_tui.screens import CommandLineScreen
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 34)) as pilot:
+            composer = app.query_one("#composer", TautComposer)
+            composer.focus()
+            await _pause_until(pilot, lambda: composer.has_focus)
+
+            await pilot.press(":", *alias, "enter")
+            assert app.is_running
+            assert isinstance(app.screen, CommandLineScreen)
+            command = app.screen.query_one("#command-line", Input)
+            assert command.value == alias
+            assert command.has_focus
+
+            await pilot.press("enter")
+            await pilot.pause()
+            assert not app.is_running
+
+    asyncio.run(exercise())
+
+
+def test_text_quit_alias_preserves_guarded_quit_blocker() -> None:
+    from taut_tui.app import TautApp
+
+    class BlockingSystem:
+        def quit_block_reason(self) -> str:
+            return "A workspace dump is still running."
+
+        def close(self) -> None:
+            pass
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 34)) as pilot:
+            assert app._system is not None
+            app._system.close()
+            app._system = BlockingSystem()  # type: ignore[assignment]
+
+            await pilot.press(":", *"quit", "enter")
+            await pilot.pause()
+
+            assert app.is_running
+            assert (
+                "workspace dump is still running"
+                in str(app.query_one("#inspector-body").render()).lower()
+            )
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("chord", ("ctrl+c", "ctrl+d"))
+def test_global_quit_chords_use_guarded_owner_from_compose(chord: str) -> None:
+    from dataclasses import replace
+
+    from taut_tui.app import TautApp
+
+    class BlockingSystem:
+        def quit_block_reason(self) -> str:
+            return "A workspace dump is still running."
+
+        def close(self) -> None:
+            pass
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 34)) as pilot:
+            assert app._system is not None
+            app._system.close()
+            app._system = BlockingSystem()  # type: ignore[assignment]
+            app.visual_state = replace(
+                app.visual_state,
+                active_conversation="general",
+            )
+            await pilot.press("i")
+            composer = app.query_one("#composer", TautComposer)
+            assert composer.has_focus
+
+            await pilot.press(chord)
+            await pilot.pause()
+
+            assert app.is_running
+            assert composer.has_focus
+            assert app.visual_state.mode is InteractionMode.COMPOSE
+            assert (
+                "workspace dump is still running"
+                in str(app.query_one("#inspector-body").render()).lower()
+            )
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("chord", ("ctrl+c", "ctrl+d"))
+@pytest.mark.parametrize(
+    "surface",
+    (
+        "normal",
+        "compose",
+        "native-form",
+        "confirmation",
+        "command-palette",
+        "command-line",
+        "search",
+        "summon-start",
+        "named-action",
+        "terminal-too-small",
+    ),
+)
+def test_global_quit_chords_exit_from_every_tui_owned_surface(
+    chord: str,
+    surface: str,
+) -> None:
+    from taut_tui.app import TautApp
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 34)) as pilot:
+            if surface == "compose":
+                assert await pilot.click("#composer") is True
+                assert app.visual_state.mode is InteractionMode.COMPOSE
+            elif surface == "command-palette":
+                await pilot.press("ctrl+p")
+                assert app.visual_state.mode is InteractionMode.COMMAND
+            elif surface == "command-line":
+                await pilot.press(":")
+                assert app.visual_state.mode is InteractionMode.COMMAND
+            elif surface == "search":
+                await pilot.press("ctrl+f")
+                assert app.visual_state.mode is InteractionMode.SEARCH
+            elif surface != "normal":
+                screen = _quit_test_screen(surface, app)
+                app.push_screen(screen)
+                await pilot.pause()
+            else:
+                assert app.visual_state.mode is InteractionMode.NORMAL
+
+            assert app.is_running
+            await pilot.press(chord)
+            await pilot.pause()
+            assert not app.is_running
+
+    asyncio.run(exercise())
+
+
+def test_repeated_global_quit_does_not_stack_owned_run_confirmation() -> None:
+    from taut_tui.actions import ActionId
+    from taut_tui.app import TautApp
+    from taut_tui.forms import FORM_SPECS
+    from taut_tui.screens import ConfirmationScreen, NativeFormScreen
+
+    class OwnedRunSummon:
+        def quit_block_reason(self) -> str:
+            return "A summoned member is still running."
+
+        def has_pending_owned(self) -> bool:
+            return False
+
+        def close(self) -> None:
+            pass
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 34)) as pilot:
+            if app._summon is not None:
+                app._summon.close()
+            app._summon = OwnedRunSummon()  # type: ignore[assignment]
+            underlying = NativeFormScreen(FORM_SPECS[ActionId.CHANNEL_JOIN])
+            app.push_screen(underlying)
+            await pilot.pause()
+
+            await pilot.press("ctrl+c")
+            await pilot.pause()
+            confirmation = app.screen
+            assert isinstance(confirmation, ConfirmationScreen)
+            stack_depth = len(app.screen_stack)
+
+            await pilot.press("ctrl+d")
+            await pilot.pause()
+            assert app.screen is confirmation
+            assert len(app.screen_stack) == stack_depth
+
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.screen is underlying
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("chord", ("ctrl+c", "ctrl+d"))
+def test_blocked_global_quit_preserves_active_modal(chord: str) -> None:
+    from taut_tui.actions import ActionId
+    from taut_tui.app import TautApp
+    from taut_tui.forms import FORM_SPECS
+    from taut_tui.screens import NativeFormScreen
+
+    class BlockingSystem:
+        def quit_block_reason(self) -> str:
+            return "A workspace dump is still running."
+
+        def close(self) -> None:
+            pass
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 34)) as pilot:
+            assert app._system is not None
+            app._system.close()
+            app._system = BlockingSystem()  # type: ignore[assignment]
+            modal = NativeFormScreen(FORM_SPECS[ActionId.CHANNEL_JOIN])
+            app.push_screen(modal)
+            await pilot.pause()
+
+            await pilot.press(chord)
+            await pilot.pause()
+
+            assert app.is_running
+            assert app.screen is modal
+            assert (
+                "workspace dump is still running"
+                in str(app.query_one("#inspector-body").render()).lower()
+            )
 
     asyncio.run(exercise())
 
@@ -1622,7 +1916,8 @@ def test_help_and_errors_open_a_visible_inspector_at_medium_and_compact_sizes(
                 "gg / Home",
                 "G / End",
                 "Ctrl-U / PageUp",
-                "Ctrl-D / PageDown",
+                "PageDown pages down",
+                "Ctrl-C / Ctrl-D quits",
                 "Tab / Shift-Tab",
                 "Ctrl-Enter or Ctrl-J",
                 "Ctrl-Tab",

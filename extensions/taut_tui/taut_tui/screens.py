@@ -466,7 +466,7 @@ class CommandLineScreen(_TautModalScreen[CommandLineSubmission | None]):
                     select_on_focus=False,
                 )
             yield Static(id="command-errors")
-            yield OptionList(id="command-completions")
+            yield _CommandCompletionList(id="command-completions")
 
     def on_mount(self) -> None:
         command_line = self.query_one("#command-line", Input)
@@ -565,6 +565,12 @@ class CommandLineScreen(_TautModalScreen[CommandLineSubmission | None]):
             return
         self._dismissed = True
         self.dismiss(result)
+
+
+class _CommandCompletionList(OptionList):
+    """Passive command suggestions that never replace the text-input owner."""
+
+    can_focus = False
 
 
 def _command_completions(text: str, syntax: RootCommandSyntax) -> tuple[str, ...]:

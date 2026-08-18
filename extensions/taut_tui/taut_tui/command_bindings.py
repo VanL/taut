@@ -67,6 +67,8 @@ _BINDINGS = (
     _native(("rejoin",), ActionId.IDENTITY_REJOIN),
     _native(("summon",), ActionId.SUMMON_START),
     _native(("dismiss",), ActionId.SUMMON_DISMISS),
+    _native(("q",), ActionId.APPLICATION_QUIT),
+    _native(("quit",), ActionId.APPLICATION_QUIT),
     _cli_only(("system", "load")),
 )
 

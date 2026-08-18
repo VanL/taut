@@ -172,10 +172,19 @@ therefore leaves the composer untouched and restores `COMPOSE`; a parsed
 submission clears only the still-matching draft before typed dispatch and also
 returns to the focused composer. Command lines opened from `NORMAL` return to
 `NORMAL` instead. The screen's completion rows
-are active input aids: Tab, explicit Up/Down selection plus Enter, and a
-single pointer click insert the path with a trailing argument separator,
-refocus the field, and do not dismiss or dispatch. The separate native-action
-browser continues to open its typed forms for argument-bearing actions.
+are passive input aids and cannot own focus: ordinary typing remains in the
+field. Tab, explicit Up/Down selection plus Enter, and a single pointer click
+insert the path with a trailing argument separator, refocus the field, and do
+not dismiss or dispatch. The separate native-action browser continues to open
+its typed forms for argument-bearing actions.
+
+`command_syntax.py` contributes only the TUI shell aliases `q` and `quit`;
+core CLI syntax does not claim them. Both bindings rejoin central
+`application.quit`, so active dump and owned-Summon blockers remain in force.
+App-level priority Ctrl-C/Ctrl-D bindings rejoin that same owner from every
+mode and modal while Textual owns the terminal. Ctrl-D is no longer a paging
+gesture; PageDown remains. During a raw Summon terminal lease, the provider
+owns those control bytes until Textual resumes.
 
 `command_bindings.py` is the second half of the boundary. A syntax provider
 only makes a path recognizable. `TuiCommandBinding` records whether the TUI
@@ -346,6 +355,9 @@ it without eager Textual import.
 
 ## Related Plans
 
+- `docs/plans/2026-08-17-tui-text-command-alias-plan.md` — passive textual
+  completions, TUI-local guarded `q`/`quit`, and any-mode Ctrl-C/Ctrl-D quit
+  while Textual owns terminal input.
 - `docs/plans/2026-08-17-summon-first-attach-handoff-plan.md` — separates the
   native pre-attach confirmation from the later raw terminal lease for both
   Summon entry routes.

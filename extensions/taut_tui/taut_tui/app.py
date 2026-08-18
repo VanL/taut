@@ -63,6 +63,7 @@ from taut_tui.actions import (
     resolve_mouse,
 )
 from taut_tui.command_bindings import binding_for
+from taut_tui.command_syntax import provide_syntax as provide_tui_syntax
 from taut_tui.domain import TuiDomainActions
 from taut_tui.forms import (
     FORM_SPECS,
@@ -287,6 +288,20 @@ class TautApp(App[None]):
         Binding("ctrl+f", "open_search", "Search", show=False),
         Binding("f1", "open_help", "Help", show=False),
         Binding("ctrl+q", "quit_tui", "Quit", show=False),
+        Binding(
+            "ctrl+c",
+            "quit_tui_anywhere",
+            "Quit",
+            show=False,
+            priority=True,
+        ),
+        Binding(
+            "ctrl+d",
+            "quit_tui_anywhere",
+            "Quit",
+            show=False,
+            priority=True,
+        ),
     ]
 
     def notify(
@@ -360,6 +375,7 @@ class TautApp(App[None]):
         self._search_hits_by_intent: dict[int, SearchHit] = {}
         self._owned_summon_tokens: set[str] = set()
         self._summon_names: dict[str, str] = {}
+        self._owned_exit_confirmation_open = False
         self._base_screen: Any | None = None
         self._resize_generation = 0
         self._shutting_down = False
@@ -858,12 +874,14 @@ class TautApp(App[None]):
     def action_open_help(self) -> None:
         self._render_inspector(
             "Keys: j/k or Down/Up move; h/l or Left/Right change panes; "
-            "gg / Home and G / End jump; Ctrl-U / PageUp and Ctrl-D / PageDown "
-            "page; Tab / Shift-Tab move focus; Enter opens; i composes; "
+            "gg / Home and G / End jump; Ctrl-U / PageUp pages up; "
+            "PageDown pages down; Tab / Shift-Tab move focus; Enter opens; "
+            "i composes; "
             "in compose, Enter sends, Ctrl-Enter or Ctrl-J inserts a newline, "
             "and Ctrl-Tab inserts a tab; "
             ": / Ctrl-P commands; / / Ctrl-F search; ? / F1 help; "
-            "g i opens notifications; q / Ctrl-Q quits. "
+            "g i opens notifications; q / Ctrl-Q quits in normal mode; "
+            "Ctrl-C / Ctrl-D quits whenever the TUI owns the terminal. "
             "Notification pointers are consumable and shared by sessions; "
             "chat history remains durable. "
             "Use Pane to cycle compact surfaces and Replies to open or close a "
@@ -884,12 +902,25 @@ class TautApp(App[None]):
             if self._summon is not None and self._summon.has_pending_owned():
                 self._show_error(summon_reason)
                 return
-            self.push_screen(
-                ConfirmationScreen(f"{summon_reason} Stop owned runs and quit?"),
-                self._complete_owned_exit,
-            )
+            if self._owned_exit_confirmation_open:
+                return
+            self._owned_exit_confirmation_open = True
+            try:
+                self.push_screen(
+                    ConfirmationScreen(f"{summon_reason} Stop owned runs and quit?"),
+                    self._complete_owned_exit,
+                )
+            except BaseException:
+                self._owned_exit_confirmation_open = False
+                raise
             return
         self.exit()
+
+    def action_quit_tui_anywhere(self) -> None:
+        self._dispatch_tui_action(
+            ActionId.APPLICATION_QUIT,
+            source=ActionRoute.KEYBOARD,
+        )
 
     def action_enter_compose(self) -> None:
         if self.visual_state.mode is InteractionMode.NORMAL:
@@ -1045,7 +1076,7 @@ class TautApp(App[None]):
     def _command_syntax(self) -> RootCommandSyntax:
         syntax = core_command_syntax()
         discovery = discover_command_syntax()
-        providers = list(discovery.providers)
+        providers = [provide_tui_syntax(), *discovery.providers]
         if self._summon is not None and not any(
             provider.provider_name == "taut-summon" for provider in providers
         ):
@@ -1099,6 +1130,12 @@ class TautApp(App[None]):
         binding = binding_for(invocation.path)
         if binding is None or binding.cli_only:
             self._show_error("CLI-only in TUI: " + " ".join(invocation.path))
+            return
+        if invocation.path in {("q",), ("quit",)}:
+            self._dispatch_tui_action(
+                ActionId.APPLICATION_QUIT,
+                source=ActionRoute.KEYBOARD,
+            )
             return
         if invocation.path in {("summon",), ("dismiss",)}:
             self._dispatch_summon_command(invocation)
@@ -2473,6 +2510,7 @@ class TautApp(App[None]):
             return
 
     def _complete_owned_exit(self, confirmed: bool | None) -> None:
+        self._owned_exit_confirmation_open = False
         if not confirmed:
             return
         summon = self._summon

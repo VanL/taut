@@ -415,12 +415,22 @@ affordance and is not part of the command. Cancel preserves an originating
 composer draft; successful command submission clears only that unchanged
 originating draft.
 
-Command completions are interactive, not display-only. Tab, keyboard
-selection, or a single click on a completion row inserts the selected command
-path followed by an argument-ready space, keeps the command line open, and
-focuses the command field. Selecting an action from the separate grouped
+Command completions are interactive, passive input aids. The completion list
+cannot own focus; ordinary typing always remains in the command field and
+never inserts or selects a completion. Tab, explicit Up/Down selection plus
+Enter, or a single click on a completion row inserts the selected command path
+followed by an argument-ready space, keeps the command line open, and restores
+focus to the command field. Selecting an action from the separate grouped
 native-action browser continues through its typed action binding and opens the
 existing native form when that action requires arguments.
+
+The TUI adds `q` and `quit` as shell-local textual aliases; they are not core
+CLI commands and do not appear in `core_command_syntax()`. Typing either alias
+remains editable and non-eager until Enter. Enter dispatches
+`application.quit` through the same guarded TUI quit owner as normal-mode
+quit. From `COMPOSE`, an undelimited `:q` or `:quit` follows the ordinary
+promotion rule: the first Enter opens the prefilled command line and the
+second Enter executes it; a whitespace delimiter promotes before submission.
 
 Enter executes a complete command only through a registered native TUI
 binding. The binding may invoke an existing action, open a deliberately chosen
@@ -465,14 +475,16 @@ In `NORMAL` mode the following pairs dispatch the same semantic actions:
 | Previous/next item or line | `k` / `j` | Up / Down |
 | Previous/next visible surface | `h` / `l` | Left / Right |
 | First/last item | `gg` / `G` | Home / End |
-| Page up/down | Ctrl-U / Ctrl-D | PageUp / PageDown |
+| Page up | Ctrl-U | PageUp |
+| Page down | none | PageDown |
 | Enter compose | `i` | Tab or click to composer; palette `Compose` |
 | Activate/open | Enter | Enter |
 | Leave transient mode | Escape | Escape |
 | Open command mode | `:` | Ctrl-P or clickable command affordance |
 | Search history | `/` | Ctrl-F or clickable search affordance |
 | Open help | `?` | F1 or clickable help affordance |
-| Quit | `q` | Ctrl-Q or palette `Quit` |
+| Quit in `NORMAL` | `q` | Ctrl-Q or palette `Quit` |
+| Guarded quit while the TUI owns input | none | Ctrl-C / Ctrl-D |
 
 In `COMPOSE`, Enter dispatches `message.send`, Ctrl-Enter or Ctrl-J inserts a
 newline, and Ctrl-Tab inserts a literal tab. Tab and Shift-Tab continue to move
@@ -490,6 +502,16 @@ which promotes that prefix to the command line under [TUI-7.1]. Unknown and
 still-growing leading-colon tokens and all other colons remain text. Escape
 has priority for leaving `COMPOSE`, `COMMAND`, `SEARCH`, or a modal.
 
+Ctrl-C and Ctrl-D are priority guarded-quit chords whenever Textual owns
+terminal input: all four modes, every native modal form, and the
+terminal-too-small surface. They dispatch `application.quit` through the
+existing guarded owner. Bare `q` remains ordinary text outside `NORMAL`, and
+Ctrl-Q retains its existing normal-only behavior. Ctrl-D no longer pages;
+PageDown remains the conventional page-down key and Ctrl-U/PageUp retain
+page-up. If quitting is blocked, the current mode and modal remain intact. An
+owned-run confirmation may layer over the current modal once; repeated quit
+requests do not stack confirmations, and cancel restores the underlying modal.
+
 Inbox is not bound to bare `i`; it is available from navigation, the command
 palette, and the optional `g i` normal-mode sequence. Mode and focus are always
 visible, so a key does not depend on invisible state.
@@ -501,6 +523,7 @@ focuses a pane or field and selects the clicked row/message. A double click or
 single click on an explicit action control activates where Textual can report
 it reliably. Command-completion rows are insertion controls under [TUI-7.1],
 so their first click inserts the command and returns focus to argument input.
+The completion list never retains focus after pointer handling.
 The scroll wheel scrolls the surface under the pointer. Clicking the composer
 focuses it and positions the editing cursor when the terminal and framework
 expose a position.
@@ -698,6 +721,10 @@ complete. Prompt-post, lease-acquisition, or restoration failure is fatal to
 that foreground run and visible through the existing safe presentation path;
 none falls through to concurrent terminal ownership.
 
+While the provider owns the raw terminal lease, Ctrl-C and Ctrl-D are provider
+input and cannot be TUI quit chords. Any-mode TUI quit resumes when Textual
+terminal ownership is restored.
+
 ### [TUI-11.4] Log routing
 
 While Summon support is loaded, the TUI installs one scoped logging handler for
@@ -799,6 +826,14 @@ The following enumerable matrices have firing tests:
   message retention; originating-draft preservation on command cancel and
   exact-draft clearing on submission; and command completion through Tab,
   keyboard selection, and mouse activation retaining editable argument focus;
+  continuous typed command input with a non-focusable completion list;
+  non-eager `q`/`quit` editing and Enter execution; core-grammar exclusion and
+  TUI-local binding ownership for both aliases; Ctrl-D removal from page-down
+  while PageDown still pages; Ctrl-C/Ctrl-D guarded quit in `NORMAL`, `COMPOSE`,
+  `COMMAND`, `SEARCH`, every current native modal class, and the
+  terminal-too-small surface; blocked-modal preservation; repeated owned-run
+  quit requests producing at most one confirmation; and real-PTY `0x03`/`0x04`
+  translation into guarded `application.quit` while the TUI owns the terminal;
 - multiline compose typing and paste; Enter send; Ctrl-Enter, Ctrl-J, and
   Ctrl-Tab insertion; Tab/Shift-Tab focus movement; exact send/failure/resize/
   target-switch draft preservation; actual LF versus literal `\n` and actual
@@ -869,6 +904,9 @@ Version 1 does not include:
 
 ## Related Plans
 
+- `docs/plans/2026-08-17-tui-text-command-alias-plan.md` — keeps textual
+  command entry focus-owned, adds TUI-local `q`/`quit`, and makes Ctrl-C and
+  Ctrl-D guarded quit chords whenever Textual owns terminal input.
 - `docs/plans/2026-08-17-summon-first-attach-handoff-plan.md` — repairs the
   shell-first attach handoff and then adapts the pre-attach acknowledgement
   and raw lease as distinct TUI transitions.

@@ -4,6 +4,10 @@
 
 ## 0.9.2 - 2026-08-17
 
+- Kept TUI `:` entry text-owned with passive completions, added guarded `:q`
+  and `:quit` aliases, and made Ctrl-C/Ctrl-D guarded quit chords from every
+  Textual-owned mode or modal. PageDown remains paging after Ctrl-D moved to
+  quit.
 - Added multiline TUI message composition. `Ctrl-Enter` or `Ctrl-J` inserts a
   newline, `Ctrl-Tab` inserts a literal tab, and Enter sends the exact composed
   text. Transcript rendering now preserves meaningful whitespace and renders

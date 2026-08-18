@@ -74,7 +74,7 @@ EXPECTED_NORMAL_GESTURES = (
     (InteractionIntent.ITEM_FIRST, ("gg",), ("home",), None),
     (InteractionIntent.ITEM_LAST, ("G",), ("end",), None),
     (InteractionIntent.PAGE_UP, ("ctrl+u",), ("pageup",), None),
-    (InteractionIntent.PAGE_DOWN, ("ctrl+d",), ("pagedown",), None),
+    (InteractionIntent.PAGE_DOWN, (), ("pagedown",), None),
     (
         InteractionIntent.DISPATCH_ACTION,
         ("i",),
@@ -176,14 +176,18 @@ def test_destructive_action_inventory_has_exact_target_confirmation() -> None:
 def test_vi_and_conventional_gestures_resolve_to_same_intent(
     pair: GesturePair,
 ) -> None:
-    assert pair.vi
+    if pair.intent is InteractionIntent.PAGE_DOWN:
+        assert pair.vi == ()
+    else:
+        assert pair.vi
     assert pair.conventional
-    assert {
-        require_interaction(
-            resolve_gesture(gesture, mode=InteractionMode.NORMAL)
-        ).intent
-        for gesture in pair.vi
-    } == {pair.intent}
+    if pair.vi:
+        assert {
+            require_interaction(
+                resolve_gesture(gesture, mode=InteractionMode.NORMAL)
+            ).intent
+            for gesture in pair.vi
+        } == {pair.intent}
     assert {
         require_interaction(
             resolve_gesture(gesture, mode=InteractionMode.NORMAL)
@@ -288,8 +292,9 @@ def test_mouse_routes_have_keyboard_equivalents() -> None:
         require_interaction(
             resolve_gesture(gesture, mode=InteractionMode.NORMAL)
         ).intent
-        for gesture in ("enter", "ctrl+u", "ctrl+d")
+        for gesture in ("enter", "ctrl+u", "pagedown")
     }
     assert InteractionIntent.ACTIVATE_SELECTION in keyboard_intents
     assert InteractionIntent.PAGE_UP in keyboard_intents
     assert InteractionIntent.PAGE_DOWN in keyboard_intents
+    assert resolve_gesture("ctrl+d", mode=InteractionMode.NORMAL) is None
