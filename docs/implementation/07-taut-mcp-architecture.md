@@ -386,6 +386,16 @@ their 15-second deadlock cap is not spent repeatedly constructing and tearing
 down setup-only runners. Default-ephemeral client cleanup remains a root client
 contract, not an incidental prerequisite repeated by every MCP tools case.
 
+The resource suite's shared workspace helper applies that split one client at
+a time. Its selected identity exists only to establish a token, so one
+immediately registered `ExitStack` owns that persistent seed and closes it
+before the helper constructs the other actor. The returned actor keeps the
+caller's requested lifecycle: default callers remain ephemeral external actors,
+while the existing high-volume pointer seed explicitly opts into persistent
+ownership under its caller's bounded stack. This keeps reactor-facing tests
+independent without spending their deadlock valve on selected-seed runner
+turnover.
+
 ## Change Guidance
 
 Read [MCP-4], [MCP-5], [MCP-8], and [MCP-11] before changing reactor state.
@@ -407,6 +417,7 @@ changelog, and plan evidence whenever ownership or rationale changes.
 
 - `docs/plans/2026-08-17-mcp-resource-seed-lifecycle-plan.md`
 - `docs/plans/2026-08-17-mcp-tools-seed-lifecycle-plan.md`
+- `docs/plans/2026-08-18-mcp-resource-helper-seed-lifecycle-plan.md`
 - `docs/plans/2026-08-14-windows-postrelease-ci-determinism-plan.md`
 - `docs/plans/2026-08-14-review-findings-remediation-plan.md`
 - `docs/plans/2026-08-12-extension-main-path-and-all-extra-plan.md`

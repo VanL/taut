@@ -28,15 +28,18 @@ def _workspace(
     workspace.mkdir()
     db = workspace / ".taut.db"
     TautClient.init(db_path=db)
-    selected = TautClient(db_path=db, as_name=selected_name)
-    try:
+    with ExitStack() as selected_seed:
+        selected = TautClient(
+            db_path=db,
+            as_name=selected_name,
+            persistent=True,
+        )
+        selected_seed.callback(selected.close)
         selected.join("general")
         member = selected.last_created_member
         assert member is not None
         assert member.token is not None
         token = member.token
-    finally:
-        selected.close()
     other = TautClient(
         db_path=db,
         as_name=other_name,
@@ -48,6 +51,95 @@ def _workspace(
         other.close()
         raise
     return workspace, token, other
+
+
+@pytest.mark.parametrize("other_persistent", [False, True])
+def test_workspace_selected_seed_has_bounded_persistent_ownership(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    other_persistent: bool,
+) -> None:
+    """The selected seed closes before constructing either other-client mode."""
+
+    events: list[tuple[str, TautClient, bool]] = []
+    persistence: dict[TautClient, bool] = {}
+    original_init = TautClient.__init__
+    original_close = TautClient.close
+
+    def observed_init(self: TautClient, *args: Any, **kwargs: Any) -> None:
+        original_init(self, *args, **kwargs)
+        persistent = bool(kwargs.get("persistent", False))
+        persistence[self] = persistent
+        events.append(("constructed", self, persistent))
+
+    def observed_close(self: TautClient) -> None:
+        original_close(self)
+        events.append(("closed", self, persistence[self]))
+
+    monkeypatch.setattr(TautClient, "__init__", observed_init)
+    monkeypatch.setattr(TautClient, "close", observed_close)
+
+    workspace, token, other = _workspace(
+        tmp_path,
+        "workspace",
+        selected_name="selected",
+        other_name="other",
+        other_persistent=other_persistent,
+    )
+    try:
+        selected = events[0][1]
+        assert workspace == tmp_path / "workspace"
+        assert token
+        assert events[:3] == [
+            ("constructed", selected, True),
+            ("closed", selected, True),
+            ("constructed", other, other_persistent),
+        ]
+        assert other.whoami().name == "other"
+    finally:
+        other.close()
+
+
+def test_workspace_selected_seed_closes_when_join_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The selected seed is owned before its first fallible operation."""
+
+    sentinel = RuntimeError("selected join failed")
+    constructed: list[tuple[TautClient, bool]] = []
+    closed: list[TautClient] = []
+    original_init = TautClient.__init__
+    original_close = TautClient.close
+
+    def observed_init(self: TautClient, *args: Any, **kwargs: Any) -> None:
+        original_init(self, *args, **kwargs)
+        constructed.append((self, bool(kwargs.get("persistent", False))))
+
+    def observed_join(self: TautClient, thread: str) -> None:
+        assert thread == "general"
+        raise sentinel
+
+    def observed_close(self: TautClient) -> None:
+        original_close(self)
+        closed.append(self)
+
+    monkeypatch.setattr(TautClient, "__init__", observed_init)
+    monkeypatch.setattr(TautClient, "join", observed_join)
+    monkeypatch.setattr(TautClient, "close", observed_close)
+
+    with pytest.raises(RuntimeError) as raised:
+        _workspace(
+            tmp_path,
+            "workspace",
+            selected_name="selected",
+            other_name="other",
+        )
+
+    assert raised.value is sentinel
+    assert len(constructed) == 1
+    assert constructed[0][1] is True
+    assert closed == [constructed[0][0]]
 
 
 @pytest.mark.sqlite_only
