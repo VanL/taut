@@ -38,6 +38,46 @@ async def _pause_until(
     pytest.fail("condition did not become true")
 
 
+async def _await_summon_confirmation(
+    app: Any,
+    started_futures: asyncio.Queue[Future[None]],
+    confirmation_requests: asyncio.Queue[object],
+    confirmation_type: type[Any],
+) -> Future[None]:
+    future = await asyncio.wait_for(started_futures.get(), timeout=5.0)
+    worker_done = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    future.add_done_callback(lambda _done: loop.call_soon_threadsafe(worker_done.set))
+    confirmation_task = asyncio.create_task(confirmation_requests.get())
+    worker_task = asyncio.create_task(worker_done.wait())
+    done, pending = await asyncio.wait(
+        {confirmation_task, worker_task},
+        timeout=15.0,
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+    for task in pending:
+        task.cancel()
+    await asyncio.gather(*pending, return_exceptions=True)
+    if not done:
+        pytest.fail("foreground produced no confirmation or outcome")
+    if worker_task in done and confirmation_task not in done:
+        future.result()
+        pytest.fail("foreground exited before attach confirmation")
+    confirmation_task.result()
+    assert isinstance(app.screen, confirmation_type)
+    return future
+
+
+async def _await_cancelled_summon_run(app: Any, future: Future[None]) -> None:
+    worker_done = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    future.add_done_callback(lambda _done: loop.call_soon_threadsafe(worker_done.set))
+    await asyncio.wait_for(worker_done.wait(), timeout=15.0)
+    future.result()
+    assert app._summon is not None
+    assert app._summon.owned_runs() == ()
+
+
 def _option_index_containing(option_list: Any, text: str) -> int:
     """Resolve a semantic row without depending on navigation ordering."""
 
@@ -1417,6 +1457,33 @@ def test_native_and_textual_summon_routes_share_confirmation_before_suspend(
         async with app.run_test(size=(100, 34)) as pilot:
             assert app._summon_interaction is not None
             assert app._summon is not None
+            confirmation_requests: asyncio.Queue[object] = asyncio.Queue()
+            started_futures: asyncio.Queue[Future[None]] = asyncio.Queue()
+            real_confirmation_handler = type(
+                app
+            ).on_terminal_attach_confirmation_request
+            real_start = app._summon.start
+
+            def observed_confirmation(owner: TautApp, request: object) -> None:
+                real_confirmation_handler(owner, request)  # type: ignore[arg-type]
+                if owner is app:
+                    confirmation_requests.put_nowait(request)
+
+            def observed_start(
+                request: object,
+                interaction: object,
+            ) -> tuple[str, Future[None]]:
+                token, future = real_start(request, interaction)
+                started_futures.put_nowait(future)
+                return token, future
+
+            monkeypatch.setattr(
+                type(app),
+                "on_terminal_attach_confirmation_request",
+                observed_confirmation,
+            )
+            monkeypatch.setattr(app._summon, "start", observed_start)
+
             suspend_calls: list[str] = []
             real_suspend = app.suspend
 
@@ -1436,40 +1503,34 @@ def test_native_and_textual_summon_routes_share_confirmation_before_suspend(
             app.screen.query_one("#summon-name", Input).value = "native-grok"
             app.screen.query_one("#summon-provider", Select).value = "grok"
             app.screen.query_one("#summon-submit", Button).press()
-            await _pause_until(
-                pilot,
-                lambda: isinstance(app.screen, ConfirmationScreen),
-                attempts=500,
+            native_future = await _await_summon_confirmation(
+                app,
+                started_futures,
+                confirmation_requests,
+                ConfirmationScreen,
             )
             confirmation = cast(ConfirmationScreen, app.screen)
             assert "provider setup" in confirmation.prompt
             assert "Ctrl-\\ Ctrl-\\" in confirmation.prompt
             assert suspend_calls == []
             await pilot.press("escape")
-            await _pause_until(
-                pilot,
-                lambda: app._summon is not None and app._summon.owned_runs() == (),
-                attempts=500,
-            )
+            await _await_cancelled_summon_run(app, native_future)
 
             composer = app.query_one("#composer", TautComposer)
             composer.focus()
             await _pause_until(pilot, lambda: composer.has_focus)
             await pilot.press(*":summon", "space", *"grok", "enter")
-            await _pause_until(
-                pilot,
-                lambda: isinstance(app.screen, ConfirmationScreen),
-                attempts=500,
+            textual_future = await _await_summon_confirmation(
+                app,
+                started_futures,
+                confirmation_requests,
+                ConfirmationScreen,
             )
             confirmation = cast(ConfirmationScreen, app.screen)
             assert "provider setup" in confirmation.prompt
             assert suspend_calls == []
             await pilot.press("escape")
-            await _pause_until(
-                pilot,
-                lambda: app._summon is not None and app._summon.owned_runs() == (),
-                attempts=500,
-            )
+            await _await_cancelled_summon_run(app, textual_future)
             assert not provider_log.exists()
 
     asyncio.run(exercise())
