@@ -12,7 +12,8 @@ Status: active.
 Make the exhaustive `search.open-result` handler proof observe the exact
 intent-tokened conversation apply and the anchor restore scheduled by that
 same apply. Time remains only a missing-callback cap. No product behavior,
-timeout, assertion, matrix, or parallelism changes.
+timeout, existing assertion removal or weakening, matrix, or parallelism
+changes.
 
 ## Source Documents and Baseline
 
@@ -81,8 +82,8 @@ the product contract.
 ## Independent Review
 
 Review must verify exact-intent identity, temporary observer scope, delegation,
-post-refresh signaling, stale-callback rejection, unchanged assertions, and
-the test-versus-app stop gate. Any P1/P2 finding blocks commit.
+post-refresh signaling, stale-callback rejection, retained and strengthened
+assertions, and the test-versus-app stop gate. Any P1/P2 finding blocks commit.
 
 ## Out of Scope
 
@@ -103,6 +104,20 @@ the test-versus-app stop gate. Any P1/P2 finding blocks commit.
   tests. Static and documentation gates passed. Independent completed-work
   review found no P1/P2 blocker.
 - Fresh hosted exact-SHA evidence remains pending.
+- Run `32093200521`, Windows job `95579370572`, exposed a fixture-isolation
+  defect rather than the provisional product race. The searched hit was the
+  newest message in a transcript shorter than the viewport, so the required
+  hit anchor and legitimate tail-pinned geometry were physically
+  indistinguishable. The exact restore ran, then an independent watcher render
+  correctly recaptured the same physical position as tail before the final
+  assertion. The case now seeds substantial later content only for
+  `search.open-result`, asserts that later content is in the exact snapshot,
+  asserts the hit anchor inside the delegated exact restore, and retains the
+  post-refresh final anchor assertion. No product code, timeout, assertion,
+  removal or weakening, matrix, or parallelism changed. The exact case passed
+  20 consecutive runs; all 37 handler cases and the full 378-case two-worker
+  `loadfile` suite passed locally. Independent review returned CLEAR with no
+  P1/P2.
 
 ## Related Plans
 

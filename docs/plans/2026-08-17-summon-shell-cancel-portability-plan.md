@@ -173,6 +173,12 @@ gates. Any P1/P2 finding blocks implementation or landing.
   unhandled thread exceptions fatal; the 332-case Summon unit partition passed;
   repository Ruff/format, Summon mypy (25 source files), documentation path and
   plan-index checks, and `git diff --check` passed.
+- Fresh canonical root run `32093200547` passed all 20 jobs at exact SHA
+  `75f56fc4d8dee61f5df8e5ded4311fea5beb0905`. Windows Python 3.11, 3.12,
+  3.13, and 3.14 all passed the real anonymous-pipe cancellation case. The
+  earlier Python 3.12 native CLI access violation did not recur. A later
+  test-only TUI fixture correction still requires final release-SHA producers,
+  so the release stop gate remains active.
 
 ## Related Plans
 

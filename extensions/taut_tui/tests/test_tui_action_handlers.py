@@ -552,6 +552,10 @@ async def _search_open_result(context: HandlerContext) -> None:
         ) -> None:
             restore_transcript_anchor(messages, anchor_index, intra_row_offset)
             if messages[anchor_index].ts == context.message_ts:
+                assert (
+                    context.app.visual_state.scroll_anchor.message_id
+                    == context.message_ts
+                )
                 context.app.call_after_refresh(search_anchor_restored.set)
 
         context.monkeypatch.setattr(
@@ -584,6 +588,7 @@ async def _search_open_result(context: HandlerContext) -> None:
     assert snapshot.intent_token == expected_intent
     assert snapshot.target == "general"
     assert any(message.ts == context.message_ts for message in snapshot.messages)
+    assert any(message.ts > context.message_ts for message in snapshot.messages)
     assert any(row.ts == context.message_ts for row in context.app._message_rows)
     assert context.app.visual_state.active_conversation == "general"
     assert context.app.visual_state.scroll_anchor.message_id == context.message_ts
@@ -890,6 +895,13 @@ def test_every_action_reaches_a_concrete_handler(
                 alice.set_channel_topic("general", "Initial topic")
                 bob.say("general", "@alice handler notification")
                 message_ts = alice.say("general", "seed handler message").ts
+                if action_id is ActionId.SEARCH_OPEN_RESULT:
+                    bob.say(
+                        "general",
+                        "\n".join(
+                            f"post-search-anchor line {index}" for index in range(40)
+                        ),
+                    )
             finally:
                 alice.close()
                 bob.close()
