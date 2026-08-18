@@ -378,6 +378,14 @@ limited to the seed actors, and closed in `finally` before the reactor is
 constructed. Message count, payload, workspace separation, and all resource
 ordering, truncation, and claim assertions remain unchanged.
 
+The tools suite's shared two-member workspace fixture follows the same owner
+split: its selected and mentioning actors are persistent only inside one
+`ExitStack`, then close before the helper returns the workspace and token.
+Individual tools tests therefore begin without a retained seed session, while
+their 15-second deadlock cap is not spent repeatedly constructing and tearing
+down setup-only runners. Default-ephemeral client cleanup remains a root client
+contract, not an incidental prerequisite repeated by every MCP tools case.
+
 ## Change Guidance
 
 Read [MCP-4], [MCP-5], [MCP-8], and [MCP-11] before changing reactor state.
@@ -398,6 +406,7 @@ changelog, and plan evidence whenever ownership or rationale changes.
 ## Related Plans
 
 - `docs/plans/2026-08-17-mcp-resource-seed-lifecycle-plan.md`
+- `docs/plans/2026-08-17-mcp-tools-seed-lifecycle-plan.md`
 - `docs/plans/2026-08-14-windows-postrelease-ci-determinism-plan.md`
 - `docs/plans/2026-08-14-review-findings-remediation-plan.md`
 - `docs/plans/2026-08-12-extension-main-path-and-all-extra-plan.md`

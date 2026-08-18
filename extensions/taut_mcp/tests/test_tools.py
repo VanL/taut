@@ -92,18 +92,100 @@ def _workspace_with_two_members(
     db = workspace / ".taut.db"
     TautClient.init(db_path=db)
 
-    selected = TautClient(db_path=db, as_name=selected_name)
-    selected.join("general")
-    member = selected.last_created_member
-    assert member is not None
-    assert member.token is not None
-    selected.close()
+    with ExitStack() as seed_clients:
+        selected = TautClient(
+            db_path=db,
+            as_name=selected_name,
+            persistent=True,
+        )
+        seed_clients.callback(selected.close)
+        selected.join("general")
+        member = selected.last_created_member
+        assert member is not None
+        assert member.token is not None
 
-    other = TautClient(db_path=db, as_name=other_name)
-    other.join("general")
-    other.say("general", f"hello @{selected_name}")
-    other.close()
+        other = TautClient(
+            db_path=db,
+            as_name=other_name,
+            persistent=True,
+        )
+        seed_clients.callback(other.close)
+        other.join("general")
+        other.say("general", f"hello @{selected_name}")
     return workspace, member.token
+
+
+def test_workspace_seed_clients_use_bounded_persistent_ownership(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Seed setup reuses owned runners without changing real client work."""
+
+    persistent_values: list[bool] = []
+    constructed: list[TautClient] = []
+    closed: list[TautClient] = []
+    original_init = TautClient.__init__
+    original_close = TautClient.close
+
+    def observed_init(self: TautClient, *args: Any, **kwargs: Any) -> None:
+        persistent_values.append(bool(kwargs.get("persistent", False)))
+        original_init(self, *args, **kwargs)
+        constructed.append(self)
+
+    def observed_close(self: TautClient) -> None:
+        original_close(self)
+        closed.append(self)
+
+    monkeypatch.setattr(TautClient, "__init__", observed_init)
+    monkeypatch.setattr(TautClient, "close", observed_close)
+
+    workspace, token = _workspace_with_two_members(tmp_path)
+
+    assert workspace == tmp_path / "workspace"
+    assert token
+    assert persistent_values == [True, True]
+    assert closed == list(reversed(constructed))
+
+
+@pytest.mark.parametrize("failure_at", [1, 2])
+def test_workspace_seed_clients_close_when_join_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_at: int,
+) -> None:
+    """Each seed is stack-owned before its first fallible operation."""
+
+    constructed: list[TautClient] = []
+    closed: list[TautClient] = []
+    join_calls = 0
+    original_init = TautClient.__init__
+    original_close = TautClient.close
+    original_join = TautClient.join
+
+    def observed_init(self: TautClient, *args: Any, **kwargs: Any) -> None:
+        original_init(self, *args, **kwargs)
+        constructed.append(self)
+
+    def observed_close(self: TautClient) -> None:
+        original_close(self)
+        closed.append(self)
+
+    def failing_join(self: TautClient, *args: Any, **kwargs: Any) -> Any:
+        nonlocal join_calls
+        join_calls += 1
+        if join_calls == failure_at:
+            raise RuntimeError(f"seed join {failure_at} failed")
+        return original_join(self, *args, **kwargs)
+
+    monkeypatch.setattr(TautClient, "__init__", observed_init)
+    monkeypatch.setattr(TautClient, "close", observed_close)
+    monkeypatch.setattr(TautClient, "join", failing_join)
+
+    with pytest.raises(RuntimeError, match=rf"^seed join {failure_at} failed$"):
+        _workspace_with_two_members(tmp_path)
+
+    assert len(constructed) == failure_at
+    assert closed == list(reversed(constructed))
 
 
 def _assert_result(
