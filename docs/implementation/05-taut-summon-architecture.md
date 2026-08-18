@@ -784,7 +784,7 @@ require a separately drained subprocess pipe.
 | `extensions/taut_summon/taut_summon/_stream.py` | Shared stream-json child-process mechanics, nonblocking write leases and cancellation epochs, reusable interruption, terminal-close request, and blocking finalization |
 | `extensions/taut_summon/taut_summon/_pty.py` | Universal interactive PTY adapter, terminal-query responder, attach bridge, and terminal-retirement fd-operation lifecycle |
 | `extensions/taut_summon/taut_summon/_scripted.py` | The `scripted` test adapter (real subprocess, fake model) — the anti-mocking seam |
-| `extensions/taut_summon/taut_summon/scripted_provider.py` | The scripted provider child, including bounded physical-SIGINT cleanup and signal-count evidence |
+| `extensions/taut_summon/taut_summon/scripted_provider.py` | The scripted provider child, including readiness publication inside bounded physical-SIGINT cleanup ownership and signal-count evidence |
 | `extensions/taut_summon/taut_summon/_claude.py` | The `claude-stream` adapter: headless stream-json, resume, event translation |
 | `extensions/taut_summon/taut_summon/_persona.py` | The default persona template ([SUM-10]) and env assembly |
 | `extensions/taut_summon/tests/conftest.py` | The shared real-process driver harness (`DriverProcess`) and fixtures |

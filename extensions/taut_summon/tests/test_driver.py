@@ -2159,6 +2159,31 @@ def test_scripted_provider_records_reentrant_sigint_cleanup(
     )
 
 
+def test_scripted_provider_owns_signal_cleanup_during_ready_publication(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut_summon import scripted_provider
+
+    events: list[str] = []
+
+    def record(payload: dict[str, Any]) -> None:
+        event = str(payload["event"])
+        events.append(event)
+        if event == "provider-ready":
+            raise scripted_provider._SignalCleanupComplete
+
+    monkeypatch.setattr(
+        scripted_provider,
+        "_load_scenario",
+        lambda: {"announce_session": False},
+    )
+    monkeypatch.setattr(scripted_provider, "_install_sigint_cleanup", lambda _s: None)
+    monkeypatch.setattr(scripted_provider, "_record", record)
+
+    assert scripted_provider.main() == 0
+    assert events == ["start", "provider-ready"]
+
+
 def test_request_stop_requests_terminal_close_before_wake() -> None:
     driver = _new_driver(_run_request())
     events: list[tuple[str, bool, bool]] = []

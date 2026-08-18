@@ -329,26 +329,25 @@ def main() -> int:
         or "scripted-session"
     )
     state = _State(session_id)
-    _record(
-        {
-            "event": "start",
-            "session": os.environ.get("TAUT_SUMMON_SESSION"),
-            "env_as": os.environ.get("TAUT_AS"),
-            "env_token": os.environ.get("TAUT_TOKEN"),
-            "env_db": os.environ.get("TAUT_DB"),
-            "env_system_prompt": os.environ.get("TAUT_SUMMON_SYSTEM_PROMPT"),
-        }
-    )
-    _record({"event": "provider-ready"})
-    if scenario.get("announce_session", True):
-        _emit_init(state.session_id)
-
-    responses = scenario.get("responses", [])
-    default_response = scenario.get(
-        "default_response", [{"assistant_text": "echo: {text}"}]
-    )
-
     try:
+        _record(
+            {
+                "event": "start",
+                "session": os.environ.get("TAUT_SUMMON_SESSION"),
+                "env_as": os.environ.get("TAUT_AS"),
+                "env_token": os.environ.get("TAUT_TOKEN"),
+                "env_db": os.environ.get("TAUT_DB"),
+                "env_system_prompt": os.environ.get("TAUT_SUMMON_SYSTEM_PROMPT"),
+            }
+        )
+        _record({"event": "provider-ready"})
+        if scenario.get("announce_session", True):
+            _emit_init(state.session_id)
+
+        responses = scenario.get("responses", [])
+        default_response = scenario.get(
+            "default_response", [{"assistant_text": "echo: {text}"}]
+        )
         _run_steps(list(scenario.get("on_start", [])), state, "")
 
         index = 0

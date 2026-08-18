@@ -186,6 +186,13 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   broad incidental signal cleanup multiplies runner-specific flake without
   strengthening the behavior under test.
 
+- 2026-08-17: A flushed readiness record is externally observable before the
+  publishing call and its file context have returned. Signal or cancellation
+  ownership must therefore be established before publishing readiness and must
+  contain the publication call itself. Waiting for the record and then acting
+  is event-based, but it is not safe if the child treats return from publication
+  as the start of its lifecycle owner.
+
 - 2026-06-12: Type-check tests when they are the executable spec proof.
   A strict source tree with excluded tests leaves a blind spot in fixtures
   and helper contracts; use `mypy taut tests` when test code is part of
