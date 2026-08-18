@@ -727,6 +727,13 @@ class TautApp(App[None]):
             self._update_reply_affordance()
 
     def on_terminal_lease_request(self, event: TerminalLeaseRequest) -> None:
+        if self._shutting_down or event.release.is_set():
+            # The worker already timed out or teardown began; suspending now
+            # would be a spurious lease with no attached worker.
+            event.error = RuntimeError("terminal lease request is stale")
+            event.acquired.set()
+            event.restored.set()
+            return
         event.hold(self)
 
     def on_terminal_attach_confirmation_request(
@@ -748,10 +755,28 @@ class TautApp(App[None]):
                 f"Return to Taut with {detach_hint}. The TUI will resume and "
                 "keep this Summon run active."
             )
+            screen = ConfirmationScreen(prompt)
+
+            def dismiss_stale() -> None:
+                try:
+                    if self.screen is screen:
+                        screen.dismiss(False)
+                except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-086] exception
+                    return
+
+            def resolved_elsewhere() -> None:
+                try:
+                    self.call_later(dismiss_stale)
+                except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-086] exception
+                    return
+
+            event.on_resolved = resolved_elsewhere
             self.push_screen(
-                ConfirmationScreen(prompt),
+                screen,
                 lambda decision: event.resolve(bool(decision)),
             )
+            if event.resolved.is_set():
+                self.call_later(dismiss_stale)
         except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-085] exception
             event.fail(exc)
 
@@ -899,9 +924,6 @@ class TautApp(App[None]):
             self._summon.quit_block_reason() if self._summon is not None else None
         )
         if summon_reason is not None:
-            if self._summon is not None and self._summon.has_pending_owned():
-                self._show_error(summon_reason)
-                return
             if self._owned_exit_confirmation_open:
                 return
             self._owned_exit_confirmation_open = True
@@ -1647,7 +1669,8 @@ class TautApp(App[None]):
                 )
             except BaseException:  # noqa: BLE001,S110 approved [DOM-10.2.1] [RUFF-SUP-086] exception
                 pass
-        self._operation_state = "idle"
+        if self._operation_state.startswith("summon"):
+            self._operation_state = "idle"
         try:
             self._update_status()
         except BaseException:  # noqa: BLE001,S110 approved [DOM-10.2.1] [RUFF-SUP-086] exception
@@ -2500,7 +2523,10 @@ class TautApp(App[None]):
         if run.member_name is not None:
             self._summon_names[run.token] = run.member_name
         try:
-            self._operation_state = "summon live"
+            if self._operation_state == "idle" or self._operation_state.startswith(
+                "summon"
+            ):
+                self._operation_state = "summon live"
             self._render_inspector(
                 f"Summon ready\n{_safe_projection(run)}",
                 kind=InspectorKind.SUMMON,

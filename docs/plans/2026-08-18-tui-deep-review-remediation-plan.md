@@ -117,17 +117,14 @@ session/domain/system, summon, and forms/layout/models.
 After the spec-promotion slice, record the promotion baseline identifier
 here:
 
-- Promotion baseline: diff base `4b88b8d` plus the 2026-08-18 worktree
-  promotion of the strategy-A deltas to `docs/specs/10-taut-tui.md`
-  ([TUI-5.3], [TUI-7.1] ×3, [TUI-11.2], [TUI-11.3]) and
-  `docs/specs/04-summon.md` ([SUM-10] bullet), each with its Related
-  Plans backlink. Rerunnable verification:
-  `git diff 4b88b8d -- docs/specs/10-taut-tui.md docs/specs/04-summon.md`
-  must show exactly those sections changed plus the K1 strategy-B
-  Shift-Enter text in [TUI-6.3], [TUI-8.1], and [TUI-13.2] (already
-  applied together with its code and tests; lands with Slice 3). Replace
-  this identifier with the promotion commit SHA when the owner lands
-  Slice 1.
+- Promotion baseline: `588dc44` — the Slice 1 landing commit carrying the
+  strategy-A deltas to `docs/specs/10-taut-tui.md` ([TUI-5.3],
+  [TUI-7.1] ×3, [TUI-11.2], [TUI-11.3]) and `docs/specs/04-summon.md`
+  ([SUM-10] bullet) with Related Plans backlinks. The K1 strategy-B
+  Shift-Enter slice (spec text in [TUI-6.3]/[TUI-8.1]/[TUI-13.2] plus
+  binding, help, README, changelog, tests) landed in the same commit
+  because it shares the spec file and the baseline forbade partial
+  staging; Slice 3 task 1 is thereby complete at `588dc44`.
 
 ## Proposed Spec Delta
 
@@ -741,6 +738,7 @@ plus the hosted TUI CI lanes on the landing branch (the repo's existing
 
 | Spec ref | Planned behavior | Actual behavior | Rationale | Spec proposal |
 |----------|------------------|-----------------|-----------|---------------|
+| [TUI-11.2] / [SUM-7] | Slice 2 investigates an in-bootstrap cancellation seam and uses it if present | Seam confirmed absent (`taut_summon/controller.py:189` `run_foreground` → `run_driver`, no cancel parameter); implemented pre-start cancel event plus bounded wait only | No Summon-side seam exists; the promoted [TUI-11.2] text already conditions adoption on Summon providing one | Closed — no spec edit required now; the [SUM-7] cooperative pre-ready cancellation enhancement is future work under its own plan |
 
 ## Independent Review Log
 
@@ -802,8 +800,67 @@ assumptions, both now removed from the promoted text).
 
 ## Implementation Log
 
-(empty — populated per slice: comprehension answers, evidence, gates run,
-stop-gate outcomes)
+### Slice 1 — 2026-08-18
+
+Landed at `588dc44` (promotion + plan + index + K1 strategy-B slice; see
+§Spec Baseline for why K1 rode along). Gates: check-plan-status-index,
+check-doc-paths, K1 test suites green.
+
+### Slice 2 — 2026-08-18 — comprehension answers (pre-edit gate)
+
+1. Decode-before-sink: decoded control characters other than LF/TAB must
+   be re-escaped by the unchanged sink policy so the decode cannot open a
+   terminal injection surface; decoding after the sink would emit raw
+   controls to the terminal. (Matches expected answer.)
+2. L1 reopen: `_apply_conversation` assigns `composer.text`
+   programmatically; TextArea posts `Changed`; `on_text_area_changed`
+   cannot distinguish that from typing and re-promotes — the
+   originating-draft clear path is not involved. (Matches.)
+3. Pending runs cannot be stopped: pending records carry no
+   `SummonRunHandle` (`on_ready` fires only after the first live
+   generation), and [TUI-11.2] forbids stopping by name because of
+   auto-rename; before this slice there is no worker-targeted
+   cancellation seam. (Matches.)
+4. Enter-submit unaffected: `TautComposer` binds `enter` to
+   `action_submit` with `priority=True`, checked before TextArea key
+   handling; the newline aliases extend only the separate
+   `insert_newline` binding. (Matches.)
+
+### Slice 2 — 2026-08-18 — evidence
+
+- S1: `TerminalLeaseRequest.hold` exits the app on any exception from
+  the suspend scope (`suppress`-guarded `app.exit()`); no
+  application-mode resume, no private Textual API. The app-level proof
+  drives the real `App.suspend` in `run_test`, where the headless
+  driver raises `SuspendNotSupported` through the same `BaseException`
+  branch a KeyboardInterrupt takes; the unit proof injects a raising
+  release-wait through the file's established `_LeaseApp` fake. (The
+  plan sentence "drive the real context manager" is satisfied by the
+  app-level test; real suspension cannot occur headless.)
+- S2: pending-run quit — `action_quit_tui` no longer dead-ends on
+  `has_pending_owned`; the owned-exit confirmation covers pending runs;
+  `_OwnedRecord.cancel` + `_run_owned` pre-start check implement the
+  pre-start cancel; `stop_owned_and_wait` cancels handle-less records
+  and bounded-waits the rest; foreground workers moved from the
+  non-daemon `ThreadPoolExecutor` to daemon threads with manual Future
+  semantics (`_submit_foreground`) so a hung bootstrap cannot pin
+  interpreter exit; `close()` also sets cancel events. Seam
+  investigation recorded in the Deviation Log.
+- S3: attach-confirmation requests carry an `on_resolved` callback; the
+  app handler retains the screen and dismisses it via
+  `call_later` when the worker resolves the request without the user
+  (dismissal when the stale screen is current; a buried screen's later
+  dismissal flows through its normal callback, which is latched-no-op).
+- S4: `on_terminal_lease_request` refuses stale (`release` already set)
+  or shutting-down requests without suspending.
+- S5: confirm-time owner contention returns a graceful decline instead
+  of raising; the exclusivity test updated to the promoted contract.
+- S6: `_apply_summon_ready`/`_apply_summon_return` mutate
+  `_operation_state` only when it holds an idle or summon-owned value.
+- Tests: 8 new tests in `test_tui_summon.py` (7 red at baseline; the
+  stale-lease guard test pins post-S1 behavior); suite 27/27; quit-route
+  matrix `test_tui_app.py -k quit` 30/30; full `test_tui_app.py` 97/97;
+  ruff clean (C901 resolved by extracting `_run_owned`).
 
 ## Completion Gate
 

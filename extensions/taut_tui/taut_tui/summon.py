@@ -15,8 +15,8 @@ import uuid
 from collections import deque
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor, wait
-from contextlib import contextmanager
-from dataclasses import dataclass
+from contextlib import contextmanager, suppress
+from dataclasses import dataclass, field
 from typing import Any, Protocol, cast
 
 from textual.message import Message as TextualMessage
@@ -122,6 +122,7 @@ class _OwnedRecord:
     token: str
     handle: _RunHandle | None = None
     future: Future[None] | None = None
+    cancel: threading.Event = field(default_factory=threading.Event)
 
 
 class TuiSummonOperations:
@@ -140,10 +141,6 @@ class TuiSummonOperations:
             controller = controller_type(db_path=db_path)
         self._controller = controller
         self._ready_callback = ready_callback
-        self._foreground_executor = ThreadPoolExecutor(
-            max_workers=8,
-            thread_name_prefix="taut-tui-summon-foreground",
-        )
         self._control_executor = ThreadPoolExecutor(
             max_workers=2,
             thread_name_prefix="taut-tui-summon-control",
@@ -239,25 +236,62 @@ class TuiSummonOperations:
                 callback(projection)
 
         def run() -> None:
-            try:
-                self._controller.run_foreground(
-                    request,
-                    interaction,
-                    install_signal_handlers=False,
-                    on_ready=on_ready,
-                )
-            finally:
-                release_worker = getattr(interaction, "release_current_worker", None)
-                if callable(release_worker):
-                    release_worker()
-                with self._lock:
-                    if self._owned.get(token) is record:
-                        self._owned.pop(token, None)
+            self._run_owned(record, request, interaction, on_ready)
 
-        future = self._foreground_executor.submit(run)
+        future = self._submit_foreground(run)
         with self._lock:
             record.future = future
         return token, future
+
+    def _run_owned(
+        self,
+        record: _OwnedRecord,
+        request: object,
+        interaction: object,
+        on_ready: Callable[[_RunHandle], None],
+    ) -> None:
+        try:
+            if record.cancel.is_set():
+                return
+            self._controller.run_foreground(
+                request,
+                interaction,
+                install_signal_handlers=False,
+                on_ready=on_ready,
+            )
+        finally:
+            release_worker = getattr(interaction, "release_current_worker", None)
+            if callable(release_worker):
+                release_worker()
+            with self._lock:
+                if self._owned.get(record.token) is record:
+                    self._owned.pop(record.token, None)
+
+    def _submit_foreground(self, run: Callable[[], None]) -> Future[None]:
+        """Run one foreground worker on a daemon thread with Future semantics.
+
+        Daemon threads keep a hung provider bootstrap from pinning interpreter
+        exit; orderly shutdown still flows through ``stop_owned_and_wait``.
+        """
+
+        future: Future[None] = Future()
+
+        def target() -> None:
+            if not future.set_running_or_notify_cancel():
+                return
+            try:
+                run()
+            except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-087] exception
+                future.set_exception(exc)
+            else:
+                future.set_result(None)
+
+        threading.Thread(
+            target=target,
+            name="taut-tui-summon-foreground",
+            daemon=True,
+        ).start()
+        return future
 
     def owned_runs(self) -> tuple[OwnedSummonRun, ...]:
         with self._lock:
@@ -302,6 +336,8 @@ class TuiSummonOperations:
             for record in records:
                 if record.handle is not None:
                     record.handle.request_stop()
+                else:
+                    record.cancel.set()
             future_records = tuple(
                 (record, record.future)
                 for record in records
@@ -343,8 +379,10 @@ class TuiSummonOperations:
             if self._closed:
                 return
             self._closed = True
+            records = tuple(self._owned.values())
+        for record in records:
+            record.cancel.set()
         self.request_owned_stops()
-        self._foreground_executor.shutdown(wait=False, cancel_futures=False)
         self._control_executor.shutdown(wait=False, cancel_futures=False)
         self._supervisor.shutdown(wait=False, cancel_futures=False)
 
@@ -385,8 +423,16 @@ class TerminalLeaseRequest(TextualMessage):
                 self.release.wait()
             app.refresh(layout=True)
         except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-087] exception
+            # [TUI-11.3]: exception exit from the suspend scope is a fatal
+            # lease failure. Application mode cannot be safely re-entered, so
+            # the TUI exits completely through normal teardown, leaving the
+            # terminal restored for the shell.
             self.error = exc
             self.acquired.set()
+            exit_app = getattr(app, "exit", None)
+            if callable(exit_app):
+                with suppress(Exception):
+                    exit_app()
         finally:
             if self._bridge is not None:
                 self._bridge.end_lease()
@@ -402,6 +448,7 @@ class TerminalAttachConfirmationRequest(TextualMessage):
         self.resolved = threading.Event()
         self.decision: bool | None = None
         self.error: BaseException | None = None
+        self.on_resolved: Callable[[], None] | None = None
         self._lock = threading.Lock()
 
     def resolve(self, decision: bool) -> None:
@@ -410,6 +457,8 @@ class TerminalAttachConfirmationRequest(TextualMessage):
                 return
             self.decision = bool(decision)
             self.resolved.set()
+            callback = self.on_resolved
+        self._notify(callback)
 
     def fail(self, error: BaseException) -> None:
         with self._lock:
@@ -417,6 +466,17 @@ class TerminalAttachConfirmationRequest(TextualMessage):
                 return
             self.error = error
             self.resolved.set()
+            callback = self.on_resolved
+        self._notify(callback)
+
+    @staticmethod
+    def _notify(callback: Callable[[], None] | None) -> None:
+        if callback is None:
+            return
+        try:
+            callback()
+        except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-086] exception
+            return
 
 
 class TuiSummonInteraction:
@@ -467,7 +527,10 @@ class TuiSummonInteraction:
                     "Summon terminal is unavailable after a failed lease"
                 )
             if self._terminal_owner is not None:
-                raise RuntimeError("another Summon terminal interaction is active")
+                # [TUI-11.3]: losing the confirm race degrades to the same
+                # graceful decline as unavailability instead of failing the
+                # whole run with a hard error.
+                return False
             self._terminal_owner = owner
             self._pending_confirmation = request
         try:

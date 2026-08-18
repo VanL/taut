@@ -556,8 +556,7 @@ def test_terminal_attach_confirmation_is_exclusive_and_precedes_lease(
             interaction.terminal_availability(TerminalIntent.PREFERRED)
             is TerminalAvailability.UNAVAILABLE
         )
-        with pytest.raises(RuntimeError, match="another Summon terminal interaction"):
-            interaction.confirm_terminal_attach(request.notice)
+        assert interaction.confirm_terminal_attach(request.notice) is False
         with (
             pytest.raises(RuntimeError, match="not acknowledged by this worker"),
             interaction.terminal_lease(),
@@ -817,3 +816,316 @@ def test_terminal_availability_requires_supported_suspend(
         interaction.terminal_availability(TerminalIntent.REQUIRED)
         is TerminalAvailability.UNAVAILABLE
     )
+
+
+# --- Slice 2 of docs/plans/2026-08-18-tui-deep-review-remediation-plan.md ---
+
+
+class _ExitRecordingLeaseApp(_LeaseApp):
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.exit_calls = 0
+
+    def exit(self) -> None:
+        self.exit_calls += 1
+
+
+class _RaisingWait:
+    """Stand-in for the release event whose wait is interrupted."""
+
+    def __init__(self, error: BaseException) -> None:
+        self._error = error
+
+    def wait(self, timeout: float | None = None) -> bool:
+        raise self._error
+
+    def set(self) -> None:  # pragma: no cover - parity with Event
+        return
+
+    def is_set(self) -> bool:
+        return False
+
+
+def test_lease_exception_records_failure_and_exits_app_completely() -> None:
+    """[TUI-11.3] exception exit from the suspend body is a fatal full exit."""
+
+    from taut_tui.summon import TerminalLeaseRequest
+
+    app = _ExitRecordingLeaseApp()
+    request = TerminalLeaseRequest()
+    interrupt = KeyboardInterrupt()
+    request.release = _RaisingWait(interrupt)  # type: ignore[assignment]
+
+    request.hold(app)
+
+    assert request.error is interrupt
+    assert request.restored.is_set()
+    assert app.exit_calls == 1
+    assert not app.refreshed.is_set()
+
+
+def test_real_app_lease_suspension_failure_exits_instead_of_lingering() -> None:
+    """A suspend failure inside the real handler exits the TUI completely."""
+
+    import asyncio
+
+    from taut_tui.app import TautApp
+    from taut_tui.summon import TerminalLeaseRequest
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            request = TerminalLeaseRequest()
+            app.post_message(request)
+            for _ in range(100):
+                await pilot.pause(0.01)
+                if request.restored.is_set():
+                    break
+            assert request.error is not None
+            for _ in range(100):
+                await pilot.pause(0.01)
+                if not app.is_running:
+                    return
+            raise AssertionError("app kept running after a failed lease")
+
+    asyncio.run(exercise())
+
+
+def test_stale_or_shutdown_lease_request_never_suspends_or_exits() -> None:
+    """A lease request whose worker already gave up is refused inertly."""
+
+    import asyncio
+
+    from taut_tui.app import TautApp
+    from taut_tui.summon import TerminalLeaseRequest
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            request = TerminalLeaseRequest()
+            request.release.set()  # worker timed out and moved on
+            app.post_message(request)
+            for _ in range(100):
+                await pilot.pause(0.01)
+                if request.restored.is_set():
+                    break
+            assert request.restored.is_set()
+            assert request.error is not None
+            assert app.is_running
+            await pilot.pause(0.05)
+            assert app.is_running
+
+    asyncio.run(exercise())
+
+
+def test_pending_worker_cancelled_before_start_never_runs_controller() -> None:
+    """Confirmed cancel-and-quit cancels workers that have not started."""
+
+    from taut_tui.summon import TuiSummonOperations
+
+    class NeverController(_Controller):
+        def run_foreground(self, *args: object, **kwargs: object) -> None:
+            raise AssertionError("cancelled pending worker must not start")
+
+    captured: list[Any] = []
+
+    class DeferredStart(TuiSummonOperations):
+        def _submit_foreground(self, run: Any) -> Any:
+            from concurrent.futures import Future
+
+            future: Future[None] = Future()
+            captured.append((run, future))
+            return future
+
+    controller = NeverController()
+    operations = DeferredStart(controller=controller)
+    try:
+        _token, _worker = operations.start(object(), object())
+        shutdown = operations.stop_owned_and_wait(timeout=1.0)
+        (run, future), = captured
+        future.set_running_or_notify_cancel()
+        try:
+            run()
+        except BaseException as exc:  # noqa: BLE001 - test surface
+            future.set_exception(exc)
+        else:
+            future.set_result(None)
+        result = shutdown.result(timeout=5)
+        assert result.complete is True
+        assert operations.owned_runs() == ()
+    finally:
+        operations.close()
+
+
+def test_quit_with_pending_run_offers_cancel_and_quit_dialog() -> None:
+    """[TUI-11.2] pending runs get the exit decision, not a dead-end error."""
+
+    import asyncio
+    from concurrent.futures import Future
+
+    from taut_tui.app import TautApp
+    from taut_tui.screens import ConfirmationScreen
+    from taut_tui.summon import OwnedSummonShutdown
+
+    class PendingStub:
+        def __init__(self) -> None:
+            self.stop_calls = 0
+
+        def close(self) -> None:
+            return
+
+        def quit_block_reason(self) -> str:
+            return "1 Summon run(s) still starting."
+
+        def has_pending_owned(self) -> bool:
+            return True
+
+        def stop_owned_and_wait(self, **_kwargs: object) -> Future[OwnedSummonShutdown]:
+            self.stop_calls += 1
+            done: Future[OwnedSummonShutdown] = Future()
+            done.set_result(
+                OwnedSummonShutdown(
+                    completed_tokens=("t",), unresolved=(), errors=()
+                )
+            )
+            return done
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        stub = PendingStub()
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            app._summon = stub  # type: ignore[assignment]
+            app.action_quit_tui()
+            await pilot.pause()
+            assert isinstance(app.screen, ConfirmationScreen)
+            app.screen.action_confirm()
+            for _ in range(100):
+                await pilot.pause(0.01)
+                if not app.is_running:
+                    break
+            assert stub.stop_calls == 1
+
+    asyncio.run(exercise())
+
+
+def test_cancelled_attach_confirmation_dismisses_stale_dialog() -> None:
+    """Worker-side resolution removes the lying confirmation modal."""
+
+    import asyncio
+
+    from taut_tui.app import TautApp
+    from taut_tui.screens import ConfirmationScreen
+    from taut_tui.summon import TerminalAttachConfirmationRequest
+
+    class _Notice:
+        member = "grok"
+        provider = "grok"
+        detach_hint = "Ctrl-\\ Ctrl-\\"
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            request = TerminalAttachConfirmationRequest(_Notice())
+            app.post_message(request)
+            for _ in range(100):
+                await pilot.pause(0.01)
+                if isinstance(app.screen, ConfirmationScreen):
+                    break
+            assert isinstance(app.screen, ConfirmationScreen)
+            request.resolve(False)
+            for _ in range(100):
+                await pilot.pause(0.01)
+                if not isinstance(app.screen, ConfirmationScreen):
+                    break
+            assert not isinstance(app.screen, ConfirmationScreen)
+            assert app.is_running
+
+    asyncio.run(exercise())
+
+
+def test_confirm_owner_contention_declines_instead_of_raising() -> None:
+    """[TUI-11.3] losing a confirm race degrades to a graceful decline."""
+
+    from taut_summon import TerminalAttachNotice
+
+    from taut_tui import summon as tui_summon
+
+    app = _LeaseApp(confirmation_decision=None)
+    interaction = tui_summon.TuiSummonInteraction(app, timeout=2.0)
+    first_blocked = Event()
+    first_done = Event()
+    results: list[object] = []
+
+    notice = TerminalAttachNotice(
+        member="grok", provider="grok", detach_hint="Ctrl-\\ Ctrl-\\"
+    )
+
+    def first() -> None:
+        cancel = Event()
+
+        def cancel_soon() -> None:
+            first_blocked.wait(5)
+            cancel.set()
+
+        Thread(target=cancel_soon).start()
+        try:
+            results.append(
+                interaction.confirm_terminal_attach(notice, cancel=cancel)
+            )
+        finally:
+            first_done.set()
+
+    worker = Thread(target=first)
+    worker.start()
+    for _ in range(200):
+        with interaction._lock:
+            if interaction._terminal_owner is not None:
+                break
+        time.sleep(0.01)
+    second = interaction.confirm_terminal_attach(notice)
+    assert second is False
+    first_blocked.set()
+    assert first_done.wait(5)
+    worker.join(timeout=5)
+
+
+def test_summon_status_transitions_do_not_clobber_unrelated_operation() -> None:
+    """Summon ready/return only own summon-shaped operation states."""
+
+    import asyncio
+    from concurrent.futures import Future
+
+    from taut_tui.app import TautApp
+    from taut_tui.summon import OwnedSummonRun
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            app._owned_summon_tokens.add("tok")
+            run = OwnedSummonRun(
+                token="tok", pending=False, member_id="m", member_name="grok"
+            )
+            app._operation_state = "working"
+            app._apply_summon_ready(run)
+            assert app._operation_state == "working"
+            app._operation_state = "summon grok starting"
+            app._apply_summon_ready(run)
+            assert app._operation_state == "summon live"
+
+            done: Future[None] = Future()
+            done.set_result(None)
+            app._owned_summon_tokens.add("tok")
+            app._operation_state = "working"
+            app._apply_summon_return("tok", done)
+            assert app._operation_state == "working"
+            app._owned_summon_tokens.add("tok2")
+            app._operation_state = "summon live"
+            app._apply_summon_return("tok2", done)
+            assert app._operation_state == "idle"
+
+    asyncio.run(exercise())
