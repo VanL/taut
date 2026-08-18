@@ -200,7 +200,10 @@ Search results remain public hydrated `SearchHit` values. Opening one calls
 `TautClient.history_around()` for exact bounded, cursor-neutral context, then
 uses that page as the active transcript and starts the ordinary filtered live
 watcher. This avoids both `show_message()` cursor movement and a TUI-owned
-second transcript store.
+second transcript store. The exhaustive handler proof observes both the exact
+intent-tokened conversation snapshot and the selected hit's delegated anchor
+restore plus following refresh. Snapshot completion alone is not presentation
+completion because message rendering defers scroll restoration.
 
 ## Responsive Presentation
 
@@ -357,6 +360,8 @@ it without eager Textual import.
 
 ## Related Plans
 
+- `docs/plans/2026-08-17-tui-search-anchor-test-synchronization-plan.md` —
+  exact-intent completion proof for deferred search-result anchor restoration.
 - `docs/plans/2026-08-17-tui-text-command-alias-plan.md` — passive textual
   completions, TUI-local guarded `q`/`quit`, and any-mode Ctrl-C/Ctrl-D quit
   while Textual owns terminal input.

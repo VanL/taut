@@ -531,18 +531,44 @@ async def _search_open_result(context: HandlerContext) -> None:
     finally:
         observer.close()
     search_context_applied = asyncio.Event()
+    search_anchor_restored = asyncio.Event()
     observed_snapshots: list[ConversationSnapshot | None] = []
     apply_optional_conversation = context.app._apply_optional_conversation
+    restore_transcript_anchor = context.app._restore_transcript_anchor
     expected_intent = context.app._conversation_intent + 1
 
     def observe_search_context(
         intent: int,
         future: Future[ConversationSnapshot | None],
     ) -> None:
-        apply_optional_conversation(intent, future)
-        if intent == expected_intent:
-            observed_snapshots.append(_successful_conversation(future))
-            search_context_applied.set()
+        if intent != expected_intent:
+            apply_optional_conversation(intent, future)
+            return
+
+        def observe_search_anchor_restore(
+            messages: tuple[Any, ...],
+            anchor_index: int,
+            intra_row_offset: int,
+        ) -> None:
+            restore_transcript_anchor(messages, anchor_index, intra_row_offset)
+            if messages[anchor_index].ts == context.message_ts:
+                context.app.call_after_refresh(search_anchor_restored.set)
+
+        context.monkeypatch.setattr(
+            context.app,
+            "_restore_transcript_anchor",
+            observe_search_anchor_restore,
+        )
+        try:
+            apply_optional_conversation(intent, future)
+        finally:
+            context.monkeypatch.setattr(
+                context.app,
+                "_restore_transcript_anchor",
+                restore_transcript_anchor,
+            )
+        observed_snapshots.append(_successful_conversation(future))
+        search_context_applied.set()
 
     context.monkeypatch.setattr(
         context.app,
@@ -551,6 +577,7 @@ async def _search_open_result(context: HandlerContext) -> None:
     )
     await _select_palette(context, ActionId.SEARCH_OPEN_RESULT)
     await asyncio.wait_for(search_context_applied.wait(), timeout=5)
+    await asyncio.wait_for(search_anchor_restored.wait(), timeout=5)
     assert len(observed_snapshots) == 1
     snapshot = observed_snapshots[0]
     assert snapshot is not None
