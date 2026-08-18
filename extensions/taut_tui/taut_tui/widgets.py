@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from typing import Any, ClassVar, Self
 
@@ -57,10 +58,50 @@ def escape_display_text(value: str) -> EscapedDisplayText:
     )
 
 
-def escape_message_body(value: str) -> EscapedDisplayText:
-    """Expand structural message tabs before applying terminal escape policy."""
+# [TUI-5.3]: the closed display-decode allowlist is exactly the inverse of
+# the terminal escape policy's output language (taut/terminal.py
+# `_write_escaped`) — short escapes plus lowercase-hex numeric forms. `\\`
+# is deliberately absent: no sequence suppresses the decode.
+_MESSAGE_ESCAPE_PATTERN = re.compile(
+    r"\\(?:[abtnvfr]|x[0-9a-f]{2}|u[0-9a-f]{4}|U[0-9a-f]{8})"
+)
+_MESSAGE_SHORT_DECODES = {
+    "a": "\a",
+    "b": "\b",
+    "t": "\t",
+    "n": "\n",
+    "v": "\v",
+    "f": "\f",
+    "r": "\r",
+}
 
-    return escape_display_text(value.expandtabs(_MESSAGE_TAB_SIZE))
+
+def decode_message_escapes(value: str) -> str:
+    """Decode the [TUI-5.3] allowlist toward sender intent; keep the rest."""
+
+    def _decode(match: re.Match[str]) -> str:
+        body = match.group(0)[1:]
+        short = _MESSAGE_SHORT_DECODES.get(body)
+        if short is not None:
+            return short
+        code_point = int(body[1:], 16)
+        if code_point > 0x10FFFF or 0xD800 <= code_point <= 0xDFFF:
+            return match.group(0)
+        return chr(code_point)
+
+    return _MESSAGE_ESCAPE_PATTERN.sub(_decode, value)
+
+
+def escape_message_body(value: str) -> EscapedDisplayText:
+    """Decode allowlisted escapes, expand tabs, then apply escape policy.
+
+    Decoding runs before the sink escape so any decoded control character
+    other than LF and TAB is immediately re-escaped by the unchanged policy.
+    """
+
+    return escape_display_text(
+        decode_message_escapes(value).expandtabs(_MESSAGE_TAB_SIZE)
+    )
 
 
 def escape_inline_text(value: str) -> EscapedDisplayText:
@@ -356,6 +397,7 @@ __all__ = [
     "TautOptionList",
     "TautSelect",
     "TautStatic",
+    "decode_message_escapes",
     "display_text",
     "escape_display_text",
     "escape_inline_text",

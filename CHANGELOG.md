@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- TUI transcript message bodies now decode a closed escape allowlist toward
+  sender intent: literal `\n`, `\t`, and the other terminal-escape-policy
+  forms (`\xNN`, `\uNNNN`, `\UNNNNNNNN`, lowercase hex) render as the
+  characters they denote, with decoded controls other than LF/TAB immediately
+  re-escaped by the unchanged display policy. The stored record, CLI output,
+  search previews, and metadata keep exact bytes. The summoned-member
+  briefing now explains that a quoted `\n` is not a newline and names stdin
+  as the multiline path.
+
 - Added `Shift-Enter` as a newline insertion key in the TUI composer,
   matching the common chat-composer convention alongside `Ctrl-Enter` and the
   portable `Ctrl-J`. Like `Ctrl-Enter`, it requires a terminal that reports

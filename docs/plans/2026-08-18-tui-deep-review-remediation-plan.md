@@ -860,7 +860,31 @@ check-doc-paths, K1 test suites green.
 - Tests: 8 new tests in `test_tui_summon.py` (7 red at baseline; the
   stale-lease guard test pins post-S1 behavior); suite 27/27; quit-route
   matrix `test_tui_app.py -k quit` 30/30; full `test_tui_app.py` 97/97;
-  ruff clean (C901 resolved by extracting `_run_owned`).
+  ruff clean (C901 resolved by extracting `_run_owned`). Landed at
+  `0261a62`.
+
+### Slice 3 — 2026-08-18 — evidence
+
+- K1 landed with Slice 1 at `588dc44` (recorded there).
+- D1: `decode_message_escapes` in `widgets.py` — regex over exactly the
+  [TUI-5.3] language (short escapes + lowercase-hex numeric forms;
+  surrogate and >U+10FFFF code points treated as malformed literals);
+  applied only in `escape_message_body`, before `expandtabs`, so decoded
+  controls re-escape through the unchanged sink. Red-green: allowlist
+  unit matrix + non-decoding boundary proof in
+  `test_tui_textual_contract.py`; transcript-level proof in
+  `test_tui_chat.py` (stored literal `\n\n` renders as a paragraph
+  break beside a real-newline message). One prior-contract assertion
+  (`test_message_body_tabs_expand_before_escape_notation`, written
+  against the superseded [TUI-5.3] sentence) updated to the promoted
+  contract with a dated comment.
+- D2: multiline-sends guidance added to the mouth section of the
+  `_persona.py` briefing (stdin path named; literal backslash-n called
+  out); `REQUIRED_PERSONA_CONCEPTS` extended red-green in
+  `test_persona.py`; module docstring aligned with the promoted
+  [SUM-10] bullet.
+- Gates: contract + chat + persona suites green; ruff clean;
+  check-doc-paths OK; changelog entry added.
 
 ## Completion Gate
 

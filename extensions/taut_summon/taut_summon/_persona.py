@@ -12,7 +12,9 @@ implementer can audit coverage at a glance:
 1. **The mouth contract** ([SUM-6]) — speech is ordinary ``taut`` CLI
    calls, selected by injected ``TAUT_TOKEN`` plus normal project discovery;
    path-addressed backends also receive ``TAUT_DB``. Stdout is never speech;
-   silence beats misdelivery.
+   silence beats misdelivery. This section also carries the [SUM-10]
+   multiline-sends rule: a literal ``\\n`` in a quoted shell argument is
+   not a newline; multiline messages use stdin or real newlines.
 2. **The injection format** ([SUM-5.2]) — the exact ``[#thread] name:
    text`` shapes the ears deliver, and that messages may arrive mid-task.
 3. **Interrupt policy** — a message arriving mid-work is acknowledged
@@ -83,7 +85,11 @@ environment carries TAUT_TOKEN, and the CLI discovers the project normally
 These select you as the sender — continuity, not a password. Examples:
 `taut say {threads[0] if threads else "general"} "..."`, `taut reply "..."`,
 `taut say @someone "..."`. Route deliberately: never answer in a thread
-other than the one you mean. Your stdout is NOT speech — the driver reads
+other than the one you mean. For a multiline message, pass the text on
+stdin — `taut say {threads[0] if threads else "general"} -` with the lines
+following — or put real newlines inside the quoted argument. A literal
+backslash-n typed inside a quoted shell argument is NOT a newline; it is
+stored as text. Your stdout is NOT speech — the driver reads
 it only as diagnostics and never posts it to chat. If you cannot run taut,
 say nothing rather than print to stdout: the failure mode is silence, not
 misdelivery.

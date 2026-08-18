@@ -318,3 +318,58 @@ def test_explicit_reply_open_commits_claimed_history_and_watches_both_surfaces(
 
     assert commits[0].reply_thread == first_reply.thread
     assert any(message.ts == later_reply.ts for message in replay)
+
+
+def test_transcript_decodes_literal_escapes_toward_sender_intent(
+    tmp_path: Path,
+) -> None:
+    """[TUI-5.3] a stored literal backslash-n body renders as a line break."""
+
+    import asyncio
+
+    from taut_tui.app import TautApp
+    from taut_tui.widgets import TautOptionList
+
+    db_path = tmp_path / "workspace.db"
+    alice, bob = _seed(db_path)
+    try:
+        bob.say("general", "first paragraph.\\n\\nsecond paragraph.")
+        bob.say("general", "real newline:\nkept as-is")
+
+        async def exercise() -> None:
+            app = TautApp(
+                db_path=str(db_path), as_name="alice", continuity_token=None
+            )
+            async with app.run_test(size=(130, 34)) as pilot:
+                for _ in range(200):
+                    await pilot.pause(0.01)
+                    if app._navigation_targets:
+                        break
+                navigation = app.query_one("#navigation-list", TautOptionList)
+                index = next(
+                    i
+                    for i, target in enumerate(app._navigation_targets)
+                    if target == "general"
+                )
+                navigation.highlighted = index
+                await pilot.pause()
+                navigation.action_select()
+                for _ in range(200):
+                    await pilot.pause(0.01)
+                    if app.visual_state.active_conversation == "general":
+                        break
+                transcript = app.query_one("#transcript", TautOptionList)
+                prompts = [
+                    str(transcript.get_option_at_index(i).prompt)
+                    for i in range(transcript.option_count)
+                ]
+                decoded = next(p for p in prompts if "first paragraph." in p)
+                assert "first paragraph.\n\nsecond paragraph." in decoded
+                assert "\\n" not in decoded
+                real = next(p for p in prompts if "real newline:" in p)
+                assert "real newline:\nkept as-is" in real
+
+        asyncio.run(exercise())
+    finally:
+        alice.close()
+        bob.close()

@@ -323,10 +323,12 @@ def test_message_body_tabs_expand_before_escape_notation() -> None:
     from taut_tui.widgets import escape_message_body
 
     actual = str(escape_message_body("a\tb\n12\tc"))
-    literal = str(escape_message_body(r"a\tb"))
+    decoded = str(escape_message_body(r"a\tb"))
 
     assert actual == "a   b\n12  c"
-    assert literal == r"a\tb"
+    # [TUI-5.3] (2026-08-18): the literal escape decodes toward sender
+    # intent and expands at the same tab stops as a real TAB.
+    assert decoded == "a   b"
 
 
 def test_protected_display_text_is_not_rescanned_by_owned_sink(
@@ -711,3 +713,45 @@ def test_retained_textual_suspend_grants_exclusive_real_pty_lease() -> None:
     assert between == b""
     assert b'"same_ui_thread": true' in captured
     assert b'"restored": true' in captured
+
+
+def test_message_body_decodes_closed_escape_allowlist() -> None:
+    """[TUI-5.3] message bodies decode the exact inverse escape language."""
+
+    from taut_tui.widgets import escape_message_body
+
+    # Layout escapes become real layout.
+    assert str(escape_message_body(r"one\ntwo")) == "one\ntwo"
+    assert str(escape_message_body(r"para\n\npara")) == "para\n\npara"
+    assert str(escape_message_body(r"a\tb")) == "a   b"
+    # Numeric forms for printable characters display as themselves.
+    assert str(escape_message_body(r"\x41")) == "A"
+    assert str(escape_message_body(r"café")) == "café"
+    assert str(escape_message_body(r"hi \U0001f600")) == "hi 😀"
+    # Decoded controls other than LF/TAB round-trip through the sink.
+    assert str(escape_message_body(r"x\ay")) == r"x\ay"
+    assert str(escape_message_body(r"esc\x1bseq")) == r"esc\x1bseq"
+    assert str(escape_message_body(r"cr\rlf")) == r"cr\rlf"
+    # Short and numeric forms of the same code point decode identically.
+    assert str(escape_message_body(r"a\x0ab")) == "a\nb"
+    # Malformed and out-of-allowlist forms stay literal.
+    assert str(escape_message_body("upper\\u00E9")) == "upper\\u00E9"
+    assert str(escape_message_body(r"upper\X41")) == r"upper\X41"
+    assert str(escape_message_body(r"not\qreal")) == r"not\qreal"
+    assert str(escape_message_body(r"short\x4")) == r"short\x4"
+    assert str(escape_message_body("trailing\\")) == "trailing\\"
+    # Surrogate and beyond-Unicode code points are malformed, not decoded.
+    assert str(escape_message_body(r"bad\ud800")) == r"bad\ud800"
+    assert str(escape_message_body(r"big\U00110000")) == r"big\U00110000"
+    # A double backslash is not an escape; the second backslash may still
+    # start one — there is deliberately no suppression sequence.
+    assert str(escape_message_body("a\\\\nb")) == "a\\\nb"
+
+
+def test_display_text_outside_message_bodies_never_decodes() -> None:
+    """Names, metadata, and search previews keep exact stored glyphs."""
+
+    from taut_tui.widgets import escape_display_text, escape_inline_text
+
+    assert str(escape_display_text(r"one\ntwo")) == r"one\ntwo"
+    assert str(escape_inline_text(r"one\ntwo")) == r"one\ntwo"

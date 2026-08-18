@@ -21,6 +21,8 @@ REQUIRED_PERSONA_CONCEPTS: dict[str, tuple[str, ...]] = {
         "path-addressed backend",
         "stdout is not speech",
         "silence",
+        "not a newline",
+        "stdin",
     ),
     "## Your ears: how messages arrive": (
         "[#general]",
