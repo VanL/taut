@@ -170,6 +170,19 @@ class TerminalTooSmallScreen(ModalScreen[None]):
     def on_mount(self) -> None:
         self.query_one("#resize-hint", ResizeHint).focus()
 
+    def on_screen_resume(self) -> None:
+        # A modal pushed above the shield can outlive the too-small state.
+        # When the shield becomes active again, dismiss it if the terminal
+        # already grew back — otherwise it would cover the app forever.
+        app = self.app
+        if getattr(app, "layout_mode", None) is LayoutMode.TOO_SMALL:
+            self.query_one("#resize-hint", ResizeHint).focus()
+            return
+        release = getattr(app, "_release_too_small_screen", None)
+        if callable(release):
+            release(self)
+        self.dismiss(None)
+
 
 class TautApp(App[None]):
     """Low-chrome shell over public session work and stable visual state."""
@@ -382,6 +395,7 @@ class TautApp(App[None]):
         self._shutting_down = False
         self._suppress_promotion_edits = 0
         self._pending_command_origin: tuple[str, int] | None = None
+        self._too_small_screen: TerminalTooSmallScreen | None = None
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="workspace"):
@@ -534,13 +548,28 @@ class TautApp(App[None]):
             and self.layout_mode is not LayoutMode.TOO_SMALL
         )
         if entered_too_small:
-            self.push_screen(TerminalTooSmallScreen())
-        elif left_too_small and isinstance(self.screen, TerminalTooSmallScreen):
-            self.pop_screen()
+            if self._too_small_screen is None:
+                shield = TerminalTooSmallScreen()
+                self._too_small_screen = shield
+                self.push_screen(shield)
+        elif (
+            left_too_small
+            and self._too_small_screen is not None
+            and self.screen is self._too_small_screen
+        ):
+            # When a covering modal owns the top of the stack instead, the
+            # shield dismisses itself on resume (see TerminalTooSmallScreen).
+            shield = self._too_small_screen
+            self._too_small_screen = None
+            shield.dismiss(None)
         self.call_after_refresh(self._render_latest_resize, resize_generation)
         if self.layout_mode is not LayoutMode.TOO_SMALL and len(self.screen_stack) == 1:
             self._focus_visual_target()
         self._update_status()
+
+    def _release_too_small_screen(self, screen: TerminalTooSmallScreen) -> None:
+        if self._too_small_screen is screen:
+            self._too_small_screen = None
 
     def _render_latest_resize(self, generation: int) -> None:
         if generation != self._resize_generation:
@@ -1778,6 +1807,9 @@ class TautApp(App[None]):
         return False
 
     def _move_surface(self, direction: int) -> None:
+        # Capture while the transcript is still visible (leaving-capture);
+        # the guard inside makes this a no-op when it is already hidden.
+        self._capture_scroll_anchor()
         surfaces = [LogicalSurface.NAVIGATION, LogicalSurface.CONVERSATION]
         if self.visual_state.inspector is not None:
             surfaces.append(LogicalSurface.INSPECTOR)
@@ -1803,6 +1835,7 @@ class TautApp(App[None]):
             self.call_after_refresh(self._render_messages, self._message_rows)
 
     def _cycle_surface(self) -> None:
+        self._capture_scroll_anchor()
         surfaces = [LogicalSurface.NAVIGATION, LogicalSurface.CONVERSATION]
         if self.visual_state.inspector is not None:
             surfaces.append(LogicalSurface.INSPECTOR)
@@ -2065,23 +2098,28 @@ class TautApp(App[None]):
                 refresh_navigation=True,
             )
         elif action_id is ActionId.CHANNEL_SET_TOPIC:
-            self._with_active_target(
-                lambda target: self._run_form_action(
+            target = self.visual_state.active_conversation
+            if target is None:
+                screen.show_domain_error("Select a conversation first.")
+            else:
+                self._run_form_action(
                     screen,
                     domain.set_topic(target, values["topic"]),
                 )
-            )
         elif action_id is ActionId.CHANNEL_RENAME:
-            self._confirm_context_action(
-                action_id,
-                self.visual_state.active_conversation,
-                lambda target: self._run_form_action(
-                    screen,
-                    domain.rename_channel(target, values["new_name"]),
-                    refresh_navigation=True,
-                ),
-                cancelled_action=screen.resume,
-            )
+            if self.visual_state.active_conversation is None:
+                screen.show_domain_error("Select a conversation first.")
+            else:
+                self._confirm_context_action(
+                    action_id,
+                    self.visual_state.active_conversation,
+                    lambda target: self._run_form_action(
+                        screen,
+                        domain.rename_channel(target, values["new_name"]),
+                        refresh_navigation=True,
+                    ),
+                    cancelled_action=screen.resume,
+                )
         else:
             return False
         return True
@@ -2096,17 +2134,22 @@ class TautApp(App[None]):
         values = submission.values
         action_id = submission.action_id
         if action_id is ActionId.MESSAGE_REPLY:
-            self._with_selected_message(
-                lambda target, message_id: self._run_form_action(
+            target = self.visual_state.active_conversation
+            message_id = self.visual_state.selected_message_id
+            if target is None or message_id is None:
+                # The selection vanished while the form was open; the error
+                # must land on the form so it stays submittable/cancellable.
+                screen.show_domain_error("Select a message first.")
+            else:
+                self._run_form_action(
                     screen,
                     domain.reply_message(target, message_id, values["message"]),
                     refresh_navigation=True,
                 )
-            )
         elif action_id is ActionId.MESSAGE_REACT:
             message_id = self.visual_state.selected_message_id
             if message_id is None:
-                self._show_error("Select a message first.")
+                screen.show_domain_error("Select a message first.")
             else:
                 self._run_form_action(
                     screen,
@@ -2525,6 +2568,9 @@ class TautApp(App[None]):
         self.visual_state = replace(
             self.visual_state,
             scroll_anchor=ScrollAnchor.history(hit.ts),
+            # The jumped-to hit is the selection; the render highlights it
+            # rather than deriving the highlight from the scroll anchor.
+            selected_message_id=hit.ts,
         )
         self._watch_future(
             session.open_history_context(
@@ -2685,6 +2731,7 @@ class TautApp(App[None]):
         self._reply_threads = reply_threads
         self._set_navigation_actions(tuple(targets), tuple(labels))
         if self._message_rows:
+            self._capture_scroll_anchor()
             self._render_messages(self._message_rows)
 
     def _set_navigation_actions(
@@ -2827,6 +2874,24 @@ class TautApp(App[None]):
             self._apply_placement(self._accepted_size)
             self._focus_visual_target()
         draft = self.visual_state.draft_for(snapshot.target)
+        if draft is None or not draft.text:
+            # Text typed before any conversation was active lives under the
+            # placeholder key; carry it into the first real target instead
+            # of silently dropping it.
+            unselected = self.visual_state.draft_for("__unselected__")
+            if unselected is not None and unselected.text.strip():
+                draft = DraftState(
+                    target=snapshot.target,
+                    text=unselected.text,
+                    cursor_position=unselected.cursor_position,
+                    revision=0 if draft is None else draft.revision + 1,
+                )
+                self.visual_state = self.visual_state.with_draft(draft).with_draft(
+                    DraftState(
+                        target="__unselected__",
+                        revision=unselected.revision + 1,
+                    )
+                )
         composer = self._query_base("#composer", TautComposer)
         composer.placeholder = f"Message {target_label}"
         self._set_composer_text(composer, "" if draft is None else draft.text)
@@ -2891,7 +2956,10 @@ class TautApp(App[None]):
                     ),
                     highlighted,
                 )
-                transcript.highlighted = anchor_index
+                # Scroll restoration is position-only: rewriting the
+                # highlight here would rewrite selected_message_id through
+                # the OptionHighlighted handler and retarget an open
+                # reply/react/delete at the anchor row.
                 self.call_after_refresh(
                     self._restore_transcript_anchor,
                     messages,
@@ -2902,6 +2970,11 @@ class TautApp(App[None]):
 
     def _capture_scroll_anchor(self) -> None:
         if not self._message_rows:
+            return
+        try:
+            if not self._query_base("#conversation").display:
+                return
+        except NoMatches:
             return
         transcript = self._query_base("#transcript", TautOptionList)
         if transcript.is_vertical_scroll_end:

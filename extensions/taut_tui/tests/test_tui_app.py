@@ -3177,3 +3177,131 @@ def test_action_browser_and_command_line_are_named_distinctly() -> None:
             assert "action browser" in help_text
 
     asyncio.run(exercise())
+
+
+# --- Slice 5 of docs/plans/2026-08-18-tui-deep-review-remediation-plan.md ---
+
+
+def test_history_anchor_rerender_preserves_selected_message() -> None:
+    """[TUI-5.3]/[TUI-6]: scroll restoration must not rewrite selection."""
+
+    from dataclasses import replace as dc_replace
+
+    from taut.client import Message
+    from taut_tui.app import TautApp
+    from taut_tui.models import ScrollAnchor
+
+    messages = tuple(
+        Message("general", ts, "m_alice", "alice", "message", f"row {ts}")
+        for ts in range(1, 8)
+    )
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 34)) as pilot:
+            app.visual_state = dc_replace(
+                app.visual_state,
+                selected_message_id=5,
+                scroll_anchor=ScrollAnchor.history(2),
+            )
+            app._render_messages(messages)
+            await pilot.pause(0.1)
+            assert app.visual_state.selected_message_id == 5
+
+    asyncio.run(exercise())
+
+
+def test_too_small_shield_clears_even_when_covered_by_a_modal() -> None:
+    from taut_tui.app import TautApp, TerminalTooSmallScreen
+    from taut_tui.screens import ConfirmationScreen
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 34)) as pilot:
+            await pilot.resize_terminal(40, 10)
+            await pilot.pause()
+            assert isinstance(app.screen, TerminalTooSmallScreen)
+            app.push_screen(ConfirmationScreen("Keep working?"))
+            await pilot.pause()
+            assert isinstance(app.screen, ConfirmationScreen)
+            await pilot.resize_terminal(100, 34)
+            await pilot.pause()
+            assert isinstance(app.screen, ConfirmationScreen)
+            app.screen.action_reject()
+            await pilot.pause(0.1)
+            assert not any(
+                isinstance(screen, TerminalTooSmallScreen)
+                for screen in app.screen_stack
+            )
+
+    asyncio.run(exercise())
+
+
+def test_reply_form_with_vanished_selection_stays_recoverable() -> None:
+    from taut_tui.actions import ActionId
+    from taut_tui.app import TautApp
+    from taut_tui.forms import FORM_SPECS
+    from taut_tui.screens import NativeFormScreen
+    from taut_tui.widgets import TautButton
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 34)) as pilot:
+            screen = NativeFormScreen(FORM_SPECS[ActionId.MESSAGE_REPLY])
+            app.push_screen(screen)
+            await pilot.pause()
+            field = screen.query_one("#field-message", Input)
+            field.value = "orphaned reply"
+            await pilot.pause()
+            # Selection vanished between opening the form and submitting.
+            screen._submit()
+            await pilot.pause(0.1)
+            submit = screen.query_one("#form-submit", TautButton)
+            assert submit.disabled is False
+            errors = str(screen.query_one("#form-errors").render())
+            assert "Select a message" in errors
+            screen.action_cancel()
+            await pilot.pause()
+            assert not isinstance(app.screen, NativeFormScreen)
+
+    asyncio.run(exercise())
+
+
+def test_unselected_composer_draft_carries_into_first_conversation(
+    tmp_path: Path,
+) -> None:
+    from taut_tui.app import TautApp
+    from taut_tui.widgets import TautComposer, TautOptionList
+
+    db_path = tmp_path / "draft-carry.db"
+    TautClient.init(db_path=db_path)
+    seeder = TautClient(db_path=db_path, as_name="van")
+    seeder.join("general")
+    seeder.close()
+
+    async def exercise() -> None:
+        app = TautApp(db_path=str(db_path), as_name="van", continuity_token=None)
+        async with app.run_test(size=(130, 34)) as pilot:
+            for _ in range(200):
+                await pilot.pause(0.01)
+                if app._navigation_targets:
+                    break
+            composer = app.query_one("#composer", TautComposer)
+            composer.focus()
+            await pilot.press(*"hello there")
+            await pilot.pause()
+            assert app.visual_state.active_conversation is None
+            navigation = app.query_one("#navigation-list", TautOptionList)
+            index = next(
+                i for i, t in enumerate(app._navigation_targets) if t == "general"
+            )
+            navigation.highlighted = index
+            await pilot.pause()
+            navigation.action_select()
+            for _ in range(200):
+                await pilot.pause(0.01)
+                if app.visual_state.active_conversation == "general":
+                    break
+            assert composer.text == "hello there"
+
+    asyncio.run(exercise())

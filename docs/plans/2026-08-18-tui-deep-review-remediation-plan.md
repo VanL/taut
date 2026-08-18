@@ -925,7 +925,42 @@ check-doc-paths, K1 test suites green.
   to the new wording.
 - Gates: `test_tui_screens` 21/21, `test_tui_app` full green,
   `test_tui_action_handlers` 37/37, action routes + command bindings
-  green, ruff clean.
+  green, ruff clean. Landed at `51704c5`.
+
+### Slice 5 — 2026-08-18 — evidence
+
+- T1: `_render_messages` no longer rewrites the highlight to the anchor
+  row; scroll restoration is position-only, so re-renders preserve
+  `selected_message_id`. Companion: search-result open now sets
+  `selected_message_id = hit.ts` explicitly (the jumped-to hit is the
+  selection), keeping the 2026-08-17 search-anchor highlight contract.
+- T2: `_capture_scroll_anchor` runs before the navigation-refresh
+  re-render and at the top of `_move_surface`/`_cycle_surface`
+  (leaving-capture, guarded to run only while the conversation surface
+  is visible). Task-detail deviation recorded: the plan sketched
+  capture at the surface-switch re-render site (arrival), but arrival
+  capture reads the hidden transcript's stale geometry and destroyed
+  the anchor (caught by the 2026-08-17 width-reflow test); departure
+  capture is the correct timing. Behavior proof: a mention-driven
+  navigation refresh no longer yanks a scrolled-up transcript (test
+  measures watcher-delivery quiescence, since deduped catch-up
+  redeliveries re-render without changing the row count).
+- T3: the too-small shield is tracked; leaving TOO_SMALL dismisses it
+  when top-of-stack, and a shield resumed under a stale state dismisses
+  itself (`on_screen_resume`), so a covering modal can no longer strand
+  it; double-push prevented.
+- T4: vanished-context error paths reachable from an open
+  `NativeFormScreen` (reply/react selection loss, set-topic/rename
+  target loss) route through `screen.show_domain_error`, keeping the
+  form submittable and cancellable.
+- T5: a nonblank `__unselected__` composer draft carries into the first
+  opened conversation instead of being silently dropped.
+- Observed during this slice and deferred to Slice 6 (A2 family):
+  watcher deliveries still in flight during app teardown can fail
+  `#transcript` queries three times and poison-advance a message; the
+  teardown guard lands with A2.
+- Gates: ruff clean; `test_tui_resize` + `test_tui_chat` +
+  `test_tui_app` 129/129.
 
 ## Completion Gate
 

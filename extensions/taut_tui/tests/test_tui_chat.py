@@ -373,3 +373,86 @@ def test_transcript_decodes_literal_escapes_toward_sender_intent(
     finally:
         alice.close()
         bob.close()
+
+
+async def _settle_deliveries(app: object, pilot: object, transcript: object) -> None:
+    """Wait for watcher catch-up quiescence.
+
+    Deduped catch-up redeliveries re-render without changing the row count,
+    so quiescence is measured in deliveries, not rows.
+    """
+
+    deliveries = {"count": 0}
+    original_apply = app._apply_delivery
+
+    def counting_apply(generation: int, item: object) -> bool:
+        deliveries["count"] += 1
+        return original_apply(generation, item)
+
+    app._apply_delivery = counting_apply
+    quiet = 0
+    stable = deliveries["count"]
+    for _ in range(400):
+        await pilot.pause(0.05)
+        if deliveries["count"] == stable:
+            quiet += 1
+            if quiet >= 20 and transcript.option_count >= 40:
+                return
+        else:
+            quiet = 0
+            stable = deliveries["count"]
+
+
+def test_notification_refresh_keeps_scrolled_transcript_position(
+    tmp_path: Path,
+) -> None:
+    """[TUI-6.2]: a nav refresh must not yank a scrolled-up transcript."""
+
+    import asyncio
+
+    from taut_tui.app import TautApp
+    from taut_tui.widgets import TautOptionList
+
+    db_path = tmp_path / "scroll.db"
+    alice, bob = _seed(db_path)
+    for ts in range(40):
+        bob.say("general", f"history row {ts}")
+
+    async def exercise() -> None:
+        app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
+        async with app.run_test(size=(130, 34)) as pilot:
+            for _ in range(200):
+                await pilot.pause(0.01)
+                if app._navigation_targets:
+                    break
+            navigation = app.query_one("#navigation-list", TautOptionList)
+            index = next(
+                i for i, t in enumerate(app._navigation_targets) if t == "general"
+            )
+            navigation.highlighted = index
+            await pilot.pause()
+            navigation.action_select()
+            for _ in range(200):
+                await pilot.pause(0.01)
+                if app.visual_state.active_conversation == "general":
+                    break
+            transcript = app.query_one("#transcript", TautOptionList)
+            transcript.focus()
+            await _settle_deliveries(app, pilot, transcript)
+            # Simulate the user scrolling up (wheel/keys do not run any
+            # anchor capture).
+            transcript.scroll_to(y=0, animate=False, force=True)
+            await pilot.pause(0.1)
+            top_offset = int(transcript.scroll_offset.y)
+            assert not transcript.is_vertical_scroll_end
+            # A mention in another thread claims a notification pointer and
+            # triggers a navigation refresh without a #general delivery.
+            bob.say("quiet", "@alice ping")
+            for _ in range(400):
+                await pilot.pause(0.01)
+            assert int(transcript.scroll_offset.y) == top_offset
+            assert not transcript.is_vertical_scroll_end
+
+    asyncio.run(exercise())
+    alice.close()
+    bob.close()
