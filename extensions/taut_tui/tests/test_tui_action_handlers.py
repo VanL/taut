@@ -635,7 +635,7 @@ async def _command_open(context: HandlerContext) -> None:
 
 async def _help_open(context: HandlerContext) -> None:
     await _select_palette(context, ActionId.HELP_OPEN)
-    assert "Ctrl-P commands" in _inspector(context)
+    assert "Ctrl-P or Actions opens the action browser" in _inspector(context)
 
 
 async def _application_quit(context: HandlerContext) -> None:

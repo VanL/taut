@@ -611,7 +611,9 @@ def test_known_command_prefix_in_composer_promotes_to_argument_input() -> None:
     asyncio.run(exercise())
 
 
-def test_direct_command_completion_click_keeps_argument_input_active() -> None:
+def test_direct_command_shadow_tab_keeps_argument_input_active() -> None:
+    # [TUI-7.1] (2026-08-18): completion is an inline ghost shadow accepted
+    # with Tab; there is no clickable completion list.
     from taut_tui.app import TautApp
     from taut_tui.screens import CommandLineScreen
 
@@ -622,10 +624,7 @@ def test_direct_command_completion_click_keeps_argument_input_active() -> None:
             await pilot.pause()
 
             assert isinstance(app.screen, CommandLineScreen)
-            assert await pilot.click(
-                "#command-completions",
-                offset=(2, 0),
-            )
+            await pilot.press("tab")
             await pilot.pause()
 
             command = app.screen.query_one("#command-line", Input)
@@ -639,7 +638,9 @@ def test_direct_command_completion_click_keeps_argument_input_active() -> None:
     asyncio.run(exercise())
 
 
-def test_direct_command_typing_keeps_completion_list_passive() -> None:
+def test_direct_command_typing_stays_field_owned_without_a_list() -> None:
+    from textual.widgets import OptionList as RawOptionList
+
     from taut_tui.app import TautApp
     from taut_tui.screens import CommandLineScreen
 
@@ -651,8 +652,7 @@ def test_direct_command_typing_keeps_completion_list_passive() -> None:
 
             assert isinstance(app.screen, CommandLineScreen)
             command = app.screen.query_one("#command-line", Input)
-            completions = app.screen.query_one("#command-completions")
-            assert not completions.can_focus
+            assert not app.screen.query(RawOptionList)
             assert app.focused is command
             assert command.value == "summon"
 
@@ -2907,7 +2907,9 @@ def test_transcript_preserves_whitespace_and_adds_message_gap() -> None:
             second = str(transcript.get_option_at_index(1).prompt)
 
             assert first == "1  alice  a   b\n\n  third  \n"
-            assert second == r"2  bob  literal\n\t" + "\n"
+            # [TUI-5.3] (2026-08-18): literal escapes decode toward sender
+            # intent — the body's \n becomes a break and \t a tab stop.
+            assert second == "2  bob  literal\n    \n"
             assert transcript.option_count == len(app._message_rows) == 2
             assert app._message_rows[1] is messages[1]
             assert app._message_row_height(messages[0], 100) == 4
@@ -3041,5 +3043,137 @@ def test_terminal_controls_are_escaped_at_every_app_text_projection(
             assert_safe(app.query_one("#inspector-body").render())
             app._update_status()
             assert_safe(app.query_one("#status-line").render())
+
+    asyncio.run(exercise())
+
+
+# --- Slice 4 of docs/plans/2026-08-18-tui-deep-review-remediation-plan.md ---
+
+
+def test_programmatic_draft_restore_never_promotes(tmp_path: Path) -> None:
+    """[TUI-7.1] only direct user editing promotes a leading-colon draft."""
+
+    from taut_tui.app import TautApp
+    from taut_tui.screens import CommandLineScreen
+    from taut_tui.widgets import TautComposer, TautOptionList
+
+    db_path = tmp_path / "promote.db"
+    TautClient.init(db_path=db_path)
+    seeder = TautClient(db_path=db_path, as_name="van")
+    seeder.join("general")
+    seeder.join("quiet")
+    seeder.close()
+
+    async def open_target(app: Any, pilot: Any, target: str) -> None:
+        navigation = app.query_one("#navigation-list", TautOptionList)
+        index = next(
+            i for i, t in enumerate(app._navigation_targets) if t == target
+        )
+        navigation.highlighted = index
+        await pilot.pause()
+        navigation.action_select()
+        for _ in range(200):
+            await pilot.pause(0.01)
+            if app.visual_state.active_conversation == target:
+                return
+        pytest.fail(f"conversation {target} did not open")
+
+    async def exercise() -> None:
+        app = TautApp(db_path=str(db_path), as_name="van", continuity_token=None)
+        async with app.run_test(size=(130, 34)) as pilot:
+            for _ in range(200):
+                await pilot.pause(0.01)
+                if app._navigation_targets:
+                    break
+            await open_target(app, pilot, "general")
+            await pilot.press("i")
+            for character in ":summon kimi":
+                await pilot.press("space" if character == " " else character)
+                await pilot.pause(0.005)
+            await pilot.pause(0.05)
+            assert isinstance(app.screen, CommandLineScreen)
+            await pilot.press("escape")
+            await pilot.pause(0.05)
+            composer = app.query_one("#composer", TautComposer)
+            assert composer.text.startswith(":summon")
+            await pilot.press("escape")
+            await pilot.pause(0.05)
+            await open_target(app, pilot, "quiet")
+            await pilot.pause(0.1)
+            await open_target(app, pilot, "general")
+            await pilot.pause(0.2)
+            assert not isinstance(app.screen, CommandLineScreen)
+            assert composer.text.startswith(":summon")
+
+    asyncio.run(exercise())
+
+
+def test_command_line_open_keeps_live_deliveries_rendering(
+    tmp_path: Path,
+) -> None:
+    """[TUI-7.1] the command line owns focus but never blocks the live view."""
+
+    from taut_tui.app import TautApp
+    from taut_tui.screens import CommandLineScreen
+    from taut_tui.widgets import TautOptionList
+
+    db_path = tmp_path / "live.db"
+    TautClient.init(db_path=db_path)
+    alice = TautClient(db_path=db_path, as_name="alice")
+    bob = TautClient(db_path=db_path, as_name="bob")
+    for client in (alice, bob):
+        client.join("general")
+
+    async def exercise() -> None:
+        app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
+        async with app.run_test(size=(130, 34)) as pilot:
+            for _ in range(200):
+                await pilot.pause(0.01)
+                if app._navigation_targets:
+                    break
+            navigation = app.query_one("#navigation-list", TautOptionList)
+            index = next(
+                i for i, t in enumerate(app._navigation_targets) if t == "general"
+            )
+            navigation.highlighted = index
+            await pilot.pause()
+            navigation.action_select()
+            for _ in range(200):
+                await pilot.pause(0.01)
+                if app.visual_state.active_conversation == "general":
+                    break
+            transcript = app.query_one("#transcript", TautOptionList)
+            baseline = transcript.option_count
+            await pilot.press("escape", "colon")
+            await pilot.pause()
+            assert isinstance(app.screen, CommandLineScreen)
+            bob.say("general", "delivered while the command line is open")
+            for _ in range(400):
+                await pilot.pause(0.01)
+                if transcript.option_count > baseline:
+                    break
+            assert transcript.option_count > baseline
+            assert isinstance(app.screen, CommandLineScreen)
+
+    asyncio.run(exercise())
+    alice.close()
+    bob.close()
+
+
+def test_action_browser_and_command_line_are_named_distinctly() -> None:
+    from taut_tui.app import TautApp
+    from taut_tui.widgets import TautButton
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(130, 34)) as pilot:
+            await pilot.pause()
+            button = app.query_one("#commands-affordance", TautButton)
+            assert "Actions" in str(button.label)
+            await pilot.press("f1")
+            await pilot.pause()
+            help_text = str(app.query_one("#inspector-body").render())
+            assert "command line" in help_text
+            assert "action browser" in help_text
 
     asyncio.run(exercise())

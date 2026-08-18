@@ -19,6 +19,7 @@ from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
 from textual.message import Message as TextualMessage
 from textual.screen import ModalScreen
+from textual.suggester import Suggester
 from textual.widgets.option_list import Option
 
 from taut.commands.syntax import (
@@ -66,6 +67,13 @@ class PaletteEntry:
 @dataclass(frozen=True, slots=True)
 class CommandLineSubmission:
     invocation: CommandInvocation
+
+
+@dataclass(frozen=True, slots=True)
+class PaletteCommandHandoff:
+    """Browser query recognized as a command; open the command line with it."""
+
+    query: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -279,23 +287,41 @@ class ConfirmationScreen(_TautModalScreen[bool]):
         self.dismiss(False)
 
 
-class CommandPaletteScreen(_TautModalScreen[ActionId | None]):
+class CommandPaletteScreen(
+    _TautModalScreen["ActionId | PaletteCommandHandoff | None"]
+):
     """Browse the grouped native semantic action registry."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Cancel", show=False),
+        Binding("down", "highlight_next", "Next action", show=False, priority=True),
+        Binding(
+            "up",
+            "highlight_previous",
+            "Previous action",
+            show=False,
+            priority=True,
+        ),
     ]
 
-    def __init__(self, entries: Iterable[PaletteEntry]) -> None:
+    def __init__(
+        self,
+        entries: Iterable[PaletteEntry],
+        *,
+        command_roots: frozenset[str] = frozenset(),
+    ) -> None:
         super().__init__()
         self._entries = tuple(entries)
+        self._command_roots = command_roots
         self._visible: tuple[PaletteEntry, ...] = ()
-        self._rendered_entries: tuple[PaletteEntry | None, ...] = ()
+        self._rendered_entries: tuple[
+            PaletteEntry | PaletteCommandHandoff | None, ...
+        ] = ()
         self._dismissed = False
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="taut-modal"):
-            yield Static("Commands", classes="modal-title")
+            yield Static("Actions", classes="modal-title")
             yield Static(
                 "Type to filter · Up/Down select · Enter run · Click run · Esc close",
                 classes="command-instructions",
@@ -318,25 +344,61 @@ class CommandPaletteScreen(_TautModalScreen[ActionId | None]):
         if event.input.id != "palette-query":
             return
         options = self.query_one("#palette-results", OptionList)
-        for index, entry in enumerate(self._rendered_entries):
-            if entry is not None and entry.enabled:
-                options.highlighted = index
-                self._dismiss_once(entry.action.action_id)
-                return
+        index = options.highlighted
+        if index is None or not 0 <= index < len(self._rendered_entries):
+            return
+        self._activate_index(index)
 
     def on_taut_option_list_activated(self, event: OptionList.Activated) -> None:
         if event.chain == 1:
             return
         if not (0 <= event.option_index < len(self._rendered_entries)):
             return
-        entry = self._rendered_entries[event.option_index]
-        if entry is not None and entry.enabled:
+        self._activate_index(event.option_index)
+
+    def _activate_index(self, index: int) -> None:
+        entry = self._rendered_entries[index]
+        if isinstance(entry, PaletteCommandHandoff):
+            self._dismiss_once(entry)
+        elif entry is not None and entry.enabled:
             self._dismiss_once(entry.action.action_id)
 
     def action_cancel(self) -> None:
         self._dismiss_once(None)
 
-    def _dismiss_once(self, result: ActionId | None) -> None:
+    def action_highlight_next(self) -> None:
+        self._move_highlight(1)
+
+    def action_highlight_previous(self) -> None:
+        self._move_highlight(-1)
+
+    def _move_highlight(self, direction: int) -> None:
+        activatable = self._activatable_indices()
+        if not activatable:
+            return
+        options = self.query_one("#palette-results", OptionList)
+        current = options.highlighted
+        if current is None or current not in activatable:
+            options.highlighted = (
+                activatable[0] if direction > 0 else activatable[-1]
+            )
+            return
+        position = activatable.index(current)
+        options.highlighted = activatable[
+            (position + direction) % len(activatable)
+        ]
+
+    def _activatable_indices(self) -> tuple[int, ...]:
+        return tuple(
+            index
+            for index, entry in enumerate(self._rendered_entries)
+            if isinstance(entry, PaletteCommandHandoff)
+            or (entry is not None and entry.enabled)
+        )
+
+    def _dismiss_once(
+        self, result: ActionId | PaletteCommandHandoff | None
+    ) -> None:
         if self._dismissed:
             return
         self._dismissed = True
@@ -353,7 +415,7 @@ class CommandPaletteScreen(_TautModalScreen[ActionId | None]):
         )
         options = self.query_one("#palette-results", OptionList)
         options.clear_options()
-        rendered: list[PaletteEntry | None] = []
+        rendered: list[PaletteEntry | PaletteCommandHandoff | None] = []
         entries_by_group: dict[str, list[PaletteEntry]] = {}
         for entry in self._visible:
             entries_by_group.setdefault(entry.action.display_group, []).append(entry)
@@ -367,7 +429,39 @@ class CommandPaletteScreen(_TautModalScreen[ActionId | None]):
             for entry in entries:
                 self._add_palette_option(options, entry)
                 rendered.append(entry)
+        handoff = self._command_handoff(query)
+        if handoff is not None:
+            options.add_option(
+                Option(
+                    f'Run as command: "{handoff.query}"',
+                    id="palette-run-command",
+                )
+            )
+            rendered.append(handoff)
+        if not rendered:
+            options.add_option(
+                Option(
+                    "No matching actions — use the : command line for "
+                    "commands with arguments",
+                    id="palette-empty",
+                    disabled=True,
+                )
+            )
+            rendered.append(None)
         self._rendered_entries = tuple(rendered)
+        activatable = self._activatable_indices()
+        options.highlighted = activatable[0] if activatable else None
+
+    def _command_handoff(self, query: str) -> PaletteCommandHandoff | None:
+        # Exact root-token membership is evaluated independently of (and
+        # before) the fuzzy action matcher, which only governs action rows.
+        stripped = query.strip()
+        if not stripped:
+            return None
+        root = stripped.split()[0]
+        if root in self._command_roots:
+            return PaletteCommandHandoff(stripped)
+        return None
 
     @staticmethod
     def _add_palette_option(options: OptionList, entry: PaletteEntry) -> None:
@@ -415,23 +509,69 @@ def _ordered_groups(
     )
 
 
-class CommandLineScreen(_TautModalScreen[CommandLineSubmission | None]):
-    """Textual mirror input over the public typed command syntax."""
+class _CommandShadowSuggester(Suggester):
+    """Ghost-shadow completion of the current input to a command path."""
+
+    def __init__(self, screen: CommandLineScreen) -> None:
+        super().__init__(use_cache=False, case_sensitive=True)
+        self._screen = screen
+
+    async def get_suggestion(self, value: str) -> str | None:
+        return self._screen.shadow_for(value)
+
+
+class CommandLineScreen(ModalScreen[CommandLineSubmission | None]):
+    """The vi-like bottom command line over the public typed syntax.
+
+    [TUI-7.1]: owns keyboard focus while open, never blocks or dims the
+    live view behind it, never presents a browsable completion list, and
+    offers inline ghost-shadow completion cycled with Up/Down and accepted
+    with Tab.
+    """
+
+    CSS = """
+    CommandLineScreen {
+        align: left bottom;
+        background: transparent;
+    }
+
+    #command-bar {
+        dock: bottom;
+        width: 1fr;
+        height: auto;
+        background: $surface;
+        border-top: tall $accent;
+        padding: 0 1;
+    }
+
+    #command-entry { height: 1; }
+    #command-marker { width: 1; color: $accent; text-style: bold; }
+
+    #command-line {
+        width: 1fr;
+        height: 1;
+        border: none;
+        padding: 0;
+        background: $surface;
+    }
+
+    #command-errors { height: 1; color: $text-muted; }
+    """
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Cancel", show=False),
-        Binding("tab", "complete", "Complete", show=False),
+        Binding("tab", "accept_shadow", "Complete", show=False),
         Binding(
             "down",
-            "select_next_completion",
-            "Next completion",
+            "shadow_next",
+            "Next match",
             show=False,
             priority=True,
         ),
         Binding(
             "up",
-            "select_previous_completion",
-            "Previous completion",
+            "shadow_previous",
+            "Previous match",
             show=False,
             priority=True,
         ),
@@ -442,21 +582,18 @@ class CommandLineScreen(_TautModalScreen[CommandLineSubmission | None]):
         syntax: RootCommandSyntax,
         *,
         initial_text: str = "",
+        reconcile: Callable[[], str] | None = None,
     ) -> None:
         super().__init__()
         self._syntax = syntax
         self._initial_text = initial_text
+        self._reconcile = reconcile
         self._dismissed = False
-        self._completions: tuple[str, ...] = ()
-        self._completion_selection_active = False
+        self._matches: tuple[str, ...] = ()
+        self._match_index = 0
 
     def compose(self) -> ComposeResult:
-        with Vertical(classes="taut-modal"):
-            yield Static("Command line", classes="modal-title")
-            yield Static(
-                "Enter run · Tab complete · Esc close",
-                classes="command-instructions",
-            )
+        with Vertical(id="command-bar"):
             with Horizontal(id="command-entry"):
                 yield Static(":", id="command-marker")
                 yield Input(
@@ -464,100 +601,104 @@ class CommandLineScreen(_TautModalScreen[CommandLineSubmission | None]):
                     placeholder="command [options]",
                     id="command-line",
                     select_on_focus=False,
+                    suggester=_CommandShadowSuggester(self),
                 )
             yield Static(id="command-errors")
-            yield _CommandCompletionList(id="command-completions")
 
     def on_mount(self) -> None:
         command_line = self.query_one("#command-line", Input)
+        if self._reconcile is not None:
+            # [TUI-7.1]: reconcile against the composer's current draft at
+            # mount time so keystrokes that raced past the promotion boundary
+            # are carried into the command field.
+            command_line.value = self._reconcile()
         command_line.focus()
         command_line.cursor_position = len(command_line.value)
-        self._render_feedback(self._initial_text)
+        self._render_feedback(command_line.value)
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == "command-line":
-            self._completion_selection_active = False
+            self._match_index = 0
             self._render_feedback(event.value)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "command-line":
             return
-        if self._completion_selection_active:
-            options = self.query_one("#command-completions", OptionList)
-            index = options.highlighted
-            if index is not None and 0 <= index < len(self._completions):
-                self._apply_completion(self._completions[index])
-                return
         self._submit(event.value)
 
-    def on_taut_option_list_activated(self, event: OptionList.Activated) -> None:
-        if event.option_list.id != "command-completions":
-            return
-        if 0 <= event.option_index < len(self._completions):
-            self._apply_completion(self._completions[event.option_index])
+    def shadow_for(self, value: str) -> str | None:
+        """Return the cycled match when it extends the exact current input.
+
+        Matches are computed from the value directly because the suggester
+        worker can run before the `Input.Changed` message handler updates
+        screen state.
+        """
+
+        matches = _command_completions(value, self._syntax)
+        if not matches:
+            return None
+        index = self._match_index % len(matches)
+        candidate = matches[index]
+        if candidate.startswith(value) and len(candidate) > len(value):
+            return candidate
+        return None
 
     def action_cancel(self) -> None:
         self._dismiss_once(None)
 
-    def action_complete(self) -> None:
-        if not self._completions:
+    def action_accept_shadow(self) -> None:
+        command_line = self.query_one("#command-line", Input)
+        shadow = self.shadow_for(command_line.value)
+        if shadow is None:
             return
-        self._apply_completion(self._completions[0])
+        command_line.value = shadow.rstrip() + " "
+        command_line.focus()
+        command_line.cursor_position = len(command_line.value)
 
-    def action_select_next_completion(self) -> None:
-        self._select_completion(1)
+    def action_shadow_next(self) -> None:
+        self._cycle_shadow(1)
 
-    def action_select_previous_completion(self) -> None:
-        self._select_completion(-1)
+    def action_shadow_previous(self) -> None:
+        self._cycle_shadow(-1)
 
-    def _select_completion(self, direction: int) -> None:
-        if not self._completions:
+    def _cycle_shadow(self, direction: int) -> None:
+        command_line = self.query_one("#command-line", Input)
+        matches = _command_completions(command_line.value, self._syntax)
+        if not matches:
             return
-        options = self.query_one("#command-completions", OptionList)
-        highlighted = options.highlighted
-        if not self._completion_selection_active or highlighted is None:
-            highlighted = 0 if direction > 0 else len(self._completions) - 1
-        else:
-            highlighted = (highlighted + direction) % len(self._completions)
-        options.highlighted = highlighted
-        self._completion_selection_active = True
-
-    def _apply_completion(self, completion: str) -> None:
-        self._completion_selection_active = False
-        query = self.query_one("#command-line", Input)
-        query.value = completion.rstrip() + " "
-        query.focus()
-        query.cursor_position = len(query.value)
+        self._match_index = (self._match_index + direction) % len(matches)
+        # Input only re-queries its suggester on value changes; refresh the
+        # displayed ghost directly. `_suggestion` is a private Textual 8.2.8
+        # reactive — pinned by the contract tests; worst-case degradation is
+        # a shadow that updates on the next keystroke.
+        command_line._suggestion = self.shadow_for(command_line.value) or ""
 
     def _submit(self, text: str) -> None:
         try:
             invocation = parse_command_line(CommandInput(text), syntax=self._syntax)
         except CommandSyntaxError as exc:
-            self._show_error(str(exc))
+            self._show_feedback(str(exc))
             return
         self._dismiss_once(CommandLineSubmission(invocation))
 
     def _render_feedback(self, text: str) -> None:
-        completions = _command_completions(text, self._syntax)
-        self._completions = completions
-        options = self.query_one("#command-completions", OptionList)
-        options.clear_options()
-        for completion in completions:
-            options.add_option(Option(completion))
+        self._matches = _command_completions(text, self._syntax)
         try:
             invocation = parse_command_line(CommandInput(text), syntax=self._syntax)
         except CommandSyntaxError as exc:
-            self._show_error(str(exc) if text.strip() else "Type a command")
+            message = str(exc) if text.strip() else "Type a command"
         else:
             if invocation.action is not None:
-                self._show_error(f"Ready: {invocation.action} help")
+                message = f"Ready: {invocation.action} help"
             else:
-                self._show_error(
-                    "Ready: "
-                    + format_command_syntax(_syntax_node(invocation, self._syntax))
+                message = "Ready: " + format_command_syntax(
+                    _syntax_node(invocation, self._syntax)
                 )
+        if len(self._matches) > 1:
+            message = f"{message}  ·  matches: " + ", ".join(self._matches)
+        self._show_feedback(message)
 
-    def _show_error(self, message: str) -> None:
+    def _show_feedback(self, message: str) -> None:
         self.query_one("#command-errors", Static).update(message)
 
     def _dismiss_once(self, result: CommandLineSubmission | None) -> None:
@@ -565,12 +706,6 @@ class CommandLineScreen(_TautModalScreen[CommandLineSubmission | None]):
             return
         self._dismissed = True
         self.dismiss(result)
-
-
-class _CommandCompletionList(OptionList):
-    """Passive command suggestions that never replace the text-input owner."""
-
-    can_focus = False
 
 
 def _command_completions(text: str, syntax: RootCommandSyntax) -> tuple[str, ...]:
@@ -840,12 +975,15 @@ def _fuzzy_match(query: str, candidate: str) -> bool:
 
 
 __all__ = [
+    "CommandLineScreen",
+    "CommandLineSubmission",
     "CommandPaletteScreen",
     "ConfirmationScreen",
     "FormSubmission",
     "NamedActionScreen",
     "NamedActionSubmission",
     "NativeFormScreen",
+    "PaletteCommandHandoff",
     "PaletteEntry",
     "SearchScreen",
     "SummonStartScreen",

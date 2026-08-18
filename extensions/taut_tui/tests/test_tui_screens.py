@@ -271,39 +271,9 @@ def test_command_line_keyboard_selection_keeps_argument_input_active() -> None:
     async def exercise() -> None:
         app = CommandHost()
         async with app.run_test(size=(80, 24)) as pilot:
-            await pilot.press(*"sum", "down", "enter")
-            command = app.screen.query_one("#command-line", Input)
-            assert command.value == "summon "
-            assert command.has_focus
-            assert isinstance(app.screen, CommandLineScreen)
-
-            await pilot.press(*"grok")
-            assert command.value == "summon grok"
-
-    asyncio.run(exercise())
-
-
-def test_command_line_mouse_activation_keeps_argument_input_active() -> None:
-    from taut_summon.command_syntax import provide_syntax
-
-    from taut.commands.syntax import core_command_syntax, merge_command_syntax
-    from taut_tui.screens import CommandLineScreen
-
-    class CommandHost(App[None]):
-        def on_mount(self) -> None:
-            syntax = merge_command_syntax(core_command_syntax(), (provide_syntax(),))
-            self.push_screen(CommandLineScreen(syntax))
-
-    async def exercise() -> None:
-        app = CommandHost()
-        async with app.run_test(size=(80, 24)) as pilot:
-            await pilot.press(*"sum")
-            assert await pilot.click(
-                "#command-completions",
-                offset=(2, 1),
-            )
-            await pilot.pause()
-
+            # Down cycles the ghost shadow; Tab accepts it ([TUI-7.1] as
+            # revised 2026-08-18 — there is no selectable completion list).
+            await pilot.press(*"sum", "down", "tab")
             command = app.screen.query_one("#command-line", Input)
             assert command.value == "summon "
             assert command.has_focus
@@ -541,5 +511,172 @@ def test_summon_provider_projection_escapes_terminal_controls() -> None:
             assert "\x07" not in projected
             assert r"\x1b" in projected
             assert r"\a" in projected
+
+    asyncio.run(exercise())
+
+
+# --- Slice 4 of docs/plans/2026-08-18-tui-deep-review-remediation-plan.md ---
+
+
+def test_palette_opens_highlighted_and_updown_select_from_query() -> None:
+    """[TUI-7.1] Up/Down move the highlight from the query; Enter runs it."""
+
+    from taut_tui.screens import CommandPaletteScreen, PaletteEntry
+
+    selected: list[ActionId | object | None] = []
+    entries = (
+        PaletteEntry(action_spec(ActionId.IDENTITY_SHOW)),
+        PaletteEntry(action_spec(ActionId.SYSTEM_DOCTOR)),
+        PaletteEntry(
+            action_spec(ActionId.MESSAGE_DELETE),
+            enabled=False,
+            reason="Select a message first",
+        ),
+    )
+
+    class PaletteHost(App[None]):
+        def on_mount(self) -> None:
+            self.push_screen(CommandPaletteScreen(entries), selected.append)
+
+    async def exercise() -> None:
+        app = PaletteHost()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            options = app.screen.query_one("#palette-results", OptionList)
+            assert options.highlighted is not None
+            first = options.get_option_at_index(options.highlighted)
+            assert not first.disabled
+            await pilot.press("down", "enter")
+            await pilot.pause()
+
+    asyncio.run(exercise())
+    # Down moved past the first enabled entry to the second one.
+    assert selected == [ActionId.SYSTEM_DOCTOR]
+
+
+def test_palette_no_match_shows_empty_state_and_enter_stays_inert() -> None:
+    from taut_tui.screens import CommandPaletteScreen, PaletteEntry
+
+    selected: list[ActionId | object | None] = []
+    entries = (PaletteEntry(action_spec(ActionId.IDENTITY_SHOW)),)
+
+    class PaletteHost(App[None]):
+        def on_mount(self) -> None:
+            self.push_screen(CommandPaletteScreen(entries), selected.append)
+
+    async def exercise() -> None:
+        app = PaletteHost()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.press(*"zzz zzz")
+            await pilot.pause()
+            options = app.screen.query_one("#palette-results", OptionList)
+            assert options.option_count == 1
+            empty_state = options.get_option_at_index(0)
+            assert empty_state.disabled
+            assert ":" in str(empty_state.prompt)
+            await pilot.press("enter")
+            await pilot.pause(0.05)
+            assert isinstance(app.screen, CommandPaletteScreen)
+            assert selected == []
+            await pilot.press("escape")
+            await pilot.pause()
+
+    asyncio.run(exercise())
+    assert selected == [None]
+
+
+def test_palette_offers_run_as_command_handoff_for_known_root() -> None:
+    from taut_tui.screens import (
+        CommandPaletteScreen,
+        PaletteCommandHandoff,
+        PaletteEntry,
+    )
+
+    selected: list[object | None] = []
+    entries = (PaletteEntry(action_spec(ActionId.IDENTITY_SHOW)),)
+
+    class PaletteHost(App[None]):
+        def on_mount(self) -> None:
+            self.push_screen(
+                CommandPaletteScreen(
+                    entries,
+                    command_roots=frozenset({"summon"}),
+                ),
+                selected.append,
+            )
+
+    async def exercise() -> None:
+        app = PaletteHost()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.press(*"summon kimi")
+            await pilot.pause()
+            options = app.screen.query_one("#palette-results", OptionList)
+            prompts = [
+                str(options.get_option_at_index(i).prompt)
+                for i in range(options.option_count)
+            ]
+            assert any("Run as command" in prompt for prompt in prompts)
+            await pilot.press("enter")
+            await pilot.pause()
+
+    asyncio.run(exercise())
+    assert selected == [PaletteCommandHandoff("summon kimi")]
+
+
+def test_command_line_has_no_completion_list_and_reconciles_on_mount() -> None:
+    """[TUI-7.1] vi-like line: no browsable list; mount reads the composer."""
+
+    from taut.commands.syntax import core_command_syntax
+    from taut_tui.screens import CommandLineScreen
+
+    class CommandHost(App[None]):
+        def on_mount(self) -> None:
+            self.push_screen(
+                CommandLineScreen(
+                    core_command_syntax(),
+                    initial_text="say ",
+                    reconcile=lambda: "say general raced",
+                )
+            )
+
+    async def exercise() -> None:
+        app = CommandHost()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            assert not app.screen.query(OptionList)
+            field = app.screen.query_one("#command-line", Input)
+            assert field.value == "say general raced"
+
+    asyncio.run(exercise())
+
+
+def test_command_line_shadow_cycles_and_tab_accepts() -> None:
+    from taut_summon.command_syntax import provide_syntax
+
+    from taut.commands.syntax import core_command_syntax, merge_command_syntax
+    from taut_tui.screens import CommandLineScreen
+
+    class CommandHost(App[None]):
+        def on_mount(self) -> None:
+            syntax = merge_command_syntax(core_command_syntax(), (provide_syntax(),))
+            self.push_screen(CommandLineScreen(syntax))
+
+    async def exercise() -> None:
+        app = CommandHost()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.press(*"s")
+            await pilot.pause(0.05)
+            field = app.screen.query_one("#command-line", Input)
+            first_shadow = field._suggestion
+            assert first_shadow.startswith("s") and len(first_shadow) > 1
+            await pilot.press("down")
+            await pilot.pause(0.05)
+            second_shadow = field._suggestion
+            assert second_shadow != first_shadow
+            await pilot.press("tab")
+            await pilot.pause()
+            assert field.value == second_shadow.rstrip() + " "
+            assert field.has_focus
+            assert isinstance(app.screen, CommandLineScreen)
 
     asyncio.run(exercise())

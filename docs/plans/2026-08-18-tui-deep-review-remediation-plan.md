@@ -884,7 +884,48 @@ check-doc-paths, K1 test suites green.
   `test_persona.py`; module docstring aligned with the promoted
   [SUM-10] bullet.
 - Gates: contract + chat + persona suites green; ruff clean;
-  check-doc-paths OK; changelog entry added.
+  check-doc-paths OK; changelog entry added. Landed at `1537fb6`.
+
+### Slice 4 — 2026-08-18 — evidence
+
+- P1+P2: `CommandPaletteScreen` gains priority Up/Down bindings cycling
+  the highlight across activatable rows, opens (and re-renders) with the
+  first activatable row highlighted, and Enter activates exactly the
+  highlighted row (inert when none). The prior filter test now
+  exercises the real path.
+- P3: no-match disabled empty-state row naming the `:` command line;
+  "Run as command" handoff row when the first query token is an exact
+  member of the app-supplied `command_roots` (evaluated independently
+  of the fuzzy action matcher); dismissal result type extended with
+  `PaletteCommandHandoff`, completed by `_complete_palette` into
+  `action_open_command_line(initial_text=query)`.
+- P4: browser titled "Actions", status-bar affordance relabeled, help
+  text names the command line and action browser distinctly.
+- L1: `_suppress_promotion_edits` counter with `_set_composer_text`
+  wrapping all three programmatic composer restores; reproduced
+  spontaneous-reopen scenario now proven inert at the app level.
+- L2: `CommandLineScreen(reconcile=...)` reads the composer's current
+  draft at mount via `TautApp._reconcile_promotion`, which also
+  advances `_pending_command_origin` so the raced draft clears on
+  successful submission.
+- L3: `CommandLineScreen` rebuilt as a bottom-docked, transparent,
+  non-dimming bar (no title/instructions/completion list; `:` marker +
+  field + one feedback line). Inline ghost shadow via a
+  `textual.suggester.Suggester` subclass computing matches from the
+  live value; Up/Down cycle the match (ghost refresh pins the private
+  `Input._suggestion` reactive, documented, degradation = stale ghost
+  until next keystroke); Tab accepts with an argument-ready space;
+  feedback line compactly names multiple matches. Liveness proven:
+  deliveries keep rendering behind the open command line.
+- Old-contract tests updated with dated comments: keyboard-selection →
+  shadow cycle + Tab; clickable-completion and passive-list app tests →
+  shadow/no-list equivalents; mouse row-click screen test retired (no
+  rows — recorded here); transcript literal-`\n\t` row expectation
+  moved to the promoted decode contract; help handler assertion updated
+  to the new wording.
+- Gates: `test_tui_screens` 21/21, `test_tui_app` full green,
+  `test_tui_action_handlers` 37/37, action routes + command bindings
+  green, ruff clean.
 
 ## Completion Gate
 

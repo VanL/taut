@@ -94,6 +94,7 @@ from taut_tui.screens import (
     NamedActionScreen,
     NamedActionSubmission,
     NativeFormScreen,
+    PaletteCommandHandoff,
     PaletteEntry,
     SearchScreen,
     SummonStartScreen,
@@ -379,6 +380,8 @@ class TautApp(App[None]):
         self._base_screen: Any | None = None
         self._resize_generation = 0
         self._shutting_down = False
+        self._suppress_promotion_edits = 0
+        self._pending_command_origin: tuple[str, int] | None = None
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="workspace"):
@@ -414,7 +417,7 @@ class TautApp(App[None]):
             yield TautStatic(id="status-line")
             yield TautButton("Pane", id="pane-affordance")
             yield TautButton("Replies", id="reply-affordance")
-            yield TautButton("Commands", id="commands-affordance")
+            yield TautButton("Actions", id="commands-affordance")
             yield TautButton("Search", id="search-affordance")
             yield TautButton("Help", id="help-affordance")
 
@@ -570,6 +573,10 @@ class TautApp(App[None]):
                 ),
             )
         )
+        if self._suppress_promotion_edits:
+            # [TUI-7.1]: programmatic draft restoration never promotes.
+            self._suppress_promotion_edits -= 1
+            return
         command_text = self._composer_command_text(composer.text, submitted=False)
         if command_text is not None:
             self.action_open_command_line(
@@ -832,8 +839,14 @@ class TautApp(App[None]):
     def action_open_command(self) -> None:
         if self.visual_state.mode is InteractionMode.NORMAL:
             self._set_mode(InteractionMode.COMMAND)
+            roots = frozenset(
+                node.path[0] for node in command_nodes(self._command_syntax())
+            )
             self.push_screen(
-                CommandPaletteScreen(self._palette_entries()),
+                CommandPaletteScreen(
+                    self._palette_entries(),
+                    command_roots=roots,
+                ),
                 self._complete_palette,
             )
 
@@ -847,21 +860,53 @@ class TautApp(App[None]):
             self.visual_state.mode is InteractionMode.COMPOSE and initial_text
         ):
             self._set_mode(InteractionMode.COMMAND)
+            self._pending_command_origin = originating_draft
+            reconcile = (
+                None if originating_draft is None else self._reconcile_promotion
+            )
             self.push_screen(
                 CommandLineScreen(
                     self._command_syntax(),
                     initial_text=initial_text,
+                    reconcile=reconcile,
                 ),
                 lambda submission: self._complete_command_line(
                     submission,
-                    originating_draft=originating_draft,
+                    originating_draft=self._pending_command_origin,
                 ),
             )
+
+    def _reconcile_promotion(self) -> str:
+        """[TUI-7.1]: read the composer's current draft at command-line mount.
+
+        Keystrokes that raced into the composer after the promotion boundary
+        are carried into the command field, and the originating-draft
+        identity advances with them so no raced suffix can survive as a
+        hidden sendable chat draft.
+        """
+
+        try:
+            composer = self._query_base("#composer", TautComposer)
+        except NoMatches:
+            return ""
+        command_text = self._composer_command_text(composer.text, submitted=True)
+        if command_text is None:
+            return composer.text.removeprefix(":")
+        self._pending_command_origin = self._current_draft_identity()
+        return command_text
 
     def _current_draft_identity(self) -> tuple[str, int] | None:
         target = self.visual_state.active_conversation or "__unselected__"
         draft = self.visual_state.draft_for(target)
         return None if draft is None else (target, draft.revision)
+
+    def _set_composer_text(self, composer: TautComposer, text: str) -> None:
+        """Restore composer text without letting the edit read as typing."""
+
+        if composer.text == text:
+            return
+        self._suppress_promotion_edits += 1
+        composer.text = text
 
     def _composer_command_text(self, text: str, *, submitted: bool) -> str | None:
         if not text.startswith(":"):
@@ -904,7 +949,8 @@ class TautApp(App[None]):
             "i composes; "
             "in compose, Enter sends, Ctrl-Enter, Shift-Enter, or Ctrl-J "
             "inserts a newline, and Ctrl-Tab inserts a tab; "
-            ": / Ctrl-P commands; / / Ctrl-F search; ? / F1 help; "
+            ": opens the command line; Ctrl-P or Actions opens the action "
+            "browser; / / Ctrl-F search; ? / F1 help; "
             "g i opens notifications; q / Ctrl-Q quits in normal mode; "
             "Ctrl-C / Ctrl-D quits whenever the TUI owns the terminal. "
             "Notification pointers are consumable and shared by sessions; "
@@ -1139,7 +1185,9 @@ class TautApp(App[None]):
         )
         active_target = self.visual_state.active_conversation or "__unselected__"
         if active_target == target:
-            self._query_base("#composer", TautComposer).text = ""
+            self._set_composer_text(
+                self._query_base("#composer", TautComposer), ""
+            )
 
     def _dispatch_command_invocation(self, invocation: CommandInvocation) -> None:
         if invocation.action is not None:
@@ -1926,10 +1974,14 @@ class TautApp(App[None]):
                 return self._target_labels.get(target, target)
         return action_spec(action_id).family.value
 
-    def _complete_palette(self, action_id: ActionId | None) -> None:
+    def _complete_palette(
+        self, result: ActionId | PaletteCommandHandoff | None
+    ) -> None:
         self._set_mode(InteractionMode.NORMAL)
-        if action_id is not None:
-            self._dispatch_tui_action(action_id, source=ActionRoute.PALETTE)
+        if isinstance(result, PaletteCommandHandoff):
+            self.action_open_command_line(initial_text=result.query)
+        elif result is not None:
+            self._dispatch_tui_action(result, source=ActionRoute.PALETTE)
 
     def _complete_search(self, result: object | None) -> None:
         self._set_mode(InteractionMode.NORMAL)
@@ -2740,7 +2792,7 @@ class TautApp(App[None]):
                     DraftState(target=target, revision=revision + 1)
                 )
                 if self.visual_state.active_conversation == target:
-                    composer.text = ""
+                    self._set_composer_text(composer, "")
         self._operation_state = "sending" if self._pending_sends else "idle"
         self._update_status()
 
@@ -2777,7 +2829,7 @@ class TautApp(App[None]):
         draft = self.visual_state.draft_for(snapshot.target)
         composer = self._query_base("#composer", TautComposer)
         composer.placeholder = f"Message {target_label}"
-        composer.text = "" if draft is None else draft.text
+        self._set_composer_text(composer, "" if draft is None else draft.text)
         if draft is not None:
             composer.cursor_position = draft.cursor_position
         self._update_status()

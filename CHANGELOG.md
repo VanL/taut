@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Rebuilt the TUI's two command surfaces per the revised [TUI-7.1]. The `:`
+  command line is now a vi-like bottom bar: it owns focus without dimming or
+  blocking the live conversation view, completes inline with a ghost shadow
+  (Up/Down cycle matches, Tab accepts), and no longer shows a completion
+  list. The action browser (Ctrl-P / "Actions") opens with the first enabled
+  row highlighted, Up/Down work from the query field, Enter runs exactly the
+  highlighted action, a no-match query shows an explicit empty state, and a
+  query starting with a known command root offers a "Run as command" handoff
+  into the command line. Programmatic draft restores no longer spuriously
+  reopen the command line, and keystrokes racing a composer promotion are
+  reconciled into the command field instead of surviving as a hidden draft.
+
 - TUI transcript message bodies now decode a closed escape allowlist toward
   sender intent: literal `\n`, `\t`, and the other terminal-escape-policy
   forms (`\xNN`, `\uNNNN`, `\UNNNNNNNN`, lowercase hex) render as the
