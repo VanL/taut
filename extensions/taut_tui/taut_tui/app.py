@@ -504,7 +504,7 @@ class TautApp(App[None]):
                 try:
                     if self._session is not None:
                         try:
-                            self._session.close()
+                            self._session.close(wait=False)
                         except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-089] exception
                             detail = str(exc) or type(exc).__name__
                             self._operation_state = f"cleanup failed: {detail}"
@@ -1520,10 +1520,36 @@ class TautApp(App[None]):
         if output.exists():
             self._confirm_command(
                 f"Replace existing dump {output}?",
-                lambda: self._run_action(domain.dump(output, replace_confirmed=True)),
+                lambda: self._submit_dump(
+                    domain, output, replace_confirmed=True
+                ),
             )
         else:
-            self._run_action(domain.dump(output))
+            self._submit_dump(domain, output)
+
+    def _submit_dump(
+        self,
+        domain: TuiDomainActions,
+        output: Path,
+        *,
+        replace_confirmed: bool = False,
+        screen: NativeFormScreen | None = None,
+    ) -> None:
+        """Submit a dump; submission itself can refuse ([TUI-12.1] recoverable)."""
+
+        try:
+            future = domain.dump(output, replace_confirmed=replace_confirmed)
+        except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-085] exception
+            detail = str(exc) or type(exc).__name__
+            if screen is not None:
+                screen.show_domain_error(detail)
+            else:
+                self._show_error(detail)
+            return
+        if screen is not None:
+            self._run_form_action(screen, future)
+        else:
+            self._run_action(future)
 
     def _dispatch_summon_command(self, invocation: CommandInvocation) -> None:
         summon = self._summon
@@ -2176,15 +2202,18 @@ class TautApp(App[None]):
                 self.push_screen(
                     ConfirmationScreen(prompt.format(target=output)),
                     lambda confirmed: (
-                        self._run_form_action(
-                            screen, domain.dump(output, replace_confirmed=True)
+                        self._submit_dump(
+                            domain,
+                            output,
+                            replace_confirmed=True,
+                            screen=screen,
                         )
                         if confirmed
                         else screen.resume()
                     ),
                 )
             else:
-                self._run_form_action(screen, domain.dump(output))
+                self._submit_dump(domain, output, screen=screen)
         elif action_id is ActionId.SYSTEM_LOAD_HELP:
             screen.complete()
             self._render_inspector(domain.load_help(values["input_path"]))
@@ -2843,7 +2872,33 @@ class TautApp(App[None]):
         self._operation_state = "sending" if self._pending_sends else "idle"
         self._update_status()
 
+    def _presentation_ready(self) -> bool:
+        """Mirror `_watch_future`'s teardown guard for direct worker applies."""
+
+        if self._shutting_down:
+            return False
+        base_screen = self._base_screen
+        if base_screen is None:
+            return True
+        if not base_screen.is_attached:
+            return False
+        try:
+            base_screen.query_one("#workspace")
+        except NoMatches:
+            return False
+        return True
+
     def _apply_conversation(self, snapshot: ConversationSnapshot) -> bool:
+        if not self._presentation_ready():
+            return False
+        if (
+            snapshot.intent_token is not None
+            and snapshot.intent_token != self._conversation_intent
+        ):
+            # A newer open superseded this snapshot between the worker-side
+            # check and this loop callback; applying it would flash stale
+            # conversation state.
+            return False
         selected = self.visual_state.selected_message_id
         if selected is not None and not any(
             message.ts == selected for message in snapshot.messages
@@ -2901,6 +2956,8 @@ class TautApp(App[None]):
         return True
 
     def _apply_delivery(self, generation: int, item: Delivery) -> bool:
+        if not self._presentation_ready():
+            return False
         if isinstance(item, Notification):
             if (
                 self.visual_state.inspector is not None

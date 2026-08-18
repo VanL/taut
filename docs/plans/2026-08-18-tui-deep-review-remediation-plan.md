@@ -960,7 +960,45 @@ check-doc-paths, K1 test suites green.
   `#transcript` queries three times and poison-advance a message; the
   teardown guard lands with A2.
 - Gates: ruff clean; `test_tui_resize` + `test_tui_chat` +
-  `test_tui_app` 129/129.
+  `test_tui_app` 129/129. Landed at `84cc74e`.
+
+### Slice 6 — 2026-08-18 — evidence
+
+- A1: `_submit_dump` wraps the synchronous submission window for both
+  the command and form dump paths; `OperationAlreadyRunning` and the
+  TOCTOU `ReplacementConfirmationRequired` render as attached
+  recoverable errors (form path re-enables the form) instead of
+  escaping the Textual handler.
+- A2: `TuiSession.close(wait=False)` for UI-loop callers — on_unmount
+  no longer blocks the loop a parked worker needs, eliminating the 7s
+  quit stall and the spurious "TUI cleanup failed: TimeoutError" toast;
+  cleanup still runs on the executor thread, which drains before
+  interpreter exit (a parked marshal unblocks with RuntimeError once
+  the loop exits and is swallowed by the existing worker guards).
+  Companion teardown guard `_presentation_ready` (mirroring
+  `_watch_future`'s attachment probe) now gates `_apply_delivery` and
+  `_apply_conversation`, closing the Slice 5-observed
+  poison-on-teardown path (three NoMatches failures advancing past a
+  live message).
+- A3: `read`, `inbox`, `log`, and `list --dms` convert
+  `EmptyResultError` into empty collections via `_empty_ok`, taking the
+  renderer's existing "No results" path.
+- A4: `_apply_conversation` re-checks the intent token on the loop
+  side; a superseded snapshot returns False without flashing stale
+  state.
+- A5: `commit_returned_message` returns `None` for threads unrelated to
+  the open conversation, ending the needless full re-render/composer
+  reset.
+- A6: reply-thread unread is claimed only after the open's first commit
+  is accepted, then merged and re-committed; a rejected (superseded)
+  open no longer silently marks never-displayed replies read.
+- A7: `start_direct_message` normalizes a single leading `@`.
+- Tests: eight new red-green tests (five in `test_tui_domain.py`, three
+  in `test_tui_app.py`; the teardown-guard test also pins
+  `_apply_conversation` against a detached screen). One prior stub
+  updated to the new `close(wait=...)` contract.
+- Gates: ruff clean; full `extensions/taut_tui/tests` lane (minus the
+  wheel-building packaging suite, exercised in CI) green.
 
 ## Completion Gate
 

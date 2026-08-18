@@ -2407,7 +2407,7 @@ def test_unmount_contains_session_cleanup_failure_without_skipping_system_close(
     from taut_tui.app import TautApp
 
     class FailingSession:
-        def close(self) -> None:
+        def close(self, *, wait: bool = True) -> None:
             raise RuntimeError("watcher remained live")
 
     class SystemProbe:
@@ -3303,5 +3303,85 @@ def test_unselected_composer_draft_carries_into_first_conversation(
                 if app.visual_state.active_conversation == "general":
                     break
             assert composer.text == "hello there"
+
+    asyncio.run(exercise())
+
+
+# -- Slice 6 of docs/plans/2026-08-18-tui-deep-review-remediation-plan.md --
+
+
+def test_overlapping_dump_request_stays_recoverable(tmp_path: Path) -> None:
+    """[TUI-12.1] a second dump request renders an error, never a crash."""
+
+    from taut_tui.app import TautApp
+    from taut_tui.system import OperationAlreadyRunning
+
+    class BusyDomain:
+        def dump(self, output: Path, *, replace_confirmed: bool = False) -> None:
+            raise OperationAlreadyRunning("a workspace dump is already running")
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 34)) as pilot:
+            await pilot.pause()
+            app._run_command_dump(BusyDomain(), tmp_path / "dump.tar")
+            await pilot.pause()
+            assert app.is_running
+            inspector = str(app.query_one("#inspector-body").render())
+            assert "already running" in inspector
+
+    asyncio.run(exercise())
+
+
+def test_delivery_during_teardown_is_rejected_without_raising() -> None:
+    from taut.client import Message
+    from taut_tui.app import TautApp
+    from taut_tui.session import ConversationSnapshot
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 34)) as pilot:
+            await pilot.pause()
+            app._shutting_down = True
+            item = Message("general", 1, "m_bob", "bob", "message", "late")
+            assert app._apply_delivery(0, item) is False
+
+            app._shutting_down = False
+
+            class DetachedScreen:
+                is_attached = False
+
+                def query_one(self, *args: object) -> object:
+                    raise AssertionError("detached screen must not be queried")
+
+            app._base_screen = DetachedScreen()
+            assert app._apply_delivery(0, item) is False
+            snapshot = ConversationSnapshot(
+                generation=1,
+                target="general",
+                messages=(item,),
+            )
+            assert app._apply_conversation(snapshot) is False
+
+    asyncio.run(exercise())
+
+
+def test_stale_intent_snapshot_is_not_applied() -> None:
+    from taut_tui.app import TautApp
+    from taut_tui.session import ConversationSnapshot
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 34)) as pilot:
+            await pilot.pause()
+            app._conversation_intent = 5
+            stale = ConversationSnapshot(
+                generation=1,
+                target="stale-target",
+                messages=(),
+                intent_token=3,
+            )
+            assert app._apply_conversation(stale) is False
+            assert app.visual_state.active_conversation != "stale-target"
 
     asyncio.run(exercise())

@@ -115,19 +115,20 @@ class TuiSession:
                 snapshot.target,
                 snapshot.reply_thread,
             }:
-                return snapshot
+                # A message for an unrelated thread changes nothing in the
+                # open conversation; returning the live snapshot here would
+                # trigger a needless full re-render and composer reset.
+                return None
             if item.thread == snapshot.reply_thread:
                 snapshot = replace(
                     snapshot,
                     reply_messages=_append_unique(snapshot.reply_messages, item),
                 )
-            elif item.thread == snapshot.target:
+            else:
                 snapshot = replace(
                     snapshot,
                     messages=_append_unique(snapshot.messages, item),
                 )
-            else:
-                return snapshot
             self._conversation = snapshot
             return snapshot
 
@@ -173,7 +174,15 @@ class TuiSession:
             intent_token,
         )
 
-    def close(self) -> None:
+    def close(self, *, wait: bool = True) -> None:
+        """Close the session.
+
+        ``wait=False`` is for callers on the UI loop: a worker parked in a
+        UI marshal cannot make progress while the loop blocks here, so the
+        UI caller must not wait — cleanup still runs on the executor thread
+        and the non-daemon executor drains before interpreter exit.
+        """
+
         with self._state_lock:
             if self._closed:
                 return
@@ -181,7 +190,8 @@ class TuiSession:
             self._desired_generation += 1
         future = self._executor.submit(self._close_owned)
         try:
-            future.result(timeout=self._watcher_stop_timeout + 5.0)
+            if wait:
+                future.result(timeout=self._watcher_stop_timeout + 5.0)
         finally:
             self._executor.shutdown(wait=False, cancel_futures=False)
 
@@ -252,19 +262,32 @@ class TuiSession:
         if not self._current_generation(generation):
             return None
         client = self._client_owned()
-        claimed_replies = self._open_reply_owned(client, reply_thread)
         snapshot = self._load_snapshot_owned(
             client,
             generation,
             target,
             reply_thread,
-            claimed_replies,
+            (),
             intent_token,
         )
         if snapshot is None or not self._commit_conversation(snapshot):
             return None
         with self._state_lock:
             self._conversation = snapshot
+        # Claim reply unread only after the open is accepted, so a
+        # superseded open cannot silently mark never-displayed replies read.
+        claimed_replies = self._open_reply_owned(client, reply_thread)
+        if claimed_replies:
+            snapshot = replace(
+                snapshot,
+                reply_messages=_merge_messages(
+                    snapshot.reply_messages, claimed_replies
+                ),
+            )
+            if not self._commit_conversation(snapshot):
+                return None
+            with self._state_lock:
+                self._conversation = snapshot
         if not self._current_generation(generation):
             return None
         self._start_watcher_owned(client, snapshot)

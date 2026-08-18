@@ -9,8 +9,10 @@ Spec references:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from concurrent.futures import Future
 from pathlib import Path
+from typing import TypeVar
 
 from taut import EmptyResultError
 from taut.client import (
@@ -30,6 +32,8 @@ from taut.client import (
 from taut_tui.actions import ActionId
 from taut_tui.session import ConversationSnapshot, TuiSession
 from taut_tui.system import TuiSystemOperations, load_help_command
+
+_ItemT = TypeVar("_ItemT")
 
 CORE_DOMAIN_ACTIONS = frozenset(
     {
@@ -133,8 +137,9 @@ class TuiDomainActions:
         )
 
     def start_direct_message(self, member: str, text: str) -> Future[Message]:
+        handle = member.removeprefix("@")
         return self._session.submit_client_operation(
-            lambda client: client.say(f"@{member}", text)
+            lambda client: client.say(f"@{handle}", text)
         )
 
     def notifications(self) -> tuple[Notification, ...]:
@@ -198,10 +203,15 @@ class TuiDomainActions:
         )
 
     def read_messages(self, thread: str | None = None) -> Future[list[Message]]:
-        return self._session.submit_client_operation(lambda client: client.read(thread))
+        # [TUI-12.1]: an empty result is a result, not an error.
+        return self._session.submit_client_operation(
+            lambda client: _empty_ok(lambda: client.read(thread))
+        )
 
     def inbox(self) -> Future[list[Notification]]:
-        return self._session.submit_client_operation(lambda client: client.inbox())
+        return self._session.submit_client_operation(
+            lambda client: _empty_ok(client.inbox)
+        )
 
     def log_messages(
         self,
@@ -211,7 +221,9 @@ class TuiDomainActions:
         limit: int | None = None,
     ) -> Future[list[Message]]:
         return self._session.submit_client_operation(
-            lambda client: client.log(thread, since=since, limit=limit)
+            lambda client: _empty_ok(
+                lambda: client.log(thread, since=since, limit=limit)
+            )
         )
 
     def list_threads(
@@ -221,7 +233,7 @@ class TuiDomainActions:
         direct_messages: bool = False,
     ) -> Future[list[Thread]]:
         operation = (
-            (lambda client: client.list_direct_messages())
+            (lambda client: _empty_ok(client.list_direct_messages))
             if direct_messages
             else (lambda client: client.list_threads(all_threads=all_threads))
         )
@@ -282,6 +294,15 @@ class TuiDomainActions:
 
     def load_help(self, input_path: str | Path) -> str:
         return load_help_command(input_path=input_path, db_path=self._db_path)
+
+
+def _empty_ok(operation: Callable[[], list[_ItemT]]) -> list[_ItemT]:
+    """Convert core's empty-result signal into the empty collection."""
+
+    try:
+        return operation()
+    except EmptyResultError:
+        return []
 
 
 __all__ = ["CORE_DOMAIN_ACTIONS", "TuiDomainActions"]
