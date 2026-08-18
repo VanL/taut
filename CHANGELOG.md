@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.3 - 2026-08-18
+
 - Rebuilt the TUI's two command surfaces per the revised [TUI-7.1]. The `:`
   command line is now a vi-like bottom bar: it owns focus without dimming or
   blocking the live conversation view, completes inline with a ghost shadow
@@ -27,6 +29,26 @@
   matching the common chat-composer convention alongside `Ctrl-Enter` and the
   portable `Ctrl-J`. Like `Ctrl-Enter`, it requires a terminal that reports
   modified Enter distinctly.
+
+- Hardened TUI Summon ownership and exit behavior. Terminal-lease failures now
+  leave through normal teardown instead of resuming outside application mode;
+  pending owned runs can be cancelled during quit; stale attach confirmations
+  dismiss cleanly; and UI-loop shutdown no longer blocks on a worker that is
+  waiting to marshal back onto that same loop.
+
+- Preserved TUI transcript and composer state across live re-renders,
+  navigation, resizing, and modal transitions. Selected messages no longer
+  change merely because scroll position is restored; scrolled-up transcripts
+  retain their anchor; the terminal-size shield cannot remain stranded under
+  another modal; recoverable native-form errors leave the form usable; and a
+  draft written before selecting a conversation carries into the first opened
+  conversation.
+
+- Made TUI async result handling more exact. Overlapping dump requests render
+  recoverable attached errors, empty read/inbox/log/DM-list results take the
+  existing "No results" path, superseded conversation snapshots cannot flash
+  stale state, unrelated thread sends do not reset the open composer, and
+  reply-thread unread state advances only after the requested open is accepted.
 
 ## 0.9.2 - 2026-08-17
 
