@@ -743,6 +743,14 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   retain coverage on the successful product-path child, and keep raw-shard
   validation fail-closed.
 
+- 2026-08-17: A cross-platform host-routing test must not acquire an
+  OS-specific provider transport before reaching the host boundary it owns.
+  Use the cross-platform external-provider seam, supply only the capability
+  needed to reach that boundary, and make any provider spawn a firing failure
+  when the contract is pre-spawn cancellation. Observe the exact foreground
+  result as well as the host callback so an early transport failure is reported
+  causally instead of becoming a generic polling timeout.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

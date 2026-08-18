@@ -830,6 +830,16 @@ with an incompatible TUI.
 - 2026-08-17: The owner explicitly authorized closeout and commit. Promoted
   the plan and index to completed before the final closeout gates and atomic
   coordinated commit.
+- 2026-08-17: The 0.9.2 pre-tag Windows lane exposed that the route proof's
+  PATH-injected `grok` executable still selected the POSIX-only PTY adapter and
+  failed on `fcntl` before acknowledgement. The test now keeps both exact
+  `grok` route inputs while its Grok factory uses the existing cross-platform
+  scripted-provider seam with attach capability supplied; provider spawn is a
+  firing failure. Both real TUI routes, the public
+  controller/driver, real SQLite, exact prompt/suspension assertions, and exact
+  cancellation cleanup remain unchanged. The event-based foreground observer
+  surfaced the transport error directly rather than collapsing it into a
+  polling timeout.
 
 ## Out of Scope
 

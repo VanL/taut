@@ -7,8 +7,6 @@ Spec references:
 from __future__ import annotations
 
 import asyncio
-import os
-import sys
 import threading
 from collections.abc import Callable
 from concurrent.futures import Future
@@ -1427,6 +1425,9 @@ def test_native_and_textual_summon_routes_share_confirmation_before_suspend(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from taut_summon import _adapter as adapter_module
+    from taut_summon._scripted import ScriptedAdapter
+
     from taut_tui import summon as tui_summon
     from taut_tui.app import TautApp
     from taut_tui.screens import ConfirmationScreen, SummonStartScreen
@@ -1434,23 +1435,26 @@ def test_native_and_textual_summon_routes_share_confirmation_before_suspend(
 
     db_path = tmp_path / "summon-confirmation-routes.db"
     TautClient.init(db_path=db_path)
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    fake_tui = (
-        Path(__file__).parents[2] / "taut_summon" / "tests" / "fixtures" / "fake_tui.py"
-    )
-    grok = fake_bin / "grok"
-    grok.write_text(
-        f"#!{sys.executable}\n"
-        "import runpy\n"
-        f"runpy.run_path({str(fake_tui)!r}, run_name='__main__')\n",
-        encoding="utf-8",
-    )
-    grok.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
+    spawn_calls: list[str] = []
+
+    def forbidden_spawn(self: ScriptedAdapter, **_kwargs: object) -> object:
+        spawn_calls.append(self.name)
+        raise AssertionError("provider spawned before confirmation cancellation")
+
+    def grok_factory() -> ScriptedAdapter:
+        adapter = ScriptedAdapter()
+        adapter.name = "grok"
+        adapter.supports_attach = True
+        return adapter
+
+    # This test owns host routing and the pre-spawn acknowledgement boundary,
+    # not the POSIX-only PTY transport. The scripted provider is the public
+    # cross-platform external-provider seam; it occupies the grok factory slot
+    # so both exact route inputs still traverse provider resolution. Any
+    # attempted spawn remains a firing failure.
+    monkeypatch.setitem(adapter_module._FACTORIES, "grok", grok_factory)
+    monkeypatch.setattr(ScriptedAdapter, "spawn", forbidden_spawn)
     monkeypatch.setattr(tui_summon, "_standard_terminal_is_suitable", lambda: True)
-    provider_log = tmp_path / "provider.jsonl"
-    monkeypatch.setenv("TAUT_FAKE_TUI_LOG", str(provider_log))
 
     async def exercise() -> None:
         app = TautApp(db_path=str(db_path), as_name=None, continuity_token=None)
@@ -1531,7 +1535,7 @@ def test_native_and_textual_summon_routes_share_confirmation_before_suspend(
             assert suspend_calls == []
             await pilot.press("escape")
             await _await_cancelled_summon_run(app, textual_future)
-            assert not provider_log.exists()
+            assert spawn_calls == []
 
     asyncio.run(exercise())
 
