@@ -231,11 +231,13 @@ framework floor is Textual 8.2.8, selected by the retained TUI lock. There is
 no separate older-Textual compatibility lane. This floor supplies the click
 event metadata used for reliable select-versus-activate semantics.
 
-Real viewport tests observe the exact anchor-restore callback caused by a
-resize and then the following framework refresh. A generic event-loop pause is
-not completion evidence because resize rendering and anchor restoration occupy
-nested after-refresh callbacks. The observer delegates to production behavior;
-its deadline is only a missing-callback cap.
+Real viewport tests observe each deferred framework boundary they depend on:
+the initial transcript render and following refresh, the explicit scroll's
+completion callback, and the exact anchor-restore callback caused by a resize
+plus its following refresh. A generic event-loop pause is not completion
+evidence because option layout, scrolling, resize rendering, and anchor
+restoration occupy distinct deferred callbacks. Observers delegate to
+production behavior; their deadlines are only missing-callback caps.
 
 The checked visual fixtures are:
 

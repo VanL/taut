@@ -111,6 +111,14 @@ reread.
 - Release gate `32047185459` published the exact wheel and sdist on its first
   attempt. GitHub/PyPI hashes match and both Sigstore statements bind the exact
   workflow, tag, commit, filenames, and digests.
+- The 0.9.2 pre-tag Windows job `95558866975` in run `32086107777` exposed the
+  same test's earlier unowned boundary: `_message_rows` reached 30 before
+  Textual had completed option layout and its deferred tail scroll, so the
+  test's explicit history scroll could be overwritten before anchor capture.
+  The test now observes the delegated 30-message render after refresh and uses
+  Textual's exact `scroll_to(..., on_complete=...)` callback before asserting
+  offset 18 and non-tail state. Time remains only a missing-callback cap; every
+  resize and anchor assertion remains unchanged.
 
 ## Related Plans
 

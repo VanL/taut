@@ -447,6 +447,15 @@ def test_real_transcript_viewport_anchor_survives_width_reflow(
     async def exercise() -> None:
         app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
         async with app.run_test(size=(100, 24)) as pilot:
+            transcript_rendered = asyncio.Event()
+            render_messages = app._render_messages
+
+            def observe_transcript_render(messages: tuple[Any, ...]) -> None:
+                render_messages(messages)
+                if len(messages) >= 30:
+                    app.call_after_refresh(transcript_rendered.set)
+
+            monkeypatch.setattr(app, "_render_messages", observe_transcript_render)
             navigation = app.query_one("#navigation-list", TautOptionList)
             await _pause_until(
                 pilot,
@@ -455,13 +464,18 @@ def test_real_transcript_viewport_anchor_survives_width_reflow(
             navigation.highlighted = _option_index_containing(navigation, "#general")
             navigation.focus()
             await pilot.press("enter")
-            await _pause_until(
-                pilot,
-                lambda: len(app._message_rows) >= 30,
-            )
+            await asyncio.wait_for(transcript_rendered.wait(), timeout=5)
             transcript = app.query_one("#transcript", TautOptionList)
-            transcript.scroll_to(y=18, animate=False, force=True)
-            await pilot.pause()
+            scroll_applied = asyncio.Event()
+            transcript.scroll_to(
+                y=18,
+                animate=False,
+                force=True,
+                on_complete=scroll_applied.set,
+            )
+            await asyncio.wait_for(scroll_applied.wait(), timeout=5)
+            assert int(transcript.scroll_offset.y) == 18
+            assert transcript.is_vertical_scroll_end is False
             app._capture_scroll_anchor()
             before = app.visual_state.scroll_anchor
             assert before.tail_pinned is False
