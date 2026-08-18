@@ -3066,9 +3066,7 @@ def test_programmatic_draft_restore_never_promotes(tmp_path: Path) -> None:
 
     async def open_target(app: Any, pilot: Any, target: str) -> None:
         navigation = app.query_one("#navigation-list", TautOptionList)
-        index = next(
-            i for i, t in enumerate(app._navigation_targets) if t == target
-        )
+        index = next(i for i, t in enumerate(app._navigation_targets) if t == target)
         navigation.highlighted = index
         await pilot.pause()
         navigation.action_select()
@@ -3310,25 +3308,38 @@ def test_unselected_composer_draft_carries_into_first_conversation(
 # -- Slice 6 of docs/plans/2026-08-18-tui-deep-review-remediation-plan.md --
 
 
-def test_overlapping_dump_request_stays_recoverable(tmp_path: Path) -> None:
-    """[TUI-12.1] a second dump request renders an error, never a crash."""
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param("busy", id="known-operation-conflict"),
+        pytest.param("backend", id="arbitrary-domain-failure"),
+    ],
+)
+def test_dump_submission_failure_stays_recoverable(
+    tmp_path: Path,
+    error: str,
+) -> None:
+    """[TUI-12.1] any synchronous dump refusal renders instead of crashing."""
 
     from taut_tui.app import TautApp
     from taut_tui.system import OperationAlreadyRunning
 
     class BusyDomain:
         def dump(self, output: Path, *, replace_confirmed: bool = False) -> None:
-            raise OperationAlreadyRunning("a workspace dump is already running")
+            if error == "busy":
+                raise OperationAlreadyRunning("a workspace dump is already running")
+            raise RuntimeError("backend refused dump submission")
 
     async def exercise() -> None:
         app = TautApp(db_path=None, as_name=None, continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
             await pilot.pause()
-            app._run_command_dump(BusyDomain(), tmp_path / "dump.tar")
+            app._run_command_dump(cast(Any, BusyDomain()), tmp_path / "dump.tar")
             await pilot.pause()
             assert app.is_running
             inspector = str(app.query_one("#inspector-body").render())
-            assert "already running" in inspector
+            expected = "already running" if error == "busy" else "backend refused"
+            assert expected in inspector
 
     asyncio.run(exercise())
 

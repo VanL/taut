@@ -199,9 +199,7 @@ def test_start_direct_message_normalizes_leading_at(tmp_path: Path) -> None:
         )
         assert sent.text == "typed with an at"
         replies = [
-            message
-            for message in bob.read()
-            if message.text == "typed with an at"
+            message for message in bob.read() if message.text == "typed with an at"
         ]
         assert len(replies) == 1
     finally:
@@ -298,16 +296,14 @@ def test_rejected_reply_open_does_not_claim_unread_replies(tmp_path: Path) -> No
         commit_conversation=lambda _snapshot: False,  # superseded open
     )
     try:
-        result = session.open_conversation(
-            "general", reply_thread=reply_thread
-        ).result(timeout=10)
+        result = session.open_conversation("general", reply_thread=reply_thread).result(
+            timeout=10
+        )
         assert result is None
         still_unread = session.submit_client_operation(
             lambda client: client.read_unread(reply_thread)
         ).result(timeout=10)
-        assert any(
-            message.text == "unread reply for alice" for message in still_unread
-        )
+        assert any(message.text == "unread reply for alice" for message in still_unread)
     finally:
         session.close()
         alice.close()

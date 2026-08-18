@@ -11,8 +11,11 @@ from pathlib import Path
 from threading import Event, Lock
 
 import pytest
+from textual.pilot import Pilot
 
 from taut.client import Message, Notification, TautClient
+from taut_tui.app import TautApp
+from taut_tui.widgets import TautOptionList
 
 pytestmark = pytest.mark.sqlite_only
 
@@ -337,9 +340,7 @@ def test_transcript_decodes_literal_escapes_toward_sender_intent(
         bob.say("general", "real newline:\nkept as-is")
 
         async def exercise() -> None:
-            app = TautApp(
-                db_path=str(db_path), as_name="alice", continuity_token=None
-            )
+            app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
             async with app.run_test(size=(130, 34)) as pilot:
                 for _ in range(200):
                     await pilot.pause(0.01)
@@ -375,7 +376,12 @@ def test_transcript_decodes_literal_escapes_toward_sender_intent(
         bob.close()
 
 
-async def _settle_deliveries(app: object, pilot: object, transcript: object) -> None:
+async def _settle_deliveries(
+    app: TautApp,
+    pilot: Pilot[None],
+    transcript: TautOptionList,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Wait for watcher catch-up quiescence.
 
     Deduped catch-up redeliveries re-render without changing the row count,
@@ -385,11 +391,11 @@ async def _settle_deliveries(app: object, pilot: object, transcript: object) -> 
     deliveries = {"count": 0}
     original_apply = app._apply_delivery
 
-    def counting_apply(generation: int, item: object) -> bool:
+    def counting_apply(generation: int, item: Message | Notification) -> bool:
         deliveries["count"] += 1
         return original_apply(generation, item)
 
-    app._apply_delivery = counting_apply
+    monkeypatch.setattr(app, "_apply_delivery", counting_apply)
     quiet = 0
     stable = deliveries["count"]
     for _ in range(400):
@@ -405,6 +411,7 @@ async def _settle_deliveries(app: object, pilot: object, transcript: object) -> 
 
 def test_notification_refresh_keeps_scrolled_transcript_position(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """[TUI-6.2]: a nav refresh must not yank a scrolled-up transcript."""
 
@@ -438,7 +445,7 @@ def test_notification_refresh_keeps_scrolled_transcript_position(
                     break
             transcript = app.query_one("#transcript", TautOptionList)
             transcript.focus()
-            await _settle_deliveries(app, pilot, transcript)
+            await _settle_deliveries(app, pilot, transcript, monkeypatch)
             # Simulate the user scrolling up (wheel/keys do not run any
             # anchor capture).
             transcript.scroll_to(y=0, animate=False, force=True)

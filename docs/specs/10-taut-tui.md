@@ -708,7 +708,9 @@ precomputes `wired`, bypasses the acknowledgement, or owns terminal bytes.
 
 Each TUI-started foreground run executes
 `SummonController.run_foreground(..., install_signal_handlers=False,
-on_ready=...)` on one supervised non-daemon worker. The optional public
+on_ready=...)` on one supervised daemon worker. Daemon status is the fail-safe
+that prevents a hung provider bootstrap from pinning interpreter exit; normal
+lifecycle ownership still stops and bounded-waits the worker. The optional public
 readiness callback is owned by the coordinated proposed Summon rich-host
 contract delta in this spec's implementation plan. It reports a run-scoped
 `SummonRunHandle` only after the first live generation's control plane can
@@ -765,7 +767,8 @@ The prompt explains provider-only setup, the Summon-supplied detach hint, and
 that Textual resumes and continues owning the run after detach. Confirmation
 resolves the worker request; cancellation ends that foreground run without a
 provider child or terminal lease. Host shutdown resolves any pending prompt
-as cancelled so a non-daemon worker cannot be stranded. One coordinator
+as cancelled so the foreground worker cannot remain stranded waiting for the
+decision. One coordinator
 excludes concurrent acknowledgement and lease owners.
 
 Only after confirmation and provider bootstrap does the interaction marshal

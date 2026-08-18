@@ -801,12 +801,11 @@ class TautApp(App[None]):
                     return
 
             def resolved_elsewhere() -> None:
-                try:
-                    self.call_later(dismiss_stale)
-                except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-086] exception
-                    return
+                self.call_later(dismiss_stale)
 
-            event.on_resolved = resolved_elsewhere
+            event.set_on_resolved(resolved_elsewhere)
+            if event.resolved.is_set():
+                return
             self.push_screen(
                 screen,
                 lambda decision: event.resolve(bool(decision)),
@@ -890,9 +889,7 @@ class TautApp(App[None]):
         ):
             self._set_mode(InteractionMode.COMMAND)
             self._pending_command_origin = originating_draft
-            reconcile = (
-                None if originating_draft is None else self._reconcile_promotion
-            )
+            reconcile = None if originating_draft is None else self._reconcile_promotion
             self.push_screen(
                 CommandLineScreen(
                     self._command_syntax(),
@@ -920,7 +917,7 @@ class TautApp(App[None]):
             return ""
         command_text = self._composer_command_text(composer.text, submitted=True)
         if command_text is None:
-            return composer.text.removeprefix(":")
+            return cast(str, composer.text.removeprefix(":"))
         self._pending_command_origin = self._current_draft_identity()
         return command_text
 
@@ -1214,9 +1211,7 @@ class TautApp(App[None]):
         )
         active_target = self.visual_state.active_conversation or "__unselected__"
         if active_target == target:
-            self._set_composer_text(
-                self._query_base("#composer", TautComposer), ""
-            )
+            self._set_composer_text(self._query_base("#composer", TautComposer), "")
 
     def _dispatch_command_invocation(self, invocation: CommandInvocation) -> None:
         if invocation.action is not None:
@@ -1520,9 +1515,7 @@ class TautApp(App[None]):
         if output.exists():
             self._confirm_command(
                 f"Replace existing dump {output}?",
-                lambda: self._submit_dump(
-                    domain, output, replace_confirmed=True
-                ),
+                lambda: self._submit_dump(domain, output, replace_confirmed=True),
             )
         else:
             self._submit_dump(domain, output)

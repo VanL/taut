@@ -9,7 +9,7 @@ from __future__ import annotations
 import time
 from contextlib import contextmanager
 from threading import Event, Lock, Thread
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -946,17 +946,66 @@ def test_pending_worker_cancelled_before_start_never_runs_controller() -> None:
         shutdown = operations.stop_owned_and_wait(timeout=1.0)
         ((run, future),) = captured
         future.set_running_or_notify_cancel()
-        try:
-            run()
-        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
-            future.set_exception(exc)
-        else:
-            future.set_result(None)
+        run()
+        future.set_result(None)
         result = shutdown.result(timeout=5)
         assert result.complete is True
         assert operations.owned_runs() == ()
     finally:
         operations.close()
+
+
+def test_foreground_worker_retains_keyboard_interrupt_on_returned_future() -> None:
+    """The daemon worker settles its Future for control-flow exceptions."""
+
+    from taut_tui.summon import TuiSummonOperations
+
+    interrupt = KeyboardInterrupt("provider interrupted")
+
+    class InterruptingController(_Controller):
+        def run_foreground(self, *args: object, **kwargs: object) -> None:
+            raise interrupt
+
+    operations = TuiSummonOperations(controller=InterruptingController())
+    try:
+        _token, worker = operations.start(object(), object())
+        with pytest.raises(KeyboardInterrupt) as captured:
+            worker.result(timeout=5)
+        assert captured.value is interrupt
+        assert operations.owned_runs() == ()
+    finally:
+        operations.close()
+
+
+@pytest.mark.parametrize("resolve_first", [False, True])
+def test_attach_resolution_callback_is_race_safe_and_subordinate(
+    resolve_first: bool,
+) -> None:
+    """Registration cannot miss resolution or replace its exact decision."""
+
+    from taut_tui.summon import TerminalAttachConfirmationRequest
+
+    class _Notice:
+        member = "grok"
+        provider = "grok"
+        detach_hint = "Ctrl-\\ Ctrl-\\"
+
+    request = TerminalAttachConfirmationRequest(_Notice())
+    calls: list[str] = []
+
+    def broken_callback() -> None:
+        calls.append("called")
+        raise RuntimeError("presentation callback failed")
+
+    if resolve_first:
+        request.resolve(False)
+    request.set_on_resolved(broken_callback)
+    if not resolve_first:
+        request.resolve(False)
+
+    assert calls == ["called"]
+    assert request.decision is False
+    assert request.resolved.is_set()
 
 
 def test_quit_with_pending_run_offers_cancel_and_quit_dialog() -> None:
@@ -1039,6 +1088,128 @@ def test_cancelled_attach_confirmation_dismisses_stale_dialog() -> None:
                 await pilot.pause(0.01)
                 if not isinstance(app.screen, ConfirmationScreen):
                     break
+            assert not isinstance(app.screen, ConfirmationScreen)
+            assert app.is_running
+
+    asyncio.run(exercise())
+
+
+def test_cancelled_attach_dismiss_failure_cannot_replace_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A deferred presentation failure stays subordinate to the decision."""
+
+    import asyncio
+
+    from textual.await_complete import AwaitComplete
+
+    from taut_tui import app as tui_app
+    from taut_tui.screens import ConfirmationScreen
+    from taut_tui.summon import TerminalAttachConfirmationRequest
+
+    class _Notice:
+        member = "grok"
+        provider = "grok"
+        detach_hint = "Ctrl-\\ Ctrl-\\"
+
+    dismiss_calls = 0
+
+    class FailingOnceConfirmation(ConfirmationScreen):
+        def dismiss(self, result: bool | None = None) -> AwaitComplete:
+            nonlocal dismiss_calls
+            dismiss_calls += 1
+            if dismiss_calls == 1:
+                raise RuntimeError("dismiss failed")
+            return super().dismiss(result)
+
+    monkeypatch.setattr(tui_app, "ConfirmationScreen", FailingOnceConfirmation)
+
+    async def exercise() -> None:
+        app = tui_app.TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            request = TerminalAttachConfirmationRequest(_Notice())
+            app.post_message(request)
+            for _ in range(100):
+                await pilot.pause(0.01)
+                if isinstance(app.screen, FailingOnceConfirmation):
+                    break
+            assert isinstance(app.screen, FailingOnceConfirmation)
+            request.resolve(False)
+            for _ in range(100):
+                await pilot.pause(0.01)
+                if dismiss_calls == 1:
+                    break
+            assert dismiss_calls == 1
+            assert request.decision is False
+            assert request.resolved.is_set()
+            assert app.is_running
+            assert isinstance(app.screen, FailingOnceConfirmation)
+            app.screen.dismiss(False)
+            await pilot.pause()
+
+    asyncio.run(exercise())
+
+
+def test_attach_resolution_during_push_retries_failed_dismiss_schedule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A resolve/push race cannot strand an already-decided modal."""
+
+    import asyncio
+
+    from taut_tui.app import TautApp
+    from taut_tui.screens import ConfirmationScreen
+    from taut_tui.summon import TerminalAttachConfirmationRequest
+
+    class _Notice:
+        member = "grok"
+        provider = "grok"
+        detach_hint = "Ctrl-\\ Ctrl-\\"
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 30)) as pilot:
+            await pilot.pause()
+            request = TerminalAttachConfirmationRequest(_Notice())
+            real_push_screen = app.push_screen
+            real_call_later = app.call_later
+            schedule_attempts = 0
+
+            def flaky_call_later(callback: Any, *args: Any, **kwargs: Any) -> bool:
+                nonlocal schedule_attempts
+                if getattr(callback, "__name__", "") == "dismiss_stale":
+                    schedule_attempts += 1
+                    if schedule_attempts == 1:
+                        raise RuntimeError("first schedule failed")
+                return real_call_later(callback, *args, **kwargs)
+
+            def resolving_push(
+                screen: Any,
+                callback: Any = None,
+                wait_for_dismiss: bool = False,
+                *,
+                mode: str | None = None,
+            ) -> Any:
+                request.resolve(False)
+                return cast(Any, real_push_screen)(
+                    screen,
+                    callback,
+                    wait_for_dismiss,
+                    mode=mode,
+                )
+
+            monkeypatch.setattr(app, "call_later", flaky_call_later)
+            monkeypatch.setattr(app, "push_screen", resolving_push)
+            app.post_message(request)
+            for _ in range(100):
+                await pilot.pause(0.01)
+                if schedule_attempts >= 2 and not isinstance(
+                    app.screen, ConfirmationScreen
+                ):
+                    break
+            assert request.decision is False
+            assert schedule_attempts == 2
             assert not isinstance(app.screen, ConfirmationScreen)
             assert app.is_running
 

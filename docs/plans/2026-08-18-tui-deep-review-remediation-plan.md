@@ -1029,6 +1029,17 @@ check-doc-paths, K1 test suites green.
   landing branch. Land instruction: push main, let
   `test-tui-extension.yml` run, then flip the status-index row and this
   header to `completed` in the same change as the claim.
+- Release-precheck correction (2026-08-18): the repository-wide raw Ruff
+  inventory exposed six Slice 2/6 `BLE001` directives that focused lint had
+  accepted but the exact registry had not reconciled. Independent suppression
+  review rejected score-only extraction, removed a main-thread test catch and
+  a redundant nested callback catch, and retained four narrow ownership
+  boundaries. The same review exposed the direct attach-resolution observer
+  assignment race; lock-owned `set_on_resolved` registration now handles both
+  register-before-resolve and resolve-before-register orderings. New firing
+  proofs cover arbitrary dump-submission failure, callback and deferred-dismiss
+  failure, and a real daemon worker retaining `KeyboardInterrupt` on its
+  returned Future. [TUI-11.2] was corrected from its stale non-daemon wording.
 
 ## Completion Gate
 

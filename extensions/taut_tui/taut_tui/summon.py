@@ -448,8 +448,20 @@ class TerminalAttachConfirmationRequest(TextualMessage):
         self.resolved = threading.Event()
         self.decision: bool | None = None
         self.error: BaseException | None = None
-        self.on_resolved: Callable[[], None] | None = None
+        self._on_resolved: Callable[[], None] | None = None
         self._lock = threading.Lock()
+
+    def set_on_resolved(self, callback: Callable[[], None]) -> None:
+        """Register one auxiliary observer without missing prior resolution."""
+
+        notify_now = False
+        with self._lock:
+            if self.resolved.is_set():
+                notify_now = True
+            else:
+                self._on_resolved = callback
+        if notify_now:
+            self._notify(callback)
 
     def resolve(self, decision: bool) -> None:
         with self._lock:
@@ -457,7 +469,7 @@ class TerminalAttachConfirmationRequest(TextualMessage):
                 return
             self.decision = bool(decision)
             self.resolved.set()
-            callback = self.on_resolved
+            callback = self._on_resolved
         self._notify(callback)
 
     def fail(self, error: BaseException) -> None:
@@ -466,7 +478,7 @@ class TerminalAttachConfirmationRequest(TextualMessage):
                 return
             self.error = error
             self.resolved.set()
-            callback = self.on_resolved
+            callback = self._on_resolved
         self._notify(callback)
 
     @staticmethod

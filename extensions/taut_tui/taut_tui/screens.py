@@ -287,9 +287,7 @@ class ConfirmationScreen(_TautModalScreen[bool]):
         self.dismiss(False)
 
 
-class CommandPaletteScreen(
-    _TautModalScreen["ActionId | PaletteCommandHandoff | None"]
-):
+class CommandPaletteScreen(_TautModalScreen["ActionId | PaletteCommandHandoff | None"]):
     """Browse the grouped native semantic action registry."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -380,14 +378,10 @@ class CommandPaletteScreen(
         options = self.query_one("#palette-results", OptionList)
         current = options.highlighted
         if current is None or current not in activatable:
-            options.highlighted = (
-                activatable[0] if direction > 0 else activatable[-1]
-            )
+            options.highlighted = activatable[0] if direction > 0 else activatable[-1]
             return
         position = activatable.index(current)
-        options.highlighted = activatable[
-            (position + direction) % len(activatable)
-        ]
+        options.highlighted = activatable[(position + direction) % len(activatable)]
 
     def _activatable_indices(self) -> tuple[int, ...]:
         return tuple(
@@ -397,9 +391,7 @@ class CommandPaletteScreen(
             or (entry is not None and entry.enabled)
         )
 
-    def _dismiss_once(
-        self, result: ActionId | PaletteCommandHandoff | None
-    ) -> None:
+    def _dismiss_once(self, result: ActionId | PaletteCommandHandoff | None) -> None:
         if self._dismissed:
             return
         self._dismissed = True

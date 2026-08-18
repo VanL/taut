@@ -149,9 +149,13 @@ def test_native_form_escape_waits_for_pending_domain_work() -> None:
 
 
 def test_command_palette_filters_and_returns_the_same_action_id() -> None:
-    from taut_tui.screens import CommandPaletteScreen, PaletteEntry
+    from taut_tui.screens import (
+        CommandPaletteScreen,
+        PaletteCommandHandoff,
+        PaletteEntry,
+    )
 
-    selected: list[ActionId | None] = []
+    selected: list[ActionId | PaletteCommandHandoff | None] = []
     entries = (
         PaletteEntry(action_spec(ActionId.IDENTITY_SHOW)),
         PaletteEntry(action_spec(ActionId.SYSTEM_DOCTOR)),

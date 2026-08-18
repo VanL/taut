@@ -342,9 +342,10 @@ degrades to a graceful decline rather than failing the run. Worker return
 releases a confirmed pre-lease reservation, so a provider failure cannot
 wedge future Summon runs. App unmount closes the interaction before the
 operations pool and wakes an outstanding confirmation; request resolution is
-idempotent, notifies an `on_resolved` hook so a worker-cancelled
-confirmation dismisses its stale modal, and a late modal callback cannot
-revive cancelled work. Stale or shutting-down lease requests are refused
+idempotent. Lock-owned `set_on_resolved` registration either installs the
+observer or invokes it after an already-latched result, so a worker-cancelled
+confirmation dismisses its stale modal without a subscription race and a late
+modal callback cannot revive cancelled work. Stale or shutting-down lease requests are refused
 without suspending. Exception exit from the suspend scope — including
 KeyboardInterrupt in the cooked-mode windows around attach/detach — is a
 fatal lease failure that exits the TUI completely through normal teardown
