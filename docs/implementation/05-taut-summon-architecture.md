@@ -430,10 +430,14 @@ line completion against cancellation under one lock and uses
 `CancelSynchronousIo` only after cancellation owns the terminal action.
 `ERROR_NOT_FOUND` is the read-entry race and retries while the same reader
 lives. An aborted read is normal only after a successful cancellation request
-for that reader; other read or Win32 errors remain fatal. Every path joins the
-reader before closing its native handle, and cleanup preserves the first
-failure. The 100 ms wait is an event-observation cadence, never a success
-condition or substitute for line/cancel evidence.
+for that reader. CPython may expose that cancellation either as Win32
+`ERROR_OPERATION_ABORTED` or as `OSError(EINVAL)` after its Windows file/text
+boundary drops the Win32 code. The translated form is normalized only under the
+same exact cancellation ownership; either form without that ownership and all
+other read or Win32 errors remain fatal. Every path joins the reader before
+closing its native handle, and cleanup preserves the first failure. The 100 ms
+wait is an event-observation cadence, never a success condition or substitute
+for line/cancel evidence.
 
 The bridge is a single select loop over the human tty, PTY master, and a
 shutdown waker pipe. It is not two blocking copy threads, because STOP must be

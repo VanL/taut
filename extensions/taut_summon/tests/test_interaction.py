@@ -616,6 +616,36 @@ def test_windows_cancelable_readline_owns_aborted_read_and_joins(
     )
 
 
+def test_windows_cancelable_readline_owns_cpython_pipe_cancel_translation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import taut_summon.interaction as interaction_module
+
+    translated = OSError(22, "Invalid argument")
+    stream = _BlockingReadStream(error=translated)
+    cancel = threading.Event()
+
+    def cancel_read(_handle: int) -> bool:
+        stream.release.set()
+        return True
+
+    monkeypatch.setattr(interaction_module, "_open_windows_thread", lambda _id: 431)
+    monkeypatch.setattr(
+        interaction_module, "_cancel_windows_synchronous_io", cancel_read
+    )
+    monkeypatch.setattr(interaction_module, "_close_windows_handle", lambda _h: None)
+    setter = threading.Thread(
+        target=_set_cancel_after_read_starts, args=(stream, cancel)
+    )
+    setter.start()
+    try:
+        assert interaction_module._windows_cancelable_readline(stream, cancel) is None
+    finally:
+        setter.join(timeout=5.0)
+
+    assert not setter.is_alive()
+
+
 def test_windows_cancelable_readline_does_not_swallow_unowned_abort(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -635,6 +665,57 @@ def test_windows_cancelable_readline_does_not_swallow_unowned_abort(
 
     with pytest.raises(OSError, match="operation aborted"):
         interaction_module._windows_cancelable_readline(stream, threading.Event())
+
+
+def test_windows_cancelable_readline_does_not_swallow_unowned_invalid_argument(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import taut_summon.interaction as interaction_module
+
+    translated = OSError(22, "Invalid argument")
+    stream = _BlockingReadStream(error=translated)
+    stream.release.set()
+    monkeypatch.setattr(interaction_module, "_open_windows_thread", lambda _id: 441)
+    monkeypatch.setattr(
+        interaction_module,
+        "_cancel_windows_synchronous_io",
+        lambda _handle: pytest.fail("completed read must win"),
+    )
+    monkeypatch.setattr(interaction_module, "_close_windows_handle", lambda _h: None)
+
+    with pytest.raises(OSError, match="Invalid argument"):
+        interaction_module._windows_cancelable_readline(stream, threading.Event())
+
+
+def test_windows_cancelable_readline_requires_token_for_invalid_argument(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import taut_summon.interaction as interaction_module
+
+    translated = OSError(22, "Invalid argument")
+    stream = _BlockingReadStream(error=translated)
+    cancel = threading.Event()
+
+    def missed_cancel(_handle: int) -> bool:
+        stream.release.set()
+        return False
+
+    monkeypatch.setattr(interaction_module, "_open_windows_thread", lambda _id: 442)
+    monkeypatch.setattr(
+        interaction_module, "_cancel_windows_synchronous_io", missed_cancel
+    )
+    monkeypatch.setattr(interaction_module, "_close_windows_handle", lambda _h: None)
+    setter = threading.Thread(
+        target=_set_cancel_after_read_starts, args=(stream, cancel)
+    )
+    setter.start()
+    try:
+        with pytest.raises(OSError, match="Invalid argument"):
+            interaction_module._windows_cancelable_readline(stream, cancel)
+    finally:
+        setter.join(timeout=5.0)
+
+    assert not setter.is_alive()
 
 
 def test_windows_cancelable_readline_retries_read_entry_race(

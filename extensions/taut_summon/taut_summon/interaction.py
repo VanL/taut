@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import select
 import sys
@@ -23,6 +24,14 @@ _T = TypeVar("_T")
 
 class _LineReader(Protocol):
     def readline(self) -> str: ...
+
+
+def _is_windows_cancelled_read_error(error: BaseException) -> bool:
+    if not isinstance(error, OSError):
+        return False
+    if getattr(error, "winerror", None) == _WINDOWS_ERROR_OPERATION_ABORTED:
+        return True
+    return getattr(error, "winerror", None) is None and error.errno == errno.EINVAL
 
 
 def _is_windows() -> bool:
@@ -255,9 +264,7 @@ class _WindowsCancelableReadOwner:
             owned_abort = (
                 action == "cancel"
                 and cancel_succeeded
-                and isinstance(read_error, OSError)
-                and getattr(read_error, "winerror", None)
-                == _WINDOWS_ERROR_OPERATION_ABORTED
+                and _is_windows_cancelled_read_error(read_error)
             )
             if not owned_abort:
                 self._primary_error = read_error

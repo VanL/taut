@@ -70,9 +70,11 @@ contract; no spec promotion or owner policy choice is needed.
   continues retrying the same cancellation until the reader terminates; after
   join and handle close, the primary error propagates. The method never reports
   success or leaks a reader merely because cancellation itself failed.
-- Normalize reader `ERROR_OPERATION_ABORTED` only when cancellation owns the
+- Normalize reader `ERROR_OPERATION_ABORTED`, including CPython's Windows text
+  pipe translation to `OSError(EINVAL)`, only when cancellation owns the
   terminal action and the exact reader has a successful cancel-request token.
-  The same error without that ownership is fatal. No second read is permitted.
+  The same errors without that ownership are fatal. No second read is
+  permitted.
 - Handle close is mandatory after join. Cleanup errors do not replace an
   earlier reader/cancel error, but are fatal when no earlier error exists.
 - The existing 100 ms interval remains event-observation responsiveness, not
@@ -157,6 +159,20 @@ gates. Any P1/P2 finding blocks implementation or landing.
   cleanup lock/event/join edges. Final independent review returned CLEAR with
   no P1/P2; real Win32 behavior remains the hosted gate.
 - Fresh exact-SHA Windows producer evidence remains pending and blocks release.
+- Hosted run `32092379298` exposed the remaining Windows abstraction boundary:
+  Python 3.11, 3.13, and 3.14 translated the successfully cancelled
+  anonymous-pipe read to `OSError(22, "Invalid argument")` without
+  `winerror=995`. A new RED firing test reproduced the translated form while
+  its paired unowned case remained fatal. The correction recognizes `EINVAL`
+  only behind the same exact terminal-action and successful-cancel token; it
+  does not broaden ordinary read-error handling. Python 3.12 failed earlier in
+  the separate root CLI smoke with native access-violation code `0xC0000005`;
+  that occurrence did not execute the Summon test and is not attributed to this
+  cancellation boundary.
+- GREEN after the translation correction: all 63 interaction cases passed with
+  unhandled thread exceptions fatal; the 332-case Summon unit partition passed;
+  repository Ruff/format, Summon mypy (25 source files), documentation path and
+  plan-index checks, and `git diff --check` passed.
 
 ## Related Plans
 
