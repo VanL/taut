@@ -5,7 +5,7 @@ Date: 2026-08-17
 Class: 4. This changes an async test-observation lifecycle across Textual's
 deferred transcript-anchor restore and refresh boundary.
 
-Status: active.
+Status: completed at `99995cc49249996c208646ee972d940c48383119`.
 
 ## Goal
 
@@ -118,6 +118,11 @@ assertions, and the test-versus-app stop gate. Any P1/P2 finding blocks commit.
   20 consecutive runs; all 37 handler cases and the full 378-case two-worker
   `loadfile` suite passed locally. Independent review returned CLEAR with no
   P1/P2.
+- Final TUI run `32094496894` passed all five jobs at exact completion SHA
+  `99995cc49249996c208646ee972d940c48383119`; the Windows lane passed the
+  corrected non-tail fixture under the retained two-worker schedule. Root
+  `32094496836`, PG `32094496899`, and MCP `32094496909` also passed at that
+  SHA.
 
 ## Related Plans
 

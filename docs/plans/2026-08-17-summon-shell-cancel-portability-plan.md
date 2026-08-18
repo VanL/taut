@@ -8,7 +8,7 @@ added or changed.
 
 Plan type: implementation.
 
-Status: active.
+Status: completed at `99995cc49249996c208646ee972d940c48383119`.
 
 ## Goal
 
@@ -179,6 +179,11 @@ gates. Any P1/P2 finding blocks implementation or landing.
   earlier Python 3.12 native CLI access violation did not recur. A later
   test-only TUI fixture correction still requires final release-SHA producers,
   so the release stop gate remains active.
+- Final root run `32094496836` passed all jobs at exact completion SHA
+  `99995cc49249996c208646ee972d940c48383119`, including Windows Python
+  3.11 through 3.14, both macOS Summon process lanes, the live local-LLM lane,
+  and the dependent coverage combiner. The implementation stop gate is closed;
+  `release.py` still owns its fresh post-push release fence.
 
 ## Related Plans
 

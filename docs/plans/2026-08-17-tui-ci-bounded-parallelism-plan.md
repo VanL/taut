@@ -7,7 +7,7 @@ required recurring verification workflow is [DOM-6]-material to future
 verification. Effective Class 5 planning/review requirements apply without a
 product-spec change.
 
-Status: active.
+Status: completed at `99995cc49249996c208646ee972d940c48383119`.
 
 ## Goal
 
@@ -163,6 +163,11 @@ landing.
   Repository-wide Ruff and format passed over 415 files; TUI mypy passed 34
   sources; documentation paths, plan index, and diff checks passed. Fresh
   hosted exact-SHA evidence and completed-work review remain pending.
+- Completed-work review returned CLEAR with no P1/P2. Final TUI run
+  `32094496894` passed all five jobs at exact completion SHA
+  `99995cc49249996c208646ee972d940c48383119`, including Windows under the
+  fixed two-worker `loadfile` command and unchanged caps. Root `32094496836`,
+  PG `32094496899`, and MCP `32094496909` also passed at that SHA.
 
 ## Related Plans
 

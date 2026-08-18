@@ -6,7 +6,7 @@ Class: 4. This changes test-owned SimpleBroker session lifecycles after a
 hosted Windows native SQLite close stalled during MCP fixture setup. It does
 not change a normative product contract.
 
-Status: active.
+Status: completed at `99995cc49249996c208646ee972d940c48383119`.
 
 ## Goal
 
@@ -115,6 +115,10 @@ the lower-layer residual. Any P1/P2 finding blocks landing.
   documentation paths (63 sources, 1,322 claims), plan index, and diff checks
   passed. Final independent re-review found no P1/P2 blocker. Fresh changed-SHA
   Windows evidence remains pending.
+- Final MCP run `32094496909` passed at exact completion SHA
+  `99995cc49249996c208646ee972d940c48383119`; root `32094496836`, PG
+  `32094496899`, and TUI `32094496894` also passed at that SHA. The hosted
+  Windows lifecycle gate and coordinated producer gate are closed.
 
 ## Related Plans
 

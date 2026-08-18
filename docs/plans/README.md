@@ -51,11 +51,11 @@ directory. Run `bin/check-plan-status-index` after changing it.
 
 | Plan | Status | Exemplar | Note |
 |------|--------|----------|------|
-| `2026-08-17-scripted-provider-ready-signal-plan.md` | active | no | Class 4 correction making scripted-provider readiness publication part of its bounded physical-SIGINT cleanup owner. |
-| `2026-08-17-summon-shell-cancel-portability-plan.md` | active | no | Class 4 Windows shell acknowledgement correction after socket-only `select()` rejected an ordinary input pipe during cancellation. |
-| `2026-08-17-mcp-tools-seed-lifecycle-plan.md` | active | no | Class 4 correction bounding the two-member MCP tools fixture's persistent seed ownership after a Windows native SQLite close stall during setup. |
-| `2026-08-17-tui-ci-bounded-parallelism-plan.md` | active | no | Class 4+P plan for fixed two-worker, file-scoped TUI CI execution after a continuously progressing Windows suite exhausted the unchanged step cap; plan review passed and implementation is active. |
-| `2026-08-17-tui-search-anchor-test-synchronization-plan.md` | active | no | Class 4 exact-intent event-based correction for deferred search-result anchor restoration; local proof is green and fresh hosted exact-SHA evidence is pending. |
+| `2026-08-17-scripted-provider-ready-signal-plan.md` | completed | no | Completed at `99995cc`; scripted-provider readiness publication is inside its bounded physical-SIGINT cleanup owner. |
+| `2026-08-17-summon-shell-cancel-portability-plan.md` | completed | no | Completed at `99995cc`; Windows shell acknowledgement uses exact owned synchronous-read cancellation for console and pipe inputs. |
+| `2026-08-17-mcp-tools-seed-lifecycle-plan.md` | completed | no | Completed at `99995cc`; the two-member MCP tools fixture bounds persistent seed ownership before reactor work. |
+| `2026-08-17-tui-ci-bounded-parallelism-plan.md` | completed | no | Completed at `99995cc`; fixed two-worker, file-scoped TUI CI passed all five hosted lanes under unchanged caps. |
+| `2026-08-17-tui-search-anchor-test-synchronization-plan.md` | completed | no | Completed at `99995cc`; exact-intent search restore proof uses a non-tail fixture and passed all hosted TUI lanes. |
 | `2026-08-17-tui-text-command-alias-plan.md` | completed | no | Class 4 hardened correction keeping textual command entry focus-owned, adding guarded TUI-local `q`/`quit`, and making Ctrl-C/Ctrl-D any-mode guarded quit chords; implementation, full TUI/static/doc verification, and independent completed-work review passed. |
 | `2026-08-17-summon-first-attach-handoff-plan.md` | completed | no | Class 5 hardened shell-first Summon attach handoff and TUI compatibility plan; implementation, verification, final review, and owner-authorized closeout passed. |
 | `2026-08-17-tui-command-entry-correction-plan.md` | completed | no | Class 5 hardened correction for composer-known-command promotion and interactive argument-ready command completion; implementation, verification, final review, and owner-authorized close-out passed. |

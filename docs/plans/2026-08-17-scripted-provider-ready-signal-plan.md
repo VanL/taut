@@ -5,7 +5,7 @@ Date: 2026-08-17
 Class: 4. This corrects a subprocess signal-cleanup ownership boundary in the
 real scripted-provider acceptance harness.
 
-Status: active.
+Status: completed at `99995cc49249996c208646ee972d940c48383119`.
 
 ## Goal
 
@@ -71,8 +71,11 @@ Local GREEN: the deterministic boundary case and both physical-SIGINT cases
 passed; the reentrant subprocess case passed 20 consecutive runs; all 259
 selected process-partition cases completed with only the two declared live
 environment skips. Repository Ruff/format, Summon mypy (25 source files),
-documentation paths, plan index, and diff checks passed. Fresh hosted evidence
-and independent review remain pending.
+documentation paths, plan index, and diff checks passed. Independent review
+returned CLEAR with no P1/P2. Fresh root run `32094496836` passed all jobs at
+the exact completion SHA, including the corrected macOS Python 3.13 and 3.14
+physical-SIGINT process lanes. PG `32094496899`, MCP `32094496909`, and all five
+TUI jobs in `32094496894` also passed at that SHA.
 
 ## Independent Review
 
