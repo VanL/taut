@@ -115,6 +115,7 @@ from taut_tui.summon import (
     TerminalLeaseRequest,
     TuiSummonInteraction,
     TuiSummonOperations,
+    _TerminalAttachNotice,
 )
 from taut_tui.system import TuiSystemOperations
 from taut_tui.widgets import (
@@ -779,41 +780,48 @@ class TautApp(App[None]):
         if self._shutting_down or event.resolved.is_set():
             event.resolve(False)
             return
-        notice = event.notice
         try:
-            member = escape_display_text(str(notice.member))
-            provider = escape_display_text(str(notice.provider))
-            detach_hint = escape_display_text(str(notice.detach_hint))
-            prompt = (
-                f"Open provider setup for {member} with {provider}?\n\n"
-                "This is provider setup, not Taut chat. Complete only trust, "
-                "login, model, or equivalent setup.\n"
-                f"Return to Taut with {detach_hint}. The TUI will resume and "
-                "keep this Summon run active."
-            )
-            screen = ConfirmationScreen(prompt)
-
-            def dismiss_stale() -> None:
-                try:
-                    if self.screen is screen:
-                        screen.dismiss(False)
-                except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-086] exception
-                    return
-
-            def resolved_elsewhere() -> None:
-                self.call_later(dismiss_stale)
-
-            event.set_on_resolved(resolved_elsewhere)
-            if event.resolved.is_set():
-                return
-            self.push_screen(
-                screen,
-                lambda decision: event.resolve(bool(decision)),
-            )
-            if event.resolved.is_set():
-                self.call_later(dismiss_stale)
+            offer, prompt = self._attach_confirmation_prompts(event.notice)
+            _present_attach_confirmation(self, event, offer=offer, prompt=prompt)
         except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-085] exception
             event.fail(exc)
+
+    @staticmethod
+    def _attach_confirmation_prompts(
+        notice: _TerminalAttachNotice,
+    ) -> tuple[str | None, str]:
+        """Build the optional [SUM-7.4] offer and the acknowledgement facts.
+
+        The offer exists only for setup-recovery notices, which carry the
+        suspect generation's screen excerpt; a bootstrap notice keeps the
+        unchanged single-phase acknowledgement ([TUI-11.1]).
+        """
+
+        member = escape_display_text(str(notice.member))
+        provider = escape_display_text(str(notice.provider))
+        detach_hint = escape_display_text(str(notice.detach_hint))
+        acknowledgement = (
+            f"Open provider setup for {member} with {provider}?\n\n"
+            "This is provider setup, not Taut chat. Complete only trust, "
+            "login, model, or equivalent setup.\n"
+            f"Return to Taut with {detach_hint}. The TUI will resume and "
+            "keep this Summon run active."
+        )
+        excerpt = notice.screen_excerpt
+        if not excerpt:
+            return None, acknowledgement
+        screen_lines = "\n".join(
+            f"  {escape_display_text(line)}" for line in str(excerpt).splitlines()
+        )
+        offer = (
+            f"Looks like {member} needs interaction. Last screen output:\n\n"
+            f"{screen_lines}\n\n"
+            "Attach?"
+        )
+        return offer, (
+            f"{acknowledgement}\n"
+            "Enter Ctrl-\\ Ctrl-\\ (Control-Backslash twice) to return to Taut."
+        )
 
     def on_key(self, event: events.Key) -> None:
         gesture = self._normalized_gesture(event)
@@ -3119,6 +3127,67 @@ class TautApp(App[None]):
             kind=InspectorKind.SYSTEM,
             style="bold red",
         )
+
+
+def _dismiss_decided_confirmation(
+    app: TautApp,
+    screen: ConfirmationScreen | None,
+) -> None:
+    """Close a confirmation the worker already decided, if it is still up."""
+
+    try:
+        if screen is not None and app.screen is screen:
+            screen.dismiss(False)
+    except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-086] exception
+        return
+
+
+def _present_attach_confirmation(
+    app: TautApp,
+    event: TerminalAttachConfirmationRequest,
+    *,
+    offer: str | None,
+    prompt: str,
+) -> None:
+    """Present one attach decision as one or two sequential confirmations.
+
+    A setup-recovery notice ([SUM-7.4]) leads with the offer; only its
+    confirmation opens the acknowledgement facts, and the single worker
+    request stays open until that last decision ([TUI-11.1]).
+    """
+
+    presented: ConfirmationScreen | None = None
+
+    def dismiss_stale() -> None:
+        _dismiss_decided_confirmation(app, presented)
+
+    def resolved_elsewhere() -> None:
+        app.call_later(dismiss_stale)
+
+    def present(text: str, decide: Callable[[object], None]) -> None:
+        nonlocal presented
+        screen = ConfirmationScreen(text)
+        presented = screen
+        app.push_screen(screen, decide)
+        if event.resolved.is_set():
+            app.call_later(dismiss_stale)
+
+    def decide_acknowledgement(decision: object) -> None:
+        event.resolve(bool(decision))
+
+    def decide_offer(decision: object) -> None:
+        if decision:
+            present(prompt, decide_acknowledgement)
+            return
+        event.resolve(False)
+
+    event.set_on_resolved(resolved_elsewhere)
+    if event.resolved.is_set():
+        return
+    if offer is None:
+        present(prompt, decide_acknowledgement)
+        return
+    present(offer, decide_offer)
 
 
 def _safe_projection(value: object) -> str:

@@ -65,6 +65,9 @@ class _TerminalAttachNotice(Protocol):
     @property
     def detach_hint(self) -> str: ...
 
+    @property
+    def screen_excerpt(self) -> str | None: ...
+
 
 class _Controller(Protocol):
     def provider_names(self) -> tuple[str, ...]: ...
@@ -508,6 +511,7 @@ class TuiSummonInteraction:
         self._closed = False
         self._terminal_owner: int | None = None
         self._pending_confirmation: TerminalAttachConfirmationRequest | None = None
+        self._pending_stop: threading.Event | None = None
         self._lease_active = False
         self._lease_broken = False
 
@@ -524,13 +528,14 @@ class TuiSummonInteraction:
         return api.TerminalAvailability.AVAILABLE
 
     def supports_setup_recovery(self) -> bool:
-        """Version 1 presents acknowledgements only during Summon bootstrap.
+        """Accept [SUM-7.4] acknowledgements outside the bootstrap window.
 
-        [TUI-11.1]: a suspected setup gate on a TUI-owned run surfaces
-        through the enriched [SUM-11] give-up diagnostics instead of a
-        mid-chat lease, so the TUI declares no setup-recovery support.
+        [TUI-11.1]: a suspected setup gate on a TUI-owned run reaches the
+        person as a native offer that names the member and shows the
+        provider's own pending question, using the same confirmation,
+        coordinator exclusion, and suspension rules as the first attach.
         """
-        return False
+        return True
 
     def confirm_terminal_attach(
         self,
@@ -540,20 +545,8 @@ class TuiSummonInteraction:
     ) -> bool:
         owner = threading.get_ident()
         request = TerminalAttachConfirmationRequest(notice)
-        with self._lock:
-            if self._closed:
-                return False
-            if self._lease_broken:
-                raise RuntimeError(
-                    "Summon terminal is unavailable after a failed lease"
-                )
-            if self._terminal_owner is not None:
-                # [TUI-11.3]: losing the confirm race degrades to the same
-                # graceful decline as unavailability instead of failing the
-                # whole run with a hard error.
-                return False
-            self._terminal_owner = owner
-            self._pending_confirmation = request
+        if not self._reserve_confirmation(request, owner=owner, cancel=cancel):
+            return False
         try:
             if not self._app.post_message(request):
                 raise RuntimeError(
@@ -577,6 +570,38 @@ class TuiSummonInteraction:
             with self._lock:
                 if self._pending_confirmation is request:
                     self._pending_confirmation = None
+                    self._pending_stop = None
+
+    def _reserve_confirmation(
+        self,
+        request: TerminalAttachConfirmationRequest,
+        *,
+        owner: int,
+        cancel: threading.Event | None,
+    ) -> bool:
+        """Claim the single acknowledgement seat, or refuse without erroring."""
+
+        with self._lock:
+            if self._closed:
+                # [TUI-11.3]: a refusal produced by host shutdown requests the
+                # run's stop first, so Summon takes the [SUM-7.4] shutdown
+                # class instead of continuing detached on a decline.
+                if cancel is not None:
+                    cancel.set()
+                return False
+            if self._lease_broken:
+                raise RuntimeError(
+                    "Summon terminal is unavailable after a failed lease"
+                )
+            if self._terminal_owner is not None:
+                # [TUI-11.3]: losing the confirm race degrades to the same
+                # graceful decline as unavailability instead of failing the
+                # whole run with a hard error.
+                return False
+            self._terminal_owner = owner
+            self._pending_confirmation = request
+            self._pending_stop = cancel
+            return True
 
     @staticmethod
     def _wait_for_confirmation(
@@ -592,6 +617,12 @@ class TuiSummonInteraction:
         with self._lock:
             self._closed = True
             pending = self._pending_confirmation
+            stop = self._pending_stop
+            self._pending_stop = None
+        # [TUI-11.3]: request the run's stop before the refusal is visible to
+        # the worker, so Summon reads a shutdown rather than a human decline.
+        if stop is not None:
+            stop.set()
         if pending is not None:
             pending.resolve(False)
 
@@ -640,9 +671,10 @@ class TuiSummonInteraction:
                 raise RuntimeError(
                     "Textual terminal suspension failed"
                 ) from request.error
+            input_fd, output_fd = _standard_terminal_fds()
             yield cast(
                 _TerminalLease,
-                api.TerminalLease(input_fd=0, output_fd=1),
+                api.TerminalLease(input_fd=input_fd, output_fd=output_fd),
             )
         except BaseException as exc:
             primary_error = exc
@@ -668,6 +700,12 @@ class TuiSummonInteraction:
                 if primary_error is None:
                     raise cleanup_error
                 primary_error.add_note(f"terminal cleanup also failed: {cleanup_error}")
+
+
+def _standard_terminal_fds() -> tuple[int, int]:
+    """The host's own standard descriptors, leased unchanged to Summon."""
+
+    return 0, 1
 
 
 def _standard_terminal_is_suitable() -> bool:

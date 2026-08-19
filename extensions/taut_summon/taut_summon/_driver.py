@@ -335,6 +335,7 @@ class SummonDriver:
         # foreground run, consumed whether the human proceeds or declines.
         self._setup_recovery_consumed = False
         self._pending_setup_recovery_attach = False
+        self._setup_recovery_excerpt: str | None = None
         self._shutdown = threading.Event()
         self._harness_dead = threading.Event()
         self._halt_ack = threading.Event()
@@ -1026,6 +1027,14 @@ class SummonDriver:
                     "an acknowledged setup attach instead of injecting",
                     boot.member_name,
                 )
+                # [SUM-7.4]: capture the suspect screen for the offer before
+                # the teardown that always precedes the acknowledgement. The
+                # tail is diagnostic, so its failure never changes the outcome.
+                try:
+                    tail = running.handle.output_tail()
+                except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-067] exception
+                    tail = ""
+                self._setup_recovery_excerpt = tail or None
                 self._teardown_generation(
                     running.generation, running.handle, running.pump
                 )
@@ -1690,7 +1699,9 @@ class SummonDriver:
             member=boot.member_name,
             provider=boot.provider,
             detach_hint="Ctrl-\\ Ctrl-\\",
+            screen_excerpt=self._setup_recovery_excerpt,
         )
+        self._setup_recovery_excerpt = None
         try:
             proceed = self._interaction.confirm_terminal_attach(
                 notice,

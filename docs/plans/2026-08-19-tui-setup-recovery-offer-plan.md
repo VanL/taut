@@ -91,10 +91,11 @@ detach hint).
   completed and landed (`f17612b` plus follow-ups, released as the 0.9.4
   pair); both specs at this SHA carry the [SUM-7.4] escalation block and
   the [TUI-11.1] non-support sentence this plan revises.
-- Slice 0's changes (below) sit on top of this baseline; land Slice 0 by
-  explicit file-list staging (spec sentence, `_pty.py`, its test, this
-  plan, index row) and record that commit SHA here.
-- Promotion baseline: _pending_
+- Slice 0 landed at `8ec4cfe` (spec sentence, `_pty.py`, its test, this
+  plan, index row; explicit file-list staging).
+- Promotion baseline: recorded at the spec-promotion slice below —
+  `8ec4cfe` plus the worktree delta application of 2026-08-19; commit
+  SHA recorded at that slice's landing.
 
 ## Slice 0 — output-tail sequence stripping (completed 2026-08-19)
 
@@ -557,6 +558,9 @@ Task 0 may proceed once the owner lands Slice 0.
 
 | Spec ref | Planned behavior | Actual behavior | Rationale | Spec proposal |
 |----------|------------------|-----------------|-----------|---------------|
+| [TUI-11.1] | Promoted text claimed the enriched [SUM-11] give-up remains the terminal diagnostic after a TUI decline | A pre-readiness decline terminates with the readiness-abort error ("provider generation exited before foreground readiness"): a TUI-owned run always passes `on_ready`, and `_raise_if_readiness_aborted` outranks the crash ladder | Found red in Task 4 Case C against the real driver; [SUM-7.4] decline semantics themselves hold (detached continuation, one offer, no lease) | Promoted in the same slice: [TUI-11.1] decline sentence qualified for the two timings (edit applied 2026-08-19, this plan) |
+| [TUI-11.3] | "Host shutdown first requests the run's stop" read as a handle/controller stop call | `TuiSummonInteraction.close()` sets the confirmation's `cancel` event — the driver's own shutdown event, passed through the public protocol — before resolving refused | Pre-readiness there is no `SummonRunHandle` and name-based stop is unavailable/forbidden ([TUI-11.2]); setting the passed event is the run's stop request at that instant, observed at the driver's own check point; proven by the F3 ordering unit test and shutdown Case D | none needed — the promoted "so the driver's shutdown event is set" clause is satisfied verbatim |
+| Task 5 item | "Predecessor plan's out-of-scope note annotated as superseded-by-successor" | Not annotated | The predecessor completed before this plan's execution; completed plans are immutable, and the relationship is recorded in this plan's Source Documents and both specs' Related Plans | none needed — plan-lifecycle rule outranks the task instruction |
 
 ## Execution Log
 
@@ -573,6 +577,70 @@ Comprehension-gate answers (recorded before implementation, 2026-08-19):
    (the recovery generation); only the arrival window changes.
 3. The coordinator admits one owner; the loser degrades to the graceful
    decline (`False`), not a run error.
+
+Task 0 (2026-08-19): Slice 0 landed at `8ec4cfe` by explicit file-list
+staging; all ten delta edits applied to both specs plus Related Plans;
+doc gates green; promotion baseline is `8ec4cfe` plus that application.
+
+Task 1 (Opus subagent, verified): red on the shape and rendering tests
+(`TypeError: unexpected keyword argument 'screen_excerpt'`), green after
+the keyword-defaulted last field and the guarded excerpt block in
+`ShellSummonInteraction`; per-line escaping chosen because
+`escape_terminal_text` escapes newlines; full `test_interaction.py`,
+mypy, ruff green.
+
+Task 2 (Opus subagent, verified): red isolated to run 2's
+`screen_excerpt is None`; green after pre-teardown best-effort capture,
+notice pass-through, consume-once clearing; the new `except Exception`
+registered under existing `[RUFF-SUP-067]` (9→10; global raw BLE001
+142→143; `RAW_RULE_COUNTS` and the generated index updated,
+`bin/ruff_suppression_index.py --write`, policy suite green —
+orchestrator-applied registry maintenance).
+
+Task 3 (Opus subagent, verified): red on the three offer-content tests;
+green with the two-phase presentation as two sequential
+`ConfirmationScreen` pushes (`app.py` handler split into module-level
+helpers to hold the C901 budget without new suppressions);
+bootstrap-notice rendering pinned byte-identical; `_TerminalAttachNotice`
+protocol widened; full TUI suite 421 passed. Known asymmetry, accepted:
+a phase-2 `push_screen` failure propagates as a Textual crash (fatal,
+TUI exits, `on_unmount` resolves the worker refused) instead of the
+phase-1 `event.fail` path — wrapping it would need a new BLE001
+directive; revisit only if a real occurrence appears.
+
+Task 4 (Opus subagent, verified): staged red (declaration, F3 ordering
+unit, three gate cases at 45 s no-modal timeouts), flip-only stage
+proved the shutdown wiring is load-bearing (Case D failed exactly as F3
+predicted), green after `close()` sets the pending confirmation's
+`cancel` event — the driver's shutdown event — before refusing.
+Full-path proofs on real machinery (real `TautApp`, controller, driver
+threads, PTY gate child; only Textual `suspend()` faked headlessly, the
+established `_LeaseApp` boundary): pending-owned offer pre-readiness,
+confirm→lease→gate answered (`\x14`, chord)→restore→readiness→retire
+with exactly one suspension; decline continues detached with one offer;
+`app.exit()` over a pending offer ends the run with no further spawn
+and no injection; concurrent exclusion cited to the existing coordinator
+proof. Deviation rows two and one record the shutdown-channel reading
+and the pre-readiness decline diagnostic.
+
+Task 5 (2026-08-19): [TUI-11.1] decline sentence qualified; stale
+"v1 TUI posture" comment retargeted to the [TUI-13.2] matrix row;
+implementation docs updated (05 summon architecture: excerpt-capture
+sentence; 12 TUI: two-timing offer paragraph); deviation log closed
+(no pending proposals); suppression registry maintenance:
+`[RUFF-SUP-067]` 9→10 (driver excerpt capture) and `[RUFF-SUP-070]`
+37→38 (gate-wiring test harness), global raw BLE001 142→144,
+`RAW_RULE_COUNTS` and the generated index updated.
+
+Final gates (2026-08-19, worktree on `8ec4cfe`, all exit zero):
+summon suite 615 passed / 1 pre-existing environmental skip; TUI suite
+425 passed; ruff check and format-check over both packages; both mypy
+runs (41 + 34 files); wheel-pair matrix; ruff policy suite;
+plan status index; docs references; doc paths; CLI claims;
+`git diff --check`. Still owed before completion claim: owner review
+and landing of the uncommitted implementation, the [DOM-11]
+completed-work independent review, and the plan's manual TUI
+observation (real terminal, real Kimi trust gate).
 
 ## Out of Scope
 

@@ -329,8 +329,24 @@ route pass the same `TuiSummonInteraction` to the public controller; neither
 route guesses whether attachment will occur. When the driver selects an actual
 attach, the worker posts one `TerminalAttachConfirmationRequest` while Textual
 is still active. The app escapes the typed notice fields and opens the ordinary
-native confirmation screen. Cancellation fails closed without suspending or
-spawning the provider.
+native confirmation screen. Cancellation of a bootstrap first-attach fails
+closed without suspending or spawning the provider.
+
+A [SUM-7.4] setup-recovery offer arrives through the same request type when
+the notice carries a screen excerpt, at either of two timings: before the
+run handle is published (first-generation gate; the TUI is still
+pending-owned, so nothing may wait on readiness) or after readiness on a
+later-generation gate. The presentation is two sequential
+`ConfirmationScreen` pushes on the one worker request — first "Looks like
+<member> needs interaction." with the escaped excerpt and the attach
+question, then, only on yes, the ordinary acknowledgement facts plus the
+plain-language "Enter Ctrl-\ Ctrl-\ (Control-Backslash twice) to return to
+Taut." line. Declining or dismissing either phase resolves the request
+refused and the run continues detached per [SUM-7.4]; only bootstrap
+cancellation ends the run. The two-phase split exists so the person sees
+the provider's own pending question before consenting to a raw terminal
+takeover — the excerpt is display-only and answers happen inside the
+attach, never from Taut chrome.
 
 A confirmed request reserves terminal ownership for that exact worker across
 provider startup. Only it may post the later `TerminalLeaseRequest`; the UI

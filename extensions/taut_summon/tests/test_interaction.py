@@ -316,11 +316,22 @@ def test_public_interaction_models_have_exact_stable_shape() -> None:
         "member",
         "provider",
         "detach_hint",
+        "screen_excerpt",
     ]
     notice = TerminalAttachNotice(
         member="grok",
         provider="grok",
         detach_hint="Ctrl-\\ Ctrl-\\",
+    )
+    assert notice.screen_excerpt is None
+    assert (
+        TerminalAttachNotice(
+            member="grok",
+            provider="grok",
+            detach_hint="Ctrl-\\ Ctrl-\\",
+            screen_excerpt="Trust this folder?",
+        ).screen_excerpt
+        == "Trust this folder?"
     )
     with pytest.raises(dataclasses.FrozenInstanceError):
         notice.member = "other"  # type: ignore[misc]
@@ -358,6 +369,47 @@ def test_shell_interaction_requires_enter_after_explaining_attach(
     assert "Press Enter to continue" in rendered
     assert "\x1b" not in rendered
     assert r"\x1b" in rendered
+
+
+def test_shell_interaction_renders_screen_excerpt_before_the_facts() -> None:
+    from taut_summon import ShellSummonInteraction, TerminalAttachNotice
+
+    output_stream = io.StringIO()
+    proceeded = ShellSummonInteraction(
+        input_stream=io.StringIO("\n"),
+        output_stream=output_stream,
+    ).confirm_terminal_attach(
+        TerminalAttachNotice(
+            member="grok",
+            provider="grok",
+            detach_hint="Ctrl-\\ Ctrl-\\",
+            screen_excerpt="\x1b[31mred\nTrust this folder?",
+        )
+    )
+
+    assert proceeded is True
+    rendered = output_stream.getvalue()
+    assert "\x1b" not in rendered
+    excerpt_block, _, facts = rendered.partition("\n\n")
+    assert excerpt_block.splitlines() == [
+        "Looks like 'grok' needs interaction. Last screen output:",
+        r"  \x1b[31mred",
+        "  Trust this folder?",
+    ]
+    assert facts.startswith("Preparing provider setup for 'grok' with 'grok'.\n")
+
+    plain_stream = io.StringIO()
+    ShellSummonInteraction(
+        input_stream=io.StringIO("\n"),
+        output_stream=plain_stream,
+    ).confirm_terminal_attach(
+        TerminalAttachNotice(
+            member="grok",
+            provider="grok",
+            detach_hint="Ctrl-\\ Ctrl-\\",
+        )
+    )
+    assert plain_stream.getvalue() == facts
 
 
 def test_shell_interaction_eof_cancels_attach(
@@ -2102,7 +2154,7 @@ class _NoTtyPtyHostInteraction(_PtyHostInteraction):
 
 
 class _NonRecoveryPtyHostInteraction(_PtyHostInteraction):
-    """Host that declares no setup-recovery support (the v1 TUI posture)."""
+    """Host that declares no setup-recovery support ([TUI-13.2] matrix row)."""
 
     def supports_setup_recovery(self) -> bool:
         return False
@@ -2116,7 +2168,7 @@ def _wire_member_through_pretrusted_first_attach(
     user_slave: int,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-) -> None:
+) -> _PtyHostInteraction:
     """Run 1: first attach against the pretrusted chat prompt wires the row."""
 
     from taut_summon import SummonController
@@ -2145,6 +2197,7 @@ def _wire_member_through_pretrusted_first_attach(
         thread.join(timeout=10.0)
     assert not thread.is_alive()
     assert failures == []
+    return interaction
 
 
 @pytest.mark.xdist_group("process")
@@ -2163,7 +2216,7 @@ def test_setup_gate_offers_single_recovery_attach_and_completes_setup(
     request = _gate_request("gated", prompt_path)
     user_master, user_slave = pty_module.openpty()
     try:
-        _wire_member_through_pretrusted_first_attach(
+        first_attach = _wire_member_through_pretrusted_first_attach(
             db=summon_db,
             request=request,
             user_master=user_master,
@@ -2171,6 +2224,9 @@ def test_setup_gate_offers_single_recovery_attach_and_completes_setup(
             monkeypatch=monkeypatch,
             tmp_path=tmp_path,
         )
+        # Invariant 4: bootstrap first-attach notices carry no excerpt.
+        assert len(first_attach.confirmation_notices) == 1
+        assert first_attach.confirmation_notices[0].screen_excerpt is None
 
         # Run 2: the wired re-summon hits the trust menu (no paste mode).
         gate_log = _configure_gate_pty(
@@ -2187,6 +2243,13 @@ def test_setup_gate_offers_single_recovery_attach_and_completes_setup(
                 lambda: len(interaction.confirmation_notices) == 1,
                 message="setup-recovery acknowledgement request",
             )
+            # [SUM-7.4]: the offer carries the suspect generation's own
+            # pending question, captured before teardown and already
+            # sequence-stripped.
+            offer_excerpt = interaction.confirmation_notices[0].screen_excerpt
+            assert offer_excerpt is not None
+            assert "Trust this folder?" in offer_excerpt
+            assert "\x1b" not in offer_excerpt
             events = _gate_events(gate_log)
             assert [e["event"] for e in events if e["event"] == "input"] == []
 

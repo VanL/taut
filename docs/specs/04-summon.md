@@ -747,7 +747,10 @@ through the acknowledged attach order (`acknowledge → spawn → rejoin →
 ensure_threads → attach → detach → set_wired(True) → pump.start →
 settle → inject orientation → watcher`). The teardown always precedes
 the acknowledgement request, so a person is never deciding while a
-suspect harness runs. Declining consumes the single attempt and is a
+suspect harness runs. Before that teardown the driver captures the
+suspect handle's bounded output tail and offers it to the host through
+the acknowledgement notice, so the offer can show the provider's own
+pending question. Declining consumes the single attempt and is a
 normal mid-run result: the driver starts the next generation detached
 and injects orientation after that generation's settle exactly as
 today; the run does not end and no second offer is made. A `False`
@@ -1403,9 +1406,11 @@ A host interaction reports terminal availability, declares through
 grant leases after its host has left bootstrap, presents one typed
 pre-spawn acknowledgement only when the driver has resolved an actual
 attach — first-generation or [SUM-7.4] setup-recovery — and grants a
-later scoped lease containing input/output fds. The notice owns
-semantic fields, including member, provider, and detach hint; hosts own their
-presentation and must escape dynamic text outside the raw lease. A cancelled
+later scoped lease containing input/output fds. The notice owns semantic fields, including member, provider, detach
+hint, and — for setup-recovery offers — an optional bounded,
+sequence-stripped excerpt of the suspect generation's final screen
+output; hosts own their presentation, may omit an absent excerpt, and
+must escape dynamic text, the excerpt included, outside the raw lease. A cancelled
 decision is a normal pre-spawn result. A presentation failure is fatal and
 never falls through to attach. Summon owns the attach decision, provider PTY
 bytes, bridge invocation, finite detach result, and lifecycle. Shell and rich
@@ -1545,6 +1550,9 @@ tail plus the `--attach` instruction.
 
 ## Related Plans
 
+- `docs/plans/2026-08-19-tui-setup-recovery-offer-plan.md` — sequence-
+  stripped give-up tail (Slice 0), the [SUM-13] notice screen-excerpt
+  field, and driver excerpt capture for the setup-recovery offer.
 - `docs/plans/2026-08-18-summon-setup-gate-recovery-attach-plan.md` — adds
   [SUM-7.4] setup-gate detection (input-prompt confirmation via bracketed
   paste), the single acknowledged setup-recovery attach, the bounded

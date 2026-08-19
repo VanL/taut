@@ -437,7 +437,12 @@ decline-able prompt per run; the kill switch is
 `TAUT_SUMMON_SETUP_RECOVERY=0`. The handle also keeps a bounded raw output
 tail, exposed control-stripped, so the crash-ladder give-up error can show
 the final screen plus the `taut summon --attach <name>` recovery command —
-turning the previously opaque give-up into a self-explaining one.
+turning the previously opaque give-up into a self-explaining one. The same
+tail is captured once more at escalation time, before the suspect
+generation's teardown, and travels to the host inside the acknowledgement
+notice's optional `screen_excerpt` field ([SUM-13]) — the offer can show
+the provider's own pending question, and a host that ignores the field
+renders exactly the pre-excerpt notice.
 
 `ShellSummonInteraction` preserves historical shell behavior. It tests stdin
 only, allows redirected stdout, gives no-tty diagnostics precedence over the

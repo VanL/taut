@@ -374,6 +374,7 @@ class TerminalAttachNotice:
     member: str
     provider: str
     detach_hint: str
+    screen_excerpt: str | None = None
 
 
 class SummonInteraction(Protocol):
@@ -440,6 +441,15 @@ class ShellSummonInteraction:
         member = escape_terminal_text(notice.member)
         provider = escape_terminal_text(notice.provider)
         detach_hint = escape_terminal_text(notice.detach_hint)
+        if notice.screen_excerpt:
+            excerpt_lines = "".join(
+                f"  {escape_terminal_text(line)}\n"
+                for line in notice.screen_excerpt.splitlines()
+            )
+            self._output_stream.write(
+                f"Looks like '{member}' needs interaction. Last screen output:\n"
+                f"{excerpt_lines}\n"
+            )
         self._output_stream.write(
             f"Preparing provider setup for '{member}' with '{provider}'.\n"
             "This is provider setup, not Taut chat.\n"

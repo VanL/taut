@@ -703,12 +703,31 @@ Both the native start form and textual `:summon` binding pass the same
 `TuiSummonInteraction`. If the driver resolves an actual terminal attach,
 that interaction requests one native acknowledgement; neither entry route
 precomputes `wired`, bypasses the acknowledgement, or owns terminal bytes.
-`TuiSummonInteraction` declares no setup-recovery support in version 1
-(`supports_setup_recovery()` is `False`): the TUI presents
-acknowledgements only during Summon bootstrap per [TUI-11.3], and a
-suspected setup gate on a TUI-owned run surfaces through the enriched
-[SUM-11] give-up diagnostics and the shell `taut summon --attach <name>`
-instruction instead of a mid-chat lease.
+`TuiSummonInteraction` declares setup-recovery support
+(`supports_setup_recovery()` is `True`): a [SUM-7.4] setup-recovery
+acknowledgement may reach the TUI outside the bootstrap window, at
+either of two timings. On a first-generation gate — the common case —
+the offer arrives after the suspect generation's teardown but before
+the run handle is published: readiness has not fired and the TUI is
+still pending-owned. On a later-generation gate, the offer arrives
+after readiness on an owned live run. In both timings the request is
+pre-spawn for the generation it governs — the suspect child and pump
+are already gone and its watcher never started — and it uses the same
+native confirmation, coordinator exclusion, and suspension rules as
+the bootstrap acknowledgement. The offer presentation names the
+member, renders the notice's screen excerpt when present (escaped as
+ordinary dynamic text), asks whether to attach, and on proceed — for
+setup-recovery offers only — presents the four required facts with a
+plain-language detach line before suspension (for example "Enter
+Ctrl-\ Ctrl-\ — Control-Backslash twice — to return to Taut").
+Declining or closing the offer is the normal [SUM-7.4] decline: the
+run continues detached. For a decline before foreground readiness the
+run's terminal diagnostic is the readiness-abort error (the detached
+continuation dies before readiness, which outranks the crash ladder);
+the enriched [SUM-11] give-up remains the terminal diagnostic for
+post-readiness declines and for shell-owned runs. Host shutdown while
+the offer is pending takes the [SUM-7.4] shutdown class, not the
+decline class.
 
 ### [TUI-11.2] Driver ownership and shutdown
 
@@ -765,16 +784,23 @@ availability without changing terminal state and returns `AVAILABLE` only
 when both standard streams are suitable, no acknowledgement or lease owner
 conflicts, and the framework can suspend safely.
 
-When Summon resolves that an attach will actually occur, the foreground
-worker posts a typed acknowledgement request to the active Textual loop
-before provider spawn. The UI handler opens the existing native confirmation
+When Summon resolves that an attach will actually occur — at bootstrap
+for a first attach, or mid-run for a [SUM-7.4] setup-recovery offer —
+the foreground worker posts a typed acknowledgement request to the
+active Textual loop before the governed generation's provider spawn. The UI handler opens the existing native confirmation
 screen and returns; it never blocks the event loop waiting for the person.
-The prompt explains provider-only setup, the Summon-supplied detach hint, and
-that Textual resumes and continues owning the run after detach. Confirmation
-resolves the worker request; cancellation ends that foreground run without a
-provider child or terminal lease. Host shutdown resolves any pending prompt
-as cancelled so the foreground worker cannot remain stranded waiting for the
-decision. One coordinator
+The prompt explains provider-only setup, the Summon-supplied detach
+hint, and that Textual resumes and continues owning the run after
+detach; a setup-recovery offer additionally leads with the member name
+and screen excerpt per [TUI-11.1]. Confirmation resolves the worker
+request. Cancellation follows the decision's [SUM-7.4] class: a
+cancelled bootstrap first-attach ends that foreground run without a
+provider child or terminal lease, while a declined or dismissed
+setup-recovery offer continues the run detached. Host shutdown first
+requests the run's stop so the driver's shutdown event is set, then
+resolves any pending prompt as refused — the foreground worker cannot
+remain stranded, and a shutdown-produced refusal takes the [SUM-7.4]
+shutdown class rather than ending as a decline or a cancel. One coordinator
 excludes concurrent acknowledgement and lease owners.
 
 Only after confirmation and provider bootstrap does the interaction marshal
@@ -939,11 +965,11 @@ The following enumerable matrices have firing tests:
   pre-spawn attach acknowledgement confirm/cancel/host-close/concurrent
   exclusion, acknowledgement-before-suspension, terminal
   availability/lease/restore, logging restoration, host signal
-  non-ownership, and setup-recovery non-support (the TUI interaction
-  reports `supports_setup_recovery()` false; the Summon-level
-  setup-recovery matrix proves that a host declaring no support receives
-  no mid-run acknowledgement request across a real suspected-gate run);
-  and
+  non-ownership, and setup-recovery offer handling (mid-run
+  acknowledgement confirm/decline/host-close/concurrent exclusion with
+  excerpt rendering, suspension and restoration equivalence with the
+  bootstrap lease, and the Summon-level proof that a non-supporting
+  host receives no mid-run request); and
 - terminal-control payloads in every user/extension text-bearing widget.
 
 Representative wide, medium, compact, and too-small screens receive a manual
@@ -985,6 +1011,9 @@ Version 1 does not include:
 
 ## Related Plans
 
+- `docs/plans/2026-08-19-tui-setup-recovery-offer-plan.md` — the native
+  setup-recovery offer: [TUI-11.1] support declaration and offer shape,
+  [TUI-11.3] decision-class scoping, [TUI-13.2] offer-handling matrix.
 - `docs/plans/2026-08-18-summon-setup-gate-recovery-attach-plan.md` —
   declares `TuiSummonInteraction` setup-recovery non-support in version 1
   ([TUI-11.1]) and the corresponding [TUI-13.2] firing row.
