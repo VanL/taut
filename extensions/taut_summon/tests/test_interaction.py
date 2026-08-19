@@ -2465,6 +2465,19 @@ def test_setup_gate_fall_through_variants_inject_after_settle(
     prompt_path.write_text("fall-through-orientation-probe", encoding="utf-8")
     request = _gate_request(member, prompt_path)
     monkeypatch.setenv("TAUT_SUMMON_RESUME_BACKOFF", "0.1")
+    # The real gate consumes the complete orientation line, then waits for a
+    # test-only release byte. Send that byte only after the real inject call
+    # returns so child exit cannot race the PTY's successful-write validation.
+    from taut_summon._pty import PtyHandle
+
+    real_inject = PtyHandle.inject
+
+    def inject_then_release_gate(self: PtyHandle, text: str) -> None:
+        real_inject(self, text)
+        self._write_best_effort(b"\0")
+
+    monkeypatch.setattr(PtyHandle, "inject", inject_then_release_gate)
+    monkeypatch.setenv("TAUT_GATE_WAIT_FOR_INJECT_RETURN", "1")
     user_master, user_slave = pty_module.openpty()
     try:
         _wire_member_through_pretrusted_first_attach(

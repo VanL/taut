@@ -65,8 +65,15 @@ def main() -> int:
         if not char:
             return 0
         if char in (b"\r", b"\n"):
-            _write(b"\r\nBye!\r\n")
             _log("declined_default")
+            if os.environ.get("TAUT_GATE_WAIT_FOR_INJECT_RETURN") == "1":
+                while True:
+                    release = os.read(0, 1)
+                    if not release:
+                        return 0
+                    if release == b"\0":
+                        break
+            _write(b"\r\nBye!\r\n")
             return 0
         if char == b"\x14":
             _log("trusted")

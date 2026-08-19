@@ -1132,6 +1132,19 @@ block is appended, and the diagnostic is called exactly once. The approved
 site is therefore registered under existing `[RUFF-SUP-067]` (8→9; global raw
 `BLE001` 141→142) rather than hidden behind a refactor or broader boundary.
 
+Hosted pre-tag correction (2026-08-19): exact-SHA root run `32275050123`
+failed only the macOS/Python 3.14 forced-detach fall-through row after the
+real gate logged `declined_default`. The child exited between a successful
+orientation write and the PTY's post-write liveness check, so the fixture
+observed an immediate orientation error instead of the asserted crash-ladder
+give-up. The test now uses a byte-level fixture handshake: the real gate waits
+after consuming the complete orientation line, and a transparent wrapper sends
+the release byte only after the real `PtyHandle.inject()` returns. This keeps
+the real PTY/process path and every exact give-up, tail, and attach assertion;
+it removes the child-exit observation race rather than accepting two outcomes
+or rerunning for luck. PG, MCP, and TUI producers were green; the release
+helper stopped before every tag as required.
+
 ## Out of Scope
 
 - Any TUI mid-chat terminal lease, acknowledgement, or [TUI-11.3] timing
