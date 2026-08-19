@@ -6,7 +6,7 @@ Class: 4. This changes platform-specific test deadlock budgets after a Windows
 resource test timed out during setup. It changes no product contract or
 behavioral assertion.
 
-Status: active.
+Status: completed at `72cd6f3`.
 
 ## Goal
 
@@ -123,8 +123,13 @@ evidence. Any P1/P2 blocks landing or completion.
   doc-path (63 sources and 1,332 claims), and `git diff --check` also passed.
 - Independent completed-work review returned CLEAR: all six outer markers use
   the exact factor helper; no inner deadline, assertion, workload, lifecycle,
-  xdist setting, or workflow changed. Fresh exact-SHA Windows evidence remains
-  the completion gate.
+  xdist setting, or workflow changed. Fresh exact-SHA Windows evidence was the
+  remaining completion gate.
+- Fresh exact-SHA MCP run `32207169859` passed at
+  `72cd6f3be48a74064e5c19a51452d696052039fc`. Windows job `95932530496`
+  passed 286 tests with 7 deselected in 275.43 seconds; the formerly failing
+  resource backstop completed in 2.93 seconds. macOS, Ubuntu 3.11/3.13/3.14
+  SQLite/PostgreSQL, lint, mypy, and package build were also green.
 
 ## Related Plans
 
