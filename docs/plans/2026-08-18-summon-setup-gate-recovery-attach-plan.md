@@ -1120,6 +1120,18 @@ CLI claims, plan index, and diff check all passed immediately before landing
 at `f17612b`; the Summon suite retained only its expected unavailable local
 Ollama smoke skip.
 
+Release-gate correction (2026-08-19): the first 0.9.4 release attempt stopped
+before branch or tag publication when the raw Ruff inventory detected the new
+give-up diagnostic catch. Independent refactor review found that the one-call
+`output_tail()` boundary is already the narrowest coherent owner: narrowing
+the exception type would guess an unconstrained adapter contract, while moving
+containment into handles would split primary-error ownership. A firing test now
+makes `output_tail()` raise an arbitrary `RuntimeError` and proves the original
+member/count/exit-code error and attach recovery instruction survive, no tail
+block is appended, and the diagnostic is called exactly once. The approved
+site is therefore registered under existing `[RUFF-SUP-067]` (8→9; global raw
+`BLE001` 141→142) rather than hidden behind a refactor or broader boundary.
+
 ## Out of Scope
 
 - Any TUI mid-chat terminal lease, acknowledgement, or [TUI-11.3] timing

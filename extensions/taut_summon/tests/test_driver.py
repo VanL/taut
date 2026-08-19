@@ -619,6 +619,56 @@ def _attach_boot() -> _BootstrapResult:
     )
 
 
+def test_give_up_preserves_primary_error_when_output_tail_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FailingTailHandle:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def output_tail(self) -> str:
+            self.calls += 1
+            raise RuntimeError("sentinel tail failure")
+
+    driver = SummonDriver(
+        _run_request(),
+        interaction=cast(
+            SummonInteraction,
+            _RecordingInteraction(TerminalAvailability.AVAILABLE),
+        ),
+        install_signal_handlers=False,
+    )
+    monkeypatch.setattr(driver, "_backoff", ())
+    monkeypatch.setattr(driver, "_teardown_generation", lambda *_args: None)
+    handle = _FailingTailHandle()
+    running = types.SimpleNamespace(
+        started_at=time.monotonic(),
+        handle=handle,
+        generation=types.SimpleNamespace(
+            exit=types.SimpleNamespace(returncode=17),
+        ),
+        pump=object(),
+    )
+
+    with pytest.raises(DriverError) as raised:
+        driver._resume_after_harness_exit(
+            cast(Any, running),
+            _attach_boot(),
+            0,
+            adapter=cast(Any, _AttachCapableAdapter()),
+        )
+
+    message = str(raised.value)
+    assert handle.calls == 1
+    assert (
+        "harness for 'ptybot' exited 1 times in a row (last exit code 17); giving up"
+    ) in message
+    assert "sentinel tail failure" not in message
+    assert "last screen output:" not in message
+    assert "taut summon --attach ptybot" in message
+    assert raised.value.__cause__ is None
+
+
 def test_attach_uses_one_host_lease_and_forwards_its_fds() -> None:
     interaction = _RecordingInteraction(
         TerminalAvailability.AVAILABLE,

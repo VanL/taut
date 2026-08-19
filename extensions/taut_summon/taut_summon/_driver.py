@@ -1107,7 +1107,7 @@ class SummonDriver:
             # never changes the driver outcome.
             try:
                 tail = running.handle.output_tail()
-            except Exception:  # noqa: BLE001 - best-effort by contract
+            except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-067] exception
                 tail = ""
             if tail:
                 message += f"\nlast screen output:\n{tail}"
