@@ -571,8 +571,10 @@ async def _search_open_result(context: HandlerContext) -> None:
                 "_restore_transcript_anchor",
                 restore_transcript_anchor,
             )
-        observed_snapshots.append(_successful_conversation(future))
-        search_context_applied.set()
+            snapshot = _successful_conversation(future)
+            if snapshot is not None:
+                observed_snapshots.append(snapshot)
+            search_context_applied.set()
 
     context.monkeypatch.setattr(
         context.app,
