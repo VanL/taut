@@ -51,7 +51,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 
 | Plan | Status | Exemplar | Note |
 |------|--------|----------|------|
-| `2026-08-18-summon-setup-gate-recovery-attach-plan.md` | active | no | Class 5 hardened setup-gate detection (bracketed-paste input-prompt confirmation), single acknowledged setup-recovery attach, and enriched crash-ladder give-up diagnostics; plan review (Codex rounds 1-2) and implementation complete, work uncommitted pending owner review and completed-work review. |
+| `2026-08-18-summon-setup-gate-recovery-attach-plan.md` | completed | no | Completed at `f17612b`; setup-gate input-prompt confirmation, one acknowledged recovery attach, enriched give-up diagnostics, full local gates, and independent completed-work review passed before 0.9.4 preparation. |
 | `2026-08-18-tui-deep-review-remediation-plan.md` | completed | no | Class 5 umbrella remediation of the 2026-08-18 TUI deep-review findings, completed at `cd88b5f`; all five hosted TUI lanes and the immutable 0.9.3 TUI publication gate passed on their first attempts. |
 | `2026-08-17-scripted-provider-ready-signal-plan.md` | completed | no | Completed at `99995cc`; scripted-provider readiness publication is inside its bounded physical-SIGINT cleanup owner. |
 | `2026-08-17-summon-shell-cancel-portability-plan.md` | completed | no | Completed at `99995cc`; Windows shell acknowledgement uses exact owned synchronous-read cancellation for console and pipe inputs. |

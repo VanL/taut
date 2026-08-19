@@ -2,7 +2,7 @@
 
 Date: 2026-08-18
 
-Status: draft (see `docs/plans/README.md` status index)
+Status: completed at `f17612b` (see `docs/plans/README.md` status index)
 
 Owner: Taut maintainers
 
@@ -53,20 +53,20 @@ Three coordinated changes:
 
 ## Requested Outcomes
 
-- [ ] A wired `taut summon kimi` whose harness sits at a trust dialog offers
+- [x] A wired `taut summon kimi` whose harness sits at a trust dialog offers
   the acknowledged setup attach within one settle deadline instead of
   crash-looping four times; completing setup during the attach and detaching
   resumes the normal detached flow and reaches `summoned ...`.
-- [ ] Declining the offer, running `--detach`, or running without an
+- [x] Declining the offer, running `--detach`, or running without an
   available terminal preserves today's behavior (inject after settle,
   ordinary crash ladder), plus an `awaiting_onboarding`-style STATUS surface
   while the suspected gate is on screen.
-- [ ] The give-up error names the member, attempt count, last exit code, a
+- [x] The give-up error names the member, attempt count, last exit code, a
   sanitized bounded tail of the final screen, and the `--attach` recovery
   command when the adapter supports attach.
-- [ ] Providers that reach a real chat prompt (bracketed paste observed) see
+- [x] Providers that reach a real chat prompt (bracketed paste observed) see
   zero new prompts, zero timing changes, and an unchanged crash ladder.
-- [ ] The TUI keeps working against the revised `SummonInteraction` contract
+- [x] The TUI keeps working against the revised `SummonInteraction` contract
   by declaring no setup-recovery support in version 1; its users get the
   enriched give-up message and the CLI `--attach` instruction.
 
@@ -127,7 +127,7 @@ identifier here:
   `docs/specs/04-summon.md` (seven [SUM-7.4] edits, one [SUM-11] edit, two
   [SUM-13] edits) and `docs/specs/10-taut-tui.md` ([TUI-11.1] append,
   [TUI-13.2] extension), verified by `bin/check-doc-paths` and
-  `tests/test_docs_references.py`; commit SHA to be recorded at landing.
+  `tests/test_docs_references.py`; landed at `f17612b`.
 
 ## Current Structure and Key Files
 
@@ -1111,6 +1111,14 @@ suite (one pre-existing environmental skip), `test_tui_summon.py`, wheel
 matrix, both statics, plan index, doc references, doc paths,
 `git diff --check` — all exit zero. Working tree after the uncontained
 Kimi reviewer run contains only the plan's own 18 expected paths.
+
+Owner closure (2026-08-19): the owner declared the reviewed plan complete
+subject to fresh Ruff, mypy, and tests, then directed release of the current
+tree as-is. Full Summon and TUI suites, repository Ruff lint/format, both
+package mypy lanes, the 47-case wheel-pair matrix, doc references, doc paths,
+CLI claims, plan index, and diff check all passed immediately before landing
+at `f17612b`; the Summon suite retained only its expected unavailable local
+Ollama smoke skip.
 
 ## Out of Scope
 

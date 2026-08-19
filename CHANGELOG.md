@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## 0.9.4 - 2026-08-19
+
+- Added setup-gate recovery for terminal-based Summon providers. A provider
+  that settles without presenting a confirmed input prompt can offer one
+  acknowledged shell attach before orientation is injected into an unknown
+  trust, login, or model-selection screen. Declining keeps the detached flow;
+  repeated-exit errors now include a bounded, control-stripped screen tail and
+  the exact `taut summon --attach <name>` recovery command. The TUI remains
+  non-owning for mid-run terminal setup and surfaces the enriched diagnostic.
+
+- Made MCP resource integration deadlock caps account for Windows process and
+  filesystem overhead without changing any event-based behavior deadline,
+  pacing assertion, workload, or result assertion. Five 15-second containment
+  caps become 45 seconds on Windows and the 60-second bulk cap becomes 180;
+  other platforms remain unchanged.
+
 ## 0.9.3 - 2026-08-18
 
 - Rebuilt the TUI's two command surfaces per the revised [TUI-7.1]. The `:`
