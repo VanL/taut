@@ -229,7 +229,7 @@ def test_wait_for_postgres_raises_last_readiness_error(
 ) -> None:
     times = iter([0.0, 0.0, 2.0])
 
-    monkeypatch.setattr(scripts.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(scripts.time, "monotonic", lambda: next(times, 3.0))
     monkeypatch.setattr(scripts.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(scripts, "_docker_port", lambda _container: "15432")
 
