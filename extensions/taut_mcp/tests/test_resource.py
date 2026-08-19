@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import queue
+import sys
 import threading
 from contextlib import ExitStack
 from pathlib import Path
@@ -14,6 +15,10 @@ from tests.helpers.eventually import async_eventually
 import taut_mcp._workspace_reactor as workspace_reactor
 from taut import TautClient, addressing, identity
 from taut_mcp._process_reactor import ProcessReactor
+
+
+def _resource_deadlock_cap(base_seconds: int, *, platform: str = sys.platform) -> int:
+    return base_seconds * 3 if platform == "win32" else base_seconds
 
 
 def _workspace(
@@ -142,8 +147,25 @@ def test_workspace_selected_seed_closes_when_join_fails(
     assert closed == [constructed[0][0]]
 
 
+@pytest.mark.parametrize(
+    ("platform", "base_seconds", "expected_seconds"),
+    [
+        ("win32", 15, 45),
+        ("win32", 60, 180),
+        ("linux", 15, 15),
+        ("darwin", 60, 60),
+    ],
+)
+def test_resource_deadlock_cap_scales_only_windows(
+    platform: str,
+    base_seconds: int,
+    expected_seconds: int,
+) -> None:
+    assert _resource_deadlock_cap(base_seconds, platform=platform) == expected_seconds
+
+
 @pytest.mark.sqlite_only
-@pytest.mark.timeout(15)
+@pytest.mark.timeout(_resource_deadlock_cap(15))
 def test_reaction_appears_in_recipient_resource_and_inbox_consumes_it(
     tmp_path: Path,
 ) -> None:
@@ -252,7 +274,7 @@ def test_reaction_appears_in_recipient_resource_and_inbox_consumes_it(
 
 
 @pytest.mark.sqlite_only
-@pytest.mark.timeout(15)
+@pytest.mark.timeout(_resource_deadlock_cap(15))
 def test_legacy_failure_cannot_suppress_modern_resource_delivery(
     tmp_path: Path,
 ) -> None:
@@ -315,7 +337,7 @@ def test_legacy_failure_cannot_suppress_modern_resource_delivery(
 
 
 @pytest.mark.sqlite_only
-@pytest.mark.timeout(60)
+@pytest.mark.timeout(_resource_deadlock_cap(60))
 def test_resource_sorts_workspaces_and_bounds_each_notification_snapshot(
     tmp_path: Path,
 ) -> None:
@@ -431,7 +453,7 @@ def test_resource_sorts_workspaces_and_bounds_each_notification_snapshot(
 
 
 @pytest.mark.sqlite_only
-@pytest.mark.timeout(15)
+@pytest.mark.timeout(_resource_deadlock_cap(15))
 def test_backstop_detects_external_consumption_without_touching_identity(
     tmp_path: Path,
 ) -> None:
@@ -617,7 +639,7 @@ def test_workspace_reactor_defers_pending_native_snapshot_until_pacing_deadline(
 
 
 @pytest.mark.sqlite_only
-@pytest.mark.timeout(15)
+@pytest.mark.timeout(_resource_deadlock_cap(15))
 def test_native_activity_wake_is_immediate_but_bursts_are_paced(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -734,7 +756,7 @@ class _FailingActivityWaiter(_FakeActivityWaiter):
 
 
 @pytest.mark.sqlite_only
-@pytest.mark.timeout(15)
+@pytest.mark.timeout(_resource_deadlock_cap(15))
 def test_native_wait_failure_falls_back_to_observational_backstop(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -798,3 +820,24 @@ def test_native_wait_failure_falls_back_to_observational_backstop(
     finally:
         other.close()
     assert waiter.closed is True
+
+
+@pytest.mark.parametrize(
+    ("test_name", "base_seconds"),
+    [
+        ("test_reaction_appears_in_recipient_resource_and_inbox_consumes_it", 15),
+        ("test_legacy_failure_cannot_suppress_modern_resource_delivery", 15),
+        ("test_resource_sorts_workspaces_and_bounds_each_notification_snapshot", 60),
+        ("test_backstop_detects_external_consumption_without_touching_identity", 15),
+        ("test_native_activity_wake_is_immediate_but_bursts_are_paced", 15),
+        ("test_native_wait_failure_falls_back_to_observational_backstop", 15),
+    ],
+)
+def test_resource_integration_deadlock_markers_use_platform_budget(
+    test_name: str,
+    base_seconds: int,
+) -> None:
+    test = globals()[test_name]
+    timeout_markers = [marker for marker in test.pytestmark if marker.name == "timeout"]
+    assert len(timeout_markers) == 1
+    assert timeout_markers[0].args == (_resource_deadlock_cap(base_seconds),)

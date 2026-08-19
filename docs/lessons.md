@@ -95,6 +95,13 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
 
 ## Project Lessons
 
+- 2026-08-18: Do not make one platform-neutral outer timeout serve as both an
+  infrastructure budget and a behavior oracle. When process startup and
+  filesystem overhead are known to differ by operating system, scale only the
+  deadlock-containment cap and keep event/state deadlines and exact assertions
+  unchanged. A stack sampled when an aggregate cap expires identifies the work
+  in progress; it does not prove that frame alone consumed the budget.
+
 - 2026-08-14: A package-specific post-tag publication gate is not a substitute
   for pre-tag test evidence. When a separately shipped extension has an owned
   CI suite, give it a distinct push-triggered producer workflow and require

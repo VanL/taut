@@ -396,6 +396,15 @@ ownership under its caller's bounded stack. This keeps reactor-facing tests
 independent without spending their deadlock valve on selected-seed runner
 turnover.
 
+The resource suite's outer `pytest-timeout` markers are deadlock containment,
+not behavior or performance assertions. Windows receives exactly three times
+the base outer cap because interpreter startup, process creation, and
+filesystem work have materially higher platform cost; other platforms retain
+the base cap. The suite enumerates every affected marker. Event-based
+`async_eventually` deadlines, pacing bounds, workloads, and exact result/state
+assertions do not scale, so Windows overhead gets setup and teardown headroom
+without changing what counts as correct MCP behavior.
+
 ## Change Guidance
 
 Read [MCP-4], [MCP-5], [MCP-8], and [MCP-11] before changing reactor state.
@@ -415,6 +424,7 @@ changelog, and plan evidence whenever ownership or rationale changes.
 
 ## Related Plans
 
+- `docs/plans/2026-08-18-mcp-windows-resource-timeout-budget-plan.md`
 - `docs/plans/2026-08-17-mcp-resource-seed-lifecycle-plan.md`
 - `docs/plans/2026-08-17-mcp-tools-seed-lifecycle-plan.md`
 - `docs/plans/2026-08-18-mcp-resource-helper-seed-lifecycle-plan.md`
