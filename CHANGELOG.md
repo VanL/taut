@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 0.9.5 - 2026-08-19
+
+- Summon setup recovery is now surfaced as an explicit TUI workflow: when an interactive setup flow exits without a confirmed terminal prompt, users can resume with a bounded attach/recovery path before the flow is auto-classified as detached. This keeps orientation and trust checks visible and avoids silent loss of user intent in terminal-facing providers.
+
+- The Summon give-up path now strips complete-screen escape sequences from the captured tail before showing the bounded recovery message, improving readability while preserving the underlying diagnostic data.
+
+- TUI summon confirmation handling was cleaned up to avoid stale modal races around resolved screens while preserving robust callback ownership and exact state transitions.
+
+- Release tooling and test evidence were updated to ensure the setup-recovery path, ruff-policy tracking, and associated docs/plan records remain in the release ledger.
+
 ## 0.9.4 - 2026-08-19
 
 - Added setup-gate recovery for terminal-based Summon providers. A provider
