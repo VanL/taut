@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "taut-chat"
-version = "0.9.4"
+version = "0.9.5"
 
 description = "Private, no-config chat with agents and humans in your terminal"
 readme = "README.md"
@@ -37,13 +37,13 @@ dependencies = [
 
 [project.optional-dependencies]
 all = [
-    "taut-pg>=0.9.4",
-    "taut-summon>=0.9.4",
-    "taut-mcp>=0.9.4",
-    "taut-tui>=0.9.4",
+    "taut-pg>=0.9.5",
+    "taut-summon>=0.9.5",
+    "taut-mcp>=0.9.5",
+    "taut-tui>=0.9.5",
 ]
 tui = [
-    "taut-tui>=0.9.4",
+    "taut-tui>=0.9.5",
 ]
 dev = [
     "build>=1.5.0",
@@ -56,8 +56,8 @@ dev = [
     "pyyaml>=6.0.3",
     "ruff>=0.16.3",
     "simplebroker-pg>=3.8.0",
-    "taut-summon>=0.9.4",
-    "taut-tui>=0.9.4",
+    "taut-summon>=0.9.5",
+    "taut-tui>=0.9.5",
     "types-psutil>=7.2.2.20260518",
     "types-PyYAML>=6.0.12.20260724",
 ]
