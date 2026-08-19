@@ -197,6 +197,20 @@ class StreamJsonHandle(ABC):
 
         return
 
+    @property
+    def input_prompt_observed(self) -> bool:
+        """Vacuously true: structured adapters have no terminal input prompt.
+
+        The driver consults this only on ``orientation_via_inject`` adapters
+        ([SUM-7.4]); structured streams receive the persona at spawn.
+        """
+        return True
+
+    def output_tail(self) -> str:
+        """Structured streams retain no raw screen tail ([SUM-7.4])."""
+
+        return ""
+
     def attach(
         self,
         *,

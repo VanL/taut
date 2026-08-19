@@ -523,6 +523,15 @@ class TuiSummonInteraction:
                 return api.TerminalAvailability.UNAVAILABLE
         return api.TerminalAvailability.AVAILABLE
 
+    def supports_setup_recovery(self) -> bool:
+        """Version 1 presents acknowledgements only during Summon bootstrap.
+
+        [TUI-11.1]: a suspected setup gate on a TUI-owned run surfaces
+        through the enriched [SUM-11] give-up diagnostics instead of a
+        mid-chat lease, so the TUI declares no setup-recovery support.
+        """
+        return False
+
     def confirm_terminal_attach(
         self,
         notice: _TerminalAttachNotice,

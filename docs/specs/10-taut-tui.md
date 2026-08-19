@@ -703,6 +703,12 @@ Both the native start form and textual `:summon` binding pass the same
 `TuiSummonInteraction`. If the driver resolves an actual terminal attach,
 that interaction requests one native acknowledgement; neither entry route
 precomputes `wired`, bypasses the acknowledgement, or owns terminal bytes.
+`TuiSummonInteraction` declares no setup-recovery support in version 1
+(`supports_setup_recovery()` is `False`): the TUI presents
+acknowledgements only during Summon bootstrap per [TUI-11.3], and a
+suspected setup gate on a TUI-owned run surfaces through the enriched
+[SUM-11] give-up diagnostics and the shell `taut summon --attach <name>`
+instruction instead of a mid-chat lease.
 
 ### [TUI-11.2] Driver ownership and shutdown
 
@@ -932,8 +938,12 @@ The following enumerable matrices have firing tests:
   readiness/worker return races, run-scoped stop, failed stop/return,
   pre-spawn attach acknowledgement confirm/cancel/host-close/concurrent
   exclusion, acknowledgement-before-suspension, terminal
-  availability/lease/restore, logging restoration, and host signal
-  non-ownership; and
+  availability/lease/restore, logging restoration, host signal
+  non-ownership, and setup-recovery non-support (the TUI interaction
+  reports `supports_setup_recovery()` false; the Summon-level
+  setup-recovery matrix proves that a host declaring no support receives
+  no mid-run acknowledgement request across a real suspected-gate run);
+  and
 - terminal-control payloads in every user/extension text-bearing widget.
 
 Representative wide, medium, compact, and too-small screens receive a manual
@@ -975,6 +985,9 @@ Version 1 does not include:
 
 ## Related Plans
 
+- `docs/plans/2026-08-18-summon-setup-gate-recovery-attach-plan.md` —
+  declares `TuiSummonInteraction` setup-recovery non-support in version 1
+  ([TUI-11.1]) and the corresponding [TUI-13.2] firing row.
 - `docs/plans/2026-08-18-tui-deep-review-remediation-plan.md` — remediates
   the 2026-08-18 deep-review findings: message-body escape decoding
   ([TUI-5.3]), palette selection/empty-state/handoff and the vi-like

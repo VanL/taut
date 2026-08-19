@@ -392,6 +392,10 @@ def test_structured_handle_has_explicit_non_terminal_defaults() -> None:
 
     handle.wait_until_quiet()
     handle.mark_awaiting_onboarding()
+    # Vacuous [SUM-7.4] facts: structured adapters never gate on a terminal
+    # input prompt and retain no raw screen tail.
+    assert handle.input_prompt_observed is True
+    assert handle.output_tail() == ""
     with pytest.raises(AdapterError, match="does not support terminal attach"):
         handle.attach(wake=threading.Event(), shutdown=threading.Event())
 

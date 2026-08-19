@@ -167,6 +167,9 @@ class _PtyHostInteraction:
         finally:
             self.lease_events.append("exit")
 
+    def supports_setup_recovery(self) -> bool:
+        return True
+
 
 class _GatedPtyHostInteraction(_PtyHostInteraction):
     """Hold the pre-spawn availability return until the test arms a phase."""
@@ -264,11 +267,26 @@ def _configure_fake_pty(monkeypatch: pytest.MonkeyPatch, *, tmp_path: Path) -> N
     monkeypatch.setenv("TAUT_SUMMON_PTY_STALL_S", "0.5")
     monkeypatch.setenv("TAUT_SUMMON_PTY_QUIET_MS", "50")
     monkeypatch.setenv("TAUT_SUMMON_PTY_MAX_SETTLE_S", "1.0")
+    # modes:True makes the fake provider enable bracketed paste — a
+    # confirmed input prompt — so wired detached resumes keep today's
+    # inject-after-settle flow under the [SUM-7.4] setup-recovery spec.
     monkeypatch.setenv(
         "TAUT_FAKE_TUI_CONFIG",
-        json.dumps({"queries": False, "modes": False, "redraw": False}),
+        json.dumps({"queries": False, "modes": True, "redraw": False}),
     )
     monkeypatch.setenv("TAUT_FAKE_TUI_LOG", str(tmp_path / "host-fake-tui.jsonl"))
+
+
+def test_shipped_interactions_declare_setup_recovery_support() -> None:
+    from taut_summon.interaction import ShellSummonInteraction
+
+    # [SUM-13]: the shell declares setup-recovery support; structural test
+    # hosts in this file mirror the shell so driver proofs can exercise the
+    # escalation path over real fds.
+    assert ShellSummonInteraction().supports_setup_recovery() is True
+    assert (
+        _PtyHostInteraction(input_fd=-1, output_fd=-1).supports_setup_recovery() is True
+    )
 
 
 def test_public_interaction_models_have_exact_stable_shape() -> None:
@@ -2025,3 +2043,487 @@ def test_controller_wraps_invalid_host_fd_failure_as_public_summon_error(
     assert row is not None
     assert row["driver_pid"] is None
     assert row["wired"] is False
+
+
+# --- [SUM-7.4] setup-recovery escalation matrix -----------------------------
+
+
+def _configure_gate_pty(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    tmp_path: Path,
+    pretrusted: bool,
+) -> Path:
+    gate = Path(__file__).with_name("fixtures") / "gate_harness.py"
+    log = tmp_path / "gate-harness.jsonl"
+    monkeypatch.setenv("TAUT_SUMMON_PTY_ARGV", json.dumps([sys.executable, str(gate)]))
+    monkeypatch.setenv("TAUT_SUMMON_PTY_ROWS", "24")
+    monkeypatch.setenv("TAUT_SUMMON_PTY_COLS", "80")
+    monkeypatch.setenv("TAUT_SUMMON_PTY_STALL_S", "0.5")
+    monkeypatch.setenv("TAUT_SUMMON_PTY_QUIET_MS", "50")
+    monkeypatch.setenv("TAUT_SUMMON_PTY_MAX_SETTLE_S", "1.0")
+    monkeypatch.setenv("TAUT_GATE_LOG", str(log))
+    if pretrusted:
+        monkeypatch.setenv("TAUT_GATE_PRETRUSTED", "1")
+    else:
+        monkeypatch.delenv("TAUT_GATE_PRETRUSTED", raising=False)
+    return log
+
+
+def _gate_events(log: Path) -> list[dict[str, Any]]:
+    if not log.exists():
+        return []
+    return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+
+
+def _gate_request(name: str, prompt_path: Path, *, detach: bool = False) -> Any:
+    from taut_summon import SummonRequest
+
+    return SummonRequest(
+        name=name,
+        threads=("general",),
+        terminal=False,
+        persona=None,
+        system_prompt_file=str(prompt_path),
+        rate_limit=None,
+        detach=detach,
+        provider_flag="pty",
+    )
+
+
+class _NoTtyPtyHostInteraction(_PtyHostInteraction):
+    """Host whose availability probe reports NO_TTY."""
+
+    def terminal_availability(self, intent: Any) -> Any:
+        from taut_summon import TerminalAvailability
+
+        self.availability_calls.append(intent)
+        return TerminalAvailability.NO_TTY
+
+
+class _NonRecoveryPtyHostInteraction(_PtyHostInteraction):
+    """Host that declares no setup-recovery support (the v1 TUI posture)."""
+
+    def supports_setup_recovery(self) -> bool:
+        return False
+
+
+def _wire_member_through_pretrusted_first_attach(
+    *,
+    db: Path,
+    request: Any,
+    user_master: int,
+    user_slave: int,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Run 1: first attach against the pretrusted chat prompt wires the row."""
+
+    from taut_summon import SummonController
+
+    _configure_gate_pty(monkeypatch, tmp_path=tmp_path, pretrusted=True)
+    interaction = _PtyHostInteraction(input_fd=user_slave, output_fd=user_slave)
+    thread, failures = _start_foreground_run(
+        db=db, request=request, interaction=interaction
+    )
+    try:
+        assert b"chat>" in _read_pty_until(user_master, b"chat>")
+        os.write(user_master, b"\x1c\x1c")
+        # Drain the bridge's reset blast so its TCSADRAIN restore completes.
+        assert b"\x1b[?2004l" in _read_pty_until(user_master, b"\x1b[?2004l")
+
+        def wired() -> bool:
+            member = _member_by_name(db, request.name)
+            if member is None:
+                return False
+            row = _session_row(db, member.member_id)
+            return bool(row and row["wired"])
+
+        wait_until(wired, message="pretrusted first attach wired transition")
+        SummonController(db_path=db).stop(request.name)
+    finally:
+        thread.join(timeout=10.0)
+    assert not thread.is_alive()
+    assert failures == []
+
+
+@pytest.mark.xdist_group("process")
+@pytest.mark.sqlite_only
+def test_setup_gate_offers_single_recovery_attach_and_completes_setup(
+    summon_db: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("pty", reason="setup recovery requires a POSIX PTY")
+    import pty as pty_module
+
+    prompt_marker = "gate-orientation-probe"
+    prompt_path = tmp_path / "gate-prompt.txt"
+    prompt_path.write_text(prompt_marker, encoding="utf-8")
+    request = _gate_request("gated", prompt_path)
+    user_master, user_slave = pty_module.openpty()
+    try:
+        _wire_member_through_pretrusted_first_attach(
+            db=summon_db,
+            request=request,
+            user_master=user_master,
+            user_slave=user_slave,
+            monkeypatch=monkeypatch,
+            tmp_path=tmp_path,
+        )
+
+        # Run 2: the wired re-summon hits the trust menu (no paste mode).
+        gate_log = _configure_gate_pty(
+            monkeypatch, tmp_path=tmp_path / "run2", pretrusted=False
+        )
+        (tmp_path / "run2").mkdir(exist_ok=True)
+        interaction = _PtyHostInteraction(input_fd=user_slave, output_fd=user_slave)
+        thread, failures = _start_foreground_run(
+            db=summon_db, request=request, interaction=interaction
+        )
+        try:
+            # The offer arrives without any injection into the menu.
+            wait_until(
+                lambda: len(interaction.confirmation_notices) == 1,
+                message="setup-recovery acknowledgement request",
+            )
+            events = _gate_events(gate_log)
+            assert [e["event"] for e in events if e["event"] == "input"] == []
+
+            # Proceed: the recovery generation bridges; answer the gate.
+            assert b"Trust this folder?" in _read_pty_until(
+                user_master, b"Trust this folder?"
+            )
+            os.write(user_master, b"\x14")
+            assert b"chat>" in _read_pty_until(user_master, b"chat>")
+            os.write(user_master, b"\x1c\x1c")
+            # Drain the reset blast so the bridge's TCSADRAIN restore returns.
+            assert b"\x1b[?2004l" in _read_pty_until(user_master, b"\x1b[?2004l")
+
+            # Detach resumes the detached flow: orientation reaches the chat.
+            def oriented() -> bool:
+                return any(
+                    e["event"] == "input" and prompt_marker in e.get("raw", "")
+                    for e in _gate_events(gate_log)
+                )
+
+            wait_until(oriented, message="post-recovery orientation injection")
+            assert len(interaction.confirmation_notices) == 1
+            # Invariant 3: availability is sampled exactly once per
+            # foreground run; the escalation reuses the cached value.
+            from taut_summon import TerminalIntent
+
+            assert interaction.availability_calls == [TerminalIntent.PREFERRED]
+            # [SUM-13] matrix: the recovery generation reaches watcher
+            # readiness — chat posted by another member arrives through the
+            # watcher's injection path.
+            from taut import TautClient
+
+            witness = TautClient(db_path=summon_db, as_name="Witness")
+            try:
+                witness.join("general")
+                witness.say("general", "watcher-readiness-probe")
+            finally:
+                witness.close()
+
+            def watcher_delivered() -> bool:
+                return any(
+                    e["event"] == "input"
+                    and "watcher-readiness-probe" in e.get("raw", "")
+                    for e in _gate_events(gate_log)
+                )
+
+            wait_until(watcher_delivered, message="watcher injection after recovery")
+            from taut_summon import SummonController
+
+            SummonController(db_path=summon_db).stop(request.name)
+        finally:
+            thread.join(timeout=15.0)
+        assert not thread.is_alive()
+        assert failures == []
+        assert interaction.lease_events.count("enter") == 1
+    finally:
+        os.close(user_master)
+        os.close(user_slave)
+
+
+@pytest.mark.xdist_group("process")
+@pytest.mark.sqlite_only
+def test_setup_gate_decline_continues_detached_and_enriches_give_up(
+    summon_db: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("pty", reason="setup recovery requires a POSIX PTY")
+    import pty as pty_module
+
+    from taut_summon import SummonOperationError
+
+    prompt_path = tmp_path / "gate-prompt.txt"
+    prompt_path.write_text("decline-orientation-probe", encoding="utf-8")
+    request = _gate_request("declined", prompt_path)
+    monkeypatch.setenv("TAUT_SUMMON_RESUME_BACKOFF", "0.1,0.1")
+    user_master, user_slave = pty_module.openpty()
+    try:
+        _wire_member_through_pretrusted_first_attach(
+            db=summon_db,
+            request=request,
+            user_master=user_master,
+            user_slave=user_slave,
+            monkeypatch=monkeypatch,
+            tmp_path=tmp_path,
+        )
+
+        (tmp_path / "run2").mkdir(exist_ok=True)
+        gate_log = _configure_gate_pty(
+            monkeypatch, tmp_path=tmp_path / "run2", pretrusted=False
+        )
+        interaction = _GatedAttachDecisionInteraction(
+            input_fd=user_slave, output_fd=user_slave, decision=False
+        )
+        thread, failures = _start_foreground_run(
+            db=summon_db, request=request, interaction=interaction
+        )
+        try:
+            assert interaction.confirmation_entered.wait(timeout=15.0)
+            interaction.allow_confirmation.set()
+            # Declined: detached continuation feeds Enter into fresh menus
+            # until the ladder exhausts; exactly one offer was ever made.
+            thread.join(timeout=30.0)
+            assert not thread.is_alive()
+        finally:
+            if thread.is_alive():  # pragma: no cover - cleanup guard
+                from taut_summon import SummonController
+
+                SummonController(db_path=summon_db).stop(request.name)
+                thread.join(timeout=10.0)
+        assert len(interaction.confirmation_notices) == 1
+        assert len(failures) == 1
+        failure = failures[0]
+        # The public controller boundary wraps the driver give-up error.
+        assert isinstance(failure, SummonOperationError)
+        message = str(failure)
+        assert "exited" in message and "giving up" in message
+        assert "last screen output:" in message
+        assert "Trust this folder?" in message
+        assert "taut summon --attach declined" in message
+        declined_defaults = [
+            e for e in _gate_events(gate_log) if e["event"] == "declined_default"
+        ]
+        assert declined_defaults, "detached continuation should reach the menu"
+    finally:
+        os.close(user_master)
+        os.close(user_slave)
+
+
+@pytest.mark.xdist_group("process")
+@pytest.mark.sqlite_only
+def test_setup_gate_shutdown_during_offer_ends_cleanly(
+    summon_db: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("pty", reason="setup recovery requires a POSIX PTY")
+    import pty as pty_module
+
+    from taut_summon._driver import SummonDriver
+
+    prompt_path = tmp_path / "gate-prompt.txt"
+    prompt_path.write_text("shutdown-orientation-probe", encoding="utf-8")
+    request = _gate_request("stopped", prompt_path)
+    drivers: list[SummonDriver] = []
+    real_driver_init = SummonDriver.__init__
+
+    def observed_driver_init(driver: SummonDriver, *args: Any, **kwargs: Any) -> None:
+        real_driver_init(driver, *args, **kwargs)
+        drivers.append(driver)
+
+    monkeypatch.setattr(SummonDriver, "__init__", observed_driver_init)
+    user_master, user_slave = pty_module.openpty()
+    try:
+        _wire_member_through_pretrusted_first_attach(
+            db=summon_db,
+            request=request,
+            user_master=user_master,
+            user_slave=user_slave,
+            monkeypatch=monkeypatch,
+            tmp_path=tmp_path,
+        )
+
+        (tmp_path / "run2").mkdir(exist_ok=True)
+        gate_log = _configure_gate_pty(
+            monkeypatch, tmp_path=tmp_path / "run2", pretrusted=False
+        )
+        interaction = _GatedAttachDecisionInteraction(
+            input_fd=user_slave, output_fd=user_slave, decision=False
+        )
+        thread, failures = _start_foreground_run(
+            db=summon_db, request=request, interaction=interaction
+        )
+        try:
+            assert interaction.confirmation_entered.wait(timeout=15.0)
+            drivers[-1].request_stop()
+            interaction.allow_confirmation.set()
+            thread.join(timeout=15.0)
+            assert not thread.is_alive()
+        finally:
+            if thread.is_alive():  # pragma: no cover - cleanup guard
+                drivers[-1].request_stop()
+                thread.join(timeout=10.0)
+        assert failures == []
+        # Shutdown during the offer spawns nothing further and injects nothing.
+        inputs = [e for e in _gate_events(gate_log) if e["event"] == "input"]
+        assert inputs == []
+    finally:
+        os.close(user_master)
+        os.close(user_slave)
+
+
+@pytest.mark.xdist_group("process")
+@pytest.mark.sqlite_only
+def test_confirmed_input_prompt_never_offers_setup_recovery(
+    summon_db: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("pty", reason="setup recovery requires a POSIX PTY")
+    import pty as pty_module
+
+    from taut_summon import SummonController
+
+    prompt_marker = "confirmed-orientation-probe"
+    prompt_path = tmp_path / "gate-prompt.txt"
+    prompt_path.write_text(prompt_marker, encoding="utf-8")
+    request = _gate_request("prompted", prompt_path)
+    user_master, user_slave = pty_module.openpty()
+    try:
+        _wire_member_through_pretrusted_first_attach(
+            db=summon_db,
+            request=request,
+            user_master=user_master,
+            user_slave=user_slave,
+            monkeypatch=monkeypatch,
+            tmp_path=tmp_path,
+        )
+
+        (tmp_path / "run2").mkdir(exist_ok=True)
+        gate_log = _configure_gate_pty(
+            monkeypatch, tmp_path=tmp_path / "run2", pretrusted=True
+        )
+        interaction = _PtyHostInteraction(input_fd=user_slave, output_fd=user_slave)
+        thread, failures = _start_foreground_run(
+            db=summon_db, request=request, interaction=interaction
+        )
+        try:
+
+            def oriented() -> bool:
+                return any(
+                    e["event"] == "input" and prompt_marker in e.get("raw", "")
+                    for e in _gate_events(gate_log)
+                )
+
+            wait_until(oriented, message="confirmed-prompt orientation injection")
+            assert interaction.confirmation_notices == []
+            SummonController(db_path=summon_db).stop(request.name)
+        finally:
+            thread.join(timeout=15.0)
+        assert not thread.is_alive()
+        assert failures == []
+    finally:
+        os.close(user_master)
+        os.close(user_slave)
+
+
+@pytest.mark.xdist_group("process")
+@pytest.mark.sqlite_only
+@pytest.mark.parametrize(
+    ("member", "variant"),
+    [
+        ("fallkill", "kill-switch"),
+        ("falldetach", "forced-detach"),
+        ("fallnotty", "no-tty"),
+        ("fallhost", "non-supporting-host"),
+    ],
+)
+def test_setup_gate_fall_through_variants_inject_after_settle(
+    summon_db: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    member: str,
+    variant: str,
+) -> None:
+    """[SUM-13] matrix: each failed escalation condition falls through to
+    today's inject-after-settle behavior with zero offers, through a real
+    driver run against the real gate child."""
+
+    pytest.importorskip("pty", reason="setup recovery requires a POSIX PTY")
+    import pty as pty_module
+
+    from taut_summon import SummonOperationError
+
+    prompt_path = tmp_path / "gate-prompt.txt"
+    prompt_path.write_text("fall-through-orientation-probe", encoding="utf-8")
+    request = _gate_request(member, prompt_path)
+    monkeypatch.setenv("TAUT_SUMMON_RESUME_BACKOFF", "0.1")
+    user_master, user_slave = pty_module.openpty()
+    try:
+        _wire_member_through_pretrusted_first_attach(
+            db=summon_db,
+            request=request,
+            user_master=user_master,
+            user_slave=user_slave,
+            monkeypatch=monkeypatch,
+            tmp_path=tmp_path,
+        )
+
+        (tmp_path / "run2").mkdir(exist_ok=True)
+        gate_log = _configure_gate_pty(
+            monkeypatch, tmp_path=tmp_path / "run2", pretrusted=False
+        )
+        interaction: _PtyHostInteraction
+        run2_request = request
+        if variant == "kill-switch":
+            monkeypatch.setenv("TAUT_SUMMON_SETUP_RECOVERY", "0")
+            interaction = _PtyHostInteraction(input_fd=user_slave, output_fd=user_slave)
+        elif variant == "forced-detach":
+            run2_request = _gate_request(member, prompt_path, detach=True)
+            interaction = _PtyHostInteraction(input_fd=user_slave, output_fd=user_slave)
+        elif variant == "no-tty":
+            interaction = _NoTtyPtyHostInteraction(
+                input_fd=user_slave, output_fd=user_slave
+            )
+        else:
+            interaction = _NonRecoveryPtyHostInteraction(
+                input_fd=user_slave, output_fd=user_slave
+            )
+        thread, failures = _start_foreground_run(
+            db=summon_db, request=run2_request, interaction=interaction
+        )
+        thread.join(timeout=30.0)
+        try:
+            assert not thread.is_alive()
+        finally:
+            if thread.is_alive():  # pragma: no cover - cleanup guard
+                from taut_summon import SummonController
+
+                SummonController(db_path=summon_db).stop(member)
+                thread.join(timeout=10.0)
+        # Zero offers: no acknowledgement request reached the host.
+        assert interaction.confirmation_notices == []
+        assert interaction.lease_events == []
+        # Inject-after-settle reached the menu: the gate saw its default
+        # answer and exited, and the ladder ended in the enriched give-up.
+        declined = [
+            e for e in _gate_events(gate_log) if e["event"] == "declined_default"
+        ]
+        assert declined, "orientation injection should reach the gate menu"
+        assert len(failures) == 1
+        failure = failures[0]
+        assert isinstance(failure, SummonOperationError)
+        message = str(failure)
+        assert "giving up" in message
+        assert "last screen output:" in message
+        assert f"taut summon --attach {member}" in message
+    finally:
+        os.close(user_master)
+        os.close(user_slave)

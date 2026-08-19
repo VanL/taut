@@ -95,6 +95,19 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
 
 ## Project Lessons
 
+- 2026-08-18: "Wired once" is not "wired forever." A provider's self-update
+  can re-gate an already-onboarded member (Kimi Code 0.37.2 introduced a
+  trust dialog whose default answer exits 0), and a harness parked on such a
+  gate is indistinguishable from a crash unless the driver records a
+  behavioral input-prompt fact — bracketed-paste enable observed since
+  spawn — rather than parsing screen text. Detect gates behaviorally, make
+  heuristics offer an acknowledged human path instead of acting silently,
+  and put the final screen tail plus the exact recovery command in the
+  give-up error so the next incident is a ten-second diagnosis. Also: a
+  test double modeling an interactive menu must ignore printable input the
+  way real gates do; a fixture that treats a letter as its setup key will
+  be accidentally driven by injected orientation text.
+
 - 2026-08-18: Do not make one platform-neutral outer timeout serve as both an
   infrastructure budget and a behavior oracle. When process startup and
   filesystem overhead are known to differ by operating system, scale only the

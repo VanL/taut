@@ -402,14 +402,42 @@ availability value before provider bootstrap for every attach-capable run
 except forced detach, then reuses it across crash generations and after the
 durable `wired` row becomes known. It computes one immutable first-generation
 attach decision from those facts and asks for confirmation before spawning the
-provider. Crash generations never prompt again. `AVAILABLE` and `NO_TTY`
+provider. Ordinary crash generations never prompt again; the single
+setup-recovery escalation below is the one later-generation exception.
+`AVAILABLE` and `NO_TTY`
 retain the delayed pump path; `NESTED_HOST` and generic `UNAVAILABLE` start the
-pump early. A lease is entered only for the confirmed first-generation attach
-transition. The driver, not the host, calls the provider bridge with the lease
+pump early. A lease is entered only for a confirmed attach transition —
+first-generation or setup-recovery. The driver, not the host, calls the
+provider bridge with the lease
 fds and interprets
 `detached`, `eof`, or `shutdown`; the host never receives an adapter handle or
 state/control access. Lease acquisition and restoration failures are fatal, so
 a failed restore cannot mark the member wired.
+
+**Setup-gate detection and recovery attach ([SUM-7.4]).** A provider gate —
+trust dialog, login, model chooser — is behaviorally indistinguishable from
+a crash without one extra fact: gates render a quiescent full-screen menu
+without presenting an input prompt, and orientation injection would press
+Enter into it (the 2026-08-18 Kimi 0.37.2 incident: the default menu answer
+exited 0, so a wired re-summon crash-looped four times). The PTY handle
+therefore latches whether a bracketed-paste enable has been observed since
+spawn (`input_prompt_observed`); the tracker latches the enable separately
+from the live paste mode so an alt-screen exit cannot unconfirm it. At
+settle, an unconfirmed prompt with an available, acknowledged terminal path
+(`supports_setup_recovery()` on the interaction; shell yes, TUI no in v1)
+tears the suspect generation down, offers exactly one acknowledged recovery
+attach per foreground run, and reuses the whole first-attach machinery for
+it. The boundary is offer-not-bridge: heuristics never start a bridge, an
+explicit human decline continues the detached path (inject-after-settle,
+`awaiting_onboarding` STATUS), a shutdown-produced refusal ends the run
+cleanly, and a generation that itself just completed an acknowledged attach
+never escalates — the human deliberately left that screen. The tradeoff is
+that a paste-less provider on an available shell terminal earns one
+decline-able prompt per run; the kill switch is
+`TAUT_SUMMON_SETUP_RECOVERY=0`. The handle also keeps a bounded raw output
+tail, exposed control-stripped, so the crash-ladder give-up error can show
+the final screen plus the `taut summon --attach <name>` recovery command —
+turning the previously opaque give-up into a self-explaining one.
 
 `ShellSummonInteraction` preserves historical shell behavior. It tests stdin
 only, allows redirected stdout, gives no-tty diagnostics precedence over the

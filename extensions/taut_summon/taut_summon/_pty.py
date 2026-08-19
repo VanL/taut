@@ -44,6 +44,8 @@ _DEFAULT_ROWS = 24
 _DEFAULT_COLS = 80
 _OUTPUT_ACTIVITY_WINDOW_SECONDS = 10.0
 _DEFAULT_DETACH_CHORD = b"\x1c\x1c"
+_OUTPUT_TAIL_RAW_CAP = 4096
+_OUTPUT_TAIL_TEXT_CAP = 1024
 _TERMINAL_RESPONSE_BUFFER_LIMIT = 4096
 _TTY_RESET = (
     b"\x18"
@@ -147,6 +149,9 @@ class _TerminalInputModeTracker:
     def __init__(self) -> None:
         self._buffer = b""
         self.bracketed_paste = False
+        # Latched once an enable is seen; a later disable never clears it
+        # ([SUM-7.4] input-prompt confirmation).
+        self.paste_enable_seen = False
 
     def feed(self, data: bytes) -> None:
         self._buffer += data
@@ -157,6 +162,7 @@ class _TerminalInputModeTracker:
                 continue
             if final == b"h":
                 self.bracketed_paste = True
+                self.paste_enable_seen = True
             elif final == b"l":
                 self.bracketed_paste = False
 
@@ -229,6 +235,7 @@ class PtyHandle:
         self._master_closed = False
         self._exit_emitted = False
         self._bracketed_paste = False
+        self._tail_buffer = bytearray()
         self._last_output_ts = time.monotonic()
         self._seen_output = threading.Event()
         self._awaiting_query: str | None = None
@@ -249,6 +256,33 @@ class PtyHandle:
 
     def mark_awaiting_onboarding(self) -> None:
         self._awaiting_onboarding = True
+
+    @property
+    def input_prompt_observed(self) -> bool:
+        """Whether a bracketed-paste enable was observed since spawn.
+
+        Latched: an alt-screen exit that disables paste mode does not
+        unconfirm a prompt that was already presented ([SUM-7.4]).
+        """
+        return self._input_modes.paste_enable_seen
+
+    def output_tail(self) -> str:
+        """Bounded control-stripped tail of raw harness output ([SUM-7.4]).
+
+        Best-effort diagnostic only: read-only, reply-free, and bounded
+        before it reaches any log, error, or host surface.
+        """
+        text = bytes(self._tail_buffer).decode("utf-8", errors="replace")
+        kept: list[str] = []
+        for char in text:
+            code = ord(char)
+            if char == "\n":
+                kept.append(char)
+            elif char == "\x1b" or code == 0x7F or code < 0x20 or 0x80 <= code <= 0x9F:
+                continue
+            else:
+                kept.append(char)
+        return "".join(kept)[-_OUTPUT_TAIL_TEXT_CAP:]
 
     def status_fields(self) -> dict[str, str]:
         fields: dict[str, str] = {}
@@ -550,6 +584,9 @@ class PtyHandle:
         self._settle_wake.set()
         self._input_modes.feed(data)
         self._bracketed_paste = self._input_modes.bracketed_paste
+        self._tail_buffer.extend(data)
+        if len(self._tail_buffer) > _OUTPUT_TAIL_RAW_CAP:
+            del self._tail_buffer[: len(self._tail_buffer) - _OUTPUT_TAIL_RAW_CAP]
 
     def _drain_pending(self) -> Iterator[AdapterEvent]:
         while True:

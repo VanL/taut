@@ -396,6 +396,14 @@ class SummonInteraction(Protocol):
         """Grant host descriptors and restore host state when the scope exits."""
         ...
 
+    def supports_setup_recovery(self) -> bool:
+        """Whether acknowledgements and leases remain available after bootstrap.
+
+        A host that returns ``False`` never receives a mid-run
+        setup-recovery acknowledgement request ([SUM-13], [SUM-7.4]).
+        """
+        ...
+
 
 class ShellSummonInteraction:
     """Terminal interaction for the standalone shell command surface."""
@@ -464,6 +472,11 @@ class ShellSummonInteraction:
         if self._availability is not TerminalAvailability.AVAILABLE:
             raise RuntimeError("terminal is not available")
         yield TerminalLease(input_fd=0, output_fd=1)
+
+    def supports_setup_recovery(self) -> bool:
+        """The shell prompt and no-op lease work at any point in the run."""
+
+        return True
 
 
 __all__ = [

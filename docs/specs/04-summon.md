@@ -567,8 +567,11 @@ permanently marking a live driver unhealthy for one local SQLite/process-churn
 blip.
 
 **Attach / detach and host interaction.** Whether a human is bridged is
-decided by the durable `wired` flag plus a [SUM-13] host-interaction adapter,
-never by screen-readiness heuristics. On a first-ever summon of a not-wired
+decided by the durable `wired` flag, the single setup-recovery escalation
+defined below, and a [SUM-13] host-interaction adapter. Screen-readiness
+observations may cause Summon to offer an acknowledged attach; they never
+start a bridge, and no bridge ever begins without an explicit host
+acknowledgement. On a first-ever summon of a not-wired
 member, the shell interaction reports an ordinary real tty as available and
 Summon bridges it in raw mode to the PTY master. The human answers
 trust/login/model prompts and explicitly detaches with the configured
@@ -583,8 +586,10 @@ may be redirected, and a missing stdin tty reports `NO_TTY` before considering
 the nested-host marker. With a tty, `TAUT_HOST_TUI=1` reports `NESTED_HOST`;
 otherwise the shell reports `AVAILABLE` and grants a no-op lease over fds 0/1.
 
-Attach is first-generation only. A post-crash resume does not re-grab
-the terminal. During attach the driver starts no event pump and no
+Attach occurs in exactly two cases: the first-generation attach decision
+(unchanged below) and at most one setup-recovery attach per foreground
+run (defined below). An ordinary post-crash resume does not re-grab the
+terminal. During any attach the driver starts no event pump and no
 watcher; there is exactly one master reader at a time: the bridge during
 attach, then the driver's reader after detach. Chat that arrives during
 attach is not injected until the watcher starts after detach.
@@ -704,15 +709,57 @@ returns with `Ctrl-\ Ctrl-\`; and the foreground Summon run continues after
 detach. The shell requires an Enter acknowledgement. A rich host may use a
 native confirmation that was opened by this exact attach decision.
 
-Cancellation is a normal pre-spawn end. It starts no provider child, terminal
-lease, event pump, control loop, watcher, or readiness callback and never
-marks the session wired. The already-bootstrapped member and durable unwired
+For the first-generation attach decision, cancellation is a normal
+pre-spawn end. It starts no provider child, terminal lease, event pump,
+control loop, watcher, or readiness callback and never marks the session
+wired. A declined setup-recovery acknowledgement is governed by the
+escalation block below: it never ends the run and its suspect generation
+was already torn down before the decision was requested. The
+already-bootstrapped member and durable unwired
 session remain available for a later summon, as they do after an interrupted
 first attach; Summon performs no destructive identity rollback. A host error
 while presenting or collecting the decision is fatal to this foreground run
 and follows normal ownership-checked cleanup. Forced detach, a wired
-automatic run, unsupported attach, and later crash generations never request
-acknowledgement.
+automatic run, and unsupported attach never request acknowledgement. Later
+generations request acknowledgement only for the single setup-recovery
+escalation defined below; ordinary crash resumes never do.
+
+**Setup-recovery escalation.** Settle publishes one additional passively
+observed fact per generation: whether the harness has enabled bracketed
+paste since spawn (the input prompt is *confirmed*). A generation that
+reaches its settle outcome without a confirmed input prompt is a
+suspected interactive setup gate — trust, login, or model onboarding —
+because injecting orientation would submit an Enter keystroke into an
+unknown full-screen dialog. Wired members are deliberately eligible: a
+provider self-update can re-gate an already-onboarded member, so `wired`
+is not an escalation condition. When every escalation condition holds —
+the adapter supports attach and orients via injection, the run is not
+`--detach`, cached availability is `AVAILABLE`, the host interaction
+declares setup-recovery support, `TAUT_SUMMON_SETUP_RECOVERY` is not
+`0`, no setup-recovery attempt has been consumed in this foreground
+run, and the generation did not itself complete an acknowledged attach
+(a human who just detached deliberately left the screen they saw; a
+paste-less provider must not re-prompt its own onboarder) — the driver
+does not inject. It tears the suspect generation down
+through the ordinary generation teardown, requests the same typed
+pre-spawn acknowledgement, and on proceed runs one fresh generation
+through the acknowledged attach order (`acknowledge → spawn → rejoin →
+ensure_threads → attach → detach → set_wired(True) → pump.start →
+settle → inject orientation → watcher`). The teardown always precedes
+the acknowledgement request, so a person is never deciding while a
+suspect harness runs. Declining consumes the single attempt and is a
+normal mid-run result: the driver starts the next generation detached
+and injects orientation after that generation's settle exactly as
+today; the run does not end and no second offer is made. A `False`
+acknowledgement produced by driver shutdown rather than a human decline
+follows the ordinary shutdown path — nothing further is spawned and
+nothing is injected. When any escalation condition fails, the driver
+injects after the settle bound exactly as today — providers that never
+enable bracketed paste retain today's behavior — and, while
+unconfirmed, surfaces the suspected gate through the existing
+`awaiting_onboarding` log-plus-STATUS surface. The escalation consumes
+no harness crash budget; the input-prompt fact is passive,
+per-generation, and never read from the master by settle itself.
 
 Startup order per generation is fixed around PTY master ownership. When policy
 rules out attach before bootstrap (`--detach`, `NESTED_HOST`, or generic
@@ -729,8 +776,10 @@ detach:
 set_wired(True) → pump.start → settle → inject orientation → watcher`.
 `--attach` follows that path when the terminal is available. `NO_TTY` and
 `AVAILABLE` preserve their reason-specific detached or acknowledged-attach
-outcomes. The same cached availability is reused after a provider crash; no
-later generation reacquires a host lease or requests acknowledgement.
+outcomes. The same cached availability is reused after a provider crash. No
+generation ever reacquires availability; the setup-recovery escalation
+reuses the cached value and is the only later-generation path that may
+request acknowledgement and a scoped lease.
 `rejoin` still anchors the member to the child before raw onboarding or
 detached operation, and the watcher starts only after orientation is
 injected. Early-pump refusal paths remain required because TUIs may emit DSR,
@@ -772,6 +821,14 @@ false and receive the persona at spawn.
 Output is never parsed as speech. The PTY reader exists for liveness,
 diagnostics, query response, and attach bridging only. Terminal mode is
 unsupported for PTY.
+
+The PTY handle additionally retains a bounded tail of raw harness output
+(final bytes only, fixed cap) for diagnostics. The tail is exposed as
+control-stripped printable text: ESC, DEL, all C0 controls except LF,
+and all C1 controls are removed and the result is length-bounded before
+it reaches any log, error, or host surface. Tail capture is best-effort
+and read-only; it never emits terminal replies, never blocks the reader,
+and its failure never changes a driver outcome.
 
 Interrupt writes raw `\x03` for the harness key reader; shutdown escalates
 with SIGTERM/SIGKILL per the fd ownership rule. STOP and SIGINT interrupt the
@@ -1087,7 +1144,12 @@ exits and preserve release-before-ACK ordering.
 - Harness crash: driver observes `exit`, marks ledger, attempts one
   resume (session id, then cursor replay); repeated crashes back off and
   exit with the reason on ctrl_out and stderr. Never auto-posts to chat
-  as the member.
+  as the member. A suspected setup gate escalates before injection per
+  [SUM-7.4] setup-recovery instead of spending crash budget. The
+  give-up error names the member, the consecutive-exit count, the last
+  exit code, the bounded sanitized tail of the final screen output when
+  the adapter retains one, and — when the adapter supports attach — the
+  exact `taut summon --attach <name>` recovery command.
 - Watcher crash: driver rebuilds the watcher over the same live harness before
   spending any harness crash budget. Repeated watcher rebuild failure is a
   driver failure; pump exit or injection failure remains the harness-resume
@@ -1329,16 +1391,26 @@ installation rolls back earlier installations before the lifecycle begins.
 The temporary opt-in does not grant ownership of unrelated signals, logging,
 terminal policy, or host environment.
 
-A host interaction reports terminal availability, presents one typed
-pre-spawn acknowledgement only when the driver has resolved an actual attach,
-and grants a later scoped lease containing input/output fds. The notice owns
+A host interaction reports terminal availability, declares through
+`supports_setup_recovery()` whether it can present acknowledgements and
+grant leases after its host has left bootstrap, presents one typed
+pre-spawn acknowledgement only when the driver has resolved an actual
+attach — first-generation or [SUM-7.4] setup-recovery — and grants a
+later scoped lease containing input/output fds. The notice owns
 semantic fields, including member, provider, and detach hint; hosts own their
 presentation and must escape dynamic text outside the raw lease. A cancelled
 decision is a normal pre-spawn result. A presentation failure is fatal and
 never falls through to attach. Summon owns the attach decision, provider PTY
 bytes, bridge invocation, finite detach result, and lifecycle. Shell and rich
 TUI adapters present different host-appropriate wording while preserving the
-same transition; neither inspects Summon persistence or provider screens. A
+same transition; neither inspects Summon persistence or provider screens. The
+shell interaction declares setup-recovery support; a host that declares no
+support never receives a mid-run acknowledgement request. For a
+setup-recovery acknowledgement, an explicit human decline is a normal
+mid-run result that continues the detached path rather than ending the
+run; a refusal produced by driver shutdown follows the ordinary shutdown
+outcome and spawns nothing; a presentation failure remains fatal and never
+falls through to attach. A
 rich TUI host that wants a nonblocking managed driver must define process
 supervision, terminal-release handshake, log routing, exit policy, and
 rollback in its own spec; Taut's first such host is governed by
@@ -1441,7 +1513,16 @@ The shell-first attach matrix additionally proves acknowledgement precedes
 provider spawn, cancel and prompt failure spawn no child or lease, attach
 output survives the reader handoff without duplicate terminal replies,
 bracketed-paste framing survives detach, and listener readiness follows the
-retained quiet interval rather than the no-output maximum.
+retained quiet interval rather than the no-output maximum. The
+setup-recovery matrix proves: an unconfirmed input prompt with a
+supporting host offers exactly one acknowledged recovery attach and
+injects nothing beforehand; proceed tears down the suspect generation,
+completes setup through the bridge, and reaches watcher readiness;
+decline, `--detach`, kill-switch, non-`AVAILABLE` availability, and a
+non-supporting host each fall through to today's inject-after-settle
+behavior with at most one offer per run; a confirmed input prompt
+changes nothing; and the give-up error carries the bounded sanitized
+tail plus the `--attach` instruction.
 
 ## Implementation Mapping
 
@@ -1457,6 +1538,10 @@ retained quiet interval rather than the no-output maximum.
 
 ## Related Plans
 
+- `docs/plans/2026-08-18-summon-setup-gate-recovery-attach-plan.md` — adds
+  [SUM-7.4] setup-gate detection (input-prompt confirmation via bracketed
+  paste), the single acknowledged setup-recovery attach, the bounded
+  output-tail diagnostic, and the enriched [SUM-11] give-up error.
 - `docs/plans/2026-08-18-tui-deep-review-remediation-plan.md` — adds the
   [SUM-10] multiline-sends briefing bullet so summoned members stop typing
   literal `\n` into quoted `taut say` arguments.

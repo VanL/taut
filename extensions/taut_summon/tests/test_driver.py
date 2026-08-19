@@ -220,11 +220,17 @@ class _ShutdownWatcher:
 
 
 class _CountingHandle:
+    # Confirmed prompt keeps orientation-path tests on the inject branch.
+    input_prompt_observed = True
+
     def __init__(self) -> None:
         self.close_calls = 0
         self.interrupt_calls = 0
         self.request_close_calls = 0
         self.session_id: str | None = None
+
+    def output_tail(self) -> str:
+        return ""
 
     def close(self) -> None:
         self.close_calls += 1
@@ -238,6 +244,7 @@ class _CountingHandle:
 
 class _AttachCapableAdapter:
     supports_attach = True
+    orientation_via_inject = True
 
 
 class _AttachUnsupportedAdapter:
@@ -265,6 +272,10 @@ class _RecordingInteraction:
         self.confirmation_calls: list[Any] = []
         self.lease_calls = 0
         self.lease_events: list[str] = []
+        self.setup_recovery_supported = True
+
+    def supports_setup_recovery(self) -> bool:
+        return self.setup_recovery_supported
 
     def terminal_availability(self, intent: TerminalIntent) -> TerminalAvailability:
         self.availability_calls.append(intent)
@@ -368,6 +379,176 @@ def test_pty_early_pump_matrix_uses_cached_availability(
             _run_request(attach=attach, detach=detach),
             adapter,
             availability=availability,
+        )
+        is expected
+    )
+
+
+class _PromptFactHandle:
+    """Minimal handle exposing only the [SUM-7.4] input-prompt fact."""
+
+    def __init__(self, *, observed: bool) -> None:
+        self.input_prompt_observed = observed
+
+
+@pytest.mark.parametrize(
+    (
+        "observed",
+        "attached",
+        "consumed",
+        "detach",
+        "supports_attach",
+        "availability",
+        "kill_switch",
+        "host_supports",
+        "expected",
+    ),
+    [
+        # Baseline: unconfirmed prompt, every condition holds -> offer.
+        (
+            False,
+            False,
+            False,
+            False,
+            True,
+            TerminalAvailability.AVAILABLE,
+            False,
+            True,
+            True,
+        ),
+        # Confirmed prompt never offers.
+        (
+            True,
+            False,
+            False,
+            False,
+            True,
+            TerminalAvailability.AVAILABLE,
+            False,
+            True,
+            False,
+        ),
+        # A generation that just completed an acknowledged attach never offers.
+        (
+            False,
+            True,
+            False,
+            False,
+            True,
+            TerminalAvailability.AVAILABLE,
+            False,
+            True,
+            False,
+        ),
+        # Once per foreground run.
+        (
+            False,
+            False,
+            True,
+            False,
+            True,
+            TerminalAvailability.AVAILABLE,
+            False,
+            True,
+            False,
+        ),
+        # --detach forces detached mode.
+        (
+            False,
+            False,
+            False,
+            True,
+            True,
+            TerminalAvailability.AVAILABLE,
+            False,
+            True,
+            False,
+        ),
+        # Adapter without attach support.
+        (
+            False,
+            False,
+            False,
+            False,
+            False,
+            TerminalAvailability.AVAILABLE,
+            False,
+            True,
+            False,
+        ),
+        # Non-AVAILABLE availability.
+        (
+            False,
+            False,
+            False,
+            False,
+            True,
+            TerminalAvailability.NO_TTY,
+            False,
+            True,
+            False,
+        ),
+        (False, False, False, False, True, None, False, True, False),
+        # TAUT_SUMMON_SETUP_RECOVERY=0 kill switch.
+        (
+            False,
+            False,
+            False,
+            False,
+            True,
+            TerminalAvailability.AVAILABLE,
+            True,
+            True,
+            False,
+        ),
+        # Host that declares no setup-recovery support.
+        (
+            False,
+            False,
+            False,
+            False,
+            True,
+            TerminalAvailability.AVAILABLE,
+            False,
+            False,
+            False,
+        ),
+    ],
+)
+def test_setup_recovery_offer_condition_matrix(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    observed: bool,
+    attached: bool,
+    consumed: bool,
+    detach: bool,
+    supports_attach: bool,
+    availability: TerminalAvailability | None,
+    kill_switch: bool,
+    host_supports: bool,
+    expected: bool,
+) -> None:
+    if kill_switch:
+        monkeypatch.setenv("TAUT_SUMMON_SETUP_RECOVERY", "0")
+    else:
+        monkeypatch.delenv("TAUT_SUMMON_SETUP_RECOVERY", raising=False)
+    interaction = _RecordingInteraction(TerminalAvailability.AVAILABLE)
+    interaction.setup_recovery_supported = host_supports
+    driver = object.__new__(SummonDriver)
+    driver._request = _run_request(detach=detach)
+    driver._setup_recovery_consumed = consumed
+    driver._interaction = cast(SummonInteraction, interaction)
+    adapter = cast(
+        Any,
+        _AttachCapableAdapter() if supports_attach else _AttachUnsupportedAdapter(),
+    )
+
+    assert (
+        driver._should_offer_setup_recovery(
+            cast(Any, _PromptFactHandle(observed=observed)),
+            adapter,
+            availability,
+            attached_this_generation=attached,
         )
         is expected
     )
@@ -2249,6 +2430,9 @@ def test_orientation_control_failure_remains_primary_and_tears_down(
             cast(Any, running),
             cast(Any, types.SimpleNamespace(orientation_via_inject=True)),
             "orientation",
+            boot=cast(Any, types.SimpleNamespace(member_name="ptybot")),
+            availability=None,
+            attached_this_generation=False,
         )
 
     assert caught.value.__cause__ is control_failure

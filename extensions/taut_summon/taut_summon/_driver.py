@@ -33,6 +33,10 @@ Test/ops knob: ``TAUT_SUMMON_RESUME_BACKOFF`` (comma-separated seconds,
 e.g. ``"0.2,0.2"``) overrides the default resume backoff schedule; the
 schedule length bounds the consecutive-crash retries.
 
+Test/ops knob: ``TAUT_SUMMON_SETUP_RECOVERY`` set to ``"0"`` disables the
+[SUM-7.4] setup-recovery escalation offer; suspected setup gates then fall
+back to inject-after-settle plus the enriched [SUM-11] give-up diagnostics.
+
 Spec references:
 - docs/specs/04-summon.md [SUM-3], [SUM-4], [SUM-5], [SUM-6], [SUM-7.1],
   [SUM-8], [SUM-11]
@@ -327,6 +331,10 @@ class SummonDriver:
         self._control_ready = threading.Event() if on_ready is not None else None
         self._run_completion = threading.Event() if on_ready is not None else None
         self._backoff = _resume_backoff_from_env()
+        # [SUM-7.4] setup-recovery escalation: at most one offer per
+        # foreground run, consumed whether the human proceeds or declines.
+        self._setup_recovery_consumed = False
+        self._pending_setup_recovery_attach = False
         self._shutdown = threading.Event()
         self._harness_dead = threading.Event()
         self._halt_ack = threading.Event()
@@ -786,13 +794,27 @@ class SummonDriver:
             if self._shutdown.is_set():
                 return self._shutdown_before_or_after_readiness(running, boot)
             first_generation = False
-            if self._orient_running_generation(running, adapter, system_prompt):
+            orientation = self._orient_running_generation(
+                running,
+                adapter,
+                system_prompt,
+                boot=boot,
+                availability=terminal_availability,
+                attached_this_generation=attach_decision.should_attach,
+            )
+            if orientation == "shutdown":
                 return self._shutdown_running_generation(running, boot)
+            if orientation == "setup-recovery":
+                stored = get_session(self._ledger(), boot.member_id)
+                session_id = (
+                    stored["provider_session_id"] if stored is not None else None
+                ) or session_id
+                continue
             self._await_running_generation(running, boot)
             if self._shutdown.is_set():
                 return self._shutdown_running_generation(running, boot)
             consecutive_crashes, session_id = self._resume_after_harness_exit(
-                running, boot, consecutive_crashes
+                running, boot, consecutive_crashes, adapter=adapter
             )
             if self._shutdown.is_set():
                 return 0
@@ -937,18 +959,84 @@ class SummonDriver:
             handle.mark_awaiting_onboarding()
         return False
 
+    def _should_offer_setup_recovery(
+        self,
+        handle: AdapterHandle,
+        adapter: ProviderAdapter,
+        availability: TerminalAvailability | None,
+        *,
+        attached_this_generation: bool,
+    ) -> bool:
+        """[SUM-7.4] setup-recovery escalation conditions, evaluated at settle."""
+
+        if attached_this_generation or self._setup_recovery_consumed:
+            return False
+        if handle.input_prompt_observed:
+            return False
+        if not adapter.supports_attach or not adapter.orientation_via_inject:
+            return False
+        if self._request.detach:
+            return False
+        if availability is not TerminalAvailability.AVAILABLE:
+            return False
+        if os.environ.get("TAUT_SUMMON_SETUP_RECOVERY") == "0":
+            return False
+        try:
+            supported = self._interaction.supports_setup_recovery()
+        except Exception as exc:
+            raise DriverError(f"terminal interaction failed: {exc}") from exc
+        if type(supported) is not bool:
+            raise DriverError(
+                "terminal interaction returned invalid setup-recovery support"
+            )
+        return supported
+
     def _orient_running_generation(
         self,
         running: _RunningGeneration,
         adapter: ProviderAdapter,
         system_prompt: str,
-    ) -> bool:
+        *,
+        boot: _BootstrapResult,
+        availability: TerminalAvailability | None,
+        attached_this_generation: bool,
+    ) -> str:
+        """Settle, then orient, escalate, or report shutdown.
+
+        Returns ``"oriented"``, ``"shutdown"``, or ``"setup-recovery"``. The
+        setup-recovery return has already torn the suspect generation down
+        ([SUM-7.4]: teardown always precedes the acknowledgement request).
+        """
         if not adapter.orientation_via_inject:
-            return False
+            return "oriented"
         try:
             self._settle_for_orientation(running.handle)
             if self._shutdown.is_set():
-                return True
+                return "shutdown"
+            if self._should_offer_setup_recovery(
+                running.handle,
+                adapter,
+                availability,
+                attached_this_generation=attached_this_generation,
+            ):
+                self._setup_recovery_consumed = True
+                self._pending_setup_recovery_attach = True
+                logger.warning(
+                    "provider '%s' settled without an input prompt; offering "
+                    "an acknowledged setup attach instead of injecting",
+                    boot.member_name,
+                )
+                self._teardown_generation(
+                    running.generation, running.handle, running.pump
+                )
+                return "setup-recovery"
+            if not running.handle.input_prompt_observed:
+                running.handle.mark_awaiting_onboarding()
+                logger.warning(
+                    "provider '%s' settled without an input prompt; injecting "
+                    "orientation anyway (no setup-recovery path available)",
+                    boot.member_name,
+                )
             running.handle.inject(system_prompt)
         except AdapterError as exc:
             try:
@@ -965,7 +1053,7 @@ class SummonDriver:
                 raise DriverError(f"cannot orient the harness: {exc}") from exc
         # Leave the AdapterError scope before shutdown teardown so the caught
         # write interruption cannot become the primary shutdown failure.
-        return self._shutdown.is_set()
+        return "shutdown" if self._shutdown.is_set() else "oriented"
 
     def _await_running_generation(
         self, running: _RunningGeneration, boot: _BootstrapResult
@@ -1004,15 +1092,31 @@ class SummonDriver:
         running: _RunningGeneration,
         boot: _BootstrapResult,
         consecutive_crashes: int,
+        *,
+        adapter: ProviderAdapter,
     ) -> tuple[int, str | None]:
         self._teardown_generation(running.generation, running.handle, running.pump)
         lived = time.monotonic() - running.started_at
         crashes = 1 if lived >= _HEALTHY_RUN_SECONDS else consecutive_crashes + 1
         if crashes > len(self._backoff):
-            raise DriverError(
+            message = (
                 f"harness for '{boot.member_name}' exited {crashes} times in a row "
                 f"(last exit code {running.generation.exit.returncode}); giving up"
             )
+            # [SUM-11]: the tail is best-effort diagnostics — its failure
+            # never changes the driver outcome.
+            try:
+                tail = running.handle.output_tail()
+            except Exception:  # noqa: BLE001 - best-effort by contract
+                tail = ""
+            if tail:
+                message += f"\nlast screen output:\n{tail}"
+            if adapter.supports_attach:
+                message += (
+                    "\nprovider may be waiting on interactive setup; "
+                    f"run: taut summon --attach {boot.member_name}"
+                )
+            raise DriverError(message)
         delay = self._backoff[crashes - 1]
         logger.warning(
             "harness exited (code %s); resuming in %.1fs (attempt %d/%d)",
@@ -1531,12 +1635,15 @@ class SummonDriver:
         if request.attach:
             self._require_attach_available(availability)
         wired = get_wired(self._ledger(), boot.member_id)
-        should_attach = first_generation and (
-            request.attach
-            or (
-                not wired
-                and availability is TerminalAvailability.AVAILABLE
-                and not request.detach
+        should_attach = self._pending_setup_recovery_attach or (
+            first_generation
+            and (
+                request.attach
+                or (
+                    not wired
+                    and availability is TerminalAvailability.AVAILABLE
+                    and not request.detach
+                )
             )
         )
         if not should_attach and not wired:
@@ -1557,9 +1664,21 @@ class SummonDriver:
             availability=availability,
             first_generation=first_generation,
         )
+        setup_recovery = self._pending_setup_recovery_attach
+        self._pending_setup_recovery_attach = False
         if not decision.should_attach:
             return decision
         if not self._confirm_terminal_attach(boot):
+            if setup_recovery and not self._shutdown.is_set():
+                # [SUM-7.4]: an explicit human decline of the setup-recovery
+                # offer continues the detached path; only shutdown ends here.
+                logger.info(
+                    "declined provider setup recovery for '%s'; continuing detached",
+                    boot.member_name,
+                )
+                return _GenerationAttachDecision(
+                    wired=decision.wired, should_attach=False
+                )
             logger.info("cancelled provider setup for '%s'", boot.member_name)
             return None
         if self._shutdown.is_set():

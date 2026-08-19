@@ -618,6 +618,15 @@ def test_terminal_attach_confirmation_close_and_post_failure_fail_closed(
     recoverable.release_current_worker()
 
 
+def test_tui_interaction_declares_no_setup_recovery_support() -> None:
+    from taut_tui import summon as tui_summon
+
+    # [TUI-11.1]: version 1 presents acknowledgements only during Summon
+    # bootstrap, so the TUI never accepts mid-run setup-recovery requests.
+    interaction = tui_summon.TuiSummonInteraction(object(), timeout=0.1)
+    assert interaction.supports_setup_recovery() is False
+
+
 def test_foreground_return_releases_confirmed_prelease_reservation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

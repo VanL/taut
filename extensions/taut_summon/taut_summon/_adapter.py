@@ -124,6 +124,25 @@ class AdapterHandle(Protocol):
         """Expose that an attached terminal is waiting on provider onboarding."""
         ...
 
+    @property
+    def input_prompt_observed(self) -> bool:
+        """Whether the harness has presented an input prompt since spawn.
+
+        PTY handles latch this on an observed bracketed-paste enable
+        ([SUM-7.4] input-prompt confirmation); structured adapters are
+        vacuously ``True`` because the driver consults the fact only on
+        ``orientation_via_inject`` adapters.
+        """
+        ...
+
+    def output_tail(self) -> str:
+        """Bounded control-stripped tail of raw output; empty when not kept.
+
+        Best-effort diagnostic for the [SUM-11] give-up error; its failure
+        never changes a driver outcome.
+        """
+        ...
+
     def attach(
         self,
         *,

@@ -1990,6 +1990,78 @@ def test_passive_input_mode_tracker_carries_split_enable_and_disable() -> None:
     assert tracker.bracketed_paste is False
 
 
+def test_input_prompt_observed_latches_across_paste_disable(
+    tmp_path: Path,
+) -> None:
+    handle, _log = _spawn_fake(tmp_path, {"queries": False, "modes": True})
+    pump = EventPump(handle)
+    try:
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not handle.input_prompt_observed:
+            time.sleep(0.05)
+        assert handle.input_prompt_observed is True
+        # A later paste-mode disable (alt-screen exit) must not unconfirm.
+        handle._observe_output(b"\x1b[?2004l")
+        assert handle._bracketed_paste is False
+        assert handle.input_prompt_observed is True
+    finally:
+        handle.close()
+    assert isinstance(pump.drain_until_exit(), ExitEvent)
+
+
+def test_input_prompt_not_observed_without_paste_mode(tmp_path: Path) -> None:
+    handle, log = _spawn_fake(tmp_path, {"queries": False, "modes": False})
+    pump = EventPump(handle)
+    try:
+        _wait_for(log, "start")
+        handle.wait_until_quiet()
+        assert handle.input_prompt_observed is False
+    finally:
+        handle.close()
+    assert isinstance(pump.drain_until_exit(), ExitEvent)
+
+
+def test_input_prompt_latch_survives_enable_and_disable_in_one_chunk(
+    tmp_path: Path,
+) -> None:
+    handle, _log = _spawn_fake(tmp_path, {"queries": False, "modes": False})
+    pump = EventPump(handle)
+    try:
+        handle._observe_output(b"\x1b[?2004hmenu\x1b[?2004l")
+        assert handle._bracketed_paste is False
+        assert handle.input_prompt_observed is True
+    finally:
+        handle.close()
+    assert isinstance(pump.drain_until_exit(), ExitEvent)
+
+
+def test_output_tail_is_bounded_control_stripped_text(tmp_path: Path) -> None:
+    handle, _log = _spawn_fake(tmp_path, {"queries": False, "modes": False})
+    pump = EventPump(handle)
+    try:
+        handle._observe_output(
+            b"\x1b[2J\x1b[H  Trust this folder?\x07\r\n\x9b1m  > Don't trust\x1b[0m"
+        )
+        tail = handle.output_tail()
+        assert "Trust this folder?" in tail
+        assert "> Don't trust" in tail
+        assert "\x1b" not in tail
+        assert "\x9b" not in tail
+        assert "\x07" not in tail
+        assert "\r" not in tail
+
+        handle._observe_output(b"x" * 8192 + b"FINAL")
+        tail = handle.output_tail()
+        assert len(tail) <= 1024
+        assert tail.endswith("FINAL")
+
+        handle._observe_output(b"\xff\xfe broken utf8")
+        assert "broken utf8" in handle.output_tail()
+    finally:
+        handle.close()
+    assert isinstance(pump.drain_until_exit(), ExitEvent)
+
+
 def test_attach_passive_observation_emits_no_query_reply_or_diagnostic(
     tmp_path: Path,
 ) -> None:
