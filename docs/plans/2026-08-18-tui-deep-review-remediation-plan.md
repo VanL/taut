@@ -2,10 +2,10 @@
 
 Date: 2026-08-18
 
-Status: active — independent review (Kimi, 2026-08-18) completed and
-dispositioned; owner decisions recorded; strategy-A spec promotion applied
-to the worktree spec tree. Code slices 2–7 may proceed against the
-promoted text.
+Status: completed at `cd88b5f58f6b668379ca616c7390a4fe08289cc4`.
+Independent review (Kimi, 2026-08-18) completed and dispositioned; owner
+decisions recorded; strategy-A spec promotion, all implementation slices,
+local verification, and exact-SHA hosted/release evidence are complete.
 
 Owner: Taut maintainers
 
@@ -1040,6 +1040,16 @@ check-doc-paths, K1 test suites green.
   proofs cover arbitrary dump-submission failure, callback and deferred-dismiss
   failure, and a real daemon worker retaining `KeyboardInterrupt` on its
   returned Future. [TUI-11.2] was corrected from its stale non-daemon wording.
+- Completion evidence (2026-08-18): exact-SHA TUI producer run `32199285765`
+  passed all five retained-lock lanes on its first attempt at `cd88b5f`,
+  including Windows Python 3.13. Coordinated producer runs root `32199285789`,
+  PG `32199285721`, and MCP `32199285720` also passed at that SHA before tag
+  publication. TUI release gate `32199990700` then passed evidence, staging,
+  package-specific PyPI publication, and immutable GitHub finalization on its
+  first attempt. GitHub and PyPI expose exactly the 0.9.3 wheel and sdist with
+  matching SHA-256 digests; each PyPI file has one Sigstore attestation binding
+  its filename, digest, tag, workflow, `cd88b5f` commit, GitHub-hosted runner,
+  and `pypi` environment.
 
 ## Completion Gate
 

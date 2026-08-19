@@ -7,7 +7,7 @@ hosted Windows SQLite commit consumed an MCP resource test's existing
 deadlock cap during fixture setup. It does not change a normative product
 contract.
 
-Status: active.
+Status: completed at `cd88b5f58f6b668379ca616c7390a4fe08289cc4`.
 
 ## Goal
 
@@ -147,6 +147,20 @@ Any P1/P2 finding blocks landing.
   without the release helper's editable overlays found stale installed 0.9.2
   metadata; rerunning with the canonical overlays was green and changed no
   code.
+- Independent completed-work review found no P1/P2 blocker. Fresh exact-SHA
+  MCP run `32199285720` passed on its first attempt at `cd88b5f`, including the
+  uninstrumented Windows Python 3.13 lane that previously failed. Root
+  `32199285789`, PG `32199285721`, and TUI `32199285765` also passed at the same
+  SHA before any tag was created.
+- Coordinated release gates root `32199991876`, PG `32199986211`, Summon
+  `32199988249`, MCP `32199989098`, and TUI `32199990700` all passed on their
+  first attempts. All five tags resolve to `cd88b5f`; all five GitHub Releases
+  are public, non-prerelease, and immutable with exactly one wheel and sdist.
+  PyPI exposes the same ten non-yanked files with matching SHA-256 digests, and
+  each file has exactly one Sigstore attestation binding its filename, digest,
+  correct tag/workflow, exact commit, GitHub-hosted runner, and `pypi`
+  environment. This closes the release gate without claiming the rare
+  lower-layer SQLite behavior is impossible.
 
 ## Related Plans
 
