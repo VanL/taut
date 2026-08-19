@@ -46,7 +46,7 @@ class _CaseSensitiveConfigParser(configparser.ConfigParser):
         return optionstr
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class WheelMetadata:
     path: Path
     name: str
@@ -56,7 +56,7 @@ class WheelMetadata:
     sha256: str
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class Inputs:
     new_core: Path
     new_summon: Path
