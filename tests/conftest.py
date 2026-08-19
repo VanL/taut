@@ -608,6 +608,14 @@ def _new_cli_diagnostic() -> Path:
     return Path(diagnostic_name)
 
 
+def _cli_post_communicate_timeout() -> float:
+    if sys.platform == "win32":
+        # Windows CI nodes are significantly slower to initialize python processes
+        # and spin up the temporary project filesystem in this benchmark.
+        return 50.0
+    return 20.0
+
+
 def _invoke_ready_cli(
     args: tuple[object, ...],
     *,
@@ -686,7 +694,7 @@ def run_cli(
     stdin: str | None = None,
     stdin_bytes: bytes | None = None,
     env: dict[str, str] | None = None,
-    timeout: float = 20.0,
+    timeout: float = _cli_post_communicate_timeout(),
     startup_timeout: float = 60.0,
 ) -> tuple[int, str, str]:
     """Run the real CLI with separate startup and post-readiness deadlines.
