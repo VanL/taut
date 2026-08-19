@@ -424,7 +424,8 @@ therefore latches whether a bracketed-paste enable has been observed since
 spawn (`input_prompt_observed`); the tracker latches the enable separately
 from the live paste mode so an alt-screen exit cannot unconfirm it. At
 settle, an unconfirmed prompt with an available, acknowledged terminal path
-(`supports_setup_recovery()` on the interaction; shell yes, TUI no in v1)
+(`supports_setup_recovery()` on the interaction; shell yes, TUI yes per
+[TUI-11.1] since the 2026-08-19 TUI setup-recovery offer plan)
 tears the suspect generation down, offers exactly one acknowledged recovery
 attach per foreground run, and reuses the whole first-attach machinery for
 it. The boundary is offer-not-bridge: heuristics never start a bridge, an

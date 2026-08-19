@@ -554,6 +554,33 @@ accepted and applied, F7's tree claim rejected with grep evidence);
 round 2 clean. The review-before-implementation gate is satisfied;
 Task 0 may proceed once the owner lands Slice 0.
 
+### Completed-work review — Grok (different family), 2026-08-19
+
+Review unit: commit `efd6119` at HEAD (on `8ec4cfe`), owner-directed.
+Same invocation form as rounds 1-2; `stopReason: end_turn`. Verdict:
+**no blocker** — "the landing is sound for the promoted contracts on
+the paths this plan named and tested." Confirmed: every promoted
+normative sentence matched against code (excerpt consume-once,
+pre-teardown capture, host escaping, byte-identical bootstrap
+rendering, shutdown class in both timings, the qualified pre-readiness
+decline diagnostic against `_raise_if_readiness_aborted`); the
+[TUI-13.2] matrix elements each traced to a firing proof or an
+explicit citation; `_GatePilotApp`'s lone `suspend()` override judged
+the established [TUI-13.1] boundary; deviation rows match HEAD; no
+drive-by changes; registry delta exactly the two new directives; and
+no blocker-class race in `_pending_stop` ordering, seat-claiming
+contention, or stale-dismiss handling.
+
+| ID | Severity | Finding | Disposition |
+|----|----------|---------|-------------|
+| F1 | P2 | `05-taut-summon-architecture.md` still said "shell yes, TUI no in v1" | Accepted; fixed in the follow-up commit with a [TUI-11.1] pointer. |
+| F2 | P2 | Confirmed quit over a pending-owned offer has no handle to stop, so it waits its bounded window instead of refusing through `_pending_stop`; actual app exit still takes the shutdown class via `close()` | Accepted as a recorded residual in the Execution Log with a reopens-when and the named fix (thread `stop_owned_and_wait` through the pending-offer stop channel). |
+| F3 | P3 | Task 4's later-generation TUI arrival gap was not written down | Accepted; Execution Log gap sentence added. |
+| F4 | P3 | An empty or failed excerpt renders the single-phase acknowledgement without offer framing | Accepted as recorded degradation; capture is best-effort by promoted [SUM-7.4] contract and the decline class is unchanged. |
+
+Remaining before plan completion: the manual TUI observation (real
+terminal, real re-gated Kimi), already recorded as owed.
+
 ## Deviation Log
 
 | Spec ref | Planned behavior | Actual behavior | Rationale | Spec proposal |
@@ -631,6 +658,28 @@ sentence; 12 TUI: two-timing offer paragraph); deviation log closed
 `[RUFF-SUP-067]` 9→10 (driver excerpt capture) and `[RUFF-SUP-070]`
 37→38 (gate-wiring test harness), global raw BLE001 142→144,
 `RAW_RULE_COUNTS` and the generated index updated.
+
+Coverage gap, recorded per Task 4's own instruction (completed-work
+review F3): the TUI modal-arrival proofs cover the pending-owned
+(first-generation) timing only; the later-generation (owned-live)
+arrival is inherited from the Summon-level matrix over the same
+confirmation and lease path, and a TUI-level case waits on a cheap
+`gate_harness` re-gate mode if one is ever added.
+
+Accepted degradation (completed-work review F4): when excerpt capture
+fails or the suspect screen was empty, the notice carries
+`screen_excerpt=None` and the TUI renders the single-phase
+acknowledgement without the offer framing; the [SUM-7.4] decline class
+is unchanged and the capture is best-effort by promoted contract.
+
+Accepted residual (completed-work review F2), reopens when a user
+reports a hung or misclassified quit: a confirmed quit issued while a
+first-generation offer is pending has no run handle to stop, so it
+waits its existing bounded window rather than refusing the offer
+through the `_pending_stop` channel; actual app exit still takes the
+shutdown class via `TuiSummonInteraction.close()` (`on_unmount`), so
+the worker cannot strand. Threading `stop_owned_and_wait` through the
+pending-offer stop channel is the named fix if the residual reopens.
 
 Final gates (2026-08-19, worktree on `8ec4cfe`, all exit zero):
 summon suite 615 passed / 1 pre-existing environmental skip; TUI suite
