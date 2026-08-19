@@ -15,6 +15,7 @@ import math
 import os
 import pty
 import queue
+import re
 import select
 import signal
 import struct
@@ -46,6 +47,28 @@ _OUTPUT_ACTIVITY_WINDOW_SECONDS = 10.0
 _DEFAULT_DETACH_CHORD = b"\x1c\x1c"
 _OUTPUT_TAIL_RAW_CAP = 4096
 _OUTPUT_TAIL_TEXT_CAP = 1024
+# Complete terminal sequences, removed with their parameter/string bodies so
+# the diagnostic tail carries no printable residue such as "[38;2;..m" or
+# "]8;;url" ([SUM-7.4]). Ordered alternation: string-bodied and CSI forms
+# match before the generic ESC form; well-formed dangling forms at the end
+# of the rolling buffer are dropped rather than leaked. C1 single-byte
+# introducers are guarded against UTF-8 continuation bytes (s-acute is
+# C5 9B) by a not-after-lead/continuation lookbehind; remaining C1
+# codepoints are stripped after decoding.
+_NOT_UTF8_TAIL = rb"(?<![\x80-\xbf\xc2-\xf4])"
+_TERMINAL_SEQUENCE = re.compile(
+    rb"(?:\x1b\[|" + _NOT_UTF8_TAIL + rb"\x9b)[0-?]*[ -/]*[@-~]"  # CSI
+    rb"|(?:\x1b\]|" + _NOT_UTF8_TAIL + rb"\x9d)[^\x07\x9c\x1b]*"  # OSC
+    rb"(?:\x07|\x1b\\|\x9c)"
+    rb"|(?:\x1bP|\x1bX|\x1b\^|\x1b_|"  # DCS/SOS/PM/APC
+     + _NOT_UTF8_TAIL + rb"[\x90\x98\x9e\x9f])[^\x1b\x9c]*(?:\x1b\\|\x9c)"
+    rb"|(?:\x1b\[|" + _NOT_UTF8_TAIL + rb"\x9b)[0-?]*[ -/]*\Z"  # dangling CSI
+    rb"|(?:\x1b\]|" + _NOT_UTF8_TAIL + rb"\x9d)[^\x07\x9c\x1b]*\Z"  # dangling OSC
+    rb"|(?:\x1bP|\x1bX|\x1b\^|\x1b_|"  # dangling DCS/SOS/PM/APC
+     + _NOT_UTF8_TAIL + rb"[\x90\x98\x9e\x9f])[^\x1b\x9c]*\Z"
+    rb"|\x1b[ -/]*[0-~]"  # other ESC sequences (ESC=, ESC(B, ...)
+    rb"|\x1b[ -/]*\Z"  # dangling ESC form at buffer end
+)
 _TERMINAL_RESPONSE_BUFFER_LIMIT = 4096
 _TTY_RESET = (
     b"\x18"
@@ -272,7 +295,8 @@ class PtyHandle:
         Best-effort diagnostic only: read-only, reply-free, and bounded
         before it reaches any log, error, or host surface.
         """
-        text = bytes(self._tail_buffer).decode("utf-8", errors="replace")
+        stripped = _TERMINAL_SEQUENCE.sub(b"", bytes(self._tail_buffer))
+        text = stripped.decode("utf-8", errors="replace")
         kept: list[str] = []
         for char in text:
             code = ord(char)

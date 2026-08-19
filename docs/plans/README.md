@@ -51,6 +51,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 
 | Plan | Status | Exemplar | Note |
 |------|--------|----------|------|
+| `2026-08-19-tui-setup-recovery-offer-plan.md` | draft | no | Class 5 hardened successor exposing the setup-recovery offer natively in the TUI: notice screen-excerpt field, owner-sketch offer modal with plain-language detach line, shell excerpt block, and the TUI support flip; Slice 0 (give-up tail sequence stripping) implemented on owner feedback, remainder awaiting independent review. |
 | `2026-08-18-summon-setup-gate-recovery-attach-plan.md` | completed | no | Completed at `f17612b`; setup-gate input-prompt confirmation, one acknowledged recovery attach, enriched give-up diagnostics, full local gates, and independent completed-work review passed before 0.9.4 preparation. |
 | `2026-08-18-tui-deep-review-remediation-plan.md` | completed | no | Class 5 umbrella remediation of the 2026-08-18 TUI deep-review findings, completed at `cd88b5f`; all five hosted TUI lanes and the immutable 0.9.3 TUI publication gate passed on their first attempts. |
 | `2026-08-17-scripted-provider-ready-signal-plan.md` | completed | no | Completed at `99995cc`; scripted-provider readiness publication is inside its bounded physical-SIGINT cleanup owner. |

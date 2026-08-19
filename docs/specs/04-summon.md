@@ -824,9 +824,16 @@ unsupported for PTY.
 
 The PTY handle additionally retains a bounded tail of raw harness output
 (final bytes only, fixed cap) for diagnostics. The tail is exposed as
-control-stripped printable text: ESC, DEL, all C0 controls except LF,
-and all C1 controls are removed and the result is length-bounded before
-it reaches any log, error, or host surface. Tail capture is best-effort
+sequence-stripped printable text: well-formed terminal escape sequences
+whose introducer lies within the retained window — CSI, OSC,
+DCS/SOS/PM/APC, and other ESC- or C1-introduced forms — are removed with
+their parameter and string bodies (a well-formed sequence left
+unterminated at the buffer end is dropped, not leaked), then ESC, DEL,
+all remaining C0 controls except LF, and all C1 controls are removed and
+the result is length-bounded before it reaches any log, error, or host
+surface. A sequence truncated by the window cap itself, or a malformed
+mid-stream sequence, may leave parameter text; C1 introducers are
+recognized only where they cannot be UTF-8 continuation bytes. Tail capture is best-effort
 and read-only; it never emits terminal replies, never blocks the reader,
 and its failure never changes a driver outcome.
 

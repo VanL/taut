@@ -2049,6 +2049,50 @@ def test_output_tail_is_bounded_control_stripped_text(tmp_path: Path) -> None:
         assert "\x9b" not in tail
         assert "\x07" not in tail
         assert "\r" not in tail
+        # Complete sequences are removed, not just their control bytes:
+        # truecolor SGR parameters, OSC-8 hyperlink bodies, private-mode
+        # sets, and split-across-chunks sequences leave no printable residue
+        # (observed residue from the 2026-08-19 Kimi give-up: "[38;2;..m",
+        # "]8;;", "[?2026l").
+        assert "[2J" not in tail
+        assert "1m" not in tail
+
+        handle._observe_output(
+            b"\x1b[38;2;232;168;56mmodel-monster (http)\x1b[39m\x1b[0m"
+            b"\x1b]8;;https://example.invalid\x07link\x1b]8;;\x1b\\"
+            b"\x1b[?2026l\x1b[?25h\x1b[?2004l Bye!"
+        )
+        handle._observe_output(b"\x1b[38;2;10;")  # split CSI, continued...
+        handle._observe_output(b"20;30mtail-after-split\x1b[0m")
+        tail = handle.output_tail()
+        assert "model-monster (http)" in tail
+        assert "link" in tail
+        assert "Bye!" in tail
+        assert "tail-after-split" in tail
+        assert "38;2" not in tail
+        assert "]8;;" not in tail
+        assert "?2026" not in tail
+        assert "?25h" not in tail
+        assert "example.invalid" not in tail
+
+        # UTF-8 text whose continuation bytes collide with C1 introducer
+        # values (s-acute is C5 9B, the CSI C1 byte) must survive intact.
+        handle._observe_output("menü für ś-tests: żółć\r\n".encode())
+        tail = handle.output_tail()
+        assert "ś-tests" in tail
+        assert "żółć" in tail
+        assert "menü für" in tail
+
+        # Unterminated string-bodied and intermediate forms dangling at the
+        # buffer end are dropped, not leaked as printable body text.
+        handle._observe_output(b"before-dcs\x1bPq#0;sixel-body-noise")
+        tail = handle.output_tail()
+        assert "before-dcs" in tail
+        assert "sixel-body-noise" not in tail
+        handle._observe_output(b"after-dcs ok\r\ncharset\x1b(")
+        tail = handle.output_tail()
+        assert "after-dcs ok" in tail
+        assert not tail.endswith("(")
 
         handle._observe_output(b"x" * 8192 + b"FINAL")
         tail = handle.output_tail()
