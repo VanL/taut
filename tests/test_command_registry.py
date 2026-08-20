@@ -3435,21 +3435,30 @@ def test_registry_join_and_whoami_human_streams_and_token_boundary(
     root = ["--db", str(db_path), "--as", "van"]
 
     result, out, err = _dispatch_static(
-        [*root, "join", "general", "--persona", "builder", "-t"]
+        [*root, "join", "general", "--persona", "build\ter", "-t"]
     )
     assert result == 0
     assert re.search(r"\d{19}", out)
     assert "van created #general" in out
     assert "created new identity 'van'" in err
     assert "token:" in err
+    token_match = re.search(r"token: (\S+)", err)
+    assert token_match is not None
+    token = token_match.group(1)
 
     result, out, err = _dispatch_static([*root, "whoami", "--explain"])
     assert result == 0, err
     lines = out.splitlines()
-    assert lines[0].startswith(r"van\tagent\t")
-    assert lines[0].endswith("  builder")
-    assert isinstance(json.loads(lines[1]), dict)
-    assert "token" not in out.lower()
+    assert lines[0] == "van\tagent\there  build\\ter"
+    explanation = json.loads(lines[1])
+    assert isinstance(explanation, dict)
+    assert "token" not in explanation
+    assert token not in out
+    assert err == ""
+
+    result, out, err = _dispatch_static([*root, "who", "general"])
+    assert result == 0, err
+    assert out == "van\tagent\there  build\\ter\n"
     assert err == ""
 
     result, out, err = _dispatch_static(["--db", str(db_path), "who", "--json"])

@@ -236,27 +236,39 @@ def _print_operation_error(exc: SummonOperationError, args: argparse.Namespace) 
 
 def _print_live_member(member: SummonedMember) -> None:
     session = member.provider_session_id or "-"
-    _write_human_line(
-        sys.stdout,
-        f"{member.name}\t{member.provider}\tlive\tsession={session}",
+    fields = (
+        escape_terminal_text(member.name),
+        escape_terminal_text(member.provider),
+        "live",
+        f"session={escape_terminal_text(session)}",
     )
+    sys.stdout.write("\t".join(fields) + "\n")
 
 
 def _print_status(status: SummonStatus) -> None:
     session = status.provider_session_id or "-"
     lag = status.cursor_lag
     lag_text = (
-        ", ".join(f"#{thread}:{count}" for thread, count in sorted(lag.items()))
+        ", ".join(
+            f"#{escape_terminal_text(thread)}:{count}"
+            for thread, count in sorted(lag.items())
+        )
         if lag
         else "caught up"
     )
-    extra = "\t".join(f"{key}={value}" for key, value in sorted(status.details.items()))
-    suffix = f"\t{extra}" if extra else ""
-    _write_human_line(
-        sys.stdout,
-        f"{status.name}\tprovider={status.provider}\tdriver={status.driver}\t"
-        f"session={session}\tthreads={status.thread_count}\tlag={lag_text}{suffix}",
+    fields = [
+        escape_terminal_text(status.name),
+        f"provider={escape_terminal_text(status.provider)}",
+        f"driver={escape_terminal_text(status.driver)}",
+        f"session={escape_terminal_text(session)}",
+        f"threads={status.thread_count}",
+        f"lag={lag_text}",
+    ]
+    fields.extend(
+        f"{escape_terminal_text(key)}={escape_terminal_text(str(value))}"
+        for key, value in sorted(status.details.items())
     )
+    sys.stdout.write("\t".join(fields) + "\n")
 
 
 def main(argv: Sequence[str] | None = None) -> int:

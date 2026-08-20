@@ -2781,6 +2781,9 @@ test.
 
 ## Related Plans
 
+- `docs/plans/2026-08-20-human-tabular-output-plan.md` — restores [TAUT-6.4]'s
+  field-before-structure boundary for human member rows and audits the adjacent
+  CLI/TUI surfaces for the same layering defect.
 - `docs/plans/2026-08-17-tui-command-mirror-plan.md` — promotes the shared
   typed command syntax contract for the TUI textual mirror and installed
   extension syntax providers without changing the version-1 command manifest.

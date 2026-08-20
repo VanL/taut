@@ -38,9 +38,10 @@ SummonCliRunner = Callable[..., tuple[int, str, str]]
 pytestmark = pytest.mark.sqlite_only
 
 
-def _assert_only_structural_newlines(text: str) -> None:
+def _assert_only_structural_newlines(text: str, *, expected_tabs: int = 0) -> None:
+    assert text.count("\t") == expected_tabs
     assert all(
-        character == "\n"
+        character in {"\n", "\t"}
         or not (ord(character) < 0x20 or 0x7F <= ord(character) <= 0x9F)
         for character in text
     )
@@ -98,7 +99,10 @@ def test_standalone_human_records_escape_all_dynamic_status_fields(
     output = capsys.readouterr().out
     for field in fields:
         assert f"summon.{field}:{escaped_suffix}" in output
-    _assert_only_structural_newlines(output)
+    assert output.endswith("\n")
+    lines = output.splitlines()
+    assert [line.count("\t") for line in lines] == [3, 6]
+    _assert_only_structural_newlines(output, expected_tabs=9)
 
 
 def test_standalone_human_records_inherit_project_terminal_policy(
@@ -133,7 +137,7 @@ def test_standalone_human_records_inherit_project_terminal_policy(
         )
     )
 
-    assert capsys.readouterr().out.startswith(r"\x4d\x41\x52\x4b\t")
+    assert capsys.readouterr().out.startswith(r"\x4d\x41\x52\x4b" + "\t")
 
 
 def test_standalone_argparse_and_operation_errors_escape_caller_text(
@@ -1162,7 +1166,7 @@ def test_cli_status_bare_lists_live_sessions(
     rc, out, err = run_summon_cli("status", "--db", db, cwd=tmp_path)
 
     assert rc == 0
-    assert out == r"reviewer\tscripted\tlive\tsession=sess-live"
+    assert out == "reviewer\tscripted\tlive\tsession=sess-live"
     assert err == ""
 
 

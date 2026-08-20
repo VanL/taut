@@ -756,6 +756,13 @@ action help to both console surfaces. Parser inventory, installed-wheel parity,
 and phrase tests prevent the surfaces from drifting while preserving verbatim
 `--` tails.
 
+Standalone human `status` rows apply core's terminal policy to each dynamic
+field before composing their trusted tab separators and final LF. This includes
+member/provider/session fields, lag thread names, and every extensible adapter
+detail key and value. The separators never enter the C0 escape policy, while
+generated escape notation is never scanned a second time. Domain values remain
+exact; the standalone status surface has no JSON mode.
+
 The console adapter installs one handler on the package-scoped `taut_summon`
 logger for each foreground command execution and escapes the final owned log
 body through core's effective packaged/project terminal policy. Propagation is

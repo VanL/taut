@@ -630,8 +630,10 @@ def test_first_party_terminal_sink_inventory_is_explicit() -> None:
     # Each entry is a reviewed sink. Duplicate tuples are intentional call
     # counts, so adding a write inside an allowed function still changes the
     # inventory. JSON/protocol/file writes preserve exact data; common line
-    # writers and parser overrides escape text; bootstrap writes are fixed
-    # ASCII; the named PTY writes are the byte-transparent SUM-7.4 exemption.
+    # writers and parser overrides escape text; tabular renderers escape each
+    # dynamic field before direct writes compose trusted tabs and LF; bootstrap
+    # writes are fixed ASCII; the named PTY writes are the byte-transparent
+    # SUM-7.4 exemption.
     expected = [
         ("taut/commands/_dispatch.py", "dispatch", ".write"),
         ("taut/commands/_dispatch.py", "_dispatch", ".write"),
@@ -648,6 +650,7 @@ def test_first_party_terminal_sink_inventory_is_explicit() -> None:
         ),
         ("taut/commands/_rendering.py", "write_json", ".write"),
         ("taut/commands/_rendering.py", "emit_doctor_report", ".write"),
+        ("taut/commands/_rendering.py", "emit_members", ".write"),
         ("taut/commands/_rendering.py", "write_human_line", ".write"),
         ("taut/commands/_rendering.py", "write_human_line", ".write"),
         (
@@ -660,6 +663,16 @@ def test_first_party_terminal_sink_inventory_is_explicit() -> None:
             "extensions/taut_summon/taut_summon/cli.py",
             "_SummonArgumentParser.error",
             "argparse.error",
+        ),
+        (
+            "extensions/taut_summon/taut_summon/cli.py",
+            "_print_live_member",
+            ".write",
+        ),
+        (
+            "extensions/taut_summon/taut_summon/cli.py",
+            "_print_status",
+            ".write",
         ),
         (
             "extensions/taut_summon/taut_summon/commands/__init__.py",

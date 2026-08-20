@@ -51,6 +51,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 
 | Plan | Status | Exemplar | Note |
 |------|--------|----------|------|
+| `2026-08-20-human-tabular-output-plan.md` | completed | no | Class 3 core/Summon field-before-structure correction; implementation, full local verification, independent completed-work review, and owner-authorized landing passed. |
 | `2026-08-19-tui-setup-recovery-offer-plan.md` | active | no | Class 5 hardened successor exposing the setup-recovery offer natively in the TUI; Slice 0 at `8ec4cfe`, implementation landed at `efd6119`, Grok completed-work review passed with dispositions recorded at `9e13039`; completion awaits only the manual TUI observation (real terminal, re-gated Kimi). |
 | `2026-08-18-summon-setup-gate-recovery-attach-plan.md` | completed | no | Completed at `f17612b`; setup-gate input-prompt confirmation, one acknowledged recovery attach, enriched give-up diagnostics, full local gates, and independent completed-work review passed before 0.9.4 preparation. |
 | `2026-08-18-tui-deep-review-remediation-plan.md` | completed | no | Class 5 umbrella remediation of the 2026-08-18 TUI deep-review findings, completed at `cd88b5f`; all five hosted TUI lanes and the immutable 0.9.3 TUI publication gate passed on their first attempts. |

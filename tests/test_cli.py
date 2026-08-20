@@ -32,9 +32,10 @@ from tests.conftest import PROJECT_ROOT, build_cli_env, run_cli
 pytestmark = [pytest.mark.sqlite_only, pytest.mark.usefixtures("clean_env")]
 
 
-def _assert_only_structural_newlines(text: str) -> None:
+def _assert_only_structural_newlines(text: str, *, expected_tabs: int = 0) -> None:
+    assert text.count("\t") == expected_tabs
     assert all(
-        character == "\n"
+        character in {"\n", "\t"}
         or not (ord(character) < 0x20 or 0x7F <= ord(character) <= 0x9F)
         for character in text
     )
@@ -1003,7 +1004,7 @@ def test_cli_persona_is_escaped_only_for_humans(tmp_path: Path) -> None:
     )
     assert rc == 0, err
     assert r"builder\noperator\x1b]52;c;Y2xpcGJvYXJk\a\x9b" in human
-    _assert_only_structural_newlines(human)
+    _assert_only_structural_newlines(human, expected_tabs=2)
 
     rc, encoded, err = run_cli(
         "--db",
@@ -1045,7 +1046,7 @@ def test_cli_human_output_inherits_project_terminal_policy(
     assert rc == 0, err
     assert r"\x4d\x41\x52\x4b\x1b" in human
     assert "MARK" not in human
-    _assert_only_structural_newlines(human)
+    _assert_only_structural_newlines(human, expected_tabs=2)
 
     rc, encoded, err = run_cli(
         "--as",
@@ -1365,7 +1366,7 @@ def test_core_human_renderer_inventory_escapes_every_dynamic_model_field() -> No
             assert f"core.{field}:{json_escaped_suffix}" in rendered
         else:
             assert f"core.{field}:{escaped_suffix}" in rendered
-    _assert_only_structural_newlines(rendered)
+    _assert_only_structural_newlines(rendered, expected_tabs=2)
 
     json_output = StringIO()
     emit_messages(

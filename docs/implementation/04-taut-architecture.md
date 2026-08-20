@@ -750,8 +750,13 @@ record body before appending structural LF. JSON serialization remains a
 separate exact-data seam. Sender values are previewed through the policy for
 display-width calculation, but the intermediate row retains the original
 sender so generated escape text is never scanned again. Human commands
-preflight the policy before domain side effects; successful JSON commands skip
-that presentation preflight. `watch` also preflights at its direct adapter
+whose trusted layout contains control characters escape each dynamic field
+once before composing that layout: `emit_members` joins its escaped member
+fields with real structural tabs and appends its structural LF afterward.
+This prevents the packaged C0 policy from turning Taut's own column separators
+into visible `\\t` text while retaining field-level control escaping. Human
+commands preflight the policy before domain side effects; successful JSON
+commands skip that presentation preflight. `watch` also preflights at its direct adapter
 boundary. If freshness or a data-dependent empty match exposes a policy failure
 while rendering a live item, the adapter converts it to a terminal-delivery
 stop before cursor advance, then carries the fixed bootstrap signal out of the

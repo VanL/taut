@@ -4552,12 +4552,13 @@ def test_status_reports_live_driver_fields(
     assert rc == 0, err
     # [SUM-9] STATUS fields: provider, driver liveness, session id, thread
     # count, cursor-lag summary.
-    assert "reviewer" in out
-    assert "provider=scripted" in out
-    assert "driver=alive" in out
-    assert "session=" in out
-    assert "threads=2" in out
-    assert "lag=" in out
+    columns = out.split("\t")
+    assert columns[0] == "reviewer"
+    assert "provider=scripted" in columns
+    assert "driver=alive" in columns
+    assert any(column.startswith("session=") for column in columns)
+    assert "threads=2" in columns
+    assert any(column.startswith("lag=") for column in columns)
     assert driver.stop() == 0
 
 

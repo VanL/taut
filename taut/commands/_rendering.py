@@ -417,11 +417,15 @@ def emit_members(
                 stdout, member_object(member, include_token=member.token is not None)
             )
         else:
-            persona = f"  {member.persona}" if member.persona else ""
-            write_human_line(
-                stdout,
-                f"{member.name}\t{member.kind}\t{member.presence}{persona}",
+            fields = (
+                _escape_human_text(member.name),
+                _escape_human_text(member.kind),
+                _escape_human_text(member.presence),
             )
+            persona = (
+                f"  {_escape_human_text(member.persona)}" if member.persona else ""
+            )
+            stdout.write("\t".join(fields) + persona + "\n")
             if member.explain is not None:
                 write_human_line(
                     stdout,

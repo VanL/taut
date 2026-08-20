@@ -1550,6 +1550,9 @@ tail plus the `--attach` instruction.
 
 ## Related Plans
 
+- `docs/plans/2026-08-20-human-tabular-output-plan.md` — restores [SUM-3]'s
+  field-before-structure boundary for standalone live and named status rows,
+  including extensible detail fields.
 - `docs/plans/2026-08-19-tui-setup-recovery-offer-plan.md` — sequence-
   stripped give-up tail (Slice 0), the [SUM-13] notice screen-excerpt
   field, and driver excerpt capture for the setup-recovery offer.
