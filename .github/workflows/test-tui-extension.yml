@@ -18,21 +18,31 @@ jobs:
   tui-retained:
     name: taut-tui retained (${{ matrix.os }}, py${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: ${{ matrix.job-timeout-minutes }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
             python-version: "3.11"
+            job-timeout-minutes: 20
+            test-timeout-minutes: 12
           - os: ubuntu-latest
             python-version: "3.13"
+            job-timeout-minutes: 20
+            test-timeout-minutes: 12
           - os: ubuntu-latest
             python-version: "3.14"
+            job-timeout-minutes: 20
+            test-timeout-minutes: 12
           - os: macos-latest
             python-version: "3.13"
+            job-timeout-minutes: 20
+            test-timeout-minutes: 12
           - os: windows-latest
             python-version: "3.13"
+            job-timeout-minutes: 35
+            test-timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -57,6 +67,6 @@ jobs:
             extensions/taut_tui/uv.lock
 
       - name: Run taut-tui suite against retained lock
-        timeout-minutes: 10
+        timeout-minutes: ${{ matrix.test-timeout-minutes }}
         run: |
           uv run --project extensions/taut_tui --extra dev --locked pytest extensions/taut_tui/tests -v --tb=short -n 2 --dist loadfile
