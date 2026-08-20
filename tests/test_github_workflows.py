@@ -282,19 +282,44 @@ def test_tui_workflow_runs_extension_suite_against_retained_lock() -> None:
     job = document["jobs"]["tui-retained"]
 
     assert job["strategy"]["matrix"]["include"] == [
-        {"os": "ubuntu-latest", "python-version": "3.11"},
-        {"os": "ubuntu-latest", "python-version": "3.13"},
-        {"os": "ubuntu-latest", "python-version": "3.14"},
-        {"os": "macos-latest", "python-version": "3.13"},
-        {"os": "windows-latest", "python-version": "3.13"},
+        {
+            "os": "ubuntu-latest",
+            "python-version": "3.11",
+            "job-timeout-minutes": 20,
+            "test-timeout-minutes": 12,
+        },
+        {
+            "os": "ubuntu-latest",
+            "python-version": "3.13",
+            "job-timeout-minutes": 20,
+            "test-timeout-minutes": 12,
+        },
+        {
+            "os": "ubuntu-latest",
+            "python-version": "3.14",
+            "job-timeout-minutes": 20,
+            "test-timeout-minutes": 12,
+        },
+        {
+            "os": "macos-latest",
+            "python-version": "3.13",
+            "job-timeout-minutes": 20,
+            "test-timeout-minutes": 12,
+        },
+        {
+            "os": "windows-latest",
+            "python-version": "3.13",
+            "job-timeout-minutes": 35,
+            "test-timeout-minutes": 20,
+        },
     ]
-    assert job["timeout-minutes"] == 20
+    assert job["timeout-minutes"] == "${{ matrix.job-timeout-minutes }}"
     steps = _named_steps(job)
     cache_glob = steps["Install uv"]["with"]["cache-dependency-glob"]
     assert "extensions/taut_tui/pyproject.toml" in cache_glob
     assert "extensions/taut_tui/uv.lock" in cache_glob
     suite = steps["Run taut-tui suite against retained lock"]
-    assert suite["timeout-minutes"] == 10
+    assert suite["timeout-minutes"] == "${{ matrix.test-timeout-minutes }}"
     assert suite["run"].split() == [
         "uv",
         "run",
