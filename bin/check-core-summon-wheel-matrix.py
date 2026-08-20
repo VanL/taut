@@ -27,6 +27,7 @@ EXPECTED_HISTORICAL_SUMMON_COMMIT = "b03709452cf4d5962b0d7204b0dab78b9bafd524"
 EXPECTED_HISTORICAL_SUMMON_VERSION = "0.5.4"
 COMMAND_TIMEOUT_SECONDS = 180.0
 CONTROL_SMOKE_TIMEOUT_SECONDS = 180.0
+MATRIX_PYTHON_MIN_MINOR = 11
 EXPECTED_HISTORICAL_SUMMON_REF = "taut_summon/v0.5.4"
 EXPECTED_REF_COMMITS = {
     EXPECTED_HISTORICAL_SUMMON_REF: EXPECTED_HISTORICAL_SUMMON_COMMIT,
@@ -503,14 +504,80 @@ def _venv_python(venv: Path) -> Path:
     return venv / "bin" / "python"
 
 
+def _python_version(python: str) -> tuple[int, int]:
+    """Return (major, minor) for a candidate interpreter, or (0, 0) if it cannot run."""
+    try:
+        completed = subprocess.run(
+            [
+                python,
+                "-c",
+                "import sys; print(sys.version_info.major); print(sys.version_info.minor)",
+            ],
+            cwd=PROJECT_ROOT,
+            env=os.environ.copy(),
+            text=True,
+            capture_output=True,
+            timeout=10.0,
+            check=False,
+        )
+    except OSError:
+        return 0, 0
+
+    if completed.returncode != 0:
+        return 0, 0
+    lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return 0, 0
+    try:
+        return int(lines[0]), int(lines[1])
+    except ValueError:
+        return 0, 0
+
+
+def _matrix_python_candidates() -> tuple[str, ...]:
+    candidates: list[str] = []
+    override = os.environ.get("TAUT_WHEEL_MATRIX_PYTHON")
+    if override:
+        candidates.append(override)
+    candidates.append(sys.executable)
+    for minor in range(14, MATRIX_PYTHON_MIN_MINOR - 1, -1):
+        candidates.append(f"python3.{minor}")
+    candidates.append("python3")
+    candidates.append("python")
+    return tuple(dict.fromkeys(candidates))
+
+
+def _candidate_path(candidate: str) -> Path:
+    resolved = shutil.which(candidate)
+    return Path(resolved if resolved is not None else candidate)
+
+
+def _resolve_matrix_python() -> Path:
+    for candidate in _matrix_python_candidates():
+        python = str(_candidate_path(candidate))
+        major, minor = _python_version(python)
+        if major < 3:
+            continue
+        if major == 3 and minor < MATRIX_PYTHON_MIN_MINOR:
+            continue
+        if not python or major == 0:
+            continue
+        return Path(python)
+    _fail(
+        "could not find a Python interpreter >= 3."
+        f"{MATRIX_PYTHON_MIN_MINOR} for wheel-matrix environments"
+    )
+
+
 def _create_environment(
     *, name: str, work: Path, env: dict[str, str], uv: str
 ) -> tuple[Path, Path]:
     case_root = work / name
     case_root.mkdir()
     venv = case_root / "venv"
+    matrix_python = _resolve_matrix_python()
     _run(
-        [uv, "venv", "--python", sys.executable, str(venv)],
+        [uv, "venv", "--python", str(matrix_python), str(venv)],
         cwd=case_root,
         env=env,
     )

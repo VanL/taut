@@ -73,6 +73,65 @@ def test_select_site_packages_rejects_missing_package_directory(
         _select_site_packages([prefix])
 
 
+def test_matrix_python_uses_explicit_override(
+    wheel_matrix_module: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TAUT_WHEEL_MATRIX_PYTHON", "/custom/python311")
+    monkeypatch.setattr(
+        wheel_matrix_module,
+        "_candidate_path",
+        lambda _candidate: Path("/custom/python311"),
+    )
+    monkeypatch.setattr(
+        wheel_matrix_module, "_python_version", lambda _candidate: (3, 11)
+    )
+
+    assert wheel_matrix_module._resolve_matrix_python() == Path("/custom/python311")
+
+
+def test_matrix_python_falls_back_to_compatible_version(
+    wheel_matrix_module: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("TAUT_WHEEL_MATRIX_PYTHON", raising=False)
+    monkeypatch.setattr(wheel_matrix_module.sys, "executable", "/custom/python39")
+
+    def fake_version(candidate: str) -> tuple[int, int]:
+        if candidate in {
+            "/custom/python39",
+            "python3.14",
+            "python3.13",
+            "python3.12",
+            "python3",
+            "python",
+        }:
+            return 3, 10
+        if candidate == "python3.11":
+            return 3, 11
+        return 0, 0
+
+    monkeypatch.setattr(wheel_matrix_module, "_candidate_path", Path)
+    monkeypatch.setattr(wheel_matrix_module, "_python_version", fake_version)
+
+    assert wheel_matrix_module._resolve_matrix_python() == Path("python3.11")
+
+
+def test_matrix_python_resolution_fails_when_only_too_old(
+    wheel_matrix_module: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("TAUT_WHEEL_MATRIX_PYTHON", raising=False)
+    monkeypatch.setattr(wheel_matrix_module.sys, "executable", "/custom/python39")
+    monkeypatch.setattr(wheel_matrix_module, "_candidate_path", Path)
+    monkeypatch.setattr(
+        wheel_matrix_module, "_python_version", lambda _candidate: (3, 10)
+    )
+
+    with pytest.raises(
+        wheel_matrix_module.WheelMatrixError,
+        match="could not find a Python interpreter >= 3.11 for wheel-matrix environments",
+    ):
+        wheel_matrix_module._resolve_matrix_python()
+
+
 def _make_venv(tmp_path: Path) -> tuple[Path, Path, Path]:
     root = tmp_path / "isolated"
     env = os.environ.copy()
