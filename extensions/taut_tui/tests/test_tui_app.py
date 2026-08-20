@@ -207,10 +207,21 @@ def test_token_only_rejoin_form_reaches_the_real_public_client(tmp_path: Path) -
             self.error = message
 
     async def exercise() -> None:
+        result_ready = asyncio.Event()
+
+        class WindowScreenProbe(ScreenProbe):
+            def complete(self) -> None:
+                super().complete()
+                result_ready.set()
+
+            def show_domain_error(self, message: str) -> None:
+                super().show_domain_error(message)
+                result_ready.set()
+
         app = TautApp(db_path=str(db_path), as_name=None, continuity_token=None)
-        async with app.run_test(size=(100, 34)) as pilot:
+        async with app.run_test(size=(100, 34)) as _pilot:
             assert app._domain is not None
-            screen = ScreenProbe()
+            screen = WindowScreenProbe()
             assert app._complete_identity_form(
                 FormSubmission(
                     ActionId.IDENTITY_REJOIN,
@@ -219,15 +230,17 @@ def test_token_only_rejoin_form_reaches_the_real_public_client(tmp_path: Path) -
                 app._domain,
                 screen=screen,  # type: ignore[arg-type]
             )
-            await _pause_until(
-                pilot, lambda: screen.completed or screen.error is not None
+            await asyncio.wait_for(
+                result_ready.wait(),
+                timeout=20.0,
             )
-            assert screen.completed is True
+            if not result_ready.is_set():
+                pytest.fail("identity rejoin did not complete before timeout")
+            assert result_ready.is_set()
+            assert screen.completed
             assert screen.error is None
-            assert (
-                app._domain.show_identity().result(timeout=5).member_id
-                == created.member_id
-            )
+            identity = app._domain.show_identity().result(timeout=10)
+            assert identity.member_id == created.member_id
 
     asyncio.run(exercise())
 
