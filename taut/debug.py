@@ -28,6 +28,7 @@ from simplebroker import BrokerTarget, Queue, ResolvedConfig
 
 from taut._constants import META_QUEUE_NAME, __version__
 from taut._maintenance import display_target, resolve_existing_target
+from taut._redact import redact_sensitive_text
 from taut.state import (
     DEBUG_CAPTURE_KEY,
     SqlSidecarTautState,
@@ -312,11 +313,13 @@ def _serialize_event(event: dict[str, Any]) -> str:
 
 
 def _json_payload(event: dict[str, Any]) -> str:
-    return json.dumps(
-        event,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
+    return redact_sensitive_text(
+        json.dumps(
+            event,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
     )
 
 

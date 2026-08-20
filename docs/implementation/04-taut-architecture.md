@@ -121,12 +121,26 @@ exception occurs. Disabled capture never opens `taut.debug` or starts an action.
 
 The local sink writes bounded UTF-8 JSON containing the exception chain,
 head-and-tail frame evidence, bounded locals, runtime metadata, a deterministic
-fingerprint, and `taut-debug:<fingerprint>`. The payload can contain secrets and
-is intentionally not a stable compatibility schema. Under one process lock,
-the module searches the ordinary SimpleBroker queue for that literal sentinel,
-including claimed rows, before writing. This closes the same-process race but
-not the cross-process search/write race. Duplicates across processes are an
-accepted best-effort result. Removing the retained message permits recurrence.
+fingerprint, and `taut-debug:<fingerprint>`. Each compact JSON candidate passes
+through `taut/_redact.py` before its encoded-size decision. That private helper
+compiles its immutable standard-library regex manifest lazily, finds exact
+credential-value spans, coalesces overlaps, and replaces right-to-left. Both
+the local queue and action stdin therefore receive the same final text without
+duplicating sink policy. A redaction failure reaches the capture operation's
+existing containment and drops the optional event; unredacted text is never a
+fallback.
+
+The helper preserves credential labels, authorization schemes, URI structure,
+provider/type prefixes, and PEM boundaries when those contexts exist. It does
+not claim completeness. Unknown credential formats and non-credential process
+data can remain, continuity tokens are deliberately not label-redacted, and
+events retained before the feature are not rewritten. The payload remains
+sensitive diagnostic data and is intentionally not a stable compatibility
+schema. Under one process lock, the module searches the ordinary SimpleBroker
+queue for the literal sentinel, including claimed rows, before writing. This
+closes the same-process race but not the cross-process search/write race.
+Duplicates across processes are an accepted best-effort result. Removing the
+retained message permits recurrence.
 
 Presence of `TAUT_DEBUG_ACTION` replaces the local sink. The value is parsed
 with one POSIX argv grammar on every platform and executed without a shell;

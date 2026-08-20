@@ -392,10 +392,16 @@ $ taut system debug disable
 ```
 
 Capture is best effort. Only exceptions that reach a named Taut-owned outer
-boundary qualify. Events include traceback frame locals and may contain
-credentials, messages, prompts, tokens, and paths. The payload is diagnostic
-data, not a stable API. Taut adds no retention or debug-event management
-command; use normal SimpleBroker commands to inspect or remove the
+boundary qualify. Before either sink receives an event, Taut redacts values
+that match its bounded credential-label, authorization, credentialed-URI,
+private-key, and high-confidence provider patterns. It preserves the
+surrounding identifier or structure so the diagnostic still records what was
+present. This is defense in depth, not a safe-to-share promise: events include
+traceback frame locals and may still contain unrecognized credentials,
+messages, prompts, continuity tokens, paths, and other sensitive process data.
+Events retained before this behavior was added are unchanged. The payload is
+diagnostic data, not a stable API. Taut adds no retention or debug-event
+management command; use normal SimpleBroker commands to inspect or remove the
 `taut.debug` queue. Logical `taut system dump` and `load` omit the setting and
 events.
 

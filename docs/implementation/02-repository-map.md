@@ -129,8 +129,9 @@ Quick pointers to the key guidance documents in this repository.
 |------|---------|
 | `taut/_constants.py` | Taut constants, config translation, name validation, and identity name pools |
 | `taut/_message_text.py` | Small built-in Unicode classifier for user-authored `say` and `reply` text |
+| `taut/_redact.py` | Private lazy-compiled rule manifest and value-only final-text credential redaction helper for debug payloads |
 | `taut/_maintenance.py`, `taut/_doctor.py` | Shared existing-target resolution and the actor-free seven-check passive diagnostic orchestrator |
-| `taut/debug.py` | Deep best-effort failure capture owner: setting read, bounded event construction, local retention-scoped deduplication, and no-shell action transport |
+| `taut/debug.py` | Deep best-effort failure capture owner: setting read, bounded and redacted event construction, local retention-scoped deduplication, and no-shell action transport |
 | `taut/terminal.py`, `taut/defaults.toml` | Lightweight public terminal-text display transform, CWD `.taut.toml` presentation discovery, and packaged baseline regex policy |
 | `taut/_broker_retry.py` | Import-only, fail-closed compatibility shim for the immutable prior Summon artifact; no retry policy |
 | `taut/addressing.py` | Channel, sub-thread, DM, mention, and notification addressing helpers |

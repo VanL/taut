@@ -94,6 +94,27 @@ def _capture_unicode_failure(db_path: Path) -> None:
         )
 
 
+def _capture_secret_failure(db_path: Path) -> None:
+    provider_secret = "sk-ant-api03-" + "A" * 93 + "AA"
+    database_password = "debug-db-password"
+    child_env = {
+        "ANTHROPIC_API_KEY": provider_secret,
+        "TAUT_TOKEN": "taut-continuity-value",
+    }
+    dsn = f"postgresql://taut:{database_password}@db.example/taut"
+    _ = child_env, dsn
+    del _
+    try:
+        raise RuntimeError('capture failed password="debug exception password"')
+    except RuntimeError as exc:
+        capture_exception(
+            exc,
+            db_path=db_path,
+            surface="test",
+            operation="debug.redaction",
+        )
+
+
 def _capture_deep_failure(db_path: Path) -> None:
     def descend(depth: int) -> None:
         origin_marker = "innermost evidence" if depth == 0 else ""
@@ -713,6 +734,107 @@ def test_action_sink_receives_json_and_replaces_local_storage(
     assert output.read_bytes().endswith(b"\n")
     assert output.with_suffix(".marker").read_text(encoding="utf-8") == "1"
     assert _debug_messages(db_path) == []
+
+
+def test_local_and_action_sinks_receive_same_redacted_json(
+    tmp_path: Path,
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[TAUT-13.3.1] Both real sinks share final-text value redaction."""
+
+    db_path = tmp_path / "workspace.db"
+    output = tmp_path / "action.json"
+    fixture = Path(__file__).parent / "fixtures" / "debug_action.py"
+    TautClient.init(db_path=db_path)
+    TautClient.set_debug_capture(True, db_path=db_path)
+
+    _capture_secret_failure(db_path)
+    local_payload = _debug_messages(db_path)[0]
+
+    monkeypatch.setenv(
+        "TAUT_DEBUG_ACTION",
+        " ".join(
+            shlex.quote(value) for value in (sys.executable, str(fixture), str(output))
+        ),
+    )
+    _capture_secret_failure(db_path)
+    action_payload = output.read_text(encoding="utf-8").rstrip("\n")
+
+    for payload in (local_payload, action_payload):
+        event = json.loads(payload)
+        assert event["exception"]["message"] == ('capture failed password="<redacted>"')
+        assert "ANTHROPIC_API_KEY" in payload
+        assert "TAUT_TOKEN" in payload
+        assert "taut-continuity-value" in payload
+        assert "debug exception password" not in payload
+        assert "debug-db-password" not in payload
+        assert "sk-ant-api03-" + "A" * 93 + "AA" not in payload
+
+    local_event = json.loads(local_payload)
+    action_event = json.loads(action_payload)
+    local_event.pop("captured_at")
+    action_event.pop("captured_at")
+    assert action_event == local_event
+
+
+def test_redaction_failure_drops_event_without_sink_fallback(
+    tmp_path: Path,
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[TAUT-13.5] Redaction failure is contained and disclosure-fail-closed."""
+
+    db_path = tmp_path / "workspace.db"
+    output = tmp_path / "action-must-not-exist.json"
+    fixture = Path(__file__).parent / "fixtures" / "debug_action.py"
+    TautClient.init(db_path=db_path)
+    TautClient.set_debug_capture(True, db_path=db_path)
+
+    def fail_redaction(text: str) -> str:
+        raise RuntimeError("redaction failed")
+
+    monkeypatch.setattr("taut.debug.redact_sensitive_text", fail_redaction)
+    _capture_secret_failure(db_path)
+    assert _debug_messages(db_path) == []
+
+    monkeypatch.setenv(
+        "TAUT_DEBUG_ACTION",
+        " ".join(
+            shlex.quote(value) for value in (sys.executable, str(fixture), str(output))
+        ),
+    )
+    _capture_secret_failure(db_path)
+    assert not output.exists()
+
+
+def test_redaction_expansion_is_bounded_before_delivery() -> None:
+    """[TAUT-13.3.1] Replacement growth participates in event-size fitting."""
+
+    from taut import debug as debug_module
+
+    event = {
+        "type": "taut_debug_event",
+        "version": 1,
+        "captured_at": "2026-08-20T00:00:00+00:00",
+        "target": ".taut.db",
+        "surface": "test",
+        "operation": "debug.redaction.bounds",
+        "exception": {"type": "RuntimeError", "message": "password=x"},
+        "traceback": "password=x;" * 20_000,
+        "frames": [],
+        "runtime": {},
+        "fingerprint": "a" * 64,
+        "sentinel": "taut-debug:" + "a" * 64,
+        "truncated": False,
+    }
+
+    payload = debug_module._serialize_event(event)
+
+    assert len(payload.encode("utf-8")) <= 131_072
+    assert json.loads(payload)["truncated"] is True
+    assert "password=x" not in payload
+    assert "password=<redacted>" in payload
 
 
 @pytest.mark.parametrize(

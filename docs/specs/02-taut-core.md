@@ -2710,10 +2710,63 @@ reserved queue `taut.debug`. The version-1 event contains a type and version,
 UTC capture time, display-safe target, stable surface and operation labels,
 exception type and message, formatted traceback, bounded frame locals,
 bounded runtime/process metadata, a deterministic SHA-256 fingerprint, and
-the literal sentinel `taut-debug:<fingerprint>`. It may contain credentials,
-message bodies, paths, prompts, tokens, and other sensitive process data. Its
-schema is exceptional diagnostic data, not a compatibility contract; later
-readers must tolerate added, removed, truncated, or changed metadata.
+the literal sentinel `taut-debug:<fingerprint>`. Before either sink receives
+it, recognizable credential values are redacted under [TAUT-13.3.1]. The
+event may still contain credentials not recognized by the bounded rule set,
+plus message bodies, paths, prompts, continuity tokens, and other sensitive
+process data. Its schema is exceptional diagnostic data, not a compatibility
+contract; later readers must tolerate added, removed, truncated, redacted,
+or changed metadata.
+
+#### [TAUT-13.3.1] Final-text credential-value redaction
+
+Core renders each candidate event as compact JSON text, then passes that
+complete text through one core-owned redaction helper before encoded-size
+acceptance and before local persistence or action dispatch. Both sinks
+therefore receive the same valid, bounded, scrubbed JSON. Callers and sinks
+do not perform their own redaction.
+
+Each rule identifies a credential-value span. Taut replaces only that span
+with the literal `<redacted>` and preserves the surrounding identifier,
+delimiter, authorization scheme, URI structure, provider/type prefix, or PEM
+boundary that establishes what was present. Overlapping value spans are
+coalesced before right-to-left replacement. The initial rules cover:
+
+1. quoted or unquoted assignments and mapping entries whose normalized label
+   is `access_key`, `api_key`, `auth_key`, `authorization`, `client_secret`,
+   `credential`, `credentials`, `encryption_key`, `password`, `passwd`,
+   `private_key`, `pwd`, `secret`, or `secret_key`, or ends with exactly one
+   of `_access_key`, `_api_key`, `_auth_key`, `_authorization`,
+   `_client_secret`, `_credential`, `_credentials`, `_encryption_key`,
+   `_password`, `_passwd`, `_private_key`, `_pwd`, `_secret`, or
+   `_secret_key`;
+2. quoted or unquoted assignments and mapping entries whose normalized label
+   is `api_token`, `access_token`, or `auth_token`, or ends with exactly one
+   of `_access_token`, `_api_token`, or `_auth_token`. Bare `token`, a label
+   ending `_token` without one of those three qualifiers, `TAUT_TOKEN`, and
+   `continuity_token` do not fire this label rule;
+3. `Authorization` Basic/Bearer values, user-info passwords in PostgreSQL,
+   MongoDB, Redis, AMQP, and FTP-family URIs, password parameters in
+   conninfo/JDBC-like text, and private-key PEM bodies; and
+4. a bounded internal manifest of high-confidence, self-identifying
+   Anthropic, OpenAI, Google, GitHub, AWS, Stripe-secret, Slack, and SendGrid
+   credential formats adapted from established detectors.
+
+A selected value span in the final JSON text must begin and end on complete
+encoded characters. In particular, a quote-delimited rule is escape-aware
+and cannot stop between a backslash and its escaped quote, backslash, or other
+encoded character. Redaction must not make a valid serialized event invalid.
+
+Raw rule declarations are import-time constants. Compiled regular
+expressions are created lazily on the first redaction call and cached for
+later calls. Taut adds no detector-file loader or runtime dependency.
+
+Redaction is defense in depth, not a completeness or safe-to-share promise.
+Unknown formats, secrets without recognizable context, false negatives, and
+conservative false positives remain possible. Taut continuity tokens are
+intentionally outside label-based credential redaction. A helper failure
+drops that debug event under [TAUT-13.5]; Taut never falls back to sending or
+storing the unredacted text.
 
 Before a local write, the handler searches `taut.debug` for the exact sentinel
 with the public literal-substring search, limit one, including claimed rows. A
@@ -2750,7 +2803,10 @@ Event construction, local representation, target resolution, setting read,
 queue search/write/close, action execution, and debug cleanup never raise to
 the caller and never replace the original failure. Action execution requests
 termination after the fixed timeout, then permits only the operating system's
-child-termination wait.
+child-termination wait. Redaction compilation, matching, span coalescing, and
+substitution are part of event construction. Their failure is best-effort with
+respect to the primary application error but fail-closed with respect to
+disclosure: the event is dropped and no unredacted sink fallback is attempted.
 
 Debug state is operational, not logical workspace content. The setting and
 `taut.debug` messages are omitted from Taut logical dump/load. A raw
@@ -2767,13 +2823,27 @@ exit behavior. Boundary tests prove the original exception result and
 diagnostic with capture disabled, enabled, and failing. Fakes may control time,
 process metadata, and local-value representation, but may not replace the
 state read, queue search/write, subprocess transport, or outer boundary under
-test.
+test. Pure-helper tests exercise every declared rule ID and every normative
+label, preserve identifiers and structural evidence, prove the matched value
+is absent, cover overlapping and repeated matches, retain explicit continuity-
+token exceptions, preserve valid JSON, and prove lazy one-time compilation
+under sequential use. Integration tests use a real local queue and a real
+action fixture to prove both receive identical scrubbed payloads and no raw
+sentinel secret. A forced helper failure proves no sink is reached and the
+primary failure behavior remains unchanged. Hostile maximum-sized text must
+complete within a subprocess test deadline without catastrophic regular-
+expression behavior.
 
 ## Implementation Mapping
 
 - `docs/implementation/04-taut-architecture.md` explains the core runtime and
   dispatcher boundaries, including [TAUT-6.4]'s packaged/project policy owner,
   exact-data split, watcher preflight, and bootstrap diagnostic.
+- `taut/_redact.py` and `tests/test_redact.py` implement and exhaustively fire
+  [TAUT-13.3.1]'s lazy, value-only rule manifest.
+- `taut/debug.py` and `tests/test_debug_capture.py` apply and verify the shared
+  final-text transform before local or action delivery under [TAUT-13.3.1],
+  including fail-closed redaction errors and encoded-size fitting.
 - `docs/implementation/06-command-extensions.md` explains static versus
   installed registration, registry selection, lazy factories, extension
   packaging, rich-host composition, and the [TAUT-8.3]/[TAUT-8.6] public
@@ -2790,6 +2860,9 @@ test.
 - `docs/plans/2026-08-14-debug-failure-capture-plan.md` defines the opt-in
   operational setting, local and action sinks, containment points, persistence
   exclusions, sensitive-data lifecycle, and cross-surface proof.
+- `docs/plans/2026-08-20-debug-payload-redaction-plan.md` revises
+  [TAUT-13.3] through [TAUT-13.6] with final-text, value-only credential
+  redaction shared by both debug sinks.
 - `docs/plans/2026-08-14-command-context-continuity-token-plan.md` — aligns
   the public command-context identity-selector name with the continuity-token
   identity model and documents the active registry/TUI transport boundaries.
