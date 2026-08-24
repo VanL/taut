@@ -424,10 +424,36 @@ the pre-insert read and the insert, reread it; refresh `last_seen_ts` and
 return it when it belongs to the same member, but keep treating another member
 as an ownership collision.
 
-Schema evolution is additive within the current schema generation when possible
-(new tables, new nullable columns). Breaking changes bump `schema_version` and
-require an explicit migration plan. Older taut versions encountering a newer
-`schema_version` must refuse with a clear error rather than guess.
+Schema evolution is additive within the current schema generation when
+possible (new tables, new nullable columns). Breaking changes bump
+`schema_version` and use an ordered `ensure_schema` migration ladder: one
+named rung advances exactly one version, and every supported older version
+reaches the current version only by applying each adjacent rung in ascending
+order. A breaking version bump is incomplete unless the same change supplies
+the new rung, an authentic source-version fixture, and backend-shared firing
+tests.
+
+Core reads and migrates the stored version inside the existing
+`Queue.sidecar(transaction=True)` and Taut schema-advisory-lock boundary.
+Each rung inspects the actual source shape, applies only its owned
+transformation, verifies the target postcondition, and only then updates
+`schema_version`. A missing rung, failed postcondition, or later rung failure
+is fatal and leaves the durable schema and version at their pre-attempt
+state. Fresh targets install the current schema directly rather than replaying
+historical rungs. Older Taut versions encountering a newer version refuse
+with a clear upgrade error rather than guess; unsupported historical source
+versions likewise refuse without mutation and name the stored version,
+current version, and recovery boundary.
+
+The development-stage schema 1 to schema 2 cutover remains an explicit
+unsupported historical boundary. It gains a `1 -> 2` rung only through a
+separate compatibility plan with an authentic schema-1 fixture; the existence
+of the future ladder does not infer that transformation.
+
+After a fresh initialization or migration reaches the current version,
+`ensure_schema` runs the current idempotent DDL reconciliation and enforces
+the core load guard before returning. These steps remain inside the same
+transaction and rollback boundary; migration cannot bypass them.
 
 Search adds disposable `taut_search_*` provider tables under [SRCH-6] and
 [SRCH-11]. They are derived state inside the resolved SimpleBroker target, not
@@ -2851,6 +2877,9 @@ expression behavior.
 
 ## Related Plans
 
+- `docs/plans/2026-08-24-concurrency-and-schema-contract-alignment-plan.md` —
+  defines the future ordered core migration ladder and the explicit unsupported
+  schema-1 cutoff without adding a speculative rung.
 - `docs/plans/2026-08-20-human-tabular-output-plan.md` — restores [TAUT-6.4]'s
   field-before-structure boundary for human member rows and audits the adjacent
   CLI/TUI surfaces for the same layering defect.

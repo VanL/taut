@@ -105,6 +105,15 @@ the projection boundary that observes them. Ordinary workspace advancement
 does not invalidate a dump. The format does not claim one transaction or one
 physical instant across broker, core sidecar, and extension projections.
 
+A core or extension contributor may assemble its projection from multiple
+reads that do not share one MVCC snapshot. “Coherent” and “individually
+consistent” mean that the published component and final composite satisfy
+their logical validators and are importable; they do not mean that every
+emitted row coexisted at one database instant. A row committed after the read
+that owns it may appear only in a later dump. A race that leaves a dangling
+reference, incomplete transition, or otherwise illegal composite remains
+fatal before publication.
+
 ### [PIO-2.5] No identity or chat side effects
 
 `system dump`, `system load --dry-run`, and the read/validation phases of
@@ -615,6 +624,15 @@ outside Taut's guarantee. This is why [PIO-2.4] requires operator quiescence
 for a predictable result. Core does not add a lifecycle lock, process census,
 backend-specific SQL, or compiled server extension to simulate one.
 
+Filesystem mutation includes replacement, in-place writing, truncation, or
+deletion of the named input dump after validation begins. Component digests
+assume the source bytes remain stable for the operation; load is not required
+to retain one descriptor, rehash component spans during replay, or copy the
+dump into a private snapshot. A future requirement to apply exactly the bytes
+observed during validation despite concurrent source mutation changes the A6
+destructive-operation contract and requires a separate specification and
+temp-artifact lifecycle design.
+
 The passive system doctor is not a quiescence substitute. Its observations can
 be stale as soon as they are read. It neither authorizes nor gates live logical
 dump, and it does not make load safe while writers are active [DOCT-1].
@@ -687,6 +705,9 @@ individually consistent logical projection. Contributors may not require
 cross-component simultaneity or fail merely because unrelated workspace state
 advanced. Core validates the completed composite and rejects dangling or
 illegal cross-component state.
+
+“Individually consistent” has [PIO-2.4]'s logical meaning. It does not require
+the contributor to hold one SQL transaction across every projection read.
 
 The component API is an internal official-extension seam, not a general public
 plugin SDK. One contributor failure is fatal to dump or preflight because a
@@ -812,6 +833,9 @@ run through a guard blocks release.
 
 ## Related Plans
 
+- `docs/plans/2026-08-24-concurrency-and-schema-contract-alignment-plan.md` —
+  clarifies multi-statement live projections and the destructive load's stable
+  input precondition without adding snapshot machinery.
 - `docs/plans/2026-08-14-debug-failure-capture-plan.md` — defines the
   operational setting/event exclusions, destination-preservation asymmetry,
   and retained-debug-message freshness rule.

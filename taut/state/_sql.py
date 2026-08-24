@@ -512,8 +512,9 @@ def ensure_schema(
                 )
             if version < SCHEMA_VERSION:
                 raise SchemaVersionError(
-                    f"taut schema version {version} is incompatible with "
-                    f"version {SCHEMA_VERSION}; recreate the development database"
+                    f"taut schema version {version} has no supported migration "
+                    f"path to version {SCHEMA_VERSION}; use a taut release that "
+                    f"supports schema version {version}, or recreate a fresh target"
                 )
             for statement in DDL:
                 session.run(statement)

@@ -78,8 +78,12 @@ Dump permits active writers. SimpleBroker samples broker-global high-water H
 when its dump iterator starts and emits only messages with id at or below H.
 Taut rewrites only copied membership cursors as `min(source_cursor, H)`; it
 never moves a live workspace cursor backward. Core sidecar and extension
-components remain individually consistent projections. A racing mutation may
-therefore appear in this dump or a later one.
+components may use multiple committed reads rather than one MVCC snapshot.
+A racing mutation may therefore appear in this dump or a later one. Here,
+logical consistency means that the assembled component passes its owner and
+cross-component validators and is importable. It does not mean every projected
+row existed at one database instant. A race that would produce an illegal
+final composite fails validation and cannot replace an older output.
 
 This is a coherent, validated, importable logical projection, not a frozen
 cross-store transaction. Claims, deletes, moves, registry changes, and sidecar
@@ -95,6 +99,14 @@ recreates it and retries. This is the same destructive-operation posture as
 SimpleBroker maintenance: Taut closes every handle it owns, but does not count
 other processes, prove last-connection status, snapshot SQLite, or claim
 rollback across independently committing stores.
+
+The input dump must remain stable from validation through the end of load.
+Validation records component byte spans, and apply may reopen the source to
+replay those spans. Taut does not retain one descriptor, rehash every replayed
+span, or copy validated input to a private snapshot. An operator or external
+process that rewrites the source during load violates the quiescent
+maintenance precondition; applying validation-time bytes under that overlap is
+not part of the integrity guarantee.
 
 Guard acquisition atomically rechecks core sidecar emptiness and allowed meta
 keys. Broker and extension-owned row freshness use their public owner APIs
@@ -160,6 +172,7 @@ relabeling the H-bounded logical projection.
 
 ## Related Plans
 
+- `docs/plans/2026-08-24-concurrency-and-schema-contract-alignment-plan.md`
 - `docs/plans/2026-08-14-review-findings-remediation-plan.md`
 - `docs/plans/2026-08-07-taut-dump-load-plan.md`
 - `docs/plans/2026-08-12-live-point-in-time-dump-plan.md`

@@ -376,6 +376,20 @@ including tests, go through `taut/state/`. That boundary matters because SQL
 sidecar tables are the current state mapping, while [TAUT-12.2] reserves a
 future non-SQL mapping behind the same state-access boundary.
 
+Future relational schema evolution remains owned by
+`taut/state/_sql.py::ensure_schema()`. The first breaking-schema change will
+add the first real adjacent, named migration rung. Each rung must inspect the
+actual prior shape, establish an explicit postcondition before advancing the
+stored version, and run with every other required rung inside the existing
+single writer transaction and `taut:schema` advisory lock. Fresh databases
+still install the current schema directly. After a migrated database reaches
+the current version, `ensure_schema()` must still run current DDL
+reconciliation and enforce the load guard before returning. A missing rung is
+fatal. Schema 1 to schema 2 remains an intentionally unsupported historical
+cutoff, so no empty registry or placeholder rung exists today. The first real
+rung must ship with an authentic prior-version fixture and shared SQLite and
+PostgreSQL transformation, postcondition, rollback, and coordination proof.
+
 SQLite sidecar writer transactions are already serialized by its
 `BEGIN IMMEDIATE` discipline. PostgreSQL needs two narrower logical locks that
 the relational constraints cannot express: a fixed transaction-scoped
@@ -915,7 +929,7 @@ requirement or auditing implementation coverage.
 | Spec area | Primary code owners | Contract tests |
 |---|---|---|
 | [TAUT-3.2], isolated config translation, project resolution, resolved target/config handoff, and Windows SQLite path preflight | `taut/_constants.py::load_config`, `freeze_broker_config`, `taut/client/_base.py::_ClientBase.__init__`, `_resolve_target`, `taut/client/__init__.py::TautClient.init`, `taut/client/_watching.py`, `taut/watcher.py` | exhaustive translation/isolation cases in `tests/test_constants.py`; resolved-handoff, argument-pair, missing-target cases in `tests/test_client.py`; `tests/test_shared_contract.py::test_project_resolved_target_config_handoff_contract` on SQLite and PostgreSQL; `tests/test_project_config.py`; `tests/test_cli.py::test_init_uses_project_config_postgres_backend`, `test_windows_sqlite_target_validation_rejects_every_control`, `test_posix_sqlite_target_validation_preserves_control_bearing_paths`, and `test_cli_windows_control_bearing_database_target_fails_fast` |
-| [TAUT-3.3], [TAUT-3.4], sidecar schema and version gate | `taut/state/_sql.py::SqlSidecarTautState.ensure_schema`, `taut/state/__init__.py::TautState` | `tests/test_state_contract.py`, `tests/test_shared_contract.py`, `extensions/taut_pg/tests/test_pg_sidecar.py::test_postgres_concurrent_empty_schema_initializers_converge` |
+| [TAUT-3.3], [TAUT-3.4], sidecar schema, future ordered migration ladder, and version gate | `taut/state/_sql.py::SqlSidecarTautState.ensure_schema`, `taut/state/__init__.py::TautState` | `tests/test_state_contract.py::test_schema_version_refusal_preserves_core_state`, other state contracts in `tests/test_state_contract.py` and `tests/test_shared_contract.py`, and `extensions/taut_pg/tests/test_pg_sidecar.py::test_postgres_concurrent_empty_schema_initializers_converge` |
 | [TAUT-4], channels, membership, replies, reads, logs, and listing | `taut/client/_threads.py::ThreadsMixin.join`, `leave`, `list_threads`; `taut/client/_messaging.py::MessagingMixin.say`, `reply`, `read_unread`, `log`; `taut/client/_identity.py::IdentityMixin.who` | `tests/test_client.py`, `tests/test_cli.py`, `tests/test_shared_contract.py` |
 | [TAUT-4.4], channel-topic validation, observational reads, membership-scoped mutation, metadata merge, and rename serialization | `taut/state/_channel_topics.py`; `taut/state/_sql.py::set_channel_topic`, `start_channel_rename`; `taut/client/_threads.py::ThreadsMixin.get_channel`, `set_channel_topic`, `_channel_from_row` | Channel-topic and corruption cases in `tests/test_state_contract.py`, `tests/test_client.py`, and `tests/test_shared_contract.py` on SQLite and PostgreSQL; channel CLI cases in `tests/test_cli.py` |
 | [TAUT-5], [IAN-3], [IAN-4], identity claims, deterministic selector capture, recognition, automatic display names, rejoin, and name changes | `taut/identity.py`, `taut/state/_sql.py::route_keys_in_use`, `taut/client/_identity.py::IdentityMixin._resolve_member`, `_create_member`, `rejoin`, `set_name` | `tests/test_identity.py`; `tests/test_client.py::test_existing_explicit_selector_skips_capture_and_preserves_process_identity`, `test_valid_token_selector_skips_capture_and_preserves_token_activity`, selector creation/guest/rejoin/explain cases, and `test_automatic_*`; `tests/test_identity_performance.py` (manual evidence, not a timing contract); `tests/test_shared_contract.py::test_project_automatic_name_skips_alias_owned_route_contract`; `tests/test_cli.py::test_rejoin_*` |
@@ -960,6 +974,7 @@ watch, `taut/client/_notifications.py::NotificationsMixin.inbox` claims notifica
 
 ## Related Plans
 
+- `docs/plans/2026-08-24-concurrency-and-schema-contract-alignment-plan.md`
 - `docs/plans/2026-08-14-review-findings-remediation-plan.md`
 - `docs/plans/2026-08-11-ci-factor-and-release-order-plan.md`
 - `docs/plans/2026-08-10-stable-dm-send-plan.md`

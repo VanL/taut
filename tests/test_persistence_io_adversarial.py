@@ -549,6 +549,131 @@ def test_dump_allows_sidecar_movement_after_its_projection(
     TautClient.load(input_path=output, db_path=restored)
 
 
+def test_dump_includes_membership_committed_after_thread_projection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[PIO-2.4] A later membership read observes a committed membership."""
+
+    import taut.state._sql as sql_state
+    from taut.state import SqlSidecarTautState, dialect_for_taut_target
+
+    source = tmp_path / "source.db"
+    TautClient.init(db_path=source)
+    owner = TautClient(db_path=source, as_name="owner")
+    late = TautClient(db_path=source, as_name="late-writer")
+    owner.join("general")
+    late.join("staging")
+    member = late.last_created_member
+    assert member is not None
+
+    original_all = sql_state._all
+    membership_committed = False
+
+    def all_with_membership_commit(
+        session: Any,
+        sql: str,
+        params: tuple[Any, ...] = (),
+    ) -> list[tuple[Any, ...]]:
+        nonlocal membership_committed
+        rows = original_all(session, sql, params)
+        normalized = " ".join(sql.split())
+        if (
+            not membership_committed
+            and "FROM taut_threads" in normalized
+            and "ORDER BY name" in normalized
+        ):
+            membership_committed = True
+            late.join("general")
+        return rows
+
+    monkeypatch.setattr(sql_state, "_all", all_with_membership_commit)
+    output = tmp_path / "backup.jsonl"
+    try:
+        TautClient.dump(output=output, db_path=source)
+    finally:
+        late.close()
+        owner.close()
+
+    assert membership_committed is True
+    records = [json.loads(line) for line in output.read_text().splitlines()]
+    assert any(
+        record.get("type") == "membership"
+        and record.get("thread") == "general"
+        and record.get("member_id") == member.member_id
+        for record in records
+    )
+
+    restored = tmp_path / "restored.db"
+    TautClient.load(input_path=output, db_path=restored)
+    queue = Queue("taut_meta", db_path=str(restored))
+    try:
+        state = SqlSidecarTautState(
+            queue,
+            dialect_for_taut_target(str(restored)),
+        )
+        assert (
+            state.get_membership(
+                thread="general",
+                member_id=member.member_id,
+            )
+            is not None
+        )
+    finally:
+        queue.close()
+
+
+def test_dump_rejects_new_thread_committed_after_thread_projection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[PIO-2.4]/[PIO-6.2] An illegal mixed projection is not published."""
+
+    import taut.state._sql as sql_state
+
+    source = tmp_path / "source.db"
+    TautClient.init(db_path=source)
+    owner = TautClient(db_path=source, as_name="owner")
+    late = TautClient(db_path=source, as_name="late-writer")
+    owner.join("general")
+    late.join("staging")
+
+    original_all = sql_state._all
+    thread_committed = False
+
+    def all_with_thread_commit(
+        session: Any,
+        sql: str,
+        params: tuple[Any, ...] = (),
+    ) -> list[tuple[Any, ...]]:
+        nonlocal thread_committed
+        rows = original_all(session, sql, params)
+        normalized = " ".join(sql.split())
+        if (
+            not thread_committed
+            and "FROM taut_threads" in normalized
+            and "ORDER BY name" in normalized
+        ):
+            thread_committed = True
+            late.join("late")
+        return rows
+
+    monkeypatch.setattr(sql_state, "_all", all_with_thread_commit)
+    output = tmp_path / "backup.jsonl"
+    previous = b"previous complete backup\n"
+    output.write_bytes(previous)
+    try:
+        with pytest.raises(TautError, match="missing thread 'late'"):
+            TautClient.dump(output=output, db_path=source)
+    finally:
+        late.close()
+        owner.close()
+
+    assert thread_committed is True
+    assert output.read_bytes() == previous
+    assert list(tmp_path.glob(".backup.jsonl.*.tmp")) == []
+
+
 def test_dump_clamps_copied_membership_cursor_to_broker_high_water(
     tmp_path: Path,
 ) -> None:

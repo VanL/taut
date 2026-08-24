@@ -11,8 +11,8 @@ from simplebroker.ext import IntegrityError
 
 import taut.state._sql as sql_state
 from taut import identity
-from taut._constants import META_QUEUE_NAME
-from taut._exceptions import TautError
+from taut._constants import META_QUEUE_NAME, SCHEMA_VERSION
+from taut._exceptions import SchemaVersionError, TautError
 from taut.client import TautClient
 from taut.state import (
     PORTABLE_SQL_DIALECT,
@@ -52,6 +52,121 @@ def test_dialect_for_taut_target_rejects_unknown_resolved_backend() -> None:
         dialect_for_taut_target(
             BrokerTarget(backend_name="unknown", target="unknown://example")
         )
+
+
+@pytest.mark.parametrize(
+    ("stored_version", "expected_error"),
+    [
+        (
+            1,
+            (
+                "taut schema version 1 has no supported migration path to version 2; "
+                "use a taut release that supports schema version 1, or recreate a "
+                "fresh target"
+            ),
+        ),
+        (
+            SCHEMA_VERSION + 1,
+            "taut schema version 3 is newer than supported version 2; upgrade taut",
+        ),
+    ],
+)
+def test_schema_version_refusal_preserves_core_state(
+    taut_project: Path,
+    stored_version: int,
+    expected_error: str,
+) -> None:
+    """[TAUT-3.3] Unsupported versions fail without mutating core state."""
+
+    TautClient.init()
+    client = TautClient()
+    queue = Queue(META_QUEUE_NAME, db_path=client.target, config=client.config)
+    state = SqlSidecarTautState(
+        queue,
+        dialect_for_taut_target(client.target),
+    )
+    member_id = identity.random_member_id()
+
+    def core_sentinel() -> dict[str, list[tuple[object, ...]]]:
+        with queue.sidecar() as session:
+            return {
+                "members": list(
+                    session.run(
+                        "SELECT member_id, display_name, created_ts, "
+                        "last_active_ts FROM taut_members ORDER BY member_id",
+                        fetch=True,
+                    )
+                ),
+                "threads": list(
+                    session.run(
+                        "SELECT name, kind, created_ts FROM taut_threads ORDER BY name",
+                        fetch=True,
+                    )
+                ),
+                "memberships": list(
+                    session.run(
+                        "SELECT thread, member_id, joined_ts, last_seen_ts "
+                        "FROM taut_membership ORDER BY thread, member_id",
+                        fetch=True,
+                    )
+                ),
+            }
+
+    try:
+        state.ensure_schema()
+        state.insert_member(
+            member_id=member_id,
+            display_name="Schema Sentinel",
+            kind="human",
+            uid=1000,
+            host_id="host:test",
+            host_label="test-host",
+            anchor_pid=None,
+            anchor_start_time=None,
+            fingerprint=None,
+            token="schema-refusal-sentinel-token",
+            meta={},
+            created_ts=10,
+        )
+        state.upsert_thread(
+            name="general",
+            kind="channel",
+            parent=None,
+            origin_ts=None,
+            created_by=member_id,
+            meta={},
+            created_ts=11,
+        )
+        state.add_membership(
+            thread="general",
+            member_id=member_id,
+            joined_ts=12,
+            last_seen_ts=13,
+        )
+        before = core_sentinel()
+        with queue.sidecar(transaction=True) as session:
+            session.run(
+                "UPDATE taut_meta SET value = ? WHERE key = ?",
+                (str(stored_version), sql_state.SCHEMA_VERSION_KEY),
+            )
+
+        with pytest.raises(SchemaVersionError) as caught:
+            state.ensure_schema()
+
+        assert str(caught.value) == expected_error
+        with queue.sidecar() as session:
+            version_rows = list(
+                session.run(
+                    "SELECT value FROM taut_meta WHERE key = ?",
+                    (sql_state.SCHEMA_VERSION_KEY,),
+                    fetch=True,
+                )
+            )
+        assert version_rows == [(str(stored_version),)]
+        assert core_sentinel() == before
+    finally:
+        queue.close()
+        client.close()
 
 
 def test_update_member_persona_preserves_unknown_meta_keys(

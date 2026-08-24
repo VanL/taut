@@ -680,6 +680,17 @@ deleted mapping cannot return a stale posting. Segment row IDs are never reused
 while stale contentless postings may exist. Rebuild constructs the inactive
 physical FTS slot and switches generations under [SRCH-10.3].
 
+SQLite generation publication and clearing of the now-inactive physical FTS
+slot remain one writer transaction. A query racing that commit may read
+generation metadata and per-chunk match sets from different committed
+snapshots and may therefore omit matching candidates, including returning an
+empty candidate page for that call; retry is the recovery. The race must not
+expose the writer transaction's intermediate `DROP TABLE` as a
+user-visible missing-table failure. Query evaluation must preserve
+message-ID intersection across physical segment rows under [SRCH-3.2];
+combining all chunks into one row-scoped FTS `MATCH` expression is not
+behavior-equivalent.
+
 FTS5 absence is detected when search is first used. It produces a one-line
 search-unavailable error and exit 1; initialization and every non-search Taut
 operation remain usable. Taut does not silently switch to a second linear-scan
@@ -809,6 +820,9 @@ Operational acceptance records, without turning host timing into CI truth:
 
 ## Related Plans
 
+- `docs/plans/2026-08-24-concurrency-and-schema-contract-alignment-plan.md` —
+  makes the accepted SQLite generation-switch omission and cross-segment query
+  boundary explicit.
 - `docs/plans/2026-08-10-test-quality-remediation-plan.md` — strengthens
   backend known-answer conformance and dynamically proves the no-raw-body
   invariant across every search-owned ordinary table.

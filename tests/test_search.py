@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from threading import Event, Thread, get_ident
 from typing import Any, cast
 
 import pytest
@@ -19,6 +20,7 @@ from taut.search._provider import (
     ThreadWatermark,
 )
 from taut.search._sqlite import (
+    _FTS_TABLES,
     SQLiteSearchProvider,
     SQLiteSearchUnavailableError,
 )
@@ -41,6 +43,11 @@ def _document(
         text_bytes=len(encoded),
         segments=projection_segments(text, max_segment_bytes=max_segment_bytes),
     )
+
+
+def _join_started_thread(thread: Thread) -> None:
+    if thread.ident is not None:
+        thread.join(timeout=3.0)
 
 
 def _candidate(document: IndexedDocument) -> SearchCandidate:
@@ -545,6 +552,231 @@ def test_sqlite_rebuild_switch_publishes_staging_and_cleans_old_slot(
     finally:
         provider.close()
         queue.close()
+
+
+def test_sqlite_query_racing_generation_switch_never_observes_missing_table(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[SRCH-3.2]/[SRCH-11.1] A switch permits omission, not missing DDL."""
+
+    db_path = str(tmp_path / ".taut.db")
+    query_queue = Queue(META_QUEUE_NAME, db_path=db_path)
+    writer_queue = Queue(META_QUEUE_NAME, db_path=db_path)
+    query_provider = SQLiteSearchProvider(sidecar=query_queue.sidecar)
+    writer_provider = SQLiteSearchProvider(sidecar=writer_queue.sidecar)
+    matching = _document(
+        message_ts=query_queue.generate_timestamp(),
+        text="alpha ---- beta",
+        max_segment_bytes=9,
+    )
+    nonmatching = _document(
+        message_ts=query_queue.generate_timestamp(),
+        text="alpha only",
+    )
+    expected = [_candidate(matching)]
+    metadata_read = Event()
+    writer_completed = Event()
+    release_query = Event()
+    query_thread_id: int | None = None
+    coordinated_state_calls = 0
+    original_state = SQLiteSearchProvider._state
+    query_results: list[list[SearchCandidate]] = []
+    worker_errors: list[tuple[str, BaseException]] = []
+
+    def observed_state(
+        session: SidecarSession,
+    ) -> tuple[int, int, tuple[int, int, int] | None]:
+        nonlocal coordinated_state_calls
+        state = original_state(session)
+        if get_ident() == query_thread_id:
+            coordinated_state_calls += 1
+            metadata_read.set()
+            assert release_query.wait(3.0), "query release handshake timed out"
+        return state
+
+    def run_query() -> None:
+        nonlocal query_thread_id
+        query_thread_id = get_ident()
+        try:
+            query_results.append(
+                query_provider.query(query_chunks("alpha beta"), limit=10)
+            )
+        except (AssertionError, OperationalError, RuntimeError, ValueError) as error:
+            worker_errors.append(("query", error))
+
+    def finish_rebuild() -> None:
+        try:
+            writer_provider.finish_rebuild(generation)
+        except (AssertionError, OperationalError, RuntimeError, ValueError) as error:
+            worker_errors.append(("writer", error))
+        finally:
+            writer_completed.set()
+
+    try:
+        query_provider.ensure_schema()
+        assert query_provider.replace_document(matching, revision=100)
+        assert query_provider.replace_document(nonmatching, revision=100)
+        assert query_provider.query(query_chunks("alpha beta"), limit=10) == expected
+
+        generation = writer_provider.begin_rebuild(scan_revision=200)
+        assert writer_provider.replace_rebuild_document(
+            matching,
+            generation=generation,
+            revision=200,
+        )
+        assert writer_provider.replace_rebuild_document(
+            nonmatching,
+            generation=generation,
+            revision=200,
+        )
+        monkeypatch.setattr(
+            SQLiteSearchProvider,
+            "_state",
+            staticmethod(observed_state),
+        )
+
+        query_thread = Thread(target=run_query, daemon=True)
+        writer_thread = Thread(target=finish_rebuild, daemon=True)
+        query_thread.start()
+        try:
+            assert metadata_read.wait(3.0), "metadata-read handshake timed out"
+            writer_thread.start()
+            assert writer_completed.wait(3.0), "generation switch timed out"
+        finally:
+            release_query.set()
+            query_thread.join(timeout=3.0)
+            _join_started_thread(writer_thread)
+
+        assert not query_thread.is_alive()
+        assert not writer_thread.is_alive()
+        assert worker_errors == []
+        assert coordinated_state_calls == 1
+        assert len(query_results) == 1
+        assert query_results[0] in ([], expected)
+    finally:
+        release_query.set()
+        writer_provider.close()
+        query_provider.close()
+        writer_queue.close()
+        query_queue.close()
+
+
+def test_sqlite_uncommitted_fts_drop_is_not_visible(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[SRCH-11.1] Readers never observe the transactional DDL midpoint."""
+
+    db_path = str(tmp_path / ".taut.db")
+    reader_queue = Queue(META_QUEUE_NAME, db_path=db_path)
+    writer_queue = Queue(META_QUEUE_NAME, db_path=db_path)
+    reader_provider = SQLiteSearchProvider(sidecar=reader_queue.sidecar)
+    writer_provider = SQLiteSearchProvider(sidecar=writer_queue.sidecar)
+    document = _document(
+        message_ts=reader_queue.generate_timestamp(),
+        text="atomic visibility",
+    )
+    drop_completed = Event()
+    fts_read_completed = Event()
+    release_create = Event()
+    writer_thread_id: int | None = None
+    coordinated_drop_calls = 0
+    original_run = SidecarSession.run
+    read_results: list[list[tuple[Any, ...]]] = []
+    worker_errors: list[tuple[str, BaseException]] = []
+
+    def observed_run(
+        session: SidecarSession,
+        sql: str,
+        params: tuple[Any, ...] = (),
+        *,
+        fetch: bool = False,
+    ) -> Iterable[tuple[Any, ...]]:
+        nonlocal coordinated_drop_calls
+        normalized = " ".join(sql.split())
+        result = original_run(session, sql, params, fetch=fetch)
+        if (
+            get_ident() == writer_thread_id
+            and normalized == f"DROP TABLE IF EXISTS {old_table}"
+        ):
+            coordinated_drop_calls += 1
+            drop_completed.set()
+            assert release_create.wait(3.0), "FTS create release timed out"
+        return result
+
+    def finish_rebuild() -> None:
+        nonlocal writer_thread_id
+        writer_thread_id = get_ident()
+        try:
+            writer_provider.finish_rebuild(generation)
+        except (AssertionError, OperationalError, RuntimeError, ValueError) as error:
+            worker_errors.append(("writer", error))
+
+    def read_old_slot() -> None:
+        try:
+            with reader_queue.sidecar() as session:
+                read_results.append(
+                    list(
+                        session.run(
+                            f"SELECT rowid FROM {old_table} "
+                            f"WHERE {old_table} MATCH ? ORDER BY rowid",
+                            ('"atomic"',),
+                            fetch=True,
+                        )
+                    )
+                )
+            fts_read_completed.set()
+        except (AssertionError, OperationalError, RuntimeError, ValueError) as error:
+            worker_errors.append(("reader", error))
+
+    try:
+        reader_provider.ensure_schema()
+        assert reader_provider.replace_document(document, revision=100)
+        generation = writer_provider.begin_rebuild(scan_revision=200)
+        assert writer_provider.replace_rebuild_document(
+            document,
+            generation=generation,
+            revision=200,
+        )
+        with reader_queue.sidecar() as session:
+            _generation, old_slot, _staging = SQLiteSearchProvider._state(session)
+            old_table = _FTS_TABLES[old_slot]
+            baseline_rows = list(
+                session.run(
+                    f"SELECT rowid FROM {old_table} "
+                    f"WHERE {old_table} MATCH ? ORDER BY rowid",
+                    ('"atomic"',),
+                    fetch=True,
+                )
+            )
+        assert baseline_rows
+        monkeypatch.setattr(SidecarSession, "run", observed_run)
+
+        writer_thread = Thread(target=finish_rebuild, daemon=True)
+        reader_thread = Thread(target=read_old_slot, daemon=True)
+        writer_thread.start()
+        try:
+            assert drop_completed.wait(3.0), "FTS drop handshake timed out"
+            reader_thread.start()
+            assert fts_read_completed.wait(3.0), "FTS read handshake timed out"
+        finally:
+            release_create.set()
+            writer_thread.join(timeout=3.0)
+            _join_started_thread(reader_thread)
+
+        assert not writer_thread.is_alive()
+        assert not reader_thread.is_alive()
+        assert worker_errors == []
+        assert coordinated_drop_calls == 1
+        assert len(read_results) == 1
+        assert read_results[0] == baseline_rows
+    finally:
+        release_create.set()
+        writer_provider.close()
+        reader_provider.close()
+        writer_queue.close()
+        reader_queue.close()
 
 
 def test_sqlite_later_mutation_wins_over_older_rebuild_scan(

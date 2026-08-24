@@ -129,14 +129,28 @@ rollback can disable the command/provider path while preserving source chat,
 and a later `--reindex` recreates derived state.
 
 Known non-corrupting limits are intentional for version 1. A SQLite query that
-races a cross-process generation switch can omit a page and succeed on retry;
+races a cross-process generation switch can omit a page and succeed on retry.
+The writer publishes the generation switch and drops and recreates the
+inactive FTS table inside one transaction, so another connection sees the
+state before or after that transaction, not its intermediate missing table.
+The query's metadata read and per-chunk FTS reads are separate committed
+snapshots, however, so a generation change between them may produce an empty
+or incomplete candidate set.
+
+That multi-statement query is required by the physical projection. One
+message may place different query terms in different segment rows, while one
+combined FTS `MATCH` expression is evaluated against one row. The provider
+therefore intersects each chunk's matches by message id across rows. Replacing
+that intersection with one combined expression would make valid cross-segment
+matches disappear even without a race. Other known limits remain:
 completed rename-marker name reuse can transiently misdirect old work until
-reconciliation; and SQLite common-term lookup materializes each term's match
-set before intersection. These affect transient recall or memory, not source
-truth, access control, or stale-positive prevention.
+reconciliation, and SQLite common-term lookup materializes each term's match
+set before intersection. These limits affect transient recall or memory, not
+source truth, access control, or stale-positive prevention.
 
 ## Related Plans
 
+- `docs/plans/2026-08-24-concurrency-and-schema-contract-alignment-plan.md`
 - `docs/plans/2026-08-14-review-findings-remediation-plan.md`
 - `docs/plans/2026-08-10-mcp-search-plan.md`
 - `docs/plans/2026-08-06-taut-search-plan.md`
