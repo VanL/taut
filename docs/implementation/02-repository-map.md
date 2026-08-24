@@ -80,14 +80,14 @@ Quick pointers to the key guidance documents in this repository.
 | `docs/specs/10-taut-tui.md` | Human-first core/extension reflection, native actions, live-read ownership, responsive layout, system operations, and rich-host Summon contract |
 | `docs/plans/README.md` | Plan directory rules |
 | retired: 2026-06-12-taut-foundation-plan (source `f1259c0`; see the ledger in docs/plans/README.md) | Historical foundation implementation plan |
-| `docs/plans/2026-06-18-member-identity-addressing-plan.md` | Implemented plan for member ids, addressing, notifications, and channel rename |
+| retired: 2026-06-18-member-identity-addressing-plan (source `3cae1f4`; see the ledger in docs/plans/README.md) | Implemented member ids, addressing, notifications, and channel rename |
 | retired: 2026-06-12-taut-0.1.1-hardening-plan (source `f1259c0`; see the ledger in docs/plans/README.md) | Hardening plan for handle quality, [TAUT-11] proof burndown, README rendering, and 0.1.1 release |
 | retired: 2026-06-17-github-release-helper-plan (source `dadd324`; see the ledger in docs/plans/README.md) | Initial GitHub-only release-helper plan; current publication ownership is in [TAUT-12.5] |
 | retired: 2026-06-17-github-actions-release-workflows-plan (source `33e13ee`; see the ledger in docs/plans/README.md) | Initial GitHub Actions test and release-workflow plan; current publication ownership is in [TAUT-12.5] |
-| `docs/plans/2026-06-17-taut-pg-extension-plan.md` | Postgres extension plan covering `extensions/`, PG test harness, and GitHub-only release gates |
+| retired: 2026-06-17-taut-pg-extension-plan (source `24dc2bc`; see the ledger in docs/plans/README.md) | Initial Postgres extension, PG test harness, and extension release target |
 | `docs/plans/2026-07-08-release-helper-simplebroker-port-plan.md` | SimpleBroker-style release helper target, batch, and summon release gate port plan |
-| `docs/plans/2026-06-17-implementation-review-followups-plan.md` | Post-review hardening for missing-plugin errors, bounded `log --limit`, and shared backend conformance |
-| `docs/plans/2026-06-18-simplebroker-latest-timestamp-plan.md` | Implemented plan for indexed `list` metadata via SimpleBroker's latest pending timestamp API |
+| retired: 2026-06-17-implementation-review-followups-plan (source `348eae9`; see the ledger in docs/plans/README.md) | Post-review hardening for missing-plugin errors, bounded `log --limit`, and shared backend conformance |
+| retired: 2026-06-18-simplebroker-latest-timestamp-plan (source `348eae9`; see the ledger in docs/plans/README.md) | Indexed `list` metadata via SimpleBroker's latest pending timestamp API |
 | `docs/plans/2026-06-30-assets-reference-cleanup-plan.md` | Implemented cleanup of stale `assets/` and `generate_knot.py` lint references |
 | `docs/plans/2026-06-30-client-module-split-plan.md` | Implemented split of `taut.client` into a package facade and concern-specific mixins |
 | `docs/plans/2026-07-01-schema-shim-retirement-plan.md` | Implemented retirement of the historical schema compatibility shim in favor of `taut/state/` |

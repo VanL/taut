@@ -2979,9 +2979,8 @@ expression behavior.
   refactor of `taut.client` from a single module into a package facade and
   concern-specific mixins while preserving the [TAUT-8.3] public import and
   Python API contract.
-- `docs/plans/2026-06-18-member-identity-addressing-plan.md` - implemented
-  migration from the current development implementation to the stable
-  member identity, mutable naming, direct-message, and notification model.
+- retired: 2026-06-18-member-identity-addressing-plan — source `3cae1f4`; see
+  the ledger in `docs/plans/README.md`.
 - retired: 2026-06-12-taut-foundation-plan — source `f1259c0`; see the
   ledger in `docs/plans/README.md`.
 - retired: 2026-06-12-taut-0.1.1-hardening-plan — source `f1259c0`; see the
@@ -2993,16 +2992,12 @@ expression behavior.
 - `docs/plans/2026-07-08-release-helper-simplebroker-port-plan.md` —
   release-helper port to SimpleBroker-style targets, batch planning, summon
   release gating, and GitHub-only release machinery documentation.
-- `docs/plans/2026-06-17-taut-pg-extension-plan.md` — implemented
-  [TAUT-12.1] plan: separate `taut-pg` extension project,
-  Postgres shared/PG-only test split, `bin/pytest-pg`, and GitHub-only
-  extension release flow.
-- `docs/plans/2026-06-17-implementation-review-followups-plan.md` —
-  post-review hardening for missing-plugin errors, bounded `log --limit`,
-  project-config proof strength, and expanded shared backend conformance.
-- `docs/plans/2026-06-18-simplebroker-latest-timestamp-plan.md` —
-  implemented issue #3 fix: use SimpleBroker's indexed latest pending
-  timestamp API for `list` metadata instead of a full-history scan.
+- retired: 2026-06-17-taut-pg-extension-plan — source `24dc2bc`; see the
+  ledger in `docs/plans/README.md`.
+- retired: 2026-06-17-implementation-review-followups-plan — source
+  `348eae9`; see the ledger in `docs/plans/README.md`.
+- retired: 2026-06-18-simplebroker-latest-timestamp-plan — source `348eae9`;
+  see the ledger in `docs/plans/README.md`.
 - `docs/plans/2026-07-01-taut-state-sql-dialect-plan.md` — implemented
   [TAUT-12.2] state-module refactor: introduce an internal `TautState`
   interface and `SqlDialect` seam while preserving current SQLite/Postgres

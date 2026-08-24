@@ -504,6 +504,10 @@ value rendered as `999+`. Listing is not a transactional snapshot: a write
 after the latest-timestamp probe may appear on the next list call. Listing
 never advances the membership cursor.
 
+Cursor-neutral `log(limit=N)` likewise streams decoded history through a
+`deque(maxlen=N)` and sorts only the retained tail chronologically. Its decoded
+retention is therefore O(N) even when the selected history is much larger.
+
 Exact message lookup is intentionally separate from history pagination.
 `show_message` validates a full ASCII 19-digit signed-int64 id before state
 access, searches only the acting member's current chat memberships, and uses
@@ -968,7 +972,8 @@ watch, `taut/client/_notifications.py::NotificationsMixin.inbox` claims notifica
 - `docs/plans/2026-07-12-lazy-command-extensions-and-rich-tui-composition-plan.md`
 - `docs/plans/2026-07-12-automatic-display-name-capitalization-plan.md`
 - `docs/plans/2026-07-10-taut-dynamic-native-waiter-replacement-plan.md`
-- `docs/plans/2026-06-18-member-identity-addressing-plan.md`
+- retired: 2026-06-18-member-identity-addressing-plan (source `3cae1f4`; see
+  the ledger in `docs/plans/README.md`)
 - retired: 2026-06-12-taut-foundation-plan (source `f1259c0`; see the ledger
   in `docs/plans/README.md`)
 - retired: 2026-06-12-taut-0.1.1-hardening-plan (source `f1259c0`; see the
@@ -977,9 +982,12 @@ watch, `taut/client/_notifications.py::NotificationsMixin.inbox` claims notifica
   ledger in `docs/plans/README.md`)
 - retired: 2026-06-17-github-actions-release-workflows-plan (source
   `33e13ee`; see the ledger in `docs/plans/README.md`)
-- `docs/plans/2026-06-17-taut-pg-extension-plan.md`
-- `docs/plans/2026-06-17-implementation-review-followups-plan.md`
-- `docs/plans/2026-06-18-simplebroker-latest-timestamp-plan.md`
+- retired: 2026-06-17-taut-pg-extension-plan (source `24dc2bc`; see the
+  ledger in `docs/plans/README.md`)
+- retired: 2026-06-17-implementation-review-followups-plan (source `348eae9`;
+  see the ledger in `docs/plans/README.md`)
+- retired: 2026-06-18-simplebroker-latest-timestamp-plan (source `348eae9`;
+  see the ledger in `docs/plans/README.md`)
 - `docs/plans/2026-07-01-schema-shim-retirement-plan.md`
 - `docs/plans/2026-07-01-taut-state-sql-dialect-plan.md`
 - `docs/plans/2026-07-01-taut-watch-runtime-plan.md`

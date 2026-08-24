@@ -961,8 +961,8 @@ Required proofs:
   active SimpleBroker floor and live native-waiter replacement follow-on.
 - `docs/plans/2026-07-10-taut-summon-quality-remediation-plan.md` — approved
   SimpleBroker floor and persona-only embedding-seam remediation.
-- `docs/plans/2026-06-18-member-identity-addressing-plan.md` - implemented
-  migration from the current development implementation to this model.
+- retired: 2026-06-18-member-identity-addressing-plan — source `3cae1f4`; see
+  the ledger in `docs/plans/README.md`.
 - `docs/plans/2026-07-06-evaluation-findings-remediation-plan.md` —
   implemented [IAN-3.3] anchor-match resolution, [IAN-8.3] channel-rename
   resume, first-contact naming retry, and direct-message mention
