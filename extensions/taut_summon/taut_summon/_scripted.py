@@ -28,6 +28,7 @@ from taut_summon._adapter import (
     AssistantTextEvent,
     SessionEvent,
 )
+from taut_summon._process_domain import spawn_process
 from taut_summon._stream import StreamJsonHandle
 
 
@@ -55,7 +56,7 @@ class ScriptedAdapter:
         if session_id is not None:
             child_env["TAUT_SUMMON_SESSION"] = session_id
         try:
-            proc = subprocess.Popen(
+            spawned = spawn_process(
                 [sys.executable, "-m", "taut_summon.scripted_provider"],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
@@ -66,7 +67,11 @@ class ScriptedAdapter:
             )
         except OSError as exc:
             raise AdapterError(f"failed to spawn scripted provider: {exc}") from exc
-        return ScriptedHandle(proc, session_id=session_id)
+        return ScriptedHandle(
+            spawned.process,
+            domain=spawned.domain,
+            session_id=session_id,
+        )
 
 
 class ScriptedHandle(StreamJsonHandle):

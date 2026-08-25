@@ -52,6 +52,13 @@ back to ``default_response`` (default: echo). Steps, one key each:
   block forever: an inject large enough to overflow the pipe buffer fails
   with a broken pipe while the process stays alive (the repeated-failed-
   inject scenario for [SUM-5.4]/[TAUT-8.4]).
+- ``{"spawn_descendant": {...}}`` — spawn one real descendant and publish its
+  PID to the required ``pid_file``. The options exercise [SUM-12] process-
+  domain cases: ``inherit_stdout``, ``ignore_sigint``, ``ignore_sigterm``,
+  ``escape_domain``, ``leader_ignore_sigint``, ``leader_ignore_sigterm``,
+  ``max_seconds``, ``leader_exit_code``, ``stdout_payload``, and
+  ``stdout_repeat``. A configured payload is written before PID publication;
+  repeat mode then writes it continuously until retirement or ``max_seconds``.
 - ``{"exec_taut": {"args": [...], "count": N, "interval": S}}`` — run
   ``python -m taut ARGS`` as a real subprocess ``N`` times (default 1),
   using the child's own environment. The environment always carries
@@ -281,12 +288,125 @@ def _run_steps(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-036] exception
                 pass
             while True:
                 time.sleep(3600)
+        elif "spawn_descendant" in step:
+            _spawn_descendant(step["spawn_descendant"])
         elif "exec_taut" in step:
             _exec_taut(step["exec_taut"])
         elif "raw_line" in step:
             _emit_raw(str(step["raw_line"]))
         else:
             raise ValueError(f"unknown scenario step: {step!r}")
+
+
+def _descendant_stdout_spec(raw_spec: dict[str, Any]) -> tuple[bool, str, bool]:
+    inherit_stdout = bool(raw_spec.get("inherit_stdout", False))
+    raw_stdout_payload = raw_spec.get("stdout_payload", "")
+    if not isinstance(raw_stdout_payload, str):
+        raise TypeError("spawn_descendant.stdout_payload must be a string")
+    stdout_repeat = bool(raw_spec.get("stdout_repeat", False))
+    if raw_stdout_payload and not inherit_stdout:
+        raise ValueError("spawn_descendant.stdout_payload requires inherit_stdout")
+    if stdout_repeat and not raw_stdout_payload:
+        raise ValueError("spawn_descendant.stdout_repeat requires stdout_payload")
+    return inherit_stdout, raw_stdout_payload, stdout_repeat
+
+
+def _spawn_descendant(raw_spec: Any) -> None:
+    """Spawn one bounded-test descendant without importing Taut internals."""
+
+    if not isinstance(raw_spec, dict):
+        raise TypeError("spawn_descendant must be an object")
+    raw_pid_file = raw_spec.get("pid_file")
+    if not isinstance(raw_pid_file, str) or not raw_pid_file:
+        raise ValueError("spawn_descendant.pid_file must be a non-empty string")
+    pid_file = os.path.abspath(raw_pid_file)
+    child_program = """
+import json
+import os
+import signal
+import sys
+import time
+
+pid_file = sys.argv[1]
+ignore_sigint = sys.argv[2] == "1"
+ignore_sigterm = sys.argv[3] == "1"
+max_seconds = float(sys.argv[4])
+stdout_payload = sys.argv[5].encode("utf-8")
+stdout_repeat = sys.argv[6] == "1"
+if ignore_sigint:
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+if ignore_sigterm:
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+
+def write_payload():
+    offset = 0
+    while offset < len(stdout_payload):
+        try:
+            written = os.write(1, stdout_payload[offset:])
+        except BrokenPipeError:
+            return False
+        if written <= 0:
+            return False
+        offset += written
+    return True
+
+if stdout_payload:
+    write_payload()
+temporary = f"{pid_file}.{os.getpid()}.tmp"
+with open(temporary, "x", encoding="utf-8") as handle:
+    json.dump({"pid": os.getpid()}, handle)
+    handle.flush()
+os.replace(temporary, pid_file)
+deadline = time.monotonic() + max_seconds
+while time.monotonic() < deadline:
+    if stdout_payload and stdout_repeat:
+        if not write_payload():
+            break
+    else:
+        time.sleep(min(1.0, deadline - time.monotonic()))
+"""
+    inherit_stdout, raw_stdout_payload, stdout_repeat = _descendant_stdout_spec(
+        raw_spec
+    )
+    max_seconds = float(raw_spec.get("max_seconds", 30.0))
+    if not 1.0 <= max_seconds <= 120.0:
+        raise ValueError("spawn_descendant.max_seconds must be in 1..120")
+    if raw_spec.get("leader_ignore_sigint", False):
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+    if raw_spec.get("leader_ignore_sigterm", False):
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            child_program,
+            pid_file,
+            "1" if raw_spec.get("ignore_sigint", False) else "0",
+            "1" if raw_spec.get("ignore_sigterm", False) else "0",
+            str(max_seconds),
+            raw_stdout_payload,
+            "1" if stdout_repeat else "0",
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=None if inherit_stdout else subprocess.DEVNULL,
+        stderr=None if inherit_stdout else subprocess.DEVNULL,
+        close_fds=True,
+        start_new_session=bool(raw_spec.get("escape_domain", False)),
+    )
+    deadline = time.monotonic() + 5.0
+    while not os.path.exists(pid_file):
+        if proc.poll() is not None:
+            raise RuntimeError(
+                f"scripted descendant exited before PID publication: {proc.returncode}"
+            )
+        if time.monotonic() >= deadline:
+            proc.kill()
+            proc.wait(timeout=5.0)
+            raise RuntimeError("scripted descendant PID publication timed out")
+        time.sleep(0.01)
+    _record({"event": "descendant", "child_pid": proc.pid})
+    if "leader_exit_code" in raw_spec:
+        raise SystemExit(int(raw_spec["leader_exit_code"]))
 
 
 def _exec_taut(spec: Any) -> None:

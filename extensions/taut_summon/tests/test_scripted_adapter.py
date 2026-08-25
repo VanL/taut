@@ -45,6 +45,7 @@ from taut_summon._adapter import (
     adapter_names,
     get_adapter,
 )
+from taut_summon._process_domain import ProcessIO, spawn_process
 from taut_summon._scripted import ScriptedHandle
 
 
@@ -273,6 +274,71 @@ class _InterruptDuringWaitProcess(_ReentrantInterruptProcess):
         return 0
 
 
+class _FakeProcessDomain:
+    """Deterministic lifecycle boundary for Popen-shaped concurrency doubles."""
+
+    def __init__(self, proc: Any) -> None:
+        self._proc = proc
+
+    def observe_leader_exit(self) -> int | None:
+        return cast(int | None, self._proc.poll())
+
+    def wait_for_leader_exit(self, timeout: float) -> int | None:
+        try:
+            return int(self._proc.wait(timeout=timeout))
+        except subprocess.TimeoutExpired:
+            return None
+
+    def signal_leader(self, sig: signal.Signals) -> None:
+        if self.observe_leader_exit() is not None:
+            return
+        if _stream_module.sys.platform == "win32":
+            self._proc.terminate()
+        else:
+            self._proc.send_signal(sig)
+
+    def finalize(self) -> int:
+        if self._proc.poll() is None:
+            try:
+                return int(self._proc.wait(timeout=5.0))
+            except subprocess.TimeoutExpired:
+                self._proc.kill()
+                try:
+                    return int(self._proc.wait(timeout=5.0))
+                except subprocess.TimeoutExpired as exc:
+                    raise AdapterError(
+                        "provider child did not exit after SIGKILL"
+                    ) from exc
+        return int(self._proc.returncode or 0)
+
+
+class _FakeProcessIO:
+    """Borrow the fake's replaceable streams without lifecycle methods."""
+
+    def __init__(self, proc: Any) -> None:
+        self._proc = proc
+
+    @property
+    def pid(self) -> int:
+        return int(self._proc.pid)
+
+    @property
+    def stdin(self) -> Any:
+        return self._proc.stdin
+
+    @property
+    def stdout(self) -> Any:
+        return self._proc.stdout
+
+
+def _fake_handle(proc: Any) -> ScriptedHandle:
+    return ScriptedHandle(
+        cast(ProcessIO, _FakeProcessIO(proc)),
+        domain=cast(Any, _FakeProcessDomain(proc)),
+        session_id=None,
+    )
+
+
 class EventPump:
     """Drain ``handle.events()`` on a thread so tests can bound their waits.
 
@@ -348,6 +414,42 @@ def _process_exists(pid: int) -> bool:
     return True
 
 
+def _capture_process_identity(pid_file: Path) -> tuple[int, float]:
+    deadline = time.monotonic() + 5.0
+    payload: object | None = None
+    while payload is None:
+        assert time.monotonic() < deadline, "descendant did not publish its PID"
+        try:
+            payload = json.loads(pid_file.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            time.sleep(0.01)
+    assert isinstance(payload, dict)
+    pid = int(payload["pid"])
+    return pid, psutil.Process(pid).create_time()
+
+
+def _same_process(identity: tuple[int, float]) -> bool:
+    pid, created_at = identity
+    try:
+        return psutil.Process(pid).create_time() == created_at
+    except psutil.NoSuchProcess:
+        return False
+
+
+def _cleanup_exact_process(identity: tuple[int, float]) -> None:
+    if not _same_process(identity):
+        return
+    pid, created_at = identity
+    process = psutil.Process(pid)
+    if process.create_time() != created_at:
+        return
+    process.kill()
+    try:
+        process.wait(timeout=5.0)
+    except psutil.TimeoutExpired as exc:
+        raise AssertionError(f"descendant {pid} survived bounded cleanup") from exc
+
+
 def _fill_real_stdin_pipe(handle: ScriptedHandle) -> threading.Event:
     """Fill the shipped provider's real pipe and expose inject arrival."""
 
@@ -388,7 +490,7 @@ def test_registry_knows_scripted_and_rejects_unknown_names() -> None:
 
 def test_structured_handle_has_explicit_non_terminal_defaults() -> None:
     proc = _ReentrantInterruptProcess()
-    handle = ScriptedHandle(cast(Any, proc), session_id=None)
+    handle = _fake_handle(proc)
 
     handle.wait_until_quiet()
     handle.mark_awaiting_onboarding()
@@ -406,7 +508,7 @@ def test_windows_interrupt_uses_process_terminate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     proc = _ReentrantInterruptProcess()
-    handle = ScriptedHandle(cast(Any, proc), session_id=None)
+    handle = _fake_handle(proc)
     monkeypatch.setattr(
         _stream_module,
         "sys",
@@ -423,7 +525,7 @@ def test_windows_terminal_request_terminates_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     proc = _ReentrantInterruptProcess()
-    handle = ScriptedHandle(cast(Any, proc), session_id=None)
+    handle = _fake_handle(proc)
     monkeypatch.setattr(
         _stream_module,
         "sys",
@@ -443,7 +545,7 @@ def test_owned_close_ends_a_blocked_event_reader_without_thread_failure() -> Non
     proc = _ReentrantInterruptProcess()
     stream = _CloseRacingReadStream()
     proc.stdout = stream
-    handle = ScriptedHandle(cast(Any, proc), session_id=None)
+    handle = _fake_handle(proc)
     with ThreadPoolExecutor(max_workers=1) as executor:
         reader = executor.submit(lambda: list(handle.events()))
         assert stream.read_entered.wait(timeout=1.0)
@@ -456,7 +558,7 @@ def test_owned_close_ends_a_blocked_event_reader_without_thread_failure() -> Non
 def test_open_event_stream_value_error_remains_fatal() -> None:
     proc = _ReentrantInterruptProcess()
     proc.stdout = _UnexpectedReadFailureStream()
-    handle = ScriptedHandle(cast(Any, proc), session_id=None)
+    handle = _fake_handle(proc)
 
     try:
         with pytest.raises(ValueError, match="unexpected open-stream failure"):
@@ -470,7 +572,7 @@ def test_closed_event_stream_translation_value_error_remains_fatal(
 ) -> None:
     proc = _ReentrantInterruptProcess()
     proc.stdout = _ClosedSingleLineStream()
-    handle = ScriptedHandle(cast(Any, proc), session_id=None)
+    handle = _fake_handle(proc)
 
     def fail_translation(_line: str) -> AdapterEvent:
         raise ValueError("translation failure")
@@ -488,7 +590,7 @@ def test_closed_event_stream_translation_value_error_remains_fatal(
 def test_closed_event_stream_decode_failure_remains_fatal() -> None:
     proc = _ReentrantInterruptProcess()
     proc.stdout = _ClosedDecodeFailureStream()
-    handle = ScriptedHandle(cast(Any, proc), session_id=None)
+    handle = _fake_handle(proc)
     handle.request_close()
 
     try:
@@ -619,7 +721,7 @@ def test_terminal_action_unblocks_write_after_stream_entry(
     terminal_action: str,
 ) -> None:
     proc = _SignalReleasesWriteProcess()
-    handle = ScriptedHandle(cast(Any, proc), session_id=None)
+    handle = _fake_handle(proc)
     failures: list[Exception] = []
 
     def blocked_inject() -> None:
@@ -648,7 +750,7 @@ def test_terminal_action_unblocks_write_after_stream_entry(
 
 def test_interrupt_cancels_current_stream_write_and_handle_rearms() -> None:
     proc = _SignalReleasesWriteProcess()
-    handle = ScriptedHandle(cast(Any, proc), session_id=None)
+    handle = _fake_handle(proc)
     failures: list[Exception] = []
 
     def blocked_inject() -> None:
@@ -710,7 +812,7 @@ def test_interrupt_cancels_full_pipe_and_real_child_accepts_next_turn() -> None:
             print(text, flush=True)
         """
     )
-    proc = subprocess.Popen(
+    spawned = spawn_process(
         [sys.executable, "-c", child_code, str(control_r)],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -719,8 +821,9 @@ def test_interrupt_cancels_full_pipe_and_real_child_accepts_next_turn() -> None:
         bufsize=1,
         pass_fds=(control_r,),
     )
+    proc = spawned.process
     os.close(control_r)
-    handle = ScriptedHandle(proc, session_id=None)
+    handle = ScriptedHandle(proc, domain=spawned.domain, session_id=None)
     assert proc.stdout is not None
     assert proc.stdout.readline() == "ready\n"
     _fill_real_stdin_pipe(handle)
@@ -741,7 +844,7 @@ def test_interrupt_cancels_full_pipe_and_real_child_accepts_next_turn() -> None:
         assert not injector.is_alive()
         assert len(failures) == 1
         assert isinstance(failures[0], AdapterError)
-        assert proc.poll() is None
+        assert spawned.domain.observe_leader_exit() is None
 
         os.write(control_w, b"d")
         assert proc.stdin is not None
@@ -759,8 +862,6 @@ def test_interrupt_cancels_full_pipe_and_real_child_accepts_next_turn() -> None:
         assert proc.stdout.readline() == "after interrupt\n"
     finally:
         os.close(control_w)
-        proc.terminate()
-        proc.wait(timeout=2.0)
         handle.close()
 
 
@@ -771,7 +872,7 @@ def test_request_close_cancels_full_pipe_when_child_ignores_sigint() -> None:
         "import signal,time; signal.signal(signal.SIGINT, signal.SIG_IGN); "
         "print('ready', flush=True); time.sleep(60)"
     )
-    proc = subprocess.Popen(
+    spawned = spawn_process(
         [
             sys.executable,
             "-c",
@@ -783,7 +884,8 @@ def test_request_close_cancels_full_pipe_when_child_ignores_sigint() -> None:
         encoding="utf-8",
         bufsize=1,
     )
-    handle = ScriptedHandle(proc, session_id=None)
+    proc = spawned.process
+    handle = ScriptedHandle(proc, domain=spawned.domain, session_id=None)
     assert proc.stdout is not None
     assert proc.stdout.readline() == "ready\n"
     stdin = proc.stdin
@@ -811,10 +913,8 @@ def test_request_close_cancels_full_pipe_when_child_ignores_sigint() -> None:
         assert not injector.is_alive()
         assert len(failures) == 1
         assert isinstance(failures[0], AdapterError)
-        assert proc.poll() is None
+        assert spawned.domain.observe_leader_exit() is None
     finally:
-        proc.terminate()
-        proc.wait(timeout=2.0)
         handle.close()
 
 
@@ -886,7 +986,7 @@ def test_request_close_retires_inject_at_real_full_pipe_boundary(
 
 def test_request_close_is_nonblocking_terminal_and_signals_once() -> None:
     proc = _BlockingCloseProcess()
-    handle = ScriptedHandle(cast(Any, proc), session_id=None)
+    handle = _fake_handle(proc)
 
     handle.request_close()
     handle.request_close()
@@ -912,7 +1012,7 @@ def test_request_close_is_nonblocking_terminal_and_signals_once() -> None:
 
 def test_inject_refuses_after_close_publishes_closing() -> None:
     proc = _BlockingCloseProcess()
-    handle = ScriptedHandle(cast(Any, proc), session_id=None)
+    handle = _fake_handle(proc)
     closer = threading.Thread(target=handle.close)
     closer.start()
     assert proc.wait_entered.wait(timeout=1.0)
@@ -929,7 +1029,7 @@ def test_inject_refuses_after_close_publishes_closing() -> None:
 
 def test_queued_inject_rechecks_close_state_under_serialization() -> None:
     proc = _BlockingCloseProcess()
-    handle = ScriptedHandle(cast(Any, proc), session_id=None)
+    handle = _fake_handle(proc)
     gate = _BlockingInjectLock()
     # Install a white-box lifecycle race seam.
     handle._inject_lock = cast(Any, gate)
@@ -963,7 +1063,7 @@ def test_queued_inject_rechecks_close_state_under_serialization() -> None:
 
 def test_interrupt_can_reenter_close_while_lifecycle_state_is_owned() -> None:
     proc = _ReentrantInterruptProcess()
-    handle = ScriptedHandle(cast(Any, proc), session_id=None)
+    handle = _fake_handle(proc)
     proc.on_first_signal = handle.interrupt
     failures: list[BaseException] = []
 
@@ -983,7 +1083,7 @@ def test_interrupt_can_reenter_close_while_lifecycle_state_is_owned() -> None:
 
 def test_request_close_can_reenter_itself_while_lifecycle_state_is_owned() -> None:
     proc = _ReentrantInterruptProcess()
-    handle = ScriptedHandle(cast(Any, proc), session_id=None)
+    handle = _fake_handle(proc)
     proc.on_first_signal = handle.request_close
 
     handle.close()
@@ -993,7 +1093,7 @@ def test_request_close_can_reenter_itself_while_lifecycle_state_is_owned() -> No
 
 def test_interrupt_can_reenter_close_during_process_wait() -> None:
     proc = _InterruptDuringWaitProcess()
-    handle = ScriptedHandle(cast(Any, proc), session_id=None)
+    handle = _fake_handle(proc)
     proc.on_wait = handle.interrupt
     failures: list[BaseException] = []
 
@@ -1042,15 +1142,22 @@ second_handled = threading.Event()
 second_sent = threading.Event()
 sender_joined = threading.Event()
 
-class ObservedProcess:
-    def __getattr__(self, name):
-        return getattr(provider, name)
+class ObservedDomain:
+    def observe_leader_exit(self):
+        return provider.returncode
 
-    def wait(self, timeout=None):
+    def wait_for_leader_exit(self, timeout):
+        del timeout
+        return provider.returncode
+
+    def signal_leader(self, sig):
+        provider.send_signal(sig)
+
+    def finalize(self):
         wait_entered.set()
-        return provider.wait(timeout=timeout)
+        return provider.wait(timeout=5.0)
 
-handle = ScriptedHandle(ObservedProcess(), session_id=None)
+handle = ScriptedHandle(provider, domain=ObservedDomain(), session_id=None)
 signal_count = 0
 
 def interrupt_handle(_signum, _frame):
@@ -1097,7 +1204,7 @@ print("closed", flush=True)
 
 def test_concurrent_close_has_one_escalation_and_stream_closer() -> None:
     proc = _BlockingCloseProcess()
-    handle = ScriptedHandle(cast(Any, proc), session_id=None)
+    handle = _fake_handle(proc)
     close_condition = _TrackingCondition(
         handle._lifecycle_lock,
         tracked_thread="second-stream-closer",
@@ -1135,7 +1242,7 @@ def test_concurrent_close_has_one_escalation_and_stream_closer() -> None:
 
 def test_post_kill_timeout_is_one_terminal_adapter_error() -> None:
     proc = _NeverReapsProcess()
-    handle = ScriptedHandle(cast(Any, proc), session_id=None)
+    handle = _fake_handle(proc)
 
     with pytest.raises(AdapterError, match="did not exit after SIGKILL"):
         handle.close()
@@ -1151,7 +1258,7 @@ def test_post_kill_timeout_is_one_terminal_adapter_error() -> None:
 
 def test_close_failure_does_not_mask_an_active_primary_error() -> None:
     proc = _NeverReapsProcess()
-    handle = ScriptedHandle(cast(Any, proc), session_id=None)
+    handle = _fake_handle(proc)
     primary = RuntimeError("primary provider failure")
 
     try:
@@ -1177,6 +1284,382 @@ def test_close_reaps_the_child_process(tmp_path: Path) -> None:
     while _process_exists(child_pid) and time.monotonic() < deadline:
         time.sleep(0.05)
     assert not _process_exists(child_pid)
+
+
+@pytest.mark.xdist_group("process")
+def test_close_retires_same_domain_descendant_after_leader_exits_first(
+    tmp_path: Path,
+) -> None:
+    """[SUM-7.1]/[SUM-12] Leader exit cannot orphan its process domain."""
+
+    pid_file = tmp_path / "descendant.json"
+    scenario = {
+        "on_start": [
+            {
+                "spawn_descendant": {
+                    "pid_file": str(pid_file),
+                    "leader_exit_code": 0,
+                }
+            }
+        ]
+    }
+    scenario_path = _write_scenario(tmp_path, scenario)
+    handle = get_adapter("scripted").spawn(
+        session_id=None,
+        system_prompt="process-domain tracer",
+        env={"TAUT_SUMMON_SCENARIO": str(scenario_path)},
+    )
+    assert isinstance(handle, ScriptedHandle)
+    identity: tuple[int, float] | None = None
+    try:
+        pump = EventPump(handle)
+        pump.next_of(SessionEvent)
+        identity = _capture_process_identity(pid_file)
+        exit_event = pump.next_of(ExitEvent)
+        assert isinstance(exit_event, ExitEvent)
+        assert exit_event.returncode == 0
+
+        handle.close()
+
+        deadline = time.monotonic() + 5.0
+        while _same_process(identity) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not _same_process(identity)
+    finally:
+        handle.close()
+        if identity is not None:
+            _cleanup_exact_process(identity)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX explicit-domain escape")
+@pytest.mark.xdist_group("process")
+def test_close_does_not_claim_a_descendant_that_creates_a_new_session(
+    tmp_path: Path,
+) -> None:
+    """[SUM-7.1] An explicit external lifetime is outside the owned domain."""
+
+    pid_file = tmp_path / "escaped-descendant.json"
+    scenario_path = _write_scenario(
+        tmp_path,
+        {
+            "on_start": [
+                {
+                    "spawn_descendant": {
+                        "pid_file": str(pid_file),
+                        "escape_domain": True,
+                        "leader_exit_code": 0,
+                    }
+                }
+            ]
+        },
+    )
+    handle = get_adapter("scripted").spawn(
+        session_id=None,
+        system_prompt="external-lifetime boundary",
+        env={"TAUT_SUMMON_SCENARIO": str(scenario_path)},
+    )
+    assert isinstance(handle, ScriptedHandle)
+    identity: tuple[int, float] | None = None
+    try:
+        pump = EventPump(handle)
+        pump.next_of(SessionEvent)
+        identity = _capture_process_identity(pid_file)
+        exit_event = pump.next_of(ExitEvent)
+        assert isinstance(exit_event, ExitEvent)
+        assert exit_event.returncode == 0
+
+        handle.close()
+
+        assert _same_process(identity)
+    finally:
+        handle.close()
+        if identity is not None:
+            _cleanup_exact_process(identity)
+
+
+@pytest.mark.xdist_group("process")
+def test_leader_exit_is_observed_while_descendant_holds_stdout(
+    tmp_path: Path,
+) -> None:
+    """[SUM-7.1]/[SUM-12] Inherited stdout cannot hide terminal leader exit."""
+
+    pid_file = tmp_path / "stdout-descendant.json"
+    scenario = {
+        "on_start": [
+            {
+                "spawn_descendant": {
+                    "pid_file": str(pid_file),
+                    "inherit_stdout": True,
+                    "leader_exit_code": 0,
+                }
+            }
+        ]
+    }
+    scenario_path = _write_scenario(tmp_path, scenario)
+    handle = get_adapter("scripted").spawn(
+        session_id=None,
+        system_prompt="inherited-stdout tracer",
+        env={"TAUT_SUMMON_SCENARIO": str(scenario_path)},
+    )
+    assert isinstance(handle, ScriptedHandle)
+    identity: tuple[int, float] | None = None
+    try:
+        pump = EventPump(handle)
+        pump.next_of(SessionEvent)
+        identity = _capture_process_identity(pid_file)
+
+        exit_event = pump.next_of(ExitEvent, timeout=2.0)
+
+        assert isinstance(exit_event, ExitEvent)
+        assert exit_event.returncode == 0
+    finally:
+        handle.close()
+        if identity is not None:
+            _cleanup_exact_process(identity)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX raw-pipe fairness regression")
+@pytest.mark.xdist_group("process")
+def test_leader_exit_is_observed_while_descendant_continuously_writes_stdout(
+    tmp_path: Path,
+) -> None:
+    """[SUM-7.1] Busy inherited stdout cannot starve leader observation."""
+
+    pid_file = tmp_path / "busy-stdout-descendant.json"
+    busy_frame = (
+        json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "x" * 2_000}],
+                },
+                "session_id": "scripted-session",
+            },
+            separators=(",", ":"),
+        )
+        + "\n"
+    )
+    scenario_path = _write_scenario(
+        tmp_path,
+        {
+            "on_start": [
+                {
+                    "spawn_descendant": {
+                        "pid_file": str(pid_file),
+                        "inherit_stdout": True,
+                        "stdout_payload": busy_frame,
+                        "stdout_repeat": True,
+                        "leader_exit_code": 0,
+                    }
+                }
+            ]
+        },
+    )
+    handle = get_adapter("scripted").spawn(
+        session_id=None,
+        system_prompt="busy inherited-stdout tracer",
+        env={"TAUT_SUMMON_SCENARIO": str(scenario_path)},
+    )
+    assert isinstance(handle, ScriptedHandle)
+    identity: tuple[int, float] | None = None
+    try:
+        pump = EventPump(handle)
+        identity = _capture_process_identity(pid_file)
+
+        exit_event = pump.next_of(ExitEvent, timeout=2.0)
+
+        assert isinstance(exit_event, ExitEvent)
+        assert exit_event.returncode == 0
+        assert _same_process(identity)
+
+        handle.close()
+
+        deadline = time.monotonic() + 5.0
+        while _same_process(identity) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not _same_process(identity)
+    finally:
+        handle.close()
+        if identity is not None:
+            _cleanup_exact_process(identity)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX raw-pipe read budget")
+def test_posix_raw_stdout_turn_has_strict_read_and_byte_bounds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[SUM-7.1] One saturated drain turn must return to lifecycle work."""
+
+    read_fd, write_fd = os.pipe()
+    reader = _stream_module._NonblockingUtf8Lines(read_fd)
+    requests: list[int] = []
+
+    def saturated_read(_fd: int, requested: int) -> bytes:
+        requests.append(requested)
+        return b"x" * requested
+
+    monkeypatch.setattr(_stream_module.os, "read", saturated_read)
+    try:
+        lines, eof = reader.read_available()
+    finally:
+        reader.close()
+        os.close(read_fd)
+        os.close(write_fd)
+
+    assert lines == []
+    assert eof is False
+    assert 0 < len(requests) <= 16
+    assert sum(requests) <= 1_048_576
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX inherited-pipe framing")
+@pytest.mark.xdist_group("process")
+def test_leader_exit_does_not_promote_an_incomplete_inherited_stdout_frame(
+    tmp_path: Path,
+) -> None:
+    """[SUM-7.1] A non-EOF line fragment is not a committed frame."""
+
+    pid_file = tmp_path / "partial-stdout-descendant.json"
+    scenario_path = _write_scenario(
+        tmp_path,
+        {
+            "on_start": [
+                {
+                    "spawn_descendant": {
+                        "pid_file": str(pid_file),
+                        "inherit_stdout": True,
+                        "stdout_payload": '{"type":"assistant"',
+                        "leader_exit_code": 0,
+                    }
+                }
+            ]
+        },
+    )
+    handle = get_adapter("scripted").spawn(
+        session_id=None,
+        system_prompt="partial inherited-frame tracer",
+        env={"TAUT_SUMMON_SCENARIO": str(scenario_path)},
+    )
+    assert isinstance(handle, ScriptedHandle)
+    identity: tuple[int, float] | None = None
+    try:
+        pump = EventPump(handle)
+        identity = _capture_process_identity(pid_file)
+
+        exit_event = pump.next_of(ExitEvent, timeout=2.0)
+
+        assert isinstance(exit_event, ExitEvent)
+        assert exit_event.returncode == 0
+        assert _same_process(identity)
+
+        handle.close()
+
+        deadline = time.monotonic() + 5.0
+        while _same_process(identity) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not _same_process(identity)
+    finally:
+        handle.close()
+        if identity is not None:
+            _cleanup_exact_process(identity)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="real Windows Job Object proof")
+@pytest.mark.xdist_group("process")
+def test_windows_job_is_nonempty_before_terminal_domain_retirement(
+    tmp_path: Path,
+) -> None:
+    """[SUM-7.1]/[SUM-12] The retained job owns leader plus descendant."""
+
+    pid_file = tmp_path / "windows-job-descendant.json"
+    scenario_path = _write_scenario(
+        tmp_path,
+        {
+            "on_start": [
+                {
+                    "spawn_descendant": {
+                        "pid_file": str(pid_file),
+                        "ignore_sigint": True,
+                        "ignore_sigterm": True,
+                        "leader_ignore_sigint": True,
+                        "leader_ignore_sigterm": True,
+                    }
+                },
+                {"stall": True},
+            ]
+        },
+    )
+    handle = get_adapter("scripted").spawn(
+        session_id=None,
+        system_prompt="Windows Job Object tracer",
+        env={"TAUT_SUMMON_SCENARIO": str(scenario_path)},
+    )
+    assert isinstance(handle, ScriptedHandle)
+    identity: tuple[int, float] | None = None
+    try:
+        pump = EventPump(handle)
+        pump.next_of(SessionEvent)
+        identity = _capture_process_identity(pid_file)
+        domain = cast(Any, handle._domain)
+        assert domain.active_processes() >= 2
+
+        handle.close()
+
+        exit_event = pump.next_of(ExitEvent, timeout=12.0)
+        assert isinstance(exit_event, ExitEvent)
+        assert not _same_process(identity)
+        assert domain.final_active_processes == 0
+    finally:
+        handle.close()
+        if identity is not None:
+            _cleanup_exact_process(identity)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process-group tracer")
+@pytest.mark.xdist_group("process")
+def test_close_force_kills_leader_and_same_domain_descendant(
+    tmp_path: Path,
+) -> None:
+    """[SUM-7.1]/[SUM-12] The pinned ladder reaches its SIGKILL stage."""
+
+    pid_file = tmp_path / "forced-descendant.json"
+    scenario = {
+        "on_start": [
+            {
+                "spawn_descendant": {
+                    "pid_file": str(pid_file),
+                    "ignore_sigint": True,
+                    "ignore_sigterm": True,
+                    "leader_ignore_sigint": True,
+                    "leader_ignore_sigterm": True,
+                }
+            }
+        ]
+    }
+    scenario_path = _write_scenario(tmp_path, scenario)
+    handle = get_adapter("scripted").spawn(
+        session_id=None,
+        system_prompt="forced-domain tracer",
+        env={"TAUT_SUMMON_SCENARIO": str(scenario_path)},
+    )
+    assert isinstance(handle, ScriptedHandle)
+    identity: tuple[int, float] | None = None
+    try:
+        pump = EventPump(handle)
+        pump.next_of(SessionEvent)
+        identity = _capture_process_identity(pid_file)
+
+        handle.close()
+
+        exit_event = pump.next_of(ExitEvent, timeout=2.0)
+        assert isinstance(exit_event, ExitEvent)
+        assert exit_event.returncode == -signal.SIGKILL
+        assert not _same_process(identity)
+    finally:
+        handle.close()
+        if identity is not None:
+            _cleanup_exact_process(identity)
 
 
 def test_unknown_event_shape_is_rejected_loudly(tmp_path: Path) -> None:

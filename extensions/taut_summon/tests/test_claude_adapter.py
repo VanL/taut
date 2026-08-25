@@ -36,6 +36,7 @@ from taut_summon._adapter import (
     get_adapter,
 )
 from taut_summon._claude import ClaudeAdapter, ClaudeHandle
+from taut_summon._process_domain import spawn_process
 from test_scripted_adapter import EventPump  # resolved by pytest's test-dir path
 
 if TYPE_CHECKING:
@@ -64,7 +65,7 @@ for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
 
 
 def _replayer_handle(fixture: Path) -> ClaudeHandle:
-    proc = subprocess.Popen(
+    spawned = spawn_process(
         [sys.executable, "-c", _REPLAYER_SRC, str(fixture)],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -72,7 +73,11 @@ def _replayer_handle(fixture: Path) -> ClaudeHandle:
         encoding="utf-8",
         bufsize=1,
     )
-    return ClaudeHandle(proc, session_id=None)
+    return ClaudeHandle(
+        spawned.process,
+        domain=spawned.domain,
+        session_id=None,
+    )
 
 
 def _raw_line_handle(tmp_path: Path, line: str) -> ClaudeHandle:
@@ -153,7 +158,7 @@ def test_translation_echo_round_trip_against_scripted_provider(
     }
     scenario_path = tmp_path / "scenario.json"
     scenario_path.write_text(json.dumps(scenario), encoding="utf-8")
-    proc = subprocess.Popen(
+    spawned = spawn_process(
         [sys.executable, str(SCRIPTED_PROVIDER)],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -165,7 +170,11 @@ def test_translation_echo_round_trip_against_scripted_provider(
         encoding="utf-8",
         bufsize=1,
     )
-    handle = ClaudeHandle(proc, session_id=None)
+    handle = ClaudeHandle(
+        spawned.process,
+        domain=spawned.domain,
+        session_id=None,
+    )
     try:
         pump = EventPump(handle)
         session = pump.next_of(SessionEvent)

@@ -19,7 +19,6 @@ import re
 import select
 import signal
 import struct
-import subprocess
 import sys
 import termios
 import threading
@@ -34,6 +33,7 @@ from taut_summon._adapter import (
     AdapterEvent,
     ExitEvent,
 )
+from taut_summon._process_domain import ProcessDomain, ProcessIO, spawn_process
 
 logger = logging.getLogger("taut_summon.pty")
 
@@ -135,14 +135,13 @@ class PtyAdapter:
         try:
             _set_winsize(slave_fd, self._spec.rows, self._spec.cols)
             _set_nonblocking(master_fd)
-            proc = subprocess.Popen(
+            spawned = spawn_process(
                 list(self._spec.argv),
                 stdin=slave_fd,
                 stdout=slave_fd,
                 stderr=slave_fd,
                 env=child_env,
                 close_fds=True,
-                start_new_session=True,
             )
         except Exception as exc:
             try:
@@ -156,7 +155,8 @@ class PtyAdapter:
             except OSError:
                 pass
         return PtyHandle(
-            proc,
+            spawned.process,
+            domain=spawned.domain,
             master_fd=master_fd,
             rows=self._spec.rows,
             cols=self._spec.cols,
@@ -224,8 +224,9 @@ class PtyHandle:
 
     def __init__(
         self,
-        proc: subprocess.Popen[bytes],
+        proc: ProcessIO,
         *,
+        domain: ProcessDomain,
         master_fd: int,
         rows: int,
         cols: int,
@@ -234,6 +235,7 @@ class PtyHandle:
         max_settle_s: float,
     ) -> None:
         self._proc = proc
+        self._domain = domain
         self._master_fd = master_fd
         self._rows = rows
         self._cols = cols
@@ -411,6 +413,9 @@ class PtyHandle:
                     if detached:
                         result = "detached"
                         break
+                if self._domain.observe_leader_exit() is not None:
+                    result = "eof"
+                    break
         finally:
             done.set()
             forwarder.join(timeout=1.0)
@@ -516,7 +521,7 @@ class PtyHandle:
         failure: AdapterError | None = None
         try:
             self._wait_for_active_operations()
-            self._reap_child()
+            self._domain.finalize()
         except AdapterError as exc:
             failure = exc
         except Exception as exc:  # pragma: no cover  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-067] exception
@@ -575,18 +580,21 @@ class PtyHandle:
                     break
                 if not ready:
                     self._maybe_mark_stall()
-                    if self._proc.poll() is not None:
+                    if self._domain.observe_leader_exit() is not None:
                         break
                     continue
                 try:
                     data = os.read(self._master_fd, 4096)
                 except BlockingIOError:
+                    if self._domain.observe_leader_exit() is not None:
+                        break
                     continue
                 except OSError:
                     break
                 if not data:
                     break
                 self._observe_output(data)
+                leader_exited = self._domain.observe_leader_exit() is not None
                 replies = self._responder.feed(data)
                 for reply in replies:
                     self._write_best_effort(reply)
@@ -594,6 +602,8 @@ class PtyHandle:
                 if now - last_activity >= _OUTPUT_ACTIVITY_WINDOW_SECONDS:
                     last_activity = now
                     yield ActivityEvent(description="output")
+                if leader_exited:
+                    break
         finally:
             with self._lifecycle_lock:
                 if not self._master_closed:
@@ -641,10 +651,10 @@ class PtyHandle:
         if close_error is not None:
             raise AdapterError(close_error)
         self._wait_for_active_operations()
-        if self._proc.poll() is None:
-            self._reap_child()
-        returncode = self._proc.returncode
-        yield ExitEvent(returncode=0 if returncode is None else int(returncode))
+        returncode = self._domain.wait_for_leader_exit(0.3)
+        if returncode is None:
+            raise AdapterError("PTY stream ended before provider leader exit")
+        yield ExitEvent(returncode=returncode)
 
     def _write_all(self, data: bytes) -> None:  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-032] exception
         offset = 0
@@ -702,7 +712,7 @@ class PtyHandle:
             raise AdapterError("PTY write interrupted")
         if self._retired or self._master_closed:
             raise AdapterError("PTY master is closed")
-        if self._proc.poll() is not None:
+        if self._domain.observe_leader_exit() is not None:
             raise AdapterError("PTY child exited during write")
 
     def _write_best_effort(self, data: bytes) -> None:
@@ -756,38 +766,10 @@ class PtyHandle:
             self._close_condition.wait_for(lambda: not self._active_operations)
 
     def _signal_process_group(self, sig: signal.Signals) -> None:
-        if self._proc.poll() is not None:
-            return
         try:
-            os.killpg(self._proc.pid, sig)
-        except ProcessLookupError:
-            return
-        except OSError:
-            try:
-                self._proc.send_signal(sig)
-            except OSError:
-                return
-
-    def _reap_child(self) -> None:
-        if self._proc.poll() is not None:
-            return
-        last_timeout: subprocess.TimeoutExpired | None = None
-        try:
-            self._proc.wait(timeout=0.3)
-            return
-        except subprocess.TimeoutExpired as exc:
-            last_timeout = exc
-        for sig, timeout in ((signal.SIGTERM, 2.0), (signal.SIGKILL, 2.0)):
-            if self._proc.poll() is not None:
-                return
-            self._signal_process_group(sig)
-            try:
-                self._proc.wait(timeout=timeout)
-                return
-            except subprocess.TimeoutExpired as exc:
-                last_timeout = exc
-                continue
-        raise AdapterError("PTY child did not exit after SIGKILL") from last_timeout
+            self._domain.signal_group(sig)
+        except AdapterError:
+            logger.debug("PTY process-group interrupt failed", exc_info=True)
 
     def _close_master_unlocked(self) -> None:
         if self._master_closed:

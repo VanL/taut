@@ -23,6 +23,7 @@ import types
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self, cast
 
+import psutil
 import pytest
 from taut_summon._adapter import (
     ActivityEvent,
@@ -34,6 +35,7 @@ from taut_summon._adapter import (
     adapter_names,
     get_adapter,
 )
+from taut_summon._process_domain import ProcessIO
 
 pty = pytest.importorskip("pty", reason="POSIX PTY tests require the pty module")
 termios = pytest.importorskip(
@@ -137,6 +139,51 @@ class _NeverReapsPtyProcess(_ScheduledPtyProcess):
         raise subprocess.TimeoutExpired("never-reaps-pty", timeout or 0.0)
 
 
+class _FakePtyDomain:
+    """Lifecycle owner for Popen-shaped boundary fakes only."""
+
+    def __init__(self, proc: _ScheduledPtyProcess) -> None:
+        self._proc = proc
+        self._lock = threading.RLock()
+
+    def observe_leader_exit(self) -> int | None:
+        return self._proc.poll()
+
+    def wait_for_leader_exit(self, timeout: float) -> int | None:
+        status = self.observe_leader_exit()
+        if status is not None:
+            return status
+        try:
+            return self._proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return None
+
+    def signal_leader(self, sig: signal.Signals) -> None:
+        self._proc.send_signal(sig)
+
+    def signal_group(self, sig: signal.Signals) -> None:
+        self._proc.send_signal(sig)
+
+    def finalize(self) -> int:
+        with self._lock:
+            status = self.observe_leader_exit()
+            if status is not None:
+                return status
+            last_timeout: subprocess.TimeoutExpired | None = None
+            for sig, timeout in (
+                (None, 0.3),
+                (signal.SIGTERM, 2.0),
+                (signal.SIGKILL, 2.0),
+            ):
+                if sig is not None:
+                    self.signal_group(sig)
+                try:
+                    return self._proc.wait(timeout=timeout)
+                except subprocess.TimeoutExpired as exc:
+                    last_timeout = exc
+            raise AdapterError("PTY child did not exit after SIGKILL") from last_timeout
+
+
 class _BlockingWriterLock:
     def __init__(self) -> None:
         self.entered = threading.Event()
@@ -198,7 +245,8 @@ class _TrackingCondition:
 
 def _boundary_pty_handle(proc: Any, master_fd: int) -> PtyHandle:
     return PtyHandle(
-        proc,
+        ProcessIO(pid=proc.pid, stdin=None, stdout=None),
+        domain=_FakePtyDomain(proc),
         master_fd=master_fd,
         rows=24,
         cols=80,
@@ -267,6 +315,38 @@ def _wait_for(path: Path, event: str, *, timeout: float = 10.0) -> dict[str, Any
     raise AssertionError(f"timed out waiting for {event}: {_entries(path)!r}")
 
 
+def _capture_process_identity(pid_file: Path) -> tuple[int, float]:
+    deadline = time.monotonic() + 5.0
+    while True:
+        assert time.monotonic() < deadline, "descendant did not publish its PID"
+        try:
+            payload = json.loads(pid_file.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            time.sleep(0.01)
+            continue
+        pid = int(payload["pid"])
+        return pid, psutil.Process(pid).create_time()
+
+
+def _same_process(identity: tuple[int, float]) -> bool:
+    pid, created_at = identity
+    try:
+        return psutil.Process(pid).create_time() == created_at
+    except psutil.NoSuchProcess:
+        return False
+
+
+def _cleanup_exact_process(identity: tuple[int, float]) -> None:
+    if not _same_process(identity):
+        return
+    pid, created_at = identity
+    process = psutil.Process(pid)
+    if process.create_time() != created_at:
+        return
+    process.kill()
+    process.wait(timeout=5.0)
+
+
 def _read_fd_until(fd: int, needle: bytes, *, timeout: float = 5.0) -> bytes:
     deadline = time.monotonic() + timeout
     out = b""
@@ -333,6 +413,202 @@ def test_spawn_replaces_inherited_host_identity_in_real_pty_child(
     assert start["env_token"] == "summoned-token"
     assert os.environ["TAUT_AS"] == "HostPersona"
     assert os.environ["TAUT_TOKEN"] == "host-token"
+
+
+def test_pty_close_retires_descendant_after_leader_exits_first(
+    tmp_path: Path,
+) -> None:
+    """[SUM-7.4]/[SUM-12] PTY EOF cannot bypass domain retirement."""
+
+    pid_file = tmp_path / "pty-descendant.json"
+    scenario_path = tmp_path / "pty-domain-scenario.json"
+    scenario_path.write_text(
+        json.dumps(
+            {
+                "on_start": [
+                    {
+                        "spawn_descendant": {
+                            "pid_file": str(pid_file),
+                            "leader_exit_code": 0,
+                        }
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    handle = PtyAdapter(
+        PtySpec(
+            name="scripted-domain",
+            argv=(sys.executable, "-m", "taut_summon.scripted_provider"),
+        )
+    ).spawn(
+        session_id=None,
+        system_prompt="ignored for PTY",
+        env={"TAUT_SUMMON_SCENARIO": str(scenario_path)},
+    )
+    identity: tuple[int, float] | None = None
+    try:
+        pump = EventPump(handle)
+        identity = _capture_process_identity(pid_file)
+        assert pump.drain_until_exit(timeout=5.0).returncode == 0
+
+        handle.close()
+
+        deadline = time.monotonic() + 5.0
+        while _same_process(identity) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not _same_process(identity)
+    finally:
+        handle.close()
+        if identity is not None:
+            _cleanup_exact_process(identity)
+
+
+def test_pty_observes_leader_exit_while_descendant_continuously_writes(
+    tmp_path: Path,
+) -> None:
+    """[SUM-7.1]/[SUM-7.4] Busy PTY output cannot starve leader exit."""
+
+    pid_file = tmp_path / "pty-busy-descendant.json"
+    scenario_path = tmp_path / "pty-busy-domain-scenario.json"
+    scenario_path.write_text(
+        json.dumps(
+            {
+                "on_start": [
+                    {
+                        "spawn_descendant": {
+                            "pid_file": str(pid_file),
+                            "inherit_stdout": True,
+                            "stdout_payload": "x" * 2_000,
+                            "stdout_repeat": True,
+                            "leader_exit_code": 0,
+                        }
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    handle = PtyAdapter(
+        PtySpec(
+            name="scripted-busy-domain",
+            argv=(sys.executable, "-m", "taut_summon.scripted_provider"),
+        )
+    ).spawn(
+        session_id=None,
+        system_prompt="ignored for PTY",
+        env={"TAUT_SUMMON_SCENARIO": str(scenario_path)},
+    )
+    identity: tuple[int, float] | None = None
+    try:
+        pump = EventPump(handle)
+        identity = _capture_process_identity(pid_file)
+
+        assert pump.drain_until_exit(timeout=2.0).returncode == 0
+        assert _same_process(identity)
+
+        handle.close()
+
+        deadline = time.monotonic() + 5.0
+        while _same_process(identity) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not _same_process(identity)
+    finally:
+        handle.close()
+        if identity is not None:
+            _cleanup_exact_process(identity)
+
+
+def test_pty_observes_terminal_leader_after_each_readable_output_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[SUM-7.1] Readable PTY data cannot defer terminal observation."""
+
+    master_fd, writer_fd = os.pipe()
+    proc = _ScheduledPtyProcess()
+    proc.returncode = 0
+    handle = _boundary_pty_handle(proc, master_fd)
+    read_calls = 0
+
+    def always_readable(
+        readers: list[int], _writers: list[int], _errors: list[int], _timeout: float
+    ) -> tuple[list[int], list[int], list[int]]:
+        return readers, [], []
+
+    def read_once(fd: int, _size: int) -> bytes:
+        nonlocal read_calls
+        assert fd == master_fd
+        read_calls += 1
+        assert read_calls == 1, "leader status was not checked after readable output"
+        return b"busy output"
+
+    monkeypatch.setattr(_pty_module.select, "select", always_readable)
+    monkeypatch.setattr(_pty_module.os, "read", read_once)
+    try:
+        events = list(handle.events())
+    finally:
+        os.close(writer_fd)
+
+    assert read_calls == 1
+    assert events[-1] == ExitEvent(returncode=0)
+
+
+@pytest.mark.parametrize(
+    ("ignore_sigterm", "expected_returncode"),
+    [(False, -signal.SIGTERM), (True, -signal.SIGKILL)],
+    ids=["term", "kill"],
+)
+def test_pty_close_retires_domain_through_forced_signal_stages(
+    tmp_path: Path,
+    ignore_sigterm: bool,
+    expected_returncode: int,
+) -> None:
+    """[SUM-7.1]/[SUM-12] PTY finalization owns the real group ladder."""
+
+    pid_file = tmp_path / f"pty-forced-{ignore_sigterm}.json"
+    scenario_path = tmp_path / f"pty-forced-{ignore_sigterm}.jsonl"
+    scenario_path.write_text(
+        json.dumps(
+            {
+                "on_start": [
+                    {
+                        "spawn_descendant": {
+                            "pid_file": str(pid_file),
+                            "ignore_sigint": True,
+                            "ignore_sigterm": ignore_sigterm,
+                            "leader_ignore_sigint": True,
+                            "leader_ignore_sigterm": ignore_sigterm,
+                        }
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    handle = PtyAdapter(
+        PtySpec(
+            name="scripted-domain",
+            argv=(sys.executable, "-m", "taut_summon.scripted_provider"),
+        )
+    ).spawn(
+        session_id=None,
+        system_prompt="ignored for PTY",
+        env={"TAUT_SUMMON_SCENARIO": str(scenario_path)},
+    )
+    identity: tuple[int, float] | None = None
+    try:
+        pump = EventPump(handle)
+        identity = _capture_process_identity(pid_file)
+
+        handle.close()
+
+        assert pump.drain_until_exit(timeout=12.0).returncode == expected_returncode
+        assert not _same_process(identity)
+    finally:
+        handle.close()
+        if identity is not None:
+            _cleanup_exact_process(identity)
 
 
 def test_fake_tui_preserves_input_that_arrives_before_query_reply() -> None:
@@ -515,8 +791,8 @@ def test_spawn_failure_closes_master_and_slave_once(
     monkeypatch.setattr(_pty_module, "_set_winsize", lambda *_args: None)
     monkeypatch.setattr(_pty_module, "_set_nonblocking", lambda _fd: None)
     monkeypatch.setattr(
-        _pty_module.subprocess,
-        "Popen",
+        _pty_module,
+        "spawn_process",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("spawn failed")),
     )
     monkeypatch.setattr(_pty_module.os, "close", close_calls.append)

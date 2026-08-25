@@ -289,13 +289,67 @@ races an adapter failure: generation teardown still runs inside the control
 error's exception scope, and cleanup failures attach as notes rather than
 replacing the control diagnostic.
 
+### Owned process domains ([SUM-7.1])
+
+`extensions/taut_summon/taut_summon/_process_domain.py` is the sole provider-
+process lifecycle owner. Adapter spawn receives an atomic pair: a `ProcessIO`
+view containing only PID and borrowed stdin/stdout, plus a `ProcessDomain`
+capability. The raw `Popen` remains private to that domain, so stream and PTY
+code cannot accidentally reap through `poll()` or `wait()`. Adapters still own
+protocol parsing, graceful request shape, pipes, and PTY fds; the domain owns
+containment, terminal observation, forced retirement, and the one leader reap.
+
+On POSIX, spawn forces a new session and saves the leader PID as the process-
+group identity. Natural exit is observed with `waitid(..., WNOWAIT)` and cached
+without reaping. Python runtimes that expose `os.waitid()` use it directly;
+macOS Python 3.11/3.12 use the isolated typed libc compatibility binding in
+`_darwin_wait.py`. Finalization keeps the leader waitable while sending the
+bounded SIGTERM/SIGKILL ladder to the saved group. A successful SIGTERM
+delivery gets one bounded grace interval; finalization then attempts SIGKILL
+regardless of leader status or the prior stage's accepted no-target result,
+observes leader termination within the kill bound, and performs one final
+`Popen.wait()`. It never uses `killpg(..., 0)` as an emptiness oracle: an
+unreaped zombie leader can keep that probe successful even after every live
+member is gone. `ESRCH` is the portable no-target stage result. Darwin `EPERM`
+is accepted only after non-reaping leader-terminal evidence. Unexpected signal
+errors remain terminal diagnostics, but finalization aggregates them while
+continuing through KILL and the one reap whenever terminal status is known.
+This is bounded best-effort group retirement, not atomic proof that a numeric
+POSIX group is empty. A descendant that deliberately creates a new session is
+outside the retained capability and must have an explicit external lifetime.
+
+On Windows, `_win32_job.py` creates and configures a kill-on-close Job Object,
+starts the provider with `CREATE_SUSPENDED`, assigns it before execution,
+recovers exactly one primary thread through the documented Toolhelp snapshot,
+and resumes only after assignment. Setup failure terminates and reaps the
+suspended child and releases every acquired handle before returning an error.
+Terminal finalization queries the retained job, terminates it when nonempty,
+requires zero active processes, performs the one leader wait, and closes the
+job handle. The runner's existing outer Job Object is not grounds for an eager
+rejection: valid nested assignment is attempted, while an actual incompatible
+assignment fails closed without breakaway.
+
+Structured stdout cannot use pipe EOF as leader-liveness evidence because a
+descendant may inherit the write end. `_stream.py` therefore reads leased raw
+fds incrementally: POSIX uses nonblocking reads capped at 16 reads and 1 MiB
+per pump turn; Windows Python 3.11 uses the documented `PeekNamedPipe`
+readiness binding in `_win32_pipe.py` with the same read-count cap. These
+bounds keep a continuously writing descendant from starving leader
+observation. After a non-reaping leader-terminal observation, the reader makes
+one equally bounded drain of committed newline-delimited frames and emits the
+exact cached exit status without waiting for an inherited writer to close. A
+non-EOF partial fragment is not a protocol frame and is discarded. Blocking
+`close()` then retires the whole domain and releases the adapter streams. The
+PTY pump likewise checks leader status after every readable output turn, so a
+continuously readable master cannot defer terminal observation.
+
 ### PTY adapter: capable terminal, not screen parser ([SUM-7.4])
 
 `extensions/taut_summon/taut_summon/_pty.py` is the default host for
-interactive CLIs. It uses stdlib `pty.openpty()` and
-`subprocess.Popen(..., start_new_session=True)`; no `pexpect`, `ptyprocess`,
-`tmux`, or screen emulator is in the dependency surface. The child sees a real
-PTY with `TERM=xterm-256color`, and the parent owns exactly one master fd.
+interactive CLIs. It uses stdlib `pty.openpty()` and the shared POSIX process-
+domain spawn; no `pexpect`, `ptyprocess`, `tmux`, or screen emulator is in the
+dependency surface. The child sees a real PTY with `TERM=xterm-256color`, and
+the parent owns exactly one master fd.
 
 The PTY reader deliberately does not parse the TUI as speech. It reads raw
 bytes for three reasons only: finite terminal-query replies, coarse liveness,
@@ -352,15 +406,16 @@ from concurrent close are normalized to the newer lifecycle state.
 
 The fd lifecycle is the load-bearing boundary. `PtyHandle.request_close()`
 publishes terminal retirement and owns one graceful Ctrl-C without waiting.
-`PtyHandle.close()` ensures that request exists, drains operations, drives
-bounded SIGTERM/SIGKILL escalation, reaps the child, and closes the master only
-if no reader has started. Once the pump owns the master, the reader closes it
-on EOF/EIO. The driver closes the handle and joins any already-started pump on
-exceptions through bootstrap and the pump hand-off, so a failed rejoin or
-thread join cannot leak a master fd or leave a zombie. Stream and PTY handles
-publish `close_requested` before the graceful signal, so injections that begin
-after terminal retirement fail synchronously; concurrent close callers observe
-the same terminal result.
+`PtyHandle.close()` ensures that request exists, drains operations, delegates
+the bounded group ladder and leader reap to the shared domain, and closes the
+master only if no reader has started. Once the pump owns the master, the reader
+closes it on EOF/EIO. Leader exit is a non-reaping observation and cannot skip
+domain retirement. The driver closes the handle and joins any already-started
+pump on exceptions through bootstrap and the pump hand-off, so a failed rejoin
+or thread join cannot leak a master fd or leave a zombie. Stream and PTY
+handles publish `close_requested` before the graceful signal, so injections
+that begin after terminal retirement fail synchronously; concurrent close
+callers observe the same terminal result.
 
 Write-side fd lifetime is carried by lifecycle-registered operation tokens and
 duplicated master fds. Normal writers snapshot their epoch before
@@ -742,9 +797,11 @@ Python text stream can wake a concurrent iterator with the built-in
 `ValueError("I/O operation on closed file.")` instead of EOF. The shared reader
 normalizes only that exact type and diagnostic when terminal retirement is
 already published and the same stdout object reports closed, then emits the
-reaped child's final `ExitEvent`. Decode-error subclasses and every other read,
-malformed-frame, or adapter-translation failure remain fatal regardless of
-close state.
+reaped child's final `ExitEvent`. Natural leader exit may instead emit the
+cached status before reap so the driver can enter whole-domain finalization;
+that path does not wait for inherited stdout EOF. Decode-error subclasses and
+every other read, malformed-frame, or adapter-translation failure remain fatal
+regardless of close state.
 
 The extension CLI keeps one documented argparse inventory for `run`, `stop`,
 and `status`. Root help owns exit classes; each subcommand owns its syntax and
@@ -823,6 +880,10 @@ require a separately drained subprocess pipe.
 | `extensions/taut_summon/taut_summon/_state.py` | The two-table ledger, claim/session helpers, single-driver guard evidence ([SUM-8]) |
 | `extensions/taut_summon/taut_summon/_control.py` | Fixed `_ControlReactor`, between-turn replacement supervisor, client, `sys.*` queue derivation, rate backstop ([SUM-9]/[SUM-10]/[SUM-11]) |
 | `extensions/taut_summon/taut_summon/_adapter.py` | `AdapterHandle` lifecycle, `ProviderAdapter` protocol, `AdapterEvent` union, adapter registry ([SUM-7.1]) |
+| `extensions/taut_summon/taut_summon/_process_domain.py` | Shared atomic spawn boundary, capability-minimal process I/O view, POSIX non-reaping group owner, and platform dispatch ([SUM-7.1]) |
+| `extensions/taut_summon/taut_summon/_darwin_wait.py` | Narrow typed libc `waitid(..., WNOWAIT)` compatibility binding for macOS Python 3.11/3.12 |
+| `extensions/taut_summon/taut_summon/_win32_job.py` | Suspended pre-execution Job Object assignment, exact native-handle ownership, zero-active finalization, and leader reap |
+| `extensions/taut_summon/taut_summon/_win32_pipe.py` | Immediate `PeekNamedPipe` readiness for inherited-stdout-safe Windows stream framing |
 | `extensions/taut_summon/taut_summon/_stream.py` | Shared stream-json child-process mechanics, nonblocking write leases and cancellation epochs, reusable interruption, terminal-close request, and blocking finalization |
 | `extensions/taut_summon/taut_summon/_pty.py` | Universal interactive PTY adapter, terminal-query responder, attach bridge, and terminal-retirement fd-operation lifecycle |
 | `extensions/taut_summon/taut_summon/_scripted.py` | The `scripted` test adapter (real subprocess, fake model) — the anti-mocking seam |
@@ -843,7 +904,7 @@ require a separately drained subprocess pipe.
 | [SUM-4], bootstrap, identity, presence | `extensions/taut_summon/taut_summon/_driver.py`, `extensions/taut_summon/taut_summon/_state.py` | `extensions/taut_summon/tests/test_driver.py` |
 | [SUM-5], ears injection contract | `extensions/taut_summon/taut_summon/_driver.py` | `extensions/taut_summon/tests/test_driver.py`, `extensions/taut_summon/tests/test_conformance.py` |
 | [SUM-6], mouth CLI contract | `extensions/taut_summon/taut_summon/_driver.py`, `extensions/taut_summon/taut_summon/_persona.py`, `extensions/taut_summon/taut_summon/_scripted.py`, `extensions/taut_summon/taut_summon/_claude.py`, `extensions/taut_summon/taut_summon/_pty.py` | `extensions/taut_summon/tests/test_driver.py`, including real-process blank-then-visible and nonblank-post-failure cases; real child identity cases in each adapter suite; `extensions/taut_summon/tests/test_persona.py`; installed paired exception proof in `tests/test_core_summon_wheel_matrix.py` |
-| [SUM-7.1], [SUM-7.2], adapters | `extensions/taut_summon/taut_summon/_adapter.py`, `extensions/taut_summon/taut_summon/_stream.py`, `extensions/taut_summon/taut_summon/_pty.py`, `extensions/taut_summon/taut_summon/_scripted.py`, `extensions/taut_summon/taut_summon/_claude.py` | `extensions/taut_summon/tests/test_scripted_adapter.py`, `extensions/taut_summon/tests/test_claude_adapter.py`, `extensions/taut_summon/tests/test_pty_adapter.py`, including reusable interrupt, one-signal terminal request, reentry, and direct/concurrent finalization |
+| [SUM-7.1], [SUM-7.2], adapters and process domains | `extensions/taut_summon/taut_summon/_adapter.py`, `extensions/taut_summon/taut_summon/_process_domain.py`, `extensions/taut_summon/taut_summon/_darwin_wait.py`, `extensions/taut_summon/taut_summon/_win32_job.py`, `extensions/taut_summon/taut_summon/_win32_pipe.py`, `extensions/taut_summon/taut_summon/_stream.py`, `extensions/taut_summon/taut_summon/_pty.py`, `extensions/taut_summon/taut_summon/_scripted.py`, `extensions/taut_summon/taut_summon/_claude.py` | `extensions/taut_summon/tests/test_process_domain.py`, `extensions/taut_summon/tests/test_win32_job.py`, `extensions/taut_summon/tests/test_win32_pipe.py`, `extensions/taut_summon/tests/test_scripted_adapter.py`, `extensions/taut_summon/tests/test_claude_adapter.py`, `extensions/taut_summon/tests/test_pty_adapter.py`, including real leader-first, inherited-stdout, TERM/KILL, explicit-escape, zero-active Job Object, outer-job rejection, reusable interrupt, one-signal terminal request, reentry, and direct/concurrent finalization |
 | [SUM-7.4], PTY shell adapter | `extensions/taut_summon/taut_summon/_pty.py`, `extensions/taut_summon/taut_summon/_driver.py` | `extensions/taut_summon/tests/test_pty_adapter.py`, PTY cases in `extensions/taut_summon/tests/test_driver.py`, `extensions/taut_summon/tests/test_interaction.py`, `extensions/taut_summon/tests/test_live_harness.py` |
 | [SUM-8], session ledger and guard | `extensions/taut_summon/taut_summon/_state.py` | `extensions/taut_summon/tests/test_state.py`, `extensions/taut_summon/tests/test_driver.py` |
 | [SUM-8], [PIO-5.3], durable session persistence and live-lease exclusion | `extensions/taut_summon/taut_summon/persistence_manifest.py`, `persistence.py`, `_state.py::persistence_records`, `persistence_is_fresh`, `load_persistence_records` | `extensions/taut_summon/tests/test_persistence.py`; cross-backend component coverage in `extensions/taut_pg/tests/test_persistence_io.py` |

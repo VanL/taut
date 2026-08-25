@@ -442,6 +442,15 @@ def test_test_workflow_is_reusable_and_owns_canonical_release_artifacts() -> Non
                 "2",
                 "load",
             ): 1,
+            (
+                "summon-process",
+                "Run taut-summon Windows process tests",
+                (),
+                "extensions/taut_summon/tests/test_process_domain.py",
+                "xdist_group and not requires_live_harness and not requires_local_llm",
+                "2",
+                "load",
+            ): 1,
         }
     )
     assert (
@@ -530,6 +539,45 @@ def test_windows_source_factor_is_exact_complete_disjoint_nonempty_union() -> No
     for index, left in enumerate(shards):
         for right in shards[index + 1 :]:
             assert left.isdisjoint(right)
+
+
+def test_summon_process_matrix_covers_e2_platform_proofs() -> None:
+    document = _workflow_data("test.yml")
+    job = document["jobs"]["summon-process"]
+
+    assert job["strategy"]["matrix"] == {
+        "include": [
+            {"os": "ubuntu-latest", "python-version": "3.11"},
+            {"os": "ubuntu-latest", "python-version": "3.12"},
+            {"os": "ubuntu-latest", "python-version": "3.13"},
+            {"os": "ubuntu-latest", "python-version": "3.14"},
+            {"os": "macos-latest", "python-version": "3.11"},
+            {"os": "macos-latest", "python-version": "3.13"},
+            {"os": "macos-latest", "python-version": "3.14"},
+            {"os": "windows-latest", "python-version": "3.11"},
+        ]
+    }
+
+
+def test_summon_process_windows_row_avoids_posix_only_collection() -> None:
+    """The Windows proof must not import the PTY module during collection."""
+
+    document = _workflow_data("test.yml")
+    steps = _named_steps(document["jobs"]["summon-process"])
+    posix = steps["Run taut-summon extension process tests"]
+    windows = steps["Run taut-summon Windows process tests"]
+
+    assert posix["if"] == (
+        "${{ matrix.os != 'windows-latest' && "
+        "(matrix.os != 'ubuntu-latest' || matrix.python-version != '3.13') }}"
+    )
+    assert windows["if"] == "${{ matrix.os == 'windows-latest' }}"
+    windows_run = str(windows["run"])
+    assert "extensions/taut_summon/tests/test_process_domain.py" in windows_run
+    assert "extensions/taut_summon/tests/test_scripted_adapter.py" in windows_run
+    assert "extensions/taut_summon/tests/test_win32_job.py" in windows_run
+    assert "pytest extensions/taut_summon/tests " not in windows_run
+    assert "test_pty_adapter.py" not in windows_run
 
 
 def test_coverage_reuses_existing_ubuntu_lanes_and_aggregates_without_tests() -> None:

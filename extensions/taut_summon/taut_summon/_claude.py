@@ -66,6 +66,7 @@ from taut_summon._adapter import (
     AssistantTextEvent,
     SessionEvent,
 )
+from taut_summon._process_domain import spawn_process
 from taut_summon._stream import StreamJsonHandle
 
 _CLAUDE_BIN = "claude"
@@ -107,7 +108,7 @@ class ClaudeAdapter:
         child_env.pop("TAUT_TOKEN", None)
         child_env.update(env)
         try:
-            proc = subprocess.Popen(
+            spawned = spawn_process(
                 command,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
@@ -120,7 +121,11 @@ class ClaudeAdapter:
             raise AdapterError(
                 f"failed to spawn the claude CLI ({exc}); is Claude Code installed?"
             ) from exc
-        return ClaudeHandle(proc, session_id=session_id)
+        return ClaudeHandle(
+            spawned.process,
+            domain=spawned.domain,
+            session_id=session_id,
+        )
 
 
 class ClaudeHandle(StreamJsonHandle):

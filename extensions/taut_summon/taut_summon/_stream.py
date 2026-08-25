@@ -14,8 +14,9 @@ claude-style stream-json over pipes; only the output translation differs.
   ``close`` owns bounded escalation, reap, and pipe release without repeating
   the graceful signal.
 - ``events`` is single-consumer, translates each stdout line through the
-  subclass's ``_parse_line``, and ends with exactly one ``ExitEvent``
-  after the child is reaped. Unknown stream shapes are rejected loudly —
+  subclass's ``_parse_line``, and ends with exactly one ``ExitEvent`` after
+  terminal leader status is observed. The domain retains the waitable leader
+  until whole-domain finalization. Unknown stream shapes are rejected loudly —
   the ``AdapterEvent`` union is closed, and a quiet skip would hide
   protocol drift.
 
@@ -25,16 +26,16 @@ Spec references:
 
 from __future__ import annotations
 
+import codecs
 import json
 import os
 import select
 import signal
-import subprocess
 import sys
 import threading
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
-from typing import Any
+from typing import Any, Protocol
 
 from taut_summon._adapter import (
     AdapterError,
@@ -42,6 +43,154 @@ from taut_summon._adapter import (
     ExitEvent,
     SessionEvent,
 )
+from taut_summon._process_domain import ProcessDomain, ProcessIO
+
+_RAW_READ_CHUNK_BYTES = 65_536
+_RAW_READ_TURN_BYTES = 1_048_576
+_RAW_READ_TURN_READS = 16
+
+
+class _Utf8LineFramer:
+    def __init__(self) -> None:
+        self._decoder = codecs.getincrementaldecoder("utf-8")("strict")
+        self._buffered = ""
+
+    def feed(self, chunk: bytes) -> list[str]:
+        self._buffered += self._decoder.decode(chunk, final=False)
+        lines: list[str] = []
+        while "\n" in self._buffered:
+            line, self._buffered = self._buffered.split("\n", 1)
+            lines.append(line)
+        return lines
+
+    def finish(self) -> list[str]:
+        self._buffered += self._decoder.decode(b"", final=True)
+        if not self._buffered:
+            return []
+        final_line = self._buffered
+        self._buffered = ""
+        return [final_line]
+
+
+class _Utf8Lines(Protocol):
+    def read_available(self) -> tuple[list[str], bool]: ...
+
+    def finish(self) -> list[str]: ...
+
+    def wait(self) -> None: ...
+
+    def close(self) -> None: ...
+
+
+class _NonblockingUtf8Lines:
+    """Own one nonblocking POSIX stdout lease and framing state."""
+
+    def __init__(self, stdout_fd: int) -> None:
+        fd: int | None = None
+        try:
+            fd = os.dup(stdout_fd)
+            os.set_blocking(fd, False)
+        except OSError as exc:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            raise AdapterError(f"provider stdout lease failed: {exc}") from exc
+        self._fd = fd
+        self._framer = _Utf8LineFramer()
+
+    def read_available(self) -> tuple[list[str], bool]:
+        lines: list[str] = []
+        eof = False
+        remaining_bytes = _RAW_READ_TURN_BYTES
+        for _ in range(_RAW_READ_TURN_READS):
+            try:
+                chunk = os.read(
+                    self._fd,
+                    min(_RAW_READ_CHUNK_BYTES, remaining_bytes),
+                )
+            except BlockingIOError:
+                break
+            except OSError as exc:
+                raise AdapterError(f"provider stdout read failed: {exc}") from exc
+            if not chunk:
+                eof = True
+                break
+            lines.extend(self._framer.feed(chunk))
+            remaining_bytes -= len(chunk)
+            if remaining_bytes == 0:
+                break
+        return lines, eof
+
+    def finish(self) -> list[str]:
+        return self._framer.finish()
+
+    def wait(self) -> None:
+        try:
+            select.select([self._fd], [], [], 0.05)
+        except (OSError, ValueError) as exc:
+            raise AdapterError(f"provider stdout wait failed: {exc}") from exc
+
+    def close(self) -> None:
+        try:
+            os.close(self._fd)
+        except OSError:
+            pass
+
+
+class _WindowsUtf8Lines:
+    """Own one Windows stdout lease observed through ``PeekNamedPipe``."""
+
+    def __init__(self, stdout_fd: int) -> None:
+        from taut_summon._win32_pipe import WindowsPipeReadiness
+
+        fd: int | None = None
+        try:
+            fd = os.dup(stdout_fd)
+            readiness = WindowsPipeReadiness.from_fd(fd)
+        except (AdapterError, OSError) as exc:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            raise AdapterError(f"provider stdout lease failed: {exc}") from exc
+        self._fd = fd
+        self._readiness = readiness
+        self._framer = _Utf8LineFramer()
+
+    def read_available(self) -> tuple[list[str], bool]:
+        lines: list[str] = []
+        try:
+            for _ in range(_RAW_READ_TURN_READS):
+                state = self._readiness.poll()
+                if state.eof:
+                    return lines, True
+                if state.available == 0:
+                    return lines, False
+                chunk = os.read(
+                    self._fd,
+                    min(state.available, _RAW_READ_CHUNK_BYTES),
+                )
+                if not chunk:
+                    return lines, True
+                lines.extend(self._framer.feed(chunk))
+        except OSError as exc:
+            raise AdapterError(f"provider stdout read failed: {exc}") from exc
+        return lines, False
+
+    def finish(self) -> list[str]:
+        return self._framer.finish()
+
+    def wait(self) -> None:
+        threading.Event().wait(0.05)
+
+    def close(self) -> None:
+        try:
+            os.close(self._fd)
+        except OSError:
+            pass
 
 
 class StreamJsonHandle(ABC):
@@ -49,11 +198,13 @@ class StreamJsonHandle(ABC):
 
     def __init__(
         self,
-        proc: subprocess.Popen[str],
+        proc: ProcessIO,
         *,
+        domain: ProcessDomain,
         session_id: str | None,
     ) -> None:
         self._proc = proc
+        self._domain = domain
         self._session_id = session_id
         # A Python signal handler may call interrupt() reentrantly on the
         # main thread while close() is transitioning lifecycle state.  RLock
@@ -142,7 +293,7 @@ class StreamJsonHandle(ABC):
             raise AdapterError(f"provider child is {state}; inject refused")
         if write_epoch != current_epoch:
             raise AdapterError("provider pipe write interrupted")
-        if self._proc.poll() is not None:
+        if self._domain.observe_leader_exit() is not None:
             raise AdapterError("provider child exited during inject")
 
     def _write_raw(self, payload: bytes, write_epoch: int) -> None:
@@ -247,7 +398,7 @@ class StreamJsonHandle(ABC):
             self._write_epoch += 1
             self._send_interrupt()
 
-    def close(self) -> None:  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-035] exception
+    def close(self) -> None:
         primary_error = sys.exception()
         self.request_close()
         owns_close = False
@@ -269,21 +420,9 @@ class StreamJsonHandle(ABC):
 
         failure: Exception | None = None
         try:
-            if self._proc.poll() is None:
-                try:
-                    self._proc.wait(timeout=5.0)
-                except subprocess.TimeoutExpired:
-                    try:
-                        self._proc.kill()
-                        self._proc.wait(timeout=5.0)
-                    except subprocess.TimeoutExpired as exc:
-                        failure = AdapterError(
-                            "provider child did not exit after SIGKILL"
-                        )
-                        failure.__cause__ = exc
-                    except OSError as exc:
-                        failure = AdapterError(f"provider child kill failed: {exc}")
-                        failure.__cause__ = exc
+            self._domain.finalize()
+        except AdapterError as exc:
+            failure = exc
         except OSError as exc:
             failure = AdapterError(f"provider child close failed: {exc}")
             failure.__cause__ = exc
@@ -322,20 +461,63 @@ class StreamJsonHandle(ABC):
         return {}
 
     def _send_interrupt(self) -> None:
-        if self._proc.poll() is not None:
-            return
         try:
-            if sys.platform == "win32":  # pragma: no cover - POSIX dev floor
-                self._proc.terminate()
-            else:
-                self._proc.send_signal(signal.SIGINT)
-        except (ProcessLookupError, OSError):  # pragma: no cover - exit race
+            self._domain.signal_leader(signal.SIGINT)
+        except AdapterError:  # pragma: no cover - exit race remains best effort
             pass
 
     def _event_stream(self) -> Iterator[AdapterEvent]:
         stdout = self._proc.stdout
         if stdout is None:  # pragma: no cover - spawn always pipes stdout
             raise AdapterError("provider child has no stdout pipe")
+        try:
+            stdout_fd = stdout.fileno()
+        except (AttributeError, OSError, ValueError):
+            pass
+        else:
+            if os.name == "nt":  # pragma: no cover - blocking Windows CI
+                yield from self._event_stream_reader(_WindowsUtf8Lines(stdout_fd))
+            else:
+                yield from self._event_stream_reader(_NonblockingUtf8Lines(stdout_fd))
+            return
+        yield from self._event_stream_text(stdout)
+
+    def _event_stream_reader(self, reader: _Utf8Lines) -> Iterator[AdapterEvent]:
+        """Decode complete provider frames without waiting for inherited EOF."""
+
+        try:
+            while True:
+                lines, eof = reader.read_available()
+                yield from self._events_from_lines(lines)
+                returncode = self._domain.observe_leader_exit()
+                if returncode is not None:
+                    # Exit orders every leader write before this observation.
+                    # Drain once more so a frame committed in that race is not
+                    # lost, then stop even if a descendant retains the pipe.
+                    final_lines, final_eof = reader.read_available()
+                    yield from self._events_from_lines(final_lines)
+                    # A descendant may still own the pipe and be partway
+                    # through a line when the leader becomes terminal. Only
+                    # EOF makes that buffered fragment a final frame; without
+                    # EOF, the line protocol has not committed it.
+                    if final_eof:
+                        yield from self._events_from_lines(reader.finish())
+                    yield ExitEvent(returncode=returncode)
+                    return
+                if eof:
+                    returncode = self._domain.wait_for_leader_exit(5.0)
+                    if returncode is None:
+                        raise AdapterError("provider stdout closed before leader exit")
+                    yield from self._events_from_lines(reader.finish())
+                    yield ExitEvent(returncode=returncode)
+                    return
+                reader.wait()
+        finally:
+            reader.close()
+
+    def _event_stream_text(self, stdout: Any) -> Iterator[AdapterEvent]:
+        """Compatibility path for deterministic stream-shaped test doubles."""
+
         lines = iter(stdout)
         while True:
             try:
@@ -353,15 +535,28 @@ class StreamJsonHandle(ABC):
                 if not owned_close:
                     raise
                 break
-            stripped = line.strip()
-            if not stripped:
-                continue
-            event = self._parse_line(stripped)
-            if isinstance(event, SessionEvent):
-                self._session_id = event.session_id
-            yield event
-        returncode = self._proc.wait()
+            event = self._event_from_line(line)
+            if event is not None:
+                yield event
+        returncode = self._domain.wait_for_leader_exit(5.0)
+        if returncode is None:
+            raise AdapterError("provider stdout closed before leader exit")
         yield ExitEvent(returncode=returncode)
+
+    def _event_from_line(self, line: str) -> AdapterEvent | None:
+        stripped = line.strip()
+        if not stripped:
+            return None
+        event = self._parse_line(stripped)
+        if isinstance(event, SessionEvent):
+            self._session_id = event.session_id
+        return event
+
+    def _events_from_lines(self, lines: list[str]) -> Iterator[AdapterEvent]:
+        for line in lines:
+            event = self._event_from_line(line)
+            if event is not None:
+                yield event
 
     def _decode_object(self, line: str) -> dict[str, Any]:
         """Parse one stdout line as a JSON object, loudly on any drift."""

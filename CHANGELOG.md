@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Summon now retires each provider's owned process domain, not only its direct
+  child. POSIX adapters keep the session leader unreaped through bounded
+  process-group TERM/KILL escalation; Windows stream adapters assign the
+  provider to a kill-on-close Job Object before it executes and require zero
+  active job processes at finalization. Leader-first exit and inherited stdout
+  no longer orphan same-domain descendants or hold the event pump open.
+  Background work intended to survive `dismiss` must use an explicit external
+  lifetime; accidental same-domain orphaning is no longer persistence behavior.
+
 - Raised the runtime floor to SimpleBroker 7.4.2 and SimpleBroker-PG 3.9.2.
   The coordinated releases preserve Taut's resolved configuration snapshot
   through watcher and PostgreSQL backend creation, include the upstream watcher

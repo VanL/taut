@@ -1,8 +1,9 @@
 # Extension Seams, Process-Domain Containment, and Coverage Integrity Plan
 
-Status: active. E1 landed at `d5e3be2`; the E2 contract is promoted for
-implementation; the T1 coverage delta remains unpromoted until that packet is
-separately authorized.
+Status: active. E1 landed at `d5e3be2`; the E2 local implementation candidate
+and independent correction rereview are complete, with hosted exact-commit
+proof still pending. The T1 coverage delta remains unpromoted until that
+packet is separately authorized.
 
 Class: 5+P. The work changes the public Python embedding contract, the MCP
 attachment contract, the Summon child-cleanup lifecycle, installed-wheel
@@ -85,12 +86,24 @@ Product and process sources consulted for this plan:
 - `docs/plans/2026-08-14-review-findings-remediation-plan.md`
 - Microsoft Learn:
   [Process Creation Flags](https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags),
+  [Nested Jobs](https://learn.microsoft.com/en-us/windows/win32/procthread/nested-jobs),
+  [CreateJobObjectW](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-createjobobjectw),
+  [SetInformationJobObject](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-setinformationjobobject),
+  [JOBOBJECT_EXTENDED_LIMIT_INFORMATION](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-jobobject_extended_limit_information),
   [AssignProcessToJobObject](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-assignprocesstojobobject),
   [Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects),
+  [QueryInformationJobObject](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-queryinformationjobobject),
+  [JOBOBJECT_BASIC_ACCOUNTING_INFORMATION](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-jobobject_basic_accounting_information),
+  [TerminateJobObject](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-terminatejobobject),
   [CreateToolhelp32Snapshot](https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/nf-tlhelp32-createtoolhelp32snapshot),
+  [Thread32First](https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/nf-tlhelp32-thread32first),
+  [Thread32Next](https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/nf-tlhelp32-thread32next),
+  [THREADENTRY32](https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/ns-tlhelp32-threadentry32),
   [OpenProcess](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocess),
-  and
-  [ResumeThread](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-resumethread)
+  [OpenThread](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openthread),
+  [ResumeThread](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-resumethread),
+  [CloseHandle](https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-closehandle),
+  and [PeekNamedPipe](https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-peeknamedpipe)
   (the Windows containment mechanism and outer-job constraints)
 - The Open Group
   [`waitid()`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/waitid.html)
@@ -522,20 +535,24 @@ cited owners are reread.
   the Job Object after its graceful interval and requires zero active processes.
   Direct leader exit never skips the remaining platform retirement step.
 - POSIX process groups are a best-effort bounded retirement capability, not a
-  durable kernel handle. Each ladder stage either safely delivers while the
-  process-group identity is pinned or returns the narrowly accepted no-
-  signalable-target result, followed by leader reap. Success does not claim an
-  atomic group-empty observation.
+  durable kernel handle. While the leader pins group identity, finalization
+  attempts SIGTERM, gives a successful delivery one bounded grace interval,
+  attempts SIGKILL regardless of leader status or the prior stage's accepted
+  no-signalable-target result, then observes leader termination within the kill
+  bound and makes the one reap attempt. It does not use `killpg(..., 0)` as a
+  group-empty oracle. Unexpected signal-stage errors are aggregated while the
+  ladder and the one reap continue whenever terminal leader status is known.
+  Success does not claim an atomic group-empty observation.
   Windows Job Object success has the stronger zero-active-process postcondition.
 - A process outside the retained domain is outside the guarantee. Production
   code does not walk arbitrary descendants with `ps`, `psutil`, `/proc`, WMI,
   or `taskkill /T` as its ownership mechanism.
 - Failure to establish containment is a spawn failure. POSIX `ESRCH`, or Darwin
   `EPERM` after the leader is already observed terminal without reaping, is an
-  expected no-signalable-target group-signal result. Any other POSIX group-signal or
-  leader-reap failure, or failure to confirm zero active Windows job processes
-  after forced termination, is a terminal cleanup failure. Cleanup failure
-  attaches to an active primary exception instead of replacing it.
+  expected no-signalable-target group-signal result. Any other POSIX group-
+  signal or leader-reap failure, or failure to confirm zero active Windows job
+  processes after forced termination, is a terminal cleanup failure. Cleanup
+  failure attaches to an active primary exception instead of replacing it.
 - The driver still anchors member presence to the provider leader PID and
   retains generation fencing, pump-drain order, checked joins, ledger release,
   and primary-error precedence. `_driver.py` does not become a second domain
@@ -736,19 +753,19 @@ Post-landing success signals:
 
 ### 5. Characterize E2 with real red process-domain tests
 
-- [ ] Extend the shipped scripted-provider scenario language with one bounded
+- [x] Extend the shipped scripted-provider scenario language with one bounded
   descendant-spawn step. It must support: same-domain child, inherited stdout,
   ignored graceful/TERM signals, leader-exits-first, and a PID publication file.
-- [ ] Make tests capture PID plus creation identity immediately. Every failure
+- [x] Make tests capture PID plus creation identity immediately. Every failure
   path cleans the descendant only if identity still matches, so tests cannot
   signal a reused PID.
-- [ ] Add red stream tests proving current `close()` leaves a same-domain
+- [x] Add red stream tests proving current `close()` leaves a same-domain
   descendant alive after graceful leader exit and after forced leader kill.
-- [ ] Add the corresponding red PTY leader-exits-first test, demonstrating the
+- [x] Add the corresponding red PTY leader-exits-first test, demonstrating the
   current `_reap_child()` early-return gap.
-- [ ] Add a red inherited-stdout test proving the descendant can delay EOF/pump
+- [x] Add a red inherited-stdout test proving the descendant can delay EOF/pump
   completion under direct-child cleanup.
-- [ ] Preserve existing tests for reusable interrupt, one graceful retirement
+- [x] Preserve existing tests for reusable interrupt, one graceful retirement
   signal, blocked writes, concurrent close, and primary-error notes.
 - **Stop gate:** if a test passes by timing luck, inspects only mock calls, or
   cannot clean its child deterministically after failure, it is not acceptable
@@ -758,34 +775,34 @@ Post-landing success signals:
 
 ### 6. Implement the shared POSIX process domain and migrate stream plus PTY
 
-- [ ] Add `_process_domain.py` with one narrow owner for POSIX spawn flags,
+- [x] Add `_process_domain.py` with one narrow owner for POSIX spawn flags,
   saved process-group identity, public non-reaping leader-exit observation,
   SIGTERM/SIGKILL group escalation while identity remains pinned, single leader
   reap, and terminal diagnostics.
-- [ ] Centralize spawn through a function/class that accepts adapter-specific
+- [x] Centralize spawn through a function/class that accepts adapter-specific
   `Popen` stdio/text/env arguments while forcing `start_new_session=True` on
   POSIX. Do not put pipe, PTY-master, or protocol parsing in the domain module.
-- [ ] Change Claude and scripted spawns to publish the process plus its domain
+- [x] Change Claude and scripted spawns to publish the process plus its domain
   atomically to `StreamJsonHandle`.
-- [ ] Change stream `close()` to preserve graceful request/close concurrency and
+- [x] Change stream `close()` to preserve graceful request/close concurrency and
   delegate forced domain finalization before pipe release.
-- [ ] Change PTY spawn and final reap to use the same domain owner; remove the
+- [x] Change PTY spawn and final reap to use the same domain owner; remove the
   PTY-local early-return/group ladder only after equivalent tests pass.
-- [ ] Replace natural event-stream and lifecycle `Popen.poll()`/`wait()` calls
+- [x] Replace natural event-stream and lifecycle `Popen.poll()`/`wait()` calls
   with the domain owner's non-consuming `waitid(..., WNOWAIT)` observation until
   terminal close. Use public `os.waitid()` where available and add a private
   Darwin-only `ctypes` binding for Python 3.11/3.12. Preserve the exact normal
   or negative-signal return code in `ExitEvent`, ensure only finalization reaps,
   and prohibit any group signal after reap.
-- [ ] Test the Darwin binding directly with real children that exit normally and
+- [x] Test the Darwin binding directly with real children that exit normally and
   by signal; prove repeated observation leaves each waitable until the one
   `Popen.wait()` reap. Add a hosted macOS Python 3.11 process cell (remove only
   that exclusion from the existing Summon process matrix, or add an equally
   narrow blocking cell) so the fallback executes on the exact commit. Python
   3.13+ macOS tests separately exercise the public `os.waitid()` path.
-- [ ] Add a regression test that makes a post-reap `killpg()` fatal and proves
+- [x] Add a regression test that makes a post-reap `killpg()` fatal and proves
   natural provider exit still runs the pinned group ladder before the one reap.
-- [ ] Add a POSIX-only explicit-escape boundary test whose child calls
+- [x] Add a POSIX-only explicit-escape boundary test whose child calls
   `setsid()`, survives domain close by contract, and is then identity-checked
   and cleaned by the test.
 - **Stop gate:** stop if the shared module begins owning adapter I/O, if
@@ -801,28 +818,28 @@ Post-landing success signals:
 
 ### 7. Implement pre-execution Windows Job Object containment
 
-- [ ] Isolate minimal typed Win32 `ctypes` declarations behind a platform-
+- [x] Isolate minimal typed Win32 `ctypes` declarations behind a platform-
   private module imported only on Windows. Define exact handle ownership and
   `CloseHandle` cleanup for job, process, thread snapshot, and opened-thread
   handles.
-- [ ] Spawn stream providers with `CREATE_SUSPENDED` and the existing compatible
+- [x] Spawn stream providers with `CREATE_SUSPENDED` and the existing compatible
   creation flags; create/configure a kill-on-close Job Object; reopen the child
   by PID with the documented process rights; assign the suspended provider;
   enumerate and require exactly one thread owned by that still-suspended PID;
   open it with `THREAD_SUSPEND_RESUME`; require the expected `ResumeThread`
   result; then publish the handle/domain. Define documented `CREATE_SUSPENDED`
   locally because `subprocess` does not export it.
-- [ ] Avoid private `Popen._handle`, undocumented NT APIs, `taskkill /T`, and a
+- [x] Avoid private `Popen._handle`, undocumented NT APIs, `taskkill /T`, and a
   post-start assignment race. Do not request `CREATE_BREAKAWAY_FROM_JOB`. Use
   documented Win32 process/thread snapshot, job, assignment, resume,
   accounting, and termination APIs.
-- [ ] On any setup failure, terminate and reap the suspended child, close all
+- [x] On any setup failure, terminate and reap the suspended child, close all
   acquired handles once, close stdio, and raise one `AdapterError` without
   publishing a live handle.
-- [ ] During terminal close, allow the current graceful provider termination,
+- [x] During terminal close, allow the current graceful provider termination,
   then terminate the Job Object if active processes remain, wait boundedly for
   zero active processes, reap the leader, and release the job handle.
-- [ ] Add deterministic unit tests for each Win32 setup failure and one hosted
+- [x] Add deterministic unit tests for each Win32 setup failure and one hosted
   Windows real-process test for leader-exits-first plus surviving grandchild.
   The real Job Object test is the primary proof and must successfully assign,
   resume, retire the descendant, and observe zero active job processes. Test
@@ -1172,6 +1189,12 @@ Any wrong or ambiguous answer causes a plan edit and another reader pass.
 | 2026-08-25 | E1 historical-wheel canary | `uv run --no-sync python bin/build-and-check-release-wheels.py`; historical MCP wheel SHA-256 `e68fb51fd7a8ba2119b74a2a28fd5cc030d28082d10f0eb3f5e6ab835f36b608` | PASS: immutable `taut_mcp/v0.9.5` source, ordinary candidate-core dependency resolution, checkout-free imports, real SQLite attach/list/detach, and clean stdio shutdown. | Reconcile implementation docs, run PostgreSQL and focused suites, then independent review. |
 | 2026-08-25 | SimpleBroker 7.4.2 typing reconciliation found during E1 gates | Full MCP, Summon, and TUI mypy gates | Removed redundant test-only casts now made obsolete by the public typed queue iterator/read contracts. No runtime behavior changed. | Rerun affected tests and static gates. |
 | 2026-08-25 | E2 spec promotion | HEAD `3441fda`; pre-promotion spec 04 blob recorded under Spec Baseline | Promoted only the authorized Summon process-domain lifecycle and firing-proof text plus backlink; T1 remains proposed. | Documentation gates, then the first real descendant red tracer. |
+| 2026-08-25 | E2 real POSIX characterization | Pre-change stream leader-first, inherited-stdout, forced-signal, and PTY leader-first probes with PID plus process-creation identity and bounded self-expiry | RED for the intended reasons: natural stream and PTY cleanup left the exact same-domain descendant alive; inherited stdout held the structured pump open; forced close killed only the leader. Each probe identity-checked and removed its descendant afterward. | Implement one non-reaping domain owner before changing adapter I/O. |
+| 2026-08-25 | E2 POSIX domain and adapter migration | Real macOS Python 3.11 libc-`waitid` normal/signal exits; real stream and PTY leader-first, inherited-stdout, TERM, SIGKILL, and explicit-`setsid` probes; post-reap `killpg` tripwire | Shared spawn now publishes capability-minimal `ProcessIO` plus one domain; raw `Popen` lifecycle stays private. POSIX leader status remains waitable through the group ladder and is reaped once afterward. Stream raw readers no longer require descendant-held EOF. | Complete Windows implementation and hosted platform proof. |
+| 2026-08-25 | E2 POSIX finalization review correction | Red-first zero-signal-oracle and terminal-TERM-error regressions, followed by deterministic signal/reap error firing tests | Replaced group-emptiness polling with ordered bounded TERM grace, unconditional KILL attempt, bounded non-reaping leader observation, and one reap attempt. Signal errors aggregate without stranding a known-terminal leader; a successful mismatched reap is marked final before its cached-status diagnostic; repeat finalization rethrows the stored terminal error without signaling or waiting again. | Rerun the focused process-domain suite and static/documentation gates; retain the hosted Linux natural-exit row as blocking evidence. |
+| 2026-08-25 | E2 busy inherited-output correction | Red-first continuous stream writer, incomplete non-EOF frame, and deterministic always-readable PTY probes | POSIX raw stream work is capped at 16 reads and 1 MiB per turn; the terminal-observed final drain has the same bound and accepts only complete newline-delimited frames unless true EOF is present. PTY observes leader status after every readable turn. Real stream and PTY descendants remain alive through `ExitEvent` and are retired by `close()`. | Rerun full local Summon behavior and independent correction review. |
+| 2026-08-25 | E2 Windows collection isolation | Red workflow contract for a missing Windows-specific process step | The Windows row selects only process-domain, structured-adapter, and Job Object test files, so pytest never imports the POSIX-only PTY module before marker filtering. POSIX rows retain broad process-marker collection. | Hosted Windows must execute both real Job Object proofs on the exact commit. |
+| 2026-08-25 | E2 Windows implementation and proof wiring | 31 deterministic Job Object tests, 12 pipe/readiness tests, real leader/descendant and incompatible-outer-job hosted tests, and a blocking Windows Python 3.11 process-matrix row | Suspended assign-before-resume, temporary/native handle ownership, kill-on-close fallback, zero-active finalization, single leader reap, inherited-stdout readiness, and fail-closed nesting rejection are implemented without private CPython state. Local deterministic gates pass; the real Windows tests are present but cannot execute on the macOS workstation. | Hosted Windows success remains the Task 7 stop gate, then independent E2 review. |
 
 ## Review Log
 
@@ -1185,6 +1208,9 @@ Any wrong or ambiguous answer causes a plan edit and another reader pass.
 | 2026-08-24 | Fresh-context reader test | All ten questions were answered, but the first targeted reread found that Python 3.11/3.12 on macOS does not expose `os.waitid`, and that Windows rejection evidence could substitute for successful containment in Task 7. | **accepted, revised, final reread passed**: add the narrow Darwin libc `waitid` shim plus macOS 3.11 hosted proof; require a separate successful Windows Job Object hosted proof and keep rejection as a distinct failure test. The reviewer found no remaining blocker. |
 | 2026-08-25 | Independent E1 completed-work review | `peek_identity()` leaked the shared resolver's reset of `last_created_member` and `last_candidates`; canary timeout/traceback/token/stage obligations were only source-string assertions; the MCP AST boundary missed direct import aliases. | **accepted and fixed**: both public seams restore the exact diagnostic objects in `finally` on success and failure; the production canary now uses an executable stdio driver with scripted subprocess failure proofs; the AST gate rejects forbidden imports and aliased calls with a mutation fixture. |
 | 2026-08-25 | Independent E1 correction rereview | Rechecked only the three E1 findings against current code and firing tests. | **PASS**: all three findings resolved; no remaining blocker or new E1 contradiction. |
+| 2026-08-25 | Independent E2 completed-work review, POSIX F1/F3 | Linux can keep `killpg(pgid, 0)` successful while the unreaped zombie leader pins the PGID, so zero-signal absence cannot terminate the ladder. An unexpected group-signal error returned before reaping a known-terminal leader, and a successful `Popen.wait()` status mismatch raised before recording that the child was already reaped. | **accepted and fixed**: POSIX finalization now uses explicit bounded stages without a zero-signal oracle, aggregates signal failures while continuing cleanup, marks a successful reap before comparing status, and stores terminal finalization errors for stable rethrow. Deterministic firing tests cover TERM/KILL aggregation, `ESRCH`, conditional Darwin `EPERM`, observation timeout, reap exceptions, mismatch, and the no-post-reap-signal tripwire; a real Linux zombie-leader regression is selected only on Linux. |
+| 2026-08-25 | Independent E2 completed-work review, output F2 | A continuously writing inherited stdout could keep the POSIX raw drain loop or PTY readable path busy forever, preventing leader observation; the prior real tests held inherited output open silently. | **accepted and fixed**: stream reads have strict per-turn read/byte bounds, incomplete non-EOF fragments are not promoted to frames, and PTY checks after every readable turn. Deterministic RED probes plus real continuously writing descendants cover both adapters and exact descendant retirement. |
+| 2026-08-25 | Independent E2 correction rereview | Rechecked the full E2 diff and F1/F2/F3 corrections against [SUM-7.1], [SUM-7.4], [SUM-12], both platform owners, stream/PTY fairness, Windows collection isolation, and documentation. | **PASS**: no actionable blocker remains. The reviewer independently reran process-domain, scripted, Win32, full PTY, static, workflow, and documentation gates. Hosted exact-commit Windows and Linux execution remain evidence gates, not local code defects. |
 
 ## Verification Log
 
@@ -1198,6 +1224,12 @@ Any wrong or ambiguous answer causes a plan edit and another reader pass.
 | 2026-08-25 | E1 MCP SQLite and PostgreSQL behavior | Package-local non-PG suite; `uv run ./bin/pytest-pg --fast -n 0 extensions/taut_mcp/tests/test_pg_conformance.py` | PASS: the full non-PG MCP suite completed; all 7 live PostgreSQL tests passed. |
 | 2026-08-25 | Root regression | `uv run --extra dev pytest -q -m 'not slow and not installed_wheel'` | PASS on the final standalone rerun with one expected Windows-only filename-contract skip on macOS. A preceding run concurrent with Docker PG had one unrelated mocked-readiness timing-fixture failure; that exact test passed immediately in isolation before the clean broad rerun. |
 | 2026-08-25 | Static, typing, and documentation integrity | Root/PG/Summon/MCP/TUI Ruff and mypy gates; `check-plan-status-index`; `check-doc-paths`; `check-dom15-fixtures`; docs-reference tests; `coalesce-check`; `git diff --check` | PASS. Path checker inspected 63 sources and 1,372 claims; coalescing resolved all local cues and reported only the five known foreign claims. |
+| 2026-08-25 | E2 local POSIX behavior | `uv run pytest -q -n 0 extensions/taut_summon/tests/test_process_domain.py extensions/taut_summon/tests/test_scripted_adapter.py extensions/taut_summon/tests/test_claude_adapter.py`; full `test_pty_adapter.py` plus focused forced-stage rerun | PASS on macOS Python 3.11: Darwin fallback, exact natural/signal status, leader-first stream/PTY retirement, inherited stdout, TERM/SIGKILL, explicit escape, and retained lifecycle concurrency contracts. |
+| 2026-08-25 | E2 POSIX finalization correction | Full `test_process_domain.py`; seven focused real stream/PTY descendant cases; scoped Ruff and mypy; plan status, doc-path, docs-reference, and diff checks | PASS locally: 13 process-domain cases passed with the one real Linux zombie-group regression selected only on Linux; all seven neighboring real-process cases and every static/documentation gate passed. Hosted Linux remains required to execute the nonportable regression on the exact commit. |
+| 2026-08-25 | E2 Linux zombie-group reproduction | Read-only repository mount in local `python:3.12-bookworm`; natural leader exit observed with `WNOWAIT`, followed by 20 ms TERM/KILL bounds and final reap | PASS after correction: `observed 0 raw_returncode None` then `result 0`, with no manual reap. The same probe failed before correction with `provider process domain survived SIGKILL` and required a manual reap. Hosted Linux remains the exact-commit release gate. |
+| 2026-08-25 | E2 corrected local regression | `uv run pytest -q extensions/taut_summon/tests -m 'not requires_live_harness and not requires_local_llm'`; full workflow contracts; focused continuous-writer and finalization cases; scoped Ruff/mypy; all documentation gates | PASS on macOS: the full local Summon suite completed with exactly the expected Linux semantic skip and two real-Windows skips; workflow selection collected both named Windows proofs without importing PTY; static and documentation gates passed. |
+| 2026-08-25 | E2 Windows deterministic boundary | `uv run pytest -q -n 0 extensions/taut_summon/tests/test_win32_job.py extensions/taut_summon/tests/test_win32_pipe.py extensions/taut_summon/tests/test_process_domain.py` | PASS locally with the expected real-Windows outer-job skip: typed ABI, every setup failure, assign-before-resume, exact handle closure, zero-before-reap ordering, pipe readiness/EOF/error mapping, and shared factory publication fired. |
+| 2026-08-25 | E2 hosted platform proof | `summon-process` matrix rows added for macOS Python 3.11 and Windows Python 3.11; Windows uses a POSIX-import-free file list | **PENDING**: workflow structure and a local Debian container reproduction are green, but this workstation cannot supply the required real Windows Job Object execution. E2 is not ready until the hosted Windows, Linux, and macOS rows pass on the exact commit. |
 
 ## Fresh-Eyes Completion Checklist
 
