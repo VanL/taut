@@ -31,6 +31,7 @@ from taut._exceptions import (
     TautError,
     TokenError,
 )
+from taut._redact import redact_sensitive_text
 from taut.client import (
     Channel,
     Message,
@@ -135,14 +136,14 @@ def test_debug_capture_setting_and_queue_are_portable_across_sql_backends(
     try:
         messages = queue.peek(all_messages=True, include_claimed=True)
         assert messages is not None
-        payloads = [cast(str, message) for message in messages]
+        payloads = list(messages)
     finally:
         queue.close()
     assert len(payloads) == 1
     event = json.loads(payloads[0])
     assert event["surface"] == "test"
     assert event["operation"] == "debug.portable"
-    assert event["target"] == target.display_target
+    assert event["target"] == redact_sensitive_text(target.display_target)
     assert any(
         "portable debug evidence" in value
         for frame in event["frames"]

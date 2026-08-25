@@ -578,26 +578,17 @@ class MultiQueueWatcher(BaseWatcher):
         Spec: [CC-2.1], [SB-0.3]
         """
         if config.mode is QueueMode.READ:
-            return cast(
-                tuple[str, int] | None,
-                config.queue.read_one(with_timestamps=True),
-            )
+            return config.queue.read_one(with_timestamps=True)
         if config.mode is QueueMode.PEEK:
-            return cast(
-                tuple[str, int] | None,
-                config.queue.peek_one(with_timestamps=True),
-            )
+            return config.queue.peek_one(with_timestamps=True)
         if config.mode is QueueMode.RESERVE:
             if not config.reserved_queue_name:
                 raise RuntimeError(
                     f"Queue '{config.name}' configured for reserve mode missing reserved queue"
                 )
-            return cast(
-                tuple[str, int] | None,
-                config.queue.move_one(
-                    config.reserved_queue_name,
-                    with_timestamps=True,
-                ),
+            return config.queue.move_one(
+                config.reserved_queue_name,
+                with_timestamps=True,
             )
         raise ValueError(f"Unsupported queue mode: {config.mode}")
 
@@ -1444,13 +1435,10 @@ class TautWatcher(BaseReactor):
         ):
             return super()._fetch_next_message(config)
         cursor = self._cursors.get(config.name, 0)
-        rows = cast(
-            list[tuple[str, int]],
-            config.queue.peek_many(
-                1,
-                with_timestamps=True,
-                after_timestamp=cursor,
-            ),
+        rows = config.queue.peek_many(
+            1,
+            with_timestamps=True,
+            after_timestamp=cursor,
         )
         return rows[0] if rows else None
 

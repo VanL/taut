@@ -13,7 +13,7 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pytest
 from simplebroker import Queue
@@ -54,7 +54,7 @@ def _debug_events(workspace: Path) -> list[dict[str, Any]]:
     try:
         messages = queue.peek(all_messages=True, include_claimed=True)
         assert messages is not None
-        return [json.loads(cast(str, message)) for message in messages]
+        return [json.loads(message) for message in messages]
     finally:
         queue.close()
 

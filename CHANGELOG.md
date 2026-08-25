@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Raised the runtime floor to SimpleBroker 7.4.2 and SimpleBroker-PG 3.9.2.
+  The coordinated releases preserve Taut's resolved configuration snapshot
+  through watcher and PostgreSQL backend creation, include the upstream watcher
+  lifecycle and error-propagation fixes, and publish `CloseableIterator` with
+  synchronous same-thread Queue-operation cleanup for public streaming APIs.
+  Existing runtime behavior required no adaptation; the new precise queue and
+  closeable-iterator overloads replace obsolete local type assumptions.
+
 ## 0.9.5 - 2026-08-19
 
 - Summon setup recovery is now surfaced as an explicit TUI workflow: when an interactive setup flow exits without a confirmed terminal prompt, users can resume with a bounded attach/recovery path before the flow is auto-classified as detached. This keeps orientation and trust checks visible and avoids silent loss of user intent in terminal-facing providers.

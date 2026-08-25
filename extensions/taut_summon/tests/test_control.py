@@ -1692,7 +1692,7 @@ def test_control_loop_real_correlated_ping_round_trip(tmp_path: Path) -> None:
         reply_body: str | None = None
         reply_deadline = time.monotonic() + 3.0
         while reply_body is None and time.monotonic() < reply_deadline:
-            reply_body = cast(str | None, reply_queue.read_one())
+            reply_body = reply_queue.read_one()
             if reply_body is None:
                 time.sleep(0.01)
         reply = json.loads(reply_body) if reply_body is not None else None

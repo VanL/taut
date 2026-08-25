@@ -309,13 +309,10 @@ class MessagingMixin(_ClientBase):
             if dm_context is not None:
                 self._remember_direct_message_display_name(dm_context)
         queue = self.queue(membership["thread"])
-        raw_messages = cast(
-            list[tuple[str, int]],
-            queue.peek_many(
-                limit,
-                with_timestamps=True,
-                after_timestamp=membership["last_seen_ts"],
-            ),
+        raw_messages = queue.peek_many(
+            limit,
+            with_timestamps=True,
+            after_timestamp=membership["last_seen_ts"],
         )
         page_messages = [
             message_from_body(membership["thread"], body, ts)
@@ -416,7 +413,7 @@ class MessagingMixin(_ClientBase):
             after_timestamp=after_timestamp,
         )
         for result in generator:
-            body, ts = cast(tuple[str, int], result)
+            body, ts = result
             messages.append(message_from_body(thread, body, ts))
         messages = sorted(messages, key=lambda message: message.ts)
         if not messages:
@@ -460,7 +457,7 @@ class MessagingMixin(_ClientBase):
         found = queue.peek_one(exact_timestamp=exact, with_timestamps=True)
         if found is None:
             raise NotFoundError(f"message not found in {thread}: {msg_id}")
-        anchor_body, anchor_ts = cast(tuple[str, int], found)
+        anchor_body, anchor_ts = found
         anchor = message_from_body(thread, anchor_body, anchor_ts)
 
         earlier: deque[Message] = deque(maxlen=before)
@@ -469,18 +466,15 @@ class MessagingMixin(_ClientBase):
                 with_timestamps=True,
                 before_timestamp=exact,
             ):
-                body, timestamp = cast(tuple[str, int], result)
+                body, timestamp = result
                 earlier.append(message_from_body(thread, body, timestamp))
 
         later: list[Message] = []
         if after:
-            rows = cast(
-                list[tuple[str, int]],
-                queue.peek_many(
-                    after,
-                    with_timestamps=True,
-                    after_timestamp=exact,
-                ),
+            rows = queue.peek_many(
+                after,
+                with_timestamps=True,
+                after_timestamp=exact,
             )
             later = [
                 message_from_body(thread, body, timestamp) for body, timestamp in rows
@@ -783,13 +777,13 @@ class MessagingMixin(_ClientBase):
             found = queue.peek_one(exact_timestamp=exact, with_timestamps=True)
             if found is None:
                 raise NotFoundError(f"message not found: {msg_id}")
-            body, timestamp = cast(tuple[str, int], found)
+            body, timestamp = found
             return message_from_body(thread, body, timestamp)
         if len(msg_id) < 4 or not msg_id.isdigit():
             raise NotFoundError("message id suffix must be at least 4 digits")
         recent: deque[Message] = deque(maxlen=1000)
         for result in queue.peek_generator(with_timestamps=True):
-            body, ts = cast(tuple[str, int], result)
+            body, ts = result
             recent.append(message_from_body(thread, body, ts))
         matches = [message for message in recent if str(message.ts).endswith(msg_id)]
         if not matches:
@@ -814,7 +808,7 @@ class MessagingMixin(_ClientBase):
             found = queue.peek_one(exact_timestamp=exact, with_timestamps=True)
             if found is None:
                 continue
-            body, timestamp = cast(tuple[str, int], found)
+            body, timestamp = found
             return _LocatedMessage(
                 queue=queue,
                 message=message_from_body(thread, body, timestamp),

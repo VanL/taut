@@ -164,7 +164,7 @@ class SearchingMixin(_ClientBase):
             )
             if found is None:
                 return None
-            body, timestamp = cast(tuple[str, int], found)
+            body, timestamp = found
             message = message_from_body(thread, body, timestamp)
             encoded = message.text.encode("utf-8")
             return IndexedDocument(
@@ -370,7 +370,7 @@ class SearchingMixin(_ClientBase):
                     revision=scan_revision,
                 )
             else:
-                body, timestamp = cast(tuple[str, int], found)
+                body, timestamp = found
                 provider.replace_document(
                     self._search_document(thread, body, timestamp),
                     revision=scan_revision,
@@ -612,7 +612,7 @@ class SearchingMixin(_ClientBase):
                 thread=candidate.thread,
             )
             return None
-        body, timestamp = cast(tuple[str, int], found)
+        body, timestamp = found
         message = message_from_body(candidate.thread, body, timestamp)
         encoded = message.text.encode("utf-8")
         projection_changed = (

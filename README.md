@@ -190,7 +190,7 @@ python -m pip install taut-chat taut-pg taut-summon taut-mcp taut-tui
 ```
 
 Requirements: Python 3.11+. Base runtime dependencies are
-`simplebroker>=7.3.2` (which itself has none) and `psutil` for cross-platform
+`simplebroker>=7.4.2` (which itself has none) and `psutil` for cross-platform
 process metadata. The optional `tui` extra installs the separate `taut-tui`
 extension, which owns its Textual 8.2.8-or-newer requirement. Ordinary core CLI
 and library use do not import it.
@@ -914,7 +914,7 @@ with the boundary itself specified by [TAUT-9] in the
 <summary><strong>Why argparse and a small dependency set?</strong></summary>
 
 Taut follows SimpleBroker's discipline: the install should be boring.
-Runtime dependencies are exactly `simplebroker>=7.3.2` and `psutil`. The CLI is
+Runtime dependencies are exactly `simplebroker>=7.4.2` and `psutil`. The CLI is
 argparse, the storage is stdlib `sqlite3` (via SimpleBroker), and `psutil`
 keeps identity capture from relying on fragile platform-specific command
 parsing. The TUI ships as a separate `taut-tui` extension; the optional

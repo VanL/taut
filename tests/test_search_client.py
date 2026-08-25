@@ -127,10 +127,7 @@ def test_message_write_enqueues_content_free_search_invalidation(
     message = alice.say("general", "secret source text")
     pending = alice.queue(PENDING_QUEUE_NAME)
     try:
-        rows = cast(
-            list[tuple[str, int]],
-            pending.peek_many(10, with_timestamps=True),
-        )
+        rows = pending.peek_many(10, with_timestamps=True)
     finally:
         pending.close()
 
@@ -246,10 +243,7 @@ def test_search_reconciles_two_rename_jobs_committed_newest_first(
 
     pending = alice.queue(PENDING_QUEUE_NAME)
     rename_rows: list[tuple[ThreadRenameJob, int]] = []
-    for body, job_ts in cast(
-        list[tuple[str, int]],
-        pending.peek_many(100, with_timestamps=True),
-    ):
+    for body, job_ts in pending.peek_many(100, with_timestamps=True):
         job = decode_search_job(body)
         if isinstance(job, ThreadRenameJob):
             rename_rows.append((job, job_ts))
@@ -425,9 +419,7 @@ def test_stale_hydration_schedules_content_free_repair(
         alice.search("hydration needle")
 
     pending = alice.queue(PENDING_QUEUE_NAME)
-    jobs = [
-        decode_message_job(body) for body in cast(list[str], pending.peek_many(100))
-    ]
+    jobs = [decode_message_job(body) for body in pending.peek_many(100)]
     assert any(job.message_ts == target.ts and job.thread == "general" for job in jobs)
 
 

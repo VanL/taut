@@ -439,7 +439,6 @@ def test_standalone_unexpected_exception_is_captured_then_reraised_same_object(
     """[SUM-11] Standalone owns one outer unexpected-exception boundary."""
 
     import json
-    from typing import cast
 
     import taut_summon.commands.summon as summon_command
     from taut_summon.cli import main
@@ -481,7 +480,7 @@ def test_standalone_unexpected_exception_is_captured_then_reraised_same_object(
     try:
         messages = queue.peek(all_messages=True, include_claimed=True)
         assert messages is not None
-        events = [json.loads(cast(str, message)) for message in messages]
+        events = [json.loads(message) for message in messages]
     finally:
         queue.close()
     assert len(events) == 1
@@ -548,7 +547,6 @@ def test_installed_summon_failure_is_captured_only_by_core_dispatch(
 
     import json
     from io import StringIO
-    from typing import cast
 
     from taut_summon.command_manifest import summon as summon_manifest
     from taut_summon.controller import SummonController
@@ -600,7 +598,7 @@ def test_installed_summon_failure_is_captured_only_by_core_dispatch(
     try:
         messages = queue.peek(all_messages=True, include_claimed=True)
         assert messages is not None
-        events = [json.loads(cast(str, message)) for message in messages]
+        events = [json.loads(message) for message in messages]
     finally:
         queue.close()
     assert len(events) == 1

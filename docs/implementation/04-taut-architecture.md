@@ -70,12 +70,17 @@ filesystem error surfaces. Core rejects those paths before constructing
 `Queue`; it does not broaden this into a portable filename policy, so POSIX
 acceptance and non-SQLite targets remain unchanged.
 
-The current SimpleBroker minimum is `simplebroker>=7.3.2`, aligned with the
-current `simplebroker-pg>=3.8.0` minimum and their owning lock selections.
+The current SimpleBroker minimum is `simplebroker>=7.4.2`, aligned with the
+current `simplebroker-pg>=3.9.2` minimum and their owning lock selections.
 Version 7.0.0 supplies the public message-id formatter
 and the exact-string JSON boundary while leaving Python and backend values as
 integers. Version 7.3.2 supplies the immutable ambient-free resolved-config
-marker that Taut preserves across lower layers. Version 5.6.1 remains the
+marker that Taut preserves across lower layers. Version 7.4.1 carries that
+snapshot through watcher and PostgreSQL backend creation and includes the
+watcher ownership and terminal error-propagation fixes inherited by Taut.
+Version 7.4.2 adds the package-root `CloseableIterator` protocol and specifies
+lazy, single-use, same-thread synchronous cleanup for public Queue iterators.
+Version 5.6.1 remains the
 origin of atomic exact-name
 `broadcast(..., queue_names=..., create_missing=True)`, in addition to the
 earlier interruptible watcher bootstrap, corrected runner cleanup, and

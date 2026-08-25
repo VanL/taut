@@ -1300,7 +1300,7 @@ def test_delete_message_always_passes_one_non_null_exact_id(
     van = client(tmp_path, "van")
     van.join("general")
     target = van.say("general", "never purge the queue")
-    message_ids: list[int | str | None] = []
+    message_ids: list[int | str] = []
     real_delete = Queue.delete
 
     def track_delete(
@@ -1308,6 +1308,7 @@ def test_delete_message_always_passes_one_non_null_exact_id(
         *,
         message_id: int | str | None = None,
     ) -> bool:
+        assert message_id is not None
         message_ids.append(message_id)
         return real_delete(queue, message_id=message_id)
 
@@ -1510,7 +1511,8 @@ def test_delete_message_physically_deletes_row_claimed_after_lookup(
                 exact_timestamp=target.ts,
                 with_timestamps=True,
             )
-            claims.append(cast(tuple[str, int] | None, claimed))
+            claims.append(claimed)
+        assert message_id is not None
         return real_delete(queue, message_id=message_id)
 
     monkeypatch.setattr(Queue, "delete", delete_after_claim)
@@ -1547,6 +1549,7 @@ def test_concurrent_delete_message_has_exactly_one_winner(
     ) -> bool:
         if queue.name == "general" and message_id == target.ts:
             delete_barrier.wait()
+        assert message_id is not None
         return real_delete(queue, message_id=message_id)
 
     monkeypatch.setattr(Queue, "delete", synchronized_delete)

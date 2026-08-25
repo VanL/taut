@@ -12,7 +12,7 @@ import secrets
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Final, Literal, cast
+from typing import Any, Final, Literal
 
 from simplebroker import Queue
 from simplebroker.ext import TimestampError, TimestampGenerator
@@ -304,7 +304,7 @@ class JobQueues:
         )
         if moved is None:
             return None
-        body, job_ts = cast(tuple[str, int], moved)
+        body, job_ts = moved
         claimed_at = self.meta.generate_timestamp()
         claimed_unix_ns = self.clock_ns()
         lease_id = secrets.token_hex(16)
@@ -332,13 +332,10 @@ class JobQueues:
         for queue in (self.pending, self.claimed):
             after: int | None = None
             while True:
-                rows = cast(
-                    list[tuple[str, int]],
-                    queue.peek_many(
-                        1000,
-                        with_timestamps=True,
-                        after_timestamp=after,
-                    ),
+                rows = queue.peek_many(
+                    1000,
+                    with_timestamps=True,
+                    after_timestamp=after,
                 )
                 if not rows:
                     break
@@ -366,14 +363,11 @@ class JobQueues:
         rows: list[tuple[str, int]] = []
         after: int | None = None
         while True:
-            page = cast(
-                list[tuple[str, int]],
-                queue.peek_many(
-                    1000,
-                    with_timestamps=True,
-                    after_timestamp=after,
-                    before_timestamp=frontier + 1,
-                ),
+            page = queue.peek_many(
+                1000,
+                with_timestamps=True,
+                after_timestamp=after,
+                before_timestamp=frontier + 1,
             )
             if not page:
                 break
@@ -424,10 +418,7 @@ class JobQueues:
             raise TypeError("limit must be an integer")
         if limit < 1:
             raise ValueError("limit must be positive")
-        rows = cast(
-            list[tuple[str, int]],
-            self.claimed.peek_many(limit, with_timestamps=True),
-        )
+        rows = self.claimed.peek_many(limit, with_timestamps=True)
         reclaimed: list[int] = []
         for _body, job_ts in rows:
             if self._recover_claimed_job(job_ts=job_ts, now=now):

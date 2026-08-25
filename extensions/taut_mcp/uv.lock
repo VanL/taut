@@ -1212,25 +1212,25 @@ wheels = [
 
 [[package]]
 name = "simplebroker"
-version = "7.3.2"
+version = "7.4.2"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/c6/e0/fbdacf869c6dd07f80ee199e2ff124270b66e39f4c74c6f100111d6b9372/simplebroker-7.3.2.tar.gz", hash = "sha256:362d1bcbb8c348ab03cad30edfcd382264a55bb6c3c1b4b462d0efa2b91df407", size = 192654, upload-time = "2026-08-14T00:37:40.586Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f0/f2/d53211f6b046ed1e6baaff09f1151f254bfd8f9146928749e1e9222bbeee/simplebroker-7.4.2.tar.gz", hash = "sha256:6a85b2ae01305089b083fba3027178b7410689bc03ce10f0493f99124f4f3496", size = 208485, upload-time = "2026-08-25T19:44:04.855Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/2b/62/cab67637415c94236ff6a468bffe99f790adb395072f933582a0f29a9c13/simplebroker-7.3.2-py3-none-any.whl", hash = "sha256:a9f59fe8d4e407b9c04ea65e057091114b347564db9657c5f750578f8bcdad0f", size = 216459, upload-time = "2026-08-14T00:37:38.686Z" },
+    { url = "https://files.pythonhosted.org/packages/fe/bf/27416b8681147a7daeb170dab72572c4965994fcd3dd1aa67b772f04cbbc/simplebroker-7.4.2-py3-none-any.whl", hash = "sha256:98e777d18f5ba4dbf9a1b2e133040373d5e2f70a0154b2cff907ea51b39cfd0b", size = 232795, upload-time = "2026-08-25T19:44:02.83Z" },
 ]
 
 [[package]]
 name = "simplebroker-pg"
-version = "3.8.0"
+version = "3.9.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "psycopg", extra = ["binary"] },
     { name = "psycopg-pool" },
     { name = "simplebroker" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/23/8c/c363f7629fc9f04683164c8be41629d6d86ee24cb3e3f689af718db44a0b/simplebroker_pg-3.8.0.tar.gz", hash = "sha256:2b8a0271f8844b9d5b44001353eff4d7695a7c2f6d6a268f8ded1dd826809e3d", size = 22124, upload-time = "2026-08-13T19:19:25.129Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ec/25/fa09423973e90ddee33425805020e91bf4d3dcbb09f791d1d7f4d69356a9/simplebroker_pg-3.9.2.tar.gz", hash = "sha256:1689baabe35ee9bbe4daeef2d79d1465c4af71bbdda6ef94e0fb59eb7fb6d676", size = 25376, upload-time = "2026-08-25T19:43:58.682Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/3e/9f/bc894f7376cfaa3e23c3e2515cd74c05bfa9a10bcd149ea2820ad1af3aa7/simplebroker_pg-3.8.0-py3-none-any.whl", hash = "sha256:62ee713dbf71e7cfb459acfaaf21759df8f872515b71bdb88347e33eef1a361a", size = 29158, upload-time = "2026-08-13T19:19:23.974Z" },
+    { url = "https://files.pythonhosted.org/packages/82/83/899422a84f4b6ea42b98400ea4bbc1a91ea770533c0e21a73080073ba192/simplebroker_pg-3.9.2-py3-none-any.whl", hash = "sha256:36655149d75685dbfd2e78c4c5ee77029d769f50e261bde5993cf7f1a3e4aa38", size = 32791, upload-time = "2026-08-25T19:43:57.197Z" },
 ]
 
 [[package]]
@@ -1280,8 +1280,8 @@ requires-dist = [
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.8.0" },
     { name = "pyyaml", marker = "extra == 'dev'", specifier = ">=6.0.3" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.16.3" },
-    { name = "simplebroker", specifier = ">=7.3.2" },
-    { name = "simplebroker-pg", marker = "extra == 'dev'", specifier = ">=3.8.0" },
+    { name = "simplebroker", specifier = ">=7.4.2" },
+    { name = "simplebroker-pg", marker = "extra == 'dev'", specifier = ">=3.9.2" },
     { name = "taut-mcp", marker = "extra == 'all'", editable = "." },
     { name = "taut-pg", marker = "extra == 'all'", editable = "../taut_pg" },
     { name = "taut-summon", marker = "extra == 'all'", editable = "../taut_summon" },
@@ -1356,7 +1356,7 @@ requires-dist = [
     { name = "pytest-timeout", marker = "extra == 'dev'", specifier = ">=2.4.0" },
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.8.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.16.3" },
-    { name = "simplebroker-pg", specifier = ">=3.8.0" },
+    { name = "simplebroker-pg", specifier = ">=3.9.2" },
     { name = "taut-chat", editable = "../../" },
     { name = "taut-tui", marker = "extra == 'dev'", editable = "../taut_tui" },
 ]

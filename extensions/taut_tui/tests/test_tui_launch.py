@@ -11,7 +11,7 @@ import sys
 from importlib.metadata import EntryPoint
 from io import StringIO
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pytest
 
@@ -407,7 +407,7 @@ def test_real_textual_fatal_callback_reaches_post_run_debug_bridge(
     try:
         messages = queue.peek(all_messages=True, include_claimed=True)
         assert messages is not None
-        events = [json.loads(cast(str, message)) for message in messages]
+        events = [json.loads(message) for message in messages]
     finally:
         queue.close()
     _assert_textual_debug_events(events, capture_mode=capture_mode)
@@ -447,7 +447,7 @@ def test_tui_run_exception_bypasses_post_run_bridge_and_is_captured_by_core(
     try:
         messages = queue.peek(all_messages=True, include_claimed=True)
         assert messages is not None
-        events = [json.loads(cast(str, message)) for message in messages]
+        events = [json.loads(message) for message in messages]
     finally:
         queue.close()
     assert len(events) == 1
