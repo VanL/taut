@@ -77,6 +77,22 @@ captivity (sealing) is composition, not architecture: wrap the spawn
 command (`--exec "docker run -i ..."`) and the same driver supervises a
 sealed instance.
 
+Lifecycle captivity includes the provider leader and every descendant that
+remains in the platform containment domain created for that provider
+generation. Terminal finalization applies the platform's bounded retirement
+guarantee even when the provider leader exits first. On Windows the retained
+Job Object is a durable kernel capability and finalization requires zero
+active job processes. Portable POSIX process groups expose only a numeric
+identifier: Taut pins that identity by keeping the group leader unreaped
+through group signaling, but cannot atomically prove group emptiness after
+reaping and therefore does not claim that stronger guarantee. This is
+resource ownership, not a sandbox or security boundary: Taut does not inspect
+arbitrary system ancestry, prevent a process from deliberately escaping the
+domain where the operating system permits it, or reclaim processes launched
+through an external supervisor. Work intended to survive `dismiss` must use
+such an explicit external lifetime rather than relying on accidental
+orphaning.
+
 ## 3. Packaging [SUM-3]
 
 - Ships as the separate extension distribution **`taut-summon`**
@@ -382,7 +398,7 @@ class ProviderAdapter(Protocol):
     def events(self) -> Iterator[AdapterEvent]   # typed output stream
     def interrupt(self) -> None                  # reusable nonterminal cancel
     def request_close(self) -> None              # nonblocking terminal retirement
-    def close(self) -> None                      # bounded finalize/reap/release
+    def close(self) -> None                      # bounded domain finalize/reap/release
     # .session_id property: provider session for resume
 ```
 
@@ -409,6 +425,20 @@ ownership-checked release. An undrained stream is a child-stdout deadlock;
 waiting for pump exit before close is not valid because a provider may remain
 alive after its graceful interrupt.
 
+Every spawn creates one owned process domain before the provider is allowed to
+execute. On POSIX the provider is the leader of a new session/process group,
+and the domain owner is the only code allowed to reap it. Natural exit is
+observed without reaping so the leader continues to pin the numeric process-
+group identity until terminal signaling finishes. On Windows the provider is
+created suspended, assigned to a Job Object configured to terminate its
+members when the job is closed, and resumed only after the assignment
+succeeds. A setup or assignment failure terminates and reaps the suspended
+child and releases every native handle before returning `AdapterError`; there
+is no direct-child-only fallback. If an outer Windows Job Object prevents a
+valid nested assignment, spawn fails rather than requesting breakaway from
+the host job. The adapter retains the provider PID as [SUM-4] identity
+evidence while the domain owner retains the separate cleanup capability.
+
 When blocking `close()` releases a structured stdout stream while its event
 pump is blocked in iteration, the resulting read is normal EOF only when it is
 the exact built-in `ValueError` with the text-stream closed-file diagnostic,
@@ -429,27 +459,42 @@ remains anchored to the harness child process being alive ([SUM-4]),
 independent of output.
 
 `emits_session_events` declares whether startup may wait for a `SessionEvent`;
-adapters that declare false never pay that wait. `interrupt()` is a reusable,
-nonterminal cancellation operation. It aborts adapter writes already in flight
-but leaves the handle open; if the provider survives, later `inject()` and
-later `interrupt()` calls remain valid.
+adapters that declare false never pay that wait. `interrupt()` remains
+reusable, nonterminal cancellation. It preserves the existing provider-
+specific signal or PTY Ctrl-C behavior, aborts adapter writes in flight, and
+leaves a surviving handle and process domain open. It does not perform
+terminal domain escalation.
 
 `request_close()` is the nonblocking terminal-retirement operation. Under the
 handle's reentrant lifecycle lock it atomically changes `open` to
 `close_requested`, permanently rejects or cancels injection, and owns the
-retirement's one graceful SIGINT or PTY Ctrl-C. It does not wait, escalate,
-reap, join, or release streams. After `close_requested` is visible,
-`interrupt()` and repeated `request_close()` calls are no-ops and cannot
-deliver another graceful signal.
+retirement's one graceful provider signal or PTY Ctrl-C. It does not wait,
+escalate, reap, join, release streams, or close the process domain. After
+`close_requested` is visible, `interrupt()` and repeated `request_close()`
+calls are no-ops and cannot deliver another graceful signal.
 
-`close()` is the blocking finalizer. A direct close first performs the same
-terminal request when the handle is still open. Exactly one closer changes
-`close_requested` to `closing`, waits within the existing bounds, escalates
-when required, reaps the child, and releases streams or fds. It does not send
-another graceful signal after a terminal request. Concurrent closers wait for
-and observe the same terminal result. `interrupt()` and `request_close()` may
-re-enter from a Python signal handler at any point in close and must not wait
-on a non-reentrant lock owned by the interrupted frame.
+`close()` is the blocking terminal finalizer. A direct close first performs
+the same terminal request when the handle is open. Exactly one closer changes
+`close_requested` to `closing`; concurrent closers wait for and observe its
+result. The closer allows the existing bounded graceful interval. On POSIX it
+observes leader exit without reaping, sends the bounded SIGTERM/SIGKILL ladder
+to the process group while the unreaped leader still pins the group identity,
+and only then reaps the leader. It never signals the numeric process-group ID
+after leader reap and does not claim an atomic group-empty proof. On Windows
+it terminates the owned Job Object, waits boundedly for zero active processes,
+and reaps the leader. Direct provider exit does not bypass either platform's
+descendant-retirement step. Finalization then releases streams, fds, and
+native domain handles in adapter-specific order. A POSIX no-signalable-target
+result is successful completion of that ladder stage: `ESRCH`, or Darwin
+`EPERM` only after non-reaping observation has already established that the
+leader is terminal. Any other failed group signal, leader reap, Job Object
+operation, or Windows zero-active-process check is terminal `AdapterError`;
+under an existing primary failure it is attached as a cleanup note rather than
+replacing the primary. No cleanup path scans unrelated process ancestry or
+signals a process outside the still-retained platform capability.
+`interrupt()` and `request_close()` may re-enter from a Python signal handler
+at any point in close and must not wait on a non-reentrant lock owned by the
+interrupted frame.
 
 Adapter capabilities are part of the interface. `supports_terminal_mode`
 controls whether `--terminal` may mirror parsed assistant text to chat.
@@ -487,11 +532,12 @@ unchanged. They are terminal transport, not Taut-owned text rendering, and
 are exempt from [TAUT-6.4]. Sanitizing this byte stream would corrupt the
 hosted terminal protocol.
 
-**Spawn.** The adapter uses `pty.openpty()` and
-`subprocess.Popen(argv, stdin=slave, stdout=slave, stderr=slave,
-start_new_session=True, env=...)`; the parent closes the slave
-immediately and owns the master. The harness argv is its normal
-interactive launch. `TERM=xterm-256color` and a real window size
+**Spawn.** The adapter uses `pty.openpty()` and the shared [SUM-7.1] POSIX
+process-domain spawn owner to launch `argv` with the slave as
+stdin/stdout/stderr in a new session/process group; the parent closes the
+slave immediately and owns the master. The shared owner, not a second PTY-only
+escalation implementation, retains the process-group identity. The harness
+argv is its normal interactive launch. `TERM=xterm-256color` and a real window size
 (`TIOCSWINSZ`) are set; `TERM=dumb` is forbidden because it breaks these
 TUIs. PTY configuration is validated before fd publication: argv is a
 non-empty sequence of non-empty strings; rows and columns are integers in
@@ -638,10 +684,13 @@ driver wake event and a bridge-local `done` event. Teardown order is
 the pump or watcher and goes straight to ordered shutdown.
 
 **Master fd ownership.** `request_close()` publishes retirement and attempts
-the one graceful Ctrl-C; `close()` then drives the existing bounded
-SIGTERM/SIGKILL escalation, reaps the child, and closes the master iff no
-reader has started. If a reader has started, the reader closes the master on
-EOF/EIO. The reader sets `_reader_started` under the lifecycle lock as its
+the one graceful Ctrl-C; `close()` drains write-side operations and delegates
+bounded process-domain finalization to [SUM-7.1] before resolving master-fd
+ownership. It does not return early when the provider leader has exited: the
+shared owner retains the unreaped leader through the safe process-group signal
+ladder. `close()` closes the master iff no reader has started. If a reader has
+started, the reader closes the master on EOF/EIO. The reader sets
+`_reader_started` under the lifecycle lock as its
 first action and checks `_master_closed` before its first read. Any `OSError`
 on master read is end-of-stream, so a close-before-first-read `EBADF` produces
 the normal single `ExitEvent`. Direct `handle.close()` first requests
@@ -1334,6 +1383,25 @@ STOP and direct driver SIGINT each record one graceful signal and exit cleanly.
 The assertion counts signals after cleanup rather than waiting for a target
 count.
 
+Process-domain conformance uses real provider and descendant processes, not
+`Popen` doubles or signal-call counts. It proves, on every supported platform,
+that terminal close delivers retirement to a same-domain descendant when the
+provider remains alive, when the provider exits first, and when the descendant
+inherits stdout and would otherwise delay EOF. Normal descendant processes
+must be absent after close in those firing probes. POSIX proof covers non-
+reaping natural-exit observation, safe group identity through graceful exit,
+SIGTERM, and SIGKILL stages for both stream and PTY handles, and the rule that
+no group signal occurs after leader reap; it is evidence for the bounded
+retirement algorithm, not an atomic proof that a numeric process group is
+empty. Windows proof covers suspended spawn, pre-execution Job Object
+assignment, resume, job termination, zero active processes, outer-job
+assignment failure, and cleanup. Existing tests continue to prove that reusable
+`interrupt()` does not retire the handle and that exactly one graceful close
+signal is sent. A POSIX-only boundary probe may show that a child which
+deliberately creates a new session is outside the owned domain, but the test
+must retain creation identity and clean it explicitly. Every descendant probe
+has bounded failure cleanup that refuses to signal a reused PID.
+
 Canonical coverage aggregation validates every downloaded raw shard before
 combine. No shard may be missing, zero-byte, or unreadable through Coverage's
 public data API, and any `CoverageWarning` during combine is fatal. Aggregation
@@ -1554,6 +1622,10 @@ tail plus the `--attach` instruction.
 
 ## Related Plans
 
+- `docs/plans/2026-08-24-extension-seams-process-containment-coverage-plan.md`
+  — defines cross-platform Summon process-domain ownership and bounded
+  descendant finalization without treating lifecycle containment as a
+  sandbox.
 - `docs/plans/2026-08-20-human-tabular-output-plan.md` — restores [SUM-3]'s
   field-before-structure boundary for standalone live and named status rows,
   including extensible detail fields.

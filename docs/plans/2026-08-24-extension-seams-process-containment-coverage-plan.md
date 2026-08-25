@@ -1,8 +1,8 @@
 # Extension Seams, Process-Domain Containment, and Coverage Integrity Plan
 
-Status: active. The E1 contract is promoted and implementation is in progress;
-the E2 and T1 proposed deltas remain unpromoted until those packets are
-separately authorized for implementation.
+Status: active. E1 landed at `d5e3be2`; the E2 contract is promoted for
+implementation; the T1 coverage delta remains unpromoted until that packet is
+separately authorized.
 
 Class: 5+P. The work changes the public Python embedding contract, the MCP
 attachment contract, the Summon child-cleanup lifecycle, installed-wheel
@@ -112,15 +112,10 @@ survival probe.
   The spec-promotion slice applies the exact delta below to the then-current
   active files without overwriting unrelated intervening edits. Code does not
   cite the new text until its implementation and reciprocal mappings land.
-- Promotion baseline: pending. Record a commit SHA or the baseline SHA plus the
-  exact promoted spec diff after the spec-promotion slice and before code
-  implementation.
-- Packeted promotion rule: owner authorization on 2026-08-25 covers E1 only.
-  Promote the E1 text in specs 02, 03, and 05 before E1 code, including the
-  [TAUT-12.5] historical MCP canary paragraph. Keep spec 04's E2 text and
-  [TAUT-12.5]'s T1 coverage replacement in this proposed delta until those
-  packets are separately authorized. This prevents active specs from
-  overstating behavior that this implementation slice will not ship.
+- Packeted promotion rule: owner authorization on 2026-08-25 covers E1 and,
+  after E1 landed, E2. The [TAUT-12.5] T1 coverage replacement remains in this
+  proposed delta until separately authorized. This prevents active specs from
+  overstating behavior that the current implementation packet will not ship.
 - E1 promotion baseline: `cd7e34724f34d8cc9a2e0cc3fdd251955d76914c`
   plus pre-promotion working-tree blobs `7c50af427331b0e4b865ee827d7669d733e18343`
   (spec 02), `1ac6b72b2493798083dbc2b9a9fc18dfe37641b2` (spec 03), and
@@ -130,6 +125,12 @@ survival probe.
   the replacement paragraph under [MCP-4], and one Related Plans backlink in
   each file. The [TAUT-12.5] addition landed after the first real checker proof;
   the timing correction is recorded in the Deviation Log.
+- E2 promotion baseline: pre-promotion HEAD
+  `3441fdac21eaf5708e1027ca372ac3ddb6c95c69` and
+  `docs/specs/04-summon.md` blob
+  `8bf55f5f31bdca82b5b731368b6e3044f8ce2b4a`. The exact promoted diff is the
+  proposed [SUM-2], [SUM-7.1], [SUM-7.4], and [SUM-12] text plus the Related
+  Plans backlink below. T1 remains proposed.
 
 ## Proposed Spec Delta
 
@@ -289,7 +290,10 @@ Insert after the first adapter contract paragraph:
 > the host job. The adapter retains the provider PID as [SUM-4] identity
 > evidence while the domain owner retains the separate cleanup capability.
 
-Replace the `interrupt()`, `request_close()`, and `close()` paragraphs with:
+In the paragraph that begins with `emits_session_events`, retain its first two
+sentences through `adapters that declare false never pay that wait`. Replace
+from the old ``interrupt()` is a reusable` sentence through the old `close()`
+paragraph with:
 
 > `interrupt()` remains reusable, nonterminal cancellation. It preserves the
 > existing provider-specific signal or PTY Ctrl-C behavior, aborts adapter
@@ -315,12 +319,17 @@ Replace the `interrupt()`, `request_close()`, and `close()` paragraphs with:
 > it terminates the owned Job Object, waits boundedly for zero active processes,
 > and reaps the leader. Direct provider exit does not bypass either platform's
 > descendant-retirement step. Finalization then releases streams, fds, and
-> native domain handles in adapter-specific order. A failed group signal,
-> leader reap, Job Object operation, or Windows zero-active-process check is
-> terminal `AdapterError`; under an existing primary failure it is attached as
-> a cleanup note rather than replacing the primary. No cleanup path scans
-> unrelated process ancestry or signals a process outside the still-retained
-> platform capability.
+> native domain handles in adapter-specific order. A POSIX no-signalable-target
+> result is successful completion of that ladder stage: `ESRCH`, or
+> Darwin `EPERM` only after non-reaping observation has already established
+> that the leader is terminal. Any other failed group signal, leader reap, Job
+> Object operation, or Windows zero-active-process check is terminal
+> `AdapterError`; under an existing primary failure it is attached as a cleanup
+> note rather than replacing the primary. No cleanup path scans unrelated
+> process ancestry or signals a process outside the still-retained platform
+> capability. `interrupt()` and `request_close()` may re-enter from a Python
+> signal handler at any point in close and must not wait on a non-reentrant
+> lock owned by the interrupted frame.
 
 ### [SUM-7.4] PTY domain ownership
 
@@ -338,7 +347,9 @@ Replace the first two sentences of `Master fd ownership` with:
 > `close()` drains write-side operations and delegates bounded process-domain
 > finalization to [SUM-7.1] before resolving master-fd ownership. It does not
 > return early when the provider leader has exited: the shared owner retains the
-> unreaped leader through the safe process-group signal ladder.
+> unreaped leader through the safe process-group signal ladder. `close()` closes
+> the master iff no reader has started. If a reader has started, the reader
+> closes the master on EOF/EIO.
 
 ### [SUM-12] Process-domain firing proof
 
@@ -365,12 +376,12 @@ Insert after the terminal-retirement conformance paragraph:
 
 ### Related-plan backlink
 
-Add to each touched spec's `## Related Plans` section:
+Add to spec 04's `## Related Plans` section for the E2 packet:
 
 > - `docs/plans/2026-08-24-extension-seams-process-containment-coverage-plan.md`
->   — public activity-neutral extension seams, admitted historical MCP/current-
->   core proof, cross-platform Summon process-domain finalization, and canonical
->   TUI/PostgreSQL coverage production.
+>   — defines cross-platform Summon process-domain ownership and bounded
+>   descendant finalization without treating lifecycle containment as a
+>   sandbox.
 
 ## Context and Key Files
 
@@ -511,16 +522,20 @@ cited owners are reread.
   the Job Object after its graceful interval and requires zero active processes.
   Direct leader exit never skips the remaining platform retirement step.
 - POSIX process groups are a best-effort bounded retirement capability, not a
-  durable kernel handle. Success proves safe signal delivery while identity was
-  pinned plus leader reap; it does not claim an atomic group-empty observation.
+  durable kernel handle. Each ladder stage either safely delivers while the
+  process-group identity is pinned or returns the narrowly accepted no-
+  signalable-target result, followed by leader reap. Success does not claim an
+  atomic group-empty observation.
   Windows Job Object success has the stronger zero-active-process postcondition.
 - A process outside the retained domain is outside the guarantee. Production
   code does not walk arbitrary descendants with `ps`, `psutil`, `/proc`, WMI,
   or `taskkill /T` as its ownership mechanism.
-- Failure to establish containment is a spawn failure. A failed POSIX group
-  signal or leader reap, or failure to confirm zero active Windows job
-  processes after forced termination, is a terminal cleanup failure. Cleanup
-  failure attaches to an active primary exception instead of replacing it.
+- Failure to establish containment is a spawn failure. POSIX `ESRCH`, or Darwin
+  `EPERM` after the leader is already observed terminal without reaping, is an
+  expected no-signalable-target group-signal result. Any other POSIX group-signal or
+  leader-reap failure, or failure to confirm zero active Windows job processes
+  after forced termination, is a terminal cleanup failure. Cleanup failure
+  attaches to an active primary exception instead of replacing it.
 - The driver still anchors member presence to the provider leader PID and
   retains generation fencing, pump-drain order, checked joins, ledger release,
   and primary-error precedence. `_driver.py` does not become a second domain
@@ -634,6 +649,11 @@ Post-landing success signals:
 - [x] Add the E1 Related Plans backlinks without implementation mapping claims.
 - [x] Run documentation path, plan-index, DOM fixture, and relevant spec tests.
 - [x] Record the E1 promotion baseline identifier in this plan.
+- [x] Apply the exact E2 Proposed Spec Delta to spec 04 after separate owner
+  authorization. Preserve the landed SimpleBroker 7.4.2 text and keep T1
+  proposed.
+- [x] Add the E2 Related Plans backlink, run the documentation gates, and
+  record the exact pre-promotion HEAD and spec blob.
 - **Stop gate:** if review rejects the public method shape, Windows pre-
   execution containment, historical-wheel obligation, or coverage topology,
   revise the delta and rerun review before any code edit.
@@ -1151,11 +1171,13 @@ Any wrong or ambiguous answer causes a plan edit and another reader pass.
 | 2026-08-25 | E1 MCP public-boundary migration | Real SQLite owner-thread attachment tripwire plus live PostgreSQL conformance | `_WorkspaceReactor` now calls only the two public core seams for attachment identity and waiter setup; notification semantics remain on `peek_inbox(limit=101)`. SQLite and PostgreSQL state snapshots stayed unchanged. | Historical installed-wheel compatibility gate. |
 | 2026-08-25 | E1 historical-wheel canary | `uv run --no-sync python bin/build-and-check-release-wheels.py`; historical MCP wheel SHA-256 `e68fb51fd7a8ba2119b74a2a28fd5cc030d28082d10f0eb3f5e6ab835f36b608` | PASS: immutable `taut_mcp/v0.9.5` source, ordinary candidate-core dependency resolution, checkout-free imports, real SQLite attach/list/detach, and clean stdio shutdown. | Reconcile implementation docs, run PostgreSQL and focused suites, then independent review. |
 | 2026-08-25 | SimpleBroker 7.4.2 typing reconciliation found during E1 gates | Full MCP, Summon, and TUI mypy gates | Removed redundant test-only casts now made obsolete by the public typed queue iterator/read contracts. No runtime behavior changed. | Rerun affected tests and static gates. |
+| 2026-08-25 | E2 spec promotion | HEAD `3441fda`; pre-promotion spec 04 blob recorded under Spec Baseline | Promoted only the authorized Summon process-domain lifecycle and firing-proof text plus backlink; T1 remains proposed. | Documentation gates, then the first real descendant red tracer. |
 
 ## Review Log
 
 | Date | Reviewer/scope | Finding | Disposition and evidence |
 |------|----------------|---------|--------------------------|
+| 2026-08-25 | E2 promotion exactness review | The first pass found lost signal-handler reentry text, an E2 backlink that claimed unpromoted T1, ambiguous Darwin `EPERM` semantics, and two proposed/live replacement-boundary mismatches. | **accepted, final re-review passed**: restored reentry; made the backlink E2-only; defined `ESRCH` and terminal-leader Darwin `EPERM` as no-signalable-target outcomes without claiming group emptiness; preserved PTY master ownership text; and narrowed the paragraph replacement instruction. The reviewer found no SimpleBroker 7.4.2 or landed-E1 conflict. |
 | 2026-08-24 | Fresh-context independent plan/delta review | Portable POSIX process groups cannot support the draft's atomic domain-empty claim once the numeric PGID can be reused after leader reap. | **accepted, plan revised**: POSIX now has one non-reaping owner, signals only while the leader pins the PGID, never signals after reap, and claims bounded best-effort group retirement. Windows alone retains the durable Job Object zero-active-process postcondition. |
 | 2026-08-24 | Fresh-context independent plan/delta review | Focused MCP and Summon `uv --project` commands used nonexistent root-relative `tests/...` paths. | **accepted, corrected** to full `extensions/.../tests/...` paths; `uv --project` selects an environment and does not change cwd. |
 | 2026-08-24 | Fresh-context independent plan/delta review | The canary text called a freshly built pinned-source wheel the published wheel. | **accepted, corrected**: the proof is consistently a wheel built from immutable 0.9.5 release source, not a byte-identical PyPI artifact. |
