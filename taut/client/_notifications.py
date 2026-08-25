@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any
+
+from simplebroker import Queue
 
 from taut import addressing
 from taut._exceptions import EmptyResultError
@@ -13,6 +15,19 @@ from ._models import Notification
 
 
 class NotificationsMixin(_ClientBase):
+    def notification_activity_queue(self) -> Queue:
+        """Return the client-owned broker activity source for this identity.
+
+        Governed by [TAUT-8.3] and [IAN-3.3]. Notification semantics remain on
+        ``peek_inbox()`` and ``inbox()``.
+        """
+
+        member = self.peek_identity()
+        return self.queue(
+            addressing.notification_queue_name(member.member_id),
+            persistent=True,
+        )
+
     def peek_inbox(self, *, limit: int = 1000) -> list[Notification]:
         """Return pending notifications without claiming them.
 
@@ -44,7 +59,7 @@ class NotificationsMixin(_ClientBase):
         member = self._require_member(resolved)
         queue = self.queue(addressing.notification_queue_name(member["member_id"]))
         read = queue.read_many if consume else queue.peek_many
-        rows = cast(list[tuple[str, int]], read(limit, with_timestamps=True))
+        rows = read(limit, with_timestamps=True)
         return [notification_from_body(body, ts) for body, ts in rows]
 
     def _write_notification(self, *, to_id: str, payload: dict[str, Any]) -> None:

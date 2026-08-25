@@ -195,6 +195,14 @@ binding.
 No resolution path silently changes a member name. Name changes are explicit
 through [IAN-4.4].
 
+A read-only selected-member resolution uses the same precedence above but
+suppresses every state effect. It may select an existing explicit-name,
+continuity-token, claim-hash, anchor, or human-fallback member, but it never
+creates a member, creates or refreshes a claim, heals an anchor match, updates
+activity, changes anchor or fingerprint evidence, or mutates membership or
+cursor state. Invalid deterministic selectors remain errors and never fall
+back. This is selection, not authentication or token verification.
+
 `join --new` creates a fresh member and bypasses rejoin suggestions. If the
 current claim hash is unclaimed, Taut may associate it with the fresh member. If
 the current claim hash already belongs to another member, `join --new` must not
@@ -916,6 +924,9 @@ Required proofs:
 
 ## Related Plans
 
+- `docs/plans/2026-08-24-extension-seams-process-containment-coverage-plan.md`
+  — defines the public read-only selected-member and notification-activity
+  seams used by first-party extensions without exposing identity internals.
 - `docs/plans/2026-08-14-debug-failure-capture-plan.md` — reserves the
   core-owned `taut.debug` operational queue and defines its retention and
   visibility contract.

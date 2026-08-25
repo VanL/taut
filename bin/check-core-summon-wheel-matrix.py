@@ -7,6 +7,7 @@ import configparser
 import hashlib
 import json
 import os
+import queue
 import re
 import shlex
 import shutil
@@ -16,6 +17,8 @@ import sys
 import tarfile
 import tempfile
 import textwrap
+import threading
+import time
 import zipfile
 from dataclasses import dataclass
 from email.parser import BytesParser
@@ -25,12 +28,18 @@ from typing import NoReturn
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_HISTORICAL_SUMMON_COMMIT = "b03709452cf4d5962b0d7204b0dab78b9bafd524"
 EXPECTED_HISTORICAL_SUMMON_VERSION = "0.5.4"
+EXPECTED_HISTORICAL_MCP_COMMIT = "b4ca0fda9767736bfd81eb08c2dfc1e1d2b03998"
+EXPECTED_HISTORICAL_MCP_VERSION = "0.9.5"
 COMMAND_TIMEOUT_SECONDS = 180.0
 CONTROL_SMOKE_TIMEOUT_SECONDS = 180.0
+MCP_STAGE_TIMEOUT_SECONDS = 20.0
+MCP_SHUTDOWN_TIMEOUT_SECONDS = 20.0
 MATRIX_PYTHON_MIN_MINOR = 11
 EXPECTED_HISTORICAL_SUMMON_REF = "taut_summon/v0.5.4"
+EXPECTED_HISTORICAL_MCP_REF = "taut_mcp/v0.9.5"
 EXPECTED_REF_COMMITS = {
     EXPECTED_HISTORICAL_SUMMON_REF: EXPECTED_HISTORICAL_SUMMON_COMMIT,
+    EXPECTED_HISTORICAL_MCP_REF: EXPECTED_HISTORICAL_MCP_COMMIT,
 }
 EXPECTED_SUMMON_COMMAND_ENTRY_POINTS = (
     ("dismiss", "taut_summon.command_manifest:dismiss"),
@@ -62,6 +71,7 @@ class Inputs:
     new_core: Path
     new_summon: Path
     historical_summon_ref: str
+    historical_mcp_ref: str
 
 
 def _fail(message: str) -> NoReturn:
@@ -87,16 +97,23 @@ def _parse_args(argv: list[str] | None) -> Inputs:
     parser.add_argument("--new-core", required=True, metavar="WHEEL")
     parser.add_argument("--new-summon", required=True, metavar="WHEEL")
     parser.add_argument("--historical-summon-ref", required=True, metavar="REF")
+    parser.add_argument("--historical-mcp-ref", required=True, metavar="REF")
     args = parser.parse_args(argv)
     inputs = Inputs(
         new_core=_required_wheel(args.new_core, "new core"),
         new_summon=_required_wheel(args.new_summon, "new Summon"),
         historical_summon_ref=args.historical_summon_ref,
+        historical_mcp_ref=args.historical_mcp_ref,
     )
     if inputs.historical_summon_ref != EXPECTED_HISTORICAL_SUMMON_REF:
         _fail(
             "historical Summon ref must be immutable release ref "
             f"{EXPECTED_HISTORICAL_SUMMON_REF!r}"
+        )
+    if inputs.historical_mcp_ref != EXPECTED_HISTORICAL_MCP_REF:
+        _fail(
+            "historical MCP ref must be immutable release ref "
+            f"{EXPECTED_HISTORICAL_MCP_REF!r}"
         )
     return inputs
 
@@ -496,6 +513,38 @@ def _build_historical_summon(
         )
     _print_wheel_evidence("historical_summon", metadata)
     return historical_summon
+
+
+def _build_historical_mcp(
+    *,
+    mcp_source: Path,
+    work: Path,
+    env: dict[str, str],
+    uv: str,
+) -> Path:
+    mcp_out = work / "historical-mcp-wheel"
+    mcp_out.mkdir()
+    _run(
+        [
+            uv,
+            "build",
+            "--wheel",
+            str(mcp_source / "extensions" / "taut_mcp"),
+            "--out-dir",
+            str(mcp_out),
+        ],
+        cwd=mcp_source,
+        env=env,
+    )
+    historical_mcp = _find_built_wheel(mcp_out, "taut-mcp")
+    metadata = _read_wheel_metadata(historical_mcp)
+    if metadata.version != EXPECTED_HISTORICAL_MCP_VERSION:
+        _fail(
+            f"historical MCP wheel version is {metadata.version}, expected "
+            f"{EXPECTED_HISTORICAL_MCP_VERSION}"
+        )
+    _print_wheel_evidence("historical_mcp", metadata)
+    return historical_mcp
 
 
 def _venv_python(venv: Path) -> Path:
@@ -969,6 +1018,413 @@ finally:
     print(probe.stdout.rstrip())
 
 
+def _stop_interactive_process(process: subprocess.Popen[str]) -> None:
+    try:
+        if os.name == "posix":
+            os.killpg(process.pid, signal.SIGKILL)
+        elif os.name == "nt":  # pragma: no cover - exercised on Windows CI
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                text=True,
+                capture_output=True,
+                timeout=10.0,
+                check=False,
+            )
+        else:  # pragma: no cover - defensive platform fallback
+            process.kill()
+    except ProcessLookupError:
+        pass
+    try:
+        process.wait(timeout=10.0)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=10.0)
+
+
+class _HistoricalMcpStdioDriver:
+    def __init__(
+        self,
+        *,
+        process: subprocess.Popen[str],
+        token: str,
+        stage_timeout: float,
+        shutdown_timeout: float,
+    ) -> None:
+        if process.stdin is None or process.stdout is None or process.stderr is None:
+            _stop_interactive_process(process)
+            _fail("installed MCP stdio pipes were not created")
+        self.process = process
+        self.stdin = process.stdin
+        self.stdout = process.stdout
+        self.stderr = process.stderr
+        self.token = token
+        self.stage_timeout = stage_timeout
+        self.shutdown_timeout = shutdown_timeout
+        self.received: queue.Queue[object] = queue.Queue()
+        self.eof = object()
+        self.reader = threading.Thread(target=self._read_stdout, daemon=True)
+        self.reader.start()
+
+    @classmethod
+    def start(
+        cls,
+        *,
+        command: tuple[str, ...],
+        token: str,
+        cwd: Path,
+        env: dict[str, str],
+        stage_timeout: float,
+        shutdown_timeout: float,
+    ) -> _HistoricalMcpStdioDriver:
+        child_env = env.copy()
+        child_env.pop("PYTHONPATH", None)
+        child_env["PYTHONNOUSERSITE"] = "1"
+        print(f"[wheel-matrix] + {_format_command(list(command))}")
+        creationflags = (
+            int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+            if os.name == "nt"
+            else 0
+        )
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=cwd,
+                env=child_env,
+                text=True,
+                bufsize=1,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=os.name == "posix",
+                creationflags=creationflags,
+            )
+        except OSError as exc:
+            detail = str(exc).replace(token, "<redacted>")
+            _fail(f"installed MCP stdio could not start: {detail}")
+        return cls(
+            process=process,
+            token=token,
+            stage_timeout=stage_timeout,
+            shutdown_timeout=shutdown_timeout,
+        )
+
+    def _redact(self, value: object) -> str:
+        return str(value).replace(self.token, "<redacted>")
+
+    def _fail(self, message: str) -> NoReturn:
+        _fail(self._redact(message))
+
+    def _read_stdout(self) -> None:
+        try:
+            for line in self.stdout:
+                self.received.put(json.loads(line))
+        except (OSError, UnicodeError, ValueError) as exc:
+            self.received.put(("reader-error", self._redact(exc)))
+        finally:
+            self.received.put(self.eof)
+
+    def _send(self, frame: dict[str, object]) -> None:
+        try:
+            self.stdin.write(
+                json.dumps(frame, sort_keys=True, separators=(",", ":")) + "\n"
+            )
+            self.stdin.flush()
+        except (BrokenPipeError, OSError) as exc:
+            self._fail(f"server input failed: {exc}")
+
+    def _receive(self, request_id: int, stage: str) -> dict[str, object]:
+        deadline = time.monotonic() + self.stage_timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self._fail(f"{stage} timed out")
+            try:
+                frame = self.received.get(timeout=remaining)
+            except queue.Empty:
+                self._fail(f"{stage} timed out")
+            if frame is self.eof:
+                self._fail(f"server stdout closed during {stage}")
+            if isinstance(frame, tuple) and frame[0] == "reader-error":
+                self._fail(f"invalid server output during {stage}: {frame[1]}")
+            if not isinstance(frame, dict):
+                self._fail(f"invalid server frame during {stage}")
+            if self.token in json.dumps(frame, sort_keys=True):
+                self._fail(f"server echoed continuity selector during {stage}")
+            if frame.get("id") == request_id:
+                return frame
+
+    def _tool_result(self, request_id: int, stage: str) -> dict[str, object]:
+        frame = self._receive(request_id, stage)
+        if "error" in frame:
+            self._fail(f"{stage} returned a protocol error")
+        result = frame.get("result")
+        if not isinstance(result, dict) or result.get("isError") is True:
+            self._fail(f"{stage} returned a tool error")
+        structured = result.get("structuredContent")
+        if not isinstance(structured, dict):
+            self._fail(f"{stage} omitted structured content")
+        return structured
+
+    def initialize(self) -> None:
+        self._send(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-11-25",
+                    "capabilities": {},
+                    "clientInfo": {"name": "wheel-matrix", "version": "1"},
+                },
+            }
+        )
+        initialized = self._receive(1, "initialize")
+        if "error" in initialized or not isinstance(initialized.get("result"), dict):
+            self._fail("initialize returned a protocol error")
+        self._send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+
+    def attach(
+        self, *, workspace: Path, member_id: str, member_name: str
+    ) -> tuple[dict[str, object], str]:
+        self._send(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "attach_workspace",
+                    "arguments": {"workspace": str(workspace), "token": self.token},
+                },
+            }
+        )
+        attached = self._tool_result(2, "attach_workspace")
+        records = attached.get("records")
+        if not isinstance(records, list) or len(records) != 1:
+            self._fail("attach_workspace returned the wrong record count")
+        record = records[0]
+        if (
+            not isinstance(record, dict)
+            or record.get("status") != "ready"
+            or record.get("member_id") != member_id
+            or record.get("name") != member_name
+        ):
+            self._fail("attach_workspace returned the wrong ready member")
+        canonical = record.get("workspace")
+        if not isinstance(canonical, str) or canonical != os.path.realpath(workspace):
+            self._fail("attach_workspace returned the wrong canonical workspace")
+        return record, canonical
+
+    def assert_listed(self, record: dict[str, object]) -> None:
+        self._send(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {"name": "list_workspaces", "arguments": {}},
+            }
+        )
+        if self._tool_result(3, "list_workspaces").get("records") != [record]:
+            self._fail("list_workspaces did not retain the attached workspace")
+
+    def detach(self, canonical: str) -> None:
+        self._send(
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": {
+                    "name": "detach_workspace",
+                    "arguments": {"workspace": canonical},
+                },
+            }
+        )
+        detached_records = self._tool_result(4, "detach_workspace").get("records")
+        if (
+            not isinstance(detached_records, list)
+            or len(detached_records) != 1
+            or not isinstance(detached_records[0], dict)
+            or detached_records[0].get("status") != "detached"
+        ):
+            self._fail("detach_workspace did not report detached state")
+
+    def assert_empty(self) -> None:
+        self._send(
+            {
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "tools/call",
+                "params": {"name": "list_workspaces", "arguments": {}},
+            }
+        )
+        listed = self._tool_result(5, "list_workspaces after detach")
+        if listed.get("records") != [] or listed.get("empty") is not True:
+            self._fail("list_workspaces retained state after detach")
+
+    def shutdown(self) -> None:
+        self.stdin.close()
+        try:
+            returncode = self.process.wait(timeout=self.shutdown_timeout)
+        except subprocess.TimeoutExpired:
+            self._fail("clean_shutdown timed out")
+        self.reader.join(timeout=5.0)
+        if self.reader.is_alive():
+            self._fail("clean_shutdown left the stdout reader live")
+        stderr = self._redact(self.stderr.read())
+        if returncode != 0:
+            self._fail(f"clean_shutdown exited {returncode}: {stderr[:500]}")
+        if "Traceback (most recent call last)" in stderr:
+            self._fail("clean_shutdown emitted a traceback")
+
+    def close(self) -> None:
+        if self.process.poll() is None:
+            _stop_interactive_process(self.process)
+        self.reader.join(timeout=5.0)
+
+
+def _drive_historical_mcp_stdio(
+    *,
+    command: tuple[str, ...],
+    workspace: Path,
+    token: str,
+    member_id: str,
+    member_name: str,
+    cwd: Path,
+    env: dict[str, str],
+    stage_timeout: float = MCP_STAGE_TIMEOUT_SECONDS,
+    shutdown_timeout: float = MCP_SHUTDOWN_TIMEOUT_SECONDS,
+) -> None:
+    """Drive the retained legacy lifecycle without exposing its selector."""
+
+    driver = _HistoricalMcpStdioDriver.start(
+        command=command,
+        token=token,
+        cwd=cwd,
+        env=env,
+        stage_timeout=stage_timeout,
+        shutdown_timeout=shutdown_timeout,
+    )
+    try:
+        driver.initialize()
+        record, canonical = driver.attach(
+            workspace=workspace,
+            member_id=member_id,
+            member_name=member_name,
+        )
+        driver.assert_listed(record)
+        driver.detach(canonical)
+        driver.assert_empty()
+        driver.shutdown()
+        print(
+            json.dumps(
+                {
+                    "case": "historical_mcp_attach",
+                    "clean_shutdown": "ok",
+                    "status": "ok",
+                },
+                sort_keys=True,
+            )
+        )
+    finally:
+        driver.close()
+
+
+def _case_historical_mcp_attach(
+    *,
+    new_core: Path,
+    historical_mcp: Path,
+    work: Path,
+    env: dict[str, str],
+    uv: str,
+) -> None:
+    case_root, python = _create_environment(
+        name="04-historical-mcp", work=work, env=env, uv=uv
+    )
+    _install(
+        python=python,
+        artifacts=(new_core, historical_mcp),
+        cwd=case_root,
+        env=env,
+        uv=uv,
+    )
+    selector_path = case_root / ".historical-mcp-selector.json"
+    probe = _run_python_probe(
+        python=python,
+        cwd=case_root,
+        env=env,
+        code=r"""
+import os
+
+import taut
+import taut_mcp
+from taut import TautClient
+
+taut_path = assert_installed(taut)
+mcp_path = assert_installed(taut_mcp)
+workspace = Path.cwd() / "workspace"
+workspace.mkdir()
+db = workspace / ".taut.db"
+TautClient.init(db_path=db)
+owner = TautClient(db_path=db, as_name="matrix-member")
+try:
+    owner.join("general")
+    member = owner.last_created_member
+    if member is None or member.token is None:
+        raise SystemExit("candidate core did not create a continuity selector")
+    selector_path = Path.cwd() / ".historical-mcp-selector.json"
+    descriptor = os.open(
+        selector_path,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+        0o600,
+    )
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        json.dump(
+            {
+                "member_id": member.member_id,
+                "member_name": member.name,
+                "token": member.token,
+            },
+            stream,
+            sort_keys=True,
+        )
+finally:
+    owner.close()
+print(json.dumps({
+    "case": "historical_mcp_bootstrap",
+    "mcp_path": mcp_path,
+    "status": "ok",
+    "taut_path": taut_path,
+}, sort_keys=True))
+""",
+    )
+    print(probe.stdout.rstrip())
+    try:
+        selector = json.loads(selector_path.read_text(encoding="utf-8"))
+        token = selector.get("token")
+        member_id = selector.get("member_id")
+        member_name = selector.get("member_name")
+        if not all(
+            isinstance(value, str) and value
+            for value in (token, member_id, member_name)
+        ):
+            _fail("candidate core bootstrap emitted invalid selector evidence")
+        console = python.with_name("taut-mcp.exe" if os.name == "nt" else "taut-mcp")
+        if not console.is_file():
+            _fail("installed taut-mcp console entry point is missing")
+        _drive_historical_mcp_stdio(
+            command=(str(console),),
+            workspace=case_root / "workspace",
+            token=token,
+            member_id=member_id,
+            member_name=member_name,
+            cwd=case_root,
+            env=env,
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        _fail(f"cannot read candidate core selector evidence: {exc}")
+    finally:
+        selector_path.unlink(missing_ok=True)
+
+
 def _case_historical_summon_metadata(metadata: WheelMetadata) -> None:
     if _canonical_project_name(metadata.name) != "taut-summon":
         _fail(
@@ -1003,6 +1459,38 @@ def _case_historical_summon_metadata(metadata: WheelMetadata) -> None:
     )
 
 
+def _case_historical_mcp_metadata(metadata: WheelMetadata) -> None:
+    if _canonical_project_name(metadata.name) != "taut-mcp":
+        _fail(
+            "historical MCP wheel has project name "
+            f"{metadata.name!r}, expected 'taut-mcp'"
+        )
+    if metadata.version != EXPECTED_HISTORICAL_MCP_VERSION:
+        _fail(
+            f"historical MCP wheel version is {metadata.version}, expected "
+            f"{EXPECTED_HISTORICAL_MCP_VERSION}"
+        )
+    requirement = f"taut-chat>={EXPECTED_HISTORICAL_MCP_VERSION}"
+    core_requirements = _requirements_for_project(metadata, "taut-chat")
+    if core_requirements != (requirement,):
+        rendered = ", ".join(metadata.requirements) or "<none>"
+        _fail(
+            "historical MCP METADATA must contain exactly one open Requires-Dist "
+            f"{requirement!r}; found: {rendered}"
+        )
+    print(
+        json.dumps(
+            {
+                "case": "historical_mcp_metadata",
+                "candidate_core_admitted": True,
+                "requires": requirement,
+                "status": "ok",
+            },
+            sort_keys=True,
+        )
+    )
+
+
 def _print_wheel_evidence(label: str, metadata: WheelMetadata) -> None:
     print(
         "[wheel-matrix] "
@@ -1029,11 +1517,13 @@ def _check(inputs: Inputs) -> None:
     historical_summon_commit = _resolve_remote_tag(
         inputs.historical_summon_ref, env=env
     )
+    historical_mcp_commit = _resolve_remote_tag(inputs.historical_mcp_ref, env=env)
     with tempfile.TemporaryDirectory(prefix="taut-wheel-matrix-") as raw_work:
         work = Path(raw_work)
         historical_summon_source = work / "historical-summon-source"
+        historical_mcp_source = work / "historical-mcp-source"
         archive_repository = _prepare_archive_repository(
-            refs=(inputs.historical_summon_ref,),
+            refs=(inputs.historical_summon_ref, inputs.historical_mcp_ref),
             work=work,
             env=env,
         )
@@ -1043,13 +1533,26 @@ def _check(inputs: Inputs) -> None:
             destination=historical_summon_source,
             env=env,
         )
+        _export_ref(
+            repository=archive_repository,
+            commit=historical_mcp_commit,
+            destination=historical_mcp_source,
+            env=env,
+        )
         historical_summon = _build_historical_summon(
             summon_source=historical_summon_source,
             work=work,
             env=env,
             uv=uv,
         )
+        historical_mcp = _build_historical_mcp(
+            mcp_source=historical_mcp_source,
+            work=work,
+            env=env,
+            uv=uv,
+        )
         _case_historical_summon_metadata(_read_wheel_metadata(historical_summon))
+        _case_historical_mcp_metadata(_read_wheel_metadata(historical_mcp))
         _case_new_core(wheel=inputs.new_core, work=work, env=env, uv=uv)
         _case_paired_control_smoke(
             new_core=inputs.new_core,
@@ -1064,9 +1567,16 @@ def _check(inputs: Inputs) -> None:
             env=env,
             uv=uv,
         )
+        _case_historical_mcp_attach(
+            new_core=inputs.new_core,
+            historical_mcp=historical_mcp,
+            work=work,
+            env=env,
+            uv=uv,
+        )
     print(
-        "[wheel-matrix] all three installed-wheel cases and historical "
-        "metadata probe passed"
+        "[wheel-matrix] all four installed-wheel cases and historical "
+        "metadata probes passed"
     )
 
 

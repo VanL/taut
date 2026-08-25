@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ast
 import asyncio
+import inspect
 import json
 import queue
 import sys
@@ -15,6 +17,160 @@ from tests.helpers.eventually import async_eventually
 import taut_mcp._workspace_reactor as workspace_reactor
 from taut import TautClient, addressing, identity
 from taut_mcp._process_reactor import ProcessReactor
+
+
+def _private_identity_activity_violations(package: Path) -> list[str]:
+    violations: list[str] = []
+    forbidden_attributes = {
+        "_resolve_member",
+        "_require_member",
+        "notification_queue_name",
+    }
+    for source_path in sorted(package.rglob("*.py")):
+        tree = ast.parse(source_path.read_text(encoding="utf-8"))
+        forbidden_names: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "taut.addressing":
+                for imported in node.names:
+                    if imported.name == "notification_queue_name":
+                        forbidden_names.add(imported.asname or imported.name)
+                        violations.append(
+                            f"{source_path.name}:{node.lineno}:import "
+                            "notification_queue_name"
+                        )
+            if not isinstance(node, ast.Call):
+                continue
+            if (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr in forbidden_attributes
+            ):
+                violations.append(f"{source_path.name}:{node.lineno}:{node.func.attr}")
+            elif isinstance(node.func, ast.Name) and node.func.id in forbidden_names:
+                violations.append(f"{source_path.name}:{node.lineno}:{node.func.id}")
+    return violations
+
+
+def test_production_mcp_uses_only_public_identity_activity_seams() -> None:
+    """[MCP-4]/[MCP-12] Attachment does not reach into core internals."""
+
+    package = Path(__file__).resolve().parents[1] / "taut_mcp"
+
+    assert _private_identity_activity_violations(package) == []
+
+
+def test_public_identity_activity_boundary_rejects_direct_import_alias(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "taut_mcp"
+    package.mkdir()
+    (package / "bad.py").write_text(
+        "from taut.addressing import notification_queue_name as queue_name\n"
+        "queue_name('m_example')\n",
+        encoding="utf-8",
+    )
+
+    violations = _private_identity_activity_violations(package)
+
+    assert violations == [
+        "bad.py:1:import notification_queue_name",
+        "bad.py:2:queue_name",
+    ]
+
+
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(45)
+def test_attachment_calls_public_identity_activity_seams_on_owner_thread(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[MCP-4] Core internals are reached only from their public core owner."""
+
+    workspace, token, other = _workspace(
+        tmp_path,
+        "workspace",
+        selected_name="selected",
+        other_name="other",
+    )
+    other.say("general", "pending @selected")
+    observer = TautClient(db_path=workspace / ".taut.db", token=token)
+    selected = observer._state.get_member_by_token(token)
+    assert selected is not None
+    selected_id = selected["member_id"]
+    token_claim = identity.claim_for_token(token)
+    member_before = observer._state.get_member(selected_id)
+    memberships_before = observer._state.list_memberships(selected_id)
+    claim_before = observer._state.get_identity_claim(token_claim.claim_hash)
+    notifications_before = tuple(observer.peek_inbox())
+    assert member_before is not None
+    assert claim_before is None
+
+    real_resolve = TautClient._resolve_member
+    real_require = TautClient._require_member
+    real_peek = TautClient.peek_identity
+    real_activity_queue = TautClient.notification_activity_queue
+    calls: list[tuple[str, int]] = []
+
+    def require_core_caller(name: str) -> None:
+        frame = inspect.currentframe()
+        assert frame is not None
+        caller = frame.f_back
+        assert caller is not None
+        core_caller = caller.f_back
+        assert core_caller is not None
+        module_name = str(core_caller.f_globals.get("__name__", ""))
+        if module_name.startswith("taut_mcp"):
+            raise AssertionError(f"MCP called private core method {name}")
+
+    def guarded_resolve(self: TautClient, *args: Any, **kwargs: Any) -> Any:
+        require_core_caller("_resolve_member")
+        return real_resolve(self, *args, **kwargs)
+
+    def guarded_require(self: TautClient, *args: Any, **kwargs: Any) -> Any:
+        require_core_caller("_require_member")
+        return real_require(self, *args, **kwargs)
+
+    def tracked_peek(self: TautClient) -> Any:
+        calls.append(("peek_identity", threading.get_ident()))
+        return real_peek(self)
+
+    def tracked_activity_queue(self: TautClient) -> Any:
+        calls.append(("notification_activity_queue", threading.get_ident()))
+        return real_activity_queue(self)
+
+    monkeypatch.setattr(TautClient, "_resolve_member", guarded_resolve)
+    monkeypatch.setattr(TautClient, "_require_member", guarded_require)
+    monkeypatch.setattr(TautClient, "peek_identity", tracked_peek)
+    monkeypatch.setattr(
+        TautClient,
+        "notification_activity_queue",
+        tracked_activity_queue,
+    )
+    master_thread = threading.get_ident()
+
+    async def scenario() -> None:
+        reactor = ProcessReactor(asyncio.get_running_loop())
+        try:
+            attached = await reactor.attach_workspace(str(workspace), token)
+            assert attached["workspace"] == str(workspace.resolve())
+        finally:
+            await reactor.aclose()
+
+    try:
+        asyncio.run(scenario())
+        assert {name for name, _thread_id in calls} == {
+            "peek_identity",
+            "notification_activity_queue",
+        }
+        owner_threads = {thread_id for _name, thread_id in calls}
+        assert len(owner_threads) == 1
+        assert master_thread not in owner_threads
+        assert observer._state.get_member(selected_id) == member_before
+        assert observer._state.list_memberships(selected_id) == memberships_before
+        assert observer._state.get_identity_claim(token_claim.claim_hash) is None
+        assert tuple(observer.peek_inbox()) == notifications_before
+    finally:
+        observer.close()
+        other.close()
 
 
 def _resource_deadlock_cap(base_seconds: int, *, platform: str = sys.platform) -> int:

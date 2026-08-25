@@ -265,6 +265,15 @@ def test_notification_peek_limit_is_keyword_only_with_core_default() -> None:
     assert parameters["limit"].default == 1000
 
 
+def test_public_identity_activity_seams_have_exact_signatures() -> None:
+    """[TAUT-8.3] Extension seams accept no alternate selector or queue name."""
+
+    assert list(inspect.signature(taut.TautClient.peek_identity).parameters) == ["self"]
+    assert list(
+        inspect.signature(taut.TautClient.notification_activity_queue).parameters
+    ) == ["self"]
+
+
 def test_client_environment_identity_inheritance_is_keyword_only_and_defaulted() -> (
     None
 ):

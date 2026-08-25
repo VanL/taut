@@ -443,12 +443,15 @@ the only capacity error.
 
 After the validation grant, the same candidate child constructs and validates
 the workspace reactor, `TautClient`, backend, token, member, and initial
-notification snapshot on its owner thread. Token/member validation uses the
-core read-only member-resolution path (`create=False`,
-`_touch_activity=False`): it does not create or heal identity, record a claim,
-update member activity, or change its anchor or fingerprint. The master never
-validates through
-or uses that client. An ordinary failure before publication reports its fixed
+notification snapshot on its owner thread. It obtains the selected member
+through public `TautClient.peek_identity()` and obtains the broker activity
+source through public `TautClient.notification_activity_queue()`. Both use
+[IAN-3.3]'s read-only selection: attachment does not create or heal identity,
+record a claim, update member activity, change anchor or fingerprint evidence,
+claim a notification, or move a cursor. MCP does not call a private client
+resolver, import internal queue-name derivation, decode raw notification
+bodies, or move either operation to the master thread. The master never
+validates through or uses that client. An ordinary failure before publication reports its fixed
 error and enters the shared hidden `retiring` state before the response is
 settled. The owner thread closes partial state and clears its raw token; the
 reservation and path exclusion remain until observed thread exit, then reap
@@ -2233,7 +2236,7 @@ wheel to register its `mcp` manifest.
 | Contract | Current owner |
 |----------|---------------|
 | [MCP-1]–[MCP-3] package, main/standalone launch adapters, dual-era SDK adapter, and stdio lifecycle | `extensions/taut_mcp/pyproject.toml`, `extensions/taut_mcp/taut_mcp/command_manifest.py`, `extensions/taut_mcp/taut_mcp/command.py`, `extensions/taut_mcp/taut_mcp/_version.py`, `extensions/taut_mcp/taut_mcp/cli.py`, `extensions/taut_mcp/taut_mcp/server.py` |
-| [MCP-4] process-local shared ensure and workspace lifecycle | `extensions/taut_mcp/taut_mcp/_process_reactor.py`, `extensions/taut_mcp/taut_mcp/_workspace_reactor.py` |
+| [MCP-4] process-local shared ensure, public core identity/activity seams, and workspace lifecycle | `extensions/taut_mcp/taut_mcp/_process_reactor.py`, `extensions/taut_mcp/taut_mcp/_workspace_reactor.py`, `taut/client/_identity.py::IdentityMixin.peek_identity`, `taut/client/_notifications.py::NotificationsMixin.notification_activity_queue`, and `extensions/taut_mcp/tests/test_resource.py` |
 | [MCP-5]–[MCP-6] manifest, validation, dispatch, and results | `extensions/taut_mcp/taut_mcp/_tools.py`, `extensions/taut_mcp/taut_mcp/_commands.py`, `extensions/taut_mcp/taut_mcp/server.py` |
 | [MCP-7]–[MCP-8] aggregate resource, reactor hierarchy, and dual notification adapters | `extensions/taut_mcp/taut_mcp/_process_reactor.py`, `extensions/taut_mcp/taut_mcp/_workspace_reactor.py`, `extensions/taut_mcp/taut_mcp/server.py` |
 | [MCP-9] instructions and legacy-only Claude adapter | `extensions/taut_mcp/taut_mcp/server.py`, `extensions/taut_mcp/taut_mcp/_claude_channel.py` |
@@ -2242,6 +2245,9 @@ wheel to register its `mcp` manifest.
 
 ## Related Plans
 
+- `docs/plans/2026-08-24-extension-seams-process-containment-coverage-plan.md`
+  — moves attachment validation to the public core identity and notification-
+  activity seams and adds the historical open-range compatibility canary.
 - `docs/plans/2026-08-14-debug-failure-capture-plan.md` — captures eligible
   resident workspace reactor failures through the core seam while preserving
   content-free MCP crash events and process-level isolation.

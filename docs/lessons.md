@@ -803,6 +803,14 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   can only time out. Give session cleanup a `wait=False` shape for loop
   callers and let the non-daemon executor drain at interpreter exit.
 
+- 2026-08-25: A packeted spec promotion must map authorization to exact
+  paragraphs, not only stable section references. If authorized and deferred
+  changes share one reference, list each paragraph independently in the
+  packet rule and promoted-diff baseline. Otherwise a section-level deferral
+  can accidentally suppress authorized contract text while implementation
+  proceeds. Reconcile the active spec against the packet's paragraph inventory
+  before the first code proof, and record any miss as a timing deviation.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

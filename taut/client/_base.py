@@ -387,6 +387,9 @@ class _ClientBase(ABC):
         )
 
     @abstractmethod
+    def peek_identity(self) -> Member: ...
+
+    @abstractmethod
     def _resolve_member(
         self,
         *,

@@ -38,8 +38,9 @@ as historical release evidence.
   [MCP-12] proof
 - `docs/specs/02-taut-core.md` [TAUT-3.2] project configuration, [TAUT-4.4]
   channel topics, [TAUT-8.1] CLI-shaped command behavior, [TAUT-8.2] public
-  records, [TAUT-8.3] Python client and observational inbox peek, [TAUT-9]
-  trust boundary, and [TAUT-11] backend conformance
+  records, [TAUT-8.3] Python client, read-only selected identity, notification
+  activity handle, and observational inbox peek, [TAUT-9] trust boundary, and
+  [TAUT-11] backend conformance
 - `docs/specs/03-identity-addressing-notifications.md` [IAN-3] identity,
   [IAN-5.1]/[IAN-5.3] asymmetric DM creation and existing-handle validation,
   [IAN-6.5] notification queues, and [IAN-7.4] consuming versus observational
@@ -84,6 +85,13 @@ resolves the selected project, constructs and uses one persistent configured
 `TautClient`, owns its broker queues and activity waiter, runs synchronous
 Taut operations, observes notifications, and closes its handles. A blocked
 backend operation can therefore stall only its workspace.
+
+Attachment validation calls `TautClient.peek_identity()` and obtains the
+waiter's source from `TautClient.notification_activity_queue()` on that same
+child owner thread. Core therefore owns selected-member precedence, no-touch
+resolution, notification queue naming, persistent handle reuse, and close.
+MCP neither reaches through private identity helpers nor derives `notify.*`
+names.
 
 Cross-thread payloads use unbounded `queue.Queue` instances. Payload-free
 `threading.Event` and `call_soon_threadsafe` wakes tell the receiving owner to
@@ -242,8 +250,9 @@ consumption.
 
 Native database activity wakes and the 0.5-second observational backstop both
 lead the child to recompute. Wakes are hints only; content always comes from
-`peek_inbox`. Non-ready entries stay visible with empty notifications and no
-backend diagnostic.
+`peek_inbox`. The waiter listens to the public activity queue handle only; it
+does not infer notification meaning from queue bodies. Non-ready entries stay
+visible with empty notifications and no backend diagnostic.
 
 One aggregate comparison independently offers a semantic change to:
 
@@ -295,6 +304,13 @@ importing package `taut`. The canonical root Test workflow builds the release
 bytes and same-run coverage shard. The dedicated MCP workflow owns the
 supported Python matrix, live PostgreSQL conformance, representative
 macOS/Windows non-PG lanes, and package-local quality gates.
+
+Candidate-core release evidence also builds the immutable `taut_mcp/v0.9.5`
+release source and installs that historical wheel with the candidate core by
+ordinary dependency resolution. Its legacy stdio attach/list/detach lifecycle
+is the retained open-range compatibility canary. This differs from the old
+Summon metadata diagnostic: the historical MCP combination is admitted and
+must run, not merely report a renamed dependency boundary.
 
 The tag gate observes exact-SHA evidence and hands the root-produced bundle to
 the shared no-rebuild staging workflow. That workflow creates a complete draft
@@ -348,6 +364,7 @@ Configuring this path is not evidence that a PyPI version has been published.
 | `extensions/taut_mcp/tests/test_stdio_server.py` | legacy and modern discovery, exact instructions/manifest, stable-DM send/miss framing, schema, cache, subscription, rate, cancellation, and installed-wheel stdio behavior |
 | `extensions/taut_mcp/tests/test_tools.py` | exact stable-only miss normalization, shape-only target grammar, real SQLite stable send/effects, search state neutrality, warnings, errors, projection, and cancellation |
 | `extensions/taut_mcp/tests/test_pg_conformance.py` | real PostgreSQL stable-DM and search adapter conformance |
+| `bin/check-core-summon-wheel-matrix.py`, `tests/test_core_summon_wheel_matrix.py` | immutable historical MCP/current-core metadata, checkout isolation, and installed stdio attach/list/detach canary |
 | `taut/_scripts.py`, `tests/test_dev_scripts.py` | canonical PostgreSQL runner routing and MCP/PG dependency overlay |
 | `.github/workflows/test.yml` | sole MCP release-byte owner and same-run non-PG MCP coverage producer/aggregator |
 | `.github/workflows/test-mcp-extension.yml` | Ubuntu SQLite/PostgreSQL matrix, macOS/Windows non-PG lanes, and package-local quality gates |
@@ -361,6 +378,13 @@ and installs both extension overlays. The release helper therefore runs an
 explicit MCP PG conformance selection immediately after its ordinary PG gate;
 the package-local non-PG MCP suite cannot stand in for that proof. A skipped
 live lane is a reported residual, not backend-conformance evidence.
+
+Attachment tests patch private core identity helpers to fail only when called
+directly from `taut_mcp`, then require both public seams to execute on the
+workspace owner thread. State snapshots cover member activity, anchor and
+fingerprint evidence, claims, memberships, cursors, and pending notifications.
+The installed historical-wheel canary remains separate proof that current
+core still serves the already-released private-reach-in client.
 
 MCP integration tests may keep seed-only `TautClient` instances persistent
 when the asserted contract is MCP behavior rather than default client

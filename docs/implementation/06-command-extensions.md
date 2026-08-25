@@ -447,8 +447,20 @@ local release checks. Canonical CI may pass one explicit core wheel and one
 explicit Summon wheel that it just built; paired arguments are required. The
 matrix exercises current `taut-chat`/Summon artifacts and records a historical
 Summon wheel's `Requires-Dist: taut` metadata without pretending that Python
-packaging aliases it to `taut-chat`. This avoids rebuilding current artifacts
-without hiding the distribution-rename boundary.
+packaging aliases it to `taut-chat`. It separately builds the immutable
+`taut_mcp/v0.9.5` release source, installs that wheel with the candidate core
+through normal dependency resolution, and exercises its installed legacy stdio
+attach/list/detach lifecycle against real SQLite. The first historical case is
+a rename diagnostic; the second is an admitted compatibility canary. This
+avoids rebuilding current artifacts without hiding either boundary.
+
+The MCP lifecycle driver is ordinary checker code, not an opaque generated
+probe. The isolated candidate-core bootstrap writes its continuity selector to
+one exclusive temporary file with owner-only mode, the checker removes that
+file in `finally`, and no command line or evidence record contains the value.
+Scripted subprocess tests execute every protocol-stage failure, request and
+shutdown timeout, traceback rejection, selector echo, and stderr redaction
+path; the separately built historical wheel remains the success proof.
 
 The principal firing tests are:
 
@@ -461,6 +473,7 @@ The principal firing tests are:
 | Current maintained CLI claims and stale exemptions | `tests/test_cli_claims.py` and `uv run bin/check-cli-claims` |
 | Real wheel install and next-process uninstall visibility | `tests/test_command_registry.py::test_installed_console_discovers_then_loses_uninstalled_command` |
 | Exact fresh Summon/core wheel entries and paired lifecycle | `tests/test_core_summon_wheel_matrix.py` metadata and installed-artifact cases |
+| Historical MCP/current-core open-range compatibility | `tests/test_core_summon_wheel_matrix.py` immutable-ref, metadata, checkout-isolation, and attach/list/detach canary cases |
 | Import and initialization floors | `tests/test_lazy_imports.py` and `tests/test_architecture_boundaries.py` |
 
 For a new core built-in:

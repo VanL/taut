@@ -1407,6 +1407,53 @@ def test_project_notification_peek_is_observational_contract(
     assert observer._state.get_member(created.member_id) == member_after_unbind
 
 
+def test_project_public_identity_activity_seams_are_observational_contract(
+    taut_project: Path,
+) -> None:
+    """[TAUT-8.3]/[IAN-3.3] Public extension seams write no domain state."""
+
+    TautClient.init()
+    owner = TautClient(as_name="reviewer")
+    owner.join("general")
+    created = owner.last_created_member
+    assert created is not None
+    assert created.token is not None
+    speaker = TautClient(as_name="speaker")
+    speaker.join("general")
+    speaker.say("general", "pending @reviewer")
+    observer = TautClient(token=created.token)
+    token_claim = identity.claim_for_token(created.token)
+    notification_name = addressing.notification_queue_name(created.member_id)
+    notification_probe = observer.queue(notification_name)
+    try:
+        member_before = observer._state.get_member(created.member_id)
+        memberships_before = observer._state.list_memberships(created.member_id)
+        claim_before = observer._state.get_identity_claim(token_claim.claim_hash)
+        meta_high_water_before = observer._meta_queue.refresh_last_ts()
+        notification_stats_before = notification_probe.stats()
+        assert member_before is not None
+        assert claim_before is None
+
+        selected = observer.peek_identity()
+        activity_queue = observer.notification_activity_queue()
+        repeated_queue = observer.notification_activity_queue()
+
+        assert selected.member_id == created.member_id
+        assert activity_queue is repeated_queue
+        assert activity_queue.name == notification_name
+        assert observer._state.get_member(created.member_id) == member_before
+        assert observer._state.list_memberships(created.member_id) == memberships_before
+        assert observer._state.get_identity_claim(token_claim.claim_hash) is None
+        assert observer._meta_queue.refresh_last_ts() == meta_high_water_before
+        assert notification_probe.stats() == notification_stats_before
+        assert len(observer.peek_inbox()) == 1
+    finally:
+        notification_probe.close()
+        observer.close()
+        speaker.close()
+        owner.close()
+
+
 def test_project_channel_rename_moves_subthreads_contract(
     taut_project: Path,
 ) -> None:

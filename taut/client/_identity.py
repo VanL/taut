@@ -16,6 +16,24 @@ from ._models import Member
 
 
 class IdentityMixin(_ClientBase):
+    def peek_identity(self) -> Member:
+        """Return the selected existing member without identity side effects.
+
+        Governed by [TAUT-8.3] and [IAN-3.3].
+        """
+
+        last_created_member = self.last_created_member
+        last_candidates = self.last_candidates
+        try:
+            try:
+                resolved = self._resolve_member(create=False, _touch_activity=False)
+            except NotFoundError as exc:
+                raise IdentityError("unrecognized caller") from exc
+            return self._member_from_row(self._require_member(resolved))
+        finally:
+            self.last_created_member = last_created_member
+            self.last_candidates = last_candidates
+
     def whoami(self, *, explain: bool = False) -> Member:
         resolved = self._resolve_member(create=False, _require_capture=explain)
         if resolved.row is None:

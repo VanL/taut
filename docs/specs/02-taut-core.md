@@ -1443,6 +1443,27 @@ create, join, or leave a thread; write a notice; or alter membership/cursor
 state. This is the public embedding seam for persona-only updates such as
 Summon re-summon.
 
+`TautClient.peek_identity() -> Member` returns the client's selected existing
+member through [IAN-3.3]'s read-only resolution. It raises the ordinary
+identity or token error when no selected member resolves. It does not create,
+heal, claim, touch activity, update anchor or fingerprint evidence, inspect
+unread state, or mutate membership or cursor state. The effect-bearing
+`whoami()` contract remains unchanged. Success or failure preserves the
+client's existing `last_created_member` and `last_candidates` diagnostic
+objects exactly. The name is intentionally identity-oriented: continuity
+tokens are selectors, not credentials.
+
+`TautClient.notification_activity_queue() -> simplebroker.Queue` resolves the
+same selected member read-only and returns that member's core-derived
+notification queue as a persistent handle owned by the client. Selection runs
+on every call. Calls that resolve the same member reuse the client-owned
+handle; a changed valid selector may return a different cached or new handle,
+and `TautClient.close()` releases all of them. The method neither reads,
+claims, decodes, nor writes a notification. Its public purpose is broker
+activity-waiter integration by long-lived embedders; semantic reads continue
+through `peek_inbox()` or `inbox()`, so extensions do not derive `notify.*`
+names or decode queue bodies.
+
 `TautClient(..., inherit_environment_identity: bool = True)` controls only
 the constructor's fallback to the process-wide `TAUT_AS` and `TAUT_TOKEN`
 identity selectors. The default preserves the CLI and ordinary embedding
@@ -2690,6 +2711,23 @@ Summon with an older `taut-chat` core when such a published baseline exists;
 exact current first-party package names and dependency relations; and a
 diagnostic historical probe recording that old Summon requires the unrelated
 `taut` distribution.
+
+Candidate-core compatibility evidence also installs a wheel built from the
+immutable `taut_mcp/v0.9.5` release source, pinned to commit
+`b4ca0fda9767736bfd81eb08c2dfc1e1d2b03998`, with the candidate core wheel
+through normal dependency resolution in a checkout-free environment. That
+historical release-source wheel is the first retained canary whose open
+`taut-chat` requirement and private selected-member reach-in make future-core
+compatibility observable. The probe creates a real SQLite workspace and
+member through the installed candidate core, launches the installed MCP stdio
+entry point, performs attach/list/detach with the member's continuity token,
+and requires clean shutdown. It never uses `--no-deps`, imports from the
+checkout, patches private core methods, or treats import success as runtime
+proof. If a future candidate cannot preserve this admitted combination, the
+release must stop for an explicit compatibility decision and corresponding
+metadata/spec change; the checker must not silently waive or replace the
+canary.
+
 Users migrating from GitHub-installed `taut` must uninstall it before
 installing `taut-chat`.
 
@@ -2878,9 +2916,19 @@ expression behavior.
   installed registration, registry selection, lazy factories, extension
   packaging, rich-host composition, and the [TAUT-8.3]/[TAUT-8.6] public
   terminal-text helper contract for extension renderers.
+- `taut/client/_identity.py`, `taut/client/_notifications.py`,
+  `tests/test_client.py`, `tests/test_public_api.py`, and
+  `tests/test_shared_contract.py` implement and fire [TAUT-8.3]'s read-only
+  identity and notification-activity seams across SQLite and PostgreSQL.
+- `bin/check-core-summon-wheel-matrix.py` and
+  `tests/test_core_summon_wheel_matrix.py` own [TAUT-12.5]'s immutable
+  historical MCP/current-core lifecycle canary.
 
 ## Related Plans
 
+- `docs/plans/2026-08-24-extension-seams-process-containment-coverage-plan.md`
+  — adds the public activity-neutral identity and notification-queue seams,
+  migrates MCP to them, and retains historical open-range compatibility proof.
 - `docs/plans/2026-08-24-concurrency-and-schema-contract-alignment-plan.md` —
   defines the future ordered core migration ladder and the explicit unsupported
   schema-1 cutoff without adding a speculative rung.

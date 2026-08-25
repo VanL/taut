@@ -33,7 +33,14 @@ from taut._exceptions import (
     ThreadNameError,
     TokenError,
 )
-from taut.client import Channel, Message, MessageDeletion, MessageReaction, TautClient
+from taut.client import (
+    Channel,
+    Member,
+    Message,
+    MessageDeletion,
+    MessageReaction,
+    TautClient,
+)
 from taut.commands._rendering import format_unread_count
 from taut.envelope import encode_envelope
 from taut.state import (
@@ -183,6 +190,248 @@ def test_client_can_ignore_ambient_identity_for_explicit_token(
 
     assert isolated.whoami().member_id == selected_member.member_id
     assert isolated.whoami().member_id != ambient_member.member_id
+
+
+def test_peek_identity_returns_member_without_touching_selected_row(
+    tmp_path: Path,
+) -> None:
+    """[TAUT-8.3] Public selected-member inspection is activity-neutral."""
+
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    owner = TautClient(db_path=db, as_name="selected")
+    owner.join("general")
+    created = owner.last_created_member
+    assert created is not None
+    assert created.token is not None
+    observer = TautClient(db_path=db, token=created.token)
+    before = observer._state.get_member(created.member_id)
+    assert before is not None
+
+    selected = observer.peek_identity()
+
+    assert isinstance(selected, Member)
+    assert selected.member_id == created.member_id
+    assert observer._state.get_member(created.member_id) == before
+
+
+def test_peek_identity_missing_named_selector_is_identity_error(
+    tmp_path: Path,
+) -> None:
+    TautClient.init(db_path=tmp_path / ".taut.db")
+
+    with pytest.raises(IdentityError, match="unrecognized caller"):
+        TautClient(
+            db_path=tmp_path / ".taut.db",
+            as_name="missing",
+        ).peek_identity()
+
+
+@pytest.mark.parametrize(
+    "method_name",
+    ["peek_identity", "notification_activity_queue"],
+)
+def test_public_identity_activity_seams_preserve_client_diagnostics_on_success(
+    tmp_path: Path,
+    method_name: str,
+) -> None:
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    client = TautClient(db_path=db, as_name="selected")
+    client.join("general")
+    created = client.last_created_member
+    assert created is not None
+    candidates = [("candidate", ["preserve this diagnostic"])]
+    client.last_candidates = candidates
+
+    result = getattr(client, method_name)()
+
+    assert result is not None
+    assert client.last_created_member is created
+    assert client.last_candidates is candidates
+    client.close()
+
+
+@pytest.mark.parametrize(
+    "method_name",
+    ["peek_identity", "notification_activity_queue"],
+)
+def test_public_identity_activity_seams_preserve_client_diagnostics_on_failure(
+    tmp_path: Path,
+    method_name: str,
+) -> None:
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    owner = TautClient(db_path=db, as_name="selected")
+    owner.join("general")
+    created = owner.last_created_member
+    assert created is not None
+    client = TautClient(db_path=db, token="invalid-token")
+    candidates = [("candidate", ["preserve this diagnostic"])]
+    client.last_created_member = created
+    client.last_candidates = candidates
+
+    with pytest.raises(TokenError, match="TAUT_TOKEN does not match"):
+        getattr(client, method_name)()
+
+    assert client.last_created_member is created
+    assert client.last_candidates is candidates
+    client.close()
+    owner.close()
+
+
+def test_notification_activity_queue_is_reused_and_closed_by_client(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[TAUT-8.3] The client owns one persistent activity queue per member."""
+
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    owner = TautClient(db_path=db, as_name="selected")
+    owner.join("general")
+    created = owner.last_created_member
+    assert created is not None
+    assert created.token is not None
+    observer = TautClient(db_path=db, token=created.token)
+    real_close = Queue.close
+    closed: list[str] = []
+
+    def close_spy(queue: Queue) -> None:
+        closed.append(queue.name)
+        real_close(queue)
+
+    monkeypatch.setattr(Queue, "close", close_spy)
+
+    first = observer.notification_activity_queue()
+    second = observer.notification_activity_queue()
+    observer.close()
+
+    expected_name = addressing.notification_queue_name(created.member_id)
+    assert first is second
+    assert first.name == expected_name
+    assert closed.count(expected_name) == 1
+
+
+def test_notification_activity_queue_reselects_and_caches_per_member(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    first_owner = TautClient(db_path=db, as_name="first")
+    first_owner.join("general")
+    first_member = first_owner.last_created_member
+    assert first_member is not None
+    second_owner = TautClient(db_path=db, as_name="second")
+    second_owner.join("general")
+    second_member = second_owner.last_created_member
+    assert second_member is not None
+    observer = TautClient(db_path=db, as_name="first")
+
+    first = observer.notification_activity_queue()
+    observer.as_name = "second"
+    second = observer.notification_activity_queue()
+    observer.as_name = "first"
+    repeated_first = observer.notification_activity_queue()
+
+    assert first is repeated_first
+    assert second is not first
+    assert first.name == addressing.notification_queue_name(first_member.member_id)
+    assert second.name == addressing.notification_queue_name(second_member.member_id)
+    observer.close()
+
+
+def test_public_identity_activity_seams_reject_invalid_token_without_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    observer = TautClient(
+        db_path=db,
+        token="not-a-member-token",
+        identity_capture=_anchor_capture(cwd="/workspace/would-match"),
+    )
+    capture_calls = capture_requests(observer, monkeypatch)
+
+    with pytest.raises(TokenError, match="TAUT_TOKEN does not match"):
+        observer.peek_identity()
+    with pytest.raises(TokenError, match="TAUT_TOKEN does not match"):
+        observer.notification_activity_queue()
+
+    assert capture_calls == []
+
+
+def test_peek_identity_claim_hash_selection_is_read_only(tmp_path: Path) -> None:
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    capture = _anchor_capture()
+    owner = TautClient(db_path=db, identity_capture=capture)
+    owner.join("general")
+    created = owner.last_created_member
+    assert created is not None
+    claim = identity.claim_for_capture(capture)
+    claim_before = owner._state.get_identity_claim(claim.claim_hash)
+    member_before = owner._state.get_member(created.member_id)
+    memberships_before = owner._state.list_memberships(created.member_id)
+    assert claim_before is not None
+    assert member_before is not None
+
+    observer = TautClient(db_path=db, identity_capture=capture)
+    selected = observer.peek_identity()
+
+    assert selected.member_id == created.member_id
+    assert observer._state.get_identity_claim(claim.claim_hash) == claim_before
+    assert observer._state.get_member(created.member_id) == member_before
+    assert observer._state.list_memberships(created.member_id) == memberships_before
+
+
+def test_peek_identity_anchor_selection_does_not_heal_claim(tmp_path: Path) -> None:
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    established_capture = _anchor_capture(cwd="/workspace/established")
+    owner = TautClient(db_path=db, identity_capture=established_capture)
+    owner.join("general")
+    created = owner.last_created_member
+    assert created is not None
+    moved_capture = _anchor_capture(cwd="/workspace/moved")
+    moved_claim = identity.claim_for_capture(moved_capture)
+    member_before = owner._state.get_member(created.member_id)
+    memberships_before = owner._state.list_memberships(created.member_id)
+    assert member_before is not None
+    assert owner._state.get_identity_claim(moved_claim.claim_hash) is None
+
+    observer = TautClient(db_path=db, identity_capture=moved_capture)
+    selected = observer.peek_identity()
+
+    assert selected.member_id == created.member_id
+    assert observer._state.get_identity_claim(moved_claim.claim_hash) is None
+    assert observer._state.get_member(created.member_id) == member_before
+    assert observer._state.list_memberships(created.member_id) == memberships_before
+
+
+def test_peek_identity_human_fallback_does_not_heal_claim(tmp_path: Path) -> None:
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    owner_capture = _human_capture(login="owner")
+    owner = TautClient(db_path=db, identity_capture=owner_capture)
+    owner.join("general")
+    created = owner.last_created_member
+    assert created is not None
+    fallback_capture = _human_capture(login="fallback")
+    fallback_claim = identity.claim_for_capture(fallback_capture)
+    member_before = owner._state.get_member(created.member_id)
+    memberships_before = owner._state.list_memberships(created.member_id)
+    assert member_before is not None
+    assert owner._state.get_identity_claim(fallback_claim.claim_hash) is None
+
+    observer = TautClient(db_path=db, identity_capture=fallback_capture)
+    selected = observer.peek_identity()
+
+    assert selected.member_id == created.member_id
+    assert observer._state.get_identity_claim(fallback_claim.claim_hash) is None
+    assert observer._state.get_member(created.member_id) == member_before
+    assert observer._state.list_memberships(created.member_id) == memberships_before
 
 
 def test_show_message_returns_exact_row_and_advances_high_water_cursor(

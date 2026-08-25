@@ -63,6 +63,7 @@ def test_postgres_activity_tools_preserve_identity_and_presence(
     async def scenario() -> None:
         reactor = ProcessReactor(asyncio.get_running_loop())
         observer = TautClient()
+        token_observer = TautClient(token=token)
 
         def snapshot() -> tuple[int, tuple[object, ...]]:
             row = observer._state.get_member_by_token(token)
@@ -81,8 +82,32 @@ def test_postgres_activity_tools_preserve_identity_and_presence(
             return row["last_active_ts"], stable
 
         try:
+            activity_before_attach, identity_before_attach = snapshot()
+            member_before_attach = observer._state.get_member(member.member_id)
+            memberships_before_attach = observer._state.list_memberships(
+                member.member_id
+            )
+            token_claim = identity.claim_for_token(token)
+            claim_before_attach = observer._state.get_identity_claim(
+                token_claim.claim_hash
+            )
+            notifications_before_attach = tuple(token_observer.peek_inbox())
+            assert member_before_attach is not None
+            assert claim_before_attach is None
+
             attached = await reactor.attach_workspace(str(taut_pg_project), token)
             assert attached["records"][0]["backend"] == "postgres"
+            assert snapshot() == (activity_before_attach, identity_before_attach)
+            assert observer._state.get_member(member.member_id) == member_before_attach
+            assert (
+                observer._state.list_memberships(member.member_id)
+                == memberships_before_attach
+            )
+            assert (
+                observer._state.get_identity_claim(token_claim.claim_hash)
+                == claim_before_attach
+            )
+            assert tuple(token_observer.peek_inbox()) == notifications_before_attach
             canonical = str(attached["workspace"])
             calls: list[tuple[str, dict[str, object]]] = [
                 ("list", {"all": True}),
@@ -96,6 +121,7 @@ def test_postgres_activity_tools_preserve_identity_and_presence(
                 assert after_activity > before_activity
                 assert after_identity == before_identity
         finally:
+            token_observer.close()
             observer.close()
             await reactor.aclose()
 

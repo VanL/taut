@@ -29,7 +29,6 @@ from taut import (
     TautClient,
     TautError,
     TokenError,
-    addressing,
 )
 from taut._constants import DEFAULT_DB_NAME, load_config
 from taut._exceptions import IdentityError, NotInitializedError
@@ -396,14 +395,8 @@ class _WorkspaceReactor:
                 persistent=True,
                 inherit_environment_identity=False,
             )
-            resolved = self.client._resolve_member(
-                create=False,
-                _touch_activity=False,
-            )
-            member = self.client._require_member(resolved)
-            notification_queue = self.client.queue(
-                addressing.notification_queue_name(str(member["member_id"]))
-            )
+            member = self.client.peek_identity()
+            notification_queue = self.client.notification_activity_queue()
             try:
                 self.activity_waiter = create_activity_waiter_for_queues(
                     [notification_queue],
@@ -439,8 +432,8 @@ class _WorkspaceReactor:
                 self.canonical,
                 self.directory_identity,
                 self.backend,
-                str(member["member_id"]),
-                str(member["display_name"]),
+                member.member_id,
+                member.name,
                 self.previous_snapshot,
                 self.previous_truncated,
             )
