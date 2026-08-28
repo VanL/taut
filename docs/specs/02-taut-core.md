@@ -484,7 +484,7 @@ an accident. Two consequences are binding:
   CLI/client work, persistent owned handles for long-lived actors, and
   `close()` at owned lifetime end.
 
-  The `simplebroker>=7.4.2` floor is load-bearing. Version 5.2.0 supplies the
+  The `simplebroker>=8.0.0` floor is load-bearing. Version 5.2.0 supplies the
   reference ownership model, 5.2.2 first passed Taut's persistent-owner
   process/control proof, 5.3.0 supplies the public live activity-waiter
   replacement contract, 5.3.1 makes `Queue.write()` return the exact committed
@@ -512,7 +512,24 @@ an accident. Two consequences are binding:
   and PostgreSQL backend creation and includes serialized watcher cleanup and
   terminal error-handler propagation. Version 7.4.2 publishes the package-root
   `CloseableIterator` protocol and guarantees lazy, single-use, same-thread
-  synchronous cleanup for public Queue iterators. Taut uses neither
+  synchronous cleanup for public Queue iterators. Version 8.0.0 makes
+  ascending public message id the uniform default retrieval order, removes
+  the private SQL row-order surrogate in schema 6, and advances the backend
+  API to v8; `simplebroker-pg>=4.0.0` is the matching PostgreSQL line. Ordinary
+  generated writes remain FIFO-like because their ids are monotonic. Exact
+  inserts, loads, or id-preserving moves of lower ids are selected by public
+  id rather than insertion time. Taut continues to expose only oldest
+  selection, now defined as ascending public message id, and uses the broker
+  defaults; it does not expose newest-first selection in this release.
+
+  The SQL schema-5 to schema-6 transition is a coordinated downtime cutover,
+  not a mixed-version rolling upgrade. Operators stop every v7 client and
+  sidecar transaction, take a whole-target backup, install SimpleBroker 8 with
+  matching first-party backend major versions, let one v8 process migrate and
+  verify the target, and restart only v8 clients. Taut never inspects,
+  migrates, or repairs SimpleBroker-owned schema objects itself.
+
+  Taut uses neither
   the SimpleBroker command layer nor the newly
   re-exported project-config helpers; it continues to use the root queue/target
   API and the existing `simplebroker.ext` embedder surfaces. Persistent Queue
@@ -916,7 +933,10 @@ an integer outside the range raises `ValueError`. The exact messages are
 `limit must be an integer` and `limit must be between 1 and 1000`,
 respectively.
 
-For an explicit thread, the limit bounds the oldest unread page. Taut decodes
+For an explicit thread, the limit bounds the oldest unread page in ascending
+public message-id order. Among rows eligible above the stored cursor, a lower
+exact id inserted later is selected before a higher id inserted earlier;
+cursor advancement remains the maximum id actually returned. Taut decodes
 that whole page before advancing its membership cursor once to the highest
 timestamp among the returned messages. Messages beyond the page stay unread
 for a later call. With no thread argument, the same limit applies
@@ -1479,8 +1499,8 @@ through read-only identity resolution. It does not update activity, record an
 identity claim, inspect unread state, or create membership. Long-lived
 extensions use it to reconcile their own thread-scoped resources.
 
-Core runtime dependencies: exactly `simplebroker>=7.4.2` and `psutil`. The
-optional `taut-pg` extension adds `simplebroker-pg>=3.9.2` and its driver
+Core runtime dependencies: exactly `simplebroker>=8.0.0` and `psutil`. The
+optional `taut-pg` extension adds `simplebroker-pg>=4.0.0` and its driver
 dependencies in the same environment as Taut. Python ≥ 3.11. The CLI uses
 argparse, not a CLI framework.
 
@@ -2926,6 +2946,9 @@ expression behavior.
 
 ## Related Plans
 
+- `docs/plans/2026-08-28-simplebroker-8-reconciliation-plan.md` — raises the
+  broker floors to SimpleBroker 8.0.0 and SimpleBroker-PG 4.0.0, adopts public
+  message-id ordering, and defines the coordinated schema-6 cutover.
 - `docs/plans/2026-08-24-extension-seams-process-containment-coverage-plan.md`
   — adds the public activity-neutral identity and notification-queue seams,
   migrates MCP to them, and retains historical open-range compatibility proof.

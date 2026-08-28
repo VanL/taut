@@ -15,7 +15,7 @@ authors = [
 ]
 dependencies = [
     "taut-chat>=0.9.5",
-    "simplebroker-pg>=3.9.2",
+    "simplebroker-pg>=4.0.0",
 ]
 
 [project.entry-points."taut.search_backends"]

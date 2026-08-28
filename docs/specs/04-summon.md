@@ -1026,18 +1026,22 @@ durable conversation; the harness session is an optimization of it.
   thread own reap or join.
   The control reactor follows SimpleBroker 5.2.0's reference
   persistent-session and thread-local-core ownership model, with
-  `simplebroker>=7.4.2` required for the supported reactor lane. Version
+  `simplebroker>=8.0.0` required for the supported reactor lane. Version
   5.2.2 first proved persistent process visibility; 5.3.2 makes cancellation
   interrupt watcher bootstrap while PhaseLock or SQLite connection setup is
   blocked; and 5.3.3 removes unsafe path-name-based runner cleanup and
   initializes timestamp-conflict metrics before concurrent first writes.
   Version 5.6.1 supplies core reaction fanout's full-requested-set exact-name
-  broadcast; `simplebroker>=7.4.2` is the repository-wide supported floor,
+  broadcast; `simplebroker>=8.0.0` is the repository-wide supported floor,
   aligned with
-  `simplebroker-pg>=3.9.2`. The current pair preserves resolved configuration
+  `simplebroker-pg>=4.0.0`. The current pair preserves resolved configuration
   through watcher and backend creation and includes serialized watcher cleanup
   and terminal error-handler propagation. It also publishes closeable Queue
-  iterators with same-thread synchronous operation cleanup. Summon does not
+  iterators with same-thread synchronous operation cleanup. Version 8.0.0
+  changes default retrieval to ascending public message id and advances the
+  SQL/backend compatibility line without changing Summon's fixed control
+  topology, read-one command consumption, watcher lifecycle, retry ownership,
+  or closeable-iterator cleanup contract. Summon does not
   call the SimpleBroker command layer,
   so 6.0.0's keyword-only command-option binding does not alter the control
   reactor path.
@@ -1368,7 +1372,7 @@ exits and preserve release-before-ACK ordering.
   old-backlog/exact-boundary rate audit, bare status success, dead-driver stop,
   unknown-verb reply, persona re-summon, unsupported attach, malformed
   ledger/configuration diagnostics, registry-wide session-event capability,
-  the 7.4.2 floor, and ordered release invocation with fresh built artifacts.
+  the 8.0.0 floor, and ordered release invocation with fresh built artifacts.
 
 Terminal-retirement conformance observes the child boundary, not only handle
 method counts. Stream and PTY tests prove `request_close()` is nonblocking,
@@ -1622,6 +1626,8 @@ tail plus the `--attach` instruction.
 
 ## Related Plans
 
+- `docs/plans/2026-08-28-simplebroker-8-reconciliation-plan.md` — raises the
+  shared broker floors while preserving Summon's control and cleanup contract.
 - `docs/plans/2026-08-24-extension-seams-process-containment-coverage-plan.md`
   — defines cross-platform Summon process-domain ownership and bounded
   descendant finalization without treating lifecycle containment as a

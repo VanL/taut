@@ -70,8 +70,15 @@ filesystem error surfaces. Core rejects those paths before constructing
 `Queue`; it does not broaden this into a portable filename policy, so POSIX
 acceptance and non-SQLite targets remain unchanged.
 
-The current SimpleBroker minimum is `simplebroker>=7.4.2`, aligned with the
-current `simplebroker-pg>=3.9.2` minimum and their owning lock selections.
+Schema initialization also retains the selected SQLite path when
+SimpleBroker wraps a connection or database failure in `RuntimeError`. The
+public Taut boundary prefixes that path without parsing upstream error text,
+retrying the operation, or changing errors for PostgreSQL targets. This keeps
+corrupt-file diagnostics actionable while leaving backend policy with
+SimpleBroker.
+
+The current SimpleBroker minimum is `simplebroker>=8.0.0`, aligned with the
+current `simplebroker-pg>=4.0.0` minimum and their owning lock selections.
 Version 7.0.0 supplies the public message-id formatter
 and the exact-string JSON boundary while leaving Python and backend values as
 integers. Version 7.3.2 supplies the immutable ambient-free resolved-config
@@ -80,6 +87,13 @@ snapshot through watcher and PostgreSQL backend creation and includes the
 watcher ownership and terminal error-propagation fixes inherited by Taut.
 Version 7.4.2 adds the package-root `CloseableIterator` protocol and specifies
 lazy, single-use, same-thread synchronous cleanup for public Queue iterators.
+Version 8.0.0 removes the private SQL row-order surrogate, makes ascending
+public message id the uniform default retrieval order, moves SQL targets to
+schema 6, and advances the backend API to v8. Taut keeps using the public
+oldest-selection defaults and adds no ordering or migration shim. Operators
+must stop all v7 clients, back up the whole target, install matching v8 core
+and first-party backend majors, let one v8 process migrate and verify the
+target, and restart only v8 clients.
 Version 5.6.1 remains the
 origin of atomic exact-name
 `broadcast(..., queue_names=..., create_missing=True)`, in addition to the

@@ -190,7 +190,7 @@ python -m pip install taut-chat taut-pg taut-summon taut-mcp taut-tui
 ```
 
 Requirements: Python 3.11+. Base runtime dependencies are
-`simplebroker>=7.4.2` (which itself has none) and `psutil` for cross-platform
+`simplebroker>=8.0.0` (which itself has none) and `psutil` for cross-platform
 process metadata. The optional `tui` extra installs the separate `taut-tui`
 extension, which owns its Textual 8.2.8-or-newer requirement. Ordinary core CLI
 and library use do not import it.
@@ -245,6 +245,14 @@ filesystem path selectors. Extensions use their own tags (`taut_pg/vX.Y.Z`,
 `taut_summon/vX.Y.Z`), so their versions do not generally have to
 match the core package version; the first PyPI publication is one
 coordinated version across all five distributions.
+
+SimpleBroker 8 upgrades SQL targets from schema 5 to schema 6 and cannot share
+a target with v7 clients afterward. Treat this as a downtime cutover: stop all
+Taut, SimpleBroker, watcher, Summon, and sidecar users of the target; take a
+whole-target backup; install SimpleBroker 8 and, where PostgreSQL is used,
+SimpleBroker-PG 4; let one v8 process migrate and verify the target; then
+restart only v8 clients. This applies to existing SQLite targets as well as
+PostgreSQL schemas.
 
 Requirements, installation, the exact `.taut.toml` shape, and the
 credential-handling warning live in the
@@ -914,7 +922,7 @@ with the boundary itself specified by [TAUT-9] in the
 <summary><strong>Why argparse and a small dependency set?</strong></summary>
 
 Taut follows SimpleBroker's discipline: the install should be boring.
-Runtime dependencies are exactly `simplebroker>=7.4.2` and `psutil`. The CLI is
+Runtime dependencies are exactly `simplebroker>=8.0.0` and `psutil`. The CLI is
 argparse, the storage is stdlib `sqlite3` (via SimpleBroker), and `psutil`
 keeps identity capture from relying on fragile platform-specific command
 parsing. The TUI ships as a separate `taut-tui` extension; the optional

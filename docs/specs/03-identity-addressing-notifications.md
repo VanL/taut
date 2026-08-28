@@ -724,12 +724,15 @@ normalized from `rename` without an alias.
 Taut must use a public SimpleBroker queue-rename API for broker queue renames.
 Taut must not update SimpleBroker-owned message tables directly.
 
-Taut requires `simplebroker>=7.4.2` and `taut-pg` requires
-`simplebroker-pg>=3.9.2`. This compatible pair preserves the atomic write ids,
+Taut requires `simplebroker>=8.0.0` and `taut-pg` requires
+`simplebroker-pg>=4.0.0`. This compatible pair preserves the atomic write ids,
 rename-capable backend handshake, persistent-reactor ownership, live
 activity-waiter replacement, interruptible watcher bootstrap, corrected
 runner cleanup, timestamp-conflict metrics, supported exact-id formatting, and
 resolved configuration ownership on which rename relies. The
+v8 pair also supplies public-id retrieval order and the coordinated SQL
+schema-6/backend-API-v8 cutover described by [TAUT-3.4]; notification queue
+names, payloads, claim semantics, and fanout remain unchanged. The
 6.0.0 command-layer binding change does not affect rename because Taut uses
 `simplebroker.open_broker(...).rename_queue(...)`, not
 `simplebroker.commands`. The implementation must use
@@ -924,6 +927,9 @@ Required proofs:
 
 ## Related Plans
 
+- `docs/plans/2026-08-28-simplebroker-8-reconciliation-plan.md` — raises the
+  broker floors while preserving notification and rename contracts across the
+  coordinated schema-6 cutover.
 - `docs/plans/2026-08-24-extension-seams-process-containment-coverage-plan.md`
   — defines the public read-only selected-member and notification-activity
   seams used by first-party extensions without exposing identity internals.

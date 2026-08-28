@@ -31,7 +31,7 @@ classifiers = [
     "Topic :: Utilities",
 ]
 dependencies = [
-    "simplebroker>=7.4.2",
+    "simplebroker>=8.0.0",
     "psutil>=7.2.2",
 ]
 
@@ -55,7 +55,7 @@ dev = [
     "pytest-xdist>=3.8.0",
     "pyyaml>=6.0.3",
     "ruff>=0.16.3",
-    "simplebroker-pg>=3.9.2",
+    "simplebroker-pg>=4.0.0",
     "taut-summon>=0.9.5",
     "taut-tui>=0.9.5",
     "types-psutil>=7.2.2.20260518",

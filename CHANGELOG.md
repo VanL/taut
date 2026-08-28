@@ -11,12 +11,13 @@
   Background work intended to survive `dismiss` must use an explicit external
   lifetime; accidental same-domain orphaning is no longer persistence behavior.
 
-- Raised the runtime floor to SimpleBroker 7.4.2 and SimpleBroker-PG 3.9.2.
-  The coordinated releases preserve Taut's resolved configuration snapshot
-  through watcher and PostgreSQL backend creation, include the upstream watcher
-  lifecycle and error-propagation fixes, and publish `CloseableIterator` with
-  synchronous same-thread Queue-operation cleanup for public streaming APIs.
-  Existing runtime behavior required no adaptation; the new precise queue and
+- Raised the runtime floor to SimpleBroker 8.0.0 and SimpleBroker-PG 4.0.0.
+  The coordinated releases preserve Taut's resolved configuration snapshot,
+  watcher lifecycle, error propagation, and closeable-iterator cleanup while
+  making ascending public message id the default retrieval order. SQL targets
+  migrate from schema 5 to schema 6 and require a backed-up downtime cutover;
+  v7 and v8 clients must not share a migrated target. Existing Taut oldest
+  selection remains oldest by public id. The new precise queue and
   closeable-iterator overloads replace obsolete local type assumptions.
 
 ## 0.9.5 - 2026-08-19

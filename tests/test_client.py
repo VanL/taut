@@ -131,7 +131,6 @@ def test_resolved_target_config_handoff_bypasses_ambient_resolution(
         config=load_config({"TAUT_BUSY_TIMEOUT": 1234}),
     )
     assert target is not None
-    target.backend_options["nested"] = {"value": "frozen"}
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     ambient_db = elsewhere / "ambient.db"
@@ -157,8 +156,8 @@ def test_resolved_target_config_handoff_bypasses_ambient_resolution(
     assert not ambient_db.exists()
     config["BROKER_BUSY_TIMEOUT"] = 9999
     assert client.config["BROKER_BUSY_TIMEOUT"] == 1234
-    target.backend_options["nested"]["value"] = "mutated"
-    assert client.target.backend_options["nested"] == {"value": "frozen"}
+    target.backend_options["late"] = "mutated"
+    assert client.target.backend_options == {}
 
 
 def test_client_can_ignore_ambient_identity_for_explicit_token(

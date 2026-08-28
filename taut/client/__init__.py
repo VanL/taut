@@ -85,6 +85,24 @@ def _validate_sqlite_path(
         )
 
 
+def _ensure_initialized_schema(
+    queue: Queue,
+    target: BrokerTarget | str,
+    db_file: Path | None,
+) -> None:
+    """Install Taut state while retaining SQLite target context in errors."""
+
+    try:
+        SqlSidecarTautState(
+            queue,
+            dialect_for_taut_target(target),
+        ).ensure_schema()
+    except RuntimeError as exc:
+        if db_file is None:
+            raise
+        raise TautError(f"{db_file}: {exc}") from exc
+
+
 __all__ = [
     "Channel",
     "DoctorCheck",
@@ -234,10 +252,7 @@ class TautClient(
                 raise TautError(f"cannot create {db_file}: {parent} is not writable")
         queue = Queue(META_QUEUE_NAME, db_path=target, config=config)
         try:
-            SqlSidecarTautState(
-                queue,
-                dialect_for_taut_target(target),
-            ).ensure_schema()
+            _ensure_initialized_schema(queue, target, db_file)
         finally:
             queue.close()
         display_target = (

@@ -27,8 +27,11 @@ file before opening a load target, retains byte offsets rather than message
 bodies, and replays the nested broker section from disk. Framing records are
 canonical UTF-8 JSON; SimpleBroker payload lines remain owned by SimpleBroker.
 Taut still validates the exact nested version-1 header and message field sets.
-That is an intentional compatibility pin to the `simplebroker>=7.4.2` format
-contract: a future nested field requires an explicit version decision when the
+That is an intentional compatibility pin to the `simplebroker>=8.0.0` format
+contract. SimpleBroker 8 changes the live SQL layout to schema 6 and orders
+selection by public message id, but its logical dump remains version 1 with
+the same exact-id fields and ordering contract. A future nested field requires
+an explicit version decision when the
 dependency floor moves, rather than permissive acceptance and silent loss.
 Taut has no pre-contract dumps, so version 1 requires SimpleBroker's canonical
 19-digit strings for nested `last_ts` and `id`. The validator normalizes them
