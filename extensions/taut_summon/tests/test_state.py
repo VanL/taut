@@ -13,13 +13,14 @@ a real child process, never a faked pid table.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import threading
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import taut_summon._state as state_module
@@ -52,6 +53,10 @@ from taut_summon._state import (
 from taut.client import TautClient
 
 pytestmark = pytest.mark.sqlite_only
+
+_SUMMON_V2_FIXTURE = (
+    Path(__file__).resolve().parent / "fixtures" / "summon-schema-v2.json"
+)
 
 
 @pytest.fixture
@@ -98,6 +103,49 @@ def _meta_value(queue: Queue, key: str) -> str | None:
 def _set_meta_value(queue: Queue, key: str, value: str) -> None:
     with queue.sidecar(transaction=True) as session:
         session.run("UPDATE taut_meta SET value = ? WHERE key = ?", (value, key))
+
+
+def _install_summon_schema_v2(queue: Queue) -> None:
+    loaded: object = json.loads(_SUMMON_V2_FIXTURE.read_text(encoding="utf-8"))
+    assert isinstance(loaded, dict)
+    fixture = cast(dict[str, object], loaded)
+    assert {
+        "source_path",
+        "source_commit",
+        "schema_version",
+        "steps",
+    } <= set(fixture)
+    assert fixture["source_path"] == "extensions/taut_summon/taut_summon/_state.py"
+    assert fixture["source_commit"] == "c7266dd97d65d96a66b03c152ac2ad3b53b363c7"
+    assert fixture["schema_version"] == 2
+
+    raw_steps = fixture["steps"]
+    assert isinstance(raw_steps, list)
+    assert all(isinstance(step, dict) for step in raw_steps)
+    steps = cast(list[dict[str, object]], raw_steps)
+    assert len(steps) == 4
+    assert all(set(step) == {"sql", "params"} for step in steps)
+    assert all(isinstance(step["sql"], str) for step in steps)
+    assert all(isinstance(step["params"], list) for step in steps)
+    assert [step["params"] for step in steps] == [
+        [],
+        [],
+        [],
+        ["summon_schema_version", "2"],
+    ]
+    assert [cast(str, step["sql"]).lstrip().splitlines()[0] for step in steps] == [
+        "CREATE TABLE IF NOT EXISTS taut_meta (",
+        "CREATE TABLE IF NOT EXISTS taut_summon_claims (",
+        "CREATE TABLE IF NOT EXISTS taut_summon_sessions (",
+        "INSERT INTO taut_meta (key, value) VALUES (?, ?)",
+    ]
+
+    with queue.sidecar(transaction=True) as session:
+        for step in steps:
+            session.run(
+                cast(str, step["sql"]),
+                tuple(cast(list[object], step["params"])),
+            )
 
 
 def _dead_evidence() -> tuple[int, str]:
@@ -214,10 +262,7 @@ def test_version_gate_refuses_older_schema(state_queue: Queue) -> None:
 def test_version_two_migrates_claim_names_to_lowercase_route_keys(
     state_queue: Queue,
 ) -> None:
-    ensure_summon_schema(state_queue)
-    with state_queue.sidecar(transaction=True) as session:
-        session.run("DROP INDEX IF EXISTS taut_summon_claim_route_key_uq")
-    _set_meta_value(state_queue, SUMMON_SCHEMA_VERSION_KEY, "2")
+    _install_summon_schema_v2(state_queue)
     with state_queue.sidecar(transaction=True) as session:
         session.run(
             """
@@ -239,10 +284,7 @@ def test_version_two_migrates_claim_names_to_lowercase_route_keys(
 def test_version_two_case_variant_claims_fail_before_migration(
     state_queue: Queue,
 ) -> None:
-    ensure_summon_schema(state_queue)
-    with state_queue.sidecar(transaction=True) as session:
-        session.run("DROP INDEX IF EXISTS taut_summon_claim_route_key_uq")
-    _set_meta_value(state_queue, SUMMON_SCHEMA_VERSION_KEY, "2")
+    _install_summon_schema_v2(state_queue)
     with state_queue.sidecar(transaction=True) as session:
         for name, pid in (("Reviewer", 123), ("reviewer", 456)):
             session.run(
@@ -254,22 +296,29 @@ def test_version_two_case_variant_claims_fail_before_migration(
                 (name, "scripted", pid, f"legacy-{pid}", pid),
             )
 
+    def migration_source_snapshot() -> tuple[
+        int | None, tuple[tuple[object, ...], ...]
+    ]:
+        with state_queue.sidecar() as session:
+            claims = tuple(
+                tuple(row)
+                for row in session.run(
+                    """
+                    SELECT name, provider, driver_pid,
+                           driver_start_time, claimed_ts
+                    FROM taut_summon_claims
+                    ORDER BY provider, name
+                    """,
+                    fetch=True,
+                )
+            )
+        return get_summon_schema_version(state_queue), claims
+
+    before = migration_source_snapshot()
     with pytest.raises(SummonSchemaVersionError, match="case-variant claims"):
         ensure_summon_schema(state_queue)
-
-    assert get_summon_schema_version(state_queue) == 2
-    with state_queue.sidecar() as session:
-        rows = list(
-            session.run(
-                """
-                SELECT name FROM taut_summon_claims
-                WHERE provider = ? ORDER BY name
-                """,
-                ("scripted",),
-                fetch=True,
-            )
-        )
-    assert {str(row[0]) for row in rows} == {"Reviewer", "reviewer"}
+    assert before[0] == 2
+    assert migration_source_snapshot() == before
 
 
 def test_version_three_index_and_lookup_cover_a_late_version_two_writer(

@@ -47,6 +47,9 @@ SHELL_BASENAMES: Final[tuple[str, ...]] = (
     "ksh",
     "csh",
     "tcsh",
+    "cmd",
+    "powershell",
+    "pwsh",
 )
 
 WRAPPER_BASENAMES: Final[tuple[str, ...]] = (
@@ -154,32 +157,30 @@ _CONFIG_COMPATIBILITY_ERROR: Final[str] = (
     "incompatible SimpleBroker configuration schema: "
     "Taut's complete configuration mapping must be updated"
 )
-_UNKNOWN_BROKER_KEY_EXPECTED: Final[str] = (
-    "a recognized canonical BROKER_* configuration key"
-)
 
 
 def _broker_config_key(taut_key: str) -> str:
     return f"BROKER_{taut_key.removeprefix('TAUT_')}"
 
 
+def _required_broker_config_keys() -> frozenset[str]:
+    return frozenset(_broker_config_key(key) for key in _TAUT_BROKER_DEFAULTS)
+
+
+def _require_supported_broker_keys(config: Mapping[str, Any]) -> None:
+    if not _required_broker_config_keys().issubset(config):
+        raise RuntimeError(_CONFIG_COMPATIBILITY_ERROR)
+
+
 def freeze_broker_config(config: Mapping[str, Any]) -> ResolvedConfig:
     """Recreate a complete ambient-free broker mapping at an ownership boundary."""
 
     from simplebroker import resolve_isolated_config
-    from simplebroker.ext import InvalidConfigError
 
-    expected = {_broker_config_key(key) for key in _TAUT_BROKER_DEFAULTS}
-    if set(config) != expected:
-        raise RuntimeError(_CONFIG_COMPATIBILITY_ERROR)
-    try:
-        resolved = resolve_isolated_config(config)
-    except InvalidConfigError as exc:
-        if exc.expected == _UNKNOWN_BROKER_KEY_EXPECTED:
-            raise RuntimeError(_CONFIG_COMPATIBILITY_ERROR) from exc
-        raise
-    if set(resolved) != expected:
-        raise RuntimeError(_CONFIG_COMPATIBILITY_ERROR)
+    _require_supported_broker_keys(config)
+    _require_supported_broker_keys(resolve_isolated_config({}))
+    resolved = resolve_isolated_config(config)
+    _require_supported_broker_keys(resolved)
     return resolved
 
 
@@ -216,11 +217,10 @@ def load_config(
     raw.update(explicit)
     translated = {_broker_config_key(key): value for key, value in raw.items()}
 
+    _require_supported_broker_keys(resolve_isolated_config({}))
     try:
         resolved = resolve_isolated_config(translated)
     except InvalidConfigError as exc:
-        if exc.expected == _UNKNOWN_BROKER_KEY_EXPECTED:
-            raise RuntimeError(_CONFIG_COMPATIBILITY_ERROR) from exc
         taut_key = f"TAUT_{exc.key.removeprefix('BROKER_')}"
         if taut_key not in _TAUT_BROKER_DEFAULTS:
             raise RuntimeError(_CONFIG_COMPATIBILITY_ERROR) from exc
@@ -229,8 +229,7 @@ def load_config(
             f"expected {exc.expected}"
         ) from exc
 
-    if set(translated) != set(resolved):
-        raise RuntimeError(_CONFIG_COMPATIBILITY_ERROR)
+    _require_supported_broker_keys(resolved)
     return resolved
 
 

@@ -13,7 +13,6 @@ from simplebroker import Queue, dump_lines, open_broker, resolve_broker_target
 from simplebroker.ext import IntegrityError, SidecarSession
 from taut_summon._state import (
     LEDGER_QUEUE_NAME,
-    SUMMON_SCHEMA_VERSION_KEY,
     SummonSchemaVersionError,
     ensure_summon_schema,
     get_claim,
@@ -49,6 +48,15 @@ from tests.conftest import build_cli_env, run_cli
 from tests.helpers.eventually import eventually
 
 pytestmark = pytest.mark.shared
+
+_SUMMON_V2_FIXTURE = (
+    Path(__file__).resolve().parents[1]
+    / "extensions"
+    / "taut_summon"
+    / "tests"
+    / "fixtures"
+    / "summon-schema-v2.json"
+)
 
 
 def test_system_doctor_is_passive_and_portable_across_sql_backends(
@@ -151,14 +159,47 @@ def test_debug_capture_setting_and_queue_are_portable_across_sql_backends(
     )
 
 
-def _downgrade_summon_claim_schema_to_v2(queue: Queue) -> None:
-    ensure_summon_schema(queue)
+def _install_summon_schema_v2(queue: Queue) -> None:
+    loaded: object = json.loads(_SUMMON_V2_FIXTURE.read_text(encoding="utf-8"))
+    assert isinstance(loaded, dict)
+    fixture = cast(dict[str, object], loaded)
+    assert {
+        "source_path",
+        "source_commit",
+        "schema_version",
+        "steps",
+    } <= set(fixture)
+    assert fixture["source_path"] == "extensions/taut_summon/taut_summon/_state.py"
+    assert fixture["source_commit"] == "c7266dd97d65d96a66b03c152ac2ad3b53b363c7"
+    assert fixture["schema_version"] == 2
+
+    raw_steps = fixture["steps"]
+    assert isinstance(raw_steps, list)
+    assert all(isinstance(step, dict) for step in raw_steps)
+    steps = cast(list[dict[str, object]], raw_steps)
+    assert len(steps) == 4
+    assert all(set(step) == {"sql", "params"} for step in steps)
+    assert all(isinstance(step["sql"], str) for step in steps)
+    assert all(isinstance(step["params"], list) for step in steps)
+    assert [step["params"] for step in steps] == [
+        [],
+        [],
+        [],
+        ["summon_schema_version", "2"],
+    ]
+    assert [cast(str, step["sql"]).lstrip().splitlines()[0] for step in steps] == [
+        "CREATE TABLE IF NOT EXISTS taut_meta (",
+        "CREATE TABLE IF NOT EXISTS taut_summon_claims (",
+        "CREATE TABLE IF NOT EXISTS taut_summon_sessions (",
+        "INSERT INTO taut_meta (key, value) VALUES (?, ?)",
+    ]
+
     with queue.sidecar(transaction=True) as session:
-        session.run("DROP INDEX IF EXISTS taut_summon_claim_route_key_uq")
-        session.run(
-            "UPDATE taut_meta SET value = ? WHERE key = ?",
-            ("2", SUMMON_SCHEMA_VERSION_KEY),
-        )
+        for step in steps:
+            session.run(
+                cast(str, step["sql"]),
+                tuple(cast(list[object], step["params"])),
+            )
 
 
 def _spawn_cli(cwd: Path, *args: object) -> subprocess.Popen[str]:
@@ -846,7 +887,7 @@ def test_project_summon_v2_claim_migration_and_route_index_contract(
     client = TautClient()
     queue = client.queue(LEDGER_QUEUE_NAME)
     try:
-        _downgrade_summon_claim_schema_to_v2(queue)
+        _install_summon_schema_v2(queue)
         with queue.sidecar(transaction=True) as session:
             session.run(
                 """
@@ -895,7 +936,7 @@ def test_project_summon_v2_case_variant_migration_fails_before_mutation_contract
     client = TautClient()
     queue = client.queue(LEDGER_QUEUE_NAME)
     try:
-        _downgrade_summon_claim_schema_to_v2(queue)
+        _install_summon_schema_v2(queue)
         with queue.sidecar(transaction=True) as session:
             for name, pid in (("Reviewer", 123), ("reviewer", 456)):
                 session.run(
@@ -907,22 +948,29 @@ def test_project_summon_v2_case_variant_migration_fails_before_mutation_contract
                     (name, "scripted", pid, f"legacy-{pid}", pid),
                 )
 
+        def migration_source_snapshot() -> tuple[
+            int | None, tuple[tuple[object, ...], ...]
+        ]:
+            with queue.sidecar() as session:
+                claims = tuple(
+                    tuple(row)
+                    for row in session.run(
+                        """
+                        SELECT name, provider, driver_pid,
+                               driver_start_time, claimed_ts
+                        FROM taut_summon_claims
+                        ORDER BY provider, name
+                        """,
+                        fetch=True,
+                    )
+                )
+            return get_summon_schema_version(queue), claims
+
+        before = migration_source_snapshot()
         with pytest.raises(SummonSchemaVersionError, match="case-variant claims"):
             ensure_summon_schema(queue)
-
-        assert get_summon_schema_version(queue) == 2
-        with queue.sidecar() as session:
-            rows = list(
-                session.run(
-                    """
-                    SELECT name FROM taut_summon_claims
-                    WHERE provider = ? ORDER BY name
-                    """,
-                    ("scripted",),
-                    fetch=True,
-                )
-            )
-        assert {str(row[0]) for row in rows} == {"Reviewer", "reviewer"}
+        assert before[0] == 2
+        assert migration_source_snapshot() == before
     finally:
         queue.close()
         client.close()

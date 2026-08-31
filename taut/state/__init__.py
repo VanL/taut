@@ -27,6 +27,7 @@ from taut.state._sql import (
     CoreSchemaInspectionError,
     CoreStateInspectionError,
     SqlSidecarTautState,
+    decode_schema_version,
 )
 from taut.state._types import (
     ChannelRenameRow,
@@ -208,6 +209,7 @@ __all__ = [
     "ThreadKind",
     "ThreadRow",
     "decode_channel_topic",
+    "decode_schema_version",
     "dialect_for_taut_target",
     "require_topic_compatible_kind",
     "validate_channel_topic_text",

@@ -1,0 +1,26 @@
+{
+  "source_path": "extensions/taut_summon/taut_summon/_state.py",
+  "source_commit": "c7266dd97d65d96a66b03c152ac2ad3b53b363c7",
+  "schema_version": 2,
+  "steps": [
+    {
+      "sql": "\nCREATE TABLE IF NOT EXISTS taut_meta (\n    key   TEXT PRIMARY KEY,\n    value TEXT NOT NULL\n)\n",
+      "params": []
+    },
+    {
+      "sql": "\n    CREATE TABLE IF NOT EXISTS taut_summon_claims (\n        name              TEXT NOT NULL,\n        provider          TEXT NOT NULL,\n        driver_pid        BIGINT NOT NULL,\n        driver_start_time TEXT NOT NULL,\n        claimed_ts        BIGINT NOT NULL,\n        PRIMARY KEY (name, provider)\n    )\n    ",
+      "params": []
+    },
+    {
+      "sql": "\n    CREATE TABLE IF NOT EXISTS taut_summon_sessions (\n        member_id           TEXT PRIMARY KEY,\n        token               TEXT NOT NULL,\n        provider            TEXT NOT NULL,\n        provider_session_id TEXT,\n        driver_pid          BIGINT,\n        driver_start_time   TEXT,\n        wired               INTEGER NOT NULL DEFAULT 0,\n        updated_ts          BIGINT NOT NULL\n    )\n    ",
+      "params": []
+    },
+    {
+      "sql": "\nINSERT INTO taut_meta (key, value) VALUES (?, ?)\n",
+      "params": [
+        "summon_schema_version",
+        "2"
+      ]
+    }
+  ]
+}

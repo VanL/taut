@@ -399,11 +399,10 @@ def test_postgres_concurrent_empty_schema_initializers_converge(
                 FROM information_schema.tables
                 WHERE table_schema = %s
                   AND table_name LIKE 'taut_%%'
-                ORDER BY table_name
                 """,
                 (pg_schema,),
             )
-            assert [row[0] for row in cursor.fetchall()] == [
+            required_tables = {
                 "taut_channel_renames",
                 "taut_identity_claims",
                 "taut_member_aliases",
@@ -411,7 +410,8 @@ def test_postgres_concurrent_empty_schema_initializers_converge(
                 "taut_membership",
                 "taut_meta",
                 "taut_threads",
-            ]
+            }
+            assert required_tables <= {row[0] for row in cursor.fetchall()}
         client = TautClient(as_name="post_init")
         try:
             client.join("general")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -926,6 +927,237 @@ def test_sqlite_provider_rejects_newer_search_schema_or_projection(
 
         with pytest.raises(RuntimeError, match=f"^{diagnostic}$"):
             provider.ensure_schema()
+    finally:
+        provider.close()
+        queue.close()
+
+
+class _RecordingSchemaSession:
+    def __init__(
+        self,
+        delegate: SidecarSession,
+        statements: list[str],
+    ) -> None:
+        self._delegate = delegate
+        self._statements = statements
+
+    def run(
+        self,
+        sql: str,
+        params: tuple[Any, ...] = (),
+        *,
+        fetch: bool = False,
+    ) -> Iterable[tuple[Any, ...]]:
+        self._statements.append(" ".join(sql.split()))
+        return self._delegate.run(sql, params, fetch=fetch)
+
+
+def _record_schema_statements(
+    sidecar: SidecarAccessor,
+    statements: list[str],
+) -> SidecarAccessor:
+    @contextmanager
+    def accessor(*, transaction: bool = False) -> Iterator[SidecarSession]:
+        with sidecar(transaction=transaction) as session:
+            yield cast(
+                SidecarSession,
+                _RecordingSchemaSession(session, statements),
+            )
+
+    return accessor
+
+
+def _assert_version_read_precedes_schema_mutation(statements: list[str]) -> None:
+    normalized = [statement.upper() for statement in statements]
+    metadata_table = r'(?:"TAUT_SEARCH_METADATA"|TAUT_SEARCH_METADATA)'
+
+    def reads_stable_versions(statement: str) -> bool:
+        projection, separator, source = statement.partition(" FROM ")
+        return (
+            statement.startswith("SELECT ")
+            and bool(separator)
+            and re.search(r"\bSCHEMA_VERSION\b", projection) is not None
+            and re.search(r"\bPROJECTION_VERSION\b", projection) is not None
+            and re.match(rf"{metadata_table}(?=\s|$)", source) is not None
+        )
+
+    read_index = next(
+        index
+        for index, statement in enumerate(normalized)
+        if reads_stable_versions(statement)
+    )
+
+    def is_schema_mutation(statement: str) -> bool:
+        if statement.startswith(("INSERT ", "UPDATE ", "DELETE ")):
+            return True
+        if statement.startswith(("ALTER ", "DROP ")):
+            return True
+        return (
+            statement.startswith("CREATE ")
+            and re.match(
+                rf"CREATE TABLE(?: IF NOT EXISTS)? {metadata_table}(?=\s|\()",
+                statement,
+            )
+            is None
+        )
+
+    assert not any(
+        is_schema_mutation(statement) for statement in normalized[:read_index]
+    )
+    assert not any(is_schema_mutation(statement) for statement in normalized)
+
+
+@pytest.mark.parametrize(
+    ("schema_version", "projection_version", "diagnostic_fragment"),
+    [
+        (2, 1, "search schema version 2"),
+        (1, 2, "search projection version 2"),
+    ],
+)
+def test_sqlite_provider_reads_source_shaped_versions_before_current_shape(
+    tmp_path: Path,
+    schema_version: int,
+    projection_version: int,
+    diagnostic_fragment: str,
+) -> None:
+    """[SRCH-6.2] Stored versions gate current-shape writes and provider DDL."""
+
+    queue = Queue(META_QUEUE_NAME, db_path=str(tmp_path / ".taut.db"))
+    statements: list[str] = []
+    provider = SQLiteSearchProvider(
+        sidecar=_record_schema_statements(queue.sidecar, statements)
+    )
+    try:
+        with queue.sidecar(transaction=True) as session:
+            session.run(
+                """
+                CREATE TABLE taut_search_metadata (
+                    singleton          BIGINT PRIMARY KEY CHECK (singleton = 1),
+                    schema_version     BIGINT NOT NULL,
+                    projection_version BIGINT NOT NULL
+                )
+                """
+            )
+            session.run(
+                """
+                INSERT INTO taut_search_metadata (
+                    singleton, schema_version, projection_version
+                ) VALUES (1, ?, ?)
+                """,
+                (schema_version, projection_version),
+            )
+        with queue.sidecar() as session:
+            columns_before = tuple(
+                str(row[1])
+                for row in session.run(
+                    "PRAGMA table_info(taut_search_metadata)",
+                    fetch=True,
+                )
+            )
+            rows_before = list(
+                session.run(
+                    "SELECT * FROM taut_search_metadata WHERE singleton = 1",
+                    fetch=True,
+                )
+            )
+
+        with pytest.raises(RuntimeError) as raised:
+            provider.ensure_schema()
+
+        assert diagnostic_fragment in str(raised.value)
+        _assert_version_read_precedes_schema_mutation(statements)
+        with queue.sidecar() as session:
+            columns_after = tuple(
+                str(row[1])
+                for row in session.run(
+                    "PRAGMA table_info(taut_search_metadata)",
+                    fetch=True,
+                )
+            )
+            rows_after = list(
+                session.run(
+                    "SELECT * FROM taut_search_metadata WHERE singleton = 1",
+                    fetch=True,
+                )
+            )
+        assert columns_after == columns_before
+        assert rows_after == rows_before
+    finally:
+        provider.close()
+        queue.close()
+
+
+def test_sqlite_provider_does_not_rewrite_missing_stable_version_field(
+    tmp_path: Path,
+) -> None:
+    """[SRCH-6.2] An unreadable stable version field is not fresh state."""
+
+    queue = Queue(META_QUEUE_NAME, db_path=str(tmp_path / ".taut.db"))
+    statements: list[str] = []
+    provider = SQLiteSearchProvider(
+        sidecar=_record_schema_statements(queue.sidecar, statements)
+    )
+    try:
+        with queue.sidecar(transaction=True) as session:
+            session.run(
+                """
+                CREATE TABLE taut_search_metadata (
+                    singleton             BIGINT PRIMARY KEY CHECK (singleton = 1),
+                    schema_version        BIGINT NOT NULL,
+                    current_generation    BIGINT NOT NULL,
+                    current_slot          BIGINT NOT NULL CHECK (current_slot IN (0, 1)),
+                    staging_generation    BIGINT,
+                    staging_slot          BIGINT CHECK (staging_slot IN (0, 1)),
+                    staging_scan_revision BIGINT,
+                    next_generation       BIGINT NOT NULL,
+                    initialized           BIGINT NOT NULL,
+                    rotation_cursor       TEXT
+                )
+                """
+            )
+            session.run(
+                """
+                INSERT INTO taut_search_metadata (
+                    singleton, schema_version, current_generation,
+                    current_slot, next_generation, initialized
+                ) VALUES (1, 1, 1, 0, 2, 0)
+                """
+            )
+        with queue.sidecar() as session:
+            columns_before = tuple(
+                str(row[1])
+                for row in session.run(
+                    "PRAGMA table_info(taut_search_metadata)",
+                    fetch=True,
+                )
+            )
+            rows_before = list(
+                session.run(
+                    "SELECT * FROM taut_search_metadata",
+                    fetch=True,
+                )
+            )
+
+        with pytest.raises(OperationalError):
+            provider.ensure_schema()
+
+        _assert_version_read_precedes_schema_mutation(statements)
+        with queue.sidecar() as session:
+            columns_after = tuple(
+                str(row[1])
+                for row in session.run(
+                    "PRAGMA table_info(taut_search_metadata)",
+                    fetch=True,
+                )
+            )
+            rows_after = list(
+                session.run(
+                    "SELECT * FROM taut_search_metadata",
+                    fetch=True,
+                )
+            )
+        assert columns_after == columns_before
+        assert rows_after == rows_before
     finally:
         provider.close()
         queue.close()

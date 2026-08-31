@@ -31,7 +31,7 @@ import subprocess
 import sys
 import time
 from dataclasses import replace
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import SimpleNamespace, TracebackType
 from typing import Any, Self, cast
 
@@ -119,7 +119,19 @@ def _whoami(shell: Path | str, cwd: Path) -> tuple[int, str | None]:
     return completed.returncode, json.loads(line).get("name")
 
 
-_SHELL_BASENAMES = {"sh", "bash", "zsh", "dash", "ksh", "csh", "tcsh", "fish"}
+_SHELL_BASENAMES = {
+    "sh",
+    "bash",
+    "zsh",
+    "dash",
+    "ksh",
+    "csh",
+    "tcsh",
+    "fish",
+    "cmd",
+    "powershell",
+    "pwsh",
+}
 
 
 def _anchor_argv0(shell: Path | str, cwd: Path) -> str:
@@ -380,6 +392,159 @@ def test_select_anchor_skips_wrappers_and_explains_human_fallbacks() -> None:
         None,
         "human fallback at top of readable process chain",
     )
+
+
+@pytest.mark.parametrize(
+    ("basename", "expected_pid"),
+    [
+        ("cmd.exe", 2),
+        ("powershell.exe", 2),
+        ("PWSH.EXE", 2),
+        ("bash.exe", 2),
+        ("uv.exe", 2),
+        ("tmux.exe", None),
+        ("codex.exe", 1),
+        ("bash.exe.exe", 1),
+    ],
+)
+def test_select_anchor_classifies_one_terminal_exe_suffix(
+    basename: str,
+    expected_pid: int | None,
+) -> None:
+    candidate = identity.ProcessInfo(
+        pid=1,
+        start_time="candidate-start",
+        exe=f"C:/tools/{basename}",
+        argv=(f"C:/tools/{basename}",),
+    )
+    control = identity.ProcessInfo(
+        pid=2,
+        start_time="control-start",
+        exe="C:/tools/codex.exe",
+        argv=("C:/tools/codex.exe",),
+    )
+
+    anchor, _rule = identity.select_anchor((candidate, control))
+
+    assert (None if anchor is None else anchor.pid) == expected_pid
+
+
+def test_exe_classification_preserves_raw_fingerprint_and_claim_evidence() -> None:
+    proc = identity.ProcessInfo(
+        pid=42,
+        ppid=7,
+        start_time="start-42",
+        exe="C:/Tools/CODEX.EXE",
+        argv=("C:/Tools/CODEX.EXE", "--work"),
+        uid=501,
+        pgid=42,
+        session_id=9,
+        tty="console",
+        cwd="C:/workspace",
+    )
+
+    anchor, _rule = identity.select_anchor((proc,))
+    fingerprint = json.loads(identity.fingerprint_for_process(anchor) or "null")
+    capture = replace(_capture(), chain=(proc,), anchor=proc)
+    claim = identity.claim_for_capture(capture)
+
+    assert anchor is proc
+    assert proc.basename == "codex.exe"
+    assert capitalize_automatic_name(normalize_name_seed(proc.basename)) == "Codex-exe"
+    assert fingerprint["exe"] == "C:/Tools/CODEX.EXE"
+    assert fingerprint["argv"] == ["C:/Tools/CODEX.EXE", "--work"]
+    assert claim.evidence["exe"] == "C:/Tools/CODEX.EXE"
+    assert claim.evidence["argv"] == ["C:/Tools/CODEX.EXE", "--work"]
+
+
+@pytest.mark.skipif(
+    os.name != "nt",
+    reason="PowerShell ancestry is a hosted Windows process contract",
+)
+@pytest.mark.usefixtures("clean_env")
+def test_powershell_parent_is_observed_but_not_selected_as_anchor(
+    tmp_path: Path,
+) -> None:
+    powershell = shutil.which("pwsh") or shutil.which("powershell")
+    assert powershell is not None, "hosted Windows proof requires PowerShell"
+    probe = tmp_path / "identity_probe.py"
+    probe.write_text(
+        """
+import json
+from taut import identity
+
+
+def process_payload(process):
+    if process is None:
+        return None
+    return {
+        "exe": process.exe,
+        "argv": list(process.argv),
+    }
+
+
+capture = identity.capture_identity()
+print(json.dumps({
+    "chain": [process_payload(process) for process in capture.chain],
+    "anchor": process_payload(capture.anchor),
+}))
+""".lstrip(),
+        encoding="utf-8",
+    )
+    launcher = tmp_path / "launch-probe.ps1"
+    launcher.write_text(
+        """
+$ErrorActionPreference = 'Stop'
+& $env:TAUT_TEST_PYTHON $env:TAUT_TEST_PROBE
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+""".lstrip(),
+        encoding="utf-8",
+    )
+    env = build_cli_env()
+    env.update(
+        {
+            "TAUT_TEST_PYTHON": sys.executable,
+            "TAUT_TEST_PROBE": str(probe),
+        }
+    )
+
+    completed = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(launcher),
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout.strip().splitlines()[-1])
+
+    def classification_names(process: dict[str, Any]) -> set[str]:
+        sources = [*(process.get("argv") or ())[:1], process.get("exe")]
+        return {
+            PureWindowsPath(source).name.casefold().removesuffix(".exe")
+            for source in sources
+            if source
+        }
+
+    observed_names = {
+        name for process in payload["chain"] for name in classification_names(process)
+    }
+    assert observed_names & {"powershell", "pwsh"}, (
+        "PowerShell was not present in the captured ancestry"
+    )
+    if payload["anchor"] is not None:
+        assert classification_names(payload["anchor"]).isdisjoint(_SHELL_BASENAMES)
 
 
 def test_fingerprint_and_token_claims_do_not_store_secret_material() -> None:

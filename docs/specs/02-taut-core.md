@@ -220,23 +220,28 @@ target = "postgresql://postgres:postgres@127.0.0.1:54329/taut_test"
 schema = "taut_project"
 ```
 
-Taut and standalone SimpleBroker have symmetric configuration namespaces.
-Taut reads `TAUT_*`; SimpleBroker reads `BROKER_*`. Ambient `BROKER_*` values,
-whether valid or invalid, do not affect Taut. Ambient `TAUT_*` values do not
-affect standalone SimpleBroker. Taut never obtains isolation by temporarily
-editing the process environment.
+Taut and standalone SimpleBroker have isolated configuration namespaces.
+Taut reads only its documented `TAUT_*` inputs and SimpleBroker reads
+`BROKER_*`; neither ambient namespace fills the other. The Taut translation
+inventory is the closed set of broker settings Taut currently exposes, not a
+promise that every future resolver output immediately gains a Taut spelling.
+A newly recognized broker setting uses the strict isolated resolver's
+canonical default until Taut deliberately assigns it a public input and
+product meaning. Taut never obtains isolation by temporarily editing the
+process environment.
 
-`load_config()` compiles one complete Taut-owned input mapping, mechanically
-renames every supported `TAUT_NAME` to `BROKER_NAME`, and passes the complete
-mapping through SimpleBroker's public `resolve_isolated_config()` helper. That
-helper returns a nominal public immutable `ResolvedConfig` mapping. Broker
-lower layers recognize that type without consulting ambient `BROKER_*`;
-converting it to an ordinary dictionary discards the isolation guarantee and
-is not permitted on the Taut-to-broker handoff. SimpleBroker owns value
-coercion, validation, safe rejected-value display, and the resulting typed
-broker mapping. Taut owns input selection, key translation, Taut-specific
-defaults, mapping-parity enforcement, and translation of a typed invalid-key
-diagnostic back to its public Taut spelling.
+`load_config()` compiles the closed Taut-owned input mapping, mechanically
+renames each supported `TAUT_NAME` to its documented `BROKER_NAME`, and
+passes only those inputs through SimpleBroker's public strict
+`resolve_isolated_config()` helper. The helper returns a nominal immutable
+`ResolvedConfig` without reading ambient `BROKER_*`. Broker lower layers
+retain that no-ambient marker; converting it to an ordinary dictionary is
+not a broker handoff. A copied embedder mapping is re-frozen before Taut
+passes it to broker lower layers. SimpleBroker owns canonical defaults,
+normalization, validation, safe rejected-value display, and the resulting
+typed mapping. Taut owns input selection, key translation, Taut-specific
+defaults, required-input survival, and translation of typed invalid-key
+diagnostics back to public Taut spellings.
 
 The named defaults have two different roles. These Taut-important values are
 grouped first in code because they encode Taut behavior: default storage is
@@ -256,12 +261,11 @@ location/name pair.
 | `TAUT_BACKEND` | `sqlite` | zero-config backend |
 | `TAUT_LOAD_MAX_FUTURE_SKEW_SECONDS` | `300` | Taut load eligibility |
 
-Every other named default exists to make the broker mapping complete so an
-ambient `BROKER_*` value can never fill a missing field. Almost all of these
-values have no independent Taut meaning: they mirror supported SimpleBroker
-defaults for cache, durability, batching, vacuum, polling, logging, and
-backend connection-part settings. Naming them in Taut is an isolation
-mechanism, not a claim that they are Taut product policy.
+Every other named Taut default mirrors a broker setting that Taut currently
+exposes. Supplying all documented Taut translations explicitly prevents
+ambient `BROKER_*` values from affecting them. Most have no independent Taut
+meaning; naming them is an isolation and public-configuration choice, not a
+claim that the table is the resolver's permanent output inventory.
 
 | Taut key | Raw default | Taut key | Raw default |
 |---|---:|---|---:|
@@ -279,14 +283,15 @@ mechanism, not a claim that they are Taut product policy.
 | `TAUT_BACKEND_DATABASE` | `simplebroker` | `TAUT_BACKEND_SCHEMA` | `simplebroker_pg_v1` |
 | `TAUT_BACKEND_TARGET` | `""` |  |  |
 
-These two tables are the closed 32-field translation inventory. The values are
-raw strings so SimpleBroker's public field schema remains the sole normalizer;
-resolved values may differ, such as vacuum threshold `10` becoming ratio
-`0.1`.
+These two tables are the closed current Taut-to-broker input translation
+inventory. Their values are raw strings so SimpleBroker's public field
+schema remains the sole normalizer; resolved values may differ, such as
+vacuum threshold `10` becoming ratio `0.1`.
 
-The mapping is exhaustive and bijective over SimpleBroker's public resolved
-config keys. Except for the separate `TAUT_DB` path selector, each broker
-setting uses mechanical prefix substitution: `TAUT_<suffix>` becomes
+Each documented Taut broker setting maps to exactly one canonical broker key;
+the Taut input inventory need not equal the strict resolver's whole returned
+key set. Except for the separate `TAUT_DB` path selector, each broker setting
+uses mechanical prefix substitution: `TAUT_<suffix>` becomes
 `BROKER_<suffix>`. The input precedence within private `load_config()` is:
 explicit Taut-spelled override, then `TAUT_DB` for the default location/name
 pair, then the corresponding ambient `TAUT_*` value, then the named default.
@@ -296,11 +301,22 @@ directory. An absolute `TAUT_DB` splits into location and basename. A relative
 `TAUT_DB` clears the location and remains relative. Unknown explicit override
 keys fail rather than pass through.
 
-The isolated resolver rejects unknown keys and returns canonical keys only.
-Taut compares its translated input key set with the returned canonical key
-set. A dependency upgrade that adds, removes, or renames a canonical broker
-key therefore fails closed before target or handle construction until Taut
-assigns the corresponding named default and verifies its role.
+The strict isolated resolver rejects broker input keys it does not recognize
+and returns a nominal ambient-free snapshot containing every canonical key
+it owns. Taut requires every translated Taut input key to be present after
+resolution. A copied client or watcher handoff must also contain every
+translated Taut key before strict re-resolution, so a missing Taut-owned
+value is not replaced by a broker default. Taut preserves any additional
+canonical keys returned by that resolver through the handoff. A missing,
+removed, or renamed Taut input fails before target or handle construction.
+Taut detects removed keys by requiring its input keys to be a subset of a
+public strict isolated default snapshot; it does not parse human-readable
+`InvalidConfigError` wording as a type tag. Taut does not enable permissive
+unknown-key preservation, expose additional outputs as Taut inputs, inspect
+SimpleBroker's private field registry, or impose whole-output key equality at
+runtime or in CI. Dependency upgrades still require behavior verification;
+key-shape compatibility alone is not an endorsement of changed broker
+semantics.
 
 When SimpleBroker rejects translated Taut input with
 `simplebroker.ext.InvalidConfigError`, Taut converts it into a safe
@@ -424,8 +440,15 @@ the pre-insert read and the insert, reread it; refresh `last_seen_ts` and
 return it when it belongs to the same member, but keep treating another member
 as an ownership collision.
 
-Schema evolution is additive within the current schema generation when
-possible (new tables, new nullable columns). Breaking changes bump
+New tables and indexes may evolve additively within the current schema
+generation through idempotent DDL. Adding a column to an installed table is
+not accomplished by editing `CREATE TABLE IF NOT EXISTS`: the change must
+supply an explicit idempotent reconciliation step or a versioned migration
+and a firing upgrade proof whose source state was produced by the actual
+supported predecessor. That proof may run the predecessor producer or use a
+provenance-pinned fixture; no generic fixture or migration framework is
+required. Backend proof follows the column's actual compatibility boundary.
+Breaking changes bump
 `schema_version` and use an ordered `ensure_schema` migration ladder: one
 named rung advances exactly one version, and every supported older version
 reaches the current version only by applying each adjacent rung in ascending
@@ -449,6 +472,12 @@ The development-stage schema 1 to schema 2 cutover remains an explicit
 unsupported historical boundary. It gains a `1 -> 2` rung only through a
 separate compatibility plan with an authentic schema-1 fixture; the existence
 of the future ladder does not infer that transformation.
+
+Migration and schema-conformance checks require named columns and logical
+constraint semantics as owned subsets. Physical column ordinal,
+engine-generated constraint names, unrelated tables sharing a prefix, table
+creation order, and unowned additional columns are not invariants unless an
+explicit consumer says otherwise.
 
 After a fresh initialization or migration reaches the current version,
 `ensure_schema` runs the current idempotent DDL reconciliation and enforces
@@ -2946,6 +2975,10 @@ expression behavior.
 
 ## Related Plans
 
+- `docs/plans/2026-08-25-semantic-compatibility-hardening-plan.md` — defines
+  strict semantic configuration compatibility, predecessor-produced schema
+  proof, and named subset conformance without freezing dependency inventory or
+  physical layout.
 - `docs/plans/2026-08-28-simplebroker-8-reconciliation-plan.md` — raises the
   broker floors to SimpleBroker 8.0.0 and SimpleBroker-PG 4.0.0, adopts public
   message-id ordering, and defines the coordinated schema-6 cutover.

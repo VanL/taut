@@ -24,12 +24,18 @@ class _EntryPoint:
     value: str
     manifest: object
     owner: str = "taut-pg"
+    load_calls: list[str] | None = None
+    fail_on_load: bool = False
 
     @property
     def dist(self) -> _Distribution:
         return _Distribution(self.owner)
 
     def load(self) -> object:
+        if self.load_calls is not None:
+            self.load_calls.append(self.owner)
+        if self.fail_on_load:
+            pytest.fail(f"ineligible provider loaded from {self.owner}")
         return self.manifest
 
 
@@ -140,13 +146,64 @@ def test_postgres_provider_discovery_validates_manifest_before_factory(
     assert calls == [sidecar]
 
 
+def test_postgres_provider_discovery_filters_foreign_claim_before_ambiguity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut.search import _discovery
+
+    provider = _CompleteProvider()
+    loads: list[str] = []
+    monkeypatch.setattr(
+        _discovery,
+        "_search_entry_points",
+        lambda: (
+            _EntryPoint(
+                "postgres",
+                "foreign:x",
+                SearchBackendSpec(1, "postgres", "foreign:x"),
+                owner="foreign",
+                load_calls=loads,
+                fail_on_load=True,
+            ),
+            _EntryPoint(
+                "postgres",
+                "official:x",
+                SearchBackendSpec(1, "postgres", "official:x"),
+                owner="TAUT.PG",
+                load_calls=loads,
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        _discovery, "_load_factory", lambda _target: lambda **_: provider
+    )
+
+    resolved = _discovery.load_search_provider(
+        backend_name="postgres",
+        sidecar=cast(SidecarAccessor, object()),
+    )
+
+    assert resolved is provider
+    assert loads == ["TAUT.PG"]
+
+
 @pytest.mark.parametrize(
     "entries",
     [
         (),
         (
-            _EntryPoint("postgres", "a:x", SearchBackendSpec(1, "postgres", "a:x")),
-            _EntryPoint("postgres", "b:x", SearchBackendSpec(1, "postgres", "b:x")),
+            _EntryPoint(
+                "postgres",
+                "a:x",
+                SearchBackendSpec(1, "postgres", "a:x"),
+                fail_on_load=True,
+            ),
+            _EntryPoint(
+                "postgres",
+                "b:x",
+                SearchBackendSpec(1, "postgres", "b:x"),
+                fail_on_load=True,
+            ),
         ),
         (
             _EntryPoint(
@@ -154,6 +211,7 @@ def test_postgres_provider_discovery_validates_manifest_before_factory(
                 "a:x",
                 SearchBackendSpec(1, "postgres", "a:x"),
                 owner="foreign",
+                fail_on_load=True,
             ),
         ),
         (_EntryPoint("postgres", "a:x", SearchBackendSpec(True, "postgres", "a:x")),),

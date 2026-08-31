@@ -47,14 +47,15 @@ def load_search_provider(
     if backend_name != "postgres":
         raise SearchProviderUnavailableError(_DIAGNOSTIC)
     claims = tuple(
-        entry for entry in _search_entry_points() if entry.name == backend_name
+        entry
+        for entry in _search_entry_points()
+        if entry.name == backend_name
+        and entry.dist is not None
+        and _normalized_distribution(entry.dist.name) == "taut-pg"
     )
     if len(claims) != 1:
         raise SearchProviderUnavailableError(_DIAGNOSTIC)
     entry = claims[0]
-    owner = None if entry.dist is None else _normalized_distribution(entry.dist.name)
-    if owner != "taut-pg":
-        raise SearchProviderUnavailableError(_DIAGNOSTIC)
     try:
         manifest = entry.load()
         validated = _validate_manifest(manifest, backend_name=backend_name)

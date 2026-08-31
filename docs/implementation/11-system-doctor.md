@@ -22,8 +22,14 @@ partial finding set for that framework failure.
 
 The seven observations use these owners:
 
-1. `taut/state/_sql.py` reads metadata and issues portable zero-row projections
-   over every required core column. It never calls schema setup.
+1. `taut/state/_sql.py` reads raw metadata and issues portable zero-row
+   projections over every required core column. `taut/_doctor.py` decodes that
+   stored version through the same state-owned, side-effect-free helper as
+   ordinary startup. Neither path calls schema setup. Taut writes canonical
+   decimal text but interprets equivalent integer spellings such as `02`
+   consistently. Malformed state still has caller-owned surfaces: startup
+   raises its existing schema error; doctor records a failed check with
+   `version: null`.
 2. The same state owner reports the load marker and projects logical records.
 3. `taut/persistence/_format.py` validates that live projection with the shared
    dump-neutral core validator, including topics, stable DM names, participant
@@ -97,5 +103,6 @@ state without migration. The shared backend contract in
 real SQLite and PostgreSQL and verifies logical state plus target redaction.
 
 The owning specification is `docs/specs/09-system-doctor.md`; execution and
-review records are `docs/plans/2026-08-10-system-doctor-plan.md` and
+review records are `docs/plans/2026-08-25-semantic-compatibility-hardening-plan.md`,
+`docs/plans/2026-08-10-system-doctor-plan.md`, and
 `docs/plans/2026-08-14-review-findings-remediation-plan.md`.

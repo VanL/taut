@@ -413,6 +413,12 @@ fatal. Schema 1 to schema 2 remains an intentionally unsupported historical
 cutoff, so no empty registry or placeholder rung exists today. The first real
 rung must ship with an authentic prior-version fixture and shared SQLite and
 PostgreSQL transformation, postcondition, rollback, and coordination proof.
+The same module's side-effect-free `decode_schema_version()` owns stored core
+version interpretation for ordinary startup, `get_schema_version()`, and the
+passive doctor. Taut writes canonical decimal text, but reads the integer value
+of the stored text, so equivalent forms such as `02` have one meaning. Callers
+still project malformed state differently: startup raises its existing schema
+error while doctor reports a failed check with no decoded version.
 
 SQLite sidecar writer transactions are already serialized by its
 `BEGIN IMMEDIATE` discipline. PostgreSQL needs two narrower logical locks that
@@ -907,7 +913,11 @@ queue high-water mark.
 - Process capture: `psutil` is the primary source for argv, executable, cwd,
   uid, parent, process group/session, and terminal when available. Native
   `/proc` or `ps` evidence remains the start-time token where needed for
-  process identity claims.
+  process identity claims. Anchor selection classifies a derived basename by
+  case-folding it and removing exactly one terminal `.exe`; that admits Windows
+  spellings to the existing shell, wrapper, and infrastructure families. Raw
+  basenames, argv, fingerprints, claim evidence, and automatic-name inputs are
+  not normalized.
 - Read model: chat client and CLI paths use peek APIs only. Notification inbox
   paths intentionally claim/read notification messages.
 - Cursor writes: `TautState.advance_cursor()` is the only production cursor
@@ -927,15 +937,21 @@ queue high-water mark.
 
 ## Key Files
 
-Configuration crosses the SimpleBroker boundary as a complete immutable
+Configuration crosses the SimpleBroker boundary as an immutable
 `ResolvedConfig`. `taut/_constants.py` first lists the few named defaults that
 encode Taut behavior: storage, project discovery, SQLite selection, and load
 skew. Its other named defaults mostly have nothing to do with Taut policy.
-They mirror SimpleBroker solely to close every field and isolate Taut from
-ambient `BROKER_*`. The nominal mapping matters as much as completeness because
-broker lower layers resolve config repeatedly; an ordinary dictionary would
-resume ambient environment reads. Client and watcher ownership boundaries
-therefore recreate the public marker through the ambient-free resolver.
+They mirror SimpleBroker to supply every Taut-required input and isolate Taut
+from ambient `BROKER_*`. Before translation, the public strict ambient-free
+resolver is also called with no inputs as a capability snapshot; every
+Taut-required key must be recognized by the installed broker. The translated
+mapping is then resolved strictly. Unknown caller inputs still fail at that
+owner, while additional canonical outputs introduced by a compatible resolver
+are retained rather than treated as drift. Freeze boundaries require the full
+Taut input subset before strict re-resolution, so a missing input cannot be
+refilled by a default. No branch parses resolver diagnostic prose. The nominal
+mapping matters because broker lower layers resolve config repeatedly; an
+ordinary dictionary would resume ambient environment reads.
 
 | Path | Owner |
 |---|---|
@@ -971,7 +987,7 @@ requirement or auditing implementation coverage.
 | Spec area | Primary code owners | Contract tests |
 |---|---|---|
 | [TAUT-3.2], isolated config translation, project resolution, resolved target/config handoff, and Windows SQLite path preflight | `taut/_constants.py::load_config`, `freeze_broker_config`, `taut/client/_base.py::_ClientBase.__init__`, `_resolve_target`, `taut/client/__init__.py::TautClient.init`, `taut/client/_watching.py`, `taut/watcher.py` | exhaustive translation/isolation cases in `tests/test_constants.py`; resolved-handoff, argument-pair, missing-target cases in `tests/test_client.py`; `tests/test_shared_contract.py::test_project_resolved_target_config_handoff_contract` on SQLite and PostgreSQL; `tests/test_project_config.py`; `tests/test_cli.py::test_init_uses_project_config_postgres_backend`, `test_windows_sqlite_target_validation_rejects_every_control`, `test_posix_sqlite_target_validation_preserves_control_bearing_paths`, and `test_cli_windows_control_bearing_database_target_fails_fast` |
-| [TAUT-3.3], [TAUT-3.4], sidecar schema, future ordered migration ladder, and version gate | `taut/state/_sql.py::SqlSidecarTautState.ensure_schema`, `taut/state/__init__.py::TautState` | `tests/test_state_contract.py::test_schema_version_refusal_preserves_core_state`, other state contracts in `tests/test_state_contract.py` and `tests/test_shared_contract.py`, and `extensions/taut_pg/tests/test_pg_sidecar.py::test_postgres_concurrent_empty_schema_initializers_converge` |
+| [TAUT-3.3], [TAUT-3.4], sidecar schema, shared stored-version interpretation, future ordered migration ladder, and version gate | `taut/state/_sql.py::decode_schema_version`, `SqlSidecarTautState.ensure_schema`, `taut/state/__init__.py::TautState` | shared-decoder and schema refusal cases in `tests/test_state_contract.py` and `tests/test_system_doctor.py`, other state contracts in `tests/test_state_contract.py` and `tests/test_shared_contract.py`, and `extensions/taut_pg/tests/test_pg_sidecar.py::test_postgres_concurrent_empty_schema_initializers_converge` |
 | [TAUT-4], channels, membership, replies, reads, logs, and listing | `taut/client/_threads.py::ThreadsMixin.join`, `leave`, `list_threads`; `taut/client/_messaging.py::MessagingMixin.say`, `reply`, `read_unread`, `log`; `taut/client/_identity.py::IdentityMixin.who` | `tests/test_client.py`, `tests/test_cli.py`, `tests/test_shared_contract.py` |
 | [TAUT-4.4], channel-topic validation, observational reads, membership-scoped mutation, metadata merge, and rename serialization | `taut/state/_channel_topics.py`; `taut/state/_sql.py::set_channel_topic`, `start_channel_rename`; `taut/client/_threads.py::ThreadsMixin.get_channel`, `set_channel_topic`, `_channel_from_row` | Channel-topic and corruption cases in `tests/test_state_contract.py`, `tests/test_client.py`, and `tests/test_shared_contract.py` on SQLite and PostgreSQL; channel CLI cases in `tests/test_cli.py` |
 | [TAUT-5], [IAN-3], [IAN-4], identity claims, deterministic selector capture, read-only selection, recognition, automatic display names, rejoin, and name changes | `taut/identity.py`, `taut/state/_sql.py::route_keys_in_use`, `taut/client/_identity.py::IdentityMixin._resolve_member`, `peek_identity`, `_create_member`, `rejoin`, `set_name` | `tests/test_identity.py`; `tests/test_client.py` public no-touch selector, explicit-selector, token, creation/guest/rejoin/explain, and `test_automatic_*` cases; `tests/test_identity_performance.py` (manual evidence, not a timing contract); `tests/test_shared_contract.py::test_project_automatic_name_skips_alias_owned_route_contract`, `test_project_public_identity_activity_seams_are_observational_contract`; `tests/test_cli.py::test_rejoin_*` |
@@ -1016,6 +1032,7 @@ watch, `taut/client/_notifications.py::NotificationsMixin.inbox` claims notifica
 
 ## Related Plans
 
+- `docs/plans/2026-08-25-semantic-compatibility-hardening-plan.md`
 - `docs/plans/2026-08-24-concurrency-and-schema-contract-alignment-plan.md`
 - `docs/plans/2026-08-14-review-findings-remediation-plan.md`
 - `docs/plans/2026-08-11-ci-factor-and-release-order-plan.md`

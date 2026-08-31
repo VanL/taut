@@ -169,6 +169,29 @@ def test_schema_version_refusal_preserves_core_state(
         client.close()
 
 
+def test_core_schema_consumers_accept_padded_current_version(
+    taut_project: Path,
+) -> None:
+    TautClient.init()
+    client = TautClient()
+    queue = Queue(META_QUEUE_NAME, db_path=client.target, config=client.config)
+    state = SqlSidecarTautState(queue, dialect_for_taut_target(client.target))
+
+    try:
+        with queue.sidecar(transaction=True) as session:
+            session.run(
+                "UPDATE taut_meta SET value = ? WHERE key = ?",
+                ("02", "schema_version"),
+            )
+
+        state.ensure_schema()
+
+        assert state.get_schema_version() == 2
+    finally:
+        queue.close()
+        client.close()
+
+
 def test_update_member_persona_preserves_unknown_meta_keys(
     taut_project: Path,
 ) -> None:

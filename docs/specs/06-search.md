@@ -373,6 +373,17 @@ Schema creation is idempotent and additive. A newer unsupported search schema
 or projection version fails search with an upgrade diagnostic but must not
 block non-search Taut operations.
 
+Each provider may create the metadata table if absent, because that statement
+is a no-op for an existing table. It then reads the singleton's stored schema
+and projection versions before any insert, update, or provider-object DDL
+that assumes the current shape. No singleton row is the fresh-initialization
+case. An existing row whose stable version fields cannot be read is not
+fresh; it fails without being rewritten. Older or newer versions follow
+their declared refusal or transition path. Provider schema checks require
+owned names, types, constraints, and indexes as semantic subsets. Physical
+column order, unrelated additional objects, and unowned additional columns
+are not provider invariants.
+
 ### [SRCH-6.3] Deletion residue
 
 Deleting a source row removes its live document and segment mappings before a
@@ -413,11 +424,14 @@ The implementation factory is loaded only on first search and is called as
 provider protocol; core closes it exactly once before closing the queue that
 owns the accessor.
 
-Zero claims, duplicate `postgres` claims, a foreign distribution owner,
-key/name mismatch, incompatible version, malformed target, load failure, or
-incomplete provider fail only search with an actionable `taut-pg`
-upgrade/install diagnostic. Discovery rejects ambiguity before choosing a
-claim. Core must not import `taut_pg` directly, depend on `simplebroker-pg`, or
+Discovery normalizes distribution ownership and filters eligible `taut-pg`
+claims before counting ambiguity. Exactly one eligible official `postgres`
+claim may load even when foreign distributions publish the same key; foreign
+claims are never loaded. Zero or duplicate eligible official claims and the
+existing manifest, load, or provider validation failures fail only search
+with the actionable `taut-pg` diagnostic. Core never chooses among multiple
+official claims by enumeration order. Core must not import `taut_pg` directly,
+depend on `simplebroker-pg`, or
 contain PostgreSQL SQL. This is a typed first-party cross-distribution seam,
 not a public third-party plugin interface or root export.
 
@@ -820,6 +834,9 @@ Operational acceptance records, without turning host timing into CI truth:
 
 ## Related Plans
 
+- `docs/plans/2026-08-25-semantic-compatibility-hardening-plan.md` — makes
+  search schema checks version-first and semantic, and filters eligible
+  first-party provider ownership before ambiguity.
 - `docs/plans/2026-08-24-concurrency-and-schema-contract-alignment-plan.md` —
   makes the accepted SQLite generation-switch omission and cross-segment query
   boundary explicit.

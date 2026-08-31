@@ -9,14 +9,107 @@ from typing import Any
 
 import psycopg
 import pytest
-from simplebroker.ext import SidecarSession
+from simplebroker import Queue
+from simplebroker.ext import OperationalError, SidecarSession
 
 from taut._constants import META_QUEUE_NAME
 from taut._exceptions import EmptyResultError
 from taut.client import TautClient
-from taut.search._provider import IndexedDocument, SearchCandidate, ThreadWatermark
+from taut.search._provider import (
+    IndexedDocument,
+    SearchCandidate,
+    SidecarAccessor,
+    ThreadWatermark,
+)
 
 pytestmark = pytest.mark.pg_only
+
+
+def _search_metadata_snapshot(
+    connection: psycopg.Connection[Any],
+    *,
+    schema: str,
+) -> tuple[list[tuple[Any, ...]], list[tuple[Any, ...]]]:
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT column_name, data_type, is_nullable
+            FROM information_schema.columns
+            WHERE table_schema = %s
+              AND table_name = 'taut_search_metadata'
+            ORDER BY column_name
+            """,
+            (schema,),
+        )
+        columns = cursor.fetchall()
+        cursor.execute(
+            f"""
+            SELECT pg_catalog.to_jsonb(metadata)
+            FROM {schema}.taut_search_metadata AS metadata
+            ORDER BY singleton
+            """
+        )
+        return columns, cursor.fetchall()
+
+
+def _recording_sidecar(
+    queue: Queue,
+    calls: list[tuple[str, tuple[object, ...]]],
+) -> SidecarAccessor:
+    @contextmanager
+    def sidecar(*, transaction: bool = False) -> Iterator[SidecarSession]:
+        with queue.sidecar(transaction=transaction) as session:
+
+            def run(
+                sql: str,
+                params: tuple[Any, ...] = (),
+                *,
+                fetch: bool = False,
+            ) -> Iterable[tuple[Any, ...]]:
+                calls.append((sql, params))
+                return session.run(sql, params, fetch=fetch)
+
+            yield SidecarSession(run)
+
+    return sidecar
+
+
+def _assert_version_read_precedes_shape_work(
+    calls: list[tuple[str, tuple[object, ...]]],
+) -> None:
+    normalized = [" ".join(sql.split()).upper() for sql, _ in calls]
+    lock_index = next(
+        index
+        for index, statement in enumerate(normalized)
+        if "PG_ADVISORY_XACT_LOCK" in statement
+    )
+    metadata_ddl_index = next(
+        index
+        for index, statement in enumerate(normalized)
+        if statement.startswith("CREATE TABLE IF NOT EXISTS TAUT_SEARCH_METADATA")
+    )
+    version_read_index = next(
+        index
+        for index, statement in enumerate(normalized)
+        if statement.startswith(
+            "SELECT SCHEMA_VERSION, PROJECTION_VERSION FROM TAUT_SEARCH_METADATA"
+        )
+    )
+    assert lock_index < metadata_ddl_index < version_read_index
+    assert calls[lock_index][1] == ("taut:search:schema",)
+    assert all(
+        not statement.startswith(("INSERT ", "UPDATE ", "DELETE "))
+        for statement in normalized
+    )
+    assert all(
+        object_name not in statement
+        for statement in normalized
+        for object_name in (
+            "TAUT_SEARCH_DOCUMENTS",
+            "TAUT_SEARCH_SEGMENTS",
+            "TAUT_SEARCH_THREAD_STATE",
+        )
+    )
 
 
 def test_postgres_public_search_pins_unicode_diacritic_and_lexeme_limit(
@@ -111,40 +204,65 @@ def test_postgres_search_schema_uses_only_additive_builtin_objects(
             """,
             (pg_schema,),
         )
-        assert [row[0] for row in cursor.fetchall()] == [
+        required_tables = {
             "taut_search_documents",
             "taut_search_metadata",
             "taut_search_segments",
             "taut_search_thread_state",
-        ]
+        }
+        assert required_tables <= {row[0] for row in cursor.fetchall()}
         cursor.execute(
             """
             SELECT column_name, data_type
             FROM information_schema.columns
             WHERE table_schema = %s
               AND table_name = 'taut_search_segments'
-            ORDER BY ordinal_position
             """,
             (pg_schema,),
         )
-        assert cursor.fetchall() == [
+        required_columns = {
             ("generation", "bigint"),
             ("message_ts", "bigint"),
             ("segment_index", "bigint"),
             ("projection", "tsvector"),
-        ]
+        }
+        assert required_columns <= set(cursor.fetchall())
         cursor.execute(
             """
-            SELECT indexdef
-            FROM pg_catalog.pg_indexes
-            WHERE schemaname = %s
-              AND indexname = 'taut_search_segments_projection_idx'
+            SELECT access_method.amname,
+                   index_state.indisvalid,
+                   index_state.indisready,
+                   index_state.indexprs,
+                   index_state.indpred,
+                   pg_catalog.array_agg(
+                       indexed_column.attname ORDER BY indexed_key.ordinality
+                   )
+            FROM pg_catalog.pg_class AS index_relation
+            JOIN pg_catalog.pg_namespace AS namespace
+              ON namespace.oid = index_relation.relnamespace
+            JOIN pg_catalog.pg_index AS index_state
+              ON index_state.indexrelid = index_relation.oid
+            JOIN pg_catalog.pg_class AS indexed_relation
+              ON indexed_relation.oid = index_state.indrelid
+            JOIN pg_catalog.pg_am AS access_method
+              ON access_method.oid = index_relation.relam
+            JOIN LATERAL pg_catalog.unnest(index_state.indkey)
+              WITH ORDINALITY AS indexed_key(attnum, ordinality) ON TRUE
+            JOIN pg_catalog.pg_attribute AS indexed_column
+              ON indexed_column.attrelid = indexed_relation.oid
+             AND indexed_column.attnum = indexed_key.attnum
+            WHERE namespace.nspname = %s
+              AND indexed_relation.relname = 'taut_search_segments'
+              AND index_relation.relname = 'taut_search_segments_projection_idx'
+            GROUP BY access_method.amname,
+                     index_state.indisvalid,
+                     index_state.indisready,
+                     index_state.indexprs,
+                     index_state.indpred
             """,
             (pg_schema,),
         )
-        index_row = cursor.fetchone()
-        assert index_row is not None
-        assert "USING gin (projection)" in index_row[0]
+        assert cursor.fetchone() == ("gin", True, True, None, None, ["projection"])
 
 
 def test_postgres_search_initially_requires_rebuild_and_finish_clears_it(
@@ -688,3 +806,111 @@ def test_postgres_rejects_newer_search_schema_or_projection(
     finally:
         provider.close()
         queue.close()
+
+
+@pytest.mark.parametrize(
+    ("schema_version", "projection_version", "diagnostic_fragment"),
+    [
+        (2, 1, "search schema version 2"),
+        (1, 2, "search projection version 2"),
+    ],
+    ids=("schema", "projection"),
+)
+def test_postgres_source_shaped_version_refuses_before_current_shape_work(
+    taut_pg_project: Path,
+    raw_pg_conn: psycopg.Connection[Any],
+    pg_schema: str,
+    monkeypatch: pytest.MonkeyPatch,
+    schema_version: int,
+    projection_version: int,
+    diagnostic_fragment: str,
+) -> None:
+    from taut_pg._search import create_provider
+
+    monkeypatch.chdir(taut_pg_project)
+    TautClient.init()
+    with raw_pg_conn.cursor() as cursor:
+        cursor.execute(
+            f"""
+            CREATE TABLE {pg_schema}.taut_search_metadata (
+                singleton BIGINT PRIMARY KEY CHECK (singleton = 1),
+                schema_version BIGINT NOT NULL,
+                projection_version BIGINT NOT NULL
+            )
+            """
+        )
+        cursor.execute(
+            f"""
+            INSERT INTO {pg_schema}.taut_search_metadata (
+                singleton, schema_version, projection_version
+            ) VALUES (1, %s, %s)
+            """,
+            (schema_version, projection_version),
+        )
+    source_before = _search_metadata_snapshot(raw_pg_conn, schema=pg_schema)
+
+    client = TautClient(as_name="van")
+    queue = client.queue(META_QUEUE_NAME)
+    calls: list[tuple[str, tuple[object, ...]]] = []
+    provider = create_provider(sidecar=_recording_sidecar(queue, calls))
+    try:
+        with pytest.raises(RuntimeError, match=diagnostic_fragment):
+            provider.ensure_schema()
+    finally:
+        provider.close()
+        queue.close()
+        client.close()
+
+    _assert_version_read_precedes_shape_work(calls)
+    assert _search_metadata_snapshot(raw_pg_conn, schema=pg_schema) == source_before
+
+
+def test_postgres_missing_stable_search_version_fails_before_shape_work(
+    taut_pg_project: Path,
+    raw_pg_conn: psycopg.Connection[Any],
+    pg_schema: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut_pg._search import create_provider
+
+    monkeypatch.chdir(taut_pg_project)
+    TautClient.init()
+    with raw_pg_conn.cursor() as cursor:
+        cursor.execute(
+            f"""
+            CREATE TABLE {pg_schema}.taut_search_metadata (
+                singleton BIGINT PRIMARY KEY CHECK (singleton = 1),
+                schema_version BIGINT NOT NULL,
+                current_generation BIGINT NOT NULL,
+                staging_generation BIGINT,
+                staging_scan_revision BIGINT,
+                next_generation BIGINT NOT NULL,
+                initialized BIGINT NOT NULL,
+                rotation_cursor TEXT
+            )
+            """
+        )
+        cursor.execute(
+            f"""
+            INSERT INTO {pg_schema}.taut_search_metadata (
+                singleton, schema_version, current_generation,
+                next_generation, initialized
+            ) VALUES (1, 1, 1, 2, 0)
+            """
+        )
+    source_before = _search_metadata_snapshot(raw_pg_conn, schema=pg_schema)
+
+    client = TautClient(as_name="van")
+    queue = client.queue(META_QUEUE_NAME)
+    calls: list[tuple[str, tuple[object, ...]]] = []
+    provider = create_provider(sidecar=_recording_sidecar(queue, calls))
+    try:
+        with pytest.raises(OperationalError, match="projection_version"):
+            provider.ensure_schema()
+    finally:
+        provider.close()
+        queue.close()
+        client.close()
+
+    _assert_version_read_precedes_shape_work(calls)
+    assert _search_metadata_snapshot(raw_pg_conn, schema=pg_schema) == source_before

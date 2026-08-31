@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 from simplebroker import ResolvedConfig, resolve_config
+from simplebroker.ext import InvalidConfigError
 
 from taut._constants import _TAUT_BROKER_DEFAULTS, freeze_broker_config, load_config
 
@@ -55,12 +56,11 @@ def test_load_config_has_exhaustive_isolated_mapping(clean_env: None) -> None:
     config = load_config()
 
     expected_keys = {_broker_key(key) for key, _, _, _ in CONFIG_CASES}
-    assert len(CONFIG_CASES) == 32
     assert _TAUT_BROKER_DEFAULTS == {
         key: raw_default for key, raw_default, _, _ in CONFIG_CASES
     }
     assert isinstance(config, ResolvedConfig)
-    assert set(config) == expected_keys
+    assert expected_keys.issubset(config)
 
 
 @pytest.mark.parametrize(
@@ -298,6 +298,22 @@ def test_rejecting_numeric_grammars_name_the_taut_key(
         load_config()
 
 
+def test_invalid_value_preserves_real_resolver_expected_display(
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import simplebroker
+
+    with pytest.raises(InvalidConfigError) as upstream:
+        simplebroker.resolve_isolated_config({"BROKER_BUSY_TIMEOUT": "invalid"})
+    monkeypatch.setenv("TAUT_BUSY_TIMEOUT", "invalid")
+
+    with pytest.raises(ValueError) as translated:
+        load_config()
+
+    assert f"expected {upstream.value.expected}" in str(translated.value)
+
+
 @pytest.mark.parametrize(
     "taut_key",
     (
@@ -318,7 +334,33 @@ def test_rejecting_path_grammars_name_the_taut_key(
         load_config()
 
 
-@pytest.mark.parametrize("drift", ("addition", "removal", "rename"))
+def test_future_canonical_broker_key_survives_load_and_refreeze(
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import simplebroker
+
+    real_resolver = simplebroker.resolve_isolated_config
+
+    def future_resolver(values: dict[str, Any]) -> ResolvedConfig:
+        current = dict(values)
+        new_value = current.pop("BROKER_NEW_SETTING", "future-default")
+        resolved = dict(real_resolver(current))
+        resolved["BROKER_NEW_SETTING"] = new_value
+        return ResolvedConfig(resolved)
+
+    monkeypatch.setattr(simplebroker, "resolve_isolated_config", future_resolver)
+
+    loaded = load_config()
+    frozen = freeze_broker_config(dict(loaded))
+
+    assert isinstance(loaded, ResolvedConfig)
+    assert loaded["BROKER_NEW_SETTING"] == "future-default"
+    assert isinstance(frozen, ResolvedConfig)
+    assert frozen["BROKER_NEW_SETTING"] == "future-default"
+
+
+@pytest.mark.parametrize("drift", ("removal", "rename"))
 def test_broker_schema_drift_fails_closed(
     clean_env: None,
     monkeypatch: pytest.MonkeyPatch,
@@ -328,14 +370,12 @@ def test_broker_schema_drift_fails_closed(
 
     real_resolver = simplebroker.resolve_isolated_config
 
-    def drifted(config: dict[str, Any]) -> dict[str, Any]:
-        if drift in {"removal", "rename"}:
-            altered = dict(config)
-            value = altered.pop("BROKER_BUSY_TIMEOUT")
-            altered["BROKER_REMOVED_BUSY_TIMEOUT"] = value
-            return dict(real_resolver(altered))
+    def drifted(config: dict[str, Any]) -> object:
         resolved = dict(real_resolver(config))
-        resolved["BROKER_NEW_SETTING"] = "new"
+        if not config:
+            value = resolved.pop("BROKER_BUSY_TIMEOUT")
+            if drift == "rename":
+                resolved["BROKER_REMOVED_BUSY_TIMEOUT"] = value
         return resolved
 
     monkeypatch.setattr(simplebroker, "resolve_isolated_config", drifted)
@@ -347,7 +387,30 @@ def test_broker_schema_drift_fails_closed(
         load_config()
 
 
-def test_freeze_fails_closed_on_upstream_unknown_key_rejection(
+def test_freeze_rejects_missing_taut_owned_key_before_default_refill(
+    clean_env: None,
+) -> None:
+    config = dict(load_config())
+    config.pop("BROKER_BUSY_TIMEOUT")
+
+    with pytest.raises(
+        RuntimeError,
+        match="incompatible SimpleBroker configuration schema",
+    ):
+        freeze_broker_config(config)
+
+
+def test_freeze_rejects_arbitrary_unknown_broker_key(clean_env: None) -> None:
+    config = dict(load_config())
+    config["BROKER_NOT_CANONICAL"] = "opaque"
+
+    with pytest.raises(InvalidConfigError) as raised:
+        freeze_broker_config(config)
+
+    assert raised.value.key == "BROKER_NOT_CANONICAL"
+
+
+def test_freeze_fails_closed_on_removed_required_upstream_key(
     clean_env: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -357,10 +420,11 @@ def test_freeze_fails_closed_on_upstream_unknown_key_rejection(
     real_resolver = simplebroker.resolve_isolated_config
 
     def removed_field(values: dict[str, Any]) -> object:
-        altered = dict(values)
-        value = altered.pop("BROKER_BUSY_TIMEOUT")
-        altered["BROKER_REMOVED_BUSY_TIMEOUT"] = value
-        return real_resolver(altered)
+        if not values:
+            resolved = dict(real_resolver(values))
+            resolved.pop("BROKER_BUSY_TIMEOUT")
+            return resolved
+        return real_resolver(values)
 
     monkeypatch.setattr(simplebroker, "resolve_isolated_config", removed_field)
 

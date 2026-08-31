@@ -46,6 +46,12 @@ LOAD_GUARD_MESSAGE = (
 )
 
 
+def decode_schema_version(raw: str | int) -> int:
+    """Interpret one stored core schema version without reading or writing state."""
+
+    return int(raw)
+
+
 class CoreSchemaInspectionError(TautError):
     """A fixed owned schema object or column is absent or malformed."""
 
@@ -504,7 +510,7 @@ def ensure_schema(
             (SCHEMA_VERSION_KEY,),
         )
         if row is not None:
-            version = int(row[0])
+            version = decode_schema_version(row[0])
             if version > SCHEMA_VERSION:
                 raise SchemaVersionError(
                     f"taut schema version {version} is newer than supported "
@@ -595,7 +601,7 @@ def get_schema_version(queue: Queue) -> int | None:
             "SELECT value FROM taut_meta WHERE key = ?",
             (SCHEMA_VERSION_KEY,),
         )
-    return None if row is None else int(row[0])
+    return None if row is None else decode_schema_version(row[0])
 
 
 def set_debug_capture(queue: Queue, *, enabled: bool) -> None:

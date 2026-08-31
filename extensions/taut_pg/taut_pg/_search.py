@@ -99,16 +99,6 @@ class PostgresSearchProvider:
                 (_SCHEMA_LOCK_KEY,),
             )
             session.run(_METADATA_DDL)
-            session.run(
-                """
-                INSERT INTO taut_search_metadata (
-                    singleton, schema_version, projection_version,
-                    current_generation, next_generation, initialized
-                ) VALUES (1, ?, ?, 1, 2, 0)
-                ON CONFLICT (singleton) DO NOTHING
-                """,
-                (_SCHEMA_VERSION, _PROJECTION_VERSION),
-            )
             rows = list(
                 session.run(
                     """
@@ -119,27 +109,38 @@ class PostgresSearchProvider:
                     fetch=True,
                 )
             )
-            schema_version, projection_version = map(int, rows[0])
-            if schema_version > _SCHEMA_VERSION:
-                raise RuntimeError(
-                    "search schema version "
-                    f"{schema_version} is newer than supported version "
-                    f"{_SCHEMA_VERSION}"
+            if not rows:
+                session.run(
+                    """
+                    INSERT INTO taut_search_metadata (
+                        singleton, schema_version, projection_version,
+                        current_generation, next_generation, initialized
+                    ) VALUES (1, ?, ?, 1, 2, 0)
+                    """,
+                    (_SCHEMA_VERSION, _PROJECTION_VERSION),
                 )
-            if projection_version > _PROJECTION_VERSION:
-                raise RuntimeError(
-                    "search projection version "
-                    f"{projection_version} is newer than supported version "
-                    f"{_PROJECTION_VERSION}"
-                )
-            if schema_version != _SCHEMA_VERSION:
-                raise RuntimeError(
-                    f"unsupported search schema version {schema_version}"
-                )
-            if projection_version != _PROJECTION_VERSION:
-                raise RuntimeError(
-                    f"unsupported search projection version {projection_version}"
-                )
+            else:
+                schema_version, projection_version = map(int, rows[0])
+                if schema_version > _SCHEMA_VERSION:
+                    raise RuntimeError(
+                        "search schema version "
+                        f"{schema_version} is newer than supported version "
+                        f"{_SCHEMA_VERSION}"
+                    )
+                if projection_version > _PROJECTION_VERSION:
+                    raise RuntimeError(
+                        "search projection version "
+                        f"{projection_version} is newer than supported version "
+                        f"{_PROJECTION_VERSION}"
+                    )
+                if schema_version != _SCHEMA_VERSION:
+                    raise RuntimeError(
+                        f"unsupported search schema version {schema_version}"
+                    )
+                if projection_version != _PROJECTION_VERSION:
+                    raise RuntimeError(
+                        f"unsupported search projection version {projection_version}"
+                    )
             for statement in _DDL:
                 session.run(statement)
 

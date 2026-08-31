@@ -986,6 +986,11 @@ durable conversation; the harness session is an optimization of it.
   cleanup. The only writers are `set_wired(queue, member_id, value)` and
   fresh-row default `0`; callers read through `get_wired(queue, member_id)`.
 
+Migration compatibility is defined by the predecessor's named semantic
+schema, not physical column order. The v2 to v3 proof starts from a checked-in
+fixture copied from the actual v2 release. Running the v3 installer and
+rewriting its version marker is not a v2 fixture.
+
 ## 9. Control Plane [SUM-9]
 
 - Congruent with **Weft's task control-queue contract** — the ctrl_in /
@@ -1293,9 +1298,9 @@ exits and preserve release-before-ACK ordering.
   visible text in terminal mode. Against a real broker and driver, the blank
   event creates no message or error log, the visible event posts exactly, and
   STOP remains responsive.
-- Schema tests build version-2 claim rows directly and prove both successful
-  mixed-case normalization and fail-before-mutation handling for colliding case
-  variants.
+- Schema tests install the historical version-2 fixture directly and prove
+  successful normalization plus fail-before-mutation handling for colliding
+  case variants on real SQLite and PostgreSQL sidecars.
 - Deterministic PTY lifecycle is proven against a fake interactive
   harness: a real subprocess over a real PTY that models a TUI
   (alternate screen, terminal queries, continuous redraw, delayed
@@ -1626,6 +1631,9 @@ tail plus the `--attach` instruction.
 
 ## Related Plans
 
+- `docs/plans/2026-08-25-semantic-compatibility-hardening-plan.md` — replaces
+  target-shaped downgrade setup with a provenance-pinned Summon v2 migration
+  fixture shared across real SQLite and PostgreSQL sidecars.
 - `docs/plans/2026-08-28-simplebroker-8-reconciliation-plan.md` — raises the
   shared broker floors while preserving Summon's control and cleanup contract.
 - `docs/plans/2026-08-24-extension-seams-process-containment-coverage-plan.md`

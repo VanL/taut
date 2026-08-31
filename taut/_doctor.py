@@ -33,6 +33,7 @@ from taut.state import (
     DEBUG_CAPTURE_KEY,
     CoreSchemaInspectionError,
     SqlSidecarTautState,
+    decode_schema_version,
     dialect_for_taut_target,
 )
 
@@ -65,10 +66,12 @@ def _nulls(keys: Iterable[str]) -> dict[str, object]:
 
 def _schema_version(meta: dict[str, str]) -> int | None:
     raw = meta.get("schema_version")
-    if raw is None or not raw.isascii() or not raw.isdigit():
+    if raw is None:
         return None
-    version = int(raw)
-    return version if str(version) == raw else None
+    try:
+        return decode_schema_version(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 def _core_counts(records: list[dict[str, Any]]) -> dict[str, object]:

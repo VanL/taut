@@ -597,6 +597,18 @@ non-conflicting late version-2 write. Case-variant collisions fail with version
 retry without a partial migration. Normalized lookup keeps any version-2 write
 that begins after commit visible until it is released or reclaimed.
 
+Migration proof installs version 2 from the fixed JSON fixture in
+`extensions/taut_summon/tests/fixtures/summon-schema-v2.json`. Its four
+portable parameterized steps are copied from `_state.py` at the released
+`taut_summon/v0.5.3` source commit recorded in the fixture: metadata-table DDL,
+the two extension-table DDL statements, and the v2 version-row insert. Root
+shared-contract and extension tests each load that fixed path locally and run
+the steps through their real SQLite or PostgreSQL sidecar. The fixture is not
+made by running the current installer and rewriting its version marker, because
+that would test the target's idea of history rather than the historical
+producer's state. It is deliberately not a generic migration-fixture format or
+SQL parser.
+
 The bootstrap order ([SUM-4]) resolves three constraints at once:
 the token/env cycle (the token must exist before the child is spawned with
 it), the concurrent-summon race, and the never-touch-a-foreign-member rule.
@@ -980,6 +992,8 @@ from manufacturing invalid evidence.
 
 ## Related Plans
 
+- `docs/plans/2026-08-25-semantic-compatibility-hardening-plan.md` — authentic
+  version-2 migration fixture and collision-preserving proof.
 - `docs/plans/2026-08-17-summon-shell-cancel-portability-plan.md` — Windows
   synchronous-reader cancellation ownership without socket-only `select()`.
 - `docs/plans/2026-08-17-summon-first-attach-handoff-plan.md` — pre-spawn

@@ -235,7 +235,7 @@ def test_doctor_cli_finding_exits_two_with_complete_report(tmp_path: Path) -> No
 
 @pytest.mark.parametrize(
     ("stored", "reported"),
-    [("1", 1), ("3", 3), ("not-an-int", None), ("02", None)],
+    [("1", 1), ("3", 3)],
 )
 def test_doctor_schema_findings_skip_only_dependent_checks(
     tmp_path: Path,
@@ -262,6 +262,37 @@ def test_doctor_schema_findings_skip_only_dependent_checks(
     assert _doctor_check(report, "broker_state").status == "skip"
     assert _doctor_check(report, "extension_state").status == "skip"
     assert _doctor_check(report, "search_work").status == "pass"
+
+
+def test_doctor_and_startup_reject_malformed_schema_with_caller_shapes(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "workspace.db"
+    TautClient.init(db_path=db_path)
+    _write_meta(db_path, "schema_version", "not-an-int")
+
+    with pytest.raises(ValueError):
+        TautClient(db_path=db_path)
+    report = TautClient.doctor(db_path=db_path)
+
+    assert _doctor_check(report, "core_schema").status == "fail"
+    assert _doctor_check(report, "core_schema").data == {"version": None}
+
+
+def test_doctor_and_startup_accept_padded_current_schema_version(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "workspace.db"
+    TautClient.init(db_path=db_path)
+    _write_meta(db_path, "schema_version", "02")
+
+    client = TautClient(db_path=db_path)
+    client.close()
+    report = TautClient.doctor(db_path=db_path)
+
+    assert _doctor_check(report, "core_schema").status == "pass"
+    assert _doctor_check(report, "core_schema").data == {"version": 2}
+    assert report.healthy is True
 
 
 def test_doctor_required_column_finding_retains_observed_meta(tmp_path: Path) -> None:

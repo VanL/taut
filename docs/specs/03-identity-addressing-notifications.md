@@ -138,6 +138,15 @@ Supported claim kinds:
 The exact evidence may be null field-by-field when the platform cannot provide
 it. Missing optional fields must not fail identity capture.
 
+Process selection classifies executable basenames independently from the raw
+evidence used for identity. For classification only, one terminal `.exe`
+suffix is case-insensitive and does not distinguish configured shell,
+wrapper, or infrastructure families. `cmd`, `powershell`, and `pwsh` are
+shell families. Classification does not rewrite executable path, argv,
+selected-anchor evidence, fingerprint, automatic-name evidence, or
+claim-hash input. A shell is not an `agent_process` anchor merely because its
+platform spelling carries an executable suffix.
+
 ### [IAN-3.3] Claim association
 
 `taut_identity_claims` maps claim hashes to `member_id` values. A claim hash can
@@ -835,6 +844,14 @@ logic for contract tests.
 
 Required proofs:
 
+- process-family classification treats one case-insensitive terminal `.exe`
+  suffix identically to the configured unsuffixed shell, wrapper, and
+  infrastructure names; synthetic chains cover `cmd`, `powershell`, `pwsh`,
+  an existing shell, one wrapper, one infrastructure process, and a
+  selectable control agent, while a real Windows subprocess probe proves it
+  observed PowerShell in the ancestry and did not select that shell as the
+  agent anchor; raw executable path, argv, fingerprint input, and claim input
+  remain unchanged
 - changing a member name does not change `member_id`
 - automatic human and agent names use the [IAN-4.2] display casing rule while
   explicit names preserve caller casing
@@ -927,6 +944,9 @@ Required proofs:
 
 ## Related Plans
 
+- `docs/plans/2026-08-25-semantic-compatibility-hardening-plan.md` — separates
+  process-family classification from raw identity evidence and adds a firing
+  Windows PowerShell ancestry proof.
 - `docs/plans/2026-08-28-simplebroker-8-reconciliation-plan.md` — raises the
   broker floors while preserving notification and rename contracts across the
   coordinated schema-6 cutover.

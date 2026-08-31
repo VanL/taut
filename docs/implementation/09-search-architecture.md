@@ -30,6 +30,10 @@ The SQLite physical provider lives in core at `taut/search/_sqlite.py` because
 FTS5 is part of the default runtime. PostgreSQL SQL lives only in
 `extensions/taut_pg/taut_pg/_search.py`. Core discovers that provider lazily
 through the strict first-party descriptor in `taut/search/_discovery.py`.
+Discovery filters inert entry-point metadata by backend name and normalized
+`taut-pg` distribution ownership before it counts eligible claims. Foreign
+same-name claims are ignored and never loaded; zero or multiple eligible
+first-party claims fail search without affecting other Taut operations.
 Both providers receive a bound `Queue.sidecar()` accessor. Neither opens a
 connection or reads broker-private tables.
 
@@ -39,6 +43,16 @@ They do not store the exact message body. Every candidate is fetched again
 from its registered SimpleBroker source queue and checked against its digest
 and current visibility before it becomes a `SearchHit`. This makes stale
 postings safe omissions, never authoritative chat records.
+
+Schema initialization keeps the existing provider transaction and lock
+discipline, then creates only the metadata table before it reads the stable
+`schema_version` and `projection_version` pair. No-row state is classified as
+fresh and receives the current metadata row. Existing state must expose both
+stable fields and pass the two independent version gates before any current-row
+insert, update, or provider-object DDL runs. This ordering lets an older or
+newer source shape fail for its version instead of first being interpreted
+through target-only columns. It is not a migration: current provider DDL and
+version numbers are unchanged.
 
 ## Lexical Analysis Decision
 
@@ -103,7 +117,8 @@ short-lived detached worker. Enabling it later requires the benchmark gate in
 Behavioral proof is split by owner:
 
 - `tests/test_search.py` covers projection, SQLite FTS, revision fences,
-  generations, retargeting, and no exact-body copy.
+  generations, retargeting, no exact-body copy, and real source-shaped
+  version-before-mutation refusal.
 - `tests/test_search_jobs.py` and `tests/test_search_worker.py` cover strict job
   shapes, claim/reclaim races, quarantine, acknowledgement, and work frontiers.
 - `tests/test_search_client.py` and `tests/test_search_cli.py` cover public
@@ -112,7 +127,9 @@ Behavioral proof is split by owner:
   newest-first order, and state neutrality against both real backends.
 - `extensions/taut_pg/tests/test_pg_search_provider.py` runs the corresponding
   physical provider proof plus public Unicode, diacritic, and oversized-lexeme
-  expectations against real PostgreSQL.
+  expectations against real PostgreSQL. Schema assertions inspect required
+  columns and GIN index semantics, not physical column ordinals or unrelated
+  objects in the namespace.
 - `extensions/taut_mcp/tests/test_tools.py` covers the adapter boundary against
   real SQLite, including facets, state neutrality, warnings, provider errors,
   empty success, reindex, and cancellation.
@@ -150,6 +167,7 @@ source truth, access control, or stale-positive prevention.
 
 ## Related Plans
 
+- `docs/plans/2026-08-25-semantic-compatibility-hardening-plan.md`
 - `docs/plans/2026-08-24-concurrency-and-schema-contract-alignment-plan.md`
 - `docs/plans/2026-08-14-review-findings-remediation-plan.md`
 - `docs/plans/2026-08-10-mcp-search-plan.md`

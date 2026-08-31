@@ -203,6 +203,14 @@ Missing, older, newer, malformed, or unqueryable schema fails.
 `version` is `int | null`; missing or malformed version uses `null`. The
 expected value comes from the implementation's core schema constant.
 
+Doctor and ordinary core startup use the same side-effect-free stored-version
+decoder and therefore accept or reject the same representations. Their error
+projections remain different: ordinary startup raises its existing schema
+error, while doctor reports malformed data as `version: null` in a failed
+check. Taut continues to write canonical decimal text, but this change does
+not invent a stricter stored-text grammar. Sharing the decoder does not permit
+doctor to call `ensure_schema`, mutate metadata, or repair it.
+
 ### [DOCT-4.2] `load_guard`
 
 Report whether the core load guard exists. Presence fails with the existing
@@ -431,6 +439,9 @@ seams in `taut/persistence/`, public values in `taut/client/_models.py`, and the
 
 ## Related Plans
 
+- `docs/plans/2026-08-25-semantic-compatibility-hardening-plan.md` — shares
+  passive stored-version interpretation with ordinary startup while retaining
+  doctor-specific nullable failure projection and no-repair behavior.
 - `docs/plans/2026-08-14-debug-failure-capture-plan.md` adds the seventh fixed
   passive check and separates operational debug state from extension ownership.
 - `docs/plans/2026-08-10-system-doctor-plan.md` defines promotion,

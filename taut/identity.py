@@ -200,16 +200,24 @@ def select_anchor(
     """Return the first non-wrapper process, or human fallback."""
 
     for proc in chain:
-        names = proc.classification_basenames
+        names = tuple(
+            _classification_basename(name) for name in proc.classification_basenames
+        )
         if any(name in SHELL_BASENAMES or name in WRAPPER_BASENAMES for name in names):
             continue
         name = proc.basename
-        if name in INFRASTRUCTURE_BASENAMES:
+        if _classification_basename(name) in INFRASTRUCTURE_BASENAMES:
             return None, f"human fallback at infrastructure process {name}"
         if proc.start_time is None:
             return None, f"human fallback because {name} has no start-time token"
         return proc, f"agent anchor selected at {name}"
     return None, "human fallback at top of readable process chain"
+
+
+def _classification_basename(name: str) -> str:
+    """Normalize one platform suffix for process-family classification only."""
+
+    return name.casefold().removesuffix(".exe")
 
 
 def fingerprint_for_process(proc: ProcessInfo | None) -> str | None:

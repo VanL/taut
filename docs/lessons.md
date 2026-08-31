@@ -811,6 +811,15 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   proceeds. Reconcile the active spec against the packet's paragraph inventory
   before the first code proof, and record any miss as a timing deviation.
 
+- 2026-08-28: Compatibility gates must name the semantics they protect. Read
+  source versions before target-shape work; classify ownership before
+  ambiguity; and do not make physical column order, ineligible foreign
+  inventory, or strict-resolver-owned canonical output additions into runtime
+  failures. Missing required inputs, unknown config inputs, newer unsupported
+  state, unknown durable data, and multiple eligible owners remain
+  fail-closed. Historical migration proof starts from the historical producer,
+  not the target installer with a rewritten marker.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent
