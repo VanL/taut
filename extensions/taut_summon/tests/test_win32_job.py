@@ -790,6 +790,7 @@ def test_real_nested_job_assignment_rejects_before_provider_execution(
     helper = """
 import subprocess
 import sys
+import ctypes
 from pathlib import Path
 
 from taut_summon import _win32_job
@@ -797,12 +798,34 @@ from taut_summon._process_domain import spawn_process
 
 result, marker = map(Path, sys.argv[1:])
 configure_kill_on_close = _win32_job.Kernel32Api.configure_kill_on_close
+blockers = []
 
-def configure_incompatible_nested_job(api, job):
+def configure_full_nested_job(api, job):
     configure_kill_on_close(api, job)
-    api.configure_ui_restrictions(job, 0x1)
+    limits = _win32_job.JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+    limits.BasicLimitInformation.LimitFlags = 0x00002000 | 0x00000008
+    limits.BasicLimitInformation.ActiveProcessLimit = 1
+    if not api._set_job_information(
+        _win32_job.HANDLE(job),
+        9,
+        ctypes.byref(limits),
+        ctypes.sizeof(limits),
+    ):
+        api._raise_last_error("SetInformationJobObject")
+    blocker = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    blockers.append(blocker)
+    process_handle = api.open_process(blocker.pid)
+    try:
+        api.assign_process(job, process_handle)
+    finally:
+        api.close_handle(process_handle)
 
-_win32_job.Kernel32Api.configure_kill_on_close = configure_incompatible_nested_job
+_win32_job.Kernel32Api.configure_kill_on_close = configure_full_nested_job
 provider = "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('started', encoding='utf-8')"
 try:
     spawned = spawn_process(
@@ -818,6 +841,13 @@ else:
         spawned.domain.finalize(graceful_timeout=0.0)
     finally:
         result.write_text("unexpected success", encoding="utf-8")
+finally:
+    for blocker in blockers:
+        try:
+            blocker.wait(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            blocker.terminate()
+            blocker.wait(timeout=5.0)
 """
     outer = spawn_windows_process(
         [

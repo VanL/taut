@@ -845,8 +845,9 @@ Post-landing success signals:
   resume, retire the descendant, and observe zero active job processes. Test
   nested-assignment rejection separately and prove fail-closed cleanup with no
   resumed or surviving child. Construct the rejection with a real incompatible
-  target job after the child has inherited an outer job; do not assume that a
-  particular outer UI restriction remains incompatible across Windows releases.
+  target job after the child has inherited an outer job: fill a one-process
+  target limit before assigning the provider. Do not assume that a particular
+  UI restriction remains incompatible across Windows releases.
   If the ordinary hosted runner forbids a valid nested job,
   provision another supported hosted Windows environment or keep E2 blocked;
   rejection evidence cannot substitute for successful containment.
