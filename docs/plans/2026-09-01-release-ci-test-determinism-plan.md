@@ -102,6 +102,9 @@ Baseline failures: root run `33547281507` and TUI run `33547281505`.
 7. Obtain independent completed-work review, commit, push, and require fresh
    exact-SHA CI. Then rerun unchanged `python3 bin/release.py all --version
    0.9.6` and verify all five GitHub and PyPI publications.
+8. If fresh hosted CI exposes another release blocker, classify it from the
+   exact failing assertion and preserve its contract. For a time-boundary
+   assertion, hold the validation clock fixed rather than adding timing margin.
 
 ## Independent Review
 
@@ -144,6 +147,15 @@ publication, timeout increases, and unrelated cleanup.
   The fixture now varies only `_ready_callback_invoked`. The same review led to
   module-local Windows `os` isolation and pre-spawn release-fence validation
   with kill/reap on timeout. Re-review found no remaining release blocker.
+- Fresh exact-SHA CI passed every PG, MCP, and TUI lane and 21/22 root jobs.
+  Windows Python 3.14 exposed a separate test-clock race in
+  `test_default_future_skew_boundary_is_300_seconds`: the test encoded a
+  timestamp 301 seconds ahead but validated it against a later wall-clock
+  sample. The 4.92-second test duration and the observed acceptance show that
+  enough time elapsed for the sample to age within the 300-second boundary.
+  The boundary proof now fixes SimpleBroker's validation clock at the same
+  instant used to encode both 299- and 301-second cases. This preserves the
+  exact boundary and removes filesystem/process speed from the assertion.
 - Pending: exact-SHA hosted workflows, unchanged release-helper gates, and
   coordinated publication verification.
 

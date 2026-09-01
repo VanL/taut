@@ -827,9 +827,11 @@ def test_default_future_skew_boundary_is_300_seconds(
     TautClient.init(db_path=source)
     canonical = tmp_path / "canonical.taut.jsonl"
     TautClient.dump(output=canonical, db_path=source)
+    now_ns = time.time_ns()
+    monkeypatch.setattr("simplebroker._dump._time_ns", lambda: now_ns)
 
     def with_skew(seconds: int) -> bytes:
-        high_water = format_message_id(time.time_ns() + seconds * 1_000_000_000)
+        high_water = format_message_id(now_ns + seconds * 1_000_000_000)
 
         def change(
             component: str,
