@@ -481,8 +481,15 @@ def test_real_transcript_viewport_anchor_survives_width_reflow(
             transcript_rendered = asyncio.Event()
             render_messages = app._render_messages
 
-            def observe_transcript_render(messages: tuple[Any, ...]) -> None:
-                render_messages(messages)
+            def observe_transcript_render(
+                messages: tuple[Any, ...],
+                *,
+                restore_owner_intent: int | None = None,
+            ) -> None:
+                render_messages(
+                    messages,
+                    restore_owner_intent=restore_owner_intent,
+                )
                 if len(messages) >= 30:
                     app.call_after_refresh(transcript_rendered.set)
 
@@ -2733,6 +2740,235 @@ def test_open_search_result_anchors_exact_hit_without_advancing_cursor(
         asyncio.run(exercise())
     finally:
         alice.close()
+
+
+def test_search_anchor_restore_owner_is_intent_exact() -> None:
+    from taut.client import Message
+    from taut_tui.app import TautApp
+
+    message = Message("general", 42, "m_alice", "alice", "message", "hit")
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 34)) as pilot:
+            app._conversation_intent = 7
+            app._arm_search_anchor(7, message.ts)
+            generation = app._transcript_restore_generation
+            restored: list[int] = []
+
+            def restore(
+                _messages: tuple[Message, ...],
+                anchor_index: int,
+                _intra_row_offset: int,
+            ) -> None:
+                restored.append(anchor_index)
+
+            app._apply_owned_search_anchor_restore(
+                generation - 1,
+                (7, message.ts),
+                True,
+                restore,
+                (message,),
+                0,
+                0,
+            )
+            assert restored == []
+            assert app._pending_search_anchor == (7, message.ts)
+
+            app._apply_owned_search_anchor_restore(
+                generation,
+                (6, message.ts),
+                True,
+                restore,
+                (message,),
+                0,
+                0,
+            )
+            assert restored == []
+            assert app._pending_search_anchor == (7, message.ts)
+
+            app._apply_owned_search_anchor_restore(
+                generation,
+                (7, message.ts),
+                True,
+                restore,
+                (message,),
+                0,
+                0,
+            )
+            assert restored == [0]
+            assert app._pending_search_anchor == (7, message.ts)
+            await pilot.pause()
+            assert app._pending_search_anchor is None
+
+    asyncio.run(exercise())
+
+
+def test_search_context_sync_failure_invalidates_restore_owner() -> None:
+    from taut.client import Message, SearchHit
+    from taut_tui.app import TautApp
+
+    error = RuntimeError("context setup failed")
+
+    class RaisingSession:
+        def open_history_context(self, *_args: object, **_kwargs: object) -> None:
+            raise error
+
+    app = TautApp(db_path=None, as_name=None, continuity_token=None)
+    app._conversation_intent = 7
+    app._search_hits_by_intent[7] = SearchHit(
+        thread="general",
+        ts=42,
+        from_id="m_alice",
+        from_name="alice",
+        kind="message",
+        text="hit",
+        thread_kind="channel",
+        channel="general",
+        parent=None,
+        members=None,
+    )
+    app._session = cast(Any, RaisingSession())
+    future: Future[list[Message]] = Future()
+    future.set_result([Message("general", 42, "m_alice", "alice", "message", "hit")])
+
+    with pytest.raises(RuntimeError) as caught:
+        app._apply_search_context(7, future)
+
+    assert caught.value is error
+    assert app._pending_search_anchor is None
+    assert app._transcript_restore_generation == 2
+
+
+def test_search_anchor_restore_failure_invalidates_owner() -> None:
+    from taut.client import Message
+    from taut_tui.app import TautApp
+
+    app = TautApp(db_path=None, as_name=None, continuity_token=None)
+    app._conversation_intent = 7
+    app._arm_search_anchor(7, 42)
+    generation = app._transcript_restore_generation
+    message = Message("general", 42, "m_alice", "alice", "message", "hit")
+    error = RuntimeError("physical restore failed")
+
+    def fail_restore(*_args: object) -> None:
+        raise error
+
+    with pytest.raises(RuntimeError) as caught:
+        app._apply_owned_search_anchor_restore(
+            generation,
+            (7, 42),
+            True,
+            fail_restore,
+            (message,),
+            0,
+            0,
+        )
+
+    assert caught.value is error
+    assert app._pending_search_anchor is None
+    assert app._transcript_restore_generation == generation + 1
+
+
+def test_superseding_intent_invalidates_pending_search_restore() -> None:
+    from taut.client import Message
+    from taut_tui.app import TautApp
+
+    app = TautApp(db_path=None, as_name=None, continuity_token=None)
+    app._conversation_intent = 7
+    app._arm_search_anchor(7, 42)
+    generation = app._transcript_restore_generation
+    assert app._advance_conversation_intent() == 8
+    assert app._pending_search_anchor is None
+    restored: list[int] = []
+    message = Message("general", 42, "m_alice", "alice", "message", "hit")
+    app._apply_owned_search_anchor_restore(
+        generation,
+        (7, 42),
+        True,
+        lambda _messages, index, _offset: restored.append(index),
+        (message,),
+        0,
+        0,
+    )
+    assert restored == []
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    ["none", "exception", "missing", "wrong-intent", "rejected"],
+)
+def test_pending_search_anchor_clears_when_context_cannot_apply(
+    outcome: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut.client import Message
+    from taut_tui.app import TautApp
+    from taut_tui.session import ConversationSnapshot
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 34)):
+            app._conversation_intent = 7
+            app._arm_search_anchor(7, 42)
+            future: Future[ConversationSnapshot | None] = Future()
+            if outcome == "none":
+                future.set_result(None)
+            elif outcome == "exception":
+                future.set_exception(RuntimeError("context failed"))
+            else:
+                messages = (
+                    ()
+                    if outcome == "missing"
+                    else (
+                        Message(
+                            "general",
+                            42,
+                            "m_alice",
+                            "alice",
+                            "message",
+                            "hit",
+                        ),
+                    )
+                )
+                future.set_result(
+                    ConversationSnapshot(
+                        generation=1,
+                        target="general",
+                        messages=messages,
+                        intent_token=6 if outcome == "wrong-intent" else 7,
+                    )
+                )
+            if outcome == "rejected":
+                monkeypatch.setattr(app, "_apply_conversation", lambda _snapshot: False)
+            app._apply_optional_conversation(7, future)
+            assert app._pending_search_anchor is None
+
+    asyncio.run(exercise())
+
+
+def test_teardown_invalidates_pending_search_restore() -> None:
+    from taut.client import Message
+    from taut_tui.app import TautApp
+
+    app = TautApp(db_path=None, as_name=None, continuity_token=None)
+    app._conversation_intent = 7
+    app._arm_search_anchor(7, 42)
+    generation = app._transcript_restore_generation
+    app.on_unmount()
+    assert app._pending_search_anchor is None
+    restored: list[int] = []
+    message = Message("general", 42, "m_alice", "alice", "message", "hit")
+    app._apply_owned_search_anchor_restore(
+        generation,
+        (7, 42),
+        True,
+        lambda _messages, index, _offset: restored.append(index),
+        (message,),
+        0,
+        0,
+    )
+    assert restored == []
 
 
 def test_delete_refresh_cannot_supersede_newer_navigation_intent(

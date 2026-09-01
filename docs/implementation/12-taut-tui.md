@@ -272,6 +272,21 @@ evidence because option layout, scrolling, resize rendering, and anchor
 restoration occupy distinct deferred callbacks. Observers delegate to
 production behavior; their deadlines are only missing-callback caps.
 
+Opening a search result gives the exact `(conversation intent, message id)`
+pair temporary ownership of its programmatic transcript anchor. The owner is
+armed with the logical anchor before the history-context future is watched.
+Live delivery and navigation refresh continue to render, but viewport capture
+cannot replace that logical anchor while the physical scroll is pending. Only
+the restore scheduled by the matching intent-tokened `ConversationSnapshot`
+can authorize ownership release. If a later content render resets the physical
+viewport before finalization, it invalidates the earlier finalizer and
+re-establishes the owned scroll before scheduling a new following-refresh
+finalizer. Generation guards make older deferred restores no-ops. A superseding
+intent, missing-hit or failed/rejected context, and teardown clear ownership
+and invalidate its callback. This prevents both stale physical scrolling and
+an indefinitely capture-blocking owner without pausing the watcher or dropping
+deliveries.
+
 The checked visual fixtures are:
 
 - `docs/implementation/artifacts/tui/taut-tui-130x34.svg`

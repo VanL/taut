@@ -3145,17 +3145,19 @@ def test_guest_read_only_resolution_does_not_generate_timestamp(tmp_path: Path) 
 
 def test_member_creation_returns_stable_member_id_name_and_token(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    expected_member_id = "m_jyn4yjry6g5van4tiah5iqu44y5a2q6f"
+    monkeypatch.setattr(identity, "random_member_id", lambda: expected_member_id)
     van = client(tmp_path, "VanL")
     van.join("general")
 
     member = van.last_created_member
 
     assert member is not None
-    assert member.member_id.startswith("m_")
+    assert member.member_id == expected_member_id
     assert member.name == "VanL"
     assert member.token is not None
-    assert "van" not in member.member_id.lower()
 
 
 def test_member_creation_explicit_conflict_does_not_adopt_matching_claim(

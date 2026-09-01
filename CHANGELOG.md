@@ -4,6 +4,14 @@
 
 ## 0.9.6 - 2026-09-01
 
+- Kept TUI search-result jumps anchored to the exact selected message when a
+  live delivery or navigation refresh lands during deferred viewport restore.
+  Intent-owned, generation-checked restores now re-establish the physical
+  viewport after intervening renders before normal scroll capture resumes.
+  CI identity coverage also uses a fixed valid generated member id instead of
+  probabilistically rejecting random ids that happen to contain a display-name
+  fragment.
+
 - Made pre-readiness PTY exit diagnostics deterministic: a terminal provider
   outcome now reports the specified foreground-readiness abort even when PTY
   closure reaches the supervisor just before pump completion. Control failures

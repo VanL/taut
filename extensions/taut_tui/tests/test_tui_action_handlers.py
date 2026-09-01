@@ -29,9 +29,9 @@ from taut_tui.screens import (
     SearchScreen,
     SummonStartScreen,
 )
-from taut_tui.session import ConversationSnapshot
+from taut_tui.session import ConversationSnapshot, NavigationSnapshot
 from taut_tui.summon import TuiSummonOperations
-from taut_tui.widgets import TautComposer
+from taut_tui.widgets import TautComposer, TautOptionList
 
 pytestmark = pytest.mark.sqlite_only
 
@@ -550,11 +550,25 @@ async def _search_open_result(context: HandlerContext) -> None:
             anchor_index: int,
             intra_row_offset: int,
         ) -> None:
+            is_search_anchor = messages[anchor_index].ts == context.message_ts
+            if is_search_anchor:
+                # Reproduce a live delivery/navigation refresh landing after
+                # the logical search anchor is committed but before its
+                # deferred physical viewport restore.
+                transcript = context.app._query_base("#transcript", TautOptionList)
+                transcript.scroll_to(y=0, animate=False, force=True)
+                context.app._capture_scroll_anchor()
             restore_transcript_anchor(messages, anchor_index, intra_row_offset)
-            if messages[anchor_index].ts == context.message_ts:
+            if is_search_anchor:
                 assert (
                     context.app.visual_state.scroll_anchor.message_id
                     == context.message_ts
+                )
+                navigation: Future[NavigationSnapshot] = Future()
+                navigation.set_result(NavigationSnapshot((), (), ()))
+                context.app.call_after_refresh(
+                    context.app._apply_navigation_result,
+                    navigation,
                 )
                 context.app.call_after_refresh(search_anchor_restored.set)
 
@@ -593,6 +607,11 @@ async def _search_open_result(context: HandlerContext) -> None:
     assert any(message.ts > context.message_ts for message in snapshot.messages)
     assert any(row.ts == context.message_ts for row in context.app._message_rows)
     assert context.app.visual_state.active_conversation == "general"
+    assert context.app.visual_state.scroll_anchor.message_id == context.message_ts
+    await context.pilot.pause()
+    assert ActionId.NOTIFICATIONS_OPEN in context.app._navigation_targets
+    assert context.app._pending_search_anchor is None
+    context.app._capture_scroll_anchor()
     assert context.app.visual_state.scroll_anchor.message_id == context.message_ts
 
 

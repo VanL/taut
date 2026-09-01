@@ -2,10 +2,11 @@
 
 Date: 2026-09-01
 
-Class: 4. The correction crosses root, Summon, and TUI test boundaries, and the
+Class: 4. The correction crosses root, Summon, and TUI test boundaries. The
 TUI decline failure requires a concurrency-safe production correction to
-restore existing [TUI-13.2] diagnostic precedence. No intended behavior or
-release gate changes.
+restore existing [TUI-13.2] diagnostic precedence, and hosted follow-up exposed
+a search-anchor ownership race against live refresh under [TUI-6.4]. No
+intended behavior or release gate changes.
 
 Status: active.
 
@@ -26,10 +27,13 @@ caps as an isolation blind spot rather than a product constraint.
   [DOM-10], [DOM-15]
 - `docs/specs/02-taut-core.md` [TAUT-12.5]
 - `docs/specs/04-summon.md` [SUM-7.1], [SUM-7.4], [SUM-12]
-- `docs/specs/10-taut-tui.md` [TUI-13.2]
+- `docs/specs/10-taut-tui.md` [TUI-6.4], [TUI-13.2]
 - `docs/agent-context/runbooks/testing-patterns.md`
 - `docs/implementation/05-taut-summon-architecture.md`
 - `docs/implementation/12-taut-tui.md`
+- `docs/plans/2026-08-17-tui-search-anchor-test-synchronization-plan.md`, whose
+  stop gate requires an exact-intent wrong-anchor observation to be treated as
+  an application race
 - `docs/plans/2026-07-13-bounded-summon-process-test-parallelism-plan.md`, the
   fixed-width policy superseded by the owner decision in this task
 - exact-SHA CI runs for `1eec6803a123f28de9b4e16a1d0852bb6181fd06`
@@ -60,6 +64,14 @@ Baseline failures: root run `33547281507` and TUI run `33547281505`.
 - POSIX rejection is asserted only against the POSIX implementation branch;
   the real Windows success path remains covered on Windows.
 - No tag or publication occurs until all exact-SHA pre-tag workflows pass.
+- A search intent owns its programmatic message anchor as the exact
+  `(intent token, message id)` pair until the restore scheduled by that
+  intent-tokened `ConversationSnapshot` commits the physical viewport on the
+  following refresh, the intent is superseded, the search context fails or is
+  rejected, or teardown begins. A stale or unrelated render naming the same
+  message may neither release ownership nor scroll a newer view. Live delivery
+  and navigation refresh may update content during that window but may not
+  recapture the stale physical viewport over the owned logical anchor.
 
 ## Hardening: Concurrency Boundary and Rollback
 
@@ -91,6 +103,11 @@ Baseline failures: root run `33547281507` and TUI run `33547281505`.
 - Success signals: deterministic unit proof of master-close-before-death
   publication, the unchanged real TUI setup-decline assertion, full Summon and
   TUI suites, and green exact-SHA hosted lanes.
+- Search-anchor rollback is the internal pending-anchor latch plus its
+  deterministic interleaving test. It changes no public API, storage, search,
+  history, watcher, or cursor contract. Stop if the correction quiesces the
+  watcher, drops a delivery, substitutes polling, or accepts a different
+  message anchor.
 
 ## Tasks and Verification
 
@@ -132,6 +149,20 @@ Baseline failures: root run `33547281507` and TUI run `33547281505`.
    the 2026-07-13 bounded-parallelism plan superseded and append a dated
    correction to the lessons ledger; preserve historical evidence rather than
    rewriting it as though it used the new topology.
+10. Reopen the prior search-anchor stop gate as a production race. Add a
+    deterministic real-Textual regression that invokes viewport capture after
+    the exact search render schedules restoration but before that restoration
+    runs. Atomically arm an internal `(intent token, message id)` owner with
+    the search anchor. Pass restore ownership only from the exact
+    intent-tokened `ConversationSnapshot`; delivery and navigation renders do
+    not inherit it. Preserve ownership until the exact restore's following
+    refresh commits the viewport. A stale or same-message unrelated restore
+    must not release or scroll. Superseding intent, missing-hit snapshot,
+    second-stage exception/`None`/apply rejection, and teardown clear ownership
+    and invalidate deferred callbacks. Add a firing test for every branch.
+    Keep live delivery active and retain every exact snapshot, later-content,
+    row, target, and final-anchor assertion. Update the TUI implementation note
+    with this ownership and finalization boundary.
 
 ## Independent Review
 
@@ -141,8 +172,8 @@ regression test remains capable of detecting the original defect.
 
 ## Out of Scope
 
-Product behavior changes, workflow topology changes, release bypasses, manual
-publication, timeout increases, and unrelated cleanup.
+Unrelated product behavior changes, workflow topology changes, release
+bypasses, manual publication, timeout increases, and unrelated cleanup.
 
 ## Fresh-Eyes Review and Execution Log
 
@@ -216,6 +247,30 @@ publication, timeout increases, and unrelated cleanup.
   verified failure-path replay cleanup, explicit owned-versus-residual resource
   boundaries, exact auto/load topology and guards, unchanged selectors and
   assertions, and no matrix cap or serial fallback.
+- Fresh exact-SHA TUI run `33558275375` reached the exact expected-intent
+  search restore with the target hit arguments but found the logical anchor
+  overwritten by an earlier notice. This fires the prior plan's application
+  race stop gate. The proven ordering is search-anchor commit, deferred
+  physical restore, live-delivery or navigation viewport capture, then the
+  exact restore. Increasing the event cap cannot change that ordering.
+- Fresh exact-SHA root run `33558275396` exposed a separate probabilistic test
+  oracle: a valid random Base32 member id contained the display-name fragment
+  `van`. The test now injects one fixed valid generated id and asserts exact
+  stable return, while the dedicated random-id test continues to own entropy
+  and shape coverage. No production restriction was added.
+- RED TUI proof scheduled a real navigation refresh after the exact owned
+  physical restore but before its finalizer. Textual reset the physical
+  viewport to the first row while the logical anchor still named the search
+  hit. GREEN adds an authorized-restore phase: a later content render
+  invalidates the old finalizer and re-establishes the exact physical scroll
+  before ownership is released. The full retained-lock TUI suite passed 434
+  tests under its two-worker `loadfile` topology; focused lifecycle/error tests
+  passed 10/10, Ruff and mypy are clean, and the exact handler passed 40/40
+  under eight-worker review stress.
+- Independent re-review approved the search-anchor correction with no P1/P2
+  blockers. It verified the physical viewport assertion, generation-bound
+  stale-callback no-ops, synchronous and asynchronous failure cleanup,
+  supersession, and teardown without pausing or dropping live delivery.
 - Pending: exact-SHA hosted workflows, unchanged release-helper gates, and
   coordinated publication verification.
 

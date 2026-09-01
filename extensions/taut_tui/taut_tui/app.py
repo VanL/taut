@@ -385,6 +385,9 @@ class TautApp(App[None]):
         self._pending_g = False
         self._operation_state = "idle"
         self._conversation_intent = 0
+        self._pending_search_anchor: tuple[int, int] | None = None
+        self._search_anchor_restore_applied = False
+        self._transcript_restore_generation = 0
         self._next_send_token = 0
         self._pending_sends: dict[int, tuple[str, int]] = {}
         self._search_hits_by_intent: dict[int, SearchHit] = {}
@@ -485,6 +488,7 @@ class TautApp(App[None]):
 
     def on_unmount(self) -> None:
         self._shutting_down = True
+        self._clear_pending_search_anchor()
         try:
             if self._summon_interaction is not None:
                 close_interaction = getattr(self._summon_interaction, "close", None)
@@ -2597,21 +2601,27 @@ class TautApp(App[None]):
             return
         self.visual_state = replace(
             self.visual_state,
-            scroll_anchor=ScrollAnchor.history(hit.ts),
             # The jumped-to hit is the selection; the render highlights it
             # rather than deriving the highlight from the scroll anchor.
             selected_message_id=hit.ts,
         )
-        self._watch_future(
-            session.open_history_context(
+        self._arm_search_anchor(intent, hit.ts)
+        try:
+            context_future = session.open_history_context(
                 hit.thread,
                 messages,
                 intent_token=intent,
-            ),
+            )
+        except Exception:
+            self._clear_pending_search_anchor(intent=intent)
+            raise
+        self._watch_future(
+            context_future,
             lambda done: self._apply_optional_conversation(intent, done),
         )
 
     def _advance_conversation_intent(self, *, reset_search: bool = True) -> int:
+        self._clear_pending_search_anchor()
         self._conversation_intent += 1
         if reset_search and self._operation_state == "searching":
             self._operation_state = "idle"
@@ -2824,14 +2834,30 @@ class TautApp(App[None]):
         future: Future[ConversationSnapshot | None],
     ) -> None:
         if intent != self._conversation_intent:
+            self._clear_pending_search_anchor(intent=intent)
             return
         try:
             result = future.result()
         except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-085] exception
+            self._clear_pending_search_anchor(intent=intent)
             self._show_error(str(exc) or type(exc).__name__)
             return
-        if result is not None and intent == self._conversation_intent:
-            self._apply_conversation(result)
+        if result is None:
+            self._clear_pending_search_anchor(intent=intent)
+            return
+        pending = self._pending_search_anchor
+        if (
+            pending is not None
+            and pending[0] == intent
+            and (
+                result.intent_token != intent
+                or not any(message.ts == pending[1] for message in result.messages)
+            )
+        ):
+            self._clear_pending_search_anchor(intent=intent)
+            return
+        if not self._apply_conversation(result):
+            self._clear_pending_search_anchor(intent=intent)
 
     def _apply_send_result(
         self,
@@ -2914,7 +2940,10 @@ class TautApp(App[None]):
         )
         target_label = self._target_labels.get(snapshot.target, snapshot.target)
         self._query_base("#target-header", TautStatic).update(target_label)
-        self._render_messages(snapshot.messages)
+        self._render_messages(
+            snapshot.messages,
+            restore_owner_intent=snapshot.intent_token,
+        )
         if snapshot.reply_thread is not None:
             self._render_reply_inspector(snapshot)
         elif (
@@ -2986,7 +3015,12 @@ class TautApp(App[None]):
             self._render_reply_inspector(snapshot)
         return True
 
-    def _render_messages(self, messages: tuple[Message, ...]) -> None:
+    def _render_messages(
+        self,
+        messages: tuple[Message, ...],
+        *,
+        restore_owner_intent: int | None = None,
+    ) -> None:
         transcript = self._query_base("#transcript", TautOptionList)
         transcript.clear_options()
         self._message_rows = messages
@@ -3003,7 +3037,36 @@ class TautApp(App[None]):
                 len(messages) - 1,
             )
             transcript.highlighted = highlighted
-            if anchor.tail_pinned:
+            pending = self._pending_search_anchor
+            if pending is not None:
+                pending_index = next(
+                    (
+                        index
+                        for index, message in enumerate(messages)
+                        if message.ts == pending[1]
+                    ),
+                    None,
+                )
+                if pending_index is None:
+                    self._clear_pending_search_anchor(intent=pending[0])
+                elif (
+                    restore_owner_intent == pending[0]
+                    or self._search_anchor_restore_applied
+                ):
+                    generation = self._invalidate_transcript_restores()
+                    restore = self._restore_transcript_anchor
+                    self.call_after_refresh(
+                        self._apply_owned_search_anchor_restore,
+                        generation,
+                        pending,
+                        restore_owner_intent == pending[0],
+                        restore,
+                        messages,
+                        pending_index,
+                        anchor.intra_row_offset,
+                    )
+            elif anchor.tail_pinned:
+                self._invalidate_transcript_restores()
                 transcript.scroll_end(animate=False)
             elif anchor.message_id is not None:
                 anchor_index = next(
@@ -3018,8 +3081,12 @@ class TautApp(App[None]):
                 # highlight here would rewrite selected_message_id through
                 # the OptionHighlighted handler and retarget an open
                 # reply/react/delete at the anchor row.
+                generation = self._invalidate_transcript_restores()
+                restore = self._restore_transcript_anchor
                 self.call_after_refresh(
-                    self._restore_transcript_anchor,
+                    self._apply_transcript_anchor_restore,
+                    generation,
+                    restore,
                     messages,
                     anchor_index,
                     anchor.intra_row_offset,
@@ -3027,6 +3094,8 @@ class TautApp(App[None]):
         self._update_context_affordances()
 
     def _capture_scroll_anchor(self) -> None:
+        if self._pending_search_anchor is not None:
+            return
         if not self._message_rows:
             return
         try:
@@ -3056,6 +3125,90 @@ class TautApp(App[None]):
                 intra_row_offset=intra_row,
             )
         self.visual_state = replace(self.visual_state, scroll_anchor=anchor)
+
+    def _arm_search_anchor(self, intent: int, message_id: int) -> None:
+        self._invalidate_transcript_restores()
+        self._pending_search_anchor = (intent, message_id)
+        self._search_anchor_restore_applied = False
+        self.visual_state = replace(
+            self.visual_state,
+            scroll_anchor=ScrollAnchor.history(message_id),
+        )
+
+    def _clear_pending_search_anchor(self, *, intent: int | None = None) -> bool:
+        pending = self._pending_search_anchor
+        if pending is None or (intent is not None and pending[0] != intent):
+            return False
+        self._pending_search_anchor = None
+        self._search_anchor_restore_applied = False
+        self._invalidate_transcript_restores()
+        return True
+
+    def _invalidate_transcript_restores(self) -> int:
+        self._transcript_restore_generation += 1
+        return self._transcript_restore_generation
+
+    def _apply_transcript_anchor_restore(
+        self,
+        generation: int,
+        restore: Callable[[tuple[Message, ...], int, int], None],
+        messages: tuple[Message, ...],
+        anchor_index: int,
+        intra_row_offset: int,
+    ) -> None:
+        if (
+            generation != self._transcript_restore_generation
+            or self._pending_search_anchor is not None
+            or self._shutting_down
+        ):
+            return
+        restore(messages, anchor_index, intra_row_offset)
+
+    def _apply_owned_search_anchor_restore(
+        self,
+        generation: int,
+        owner: tuple[int, int],
+        authorize: bool,
+        restore: Callable[[tuple[Message, ...], int, int], None],
+        messages: tuple[Message, ...],
+        anchor_index: int,
+        intra_row_offset: int,
+    ) -> None:
+        if (
+            generation != self._transcript_restore_generation
+            or owner != self._pending_search_anchor
+            or owner[0] != self._conversation_intent
+            or self._shutting_down
+        ):
+            return
+        try:
+            restore(messages, anchor_index, intra_row_offset)
+        except BaseException:
+            self._clear_pending_search_anchor(intent=owner[0])
+            raise
+        if authorize:
+            self._search_anchor_restore_applied = True
+        self.call_after_refresh(
+            self._finish_owned_search_anchor_restore,
+            generation,
+            owner,
+        )
+
+    def _finish_owned_search_anchor_restore(
+        self,
+        generation: int,
+        owner: tuple[int, int],
+    ) -> None:
+        if (
+            generation != self._transcript_restore_generation
+            or owner != self._pending_search_anchor
+            or owner[0] != self._conversation_intent
+            or self.visual_state.scroll_anchor.message_id != owner[1]
+            or not self._search_anchor_restore_applied
+            or self._shutting_down
+        ):
+            return
+        self._clear_pending_search_anchor(intent=owner[0])
 
     def _message_prompt(self, message: Message) -> DisplayText:
         target = self.visual_state.active_conversation
