@@ -952,19 +952,23 @@ Before completion, run the extension gate block from the active plan (the
 extension suite, the core suite untouched-green, ruff/format/mypy over the
 extension paths, and `uv build extensions/taut_summon`). Keep the deterministic
 process, external-live, and local-LLM lanes in separate fresh pytest
-invocations. The deterministic lane is a bounded pressure proof: local release
-prechecks use `-n 4 --dist load`, while CI uses `-n 2 --dist load` and collects
-coverage during that same execution. Every selected item owns test-local
-resources. Its
+invocations. Every lane uses `-n auto --dist load`; CI collects coverage during
+the same unit, deterministic-process, and prepared local-LLM executions. Every
+selected item owns its database, paths, processes, descriptors, and Taut
+control state. External provider CLIs still share host auth/config/cache stores
+and account quotas. Those are explicit prerequisites; a concurrency failure at
+that boundary must be classified and fixed rather than used to restore a
+worker cap. The process lane's
 `xdist_group("process")` marker still co-locates process-heavy tests in broad
 default `--dist loadgroup` runs, but is selection-only when the isolated lane
-deliberately overrides the scheduler with `--dist load`. This prevents
-unbounded `-n auto` fan-out without removing useful concurrent pressure.
+deliberately overrides the scheduler with `--dist load`. Host CPU count is
+intentional pressure: a concurrency failure is classified and fixed rather
+than hidden behind a worker cap.
 
-External-live and local-LLM lanes retain their known-safe
-`-n 1 --dist loadgroup` boundaries and select only `requires_live_harness` or
-`requires_local_llm`. Their non-live diagnostics remain in the unit selector,
-and a collection proof keeps the unit/live partitions disjoint and complete.
+External-live and local-LLM lanes also use `-n auto --dist load` and select only
+`requires_live_harness` or `requires_local_llm`. Their non-live diagnostics
+remain in the unit selector, and a collection proof keeps the unit/live
+partitions disjoint and complete.
 Release prechecks set both `TAUT_SUMMON_LIVE_HARNESS=1` and
 `TAUT_SUMMON_LIVE_HARNESS_STRICT=1` locally for the external-live lane so an
 inherited disable cannot skip it and installed provider CLIs fail instead of
@@ -1024,8 +1028,8 @@ from manufacturing invalid evidence.
   strict local-LLM evidence, existing-lane coverage, and release reuse of
   exact-SHA canonical test artifacts.
 - `docs/plans/2026-07-13-bounded-summon-process-test-parallelism-plan.md` —
-  fixed-width deterministic process pressure locally and in CI while
-  preserving fresh one-worker external-live and local-LLM boundaries.
+  superseded fixed-width policy; the 2026-09-01 release determinism plan makes
+  every fresh Summon lane an auto-width pressure proof.
 - `docs/plans/2026-07-12-automatic-display-name-capitalization-plan.md` —
   implied-provider display casing, shared candidate selection, and normalized
   transient name claims.

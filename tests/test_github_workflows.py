@@ -430,8 +430,8 @@ def test_test_workflow_is_reusable_and_owns_canonical_release_artifacts() -> Non
                 (),
                 "extensions/taut_summon/tests",
                 "not xdist_group",
-                None,
-                None,
+                "auto",
+                "load",
             ): 1,
             (
                 "summon-process",
@@ -439,7 +439,7 @@ def test_test_workflow_is_reusable_and_owns_canonical_release_artifacts() -> Non
                 (),
                 "extensions/taut_summon/tests",
                 "xdist_group and not requires_live_harness and not requires_local_llm",
-                "2",
+                "auto",
                 "load",
             ): 1,
             (
@@ -448,7 +448,7 @@ def test_test_workflow_is_reusable_and_owns_canonical_release_artifacts() -> Non
                 (),
                 "extensions/taut_summon/tests/test_process_domain.py",
                 "xdist_group and not requires_live_harness and not requires_local_llm",
-                "2",
+                "auto",
                 "load",
             ): 1,
         }
@@ -641,8 +641,8 @@ def test_coverage_reuses_existing_ubuntu_lanes_and_aggregates_without_tests() ->
                 wrapper,
                 "extensions/taut_summon/tests",
                 "not xdist_group",
-                "0",
-                None,
+                "auto",
+                "load",
             ): 1,
             (
                 "summon-process",
@@ -650,7 +650,7 @@ def test_coverage_reuses_existing_ubuntu_lanes_and_aggregates_without_tests() ->
                 wrapper,
                 "extensions/taut_summon/tests",
                 "xdist_group and not requires_live_harness and not requires_local_llm",
-                "2",
+                "auto",
                 "load",
             ): 1,
             (
@@ -659,8 +659,8 @@ def test_coverage_reuses_existing_ubuntu_lanes_and_aggregates_without_tests() ->
                 wrapper,
                 "extensions/taut_summon/tests/test_live_local_llm.py",
                 "requires_local_llm",
-                "1",
-                "loadgroup",
+                "auto",
+                "load",
             ): 1,
             (
                 "mcp-coverage",

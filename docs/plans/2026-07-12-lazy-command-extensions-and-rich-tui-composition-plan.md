@@ -1865,14 +1865,15 @@ their owning task.
 ```bash
 uv run --extra dev pytest
 uv run ./bin/pytest-pg --fast
-uv run --extra dev pytest extensions/taut_summon/tests -m "not xdist_group"
+uv run --extra dev pytest extensions/taut_summon/tests -m "not xdist_group" \
+  -n auto --dist load
 uv run --extra dev pytest extensions/taut_summon/tests \
   -m "xdist_group and not requires_live_harness and not requires_local_llm" \
-  -n 4 --dist load
+  -n auto --dist load
 TAUT_SUMMON_LIVE_HARNESS_STRICT=1 uv run --extra dev pytest \
-  extensions/taut_summon/tests/test_live_harness.py -n 1 --dist loadgroup
+  extensions/taut_summon/tests/test_live_harness.py -n auto --dist load
 TAUT_SUMMON_LOCAL_LLM=1 uv run --extra dev pytest \
-  extensions/taut_summon/tests/test_live_local_llm.py -n 1 --dist loadgroup
+  extensions/taut_summon/tests/test_live_local_llm.py -n auto --dist load
 uv run --extra dev ruff check taut tests bin \
   extensions/taut_summon/taut_summon extensions/taut_summon/tests
 uv run --extra dev ruff format --check taut tests bin \

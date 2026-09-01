@@ -1,6 +1,8 @@
 # Bounded Summon Process Test Parallelism Plan
 
-Status: Implemented and verified locally; remote CI observation pending.
+Status: Superseded on 2026-09-01 by the auto-width policy in
+`2026-09-01-release-ci-test-determinism-plan.md`. Historical evidence below is
+preserved as executed.
 
 Plan type: Implementation with spec revision.
 

@@ -820,6 +820,17 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   fail-closed. Historical migration proof starts from the historical producer,
   not the target installer with a rewritten marker.
 
+- 2026-09-01: A fixed xdist width can hide test isolation defects even when it
+  adds some pressure. When every case is required to own its database, paths,
+  processes, descriptors, and control state, use `-n auto --dist load` in the
+  dedicated lane and treat host CPU count as variable pressure. Keep external
+  auth/config/cache stores and provider quotas explicit as residual shared
+  prerequisites; classify and fix concurrent access failures rather than
+  falling back to serialization. Parser-only subprocess fixtures should
+  observe natural child exit before consuming buffered output that is expected
+  to raise; otherwise cleanup can turn a protocol assertion into an abrupt
+  coverage-finalizer race.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

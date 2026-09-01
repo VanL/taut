@@ -14,7 +14,9 @@ Status: active.
 Repair the exact-SHA CI failures blocking the coordinated 0.9.6 release by
 making each test enter the state it claims to test through causal events or
 platform-correct selection. Preserve every behavior assertion, required
-platform, worker count, timeout budget, and release gate.
+platform, timeout budget, and release gate. Replace Summon's historical fixed
+worker counts with `-n auto --dist load` after owner review identified those
+caps as an isolation blind spot rather than a product constraint.
 
 ## Source Documents and Baseline
 
@@ -28,14 +30,30 @@ platform, worker count, timeout budget, and release gate.
 - `docs/agent-context/runbooks/testing-patterns.md`
 - `docs/implementation/05-taut-summon-architecture.md`
 - `docs/implementation/12-taut-tui.md`
+- `docs/plans/2026-07-13-bounded-summon-process-test-parallelism-plan.md`, the
+  fixed-width policy superseded by the owner decision in this task
 - exact-SHA CI runs for `1eec6803a123f28de9b4e16a1d0852bb6181fd06`
 
 Baseline failures: root run `33547281507` and TUI run `33547281505`.
 
 ## Invariants and Constraints
 
-- Do not extend a timeout, remove or skip meaningful platform coverage, reduce
-  parallelism, retry failed assertions, or weaken expected diagnostics.
+- Do not extend a timeout, remove or skip meaningful platform coverage, retry
+  failed assertions, or weaken expected diagnostics.
+- Every Summon release lane must pass under explicit `-n auto --dist load`.
+  CI must use the same topology for Summon unit, process, process-coverage, and
+  prepared local-LLM execution, with no matrix `max-parallel` cap. External
+  live providers remain a local release gate but receive the same topology.
+- The prepared Ollama service and each external provider executable are real.
+  Tests own separate databases, members, paths, processes, and control state;
+  provider-side inference queuing is allowed, test-side shared mutable state is
+  not. The one current local-LLM smoke does not by itself prove concurrent
+  requests, but the lane topology must not suppress future pressure.
+- External provider CLIs still share host auth/config/cache stores and provider
+  account quotas. Those are residual prerequisites, not test-owned resources.
+  A failure caused by concurrent access to them must be classified and fixed at
+  the provider adapter or fixture boundary; it is not grounds for a serial
+  fallback.
 - Keep real subprocess, PTY, Textual, SQLite, and stdio protocol boundaries.
 - A PID publication is not a lifetime fence. A later-stage timeout test must
   causally establish completion of all earlier protocol stages.
@@ -105,6 +123,15 @@ Baseline failures: root run `33547281507` and TUI run `33547281505`.
 8. If fresh hosted CI exposes another release blocker, classify it from the
    exact failing assertion and preserve its contract. For a time-boundary
    assertion, hold the validation clock fixed rather than adding timing margin.
+9. Supersede the fixed-width Summon policy in [TAUT-12.5]. Red-green the exact
+   release-helper and workflow guards, then run every isolated Summon lane with
+   `-n auto --dist load`. Keep fresh invocation and environment boundaries;
+   do not combine lanes merely to obtain concurrency. Reconcile the live
+   guidance owners in the Summon implementation note and test conftest, the
+   current gate block in the 2026-07-12 plan, and the related-plan text. Mark
+   the 2026-07-13 bounded-parallelism plan superseded and append a dated
+   correction to the lessons ledger; preserve historical evidence rather than
+   rewriting it as though it used the new topology.
 
 ## Independent Review
 
@@ -156,6 +183,39 @@ publication, timeout increases, and unrelated cleanup.
   The boundary proof now fixes SimpleBroker's validation clock at the same
   instant used to encode both 299- and 301-second cases. This preserves the
   exact boundary and removes filesystem/process speed from the assertion.
+- Owner review rejected the historical fixed-width Summon policy. RED: exact
+  release-helper and workflow guards fail while commands remain at unit
+  `-n 0`, process `-n 4`/`-n 2`, and live `-n 1 --dist loadgroup`. Before any
+  command change, the existing deterministic process selector passed locally
+  with 16 auto-selected workers under `--dist load`: 303 passed and three
+  expected platform skips in 49.50 seconds.
+- Independent concurrency review required all live guidance owners to be
+  reconciled and provider auth/config/cache plus account quotas to remain named
+  residual shared prerequisites. After those amendments it approved the
+  auto-width implementation. GREEN: the unit selector passed 383 tests on 16
+  workers in 16.02 seconds; all eight strict external-provider live cases
+  passed concurrently on 16 workers in 12.85 seconds; and the complete
+  release/workflow guard files passed 188 tests on 16 workers. The ordinary CI
+  unit step was already effectively auto-width through project addopts; making
+  it explicit improves drift detection but is not counted as a speedup.
+- Auto-width coverage then exposed a parser-fixture lifecycle race: a replay
+  child could print one malformed Claude event, the expected parser error could
+  win, and `close()` could terminate the child while its automatic coverage
+  finalizer was writing. Four of five stress runs produced one or two zero-byte
+  shards, correctly rejected by the fail-closed combiner. The parser-only
+  helper now observes natural child exit before parsing the buffered line. Ten
+  subsequent 16-worker coverage runs produced 88 readable shards each and all
+  passed the repository combiner; the protocol-error assertion is unchanged.
+- Failure-path review required that the parser helper also close the replay
+  handle if its bounded natural-exit assertion fails. After that correction,
+  five more auto-width coverage runs produced 88 non-empty shards each and all
+  passed the fail-closed combiner. The prepared disposable-Ollama gate also
+  passed its live inference case with `-n auto --dist load` (50 local workers,
+  18.37 seconds).
+- Independent closure review approved the completed slice with no blockers. It
+  verified failure-path replay cleanup, explicit owned-versus-residual resource
+  boundaries, exact auto/load topology and guards, unchanged selectors and
+  assertions, and no matrix cap or serial fallback.
 - Pending: exact-SHA hosted workflows, unchanged release-helper gates, and
   coordinated publication verification.
 

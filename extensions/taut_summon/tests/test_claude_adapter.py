@@ -83,7 +83,16 @@ def _replayer_handle(fixture: Path) -> ClaudeHandle:
 def _raw_line_handle(tmp_path: Path, line: str) -> ClaudeHandle:
     path = tmp_path / "line.jsonl"
     path.write_text(line + "\n", encoding="utf-8")
-    return _replayer_handle(path)
+    handle = _replayer_handle(path)
+    # These parser-only cases need the child's buffered line, not a live
+    # process. Establish natural exit before parsing so a deliberate protocol
+    # error cannot make close() race the replayer's coverage finalizer.
+    try:
+        assert handle._domain.wait_for_leader_exit(5.0) == 0
+    except BaseException:
+        handle.close()
+        raise
+    return handle
 
 
 def test_registry_knows_claude() -> None:

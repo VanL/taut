@@ -58,8 +58,8 @@ SummonCliRunner = Callable[..., tuple[int, str, str]]
 # Generous for slow CI runners: every use is a wait-until (cheap when
 # green), and each driver test runs a real three-process pipeline
 # (driver + provider + CLI writers). Broad xdist runs co-locate process-heavy
-# tests to avoid unbounded ``-n auto`` fan-out; isolated process lanes override
-# that grouping with a deliberate fixed worker count.
+# tests during broad mixed-suite runs; isolated process lanes override that
+# grouping with ``-n auto --dist load`` as an intentional pressure proof.
 _DEADLINE = 90.0
 # Bootstrap PING is the live readiness authority. Keep the per-request timeout
 # generous enough for slow CI and loaded local runs without adding a Taut-level
@@ -138,9 +138,9 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 
     The shared driver harness starts a foreground driver, a provider child,
     and peer CLI subprocesses. Every marked test owns test-local resources.
-    Broad ``loadgroup`` runs co-locate the group because unbounded fan-out can
-    starve control loops; isolated release and CI lanes intentionally use
-    bounded ``load`` scheduling to add concurrent pressure.
+    Broad ``loadgroup`` runs co-locate the group to keep unrelated tests from
+    changing the process lane's topology. Isolated release and CI lanes use
+    ``-n auto --dist load`` so host-width pressure exposes ownership defects.
     """
 
     for item in items:

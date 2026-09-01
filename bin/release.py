@@ -161,7 +161,9 @@ SUMMON_UNIT_TEST_COMMAND: Final[Command] = (
     "-m",
     "not xdist_group",
     "-n",
-    "0",
+    "auto",
+    "--dist",
+    "load",
 )
 SUMMON_PROCESS_TEST_COMMAND: Final[Command] = (
     *PYTEST_PREFIX,
@@ -169,7 +171,7 @@ SUMMON_PROCESS_TEST_COMMAND: Final[Command] = (
     "-m",
     "xdist_group and not requires_live_harness and not requires_local_llm",
     "-n",
-    "4",
+    "auto",
     "--dist",
     "load",
 )
@@ -179,9 +181,9 @@ SUMMON_LIVE_HARNESS_TEST_COMMAND: Final[Command] = (
     "-m",
     "requires_live_harness",
     "-n",
-    "1",
+    "auto",
     "--dist",
-    "loadgroup",
+    "load",
 )
 SUMMON_LOCAL_LLM_TEST_COMMAND: Final[Command] = (
     *PYTEST_PREFIX,
@@ -189,9 +191,9 @@ SUMMON_LOCAL_LLM_TEST_COMMAND: Final[Command] = (
     "-m",
     "requires_local_llm",
     "-n",
-    "1",
+    "auto",
     "--dist",
-    "loadgroup",
+    "load",
 )
 SUMMON_TEST_COMMANDS: Final[tuple[Command, ...]] = (
     SUMMON_UNIT_TEST_COMMAND,

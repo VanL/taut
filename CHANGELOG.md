@@ -10,7 +10,10 @@
   and explicit shutdown still take precedence, and post-readiness orientation
   failures keep their existing diagnostics. Release tests now fence real child
   lifetime, protocol stage entry, search completion, and platform branches by
-  events instead of startup or scheduler timing.
+  events instead of startup or scheduler timing. Every isolated Summon lane
+  now runs with `-n auto --dist load`, so host-width concurrency pressure can
+  expose resource-ownership defects instead of being hidden by fixed worker
+  caps.
 
 - Summon now retires each provider's owned process domain, not only its direct
   child. POSIX adapters keep the session leader unreaped through bounded

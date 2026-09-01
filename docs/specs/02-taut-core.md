@@ -2497,8 +2497,8 @@ Helper obligations:
   plus a fresh serial `not slow and installed_wheel` invocation,
   `bin/pytest-pg --fast`, a second PostgreSQL-harness invocation selecting
   `extensions/taut_mcp/tests/test_pg_conformance.py`, the four isolated Summon
-  lanes (a serial `not xdist_group` unit lane, the fixed-width process lane,
-  and the two single-worker live lanes), one explicit MCP `not pg_only` lane
+  lanes (unit, deterministic process, external-live, and local-LLM), each under
+  explicit `-n auto --dist load`, one explicit MCP `not pg_only` lane
   under the MCP project, the complete package-local TUI lane against its
   retained lock, existing root/PG/Summon Ruff paths, package-local MCP and TUI
   Ruff lint/format, and five collision-safe mypy owners including explicit MCP
@@ -2512,16 +2512,21 @@ Helper obligations:
 
   The process/live/LLM lanes are isolated from unrelated summon tests because
   they drive multiple real processes against shared SQLite files. The
-  deterministic process lane is a fixed-width pressure proof: local release
-  checks run it with `-n 4 --dist load`. Its `xdist_group("process")` marker
+  deterministic process lane is an auto-width pressure proof: local release
+  checks run it with `-n auto --dist load`. Its `xdist_group("process")` marker
   selects and co-locates the lane in broad default runs, but every selected test
   owns test-local resources because the isolated release invocation uses
   `--dist load` and intentionally ignores group co-location. Strict
-  external-live and local-LLM lanes retain their existing known-safe
-  `-n 1 --dist loadgroup` boundaries and select only
+  external-live and local-LLM lanes use the same auto-width load scheduler and
+  select only
   `requires_live_harness` or `requires_local_llm`, respectively. Non-live
   diagnostics in those files remain owned by the unit lane. All three run as
-  fresh pytest invocations rather than one long worker.
+  fresh pytest invocations rather than one long worker. Each case owns its
+  database, paths, processes, descriptors, and Taut control state. External
+  provider CLIs still share host auth/config/cache stores and account quotas;
+  those are explicit prerequisites, not test-owned resources. A concurrent
+  access failure must be classified and fixed at the provider or fixture
+  boundary, never hidden by restoring serial execution.
 - For every target whose prechecks run, require the summon local-LLM lane
   locally. The helper starts one local-LLM preparation at the beginning of
   prechecks so Docker image/model setup can overlap root and PostgreSQL checks,
@@ -2540,14 +2545,14 @@ Helper obligations:
 - In `.github/workflows/test.yml`, keep summon's deterministic process lane
   aligned with the release helper selector:
   `xdist_group and not requires_live_harness and not requires_local_llm`. Run
-  that lane as a dedicated fresh matrix job under `-n 2 --dist load`, so it is
+  that lane as a dedicated fresh matrix job under `-n auto --dist load`, so it is
   not preceded by the broad root and summon unit suites in the same runner
   environment. Do not serialize the matrix itself for SQLite safety; matrix
   jobs run on isolated hosts. The local-LLM lane runs in its own CI job with a
   prepared loopback Ollama model. The representative Ubuntu root/unit cell,
   Ubuntu deterministic-process cell, and prepared local-LLM job collect and
-  upload coverage while running their existing selectors; the process shard
-  retains `-n 2 --dist load`. A final aggregation job downloads and combines
+  upload coverage while running their existing selectors; every Summon shard
+  uses `-n auto --dist load`. A final aggregation job downloads and combines
   shards, enforces required paths, and uploads the report, but runs no tests.
   Placeholder live files that skip without prepared credentials or a model are
   not invoked merely to inflate coverage. External-provider live harnesses are
@@ -3089,8 +3094,8 @@ expression behavior.
   metadata reconciliation, exact-path local preparation commits, and remote
   release fences.
 - `docs/plans/2026-07-13-bounded-summon-process-test-parallelism-plan.md` —
-  fixed-width deterministic process pressure locally and in CI while preserving
-  fresh one-worker external-live and local-LLM boundaries.
+  superseded fixed-width policy; the 2026-09-01 release determinism plan makes
+  every fresh Summon lane an auto-width pressure proof.
 - `docs/plans/2026-07-12-lazy-command-extensions-and-rich-tui-composition-plan.md`
   — command modules, installed extension discovery, lazy subsystem imports,
   Summon embedding, and future rich-TUI composition boundaries.

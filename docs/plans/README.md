@@ -113,7 +113,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 | `2026-07-11-v0.5.2-coordinated-release-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |
 | `2026-07-12-automatic-display-name-capitalization-plan.md` | completed | no | Completed; landed evidence includes `b8d145e`. |
 | `2026-07-12-lazy-command-extensions-and-rich-tui-composition-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |
-| `2026-07-13-bounded-summon-process-test-parallelism-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |
+| `2026-07-13-bounded-summon-process-test-parallelism-plan.md` | superseded | no | Fixed-width policy superseded by the owner-directed auto-width Summon pressure contract in the 2026-09-01 release determinism plan; historical evidence remains intact. |
 | `2026-07-13-ci-speed-determinism-release-evidence-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |
 | `2026-07-13-release-metadata-preparation-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |
 | `2026-07-13-summon-stop-release-race-plan.md` | completed | no | Completed; evidence reconciled from the plan and repository history. |

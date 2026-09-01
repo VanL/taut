@@ -121,7 +121,7 @@ jobs:
         if: ${{ matrix.os != 'ubuntu-latest' || matrix.python-version != '3.13' }}
         timeout-minutes: 10
         run: |
-          pytest extensions/taut_summon/tests -v --tb=short -m "not xdist_group"
+          pytest extensions/taut_summon/tests -v --tb=short -m "not xdist_group" -n auto --dist load
 
       - name: Run taut-summon extension unit tests with coverage
         id: summon_unit_coverage
@@ -131,7 +131,7 @@ jobs:
           COVERAGE_PROCESS_START: ${{ github.workspace }}/pyproject.toml
           COVERAGE_FILE: ${{ github.workspace }}/.coverage.root-unit
         run: |
-          python -m coverage run --parallel-mode -m pytest extensions/taut_summon/tests -v --tb=short -m "not xdist_group" -n 0
+          python -m coverage run --parallel-mode -m pytest extensions/taut_summon/tests -v --tb=short -m "not xdist_group" -n auto --dist load
 
       - name: Upload root and unit coverage data
         if: ${{ always() && matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13' && (steps.root_coverage.outcome != 'skipped' || steps.summon_unit_coverage.outcome != 'skipped') }}
@@ -201,13 +201,13 @@ jobs:
         if: ${{ matrix.os != 'windows-latest' && (matrix.os != 'ubuntu-latest' || matrix.python-version != '3.13') }}
         timeout-minutes: 15
         run: |
-          pytest extensions/taut_summon/tests -v --tb=short -m "xdist_group and not requires_live_harness and not requires_local_llm" -n 2 --dist load
+          pytest extensions/taut_summon/tests -v --tb=short -m "xdist_group and not requires_live_harness and not requires_local_llm" -n auto --dist load
 
       - name: Run taut-summon Windows process tests
         if: ${{ matrix.os == 'windows-latest' }}
         timeout-minutes: 15
         run: |
-          pytest extensions/taut_summon/tests/test_process_domain.py extensions/taut_summon/tests/test_scripted_adapter.py extensions/taut_summon/tests/test_win32_job.py -v --tb=short -m "xdist_group and not requires_live_harness and not requires_local_llm" -n 2 --dist load
+          pytest extensions/taut_summon/tests/test_process_domain.py extensions/taut_summon/tests/test_scripted_adapter.py extensions/taut_summon/tests/test_win32_job.py -v --tb=short -m "xdist_group and not requires_live_harness and not requires_local_llm" -n auto --dist load
 
       - name: Run taut-summon extension process tests with coverage
         id: summon_process_coverage
@@ -218,7 +218,7 @@ jobs:
           COVERAGE_FILE: ${{ github.workspace }}/.coverage.summon-process
         run: |
           python -m coverage erase
-          python -m coverage run --parallel-mode -m pytest extensions/taut_summon/tests -v --tb=short -m "xdist_group and not requires_live_harness and not requires_local_llm" -n 2 --dist load
+          python -m coverage run --parallel-mode -m pytest extensions/taut_summon/tests -v --tb=short -m "xdist_group and not requires_live_harness and not requires_local_llm" -n auto --dist load
 
       - name: Upload process coverage data
         if: ${{ always() && matrix.os == 'ubuntu-latest' && matrix.python-version == '3.13' && steps.summon_process_coverage.outcome != 'skipped' }}
@@ -492,7 +492,7 @@ jobs:
           COVERAGE_FILE: ${{ github.workspace }}/.coverage.local-llm
         run: |
           python -m coverage erase
-          python -m coverage run --parallel-mode -m pytest extensions/taut_summon/tests/test_live_local_llm.py -v --tb=short -m requires_local_llm -n 1 --dist loadgroup
+          python -m coverage run --parallel-mode -m pytest extensions/taut_summon/tests/test_live_local_llm.py -v --tb=short -m requires_local_llm -n auto --dist load
 
       - name: Upload local LLM coverage data
         if: ${{ always() && steps.local_llm_coverage.outcome != 'skipped' }}

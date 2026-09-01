@@ -2201,7 +2201,9 @@ def test_every_target_set_plans_one_literal_universal_precheck_sequence(
             "-m",
             "not xdist_group",
             "-n",
-            "0",
+            "auto",
+            "--dist",
+            "load",
         ),
         (
             "uv",
@@ -2213,7 +2215,7 @@ def test_every_target_set_plans_one_literal_universal_precheck_sequence(
             "-m",
             "xdist_group and not requires_live_harness and not requires_local_llm",
             "-n",
-            "4",
+            "auto",
             "--dist",
             "load",
         ),
@@ -2227,9 +2229,9 @@ def test_every_target_set_plans_one_literal_universal_precheck_sequence(
             "-m",
             "requires_live_harness",
             "-n",
-            "1",
+            "auto",
             "--dist",
-            "loadgroup",
+            "load",
         ),
         (
             "uv",
@@ -2241,9 +2243,9 @@ def test_every_target_set_plans_one_literal_universal_precheck_sequence(
             "-m",
             "requires_local_llm",
             "-n",
-            "1",
+            "auto",
             "--dist",
-            "loadgroup",
+            "load",
         ),
         (
             "uv",
@@ -2458,26 +2460,31 @@ def test_summon_precheck_commands_include_extension_gate() -> None:
     assert release.SUMMON_PROCESS_TEST_COMMAND in commands
     assert release.SUMMON_LIVE_HARNESS_TEST_COMMAND in commands
     assert release.SUMMON_LOCAL_LLM_TEST_COMMAND in commands
-    assert release.SUMMON_UNIT_TEST_COMMAND[-2:] == ("-n", "0")
+    assert release.SUMMON_UNIT_TEST_COMMAND[-4:] == (
+        "-n",
+        "auto",
+        "--dist",
+        "load",
+    )
     assert (
         "xdist_group and not requires_live_harness and not requires_local_llm"
         in release.SUMMON_PROCESS_TEST_COMMAND
     )
     assert release.SUMMON_PROCESS_TEST_COMMAND[-4:] == (
         "-n",
-        "4",
+        "auto",
         "--dist",
         "load",
     )
-    for single_resource_command in (
+    for pressure_command in (
         release.SUMMON_LIVE_HARNESS_TEST_COMMAND,
         release.SUMMON_LOCAL_LLM_TEST_COMMAND,
     ):
-        assert single_resource_command[-4:] == (
+        assert pressure_command[-4:] == (
             "-n",
-            "1",
+            "auto",
             "--dist",
-            "loadgroup",
+            "load",
         )
     assert (
         "-m",
