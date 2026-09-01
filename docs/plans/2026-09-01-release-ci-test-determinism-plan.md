@@ -8,7 +8,7 @@ restore existing [TUI-13.2] diagnostic precedence, and hosted follow-up exposed
 a search-anchor ownership race against live refresh under [TUI-6.4]. No
 intended behavior or release gate changes.
 
-Status: active.
+Status: completed.
 
 ## Goal
 
@@ -276,14 +276,37 @@ bypasses, manual publication, timeout increases, and unrelated cleanup.
   atomically replaced its complete PID payload, but the redundant reader saw a
   transient `PermissionError` after target visibility; the exact Windows or
   filesystem-filter cause is unobserved. The Windows Job proof now waits for
-  an exact `descendant-ready`
-  provider event that can only follow successful child spawn and PID
+  an exact `descendant-ready` provider event that can only follow successful
+  child spawn and PID
   publication, then captures the sole direct child from the already-known
   provider process. The redundant second file reader is gone from this path.
   The five-second containment cap and every process/job assertion are
   unchanged.
-- Pending: exact-SHA hosted workflows, unchanged release-helper gates, and
-  coordinated publication verification.
+- Exact-SHA hosted evidence is green: root `33562480441` (23 jobs), PG
+  `33562480448`, MCP `33562480513`, and TUI `33562480535` (five retained-lock
+  jobs). The corrected Windows 3.11 process proof and the local-LLM smoke both
+  passed. The root workflow completed in 12m35s wall time including runner
+  allocation; no job failed.
+- The unchanged coordinated release helper passed 2,233 root tests, 28 wheel
+  tests, 314 shared Postgres tests, 40 PG extension tests, seven MCP/PG tests,
+  383 Summon unit tests in 15.70s at auto width, 301 Summon process tests in
+  46.01s at auto width, eight live harness tests in 11.61s, the local-LLM
+  smoke in 18.09s at auto width, 289 MCP tests, and 435 TUI tests. All Ruff,
+  formatting, suppression, and five mypy gates passed. Compared with the
+  reported 38.00s four-attempt local-LLM failure, the final smoke completed on
+  its first attempt in under half that wall time; this is observed release
+  evidence, not a controlled performance benchmark.
+- Release-gate runs `33564360352`, `33564351484`, `33564354442`,
+  `33564363904`, and `33564357967` all passed. All five `0.9.6` GitHub Releases
+  and PyPI projects contain exactly one wheel and one source archive with
+  matching SHA-256 digests. PyPI integrity provenance contains a Sigstore
+  certificate and transparency entry for all ten files, tied to the exact
+  package release-gate workflow. GitHub Release assets expose matching SHA-256
+  digests but no GitHub artifact attestation; `gh attestation verify` returns
+  404 for the core wheel. That provenance-surface gap is explicit and was not
+  silently treated as publication failure because the current release contract
+  requires inner bundle provenance plus exact-byte postflight, not a GitHub
+  artifact attestation.
 
 ## Deviation Log
 
