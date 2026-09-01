@@ -298,6 +298,71 @@ class _FakeApi:
             self.proc.returncode = 1
 
 
+class _CleanupStageStream(_FakeStream):
+    def __init__(self, failure: BaseException | None = None) -> None:
+        super().__init__()
+        self._failure = failure
+
+    def close(self) -> None:
+        super().close()
+        if self._failure is not None:
+            raise self._failure
+
+
+class _CleanupStageProcess(_FakeProcess):
+    def __init__(
+        self,
+        calls: list[tuple[Any, ...]],
+        fallback_failure: BaseException | None,
+    ) -> None:
+        super().__init__(calls)
+        self._fallback_failure = fallback_failure
+
+    def wait(self, timeout: float | None = None) -> int:
+        if self._fallback_failure is not None:
+            self.wait_calls += 1
+            assert self.calls is not None
+            self.calls.append(("wait", timeout))
+            raise self._fallback_failure
+        return super().wait(timeout)
+
+
+class _CleanupStageApi(_FakeApi):
+    def __init__(
+        self,
+        calls: list[tuple[Any, ...]],
+        *,
+        proc: _FakeProcess,
+        stage: str,
+        primary: BaseException,
+        cleanup_failure: BaseException,
+    ) -> None:
+        super().__init__(calls, proc=proc)
+        self._stage = stage
+        self._primary = primary
+        self._cleanup_failure = cleanup_failure
+
+    def resume_thread(self, thread: int) -> int:
+        self.calls.append(("resume", thread))
+        raise self._primary
+
+    def terminate_job(self, job: int, exit_code: int) -> None:
+        self.calls.append(("terminate_job", job, exit_code))
+        if self._stage == "initial_retire":
+            raise self._cleanup_failure
+        if self._stage == "fallback_reap":
+            raise OSError("initial retire cleanup")
+        assert self.proc is not None
+        self.proc.returncode = exit_code
+
+    def close_handle(self, handle: int) -> None:
+        self.calls.append(("close", handle))
+        if self._stage == "handle_close" and handle == 12:
+            raise self._cleanup_failure
+        if handle == 10 and self.proc is not None and self.proc.returncode is None:
+            self.proc.returncode = 1
+
+
 def test_spawn_assigns_suspended_process_before_exact_primary_thread_resume() -> None:
     calls: list[tuple[Any, ...]] = []
     proc = _FakeProcess()
@@ -408,6 +473,53 @@ def test_setup_cleanup_reaps_after_termination_api_failure_and_job_close() -> No
     assert proc.returncode == 1
     assert proc.wait_calls == 1
     assert any("terminate_job failed" in note for note in captured.value.__notes__)
+
+
+@pytest.mark.parametrize(
+    "stage",
+    ["initial_retire", "stream_close", "handle_close", "fallback_reap"],
+)
+def test_setup_cleanup_contains_control_flow_failure_at_each_boundary(
+    stage: str,
+) -> None:
+    """Every broad cleanup boundary preserves one control-flow primary."""
+
+    calls: list[tuple[Any, ...]] = []
+    primary = SystemExit("resume aborted")
+    cleanup_failure = KeyboardInterrupt(f"{stage} cleanup")
+    fallback_failure = cleanup_failure if stage == "fallback_reap" else None
+    proc = _CleanupStageProcess(calls, fallback_failure)
+    stream_failure = cleanup_failure if stage == "stream_close" else None
+    proc.stdin = _CleanupStageStream(stream_failure)
+    proc.stdout = _CleanupStageStream()
+    stderr = _CleanupStageStream()
+    cast(Any, proc).stderr = stderr
+    api = _CleanupStageApi(
+        calls,
+        proc=proc,
+        stage=stage,
+        primary=primary,
+        cleanup_failure=cleanup_failure,
+    )
+
+    with pytest.raises(SystemExit, match="resume aborted") as captured:
+        spawn_windows_process(
+            ["provider"],
+            api=api,
+            popen_factory=lambda *_args, **_kwargs: proc,
+        )
+
+    assert captured.value is primary
+    notes = primary.__notes__
+    assert any(str(cleanup_failure) in note for note in notes)
+    if stage == "fallback_reap":
+        assert any("initial retire cleanup" in note for note in notes)
+    for handle in (10, 11, 12, 13):
+        assert calls.count(("close", handle)) == 1
+    assert proc.stdin.close_calls == 1
+    assert proc.stdout.close_calls == 1
+    assert stderr.close_calls == 1
+    assert proc.wait_calls == 1
 
 
 def test_assignment_failure_never_resumes_and_cleans_suspended_child() -> None:

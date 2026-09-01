@@ -527,7 +527,107 @@ class WindowsJobDomain:
         return self._returncode
 
 
-def spawn_windows_process(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-035] exception
+@dataclass
+class _WindowsSpawnAttempt:
+    """Own partially acquired resources until spawn publishes a domain."""
+
+    api: Win32Api
+    job: _OwnedHandle | None = None
+    process: _OwnedHandle | None = None
+    snapshot: _OwnedHandle | None = None
+    thread: _OwnedHandle | None = None
+    proc: Any | None = None
+    assigned: bool = False
+
+    def publish(
+        self,
+        *,
+        monotonic: Callable[[], float],
+        sleep: Callable[[float], None],
+    ) -> WindowsSpawnedProcess:
+        """Transfer the completed process and job ownership atomically."""
+
+        assert self.proc is not None
+        assert self.job is not None
+        spawned = WindowsSpawnedProcess(
+            proc=self.proc,
+            domain=WindowsJobDomain(
+                self.proc,
+                api=self.api,
+                job=self.job,
+                monotonic=monotonic,
+                sleep=sleep,
+            ),
+        )
+        self.job = None
+        return spawned
+
+    def rollback(self) -> tuple[BaseException, ...]:
+        """Run every compensating action and retain its failure in order."""
+
+        cleanup_errors: list[BaseException] = []
+        reaped = False
+        if self.proc is not None:
+            reaped = self._attempt_cleanup(self._retire_and_reap, cleanup_errors)
+            for stream in (self.proc.stdin, self.proc.stdout, self.proc.stderr):
+                if stream is not None:
+                    self._attempt_cleanup(stream.close, cleanup_errors)
+        for owned in (self.thread, self.snapshot, self.process, self.job):
+            if owned is not None:
+                self._attempt_cleanup(owned.close, cleanup_errors)
+        if self.proc is not None and not reaped:
+            self._attempt_cleanup(self._reap, cleanup_errors)
+        return tuple(cleanup_errors)
+
+    def _retire_and_reap(self) -> None:
+        assert self.proc is not None
+        if self.assigned:
+            assert self.job is not None
+            self.api.terminate_job(self.job.value, 1)
+        elif self.proc.poll() is None:
+            self.proc.kill()
+        self.proc.wait(timeout=5.0)
+
+    def _reap(self) -> None:
+        assert self.proc is not None
+        self.proc.wait(timeout=5.0)
+
+    @staticmethod
+    def _attempt_cleanup(
+        action: Callable[[], object],
+        cleanup_errors: list[BaseException],
+    ) -> bool:
+        try:
+            action()
+        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-091] exception
+            cleanup_errors.append(exc)
+            return False
+        return True
+
+
+def _translated_spawn_failure(
+    primary: BaseException,
+    cleanup_errors: Sequence[BaseException],
+) -> AdapterError | None:
+    """Return a public setup error, or ``None`` to re-raise the primary."""
+
+    if isinstance(primary, AdapterError):
+        failure = primary
+    elif isinstance(primary, OSError):
+        failure = AdapterError(f"Windows provider setup failed: {primary}")
+        failure.__cause__ = primary
+    else:
+        for cleanup_error in cleanup_errors:
+            primary.add_note(
+                f"Windows provider setup cleanup also failed: {cleanup_error}"
+            )
+        return None
+    for cleanup_error in cleanup_errors:
+        failure.add_note(f"Windows provider setup cleanup also failed: {cleanup_error}")
+    return failure
+
+
+def spawn_windows_process(
     argv: Sequence[str],
     *,
     creationflags: int = 0,
@@ -545,24 +645,19 @@ def spawn_windows_process(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-035] ex
         )
     if api is None:
         api = Kernel32Api()
-    job: _OwnedHandle | None = None
-    process: _OwnedHandle | None = None
-    snapshot: _OwnedHandle | None = None
-    thread: _OwnedHandle | None = None
-    proc: Any | None = None
-    assigned = False
+    attempt = _WindowsSpawnAttempt(api)
     try:
-        job = _OwnedHandle(api, api.create_job())
+        job = attempt.job = _OwnedHandle(api, api.create_job())
         api.configure_kill_on_close(job.value)
-        proc = popen_factory(
+        proc = attempt.proc = popen_factory(
             list(argv),
             creationflags=creationflags | CREATE_SUSPENDED,
             **popen_kwargs,
         )
-        process = _OwnedHandle(api, api.open_process(proc.pid))
+        process = attempt.process = _OwnedHandle(api, api.open_process(proc.pid))
         api.assign_process(job.value, process.value)
-        assigned = True
-        snapshot = _OwnedHandle(api, api.create_thread_snapshot())
+        attempt.assigned = True
+        snapshot = attempt.snapshot = _OwnedHandle(api, api.create_thread_snapshot())
         entries = [
             entry
             for entry in api.thread_entries(snapshot.value)
@@ -573,7 +668,7 @@ def spawn_windows_process(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-035] ex
                 f"suspended provider has {len(entries)} owned threads; "
                 "expected exactly one"
             )
-        thread = _OwnedHandle(api, api.open_thread(entries[0][0]))
+        thread = attempt.thread = _OwnedHandle(api, api.open_thread(entries[0][0]))
         previous_suspend_count = api.resume_thread(thread.value)
         if previous_suspend_count != 1:
             raise AdapterError(
@@ -583,63 +678,9 @@ def spawn_windows_process(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-035] ex
         thread.close()
         snapshot.close()
         process.close()
-        return WindowsSpawnedProcess(
-            proc=proc,
-            domain=WindowsJobDomain(
-                proc,
-                api=api,
-                job=job,
-                monotonic=monotonic,
-                sleep=sleep,
-            ),
-        )
+        return attempt.publish(monotonic=monotonic, sleep=sleep)
     except BaseException as primary:
-        cleanup_errors: list[BaseException] = []
-        reaped = False
-        if proc is not None:
-            try:
-                if assigned and job is not None:
-                    api.terminate_job(job.value, 1)
-                elif proc.poll() is None:
-                    proc.kill()
-                proc.wait(timeout=5.0)
-                reaped = True
-            except BaseException as exc:  # noqa: BLE001 - preserve setup primary
-                cleanup_errors.append(exc)
-            for stream in (proc.stdin, proc.stdout, proc.stderr):
-                if stream is None:
-                    continue
-                try:
-                    stream.close()
-                except BaseException as exc:  # noqa: BLE001 - cleanup aggregation
-                    cleanup_errors.append(exc)
-        for owned in (thread, snapshot, process, job):
-            if owned is None:
-                continue
-            try:
-                owned.close()
-            except BaseException as exc:  # noqa: BLE001 - cleanup aggregation
-                cleanup_errors.append(exc)
-        if proc is not None and not reaped:
-            try:
-                proc.wait(timeout=5.0)
-            except BaseException as exc:  # noqa: BLE001 - cleanup aggregation
-                cleanup_errors.append(exc)
-        if isinstance(primary, AdapterError):
-            failure = primary
-        elif isinstance(primary, OSError):
-            failure = AdapterError(f"Windows provider setup failed: {primary}")
-            failure.__cause__ = primary
-        else:
-            for cleanup_error in cleanup_errors:
-                primary.add_note(
-                    f"Windows provider setup cleanup also failed: {cleanup_error}"
-                )
-            raise
-        for cleanup_error in cleanup_errors:
-            failure.add_note(
-                f"Windows provider setup cleanup also failed: {cleanup_error}"
-            )
-        if failure is primary:
+        failure = _translated_spawn_failure(primary, attempt.rollback())
+        if failure is None or failure is primary:
             raise
         raise failure from primary

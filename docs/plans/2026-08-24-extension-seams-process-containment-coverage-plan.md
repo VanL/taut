@@ -855,6 +855,73 @@ Post-landing success signals:
   descendant, zero active job processes, bounded close, and complete handle
   cleanup. A separate rejection path proves fail-closed cleanup.
 
+### 7A. Reconcile the Windows spawn Ruff inventory through judged refactoring
+
+This post-E2 correction remains inside the plan's Class 5+P unit. It changes no
+Summon product contract. If a suppression remains after judgment, the
+human-owned [DOM-10.2.1] registry and its global inventory must be reconciled as
+part of the already-active process-gate scope; a count-only sentinel bump is not
+an acceptable substitute for the required design review.
+
+- [x] Preserve the red baseline from clean `50eeb94`: the real raw-inventory
+  sentinel reports `BLE001=148` and `C901=39` against stale `144` and `38`.
+  The five additions are exactly `spawn_windows_process`'s C901 finding and
+  its four setup-failure `BaseException` catches.
+- [x] Attempt a concrete C901 refactor at a real ownership seam. The candidate
+  must keep suspended create/assign/resume order visible and may not pass a bag
+  of partial native-handle locals to an unrelated helper merely to lower the
+  score.
+- [x] Attempt a concrete refactor of all four BLE001 sites. It must retain
+  cleanup after `BaseException`, primary-error precedence, every cleanup note,
+  one reap attempt after kill-on-close fallback, stdio closure, and exactly-once
+  release of every acquired native handle. Narrowing to ordinary `Exception`
+  is a behavior change and is not permitted as lint evasion.
+- [x] Before changing the owner, add one baseline characterization per broad
+  cleanup boundary using a control-flow `BaseException` (`KeyboardInterrupt`
+  or `SystemExit`): initial retire/reap, stream close, native-handle close, and
+  fallback reap. Each case must prove the original primary survives, the
+  injected failure becomes a note, every later cleanup phase still runs, and
+  each acquired stream/handle closes once. These cases pass on the original
+  implementation because the refactor is behavior-preserving; the named Rule 5
+  substitute proof is the already-red policy sentinel plus pre/post
+  characterization of the behavior that must not move. A narrowed
+  `except Exception` candidate is rejected if any control-flow probe escapes.
+- [x] Give the original and runnable candidate diff to one independent judge.
+  The judge must decide each candidate `net positive` or `net negative` using
+  understandability, compactness, legibility, grouping of similar concerns,
+  and overall maintainability. A retained suppression needs the rejected
+  candidate and reason recorded in the Review Log; an accepted candidate lands
+  only after its closest behavior proof passes.
+- [x] Reconcile all surviving source directives, human registry cardinalities,
+  generated locations, the global raw inventory, and the policy-test sentinel.
+  Remove obsolete directives and registry memberships rather than blessing
+  findings that the accepted refactor eliminated.
+- **Invariants:** no provider executes before Job Object assignment; every
+  setup failure remains fail-closed; no handle, process, or stream ownership is
+  duplicated or leaked; programming/control-flow primaries remain primary;
+  public signatures and error text remain stable; POSIX process-domain code is
+  untouched.
+- **Red/green proof:** use the already-failing
+  `tests/test_ruff_policy.py::test_raw_active_rule_inventory_and_registry_are_exact`
+  as the red test, then run the complete deterministic Win32 Job Object suite,
+  raw C901/BLE001 inspection, normal Ruff, the suppression-index checker,
+  Summon mypy, and the documentation/status/diff gates.
+- **Done signal:** all five additions have an attempted before/after design and
+  an independent verdict; accepted refactors pass their real behavior tests;
+  every retained finding has exact reviewed policy evidence; normal and raw
+  Ruff inventories reconcile from the current tree.
+
+The judge fills every row independently. Rows may point to one shared
+transaction-owner candidate, but no row inherits another row's verdict:
+
+| Finding | Original | Attempted replacement | Verdict | Criteria-based rationale |
+|---------|----------|-----------------------|---------|--------------------------|
+| `C901` — `spawn_windows_process` | One 23-point setup/rollback/error-normalization owner | `_WindowsSpawnAttempt` owns partial resources, rollback, and publication while the public setup order stays linear | `net positive` | More source lines, but lower cognitive size, visible create/assign/resume order, and named transaction boundaries improve understanding, legibility, grouping, and maintenance. |
+| `BLE001` — initial retire/reap cleanup | Inline broad catch preserves the setup primary | Transaction-local `_attempt_cleanup(_retire_and_reap, ...)` | `net positive` | The assigned-job versus unassigned-child choice stays together and the explicit boolean still owns fallback; centralized aggregation is shorter and easier to audit. |
+| `BLE001` — per-stream close cleanup | Inline broad catch aggregates each stream failure | Ordered stream loop through transaction-local `_attempt_cleanup` | `net positive` | Every stream remains independently attempted in place; repeated scaffolding disappears without moving ownership or hiding continuation. |
+| `BLE001` — per-native-handle close cleanup | Inline broad catch aggregates each handle failure | Ordered handle loop through transaction-local `_attempt_cleanup` | `net positive` | Reverse dependency order remains visible and `_OwnedHandle.close()` still clears ownership before the native call; one aggregation seam improves compactness and exact-once auditability. |
+| `BLE001` — fallback reap cleanup | Inline broad catch retains failure after kill-on-close fallback | Named `_reap` attempted only after failed initial retirement and handle closure | `net positive` | The condition and ordering remain explicit while the named operation makes kill-on-close fallback easier to read and maintain. |
+
 ### 8. Add canonical TUI and PostgreSQL coverage producers red-first
 
 - [ ] Update `tests/test_github_workflows.py` first so it expects exact source
@@ -1195,6 +1262,7 @@ Any wrong or ambiguous answer causes a plan edit and another reader pass.
 | 2026-08-25 | E2 busy inherited-output correction | Red-first continuous stream writer, incomplete non-EOF frame, and deterministic always-readable PTY probes | POSIX raw stream work is capped at 16 reads and 1 MiB per turn; the terminal-observed final drain has the same bound and accepts only complete newline-delimited frames unless true EOF is present. PTY observes leader status after every readable turn. Real stream and PTY descendants remain alive through `ExitEvent` and are retired by `close()`. | Rerun full local Summon behavior and independent correction review. |
 | 2026-08-25 | E2 Windows collection isolation | Red workflow contract for a missing Windows-specific process step | The Windows row selects only process-domain, structured-adapter, and Job Object test files, so pytest never imports the POSIX-only PTY module before marker filtering. POSIX rows retain broad process-marker collection. | Hosted Windows must execute both real Job Object proofs on the exact commit. |
 | 2026-08-25 | E2 Windows implementation and proof wiring | 31 deterministic Job Object tests, 12 pipe/readiness tests, real leader/descendant and incompatible-outer-job hosted tests, and a blocking Windows Python 3.11 process-matrix row | Suspended assign-before-resume, temporary/native handle ownership, kill-on-close fallback, zero-active finalization, single leader reap, inherited-stdout readiness, and fail-closed nesting rejection are implemented without private CPython state. Local deterministic gates pass; the real Windows tests are present but cannot execute on the macOS workstation. | Hosted Windows success remains the Task 7 stop gate, then independent E2 review. |
+| 2026-08-28 | E2 Ruff-inventory correction | Red raw inventory `BLE001=148`/`C901=39`; four pre/post control-flow cleanup characterizations; independently judged runnable diff | Added one `_WindowsSpawnAttempt` owner that keeps create/assign/resume linear, transfers the job only after result construction, and consolidates four broad cleanup sites into one explicit boundary. The spawn C901 and three net BLE001 findings were removed; surviving raw inventory is `BLE001=145`/`C901=38`. | Run the complete Task 7A static, policy, documentation, and neighboring behavior gates. |
 
 ## Review Log
 
@@ -1211,6 +1279,9 @@ Any wrong or ambiguous answer causes a plan edit and another reader pass.
 | 2026-08-25 | Independent E2 completed-work review, POSIX F1/F3 | Linux can keep `killpg(pgid, 0)` successful while the unreaped zombie leader pins the PGID, so zero-signal absence cannot terminate the ladder. An unexpected group-signal error returned before reaping a known-terminal leader, and a successful `Popen.wait()` status mismatch raised before recording that the child was already reaped. | **accepted and fixed**: POSIX finalization now uses explicit bounded stages without a zero-signal oracle, aggregates signal failures while continuing cleanup, marks a successful reap before comparing status, and stores terminal finalization errors for stable rethrow. Deterministic firing tests cover TERM/KILL aggregation, `ESRCH`, conditional Darwin `EPERM`, observation timeout, reap exceptions, mismatch, and the no-post-reap-signal tripwire; a real Linux zombie-leader regression is selected only on Linux. |
 | 2026-08-25 | Independent E2 completed-work review, output F2 | A continuously writing inherited stdout could keep the POSIX raw drain loop or PTY readable path busy forever, preventing leader observation; the prior real tests held inherited output open silently. | **accepted and fixed**: stream reads have strict per-turn read/byte bounds, incomplete non-EOF fragments are not promoted to frames, and PTY checks after every readable turn. Deterministic RED probes plus real continuously writing descendants cover both adapters and exact descendant retirement. |
 | 2026-08-25 | Independent E2 correction rereview | Rechecked the full E2 diff and F1/F2/F3 corrections against [SUM-7.1], [SUM-7.4], [SUM-12], both platform owners, stream/PTY fairness, Windows collection isolation, and documentation. | **PASS**: no actionable blocker remains. The reviewer independently reran process-domain, scripted, Win32, full PTY, static, workflow, and documentation gates. Hosted exact-commit Windows and Linux execution remain evidence gates, not local code defects. |
+| 2026-08-28 | Task 7A scoped plan review and round 2 | Initial review blocked on missing control-flow `BaseException` firing proof and a candidate-level rather than five-finding decision record. | **accepted; round-2 PASS**: Task 7A now requires four per-boundary characterization cases, names the red policy sentinel plus pre/post characterization as the Rule 5 substitute, and carries five independent decision rows. |
+| 2026-08-28 | Task 7A runnable-candidate judgment | Compared clean `50eeb94` with the actual `_WindowsSpawnAttempt` diff and independently ran focused Win32, Ruff, and mypy proof. | **no blocker; five `net positive` verdicts**: the judge found the transaction owner improved understanding, legibility, concern grouping, and maintenance despite adding physical lines; every cleanup order, primary/cause/note behavior, assignment barrier, and ownership transfer remained exact. |
+| 2026-08-28 | Task 7A final reconciliation review | Rechecked the accepted code/tests, `RUFF-SUP-035` owner move, new `RUFF-SUP-091` graph, global/test inventories, five verdict rows, and current verification evidence. | **PASS**: no defect; direct raw derivation is `BLE001=145`/`C901=38`, both groups reconcile one directive/location/raw diagnostic, and every focused static, behavior, policy, and documentation rerun passed. |
 
 ## Verification Log
 
@@ -1230,6 +1301,7 @@ Any wrong or ambiguous answer causes a plan edit and another reader pass.
 | 2026-08-25 | E2 corrected local regression | `uv run pytest -q extensions/taut_summon/tests -m 'not requires_live_harness and not requires_local_llm'`; full workflow contracts; focused continuous-writer and finalization cases; scoped Ruff/mypy; all documentation gates | PASS on macOS: the full local Summon suite completed with exactly the expected Linux semantic skip and two real-Windows skips; workflow selection collected both named Windows proofs without importing PTY; static and documentation gates passed. |
 | 2026-08-25 | E2 Windows deterministic boundary | `uv run pytest -q -n 0 extensions/taut_summon/tests/test_win32_job.py extensions/taut_summon/tests/test_win32_pipe.py extensions/taut_summon/tests/test_process_domain.py` | PASS locally with the expected real-Windows outer-job skip: typed ABI, every setup failure, assign-before-resume, exact handle closure, zero-before-reap ordering, pipe readiness/EOF/error mapping, and shared factory publication fired. |
 | 2026-08-25 | E2 hosted platform proof | `summon-process` matrix rows added for macOS Python 3.11 and Windows Python 3.11; Windows uses a POSIX-import-free file list | **PENDING**: workflow structure and a local Debian container reproduction are green, but this workstation cannot supply the required real Windows Job Object execution. E2 is not ready until the hosted Windows, Linux, and macOS rows pass on the exact commit. |
+| 2026-08-28 | Task 7A judged Ruff correction | Red policy sentinel; 37 policy/index tests; deterministic Win32 Job Object, pipe, and process-domain set; full non-live Summon suite; 48-file Summon mypy; repository Ruff/index; formatter, plan/status/path/DOM/coalescing/docs-reference/diff gates | PASS. The red reproduced `BLE001=148`/`C901=39`; accepted refactoring and registry regeneration reconcile at `BLE001=145`/`C901=38`. Four control-flow cleanup cells pass, the focused platform set has only its two expected host skips, the broad Summon suite reached 100% with three expected platform skips, and every static/documentation gate is green. Independent judge: five `net positive` verdicts, no blocker. |
 
 ## Fresh-Eyes Completion Checklist
 

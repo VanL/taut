@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.6 - 2026-08-31
+
 - Summon now retires each provider's owned process domain, not only its direct
   child. POSIX adapters keep the session leader unreaped through bounded
   process-group TERM/KILL escalation; Windows stream adapters assign the
