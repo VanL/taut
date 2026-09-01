@@ -778,31 +778,31 @@ def test_finalize_is_idempotent_after_success() -> None:
     assert proc.wait_calls == 1
 
 
-@pytest.mark.skipif(os.name != "nt", reason="real incompatible outer-job proof")
+@pytest.mark.skipif(os.name != "nt", reason="real incompatible nested-job proof")
 @pytest.mark.xdist_group("process")
-def test_real_outer_job_ui_limit_rejects_before_provider_execution(
+def test_real_nested_job_assignment_rejects_before_provider_execution(
     tmp_path: Path,
 ) -> None:
-    """[SUM-7.1] Invalid nesting fails closed while the child is suspended."""
+    """[SUM-7.1] Real assignment failure leaves the provider suspended."""
 
-    gate = tmp_path / "outer-job-gate"
-    result = tmp_path / "outer-job-result"
+    result = tmp_path / "nested-job-result"
     provider_marker = tmp_path / "provider-started"
     helper = """
 import subprocess
 import sys
-import time
 from pathlib import Path
 
+from taut_summon import _win32_job
 from taut_summon._process_domain import spawn_process
 
-gate, result, marker = map(Path, sys.argv[1:])
-deadline = time.monotonic() + 15.0
-while not gate.exists():
-    if time.monotonic() >= deadline:
-        result.write_text("gate timeout", encoding="utf-8")
-        raise SystemExit(2)
-    time.sleep(0.01)
+result, marker = map(Path, sys.argv[1:])
+configure_kill_on_close = _win32_job.Kernel32Api.configure_kill_on_close
+
+def configure_incompatible_nested_job(api, job):
+    configure_kill_on_close(api, job)
+    api.configure_ui_restrictions(job, 0x1)
+
+_win32_job.Kernel32Api.configure_kill_on_close = configure_incompatible_nested_job
 provider = "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('started', encoding='utf-8')"
 try:
     spawned = spawn_process(
@@ -824,7 +824,6 @@ else:
             sys.executable,
             "-c",
             helper,
-            str(gate),
             str(result),
             str(provider_marker),
         ],
@@ -834,12 +833,9 @@ else:
         close_fds=True,
     )
     try:
-        api = cast(Kernel32Api, outer.domain._api)
-        api.configure_ui_restrictions(outer.domain._job.value, 0x1)
-        gate.write_text("go", encoding="utf-8")
         deadline = time.monotonic() + 15.0
         while not result.exists():
-            assert time.monotonic() < deadline, "outer-job helper did not finish"
+            assert time.monotonic() < deadline, "nested-job helper did not finish"
             time.sleep(0.01)
 
         diagnostic = result.read_text(encoding="utf-8")

@@ -843,8 +843,11 @@ Post-landing success signals:
   Windows real-process test for leader-exits-first plus surviving grandchild.
   The real Job Object test is the primary proof and must successfully assign,
   resume, retire the descendant, and observe zero active job processes. Test
-  outer-job rejection separately and prove fail-closed cleanup with no resumed
-  or surviving child. If the ordinary hosted runner forbids a valid nested job,
+  nested-assignment rejection separately and prove fail-closed cleanup with no
+  resumed or surviving child. Construct the rejection with a real incompatible
+  target job after the child has inherited an outer job; do not assume that a
+  particular outer UI restriction remains incompatible across Windows releases.
+  If the ordinary hosted runner forbids a valid nested job,
   provision another supported hosted Windows environment or keep E2 blocked;
   rejection evidence cannot substitute for successful containment.
 - **Stop gate:** if documented APIs cannot provide suspended assignment and
