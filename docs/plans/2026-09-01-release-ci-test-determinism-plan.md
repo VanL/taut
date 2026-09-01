@@ -271,6 +271,17 @@ bypasses, manual publication, timeout increases, and unrelated cleanup.
   blockers. It verified the physical viewport assertion, generation-bound
   stale-callback no-ops, synchronous and asynchronous failure cleanup,
   supersession, and teardown without pausing or dropping live delivery.
+- Fresh exact-SHA root run `33561588262` exposed a Windows filesystem
+  publication race in the process-domain test harness. The descendant had
+  atomically replaced its complete PID payload, but the redundant reader saw a
+  transient `PermissionError` after target visibility; the exact Windows or
+  filesystem-filter cause is unobserved. The Windows Job proof now waits for
+  an exact `descendant-ready`
+  provider event that can only follow successful child spawn and PID
+  publication, then captures the sole direct child from the already-known
+  provider process. The redundant second file reader is gone from this path.
+  The five-second containment cap and every process/job assertion are
+  unchanged.
 - Pending: exact-SHA hosted workflows, unchanged release-helper gates, and
   coordinated publication verification.
 

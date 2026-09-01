@@ -18,7 +18,9 @@
   and explicit shutdown still take precedence, and post-readiness orientation
   failures keep their existing diagnostics. Release tests now fence real child
   lifetime, protocol stage entry, search completion, and platform branches by
-  events instead of startup or scheduler timing. Every isolated Summon lane
+  events instead of startup or scheduler timing. The Windows Job Object proof
+  also consumes an explicit descendant-ready provider event before inspecting
+  the exact direct child, avoiding filesystem sharing races. Every isolated Summon lane
   now runs with `-n auto --dist load`, so host-width concurrency pressure can
   expose resource-ownership defects instead of being hidden by fixed worker
   caps.

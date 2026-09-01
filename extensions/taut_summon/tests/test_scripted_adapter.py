@@ -1586,6 +1586,7 @@ def test_windows_job_is_nonempty_before_terminal_domain_retirement(
                         "leader_ignore_sigterm": True,
                     }
                 },
+                {"activity": "descendant-ready"},
                 {"stall": True},
             ]
         },
@@ -1600,7 +1601,12 @@ def test_windows_job_is_nonempty_before_terminal_domain_retirement(
     try:
         pump = EventPump(handle)
         pump.next_of(SessionEvent)
-        identity = _capture_process_identity(pid_file)
+        ready = pump.next_of(ActivityEvent)
+        assert isinstance(ready, ActivityEvent)
+        assert ready.description == "descendant-ready"
+        descendants = psutil.Process(handle.pid).children(recursive=False)
+        assert len(descendants) == 1
+        identity = (descendants[0].pid, descendants[0].create_time())
         domain = cast(Any, handle._domain)
         assert domain.active_processes() >= 2
 
