@@ -136,7 +136,13 @@ def test_kernel_api_preserves_fatal_peek_error_code() -> None:
     assert captured.value.error_code == 87
 
 
-def test_real_constructor_rejects_posix_before_loading_windows_modules() -> None:
+def test_real_constructor_rejects_posix_before_loading_windows_modules(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    posix_os = ModuleType("os")
+    posix_os.__dict__["name"] = "posix"
+    monkeypatch.setattr(win32_pipe_module, "os", posix_os)
+
     with pytest.raises(AdapterError, match="available only on Windows"):
         WindowsPipeReadiness.from_fd(3)
 

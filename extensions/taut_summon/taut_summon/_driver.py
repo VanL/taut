@@ -78,6 +78,7 @@ from taut_summon._adapter import (
     ActivityEvent,
     AdapterError,
     AdapterEvent,
+    AdapterExitedError,
     AdapterHandle,
     AssistantTextEvent,
     ExitEvent,
@@ -1059,6 +1060,14 @@ class SummonDriver:
                 self._teardown_generation(
                     running.generation, running.handle, running.pump
                 )
+                if (
+                    isinstance(exc, AdapterExitedError)
+                    and self._on_ready is not None
+                    and not self._ready_callback_invoked
+                ):
+                    raise DriverError(
+                        "provider generation exited before foreground readiness"
+                    ) from exc
                 raise DriverError(f"cannot orient the harness: {exc}") from exc
         # Leave the AdapterError scope before shutdown teardown so the caught
         # write interruption cannot become the primary shutdown failure.

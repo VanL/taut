@@ -2,7 +2,15 @@
 
 ## Unreleased
 
-## 0.9.6 - 2026-08-31
+## 0.9.6 - 2026-09-01
+
+- Made pre-readiness PTY exit diagnostics deterministic: a terminal provider
+  outcome now reports the specified foreground-readiness abort even when PTY
+  closure reaches the supervisor just before pump completion. Control failures
+  and explicit shutdown still take precedence, and post-readiness orientation
+  failures keep their existing diagnostics. Release tests now fence real child
+  lifetime, protocol stage entry, search completion, and platform branches by
+  events instead of startup or scheduler timing.
 
 - Summon now retires each provider's owned process domain, not only its direct
   child. POSIX adapters keep the session leader unreaped through bounded

@@ -397,6 +397,16 @@ STOP failure. The rich-host regression pins the real write lease, control
 close request, and teardown order with events. Structured adapters keep the
 spawn-time system-prompt path.
 
+PTY writes distinguish an ordinary adapter fault from a terminal provider
+outcome with an internal, non-exported `AdapterExitedError`. This closes the
+small interval where the pump has closed the PTY master but has not yet
+published generation death. Orientation preserves control failure first and
+explicit shutdown second; while a rich-host readiness callback is still
+pending, the terminal outcome becomes the specified readiness-abort diagnostic.
+After readiness, the same outcome remains an ordinary orientation failure.
+Classification never waits for the pump thread; normal teardown still joins it
+and keeps cleanup failures subordinate to the selected primary error.
+
 PTY construction validates argv, unsigned-short terminal dimensions, and
 finite timing values before publishing a handle. Any setup or `Popen` failure
 closes both fds and becomes `AdapterError`, so malformed environment knobs

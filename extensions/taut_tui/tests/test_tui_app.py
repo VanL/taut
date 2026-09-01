@@ -261,6 +261,7 @@ def test_help_teaches_consumable_shared_notification_pointers() -> None:
 
 def test_real_empty_search_renders_no_matches_in_the_native_screen(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from textual.widgets import Input, Static
 
@@ -275,13 +276,30 @@ def test_real_empty_search_renders_no_matches_in_the_native_screen(
     async def exercise() -> None:
         app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
+            assert app._domain is not None
+            search_futures: list[Future[list[object]]] = []
+            real_search = app._domain.search
+
+            def record_search(query: str, *, limit: int = 50) -> Future[list[object]]:
+                future = cast(Future[list[object]], real_search(query, limit=limit))
+                search_futures.append(future)
+                return future
+
+            monkeypatch.setattr(app._domain, "search", record_search)
             app.action_open_search()
             await pilot.pause()
             query = app.screen.query_one("#search-query", Input)
             query.value = "nothing-can-match-this"
             await pilot.press("enter")
+            assert len(search_futures) == 1
+            await asyncio.wait_for(
+                asyncio.wrap_future(search_futures[0]),
+                timeout=20.0,
+            )
+            refreshed = asyncio.Event()
+            app.call_after_refresh(refreshed.set)
+            await asyncio.wait_for(refreshed.wait(), timeout=5.0)
             errors = app.screen.query_one("#search-errors", Static)
-            await _pause_until(pilot, lambda: "No matches" in str(errors.render()))
 
             assert str(errors.render()) == "No matches"
 

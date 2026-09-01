@@ -57,6 +57,7 @@ from simplebroker.ext import DatabaseError
 from taut_summon._adapter import (
     ActivityEvent,
     AdapterError,
+    AdapterExitedError,
     AssistantTextEvent,
     ExitEvent,
     SessionEvent,
@@ -2438,7 +2439,7 @@ def test_request_stop_requests_terminal_close_before_wake() -> None:
     assert driver._wake.is_set()
 
 
-def test_orientation_control_failure_remains_primary_and_tears_down(
+def test_orientation_terminal_outcome_preserves_control_failure_and_tears_down(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     driver = _new_driver(_run_request())
@@ -2452,7 +2453,7 @@ def test_orientation_control_failure_remains_primary_and_tears_down(
             self.closed = threading.Event()
 
         def inject(self, _text: str) -> None:
-            raise AdapterError("orientation write failed")
+            raise AdapterExitedError("provider exited during orientation")
 
         def close(self) -> None:
             super().close()
@@ -2490,6 +2491,121 @@ def test_orientation_control_failure_remains_primary_and_tears_down(
     assert pump_observed_close == [True]
     assert not pump.is_alive()
     assert driver._active_generation is None
+
+
+@pytest.mark.parametrize(
+    ("readiness_pending", "failure", "diagnostic"),
+    [
+        (
+            True,
+            AdapterExitedError("provider exited during orientation"),
+            "provider generation exited before foreground readiness",
+        ),
+        (
+            False,
+            AdapterExitedError("provider exited during orientation"),
+            "cannot orient the harness: provider exited during orientation",
+        ),
+        (
+            True,
+            AdapterError("orientation write failed"),
+            "cannot orient the harness: orientation write failed",
+        ),
+    ],
+    ids=("pending-terminal", "ready-terminal", "pending-ordinary"),
+)
+def test_orientation_failure_precedence_and_exact_teardown(
+    monkeypatch: pytest.MonkeyPatch,
+    readiness_pending: bool,
+    failure: AdapterError,
+    diagnostic: str,
+) -> None:
+    driver = _new_driver(_run_request())
+    driver._on_ready = lambda _run: None
+    driver._ready_callback_invoked = not readiness_pending
+
+    class FailingHandle(_CountingHandle):
+        def __init__(self) -> None:
+            super().__init__()
+            self.closed = threading.Event()
+
+        def inject(self, _text: str) -> None:
+            raise failure
+
+        def close(self) -> None:
+            super().close()
+            self.closed.set()
+            if readiness_pending and isinstance(failure, AdapterExitedError):
+                raise AdapterError("orientation cleanup failed")
+
+    handle = FailingHandle()
+    generation = driver._activate_generation()
+
+    def run_pump() -> None:
+        assert handle.closed.wait(timeout=1.0)
+        driver._finish_generation(generation)
+
+    pump = threading.Thread(target=run_pump)
+    pump.start()
+    running = types.SimpleNamespace(
+        generation=generation,
+        handle=handle,
+        pump=pump,
+    )
+    monkeypatch.setattr(driver, "_settle_for_orientation", lambda _handle: None)
+
+    with pytest.raises(DriverError, match=diagnostic) as caught:
+        driver._orient_running_generation(
+            cast(Any, running),
+            cast(Any, types.SimpleNamespace(orientation_via_inject=True)),
+            "orientation",
+            boot=cast(Any, types.SimpleNamespace(member_name="ptybot")),
+            availability=None,
+            attached_this_generation=False,
+        )
+
+    assert handle.close_calls == 1
+    assert not pump.is_alive()
+    assert driver._active_generation is None
+    if readiness_pending and isinstance(failure, AdapterExitedError):
+        assert caught.value.__cause__ is failure
+        notes = getattr(failure, "__notes__", ())
+        assert any("orientation cleanup failed" in note for note in notes)
+
+
+def test_orientation_terminal_outcome_during_shutdown_returns_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver = _new_driver(_run_request())
+    driver._on_ready = lambda _run: None
+
+    class ShutdownHandle(_CountingHandle):
+        def inject(self, _text: str) -> None:
+            driver._shutdown.set()
+            raise AdapterExitedError("provider exited during orientation")
+
+    handle = ShutdownHandle()
+    generation = driver._activate_generation()
+    running = types.SimpleNamespace(
+        generation=generation,
+        handle=handle,
+        pump=None,
+    )
+    monkeypatch.setattr(driver, "_settle_for_orientation", lambda _handle: None)
+
+    assert (
+        driver._orient_running_generation(
+            cast(Any, running),
+            cast(Any, types.SimpleNamespace(orientation_via_inject=True)),
+            "orientation",
+            boot=cast(Any, types.SimpleNamespace(member_name="ptybot")),
+            availability=None,
+            attached_this_generation=False,
+        )
+        == "shutdown"
+    )
+    assert handle.close_calls == 0
+    assert driver._active_generation is generation
 
 
 def test_stop_before_handle_publication_requests_close_on_published_handle(

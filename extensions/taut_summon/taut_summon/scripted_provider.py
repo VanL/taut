@@ -57,8 +57,11 @@ back to ``default_response`` (default: echo). Steps, one key each:
   domain cases: ``inherit_stdout``, ``ignore_sigint``, ``ignore_sigterm``,
   ``escape_domain``, ``leader_ignore_sigint``, ``leader_ignore_sigterm``,
   ``max_seconds``, ``leader_exit_code``, ``stdout_payload``, and
-  ``stdout_repeat``. A configured payload is written before PID publication;
-  repeat mode then writes it continuously until retirement or ``max_seconds``.
+  ``stdout_repeat``. ``leader_exit_release_file`` can hold leader exit behind a
+  test-owned release fence, and ``linger_after_stdout_close`` keeps a repeating
+  writer alive for domain-retirement proof after its output closes. A
+  configured payload is written before PID publication; repeat mode then writes
+  it continuously until retirement or ``max_seconds``.
 - ``{"exec_taut": {"args": [...], "count": N, "interval": S}}`` — run
   ``python -m taut ARGS`` as a real subprocess ``N`` times (default 1),
   using the child's own environment. The environment always carries
@@ -311,6 +314,65 @@ def _descendant_stdout_spec(raw_spec: dict[str, Any]) -> tuple[bool, str, bool]:
     return inherit_stdout, raw_stdout_payload, stdout_repeat
 
 
+def _descendant_lifetime_spec(
+    raw_spec: dict[str, Any], *, stdout_repeat: bool
+) -> tuple[float, bool]:
+    max_seconds = float(raw_spec.get("max_seconds", 30.0))
+    if not 1.0 <= max_seconds <= 120.0:
+        raise ValueError("spawn_descendant.max_seconds must be in 1..120")
+    linger_after_stdout_close = bool(raw_spec.get("linger_after_stdout_close", False))
+    if linger_after_stdout_close and not stdout_repeat:
+        raise ValueError("linger_after_stdout_close requires stdout_repeat")
+    return max_seconds, linger_after_stdout_close
+
+
+def _configure_descendant_leader_signals(raw_spec: dict[str, Any]) -> None:
+    if raw_spec.get("leader_ignore_sigint", False):
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+    if raw_spec.get("leader_ignore_sigterm", False):
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+
+
+def _wait_for_descendant_pid(proc: subprocess.Popen[bytes], pid_file: str) -> None:
+    deadline = time.monotonic() + 5.0
+    while not os.path.exists(pid_file):
+        if proc.poll() is not None:
+            raise RuntimeError(
+                f"scripted descendant exited before PID publication: {proc.returncode}"
+            )
+        if time.monotonic() >= deadline:
+            proc.kill()
+            proc.wait(timeout=5.0)
+            raise RuntimeError("scripted descendant PID publication timed out")
+        time.sleep(0.01)
+
+
+def _descendant_leader_release_path(raw_release_file: Any) -> str | None:
+    if raw_release_file is None:
+        return None
+    if not isinstance(raw_release_file, str) or not raw_release_file:
+        raise ValueError("leader_exit_release_file must be a non-empty string")
+    return os.path.abspath(raw_release_file)
+
+
+def _wait_for_descendant_leader_release(
+    proc: subprocess.Popen[bytes], release_file: str | None
+) -> None:
+    if release_file is None:
+        return
+    deadline = time.monotonic() + 5.0
+    while not os.path.exists(release_file):
+        if proc.poll() is not None:
+            raise RuntimeError(
+                f"scripted descendant exited before leader release: {proc.returncode}"
+            )
+        if time.monotonic() >= deadline:
+            proc.kill()
+            proc.wait(timeout=5.0)
+            raise RuntimeError("scripted descendant leader release timed out")
+        time.sleep(0.01)
+
+
 def _spawn_descendant(raw_spec: Any) -> None:
     """Spawn one bounded-test descendant without importing Taut internals."""
 
@@ -333,17 +395,20 @@ ignore_sigterm = sys.argv[3] == "1"
 max_seconds = float(sys.argv[4])
 stdout_payload = sys.argv[5].encode("utf-8")
 stdout_repeat = sys.argv[6] == "1"
+linger_after_stdout_close = sys.argv[7] == "1"
 if ignore_sigint:
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 if ignore_sigterm:
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
+if linger_after_stdout_close and hasattr(signal, "SIGHUP"):
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
 
 def write_payload():
     offset = 0
     while offset < len(stdout_payload):
         try:
             written = os.write(1, stdout_payload[offset:])
-        except BrokenPipeError:
+        except OSError:
             return False
         if written <= 0:
             return False
@@ -361,20 +426,22 @@ deadline = time.monotonic() + max_seconds
 while time.monotonic() < deadline:
     if stdout_payload and stdout_repeat:
         if not write_payload():
-            break
+            if not linger_after_stdout_close:
+                break
+            stdout_repeat = False
     else:
         time.sleep(min(1.0, deadline - time.monotonic()))
 """
     inherit_stdout, raw_stdout_payload, stdout_repeat = _descendant_stdout_spec(
         raw_spec
     )
-    max_seconds = float(raw_spec.get("max_seconds", 30.0))
-    if not 1.0 <= max_seconds <= 120.0:
-        raise ValueError("spawn_descendant.max_seconds must be in 1..120")
-    if raw_spec.get("leader_ignore_sigint", False):
-        signal.signal(signal.SIGINT, signal.SIG_IGN)
-    if raw_spec.get("leader_ignore_sigterm", False):
-        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    max_seconds, linger_after_stdout_close = _descendant_lifetime_spec(
+        raw_spec, stdout_repeat=stdout_repeat
+    )
+    leader_release_file = _descendant_leader_release_path(
+        raw_spec.get("leader_exit_release_file")
+    )
+    _configure_descendant_leader_signals(raw_spec)
     proc = subprocess.Popen(
         [
             sys.executable,
@@ -386,6 +453,7 @@ while time.monotonic() < deadline:
             str(max_seconds),
             raw_stdout_payload,
             "1" if stdout_repeat else "0",
+            "1" if linger_after_stdout_close else "0",
         ],
         stdin=subprocess.DEVNULL,
         stdout=None if inherit_stdout else subprocess.DEVNULL,
@@ -393,18 +461,9 @@ while time.monotonic() < deadline:
         close_fds=True,
         start_new_session=bool(raw_spec.get("escape_domain", False)),
     )
-    deadline = time.monotonic() + 5.0
-    while not os.path.exists(pid_file):
-        if proc.poll() is not None:
-            raise RuntimeError(
-                f"scripted descendant exited before PID publication: {proc.returncode}"
-            )
-        if time.monotonic() >= deadline:
-            proc.kill()
-            proc.wait(timeout=5.0)
-            raise RuntimeError("scripted descendant PID publication timed out")
-        time.sleep(0.01)
+    _wait_for_descendant_pid(proc, pid_file)
     _record({"event": "descendant", "child_pid": proc.pid})
+    _wait_for_descendant_leader_release(proc, leader_release_file)
     if "leader_exit_code" in raw_spec:
         raise SystemExit(int(raw_spec["leader_exit_code"]))
 

@@ -348,6 +348,12 @@ the provider's own pending question before consenting to a raw terminal
 takeover — the excerpt is display-only and answers happen inside the
 attach, never from Taut chrome.
 
+If a declined pre-readiness continuation loses its provider during
+orientation, the terminal outcome remains the readiness-abort diagnostic even
+when PTY master closure is observed just before the pump publishes generation
+death. This precedence is owned by Summon's typed internal adapter outcome; the
+TUI neither waits for pump timing nor rewrites errors.
+
 A confirmed request reserves terminal ownership for that exact worker across
 provider startup. Only it may post the later `TerminalLeaseRequest`; the UI
 handler then enters and remains inside `App.suspend()` and signals acquisition.

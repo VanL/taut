@@ -29,6 +29,7 @@ from taut_summon._adapter import (
     ActivityEvent,
     AdapterError,
     AdapterEvent,
+    AdapterExitedError,
     AdapterHandle,
     ExitEvent,
     UnknownAdapterError,
@@ -471,6 +472,7 @@ def test_pty_observes_leader_exit_while_descendant_continuously_writes(
     """[SUM-7.1]/[SUM-7.4] Busy PTY output cannot starve leader exit."""
 
     pid_file = tmp_path / "pty-busy-descendant.json"
+    leader_release_file = tmp_path / "pty-busy-leader-release"
     scenario_path = tmp_path / "pty-busy-domain-scenario.json"
     scenario_path.write_text(
         json.dumps(
@@ -482,6 +484,8 @@ def test_pty_observes_leader_exit_while_descendant_continuously_writes(
                             "inherit_stdout": True,
                             "stdout_payload": "x" * 2_000,
                             "stdout_repeat": True,
+                            "linger_after_stdout_close": True,
+                            "leader_exit_release_file": str(leader_release_file),
                             "leader_exit_code": 0,
                         }
                     }
@@ -504,6 +508,7 @@ def test_pty_observes_leader_exit_while_descendant_continuously_writes(
     try:
         pump = EventPump(handle)
         identity = _capture_process_identity(pid_file)
+        leader_release_file.touch()
 
         assert pump.drain_until_exit(timeout=2.0).returncode == 0
         assert _same_process(identity)
@@ -1404,6 +1409,34 @@ def test_inject_refuses_after_pty_close_publishes_closing() -> None:
         proc.release_wait.set()
         closer.join(timeout=2.0)
         child_socket.close()
+
+
+def test_inject_classifies_observed_master_close_as_terminal() -> None:
+    master_socket, child_socket = socket.socketpair()
+    proc = _ScheduledPtyProcess()
+    handle = _boundary_pty_handle(proc, master_socket.detach())
+    with handle._lifecycle_lock:
+        handle._close_master_unlocked()
+
+    with pytest.raises(AdapterExitedError, match="PTY master is closed"):
+        handle.inject("must not be delivered")
+
+    proc.returncode = 0
+    handle.close()
+    child_socket.close()
+
+
+def test_inject_classifies_observed_leader_exit_as_terminal() -> None:
+    master_socket, child_socket = socket.socketpair()
+    proc = _ScheduledPtyProcess()
+    handle = _boundary_pty_handle(proc, master_socket.detach())
+    proc.returncode = 0
+
+    with pytest.raises(AdapterExitedError, match="PTY child exited during write"):
+        handle.inject("must not be delivered")
+
+    handle.close()
+    child_socket.close()
 
 
 def test_queued_pty_inject_rechecks_retirement_under_serialization() -> None:

@@ -31,6 +31,7 @@ from taut_summon._adapter import (
     ActivityEvent,
     AdapterError,
     AdapterEvent,
+    AdapterExitedError,
     ExitEvent,
 )
 from taut_summon._process_domain import ProcessDomain, ProcessIO, spawn_process
@@ -659,7 +660,9 @@ class PtyHandle:
     def _write_all(self, data: bytes) -> None:  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-032] exception
         offset = 0
         with self._lifecycle_lock:
-            if self._retired or self._master_closed:
+            if self._master_closed:
+                raise AdapterExitedError("PTY master is closed")
+            if self._retired:
                 raise AdapterError("PTY master is closed")
             write_epoch = self._write_epoch
         with self._normal_writer_lock:
@@ -710,10 +713,12 @@ class PtyHandle:
     def _validate_write_unlocked(self, write_epoch: int) -> None:
         if write_epoch != self._write_epoch:
             raise AdapterError("PTY write interrupted")
-        if self._retired or self._master_closed:
+        if self._master_closed:
+            raise AdapterExitedError("PTY master is closed")
+        if self._retired:
             raise AdapterError("PTY master is closed")
         if self._domain.observe_leader_exit() is not None:
-            raise AdapterError("PTY child exited during write")
+            raise AdapterExitedError("PTY child exited during write")
 
     def _write_best_effort(self, data: bytes) -> None:
         try:

@@ -274,6 +274,7 @@ import sys
 import time
 
 mode = os.environ["TAUT_TEST_MCP_MODE"]
+time.sleep(float(os.environ.get("TAUT_TEST_MCP_STARTUP_DELAY", "0")))
 workspace = os.path.realpath(os.environ["TAUT_TEST_MCP_WORKSPACE"])
 member_id = os.environ["TAUT_TEST_MCP_MEMBER_ID"]
 member_name = os.environ["TAUT_TEST_MCP_MEMBER_NAME"]
@@ -1617,7 +1618,7 @@ def test_historical_mcp_case_installs_normally_and_bootstraps_isolated_selector(
     assert "taut-secret-selector" not in output
 
 
-def _drive_scripted_historical_mcp(
+def _start_scripted_historical_mcp(
     *,
     tmp_path: Path,
     wheel_matrix_module: ModuleType,
@@ -1625,7 +1626,8 @@ def _drive_scripted_historical_mcp(
     token: str = "taut-scripted-secret",
     stage_timeout: float = 1.0,
     shutdown_timeout: float = 1.0,
-) -> None:
+    startup_delay: float = 0.0,
+) -> tuple[Any, Path]:
     server = _write_scripted_mcp_server(tmp_path / f"server-{mode}.py")
     workspace = tmp_path / "workspace"
     workspace.mkdir(exist_ok=True)
@@ -1635,20 +1637,61 @@ def _drive_scripted_historical_mcp(
             "TAUT_TEST_MCP_MEMBER_ID": "m_scripted",
             "TAUT_TEST_MCP_MEMBER_NAME": "matrix-member",
             "TAUT_TEST_MCP_MODE": mode,
+            "TAUT_TEST_MCP_STARTUP_DELAY": str(startup_delay),
             "TAUT_TEST_MCP_WORKSPACE": str(workspace),
         }
     )
-    wheel_matrix_module._drive_historical_mcp_stdio(
+    driver = wheel_matrix_module._HistoricalMcpStdioDriver.start(
         command=(sys.executable, str(server)),
-        workspace=workspace,
         token=token,
-        member_id="m_scripted",
-        member_name="matrix-member",
         cwd=tmp_path,
         env=env,
         stage_timeout=stage_timeout,
         shutdown_timeout=shutdown_timeout,
     )
+    return driver, workspace
+
+
+def _drive_scripted_historical_mcp(
+    *,
+    tmp_path: Path,
+    wheel_matrix_module: ModuleType,
+    mode: str,
+    token: str = "taut-scripted-secret",
+    stage_timeout: float = 1.0,
+    shutdown_timeout: float = 1.0,
+) -> None:
+    driver, workspace = _start_scripted_historical_mcp(
+        tmp_path=tmp_path,
+        wheel_matrix_module=wheel_matrix_module,
+        mode=mode,
+        token=token,
+        stage_timeout=stage_timeout,
+        shutdown_timeout=shutdown_timeout,
+    )
+    try:
+        driver.initialize()
+        record, canonical = driver.attach(
+            workspace=workspace,
+            member_id="m_scripted",
+            member_name="matrix-member",
+        )
+        driver.assert_listed(record)
+        driver.detach(canonical)
+        driver.assert_empty()
+        driver.shutdown()
+        print(
+            json.dumps(
+                {
+                    "case": "historical_mcp_attach",
+                    "clean_shutdown": "ok",
+                    "status": "ok",
+                },
+                sort_keys=True,
+            )
+        )
+    finally:
+        driver.close()
 
 
 def test_historical_mcp_stdio_driver_fires_complete_success_lifecycle(
@@ -1701,28 +1744,60 @@ def test_historical_mcp_stdio_driver_fails_each_lifecycle_stage(
         )
 
 
-@pytest.mark.parametrize(
-    ("mode", "diagnostic"),
-    [
-        ("timeout-2", "attach_workspace timed out"),
-        ("shutdown-timeout", "clean_shutdown timed out"),
-    ],
-    ids=("request", "shutdown"),
-)
-def test_historical_mcp_stdio_driver_fires_bounded_timeouts(
+def test_historical_mcp_stdio_driver_fires_bounded_request_timeout(
     tmp_path: Path,
     wheel_matrix_module: ModuleType,
-    mode: str,
-    diagnostic: str,
 ) -> None:
-    with pytest.raises(wheel_matrix_module.WheelMatrixError, match=diagnostic):
-        _drive_scripted_historical_mcp(
-            tmp_path=tmp_path,
-            wheel_matrix_module=wheel_matrix_module,
-            mode=mode,
-            stage_timeout=0.05,
-            shutdown_timeout=0.05,
+    driver, workspace = _start_scripted_historical_mcp(
+        tmp_path=tmp_path,
+        wheel_matrix_module=wheel_matrix_module,
+        mode="timeout-2",
+        startup_delay=0.1,
+    )
+    try:
+        driver.initialize()
+        driver.stage_timeout = 0.05
+        with pytest.raises(
+            wheel_matrix_module.WheelMatrixError,
+            match="attach_workspace timed out",
+        ):
+            driver.attach(
+                workspace=workspace,
+                member_id="m_scripted",
+                member_name="matrix-member",
+            )
+    finally:
+        driver.close()
+
+
+def test_historical_mcp_stdio_driver_fires_bounded_shutdown_timeout(
+    tmp_path: Path,
+    wheel_matrix_module: ModuleType,
+) -> None:
+    driver, workspace = _start_scripted_historical_mcp(
+        tmp_path=tmp_path,
+        wheel_matrix_module=wheel_matrix_module,
+        mode="shutdown-timeout",
+        startup_delay=0.1,
+    )
+    try:
+        driver.initialize()
+        record, canonical = driver.attach(
+            workspace=workspace,
+            member_id="m_scripted",
+            member_name="matrix-member",
         )
+        driver.assert_listed(record)
+        driver.detach(canonical)
+        driver.assert_empty()
+        driver.shutdown_timeout = 0.05
+        with pytest.raises(
+            wheel_matrix_module.WheelMatrixError,
+            match="clean_shutdown timed out",
+        ):
+            driver.shutdown()
+    finally:
+        driver.close()
 
 
 def test_historical_mcp_stdio_driver_rejects_traceback_without_reprinting_it(

@@ -39,6 +39,10 @@ class AdapterError(Exception):
     """An adapter operation failed (spawn, inject, or stream translation)."""
 
 
+class AdapterExitedError(AdapterError):
+    """An adapter operation failed because its provider has already exited."""
+
+
 class UnknownAdapterError(AdapterError):
     """No adapter is registered under the requested provider name."""
 
