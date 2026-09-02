@@ -587,7 +587,7 @@ def test_discovered_taut_project_config_requires_every_storage_field(
     )
     monkeypatch.chdir(tmp_path)
 
-    with pytest.raises(ValueError, match=missing_field):
+    with pytest.raises(TautError, match=rf"^invalid \.taut\.toml: .*{missing_field}"):
         TautClient.init()
 
 
@@ -606,7 +606,7 @@ def test_discovered_taut_config_does_not_merge_storage_from_other_files(
     )
     monkeypatch.chdir(tmp_path)
 
-    with pytest.raises(ValueError, match="target"):
+    with pytest.raises(TautError, match=r"^invalid \.taut\.toml: .*target"):
         TautClient.init()
 
 
@@ -638,8 +638,14 @@ def test_terminal_only_project_config_does_not_define_storage(
     monkeypatch.chdir(tmp_path)
 
     assert escape_terminal_text("raw\x1b") == "raw\x1b"
-    with pytest.raises(ValueError, match="version"):
+    with pytest.raises(TautError) as caught:
         TautClient.init()
+    message = str(caught.value)
+    assert message.startswith("invalid .taut.toml: ")
+    assert ".broker.toml" not in message
+    assert "[terminal_text]" in message
+    for key in ("version", "backend", "target"):
+        assert key in message
 
 
 def test_explicit_missing_path_does_not_auto_create(tmp_path: Path) -> None:

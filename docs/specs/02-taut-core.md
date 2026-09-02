@@ -1945,9 +1945,11 @@ Taut's trust model is deliberately weak, and the documentation must say so
 plainly rather than imply otherwise:
 
 - Everyone who can open the file is root of the chat. `.taut.db` is
-  created with SimpleBroker's default 0600 permissions; any process that
-  can read/write it can read all history, post as anyone (`--as` requires
-  no proof), move cursors, and edit tables with sqlite3.
+  created with the process umask's default mode (typically 0644); taut
+  does not narrow it, and only the `taut system dump` output file is
+  created 0600. Any process that can read/write the database can read all
+  history, post as anyone (`--as` requires no proof), move cursors, and
+  edit tables with sqlite3.
 - Identity claims identify, they do not authenticate. Process evidence,
   continuity tokens, names, existing aliases, and `rejoin` make the common case
   frictionless and make attribution inspectable (`whoami --explain`, claims on

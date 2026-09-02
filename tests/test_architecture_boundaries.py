@@ -456,7 +456,7 @@ class _RuntimeImportVisitor(ast.NodeVisitor):
         (
             Path("taut/commands/_rendering.py"),
             {"taut", "taut._exceptions"},
-            {"simplebroker", "taut.client", "taut.search"},
+            {"simplebroker", "taut.client", "taut.search", "taut.terminal"},
         ),
         (
             Path("taut/commands/_protocol.py"),
@@ -653,6 +653,8 @@ def test_first_party_terminal_sink_inventory_is_explicit() -> None:
         ("taut/commands/_rendering.py", "emit_members", ".write"),
         ("taut/commands/_rendering.py", "write_human_line", ".write"),
         ("taut/commands/_rendering.py", "write_human_line", ".write"),
+        ("taut/commands/_rendering.py", "write_human_line_packaged_policy", ".write"),
+        ("taut/commands/_rendering.py", "write_human_line_packaged_policy", ".write"),
         (
             "taut/commands/_summon_compat.py",
             "MissingSummonCommand.run",

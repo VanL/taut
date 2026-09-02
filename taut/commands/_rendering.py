@@ -753,6 +753,19 @@ def write_human_line(stream: TextIO, body: str) -> None:
     stream.write("\n")
 
 
+def write_human_line_packaged_policy(stream: TextIO, body: str) -> None:
+    """Escape one record with the packaged policy only.
+
+    Used for diagnostics that must still be delivered when the project's own
+    terminal policy is the thing that failed.
+    """
+
+    from taut.terminal import escape_terminal_text_packaged
+
+    stream.write(escape_terminal_text_packaged(body))
+    stream.write("\n")
+
+
 def preflight_human_output_policy() -> None:
     """Validate the effective human-output policy before command side effects."""
 

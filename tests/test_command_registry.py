@@ -4472,3 +4472,77 @@ def test_registry_command_context_uses_one_persistent_session(
 
     assert result == 0, stderr.getvalue()
     assert connects <= 2, f"say opened {connects} SQLite connections"
+
+
+def test_registry_reports_the_real_error_when_terminal_policy_is_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A broken ``.taut.toml`` must not replace the command's own diagnostic.
+
+    In ``--json`` mode the human-output preflight does not run, so the command
+    executes and fails on its own terms; rendering that failure then trips
+    the terminal policy. Both facts reach stderr: the original error first,
+    escaped with the packaged policy, then the policy diagnostic.
+    """
+
+    from taut.commands._dispatch import dispatch
+    from taut.commands._registry import CommandRegistry
+
+    db_path = tmp_path / "chat.db"
+    _seed_channel(db_path, "van")
+    (tmp_path / ".taut.toml").write_text("[terminal_text\nx = 1\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    stdout = StringIO()
+    stderr = StringIO()
+
+    result = dispatch(
+        ["--db", str(db_path), "--as", "Nobody", "--json", "whoami"],
+        registry=CommandRegistry(entry_points=()),
+        stdin=StringIO(),
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+    assert result == 1
+    assert stdout.getvalue() == ""
+    assert stderr.getvalue().splitlines() == [
+        "member not found: Nobody",
+        "invalid .taut.toml: terminal output policy is unavailable",
+    ]
+
+
+def test_registry_names_taut_toml_for_a_presentation_only_project_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``[terminal_text]``-only file is not a project config; say so in Taut's words.
+
+    SimpleBroker validates the file it discovered and reports the failure
+    under its own default filename. Taut owns the diagnostic and must name
+    ``.taut.toml`` and the keys a complete project file needs.
+    """
+
+    from taut.commands._dispatch import dispatch
+    from taut.commands._registry import CommandRegistry
+
+    db_path = tmp_path / ".taut.db"
+    _seed_channel(db_path, "van")
+    (tmp_path / ".taut.toml").write_text(
+        "[terminal_text]\ninherit_defaults = true\n", encoding="utf-8"
+    )
+    monkeypatch.chdir(tmp_path)
+    stderr = StringIO()
+
+    result = dispatch(
+        ["--as", "van", "whoami"],
+        registry=CommandRegistry(entry_points=()),
+        stdin=StringIO(),
+        stdout=StringIO(),
+        stderr=stderr,
+    )
+
+    message = stderr.getvalue()
+    assert result == 1
+    assert message.startswith("invalid .taut.toml: ")
+    assert ".broker.toml" not in message
+    for key in ("version", "backend", "target"):
+        assert key in message

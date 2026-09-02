@@ -27,7 +27,11 @@ from simplebroker import (
 
 from taut._constants import MESSAGE_ID_RE, META_QUEUE_NAME, load_config
 from taut._exceptions import TautError
-from taut._maintenance import backend_install_hint_error, resolve_existing_target
+from taut._maintenance import (
+    backend_install_hint_error,
+    invalid_project_config_error,
+    resolve_existing_target,
+)
 from taut.client._models import DumpReport, LoadReport, PersistenceComponentReport
 from taut.state import DEBUG_CAPTURE_KEY, SqlSidecarTautState, dialect_for_taut_target
 
@@ -60,8 +64,10 @@ def _resolve_destination(
         return str(path), config
     try:
         return target_for_directory(Path.cwd(), config=config), config
-    except tomllib.TOMLDecodeError as exc:
-        raise TautError(f"invalid project configuration: {exc}") from exc
+    except (tomllib.TOMLDecodeError, ValueError) as exc:
+        raise invalid_project_config_error(
+            exc, str(config["BROKER_PROJECT_CONFIG_NAME"])
+        ) from exc
     except RuntimeError as exc:
         raise (backend_install_hint_error(exc) or TautError(str(exc))) from exc
 

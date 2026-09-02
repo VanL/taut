@@ -258,6 +258,7 @@ def test_cli_search_delegates_every_flag_once_with_interspersed_query_words() ->
         "db_path": "chat.db",
         "as_name": "van",
         "token": "continuity-token",
+        "persistent": True,
     }
     assert client.closed is True
     assert json.loads(out) == {

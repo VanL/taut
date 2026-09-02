@@ -31,6 +31,34 @@ def backend_install_hint_error(exc: RuntimeError) -> TautError | None:
     return None
 
 
+_PROJECT_CONFIG_SHAPE_HINT = (
+    "a project file needs version = 1, backend, and target; a file holding "
+    "only [terminal_text] is display policy, not project storage"
+)
+
+
+def invalid_project_config_error(
+    exc: tomllib.TOMLDecodeError | ValueError,
+    project_config_name: str,
+) -> TautError:
+    """Translate a project-config failure into Taut's own diagnostic.
+
+    SimpleBroker parses the file Taut selected but reports a syntax error
+    without the filename and a shape error under its own default name
+    (``.broker.toml``). A CLI diagnostic must name the file the user actually
+    wrote, and a file that fails the shape check because it carries only the
+    ``[terminal_text]`` table deserves to hear which keys are missing.
+    """
+
+    detail = str(exc).replace(".broker.toml", project_config_name)
+    detail = detail.removeprefix(f"{project_config_name} ")
+    if isinstance(exc, ValueError) and not isinstance(exc, tomllib.TOMLDecodeError):
+        lowered = detail.lower()
+        if "version" in lowered or "requires" in lowered:
+            detail = f"{detail}; {_PROJECT_CONFIG_SHAPE_HINT}"
+    return TautError(f"invalid {project_config_name}: {detail}")
+
+
 def resolve_existing_target(
     db_path: str | Path | None,
 ) -> tuple[BrokerTarget | str, ResolvedConfig]:
@@ -45,8 +73,10 @@ def resolve_existing_target(
         return str(path), config
     try:
         target = resolve_broker_target(Path.cwd(), config=config)
-    except tomllib.TOMLDecodeError as exc:
-        raise TautError(f"invalid project configuration: {exc}") from exc
+    except (tomllib.TOMLDecodeError, ValueError) as exc:
+        raise invalid_project_config_error(
+            exc, str(config["BROKER_PROJECT_CONFIG_NAME"])
+        ) from exc
     except RuntimeError as exc:
         raise (backend_install_hint_error(exc) or TautError(str(exc))) from exc
     if target is None:

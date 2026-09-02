@@ -773,9 +773,12 @@ the design. The exact boundary is [TAUT-9] in the
   inspectable (`whoami --explain`, claims on record) — not impossible to spoof.
   Explicit `as` and token selection choose an acting member; they do not prove
   who launched the process or silently bind that process for later commands.
-- **The boundary is storage access.** `.taut.db` is created `0600`. Want
-  another local user in the SQLite chat? That's a `chmod`/group decision you
-  make, not one taut manages. With Postgres, the boundary is who can reach and
+- **The boundary is storage access.** `.taut.db` is created with your
+  umask's default mode, typically `0644`; taut does not narrow it. Want to
+  keep another local user out of the SQLite chat, or let one in? That's a
+  `chmod`/group decision you make, not one taut manages. (The one file taut
+  does create `0600` is a `taut system dump` output, because it is a
+  portable copy of everything.) With Postgres, the boundary is who can reach and
   write the configured database/schema. Wider, same shape: storage access *is*
   membership.
 - **Summon widens what storage write access can cause.** A writer can inject

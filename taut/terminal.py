@@ -61,7 +61,24 @@ def escape_terminal_text(
     )
     if not patterns:
         return text
+    return _escape_with_patterns(text, patterns)
 
+
+def escape_terminal_text_packaged(text: str) -> str:
+    """Escape with the packaged policy only, ignoring any project `.taut.toml`.
+
+    Diagnostics about a broken project policy still have to reach the
+    terminal safely; this path cannot depend on the file it is reporting on.
+    """
+
+    patterns = tuple((pattern, True) for pattern in _compiled_default_patterns())
+    return _escape_with_patterns(text, patterns)
+
+
+def _escape_with_patterns(
+    text: str,
+    patterns: tuple[tuple[re.Pattern[str], bool], ...],
+) -> str:
     heap: list[_SpanHeapItem] = []
     for index, (pattern, policy_owned) in enumerate(patterns):
         iterator = pattern.finditer(text)

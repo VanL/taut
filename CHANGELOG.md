@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- A command's own failure is no longer hidden by a broken `.taut.toml`. When
+  rendering an execution error trips the terminal policy, stderr now carries
+  the original diagnostic first, escaped with the packaged policy, then the
+  policy failure, and the command exits 1. The human-output preflight for
+  ordinary commands is unchanged.
+
+- Project-file shape errors are reported in Taut's words. A `.taut.toml` that
+  SimpleBroker rejects for a missing `version`, `backend`, or `target` now
+  yields `invalid .taut.toml: ...` naming the file the user wrote instead of
+  SimpleBroker's default `.broker.toml`, and says that a file holding only
+  `[terminal_text]` is display policy, not project storage. The same
+  diagnostic applies to `init`, ordinary commands, and the actor-free
+  `system` commands.
+
+- README and the core spec no longer claim `.taut.db` is created `0600`. It
+  is created with the process umask's default mode and taut does not narrow
+  it; only the `taut system dump` output file is created `0600`.
+
 - Identity resolution is harder to fool and easier to recover. Infrastructure
   classification now consults every classification basename, so a Linux
   daemon that rewrites its argv[0] (`sshd: user@pts/0`, `tmux: server (...)`)

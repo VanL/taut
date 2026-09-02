@@ -29,7 +29,7 @@ from taut._exceptions import (
     TautError,
     UnrecognizedCallerError,
 )
-from taut._maintenance import backend_install_hint_error
+from taut._maintenance import backend_install_hint_error, invalid_project_config_error
 from taut._reactions import load_reaction_values
 from taut.state import (
     ChannelRenameRow,
@@ -45,17 +45,12 @@ from ._models import Member, Message
 
 
 def _raise_invalid_project_config(
-    exc: tomllib.TOMLDecodeError,
+    exc: tomllib.TOMLDecodeError | ValueError,
     project_config_name: str = PROJECT_CONFIG_NAME,
 ) -> NoReturn:
-    """Re-raise a project-config parse failure naming the offending file.
+    """Re-raise a project-config parse or shape failure naming the file."""
 
-    SimpleBroker's target resolution raises the raw ``TOMLDecodeError``
-    ("Invalid value (at line 1, column 12)") without saying which file it
-    was parsing; a CLI diagnostic must name the offending input.
-    """
-
-    raise TautError(f"invalid {project_config_name}: {exc}") from exc
+    raise invalid_project_config_error(exc, project_config_name) from exc
 
 
 def _json_dumps(value: Any) -> str:
@@ -313,7 +308,7 @@ class _ClientBase(ABC):
             return str(path)
         try:
             target = resolve_broker_target(Path.cwd(), config=self.config)
-        except tomllib.TOMLDecodeError as exc:
+        except (tomllib.TOMLDecodeError, ValueError) as exc:
             _raise_invalid_project_config(
                 exc,
                 str(self.config["BROKER_PROJECT_CONFIG_NAME"]),

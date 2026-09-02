@@ -101,13 +101,14 @@ def dispatch(
         if not isinstance(exc, _TerminalOutputPolicyError):
             raise
         error_stream = stderr if stderr is not None else sys.stderr
-        message = (
-            f"invalid {PROJECT_CONFIG_NAME}: terminal output policy is unavailable"
-            if exc.project_config_syntax
-            else str(exc)
-        )
-        error_stream.write(f"{message}\n")
+        error_stream.write(f"{_terminal_policy_failure_message(exc)}\n")
         return 1
+
+
+def _terminal_policy_failure_message(exc: RuntimeError) -> str:
+    if getattr(exc, "project_config_syntax", False):
+        return f"invalid {PROJECT_CONFIG_NAME}: terminal output policy is unavailable"
+    return str(exc)
 
 
 def _dispatch(
@@ -708,6 +709,10 @@ def _render_execution_error(
     if context.quiet:
         return code
     from taut._exceptions import UnrecognizedCallerError
+    from taut.commands._rendering import (
+        _TerminalOutputPolicyError,
+        write_human_line_packaged_policy,
+    )
 
     # Recovery hints are separate records; everything else is one record, so
     # a newline inside dynamic error text stays visible as `\n`.
@@ -716,8 +721,19 @@ def _render_execution_error(
         if isinstance(exc, UnrecognizedCallerError)
         else [_exception_message(exc)]
     )
-    for line in lines:
-        _write_human_line(context.stderr, line)
+    try:
+        for line in lines:
+            _write_human_line(context.stderr, line)
+    except _TerminalOutputPolicyError as policy_error:
+        # The command failed on its own terms and the project's terminal
+        # policy failed while reporting it. Deliver both, in that order, with
+        # the packaged policy, and let the config failure own the exit class.
+        for line in lines:
+            write_human_line_packaged_policy(context.stderr, line)
+        write_human_line_packaged_policy(
+            context.stderr, _terminal_policy_failure_message(policy_error)
+        )
+        return 1
     return code
 
 
