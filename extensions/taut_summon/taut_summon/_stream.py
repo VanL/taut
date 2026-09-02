@@ -16,9 +16,10 @@ claude-style stream-json over pipes; only the output translation differs.
 - ``events`` is single-consumer, translates each stdout line through the
   subclass's ``_parse_line``, and ends with exactly one ``ExitEvent`` after
   terminal leader status is observed. The domain retains the waitable leader
-  until whole-domain finalization. Unknown stream shapes are rejected loudly —
-  the ``AdapterEvent`` union is closed, and a quiet skip would hide
-  protocol drift.
+  until whole-domain finalization. The ``AdapterEvent`` union is closed:
+  a subclass either translates a line into one of its members, skips it
+  with a warning when the provider emitted a shape it does not know, or
+  raises ``AdapterError`` when a known event is malformed.
 
 Spec references:
 - docs/specs/04-summon.md [SUM-7.1], [SUM-5.4]
@@ -573,4 +574,4 @@ class StreamJsonHandle(ABC):
 
     @abstractmethod
     def _parse_line(self, line: str) -> AdapterEvent:
-        """Translate one stdout line; raise ``AdapterError`` on unknown shapes."""
+        """Translate one stdout line; raise ``AdapterError`` on malformed known events."""

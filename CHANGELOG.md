@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Summon's `claude-stream` adapter no longer treats a Claude Code event
+  family it does not know as harness death. Unknown top-level event types,
+  unknown `system` subtypes, and unknown assistant content blocks are logged
+  once per shape at warning level and skipped; `init` or `result` without a
+  session id, an assistant event without a content list, and malformed JSON
+  still raise `AdapterError`.
+
 - Core schema startup is now a read in the steady state. `ensure_schema`
   reads the stored version and load-guard rows in one ordinary session and
   returns, refuses the guard, or raises the version error from that read;

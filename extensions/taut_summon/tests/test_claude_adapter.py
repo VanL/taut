@@ -17,6 +17,7 @@ is skipped when it is absent (``requires_claude``).
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -80,9 +81,9 @@ def _replayer_handle(fixture: Path) -> ClaudeHandle:
     )
 
 
-def _raw_line_handle(tmp_path: Path, line: str) -> ClaudeHandle:
+def _raw_line_handle(tmp_path: Path, *lines: str) -> ClaudeHandle:
     path = tmp_path / "line.jsonl"
-    path.write_text(line + "\n", encoding="utf-8")
+    path.write_text("".join(line + "\n" for line in lines), encoding="utf-8")
     handle = _replayer_handle(path)
     # These parser-only cases need the child's buffered line, not a live
     # process. Establish natural exit before parsing so a deliberate protocol
@@ -239,15 +240,6 @@ def test_spawn_replaces_inherited_host_identity_in_real_stream_child(
     assert os.environ["TAUT_TOKEN"] == "host-token"
 
 
-def test_unknown_event_shape_is_rejected_loudly(tmp_path: Path) -> None:
-    handle = _raw_line_handle(tmp_path, '{"type": "mystery"}')
-    try:
-        with pytest.raises(AdapterError, match="mystery"):
-            list(handle.events())
-    finally:
-        handle.close()
-
-
 def test_assistant_thinking_block_is_activity(tmp_path: Path) -> None:
     # Shape synthesized from the Anthropic API content-block family (a
     # thinking block was not exercised by the recorded probe); the adapter
@@ -271,19 +263,196 @@ def test_assistant_thinking_block_is_activity(tmp_path: Path) -> None:
     assert events[0].description == "thinking"
 
 
-def test_assistant_event_without_known_blocks_is_loud(tmp_path: Path) -> None:
-    line = json.dumps(
+_RESULT_LINE = json.dumps({"type": "result", "session_id": "sess-after"})
+
+
+def _claude_warnings(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [
+        record
+        for record in caplog.records
+        if record.name == "taut_summon.claude" and record.levelno == logging.WARNING
+    ]
+
+
+def test_unknown_event_type_is_warned_once_and_skipped(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # A future Claude Code release adding an event family must not turn
+    # into a kill-and-respawn loop: the line is logged and dropped, and
+    # the pump continues to the next known event.
+    caplog.set_level(logging.WARNING, logger="taut_summon.claude")
+    handle = _raw_line_handle(
+        tmp_path,
+        '{"type": "mystery", "n": 1}',
+        '{"type": "mystery", "n": 2}',
+        _RESULT_LINE,
+    )
+    try:
+        events = list(handle.events())
+    finally:
+        handle.close()
+
+    assert isinstance(events[0], SessionEvent)
+    assert events[0].session_id == "sess-after"
+    assert isinstance(events[1], ExitEvent)
+    warnings = _claude_warnings(caplog)
+    assert len(warnings) == 1
+    assert "mystery" in warnings[0].getMessage()
+    assert '"n": 1' in warnings[0].getMessage()
+
+
+def test_unknown_shapes_warn_once_per_shape_per_handle(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.WARNING, logger="taut_summon.claude")
+    lines = ('{"type": "mystery"}', '{"type": "other"}', '{"type": "mystery"}')
+    for _ in range(2):
+        handle = _raw_line_handle(tmp_path, *lines, _RESULT_LINE)
+        try:
+            events = list(handle.events())
+        finally:
+            handle.close()
+        assert [type(event) for event in events] == [SessionEvent, ExitEvent]
+
+    # Two distinct shapes per handle, two handles: the once-per-shape
+    # memory is per adapter instance, not per process.
+    messages = [record.getMessage() for record in _claude_warnings(caplog)]
+    assert len(messages) == 4
+    assert sum("mystery" in message for message in messages) == 2
+    assert sum("other" in message for message in messages) == 2
+
+
+def test_unknown_shape_warning_excerpt_is_bounded(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.WARNING, logger="taut_summon.claude")
+    line = json.dumps({"type": "mystery", "blob": "x" * 1000})
+    handle = _raw_line_handle(tmp_path, line, _RESULT_LINE)
+    try:
+        events = list(handle.events())
+    finally:
+        handle.close()
+
+    assert [type(event) for event in events] == [SessionEvent, ExitEvent]
+    (warning,) = _claude_warnings(caplog)
+    message = warning.getMessage()
+    assert "x" * 1000 not in message
+    assert repr(line[:200]) in message
+
+
+def test_system_event_without_subtype_is_warned_and_skipped(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.WARNING, logger="taut_summon.claude")
+    handle = _raw_line_handle(
+        tmp_path,
+        '{"type": "system", "note": "no subtype"}',
+        '{"type": "system", "subtype": 7}',
+        '{"type": "system", "subtype": "init", "session_id": "sess-init"}',
+    )
+    try:
+        events = list(handle.events())
+    finally:
+        handle.close()
+
+    assert isinstance(events[0], SessionEvent)
+    assert events[0].session_id == "sess-init"
+    assert isinstance(events[1], ExitEvent)
+    messages = [record.getMessage() for record in _claude_warnings(caplog)]
+    assert len(messages) == 2
+    assert any("system" in message and "no subtype" in message for message in messages)
+    assert any(
+        "system" in message and '"subtype": 7' in message for message in messages
+    )
+
+
+def test_assistant_event_with_only_unknown_blocks_is_warned_and_skipped(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.WARNING, logger="taut_summon.claude")
+    unknown = json.dumps(
         {
             "type": "assistant",
             "message": {"role": "assistant", "content": [{"type": "wat"}]},
         }
     )
+    known = json.dumps(
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "after"}],
+            },
+        }
+    )
+    handle = _raw_line_handle(tmp_path, unknown, unknown, known)
+    try:
+        events = list(handle.events())
+    finally:
+        handle.close()
+
+    assert isinstance(events[0], AssistantTextEvent)
+    assert events[0].text == "after"
+    assert isinstance(events[1], ExitEvent)
+    (warning,) = _claude_warnings(caplog)
+    assert "wat" in warning.getMessage()
+    assert "assistant" in warning.getMessage()
+
+
+def test_assistant_event_with_mixed_blocks_yields_known_text(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.WARNING, logger="taut_summon.claude")
+    line = json.dumps(
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "wat"},
+                    {"type": "text", "text": "kept"},
+                    {"type": "wat"},
+                ],
+            },
+        }
+    )
     handle = _raw_line_handle(tmp_path, line)
     try:
-        with pytest.raises(AdapterError, match="assistant"):
+        events = list(handle.events())
+    finally:
+        handle.close()
+
+    assert isinstance(events[0], AssistantTextEvent)
+    assert events[0].text == "kept"
+    assert isinstance(events[1], ExitEvent)
+    (warning,) = _claude_warnings(caplog)
+    assert "wat" in warning.getMessage()
+
+
+@pytest.mark.parametrize(
+    ("line", "match"),
+    [
+        ('{"type": "system", "subtype": "init"}', "init event without a session id"),
+        ('{"type": "result"}', "result event without a session id"),
+        ('{"type": "assistant", "message": {}}', "assistant event without a content"),
+        ("not json {", "non-JSON line"),
+        ('["type", "system"]', "not an object"),
+    ],
+)
+def test_protocol_violations_on_known_events_stay_loud(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    line: str,
+    match: str,
+) -> None:
+    caplog.set_level(logging.WARNING, logger="taut_summon.claude")
+    handle = _raw_line_handle(tmp_path, line)
+    try:
+        with pytest.raises(AdapterError, match=match):
             list(handle.events())
     finally:
         handle.close()
+    assert _claude_warnings(caplog) == []
 
 
 @pytest.mark.requires_claude

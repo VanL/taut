@@ -44,9 +44,16 @@ Verified against the installed CLI (claude 2.1.201, 2026-07-07):
                                              ("thinking")
   ============================  ===========  ==========================
 
-  Anything outside these families raises a loud ``AdapterError`` — the
-  union is closed, and silently skipping an unknown shape would hide
-  protocol drift ([SUM-7.1]).
+  Shapes outside these families — an unknown top-level ``type``, a
+  ``system`` event without a string subtype, an ``assistant`` content
+  block of an unknown type — are logged at WARNING once per distinct
+  shape per handle (``taut_summon.claude``) and skipped, so a Claude
+  Code release that adds an event family degrades to a log line rather
+  than a driver respawn loop. An ``assistant`` event whose blocks are all
+  unknown yields nothing; a mix yields the known text. Protocol
+  violations on known events (``init``/``result`` without a session id,
+  ``assistant`` without a content list) and malformed JSON lines still
+  raise ``AdapterError`` ([SUM-7.1]).
 
 Spec references:
 - docs/specs/04-summon.md [SUM-7.1], [SUM-7.2], [SUM-7.3]
@@ -54,10 +61,11 @@ Spec references:
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, NoReturn
 
 from taut_summon._adapter import (
     ActivityEvent,
@@ -66,10 +74,16 @@ from taut_summon._adapter import (
     AssistantTextEvent,
     SessionEvent,
 )
-from taut_summon._process_domain import spawn_process
+from taut_summon._process_domain import ProcessDomain, ProcessIO, spawn_process
 from taut_summon._stream import StreamJsonHandle
 
+logger = logging.getLogger("taut_summon.claude")
+
 _CLAUDE_BIN = "claude"
+
+
+class _SkippedShape(Exception):
+    """A line ``_parse_line`` warned about and dropped; never leaves the handle."""
 
 
 class ClaudeAdapter:
@@ -131,6 +145,32 @@ class ClaudeAdapter:
 class ClaudeHandle(StreamJsonHandle):
     """Live Claude Code child; satisfies the ``AdapterHandle`` protocol."""
 
+    def __init__(
+        self,
+        proc: ProcessIO,
+        *,
+        domain: ProcessDomain,
+        session_id: str | None,
+    ) -> None:
+        super().__init__(proc, domain=domain, session_id=session_id)
+        self._warned_shapes: set[str] = set()
+
+    def _event_from_line(self, line: str) -> AdapterEvent | None:
+        try:
+            return super()._event_from_line(line)
+        except _SkippedShape:
+            return None
+
+    def _warn_unknown(self, shape: str, line: str) -> None:
+        if shape in self._warned_shapes:
+            return
+        self._warned_shapes.add(shape)
+        logger.warning("skipping unknown claude %s: %r", shape, line[:200])
+
+    def _skip(self, shape: str, line: str) -> NoReturn:
+        self._warn_unknown(shape, line)
+        raise _SkippedShape
+
     def _parse_line(self, line: str) -> AdapterEvent:
         payload = self._decode_object(line)
         kind = payload.get("type")
@@ -149,7 +189,7 @@ class ClaudeHandle(StreamJsonHandle):
             if isinstance(session_id, str) and session_id:
                 return SessionEvent(session_id=session_id)
             raise AdapterError(f"result event without a session id: {line[:200]!r}")
-        raise AdapterError(f"unknown claude event shape: {line[:200]!r}")
+        self._skip(f"event type {kind!r}", line)
 
     def _parse_system(self, payload: dict[str, Any], line: str) -> AdapterEvent:
         subtype = payload.get("subtype")
@@ -163,7 +203,7 @@ class ClaudeHandle(StreamJsonHandle):
             # peers: supervision telemetry from the harness's own
             # machinery, translated as liveness.
             return ActivityEvent(description=f"system:{subtype}")
-        raise AdapterError(f"system event without a subtype: {line[:200]!r}")
+        self._skip(f"system subtype {subtype!r}", line)
 
     def _parse_assistant(self, payload: dict[str, Any], line: str) -> AdapterEvent:
         message = payload.get("message")
@@ -173,6 +213,10 @@ class ClaudeHandle(StreamJsonHandle):
                 f"assistant event without a content list: {line[:200]!r}"
             )
         blocks = [block for block in content if isinstance(block, dict)]
+        for block in blocks:
+            block_type = block.get("type")
+            if block_type not in ("text", "tool_use", "thinking"):
+                self._warn_unknown(f"assistant content block {block_type!r}", line)
         texts = [
             str(block.get("text", ""))
             for block in blocks
@@ -189,6 +233,4 @@ class ClaudeHandle(StreamJsonHandle):
             return ActivityEvent(description=tools[0])
         if any(block.get("type") == "thinking" for block in blocks):
             return ActivityEvent(description="thinking")
-        raise AdapterError(
-            f"assistant event with no known content blocks: {line[:200]!r}"
-        )
+        raise _SkippedShape

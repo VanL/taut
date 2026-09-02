@@ -406,7 +406,15 @@ class ProviderAdapter(Protocol):
 (tool use — feeds presence, never posted), `session` (id updates),
 `exit`. There is **no summon-defined wire protocol**: the wire format is
 the provider's own streaming envelope (Claude Code `stream-json`, Codex
-JSONL). Adapters translate; they do not define.
+JSONL). Adapters translate; they do not define. A provider line the
+adapter does not recognize (a new top-level event type, a `system` event
+without a subtype, an `assistant` content block of an unknown type) is
+logged at WARNING once per distinct shape per handle and skipped, so a
+provider release that adds an event family degrades to a log line rather
+than a respawn loop; an `assistant` event whose blocks are all unknown
+yields nothing, a mix yields the known text. Malformed JSON and protocol
+violations on known events (`init` or `result` without a session id) stay
+`AdapterError`.
 
 Contract requirements on every adapter: `inject()` returns only after a
 flushed write and surfaces failures synchronously ([SUM-5.4]);
