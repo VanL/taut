@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 import pytest
+from _result_schemas import result_schema
 from jsonschema import ValidationError, validate
 
 from taut import Channel, NotFoundError, TautClient, Thread
@@ -18,7 +19,7 @@ def _tool(name: str) -> Any:
     ("tool_name", "read_only", "destructive", "idempotent", "open_world"),
     [
         ("channel_show", True, False, True, True),
-        ("channel_topic", False, True, False, True),
+        ("channel_topic", False, False, False, True),
     ],
 )
 def test_channel_tool_annotations(
@@ -130,9 +131,9 @@ def test_missing_channel_is_an_empty_channel_result(tool_name: str) -> None:
     assert result.records == ()
 
 
-def test_thread_output_schema_is_closed_and_kind_discriminated() -> None:
-    schema = _tool("list").output_schema
-    assert schema is not None
+def test_thread_result_schema_is_closed_and_kind_discriminated() -> None:
+    assert _tool("list").output_schema is None
+    schema = result_schema("thread")
 
     base = {
         "empty": False,

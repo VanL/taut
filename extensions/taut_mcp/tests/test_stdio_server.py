@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import IO, Any, cast
 
 import pytest
+from _result_schemas import result_schema, result_schema_for_tool
 from jsonschema import validate
 from mcp import ClientSession, types
 from mcp.client import Client
@@ -543,10 +544,11 @@ def test_modern_discovery_lazy_identity_and_subscription_share_one_server(
                 },
             ]
             search_tool = next(tool for tool in TOOLS if tool.name == "search")
-            assert search_tool.output_schema is not None
+            assert search_tool.output_schema is None
+            search_schema = result_schema("search_hit")
             validate(
                 instance=searched.structured_content,
-                schema=search_tool.output_schema,
+                schema=search_schema,
             )
             assert isinstance(searched.content[0], types.TextContent)
             assert searched.content[0].text == json.dumps(
@@ -572,7 +574,7 @@ def test_modern_discovery_lazy_identity_and_subscription_share_one_server(
             ]
             validate(
                 instance=unicode_result.structured_content,
-                schema=search_tool.output_schema,
+                schema=search_schema,
             )
 
             empty_search = await client.call_tool(
@@ -594,7 +596,7 @@ def test_modern_discovery_lazy_identity_and_subscription_share_one_server(
             }
             validate(
                 instance=empty_search.structured_content,
-                schema=search_tool.output_schema,
+                schema=search_schema,
             )
             assert snapshot() == before_search
             observer.close()
@@ -1476,7 +1478,11 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
         ):
             await session.initialize()
             listed_tools = await session.list_tools()
-            schemas = {tool.name: tool.output_schema for tool in listed_tools.tools}
+            assert all(tool.output_schema is None for tool in listed_tools.tools)
+            schemas = {
+                tool.name: result_schema_for_tool(tool.name)
+                for tool in listed_tools.tools
+            }
             attached = await session.call_tool(
                 "attach_workspace",
                 {"workspace": str(workspace), "token": member.token},

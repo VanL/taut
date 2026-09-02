@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- The MCP `tools/list` manifest no longer carries `outputSchema` (about
+  80 KB down to about 33 KB serialized); the result contract is proven by
+  tests against real results instead. Tool annotations now follow MCP's
+  meaning: `readOnlyHint=true` for `list`, `who`, `whoami`, `log`, `search`,
+  `channel_show`, and `list_workspaces`; `destructiveHint=true` only for
+  `message_delete` and `leave`; every other tool sets it false explicitly.
+
 - Summon's `claude-stream` adapter no longer treats a Claude Code event
   family it does not know as harness death. Unknown top-level event types,
   unknown `system` subtypes, and unknown assistant content blocks are logged

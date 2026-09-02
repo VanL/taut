@@ -662,12 +662,27 @@ MCP identifiers for nested CLI operations use noun-first underscore form.
 `message_delete`, and `message_react` replace the former verb-first or generic
 identifiers one-for-one. The old identifiers are not aliases and do not appear
 in discovery. This normalization does not change the fixed 21-tool count,
-input/output schemas, annotations, dispatch targets, or domain behavior.
+input schemas, annotations, dispatch targets, or domain behavior.
 
 Tool descriptions and MCP annotations are normative agent-facing contract,
 not documentation added after implementation. Descriptions lead with state
 effects. Annotations use the MCP hint fields and remain hints:
 clients must not treat them as an authorization or enforcement boundary.
+Hosts commonly key auto-approval off `readOnlyHint` and `destructiveHint`, so
+both follow one rule. `readOnlyHint=true` marks a tool that writes no Taut
+state a caller would need to approve: `whoami`, `who`, `list`, `log`,
+`search`, `channel_show`, and `list_workspaces`. Resolving the existing member
+for `list`, `who`, and `whoami` may refresh that member's activity timestamp,
+and `search` may reconcile disposable derived index state; both are presence
+or cache bookkeeping rather than participant-visible writes, and the
+descriptions still disclose them. `message_show` and `read` advance a cursor,
+so they are not read-only. `destructiveHint=true` marks only `message_delete`
+and `leave`, the two tools whose effect is removal. Every other non-read-only
+tool sets `destructiveHint=false` explicitly because MCP treats an omitted
+`destructiveHint` as true; cursor advances, notification claims, and
+replacement writes such as `set_name`, `channel_topic`, and `channel_rename`
+are disclosed by description and structured guidance, not by the destructive
+flag. Read-only tools set `idempotentHint=true`.
 CLI-shaped tools whose domain includes externally mutable participant-shared
 Taut state set `openWorldHint=true`. The three process-lifecycle tools set
 it false because their tool-level effects are process-local; attachment
@@ -678,26 +693,26 @@ hint.
 | Tool | Exact description | `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
 |------|-------------------|----------------|-------------------|------------------|-----------------|
 | `attach_workspace` | Eagerly validate and retain one local Taut workspace with an existing continuity token. Reads project and member identity without touching member activity; starts notification observation and creates no Taut project or member. | false | false | true | false |
-| `detach_workspace` | Stop and remove this process's resident workspace owner. Deletes no Taut project, member, message, or identity data. | false | true | true | false |
+| `detach_workspace` | Stop and remove this process's resident workspace owner. Deletes no Taut project, member, message, or identity data. | false | false | true | false |
 | `list_workspaces` | List canonical workspaces and statuses currently resident in this server process. Reads only process-local cached state. | true | false | true | false |
 | `join` | Join or create a Taut channel. Writes membership state and a channel notice. | false | false | false | true |
 | `leave` | Leave a Taut channel or sub-thread. Removes membership and writes a notice. | false | true | false | true |
 | `channel_show` | Return current metadata for one registered top-level Taut channel. Reads only shared registry state and does not resolve identity, touch activity, inspect a broker queue, or move a cursor. | true | false | true | true |
-| `channel_topic` | Set or clear one registered top-level Taut channel's topic. Requires the attached member's current channel membership; a changed value replaces shared topic state and updates member activity, while an identical value is a no-op. | false | true | false | true |
-| `set_name` | Change the attached member's Taut display name. Replaces identity-routing state for that member. | false | true | false | true |
+| `channel_topic` | Set or clear one registered top-level Taut channel's topic. Requires the attached member's current channel membership; a changed value replaces shared topic state and updates member activity, while an identical value is a no-op. | false | false | false | true |
+| `set_name` | Change the attached member's Taut display name. Replaces identity-routing state for that member. | false | false | false | true |
 | `say` | Post a new Taut message to a channel, sub-thread, person-addressed direct message, or an existing direct-message conversation. `@name-or-alias` may create a DM; exact `dm.d_*` requires an existing actor-accessible conversation and never creates or heals one. | false | false | false | true |
 | `reply` | Post a new reply under a top-level channel message. May create the reply sub-thread and membership. | false | false | false | true |
-| `message_show` | Return one exact full-id message from this member's current chat memberships, then advance that thread's high-water cursor through the returned id. This may mark unseen intervening history seen. It never joins a thread; use `log` for cursor-neutral known-channel or sub-thread inspection. | false | true | false | true |
+| `message_show` | Return one exact full-id message from this member's current chat memberships, then advance that thread's high-water cursor through the returned id. This may mark unseen intervening history seen. It never joins a thread; use `log` for cursor-neutral known-channel or sub-thread inspection. | false | false | false | true |
 | `message_delete` | Physically and irreversibly delete one exact ordinary message authored by this member, including after leaving its thread. It does not cascade to notifications, sub-threads, memberships, cursors, or thread registry state and is not recall. | false | true | false | true |
-| `message_react` | Send one configured reaction to the current audience of an exact ordinary message, excluding this member. Validates against the workspace's attachment-time reaction vocabulary, advances this member's high-water cursor through the target, then attempts one atomic best-effort notification broadcast to every requested inbox. Repeating may deliver duplicates. | false | true | false | true |
-| `read` | Return oldest unread messages and advance each selected cursor through its returned page. `thread` may select a channel, subthread, `@name-or-alias` DM, or stable `dm.d_*` conversation. Omit it for all joined chat threads. | false | true | false | true |
-| `inbox` | Claim and return notification pointers from this member's inbox. This consumes the pointers; source chat history is not changed by inbox but may already be author-deleted. | false | true | false | true |
+| `message_react` | Send one configured reaction to the current audience of an exact ordinary message, excluding this member. Validates against the workspace's attachment-time reaction vocabulary, advances this member's high-water cursor through the target, then attempts one atomic best-effort notification broadcast to every requested inbox. Repeating may deliver duplicates. | false | false | false | true |
+| `read` | Return oldest unread messages and advance each selected cursor through its returned page. `thread` may select a channel, subthread, `@name-or-alias` DM, or stable `dm.d_*` conversation. Omit it for all joined chat threads. | false | false | false | true |
+| `inbox` | Claim and return notification pointers from this member's inbox. This consumes the pointers; source chat history is not changed by inbox but may already be author-deleted. | false | false | false | true |
 | `log` | Inspect cursor-neutral history for a channel, subthread, or existing actor-accessible DM selected by `@name-or-alias` or stable `dm.d_*` handle. | true | false | true | true |
-| `search` | Search actor-visible Taut history without moving chat cursors, claiming notifications, or touching member activity. The call may reconcile disposable derived index state; `reindex=true` rebuilds it. Backend tokenization and ranking may differ. | false | false | true | true |
-| `list` | List ordinary joined/unread threads, every registered thread, or every valid actor-accessible DM. `all` and `dms` are mutually exclusive. Resolving the existing member for actor-scoped list modes may update activity. | false | false | false | true |
-| `channel_rename` | Rename a Taut channel and its sub-threads. Replaces existing thread addresses. | false | true | false | true |
-| `who` | List Taut members or members of one thread. Resolving the existing member updates the caller's activity timestamp; it does not change the member anchor, token fingerprint, or computed presence. | false | false | false | true |
-| `whoami` | Return the member bound to this workspace attachment. Resolving the existing member updates its activity timestamp; it does not change the member anchor, token fingerprint, or computed presence. | false | false | false | true |
+| `search` | Search actor-visible Taut history without moving chat cursors, claiming notifications, or touching member activity. The call may reconcile disposable derived index state; `reindex=true` rebuilds it. Backend tokenization and ranking may differ. | true | false | true | true |
+| `list` | List ordinary joined/unread threads, every registered thread, or every valid actor-accessible DM. `all` and `dms` are mutually exclusive. Resolving the existing member for actor-scoped list modes may update activity. | true | false | true | true |
+| `channel_rename` | Rename a Taut channel and its sub-threads. Replaces existing thread addresses. | false | false | false | true |
+| `who` | List Taut members or members of one thread. Resolving the existing member updates the caller's activity timestamp; it does not change the member anchor, token fingerprint, or computed presence. | true | false | true | true |
+| `whoami` | Return the member bound to this workspace attachment. Resolving the existing member updates its activity timestamp; it does not change the member anchor, token fingerprint, or computed presence. | true | false | true | true |
 
 `init`, `watch`, `rejoin`, `summon`, `dismiss`, extension-discovered verbs,
 and future CLI verbs are not registered automatically. `init` and identity
@@ -739,18 +754,23 @@ admission slot prevents two concurrent MCP commands for one attachment;
 external Taut clients may still race, and the MCP layer neither merges nor
 retries their operations beyond the core monotonic-cursor contract.
 `read` advances membership cursors only through returned records and never
-deletes message history. Its `destructiveHint=true` describes that
-non-additive cursor-state change, not deletion of message bodies.
-`message_show` has the same non-additive high-water effect for one exact
+deletes message history. That cursor-state change is why `read` is not
+`readOnlyHint=true`; it sets `destructiveHint=false` because nothing is
+removed, and its description plus the structured cursor guidance disclose the
+consumption so a host that pre-approves non-destructive tools still shows the
+agent the effect. `message_show` has the same high-water effect for one exact
 current-membership record. `message_react` has that cursor effect plus
 best-effort notification writes. `message_delete` is the only tool here that
-physically removes a chat row.
+physically removes a chat row and the only message tool with
+`destructiveHint=true`.
 
 `search` keeps `idempotentHint=true`: repeated calls converge the same
 disposable projection for the then-current source state and do not compound
 an authoritative effect. Concurrent source changes may still change the
-returned records. It deliberately keeps `readOnlyHint=false` because ordinary
-search may reconcile derived index state and `reindex=true` rebuilds it.
+returned records. It sets `readOnlyHint=true`: ordinary search may reconcile
+derived index state and `reindex=true` rebuilds it, but that index is a
+disposable projection of authoritative history, not participant-visible Taut
+state, and the description still discloses the reconciliation.
 Search creates no chat message and no search-result-specific resource update.
 It retains the existing post-command observational notification refresh, which
 may publish an independently changed inbox snapshot.
@@ -942,17 +962,22 @@ process-restart case in [MCP-11].
 
 ## 6. Tool Results and Errors [MCP-6]
 
-Successful tools return `structuredContent` conforming to a declared output
-schema and a text content block containing the same result as canonical JSON
-for clients that do not consume structured output. The common top-level
-object is
+Successful tools return `structuredContent` conforming to the fixed result
+envelope and record shapes below, and a text content block containing the
+same result as canonical JSON for clients that do not consume structured
+output. The manifest carries input schemas only: `tools/list` omits
+`outputSchema` because hosts do not show it to the model, it serves only
+optional client-side validation, and it accounted for more than half of the
+serialized manifest. The result contract is normative here and is enforced by
+validating real tool results against closed result schemas in the test suite.
+The common top-level object is
 `{ "empty": bool, "guidance": array, "record_type": string, "records": array,
 "warnings": array, "workspace": string or null }`. `workspace` is the
 canonical selected path for a scoped result and null only for
 `list_workspaces` or a successful empty missing-workspace detach, where no
-canonical selection exists. Each tool declares its own output schema with a fixed
-`record_type` and the corresponding [TAUT-8.2] record schema or the MCP-owned
-workspace lifecycle schema:
+canonical selection exists. Each tool returns a fixed `record_type` with the
+corresponding [TAUT-8.2] record shape or the MCP-owned workspace lifecycle
+record:
 
 | Tools | `record_type` | Record shape |
 |-------|---------------|--------------|
@@ -972,14 +997,14 @@ nullable; all four topic fields are null when no topic exists. The existing
 `thread` record is a closed discriminated `oneOf`: the `kind: "channel"`
 branch requires `topic` and forbids `members`; the `kind: "dm"` branch
 requires `members` and forbids `topic`; and the `kind: "subthread"` branch
-forbids both. Schema snapshots prove both `list` and `channel_rename` channel
-records.
+forbids both. Result-schema tests validate both `list` and `channel_rename`
+channel records.
 
 Every non-null record field in [TAUT-3.5]'s timestamp domain is an exact
 19-digit ASCII decimal string in both `structuredContent` and canonical text.
 This includes `ts`, `message_ts`, `last_active_ts`, `topic_updated_ts`, and
-`last_ts`; the three nullable fields retain JSON null. Their output schemas use
-`type: "string"` with `pattern: ^[0-9]{19}$`. `audience_count` and unrelated
+`last_ts`; the three nullable fields retain JSON null. The result contract
+pins them as `type: "string"` with `pattern: ^[0-9]{19}$`. `audience_count` and unrelated
 counts remain integers. The command adapter applies the public
 `simplebroker.format_message_id` helper to explicit fields while the public
 Python objects and backend state stay integer-valued.

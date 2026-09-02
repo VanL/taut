@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from _result_schemas import result_schema, result_schema_for_tool
 from jsonschema import ValidationError, validate
 from simplebroker import BrokerTarget, Queue
 from tests.helpers.eventually import async_eventually
@@ -200,13 +201,7 @@ def _assert_result(
     assert payload["empty"] is (not payload["records"])
     assert payload["guidance"] == ([] if guidance is None else guidance)
     assert payload["warnings"] == []
-    schema = next(
-        tool.output_schema
-        for tool in TOOLS
-        if tool.output_schema is not None
-        and tool.output_schema["properties"]["record_type"].get("const") == record_type
-    )
-    validate(instance=payload, schema=schema)
+    validate(instance=payload, schema=result_schema(record_type))
 
 
 @pytest.mark.parametrize(
@@ -2977,8 +2972,8 @@ def test_activity_writing_tools_do_not_change_bound_identity_or_presence(
     asyncio.run(scenario())
 
 
-def test_every_tool_declares_a_closed_common_output_schema() -> None:
-    """[MCP-6] Structured results are declared before any tool is callable."""
+def test_manifest_omits_output_schema_and_results_stay_closed() -> None:
+    """[MCP-5]/[MCP-6] The manifest carries input schemas only; result shapes stay closed."""
 
     expected_record_types = {
         "attach_workspace": "workspace",
@@ -3005,8 +3000,9 @@ def test_every_tool_declares_a_closed_common_output_schema() -> None:
     }
     assert {tool.name for tool in TOOLS} == set(expected_record_types)
     for tool in TOOLS:
-        schema = tool.output_schema
-        assert schema is not None
+        assert tool.output_schema is None
+        assert "outputSchema" not in tool.model_dump(by_alias=True, exclude_none=True)
+        schema = result_schema(expected_record_types[tool.name])
         assert schema["additionalProperties"] is False
         assert (
             schema["properties"]["record_type"]["const"]
@@ -3022,10 +3018,7 @@ def test_every_tool_declares_a_closed_common_output_schema() -> None:
         else:
             assert record_schema["additionalProperties"] is False
 
-    deletion_schema = next(
-        tool.output_schema for tool in TOOLS if tool.name == "message_delete"
-    )
-    assert deletion_schema is not None
+    deletion_schema = result_schema_for_tool("message_delete")
     assert deletion_schema["properties"]["records"]["items"] == {
         "additionalProperties": False,
         "properties": {
@@ -3046,10 +3039,7 @@ def test_every_tool_declares_a_closed_common_output_schema() -> None:
         "required": ["thread", "ts", "deleted"],
         "type": "object",
     }
-    reaction_schema = next(
-        tool.output_schema for tool in TOOLS if tool.name == "message_react"
-    )
-    assert reaction_schema is not None
+    reaction_schema = result_schema_for_tool("message_react")
     assert reaction_schema["properties"]["records"]["items"] == {
         "additionalProperties": False,
         "properties": {
@@ -3078,10 +3068,7 @@ def test_every_tool_declares_a_closed_common_output_schema() -> None:
         "required": ["thread", "message_ts", "reaction", "audience_count"],
         "type": "object",
     }
-    notification_schema = next(
-        tool.output_schema for tool in TOOLS if tool.name == "inbox"
-    )
-    assert notification_schema is not None
+    notification_schema = result_schema_for_tool("inbox")
     assert notification_schema["properties"]["records"]["items"]["properties"][
         "reaction"
     ] == {
@@ -3090,11 +3077,10 @@ def test_every_tool_declares_a_closed_common_output_schema() -> None:
     }
 
 
-def test_output_schemas_require_canonical_string_timestamps() -> None:
+def test_result_schemas_require_canonical_string_timestamps() -> None:
     schemas = {
-        tool.name: tool.output_schema["properties"]["records"]["items"]
+        tool.name: result_schema_for_tool(tool.name)["properties"]["records"]["items"]
         for tool in TOOLS
-        if tool.output_schema is not None
     }
     canonical = {"pattern": r"^[0-9]{19}$", "type": "string"}
 
@@ -3187,7 +3173,7 @@ def test_exact_message_tool_manifest_contract(tool_name: str) -> None:
         exclude_none=True,
         by_alias=True,
     ) == {
-        "destructiveHint": True,
+        "destructiveHint": tool_name == "message_delete",
         "idempotentHint": False,
         "openWorldHint": True,
         "readOnlyHint": False,
@@ -3258,7 +3244,7 @@ def test_react_to_message_manifest_contract_has_no_static_enum() -> None:
         exclude_none=True,
         by_alias=True,
     ) == {
-        "destructiveHint": True,
+        "destructiveHint": False,
         "idempotentHint": False,
         "openWorldHint": True,
         "readOnlyHint": False,
@@ -3328,12 +3314,13 @@ def test_search_manifest_and_result_family_are_exact() -> None:
         "destructiveHint": False,
         "idempotentHint": True,
         "openWorldHint": True,
-        "readOnlyHint": False,
+        "readOnlyHint": True,
     }
 
-    assert tool.output_schema is not None
-    assert tool.output_schema["properties"]["record_type"]["const"] == "search_hit"
-    branches = tool.output_schema["properties"]["records"]["items"]["oneOf"]
+    assert tool.output_schema is None
+    schema = result_schema("search_hit")
+    assert schema["properties"]["record_type"]["const"] == "search_hit"
+    branches = schema["properties"]["records"]["items"]["oneOf"]
     assert [branch["properties"]["thread_kind"]["const"] for branch in branches] == [
         "channel",
         "subthread",
@@ -3449,6 +3436,68 @@ def test_search_schema_rejects_malformed_calls(arguments: dict[str, object]) -> 
         validate(instance=arguments, schema=tool.input_schema)
 
 
+def test_tool_annotations_match_exact_mcp5_table() -> None:
+    """[MCP-5] Every tool's four hints are literal; hosts key auto-approval off them."""
+
+    expected = {
+        "attach_workspace": (False, False, True, False),
+        "detach_workspace": (False, False, True, False),
+        "list_workspaces": (True, False, True, False),
+        "join": (False, False, False, True),
+        "leave": (False, True, False, True),
+        "channel_show": (True, False, True, True),
+        "channel_topic": (False, False, False, True),
+        "set_name": (False, False, False, True),
+        "say": (False, False, False, True),
+        "reply": (False, False, False, True),
+        "message_show": (False, False, False, True),
+        "message_delete": (False, True, False, True),
+        "message_react": (False, False, False, True),
+        "read": (False, False, False, True),
+        "inbox": (False, False, False, True),
+        "log": (True, False, True, True),
+        "search": (True, False, True, True),
+        "list": (True, False, True, True),
+        "channel_rename": (False, False, False, True),
+        "who": (True, False, True, True),
+        "whoami": (True, False, True, True),
+    }
+    actual = {}
+    for tool in TOOLS:
+        assert tool.annotations is not None
+        hints = tool.annotations.model_dump(
+            mode="json",
+            exclude_none=True,
+            by_alias=True,
+        )
+        assert set(hints) == {
+            "readOnlyHint",
+            "destructiveHint",
+            "idempotentHint",
+            "openWorldHint",
+        }
+        actual[tool.name] = (
+            hints["readOnlyHint"],
+            hints["destructiveHint"],
+            hints["idempotentHint"],
+            hints["openWorldHint"],
+        )
+    assert actual == expected
+    assert {name for name, hints in expected.items() if hints[1]} == {
+        "message_delete",
+        "leave",
+    }
+    assert {name for name, hints in expected.items() if hints[0]} == {
+        "whoami",
+        "who",
+        "list",
+        "log",
+        "search",
+        "channel_show",
+        "list_workspaces",
+    }
+
+
 def test_exact_tool_manifest_snapshot() -> None:
     """[MCP-5]/[MCP-12] Pin every agent-facing manifest contract field."""
 
@@ -3466,7 +3515,6 @@ def test_exact_tool_manifest_snapshot() -> None:
             "description": tool.description,
             "inputSchema": tool.input_schema,
             "name": tool.name,
-            "outputSchema": tool.output_schema,
         }
         for tool in TOOLS
     ]
@@ -3477,7 +3525,7 @@ def test_exact_tool_manifest_snapshot() -> None:
         separators=(",", ":"),
     ).encode()
     assert hashlib.sha256(encoded).hexdigest() == (
-        "a9ec57eb58af8f0af6cdfaa858b39210c029cdb7e8fe562d9599dff8f557a625"
+        "56acef11c9afc46946f07f5d38a1b8db7e82cd37db7ae9f1fe882841d49706cf"
     )
 
     def assert_property_descriptions(schema: dict[str, object]) -> None:
@@ -3494,8 +3542,7 @@ def test_exact_tool_manifest_snapshot() -> None:
     for tool in TOOLS:
         assert tool.description
         assert_property_descriptions(tool.input_schema)
-        assert tool.output_schema is not None
-        assert_property_descriptions(tool.output_schema)
+        assert tool.output_schema is None
 
 
 def test_manifest_property_teaching_matches_exact_mcp5_table() -> None:
