@@ -248,11 +248,7 @@ class _ClientBase(ABC):
 
         from taut.search._jobs import PENDING_QUEUE_NAME, encode_message_job
 
-        queue = Queue(
-            PENDING_QUEUE_NAME,
-            db_path=self.target,
-            config=self.config,
-        )
+        queue = self.queue(PENDING_QUEUE_NAME)
         try:
             queue.write(encode_message_job(message_ts=message_ts, thread=thread))
         except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-082] exception
@@ -260,7 +256,7 @@ class _ClientBase(ABC):
                 f"search invalidation enqueue failed for {thread}/{message_ts}: {exc}"
             )
         finally:
-            queue.close()
+            self._release_if_ephemeral(queue)
 
     def _enqueue_search_thread_rename(
         self,
@@ -271,7 +267,7 @@ class _ClientBase(ABC):
     ) -> None:
         from taut.search._jobs import PENDING_QUEUE_NAME, encode_thread_rename_job
 
-        queue = Queue(PENDING_QUEUE_NAME, db_path=self.target, config=self.config)
+        queue = self.queue(PENDING_QUEUE_NAME)
         try:
             queue.write(encode_thread_rename_job(old=old, new=new, affected=affected))
         except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-082] exception
@@ -279,6 +275,17 @@ class _ClientBase(ABC):
                 f"search rename invalidation enqueue failed for {old} -> {new}: {exc}"
             )
         finally:
+            self._release_if_ephemeral(queue)
+
+    def _release_if_ephemeral(self, queue: Queue) -> None:
+        """Close a one-shot handle; cached persistent handles stay open.
+
+        ``queue()`` returns a cached handle on a persistent client, and
+        ``close()`` owns that cache, so closing it here would tear down a
+        session the next call expects to reuse.
+        """
+
+        if not self._persistent:
             queue.close()
 
     def _resolve_target(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-046] exception

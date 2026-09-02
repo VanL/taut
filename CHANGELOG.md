@@ -11,6 +11,16 @@
   holding SQLite's write lock or a Postgres initializer holding the schema
   lock. Fresh installation and load-guard refusal are unchanged.
 
+- The CLI command context now constructs its one-command `TautClient` with
+  `persistent=True`, so state and queue calls within a command share one
+  broker session instead of bootstrapping a fresh SQLite connection per call.
+  The search invalidation enqueue on `say`, `reply`, `delete`, and channel
+  rename now uses the client's own queue handle as well, so a persistent
+  client releases nothing per write and an ephemeral one still closes its
+  one-shot handle. Measured `taut say` drops from 12 connections to 1 and
+  from about 12 ms to 3 ms of client work. The dispatcher's existing
+  `finally` still closes the client, so no handle outlives the command.
+
 ## 0.9.6 - 2026-09-01
 
 - Kept TUI search-result jumps anchored to the exact selected message when a

@@ -177,10 +177,15 @@ class CommandContext:
                 from taut.client import TautClient
 
                 factory = TautClient
+            # The context owns this client for exactly one command and closes
+            # it in the dispatcher's ``finally``, so the client may hold its
+            # persistent broker session for that lifetime instead of
+            # bootstrapping a fresh connection for every sidecar call.
             self._client_instance = factory(
                 db_path=self.db_path,
                 as_name=self.as_name,
                 token=self.continuity_token,
+                persistent=True,
             )
         return self._client_instance
 

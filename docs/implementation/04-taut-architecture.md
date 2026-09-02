@@ -754,8 +754,12 @@ watcher-owned runtime has a separate persistent metadata Queue and state
 adapter, so closing the source client cannot invalidate the live watcher and
 closing the watcher cannot close the source client. It closes removed
 membership handles with `Queue.close()` and closes all owned handles on the
-drive owner at watcher shutdown. One-shot
-CLI/client paths stay non-persistent. Taut does not add a retry classifier
+drive owner at watcher shutdown. A `TautClient` constructed directly defaults
+to non-persistent queues; the CLI's `CommandContext` constructs its
+one-command client with `persistent=True` because it owns that client for
+exactly one command and closes it in the dispatcher's `finally`, so the
+command's state and queue calls share one broker session instead of
+bootstrapping a connection per sidecar call. Taut does not add a retry classifier
 around queue operations; SimpleBroker owns lock/busy retry, and Taut owns only
 handle lifetime and taut-specific state.
 

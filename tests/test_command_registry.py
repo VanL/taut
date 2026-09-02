@@ -2393,7 +2393,14 @@ def test_dispatch_reuses_and_closes_one_lazy_client() -> None:
 
     assert result == 0
     assert stdout.getvalue() == "true\n"
-    assert received == [{"db_path": "chat.db", "as_name": "Ada", "token": "secret"}]
+    assert received == [
+        {
+            "db_path": "chat.db",
+            "as_name": "Ada",
+            "token": "secret",
+            "persistent": True,
+        }
+    ]
     assert len(clients) == 1
     assert clients[0].closed is True
 
@@ -4419,3 +4426,46 @@ def test_registry_init_is_idempotent_and_honors_render_modes(tmp_path: Path) -> 
     result, out, err = _dispatch_static(["init", f"--db={db_path}", "--quiet"])
     assert result == 0
     assert out == err == ""
+
+
+def test_registry_command_context_uses_one_persistent_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One CLI command must not bootstrap a SQLite connection per state call.
+
+    The command context owns the client for exactly one command and closes it
+    in the dispatcher's ``finally``, so the client can hold its persistent
+    broker session for that lifetime. Counting real ``sqlite3.connect`` calls
+    is the behavioral guard: an ephemeral meta queue reopens the database for
+    every sidecar session and turns ``say`` into a dozen connections.
+    """
+
+    import sqlite3
+
+    from taut.commands._dispatch import dispatch
+    from taut.commands._registry import CommandRegistry
+
+    db_path = tmp_path / "chat.db"
+    _seed_channel(db_path, "van")
+    connects = 0
+    real_connect: Callable[..., sqlite3.Connection] = sqlite3.connect
+
+    def counting_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        nonlocal connects
+        connects += 1
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", counting_connect)
+    stdout = StringIO()
+    stderr = StringIO()
+
+    result = dispatch(
+        ["--db", str(db_path), "--as", "van", "say", "general", "hello"],
+        registry=CommandRegistry(entry_points=()),
+        stdin=StringIO(),
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+    assert result == 0, stderr.getvalue()
+    assert connects <= 2, f"say opened {connects} SQLite connections"

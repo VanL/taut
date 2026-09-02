@@ -5809,3 +5809,40 @@ def test_reply_suffix_prefers_in_window_match_over_evicted_older_message(
     reply = van.reply("general", "994321", "resolved to recent")
 
     assert reply.thread == f"general.{recent_ts}"
+
+
+def test_persistent_client_writes_reuse_one_session(
+    taut_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A persistent client's message writes must not open side connections.
+
+    ``say``, ``reply``, and ``delete_message`` also enqueue a search
+    invalidation job. That enqueue must go through the client's own queue
+    handles so a persistent client keeps one broker session instead of
+    bootstrapping an extra SQLite connection for every write. Channel rename
+    is excluded on purpose: its queue rename runs through SimpleBroker's
+    ``open_broker`` session, which is a separate handle by design.
+    """
+
+    import sqlite3
+
+    TautClient.init()
+    real_connect: Callable[..., sqlite3.Connection] = sqlite3.connect
+    connects = 0
+
+    def counting_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        nonlocal connects
+        connects += 1
+        return real_connect(*args, **kwargs)
+
+    client = TautClient(as_name="Writer", persistent=True)
+    try:
+        client.join("general")
+        monkeypatch.setattr(sqlite3, "connect", counting_connect)
+        posted = client.say("general", "one session")
+        client.reply("general", str(posted.ts), "still one session")
+        client.delete_message(str(posted.ts))
+    finally:
+        client.close()
+
+    assert connects == 0, f"persistent client writes opened {connects} connections"
