@@ -484,6 +484,15 @@ After a fresh initialization or migration reaches the current version,
 the core load guard before returning. These steps remain inside the same
 transaction and rollback boundary; migration cannot bypass them.
 
+When the stored version is already current, `ensure_schema` has nothing to
+install or migrate. It reads `schema_version` and the load-guard marker in one
+ordinary read session, without opening the writer transaction or acquiring the
+schema advisory lock, and returns, refuses the load guard, or raises the
+version error from that read. Startup therefore never waits on a concurrent
+writer or on an initializer holding the schema lock. Only an absent metadata
+table or an absent version row enters the installing transaction, which
+re-checks the version under the lock before it installs anything.
+
 Search adds disposable `taut_search_*` provider tables under [SRCH-6] and
 [SRCH-11]. They are derived state inside the resolved SimpleBroker target, not
 a second message authority. Search schema/version failure is isolated from the

@@ -499,8 +499,18 @@ def ensure_schema(
     dialect: SqlDialect,
     allow_load_guard: bool = False,
 ) -> None:
-    """Install or validate the current sidecar schema."""
+    """Install or validate the current sidecar schema.
 
+    The steady state is a read. Every client construction calls this, so a
+    workspace whose stored version is already current must not queue behind
+    the writer transaction or the schema advisory lock: one ordinary read
+    session decides current, load-guarded, or version-mismatched. Only an
+    absent metadata table or version row enters the installing transaction,
+    which re-checks the version under the lock before installing anything.
+    """
+
+    if _current_schema_is_installed(queue, allow_load_guard=allow_load_guard):
+        return
     with queue.sidecar(transaction=True) as session:
         _acquire_advisory_lock(session, dialect, "taut:schema")
         session.run(META_DDL)
@@ -510,26 +520,10 @@ def ensure_schema(
             (SCHEMA_VERSION_KEY,),
         )
         if row is not None:
-            version = decode_schema_version(row[0])
-            if version > SCHEMA_VERSION:
-                raise SchemaVersionError(
-                    f"taut schema version {version} is newer than supported "
-                    f"version {SCHEMA_VERSION}; upgrade taut"
-                )
-            if version < SCHEMA_VERSION:
-                raise SchemaVersionError(
-                    f"taut schema version {version} has no supported migration "
-                    f"path to version {SCHEMA_VERSION}; use a taut release that "
-                    f"supports schema version {version}, or recreate a fresh target"
-                )
+            _require_supported_version(decode_schema_version(row[0]))
             for statement in DDL:
                 session.run(statement)
-            if not allow_load_guard and _one(
-                session,
-                "SELECT 1 FROM taut_meta WHERE key = ?",
-                (LOAD_GUARD_KEY,),
-            ):
-                raise TautError(LOAD_GUARD_MESSAGE)
+            _refuse_load_guard(session, allow_load_guard=allow_load_guard)
             return
         for statement in DDL:
             session.run(statement)
@@ -537,6 +531,59 @@ def ensure_schema(
             "INSERT INTO taut_meta (key, value) VALUES (?, ?)",
             (SCHEMA_VERSION_KEY, str(SCHEMA_VERSION)),
         )
+
+
+def _current_schema_is_installed(queue: Queue, *, allow_load_guard: bool) -> bool:
+    """Decide from one read whether there is nothing to install.
+
+    Returns ``True`` only when the stored version equals the supported version
+    and the load guard is absent or permitted. A missing metadata table or
+    version row returns ``False`` so the caller installs under the lock. A
+    present but unsupported version or a refused load guard raises here,
+    exactly as the installing path would, without taking any lock.
+    """
+
+    try:
+        with queue.sidecar() as session:
+            rows = _all(
+                session,
+                "SELECT key, value FROM taut_meta WHERE key IN (?, ?)",
+                (SCHEMA_VERSION_KEY, LOAD_GUARD_KEY),
+            )
+    except DatabaseError as exc:
+        if _is_schema_shape_error(exc):
+            return False
+        raise
+    meta = {str(row[0]): row[1] for row in rows}
+    if SCHEMA_VERSION_KEY not in meta:
+        return False
+    _require_supported_version(decode_schema_version(meta[SCHEMA_VERSION_KEY]))
+    if not allow_load_guard and LOAD_GUARD_KEY in meta:
+        raise TautError(LOAD_GUARD_MESSAGE)
+    return True
+
+
+def _require_supported_version(version: int) -> None:
+    if version > SCHEMA_VERSION:
+        raise SchemaVersionError(
+            f"taut schema version {version} is newer than supported "
+            f"version {SCHEMA_VERSION}; upgrade taut"
+        )
+    if version < SCHEMA_VERSION:
+        raise SchemaVersionError(
+            f"taut schema version {version} has no supported migration "
+            f"path to version {SCHEMA_VERSION}; use a taut release that "
+            f"supports schema version {version}, or recreate a fresh target"
+        )
+
+
+def _refuse_load_guard(session: SidecarSession, *, allow_load_guard: bool) -> None:
+    if not allow_load_guard and _one(
+        session,
+        "SELECT 1 FROM taut_meta WHERE key = ?",
+        (LOAD_GUARD_KEY,),
+    ):
+        raise TautError(LOAD_GUARD_MESSAGE)
 
 
 def acquire_load_guard(

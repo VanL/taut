@@ -409,7 +409,13 @@ single writer transaction and `taut:schema` advisory lock. Fresh databases
 still install the current schema directly. After a migrated database reaches
 the current version, `ensure_schema()` must still run current DDL
 reconciliation and enforce the load guard before returning. A missing rung is
-fatal. Schema 1 to schema 2 remains an intentionally unsupported historical
+fatal. The steady state is a read: when the stored version is already current,
+`ensure_schema()` reads the version and load-guard rows in one ordinary session
+and returns without the writer transaction or the `taut:schema` advisory lock.
+Every CLI command constructs a client, so this is the difference between
+startup contending with every writer in the workspace and startup costing one
+indexed read; a held SQLite `BEGIN IMMEDIATE` or a Postgres initializer holding
+the schema lock no longer delays or fails an ordinary command. Schema 1 to schema 2 remains an intentionally unsupported historical
 cutoff, so no empty registry or placeholder rung exists today. The first real
 rung must ship with an authentic prior-version fixture and shared SQLite and
 PostgreSQL transformation, postcondition, rollback, and coordination proof.

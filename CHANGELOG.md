@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Core schema startup is now a read in the steady state. `ensure_schema`
+  reads the stored version and load-guard rows in one ordinary session and
+  returns, refuses the guard, or raises the version error from that read;
+  only an absent metadata table or version row enters the installing
+  transaction and its `taut:schema` advisory lock. Every CLI command
+  constructs a client, so ordinary commands no longer wait behind a writer
+  holding SQLite's write lock or a Postgres initializer holding the schema
+  lock. Fresh installation and load-guard refusal are unchanged.
+
 ## 0.9.6 - 2026-09-01
 
 - Kept TUI search-result jumps anchored to the exact selected message when a

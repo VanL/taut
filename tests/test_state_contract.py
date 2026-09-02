@@ -993,3 +993,49 @@ def test_concurrent_membership_removal_reports_exactly_one_winner(
         setup_queue.close()
         for queue in queues:
             queue.close()
+
+
+def test_ensure_schema_on_current_schema_does_not_wait_for_the_writer_lock(
+    taut_project: Path,
+) -> None:
+    """Steady-state startup must be a read, not a write transaction.
+
+    Every ``TautClient`` construction runs ``ensure_schema``. When the stored
+    version is already current and no load guard exists, there is nothing to
+    install, so startup must not queue behind a writer holding the SQLite
+    RESERVED lock. A held ``BEGIN IMMEDIATE`` on another connection therefore
+    must not block, and must not fail, a second client's construction.
+    """
+
+    import sqlite3
+    from concurrent.futures import ThreadPoolExecutor, wait
+
+    TautClient.init()
+    db_path = taut_project / ".taut.db"
+    # ``init`` creates the taut tables after SimpleBroker publishes its schema
+    # proof, so SimpleBroker's next connection re-runs its own exclusive setup
+    # once to republish that proof. One ordinary open settles it; the steady
+    # state under test begins after that.
+    TautClient(db_path=db_path, as_name="Settler").close()
+    holder = sqlite3.connect(db_path, isolation_level=None)
+    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="startup-under-writer")
+
+    def construct() -> None:
+        TautClient(db_path=db_path, as_name="Reader").close()
+
+    try:
+        holder.execute("BEGIN IMMEDIATE")
+        holder.execute(
+            "INSERT INTO taut_meta (key, value) VALUES ('writer_probe', '1')"
+        )
+        future = pool.submit(construct)
+        done, _pending = wait([future], timeout=5.0)
+        blocked = future not in done
+    finally:
+        holder.execute("ROLLBACK")
+        holder.close()
+    # The writer lock is released now, so a blocked construction can finish.
+    failure = future.exception(timeout=60.0)
+    pool.shutdown(wait=True)
+    assert not blocked, "client construction waited on the writer lock"
+    assert failure is None, f"client construction failed: {failure!r}"

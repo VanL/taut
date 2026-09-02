@@ -490,3 +490,46 @@ def test_summon_driver_claim_race_has_one_exact_postgres_owner(
             if child.poll() is None:
                 child.kill()
             child.wait()
+
+
+def test_postgres_ensure_schema_on_current_schema_skips_the_schema_lock(
+    taut_pg_project: Path,
+    pg_schema: str,
+    raw_pg_conn: psycopg.Connection[Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Steady-state startup must not queue behind the ``taut:schema`` lock.
+
+    The global advisory lock serializes installation and future migration.
+    Once the stored version is current and no load guard exists, a client
+    constructed by every CLI command has nothing to install, so it must not
+    wait on a concurrent initializer or migrator holding that lock.
+    """
+
+    from concurrent.futures import ThreadPoolExecutor, wait
+
+    monkeypatch.chdir(taut_pg_project)
+    config = load_config()
+    target = target_for_directory(taut_pg_project, config=config)
+    setup_queue = Queue(META_QUEUE_NAME, db_path=target, config=config)
+    SqlSidecarTautState(setup_queue, POSTGRES_SQL_DIALECT).ensure_schema()
+    queue = Queue(META_QUEUE_NAME, db_path=target, config=config)
+    state = SqlSidecarTautState(queue, POSTGRES_SQL_DIALECT)
+    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="startup-under-lock")
+    try:
+        with raw_pg_conn.transaction(), raw_pg_conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                ("taut:schema",),
+            )
+            future = pool.submit(state.ensure_schema)
+            done, _pending = wait([future], timeout=5.0)
+            blocked = future not in done
+        # The lock is released now, so a blocked startup can finish.
+        failure = future.exception(timeout=60.0)
+        assert not blocked, "ensure_schema waited on the taut:schema advisory lock"
+        assert failure is None, f"ensure_schema failed: {failure!r}"
+    finally:
+        pool.shutdown(wait=True)
+        queue.close()
+        setup_queue.close()
