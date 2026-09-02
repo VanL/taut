@@ -31,6 +31,23 @@ class IdentityError(TautError):
     """Raised when member identity cannot be resolved safely."""
 
 
+class UnrecognizedCallerError(IdentityError):
+    """Raised when no selector or process evidence maps to an existing member.
+
+    The dispatcher maps this exact subtype to exit 2 ("nothing found") so
+    scripts can distinguish "taut does not know who you are" from an invalid
+    selector, which stays exit 1. ``hints`` are recovery lines; ``str()``
+    joins them under the message, and the CLI renders each as its own record.
+    """
+
+    def __init__(
+        self, message: str = "unrecognized caller", *, hints: tuple[str, ...] = ()
+    ) -> None:
+        super().__init__("\n".join((message, *hints)))
+        self.message = message
+        self.hints = hints
+
+
 class MembershipError(TautError):
     """Raised when a command requires thread membership."""
 

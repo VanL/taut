@@ -705,8 +705,19 @@ def _render_execution_error(
         code = _exit_code_for_exception(exc)
     else:
         code = 1
-    if not context.quiet:
-        _write_human_line(context.stderr, _exception_message(exc))
+    if context.quiet:
+        return code
+    from taut._exceptions import UnrecognizedCallerError
+
+    # Recovery hints are separate records; everything else is one record, so
+    # a newline inside dynamic error text stays visible as `\n`.
+    lines = (
+        [exc.message, *exc.hints]
+        if isinstance(exc, UnrecognizedCallerError)
+        else [_exception_message(exc)]
+    )
+    for line in lines:
+        _write_human_line(context.stderr, line)
     return code
 
 
@@ -721,17 +732,17 @@ def _write_human_line(stream: TextIO, body: str) -> None:
 def _exit_code_for_exception(exc: Exception) -> int:
     from taut._exceptions import (
         EmptyResultError,
-        IdentityError,
         MembershipError,
         NotFoundError,
         TokenError,
+        UnrecognizedCallerError,
     )
 
     if isinstance(exc, TokenError):
         return 1
     if isinstance(exc, (EmptyResultError, NotFoundError, MembershipError)):
         return 2
-    if isinstance(exc, IdentityError) and str(exc) == "unrecognized caller":
+    if isinstance(exc, UnrecognizedCallerError):
         return 2
     return 1
 

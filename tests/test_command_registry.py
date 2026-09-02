@@ -3037,6 +3037,7 @@ def test_shared_creation_renderer_preserves_quiet_candidate_note(
     assert stdout.getvalue() == ""
     assert stderr.getvalue() == (
         "note: you may be one of these:\n  Ada  same executable\n"
+        "reclaim with 'taut rejoin Ada'\n"
     )
 
 
@@ -3656,7 +3657,8 @@ def test_registry_identity_guest_and_invalid_token_exit_classes(
     result, out, err = _dispatch_static([*root, "whoami", "--json"])
     assert result == 2
     assert out == ""
-    assert err == "unrecognized caller\n"
+    assert err.splitlines()[0] == "unrecognized caller"
+    assert "--as NAME" in err
 
     result, out, err = _dispatch_static(
         [*root, "--token", "not-a-real-token", "who", "--json"]
@@ -3668,7 +3670,8 @@ def test_registry_identity_guest_and_invalid_token_exit_classes(
     result, out, err = _dispatch_static([*root, "set", "name", "vanna", "--json"])
     assert result == 2
     assert out == ""
-    assert err == "unrecognized caller\n"
+    assert err.splitlines()[0] == "unrecognized caller"
+    assert "--as NAME" in err
 
 
 def test_registry_leave_not_member_and_set_collision_exit_classes(

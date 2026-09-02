@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Identity resolution is harder to fool and easier to recover. Infrastructure
+  classification now consults every classification basename, so a Linux
+  daemon that rewrites its argv[0] (`sshd: user@pts/0`, `tmux: server (...)`)
+  is still infrastructure rather than an "agent" named `0`. `time`, `nice`,
+  `caffeinate`, `stdbuf`, `watch`, and `hyperfine` are recognized wrappers, so
+  a first contact under one of them anchors on the real caller instead of
+  the wrapper's ephemeral pid. The `unrecognized caller` diagnostic now lists
+  members with matching evidence, names `taut rejoin NAME` for the best
+  match, and always names `--as NAME` and `TAUT_TOKEN`; first contact prints
+  the same reclaim line after its candidate list. `UnrecognizedCallerError`
+  is a public `IdentityError` subtype carrying those hints, and the CLI maps
+  the type, not the message text, to exit 2 and renders each hint as its own
+  line. The macOS start-time token is read with `LC_ALL=C`, so processes
+  running under different locales agree about one start time.
+
 - The MCP `tools/list` manifest no longer carries `outputSchema` (about
   80 KB down to about 33 KB serialized); the result contract is proven by
   tests against real results instead. Tool annotations now follow MCP's

@@ -395,6 +395,82 @@ def test_select_anchor_skips_wrappers_and_explains_human_fallbacks() -> None:
 
 
 @pytest.mark.parametrize(
+    ("argv0", "exe", "family"),
+    [
+        ("sshd: van@pts/0", "/usr/sbin/sshd", "sshd"),
+        ("tmux: server (/tmp/tmux-501/default)", "/usr/bin/tmux", "tmux"),
+    ],
+)
+def test_select_anchor_classifies_infrastructure_by_every_basename(
+    argv0: str,
+    exe: str,
+    family: str,
+) -> None:
+    """[IAN-3.2]: sshd and tmux rewrite argv[0] on Linux, so the family must
+    be read from every classification basename, not only argv[0]."""
+    rewritten = identity.ProcessInfo(
+        pid=7,
+        start_time="infra-start",
+        exe=exe,
+        argv=(argv0,),
+    )
+    shell = identity.ProcessInfo(
+        pid=6,
+        start_time="shell-start",
+        exe="/bin/bash",
+        argv=("bash",),
+    )
+    claude = identity.ProcessInfo(
+        pid=8,
+        start_time="claude-start",
+        exe="/opt/homebrew/bin/claude",
+        argv=("claude",),
+    )
+    assert rewritten.basename != family
+
+    assert identity.select_anchor((rewritten,)) == (
+        None,
+        f"human fallback at infrastructure process {family}",
+    )
+    anchor, _rule = identity.select_anchor((shell, rewritten, claude))
+    assert anchor is None
+
+
+@pytest.mark.parametrize(
+    "wrapper",
+    ["time", "nice", "caffeinate", "stdbuf", "watch", "hyperfine"],
+)
+def test_select_anchor_skips_process_wrappers(wrapper: str) -> None:
+    """[IAN-3.2]: ``/usr/bin/time taut join`` must anchor on the agent behind
+    the wrapper, never on the ephemeral wrapper pid."""
+    chain = (
+        identity.ProcessInfo(
+            pid=2,
+            start_time="wrapper-start",
+            exe=f"/usr/bin/{wrapper}",
+            argv=(wrapper, "taut", "join"),
+        ),
+        identity.ProcessInfo(
+            pid=3,
+            start_time="shell-start",
+            exe="/bin/bash",
+            argv=("bash",),
+        ),
+        identity.ProcessInfo(
+            pid=4,
+            start_time="claude-start",
+            exe="/opt/homebrew/bin/claude",
+            argv=("claude",),
+        ),
+    )
+
+    anchor, rule = identity.select_anchor(chain)
+
+    assert anchor is chain[2]
+    assert rule == "agent anchor selected at claude"
+
+
+@pytest.mark.parametrize(
     ("basename", "expected_pid"),
     [
         ("cmd.exe", 2),
@@ -914,6 +990,26 @@ def test_native_start_time_uses_platform_specific_reader(
     monkeypatch.setattr(identity.sys, "platform", "darwin")
     monkeypatch.setattr(identity, "_read_ps_lstart", lambda _pid: "ps-start")
     assert identity._native_start_time(123) == "ps-start"
+
+
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="ps lstart is the macOS start-time source; Linux reads /proc",
+)
+def test_ps_lstart_token_is_locale_independent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[IAN-3.1]: the start-time token is compared as a string across
+    processes, so a caller's LC_ALL must not change its spelling."""
+    monkeypatch.delenv("LC_ALL", raising=False)
+    baseline = identity._read_ps_lstart(os.getpid())
+    monkeypatch.setenv("LC_ALL", "de_DE.UTF-8")
+
+    token = identity._read_ps_lstart(os.getpid())
+
+    assert token is not None
+    assert re.match(r"^[A-Z][a-z]{2} [A-Z][a-z]{2} ", token), token
+    assert token == baseline
 
 
 def test_read_linux_start_time_parses_proc_stat(

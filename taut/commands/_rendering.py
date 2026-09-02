@@ -252,6 +252,8 @@ def emit_created_member(
         write_human_line(stderr, "note: you may be one of these:")
         for name, reasons in client.last_candidates:
             write_human_line(stderr, f"  {name}  {', '.join(reasons)}")
+        top_name = client.last_candidates[0][0]
+        write_human_line(stderr, f"reclaim with 'taut rejoin {top_name}'")
 
 
 def emit_notification_warnings(

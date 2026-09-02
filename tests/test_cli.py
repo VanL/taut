@@ -2015,6 +2015,48 @@ def test_cli_set_name_unrecognized_exits_2(tmp_path: Path) -> None:
     assert "unrecognized caller" in err
 
 
+_FOREIGN_ANCHOR_JOIN = """
+import subprocess
+import sys
+
+completed = subprocess.run(
+    [sys.executable, "-m", "taut", "--as", "Claude", "join", "general"],
+    cwd=sys.argv[1],
+    check=False,
+)
+sys.exit(completed.returncode)
+"""
+
+
+def test_cli_unrecognized_caller_names_rejoin_recovery(tmp_path: Path) -> None:
+    """[IAN-3.3] step 6 on a real chain: a member whose anchor is gone but
+    whose executable matches is offered back with the exact rejoin command."""
+    assert run_cli("init", cwd=tmp_path)[0] == 0
+    harness = tmp_path / "foreign_anchor.py"
+    harness.write_text(_FOREIGN_ANCHOR_JOIN, encoding="utf-8")
+    # The harness is a plain Python process, so it becomes Claude's anchor
+    # and dies with this call; the next command runs from a different anchor.
+    completed = subprocess.run(
+        [sys.executable, str(harness), str(tmp_path)],
+        cwd=Path.cwd(),
+        env=build_cli_env(),
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+
+    rc, _out, err = run_cli("say", "general", "hello", cwd=tmp_path)
+
+    assert rc == 2
+    assert "unrecognized caller" in err
+    assert "note: you may be one of these:" in err
+    assert "  Claude  same executable" in err
+    assert "reclaim with 'taut rejoin Claude'" in err
+    assert "or select a member explicitly with --as NAME or TAUT_TOKEN" in err
+
+
 def test_cli_say_dm_and_list_json_members(tmp_path: Path) -> None:
     assert run_cli("init", cwd=tmp_path)[0] == 0
     assert run_cli("--as", "van", "join", "general", cwd=tmp_path)[0] == 0

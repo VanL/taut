@@ -205,9 +205,10 @@ def select_anchor(
         )
         if any(name in SHELL_BASENAMES or name in WRAPPER_BASENAMES for name in names):
             continue
+        for name in names:
+            if name in INFRASTRUCTURE_BASENAMES:
+                return None, f"human fallback at infrastructure process {name}"
         name = proc.basename
-        if _classification_basename(name) in INFRASTRUCTURE_BASENAMES:
-            return None, f"human fallback at infrastructure process {name}"
         if proc.start_time is None:
             return None, f"human fallback because {name} has no start-time token"
         return proc, f"agent anchor selected at {name}"
@@ -571,6 +572,9 @@ def _ps_output(pid: int, *fields: str) -> str | None:
             capture_output=True,
             text=True,
             timeout=2,
+            # lstart= is compared as a string across processes; the caller's
+            # locale must not change its spelling.
+            env={**os.environ, "LC_ALL": "C"},
         )
     except (OSError, subprocess.SubprocessError):
         return None

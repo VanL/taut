@@ -32,6 +32,7 @@ from taut._exceptions import (
     TautError,
     ThreadNameError,
     TokenError,
+    UnrecognizedCallerError,
 )
 from taut.client import (
     Channel,
@@ -4496,6 +4497,57 @@ def test_automatic_human_name_capitalizes_first_ascii_letter(tmp_path: Path) -> 
     client.join("general")
 
     assert client.whoami().name == "Van"
+
+
+def test_unrecognized_caller_names_rejoin_candidates_and_selectors(
+    tmp_path: Path,
+) -> None:
+    """[IAN-3.3] step 6: the unrecognized-caller error names the recovery."""
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    owner = TautClient(
+        db_path=db,
+        identity_capture=_anchor_capture(executable="claude"),
+    )
+    owner.join("general")
+    assert owner.whoami().name == "Claude"
+    restarted = TautClient(
+        db_path=db,
+        identity_capture=_anchor_capture(
+            pid=5151,
+            start_time="restarted-start",
+            executable="claude",
+        ),
+    )
+
+    with pytest.raises(UnrecognizedCallerError) as excinfo:
+        restarted.say("general", "hello")
+
+    message = str(excinfo.value)
+    lines = message.splitlines()
+    assert lines[0] == "unrecognized caller"
+    assert "note: you may be one of these:" in lines
+    assert any(line.startswith("  Claude  same executable, same cwd") for line in lines)
+    assert "reclaim with 'taut rejoin Claude'" in lines
+    assert lines[-1] == "or select a member explicitly with --as NAME or TAUT_TOKEN"
+
+
+def test_unrecognized_caller_without_candidates_still_names_selectors(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    human = TautClient(db_path=db, identity_capture=_human_capture(login="van"))
+    human.join("general")
+    stranger = TautClient(db_path=db, identity_capture=_anchor_capture())
+
+    with pytest.raises(UnrecognizedCallerError) as excinfo:
+        stranger.say("general", "hello")
+
+    lines = str(excinfo.value).splitlines()
+    assert lines[0] == "unrecognized caller"
+    assert "note: you may be one of these:" not in lines
+    assert lines[-1] == "or select a member explicitly with --as NAME or TAUT_TOKEN"
 
 
 def test_repeated_pi_agents_use_capitalized_curated_names(

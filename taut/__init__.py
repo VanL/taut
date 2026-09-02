@@ -23,6 +23,7 @@ from taut._exceptions import (
     TautError,
     ThreadNameError,
     TokenError,
+    UnrecognizedCallerError,
     WatcherRejected,
 )
 
@@ -93,6 +94,7 @@ __all__ = [
     "Thread",
     "ThreadNameError",
     "TokenError",
+    "UnrecognizedCallerError",
     "WatcherRejected",
     "__version__",
     "escape_terminal_text",

@@ -8,7 +8,12 @@ from simplebroker.ext import IntegrityError
 
 from taut import addressing, identity
 from taut._constants import route_key, validate_member_name
-from taut._exceptions import IdentityError, NotFoundError, TokenError
+from taut._exceptions import (
+    IdentityError,
+    NotFoundError,
+    TokenError,
+    UnrecognizedCallerError,
+)
 from taut.state import MemberRow
 
 from ._base import _ClientBase, _ResolvedMember
@@ -28,7 +33,7 @@ class IdentityMixin(_ClientBase):
             try:
                 resolved = self._resolve_member(create=False, _touch_activity=False)
             except NotFoundError as exc:
-                raise IdentityError("unrecognized caller") from exc
+                raise UnrecognizedCallerError("unrecognized caller") from exc
             return self._member_from_row(self._require_member(resolved))
         finally:
             self.last_created_member = last_created_member
@@ -36,15 +41,14 @@ class IdentityMixin(_ClientBase):
 
     def whoami(self, *, explain: bool = False) -> Member:
         resolved = self._resolve_member(create=False, _require_capture=explain)
-        if resolved.row is None:
-            raise IdentityError("unrecognized caller")
+        row = self._require_member(resolved)
         explanation: dict[str, Any] | None = None
         if explain:
             if resolved.capture is None:
                 raise AssertionError("identity explanation requires capture evidence")
             explanation = identity.explain_capture(resolved.capture, resolved.rule)
         return self._member_from_row(
-            resolved.row,
+            row,
             capture=resolved.capture,
             explain=explanation,
         )
@@ -132,7 +136,7 @@ class IdentityMixin(_ClientBase):
             # call must use its read-only selection mode.
             resolved = self._resolve_member(create=False, _touch_activity=False)
         except NotFoundError as exc:
-            raise IdentityError("unrecognized caller") from exc
+            raise UnrecognizedCallerError("unrecognized caller") from exc
         member = self._require_member(resolved)
         updated = self._state.update_member_persona(
             member["member_id"],
@@ -140,7 +144,7 @@ class IdentityMixin(_ClientBase):
             active_ts=self._meta_queue.generate_timestamp(),
         )
         if updated is None:
-            raise IdentityError("unrecognized caller")
+            raise UnrecognizedCallerError("unrecognized caller")
         return self._member_from_row(updated)
 
     def _resolve_member(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-047] exception

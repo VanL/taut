@@ -144,7 +144,10 @@ suffix is case-insensitive and does not distinguish configured shell,
 wrapper, or infrastructure families. `cmd`, `powershell`, and `pwsh` are
 shell families. Classification does not rewrite executable path, argv,
 selected-anchor evidence, fingerprint, automatic-name evidence, or
-claim-hash input. A shell is not an `agent_process` anchor merely because its
+claim-hash input. Family membership is read from every classification
+basename, the argv[0] basename and the executable basename alike, so a
+daemon that rewrites its argv[0] (for example `sshd: user@pts/0` or
+`tmux: server (...)`) still classifies through its executable. A shell is not an `agent_process` anchor merely because its
 platform spelling carries an executable suffix.
 
 ### [IAN-3.3] Claim association
@@ -188,6 +191,12 @@ Resolution order:
    member only when the command can still succeed after creating that member.
    Membership-gated writes, such as channel `say` and `reply`, must not create
    throwaway members before failing membership or missing-target validation.
+   The unrecognized-caller error starts with the line `unrecognized caller`,
+   then lists ranked rejoin candidates in the first-contact shape (`note: you
+   may be one of these:`, one `  NAME  reason, reason` line per candidate, and
+   `reclaim with 'taut rejoin NAME'` for the top candidate) when stored agent
+   fingerprints match the captured anchor, and always ends with `or select a
+   member explicitly with --as NAME or TAUT_TOKEN`.
 
 Acting-member selection and process-claim association are separate operations.
 For an existing member, `as` and token selectors affect the current operation

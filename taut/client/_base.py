@@ -24,10 +24,10 @@ from taut._constants import (
     load_config,
 )
 from taut._exceptions import (
-    IdentityError,
     NotFoundError,
     NotInitializedError,
     TautError,
+    UnrecognizedCallerError,
 )
 from taut._maintenance import backend_install_hint_error
 from taut._reactions import load_reaction_values
@@ -335,9 +335,24 @@ class _ClientBase(ABC):
         return identity.capture_identity()
 
     def _require_member(self, resolved: _ResolvedMember) -> MemberRow:
-        if resolved.row is None:
-            raise IdentityError("unrecognized caller")
-        return resolved.row
+        if resolved.row is not None:
+            return resolved.row
+        hints: list[str] = []
+        if resolved.capture is not None:
+            candidates = identity.rank_candidates(
+                resolved.capture, self._state.list_members()
+            )
+            if candidates:
+                hints.append("note: you may be one of these:")
+                hints.extend(
+                    f"  {member['display_name']}  {', '.join(reasons)}"
+                    for member, reasons in candidates
+                )
+                hints.append(
+                    f"reclaim with 'taut rejoin {candidates[0][0]['display_name']}'"
+                )
+        hints.append("or select a member explicitly with --as NAME or TAUT_TOKEN")
+        raise UnrecognizedCallerError(hints=tuple(hints))
 
     def _ensure_no_incomplete_channel_rename(self) -> None:
         renames = self._state.incomplete_channel_renames()

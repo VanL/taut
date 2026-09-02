@@ -24,6 +24,7 @@ EXPECTED_PUBLIC_EXPORTS = [
     "DumpReport",
     "EmptyResultError",
     "IdentityError",
+    "UnrecognizedCallerError",
     "LoadReport",
     "Member",
     "MembershipError",

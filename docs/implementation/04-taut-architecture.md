@@ -923,7 +923,10 @@ queue high-water mark.
 - Process capture: `psutil` is the primary source for argv, executable, cwd,
   uid, parent, process group/session, and terminal when available. Native
   `/proc` or `ps` evidence remains the start-time token where needed for
-  process identity claims. Anchor selection classifies a derived basename by
+  process identity claims. The `ps` invocation runs with `LC_ALL=C` because
+  its `lstart` text is compared for equality across processes, and a locale
+  that spells the month differently would make two processes disagree about
+  one start time. Anchor selection classifies a derived basename by
   case-folding it and removing exactly one terminal `.exe`; that admits Windows
   spellings to the existing shell, wrapper, and infrastructure families. Raw
   basenames, argv, fingerprints, claim evidence, and automatic-name inputs are
