@@ -1544,6 +1544,8 @@ def run_client(helper: Path) -> NoReturn:
         if command.startswith("ECHO:"):
             encoded = base64.b64encode(command[5:].encode("utf-8")).decode("ascii")
             print(f"ECHO {encoded}", flush=True)
+        elif command == "VT":
+            print("\x1b[31mVT_RED\x1b[0m", flush=True)
         elif command == "PAUSE1":
             reading.clear()
             print(f"PAUSED {command}", flush=True)
@@ -1604,13 +1606,16 @@ def run_coordinator(helper: Path) -> int:
 
         events: list[str] = []
         writer = EpochWriter(native, owner.input_write, events)
-        echo_text = "café λ \x1b[31mred\x1b[0m"
+        echo_text = "café λ red"
         writer.write(f"ECHO:{echo_text}\r".encode())
         expected_echo = base64.b64encode(echo_text.encode("utf-8"))
         owner.drain.wait_for(b"ECHO " + expected_echo)
+        writer.write(b"VT\r")
+        owner.drain.wait_for(b"\x1b[31mVT_RED\x1b[0m")
         evidence["io"] = {
             "utf8_vt_round_trip": True,
             "echo_base64": expected_echo.decode("ascii"),
+            "vt_output": "red-sgr-observed",
         }
 
         sink1_read, sink1_write = owner._pipe()

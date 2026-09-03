@@ -726,7 +726,8 @@ or if the deletion ledger misses an import/export/test owner.
    ownership transition in the complete Windows native API ledger above. The
    probe is review evidence, not shipped code.
 2. The real probe child creates an attached descendant, publishes a ready
-   token, echoes injected UTF-8/VT input, survives one reusable Ctrl-C, and
+   token, echoes injected UTF-8 text, emits observable VT output, accepts the
+   Ctrl-C terminal input sequence, survives one reusable interrupt, and
    then remains alive until pseudoconsole close. Separate read and write owners
    keep output drained. Force the ConPTY input `WriteFile` owner to block;
    prove reusable interrupt invalidates its epoch, cancels that exact writer,
@@ -1086,6 +1087,15 @@ saw only its initialization VT bytes. This is a real redirected-parent spawn
 path. The accepted correction is the documented node-pty pattern:
 `STARTF_USESTDHANDLES` with all three standard handles null and
 `bInheritHandles=False`. Rerun required; no later Slice 1 claim was reached.
+
+Second hosted attempt: branch commit `877a791e442ce8b442fcc287910f32b966be989c`,
+Actions run `33802096546`, job `100803801113`, Windows Python 3.11.9. The
+standard-handle correction worked: `READY`, the descendant marker, and child
+output arrived through ConPTY. The probe then incorrectly expected ANSI input
+sequences to survive as literal echoed text; ConPTY correctly interpreted and
+removed those terminal controls. The probe now tests exact UTF-8 text echo,
+observable SGR output, and Ctrl-C input separately. Rerun required; the failure
+does not change the production design.
 
 ## Out of Scope
 
