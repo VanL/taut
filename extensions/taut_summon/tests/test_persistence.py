@@ -70,7 +70,6 @@ def test_summon_round_trip_keeps_continuity_and_clears_live_state(
             member_id=member.member_id,
             token=member.token,
             provider="claude",
-            provider_session_id="provider-session",
             driver_pid=12345,
             driver_start_time="old-process",
             updated_ts=99,
@@ -106,6 +105,7 @@ def test_summon_round_trip_keeps_continuity_and_clears_live_state(
         if record.get("type") == "session"
     )
     assert session_record["updated_ts"] == "0000000000000000100"
+    assert "provider_session_id" not in session_record
 
     destination = tmp_path / "destination.db"
     TautClient.load(input_path=dump_path, db_path=destination)
@@ -114,7 +114,7 @@ def test_summon_round_trip_keeps_continuity_and_clears_live_state(
         restored = _state.get_session(restored_queue, member.member_id)
         assert restored is not None
         assert restored["token"] == member.token
-        assert restored["provider_session_id"] == "provider-session"
+        assert restored["provider_session_id"] is None
         assert restored["wired"] is True
         assert restored["updated_ts"] == 100
         assert restored["driver_pid"] is None
@@ -170,7 +170,6 @@ def test_summon_persistence_v2_manifest_and_dump_omit_provider_session_id(
             member_id=member.member_id,
             token=member.token,
             provider="claude",
-            provider_session_id="released-session-value",
             updated_ts=1,
         )
         records = create_component().dump_records(queue)
@@ -264,11 +263,14 @@ def test_summon_persistence_exact_v1_load_discards_provider_session_id(
         with queue.sidecar(transaction=True) as session:
             component.load_records(session, [released_v1])
         restored = _state.get_session(queue, member.member_id)
+        redumped = component.dump_records(queue)
     finally:
         queue.close()
 
     assert restored is not None
     assert restored["provider_session_id"] is None
+    assert len(redumped) == 1
+    assert "provider_session_id" not in redumped[0]
 
 
 @pytest.mark.parametrize(

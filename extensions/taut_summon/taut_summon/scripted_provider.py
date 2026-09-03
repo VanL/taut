@@ -74,6 +74,32 @@ class _SignalCleanupComplete(Exception):
     """Unwind the provider's main loop after bounded SIGINT cleanup."""
 
 
+def _configure_terminal_input() -> None:
+    """Enter raw input when fd 0 is an interactive terminal."""
+
+    if not os.isatty(0):
+        return
+    if os.name == "nt":
+        import ctypes
+        import msvcrt
+
+        ctypes_api: Any = ctypes
+        msvcrt_api: Any = msvcrt
+        kernel32 = ctypes_api.WinDLL("kernel32", use_last_error=True)
+        handle = msvcrt_api.get_osfhandle(0)
+        mode = ctypes.c_uint32()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            raise OSError(ctypes_api.get_last_error(), "GetConsoleMode(stdin) failed")
+        raw_mode = (mode.value & ~(0x0001 | 0x0002 | 0x0004)) | 0x0200
+        if not kernel32.SetConsoleMode(handle, raw_mode):
+            raise OSError(ctypes_api.get_last_error(), "SetConsoleMode(stdin) failed")
+        return
+
+    import tty
+
+    tty.setraw(0)
+
+
 def _record(payload: dict[str, Any]) -> None:
     path = os.environ.get("TAUT_SUMMON_RECEIVED_LOG")
     if not path:
@@ -128,9 +154,7 @@ class _InterruptController:
 
     def interrupt(self) -> None:
         self._signal_count += 1
-        _record(
-            {"event": "signal", "signal": "SIGINT", "count": self._signal_count}
-        )
+        _record({"event": "signal", "signal": "SIGINT", "count": self._signal_count})
         if self._seconds is None:
             raise KeyboardInterrupt
         if self._signal_count > 1:
@@ -472,6 +496,7 @@ def main() -> int:
     state = _State()
     parser = _TerminalInputParser()
     try:
+        _configure_terminal_input()
         _record(
             {
                 "event": "start",

@@ -54,7 +54,6 @@ _STATUS_MODELED_KEYS = frozenset(
         "request_id",
         "driver",
         "provider",
-        "session_id",
         "thread_count",
         "cursor_lag",
     }
@@ -91,7 +90,6 @@ class SummonController:
                     member_id=row["member_id"],
                     name=names.get(row["member_id"], row["member_id"]),
                     provider=row["provider"],
-                    provider_session_id=row["provider_session_id"],
                 )
                 for row in live
             )
@@ -329,9 +327,6 @@ def _status_from_reply(member: Member, reply: dict[str, Any]) -> SummonStatus:
         raise SummonOperationError(str(error), fault_plane="driver_snapshot")
     driver = _required_text(reply, "driver")
     provider = _required_text(reply, "provider")
-    session_id = reply.get("session_id")
-    if session_id is not None and not isinstance(session_id, str):
-        raise SummonOperationError("invalid STATUS field 'session_id'")
     thread_count = reply.get("thread_count")
     if (
         not isinstance(thread_count, int)
@@ -364,7 +359,6 @@ def _status_from_reply(member: Member, reply: dict[str, Any]) -> SummonStatus:
         name=member.name,
         driver=driver,
         provider=provider,
-        provider_session_id=session_id,
         thread_count=thread_count,
         cursor_lag=dict(cursor_lag),
         details=dict(details),

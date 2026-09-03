@@ -78,7 +78,6 @@ _STATUS_RESERVED_KEYS = frozenset(
         "rate_limited",
         "rate_breaches",
         "provider",
-        "session_id",
         "thread_count",
         "cursor_lag",
         "control_health",
@@ -226,7 +225,6 @@ class StatusSnapshot:
     """The [SUM-9] STATUS payload the driver reports for its member."""
 
     provider: str
-    session_id: str | None
     thread_count: int
     cursor_lag: dict[str, int]
     control_health: str
@@ -240,7 +238,6 @@ class StatusSnapshot:
             "rate_limited": self.rate_limited,
             "rate_breaches": self.rate_breaches,
             "provider": self.provider,
-            "session_id": self.session_id,
             "thread_count": self.thread_count,
             "cursor_lag": self.cursor_lag,
             "control_health": self.control_health,
@@ -382,7 +379,6 @@ class ControlLoop:
         ledger_queue_name: str,
         driver_pid: int,
         driver_start_time: str,
-        provider_session_id: str | None = None,
         audit_start_ts: int = 0,
         ready: threading.Event | None = None,
     ) -> None:
@@ -400,8 +396,6 @@ class ControlLoop:
         self._ledger_queue_name = ledger_queue_name
         self._driver_pid = driver_pid
         self._driver_start_time = driver_start_time
-        self._status_lock = threading.Lock()
-        self._provider_session_id = provider_session_id
         self._audit_start_ts = audit_start_ts
         self._ready = ready
         # The control/audit cadence. Kept gentle by default so the audit's
@@ -437,12 +431,6 @@ class ControlLoop:
         self._ctl_out: Queue | None = None
         self._ledger: Queue | None = None
         self._thread_queues: dict[str, Queue] = {}
-
-    def update_session_id(self, session_id: str | None) -> None:
-        """Record live provider session identity for future STATUS replies."""
-
-        with self._status_lock:
-            self._provider_session_id = session_id
 
     def run(self) -> None:
         try:
@@ -939,7 +927,6 @@ class ControlLoop:
     def _status_snapshot(self) -> StatusSnapshot:
         return StatusSnapshot(
             provider=self._provider,
-            session_id=self._session_id(),
             thread_count=len(self._threads),
             cursor_lag=self._cursor_lag(),
             control_health="ok" if self._unhealthy is None else "degraded",
@@ -947,10 +934,6 @@ class ControlLoop:
             rate_limited=self._hard_breached,
             rate_breaches=self._hard_breach_count,
         )
-
-    def _session_id(self) -> str | None:
-        with self._status_lock:
-            return self._provider_session_id
 
     def _cursor_lag(self) -> dict[str, int]:
         client = self._client

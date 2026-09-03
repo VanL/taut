@@ -235,18 +235,15 @@ def _print_operation_error(exc: SummonOperationError, args: argparse.Namespace) 
 
 
 def _print_live_member(member: SummonedMember) -> None:
-    session = member.provider_session_id or "-"
     fields = (
         escape_terminal_text(member.name),
         escape_terminal_text(member.provider),
         "live",
-        f"session={escape_terminal_text(session)}",
     )
     sys.stdout.write("\t".join(fields) + "\n")
 
 
 def _print_status(status: SummonStatus) -> None:
-    session = status.provider_session_id or "-"
     lag = status.cursor_lag
     lag_text = (
         ", ".join(
@@ -260,7 +257,6 @@ def _print_status(status: SummonStatus) -> None:
         escape_terminal_text(status.name),
         f"provider={escape_terminal_text(status.provider)}",
         f"driver={escape_terminal_text(status.driver)}",
-        f"session={escape_terminal_text(session)}",
         f"threads={status.thread_count}",
         f"lag={lag_text}",
     ]

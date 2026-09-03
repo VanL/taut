@@ -164,7 +164,6 @@ class TuiSummonOperations:
         *,
         name: str,
         threads: tuple[str, ...],
-        terminal: bool,
         persona: str | None,
         system_prompt_file: str | None,
         rate_limit: int | None,
@@ -179,7 +178,6 @@ class TuiSummonOperations:
         return api.SummonRequest(
             name=name,
             threads=threads,
-            terminal=terminal,
             persona=persona,
             system_prompt_file=system_prompt_file,
             rate_limit=rate_limit,

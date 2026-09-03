@@ -16,12 +16,10 @@ manager ([SUM-2]). The driver owns exactly three runtime lanes:
   the driver has stopped the watcher) so [TAUT-8.4]'s 3-strikes poison
   advance can never skip live chat.
 - **Event pump**: a dedicated thread draining ``events()`` for the life
-  of the child ([SUM-7.1]) — session ids to the ledger, activity to the
-  member's liveness through rate-limited token-selected ``whoami()``,
-  assistant text to the thread in terminal mode or to the log otherwise,
-  ``exit`` to the [SUM-11] resume path (one session-id resume attempt,
-  fresh-session cursor replay as the fallback, bounded backoff then a
-  loud exit).
+  of the child ([SUM-7.1]). Activity updates member liveness through
+  rate-limited token-selected ``whoami()``; ``exit`` enters [SUM-11]'s
+  fresh-generation recovery path with durable cursor replay, bounded
+  backoff, and then a loud exit.
 
 Shutdown ordering ([SUM-9], shared by SIGINT): publish shutdown → request
 terminal close on the adapter → stop and checked-join the watcher →
@@ -59,7 +57,6 @@ from simplebroker import BrokerTarget, Queue
 from simplebroker.ext import BrokerError
 
 from taut import (
-    BlankMessageError,
     IdentityError,
     NotFoundError,
     NotInitializedError,
@@ -80,10 +77,8 @@ from taut_summon._adapter import (
     AdapterEvent,
     AdapterExitedError,
     AdapterHandle,
-    AssistantTextEvent,
     ExitEvent,
     ProviderAdapter,
-    SessionEvent,
     UnknownAdapterError,
     get_adapter,
 )
@@ -94,18 +89,20 @@ from taut_summon._state import (
     LEDGER_QUEUE_NAME,
     ClaimConflictError,
     DriverConflictError,
+    SummonSessionRow,
     SummonStateError,
     capture_driver_evidence,
     claim_driver,
     claim_name,
+    driver_liveness,
     ensure_summon_schema,
     get_session,
     get_wired,
     record_session,
     release_claim,
     release_driver,
+    replace_legacy_provider,
     set_wired,
-    update_session,
 )
 from taut_summon.interaction import (
     SummonInteraction,
@@ -127,7 +124,6 @@ _LEDGER_QUEUE_NAME = LEDGER_QUEUE_NAME
 _DEFAULT_RESUME_BACKOFF = (1.0, 2.0, 4.0)
 _HEALTHY_RUN_SECONDS = 60.0
 _ACTIVITY_WINDOW_SECONDS = 10.0
-_SESSION_BOOTSTRAP_WAIT_SECONDS = 5.0
 _PUMP_JOIN_TIMEOUT_SECONDS = 10.0
 _SHUTDOWN_PUMP_JOIN_TIMEOUT_SECONDS = 5.0
 _HALT_ACK_TIMEOUT_SECONDS = 30.0
@@ -227,7 +223,6 @@ class _BootstrapResult:
     member_name: str
     token: str
     provider: str
-    provider_session_id: str | None
     resummon: bool = False
 
 
@@ -252,7 +247,6 @@ class _GenerationContext:
     token: int
     completion: threading.Event
     harness_dead: threading.Event
-    session_observed: threading.Event
     wake: threading.Event
     exit: _GenerationExit
     failure: _GenerationFailure
@@ -369,7 +363,6 @@ class SummonDriver:
         self._watcher: Any | None = None
         self._watcher_failed = threading.Event()
         self._watcher_error: BaseException | None = None
-        self._session_observed = threading.Event()
         self._member_id: str | None = None
         self._exit_code: int | None = None
         self._generation_lock = threading.RLock()
@@ -510,6 +503,8 @@ class SummonDriver:
 
         if row is not None:
             assert member is not None
+            if row["provider"] == "claude-stream":
+                row = self._recover_legacy_provider(requested, member, row)
             # Re-summon: resolve provider from the session row; an
             # explicit --provider that disagrees is a loud error
             # ([SUM-3] — members do not switch harnesses implicitly).
@@ -541,7 +536,6 @@ class SummonDriver:
                 member_name=member.name,
                 token=row["token"],
                 provider=row["provider"],
-                provider_session_id=row["provider_session_id"],
                 resummon=True,
             )
 
@@ -563,6 +557,39 @@ class SummonDriver:
                 )
             logger.warning("summoned as '%s' — '%s' is taken", target, requested)
         return self._first_summon(client, requested, target, provider, implied)
+
+    def _recover_legacy_provider(
+        self,
+        requested: str,
+        member: Member,
+        row: SummonSessionRow,
+    ) -> SummonSessionRow:
+        if self._request.provider_flag != "claude":
+            raise DriverError(
+                f"member '{requested}' has legacy provider 'claude-stream'; "
+                "stop its old driver if it is live, then rerun with --provider claude"
+            )
+        liveness = driver_liveness(row)
+        if liveness == "live":
+            raise DriverError(
+                f"member '{requested}' still has a live claude-stream driver; "
+                "stop it before rerunning with --provider claude"
+            )
+        if liveness == "indeterminate":
+            raise DriverError(
+                f"member '{requested}' has indeterminate claude-stream driver "
+                "evidence; refusing recovery"
+            )
+        try:
+            return replace_legacy_provider(
+                self._ledger(),
+                member_id=member.member_id,
+                expected_driver_pid=row["driver_pid"],
+                expected_driver_start_time=row["driver_start_time"],
+                updated_ts=self._ledger().generate_timestamp(),
+            )
+        except SummonStateError as exc:
+            raise DriverError(str(exc)) from exc
 
     def _first_summon(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-024] exception
         self,
@@ -705,7 +732,6 @@ class SummonDriver:
                 member_id=created.member_id,
                 token=created.token,
                 provider=provider,
-                provider_session_id=None,
                 driver_pid=pid,
                 driver_start_time=start,
                 updated_ts=queue.generate_timestamp(),
@@ -730,7 +756,6 @@ class SummonDriver:
             member_name=target,
             token=created.token,
             provider=provider,
-            provider_session_id=None,
         )
 
     def _update_resummon_persona(self, boot: _BootstrapResult) -> None:
@@ -767,8 +792,6 @@ class SummonDriver:
         terminal_availability = self._terminal_availability(request, adapter)
         env = _harness_environment(boot, db_path=db_path)
         system_prompt = self._system_prompt(boot, db_display)
-        terminal_thread = self._terminal_thread(adapter)
-        session_id = boot.provider_session_id
         consecutive_crashes = 0
         first_generation = True
         while True:
@@ -785,8 +808,6 @@ class SummonDriver:
                 adapter=adapter,
                 env=env,
                 system_prompt=system_prompt,
-                session_id=session_id,
-                terminal_thread=terminal_thread,
                 terminal_availability=terminal_availability,
                 attach_decision=attach_decision,
             )
@@ -804,46 +825,25 @@ class SummonDriver:
                 availability=terminal_availability,
                 attached_this_generation=attach_decision.should_attach,
             )
-            if orientation == "shutdown":
-                return self._shutdown_running_generation(running, boot)
-            if orientation == "setup-recovery":
-                stored = get_session(self._ledger(), boot.member_id)
-                session_id = (
-                    stored["provider_session_id"] if stored is not None else None
-                ) or session_id
+            if orientation != "oriented":
+                consecutive_crashes, result = self._finish_orientation_outcome(
+                    orientation,
+                    running,
+                    boot,
+                    consecutive_crashes,
+                    adapter,
+                )
+                if result is not None:
+                    return result
                 continue
             self._await_running_generation(running, boot)
             if self._shutdown.is_set():
                 return self._shutdown_running_generation(running, boot)
-            consecutive_crashes, session_id = self._resume_after_harness_exit(
+            consecutive_crashes, _ = self._resume_after_harness_exit(
                 running, boot, consecutive_crashes, adapter=adapter
             )
             if self._shutdown.is_set():
                 return 0
-
-    def _terminal_thread(self, adapter: ProviderAdapter) -> str | None:
-        request = self._request
-        terminal_thread = (
-            request.threads[0]
-            if (
-                request.terminal
-                and adapter.supports_terminal_mode
-                and len(request.threads) == 1
-            )
-            else None
-        )
-        if request.terminal and not adapter.supports_terminal_mode:
-            logger.warning(
-                "--terminal is not supported by provider '%s'; assistant text "
-                "will go to the log",
-                adapter.name,
-            )
-        elif request.terminal and terminal_thread is None:
-            logger.warning(
-                "--terminal requires exactly one thread; assistant text "
-                "will go to the log"
-            )
-        return terminal_thread
 
     def _start_live_generation(
         self,
@@ -852,13 +852,11 @@ class SummonDriver:
         adapter: ProviderAdapter,
         env: dict[str, str],
         system_prompt: str,
-        session_id: str | None,
-        terminal_thread: str | None,
         terminal_availability: TerminalAvailability | None,
         attach_decision: _GenerationAttachDecision,
     ) -> _RunningGeneration | None:
         started_at = time.monotonic()
-        handle = self._spawn(adapter, session_id, system_prompt, env)
+        handle = self._spawn(adapter, system_prompt, env)
         self._handle = handle
         self._request_close_after_publication_if_needed(handle)
         generation = self._activate_generation()
@@ -868,9 +866,7 @@ class SummonDriver:
             if self._should_start_pump_before_bootstrap(
                 self._request, adapter, availability=terminal_availability
             ):
-                pump = self._start_generation_pump(
-                    generation, handle, boot, terminal_thread
-                )
+                pump = self._start_generation_pump(generation, handle, boot)
             self._rejoin(handle, boot)
             self._ensure_generation_threads(boot)
             if self._prepare_generation_attach(
@@ -881,10 +877,7 @@ class SummonDriver:
                 self._teardown_generation(generation, handle, pump)
                 return None
             if pump is None:
-                pump = self._start_generation_pump(
-                    generation, handle, boot, terminal_thread
-                )
-            self._await_initial_session_event(adapter)
+                pump = self._start_generation_pump(generation, handle, boot)
             self._raise_if_pump_failed(generation)
             self._start_control_thread(boot)
             self._raise_if_control_failed()
@@ -909,15 +902,12 @@ class SummonDriver:
         generation: _GenerationContext,
         handle: AdapterHandle,
         boot: _BootstrapResult,
-        terminal_thread: str | None,
     ) -> threading.Thread:
         return self._start_pump(
             generation,
             handle,
             db_path=self._db_path,
             token=boot.token,
-            member_id=boot.member_id,
-            terminal_thread=terminal_thread,
         )
 
     def _ensure_generation_threads(self, boot: _BootstrapResult) -> None:
@@ -1005,7 +995,8 @@ class SummonDriver:
     ) -> str:
         """Settle, then orient, escalate, or report shutdown.
 
-        Returns ``"oriented"``, ``"shutdown"``, or ``"setup-recovery"``. The
+        Returns ``"oriented"``, ``"shutdown"``, ``"exited"``, or
+        ``"setup-recovery"``. The
         setup-recovery return has already torn the suspect generation down
         ([SUM-7.4]: teardown always precedes the acknowledgement request).
         """
@@ -1057,21 +1048,45 @@ class SummonDriver:
                 )
                 raise
             if not self._shutdown.is_set():
+                if isinstance(exc, AdapterExitedError):
+                    return self._orientation_exit_outcome(running, exc)
                 self._teardown_generation(
                     running.generation, running.handle, running.pump
                 )
-                if (
-                    isinstance(exc, AdapterExitedError)
-                    and self._on_ready is not None
-                    and not self._ready_callback_invoked
-                ):
-                    raise DriverError(
-                        "provider generation exited before foreground readiness"
-                    ) from exc
                 raise DriverError(f"cannot orient the harness: {exc}") from exc
         # Leave the AdapterError scope before shutdown teardown so the caught
         # write interruption cannot become the primary shutdown failure.
         return "shutdown" if self._shutdown.is_set() else "oriented"
+
+    def _orientation_exit_outcome(
+        self,
+        running: _RunningGeneration,
+        exc: AdapterExitedError,
+    ) -> str:
+        if self._on_ready is None or self._ready_callback_invoked:
+            return "exited"
+        self._teardown_generation(running.generation, running.handle, running.pump)
+        raise DriverError(
+            "provider generation exited before foreground readiness"
+        ) from exc
+
+    def _finish_orientation_outcome(
+        self,
+        outcome: str,
+        running: _RunningGeneration,
+        boot: _BootstrapResult,
+        consecutive_crashes: int,
+        adapter: ProviderAdapter,
+    ) -> tuple[int, int | None]:
+        if outcome == "shutdown":
+            return consecutive_crashes, self._shutdown_running_generation(running, boot)
+        if outcome == "exited":
+            crashes, _ = self._resume_after_harness_exit(
+                running, boot, consecutive_crashes, adapter=adapter
+            )
+            return crashes, None
+        assert outcome == "setup-recovery"
+        return consecutive_crashes, None
 
     def _await_running_generation(
         self, running: _RunningGeneration, boot: _BootstrapResult
@@ -1146,11 +1161,7 @@ class SummonDriver:
         self._shutdown.wait(timeout=delay)
         if self._shutdown.is_set():
             return crashes, None
-        stored = get_session(self._ledger(), boot.member_id)
-        session_id = (
-            stored["provider_session_id"] if stored is not None else None
-        ) or running.handle.session_id
-        return crashes, session_id
+        return crashes, None
 
     # --- ears: the watch handler ([SUM-5]) ---------------------------------
 
@@ -1206,7 +1217,6 @@ class SummonDriver:
                 token=self._generation_counter,
                 completion=threading.Event(),
                 harness_dead=threading.Event(),
-                session_observed=threading.Event(),
                 wake=threading.Event(),
                 exit=_GenerationExit(),
                 failure=_GenerationFailure(),
@@ -1216,7 +1226,6 @@ class SummonDriver:
             # pump retains only its context objects and can never reach these
             # aliases after the next generation is published.
             self._harness_dead = generation.harness_dead
-            self._session_observed = generation.session_observed
             self._wake = generation.wake
             self._exit_code = None
             return generation
@@ -1356,8 +1365,6 @@ class SummonDriver:
         handle: AdapterHandle,
         db_path: str | None,
         token: str,
-        member_id: str,
-        terminal_thread: str | None,
     ) -> None:
         mouth: TautClient | None = None
         last_activity = 0.0
@@ -1371,14 +1378,10 @@ class SummonDriver:
                     persistent=True,
                     inherit_environment_identity=False,
                 )
-                queue = mouth.queue(_LEDGER_QUEUE_NAME)
             for event in handle.events():
                 last_activity = self._pump_event(
                     event,
-                    queue,
                     mouth,
-                    member_id,
-                    terminal_thread,
                     last_activity,
                     generation=generation,
                 )
@@ -1398,10 +1401,7 @@ class SummonDriver:
     def _pump_event(
         self,
         event: AdapterEvent,
-        queue: Queue,
         mouth: TautClient,
-        member_id: str,
-        terminal_thread: str | None,
         last_activity: float,
         *,
         generation: _GenerationContext,
@@ -1411,37 +1411,11 @@ class SummonDriver:
         with self._generation_lock:
             if self._active_generation is not generation:
                 return last_activity
-            if isinstance(event, SessionEvent):
-                self._record_session_event(event, queue, member_id, generation)
-            elif isinstance(event, ActivityEvent):
+            if isinstance(event, ActivityEvent):
                 last_activity = self._record_activity_event(event, mouth, last_activity)
-            elif isinstance(event, AssistantTextEvent):
-                self._record_assistant_event(event, mouth, terminal_thread)
             elif isinstance(event, ExitEvent):
                 self._record_exit_event(event, generation)
         return last_activity
-
-    def _record_session_event(
-        self,
-        event: SessionEvent,
-        queue: Queue,
-        member_id: str,
-        generation: _GenerationContext,
-    ) -> None:
-        logger.debug("session id: %s", event.session_id)
-        if self._control_loop is not None:
-            self._control_loop.update_session_id(event.session_id)
-        try:
-            update_session(
-                queue,
-                member_id=member_id,
-                provider_session_id=event.session_id,
-                updated_ts=queue.generate_timestamp(),
-            )
-        except SummonStateError as exc:
-            logger.error("could not record session id: %s", exc)
-        finally:
-            generation.session_observed.set()
 
     @staticmethod
     def _record_activity_event(
@@ -1458,23 +1432,6 @@ class SummonDriver:
             logger.debug("activity resolution failed: %s", exc)
         return now
 
-    @staticmethod
-    def _record_assistant_event(
-        event: AssistantTextEvent,
-        mouth: TautClient,
-        terminal_thread: str | None,
-    ) -> None:
-        if terminal_thread is None:
-            # stdout is diagnostics, not speech ([SUM-6]).
-            logger.info("assistant: %s", event.text)
-            return
-        try:
-            mouth.say(terminal_thread, event.text)
-        except BlankMessageError:
-            pass
-        except TautError as exc:
-            logger.error("terminal-mode post failed: %s", exc)
-
     def _record_exit_event(
         self, event: ExitEvent, generation: _GenerationContext
     ) -> None:
@@ -1487,26 +1444,11 @@ class SummonDriver:
     def _spawn(
         self,
         adapter: ProviderAdapter,
-        session_id: str | None,
         system_prompt: str,
         env: dict[str, str],
     ) -> AdapterHandle:
-        if session_id is not None:
-            try:
-                return adapter.spawn(
-                    session_id=session_id,
-                    system_prompt=system_prompt,
-                    env=env,
-                )
-            except AdapterError as exc:
-                logger.warning(
-                    "resume with session '%s' failed (%s); starting a fresh "
-                    "session with cursor replay",
-                    session_id,
-                    exc,
-                )
         try:
-            return adapter.spawn(session_id=None, system_prompt=system_prompt, env=env)
+            return adapter.spawn(system_prompt=system_prompt, env=env)
         except AdapterError as exc:
             # Release is centralized in _run's finally ([SUM-8] cleanup).
             raise DriverError(f"cannot spawn the harness: {exc}") from exc
@@ -1581,20 +1523,6 @@ class SummonDriver:
             raise DriverError("terminal interaction returned invalid availability")
         return availability
 
-    def _await_initial_session_event(self, adapter: ProviderAdapter) -> None:
-        if not adapter.emits_session_events:
-            return
-        if self._session_observed.is_set():
-            return
-        deadline = time.monotonic() + _SESSION_BOOTSTRAP_WAIT_SECONDS
-        while (
-            not self._session_observed.is_set()
-            and not self._harness_dead.is_set()
-            and not self._shutdown.is_set()
-            and time.monotonic() < deadline
-        ):
-            self._session_observed.wait(timeout=0.05)
-
     def _start_pump(
         self,
         generation: _GenerationContext,
@@ -1602,8 +1530,6 @@ class SummonDriver:
         *,
         db_path: str | None,
         token: str,
-        member_id: str,
-        terminal_thread: str | None,
     ) -> threading.Thread:
         pump = threading.Thread(
             target=self._pump,
@@ -1612,8 +1538,6 @@ class SummonDriver:
                 handle,
                 db_path,
                 token,
-                member_id,
-                terminal_thread,
             ),
             daemon=True,
             name="taut-summon-pump",
@@ -1890,7 +1814,7 @@ class SummonDriver:
         """Keep the chat watcher alive until shutdown or harness death.
 
         Watcher storage failures are not harness failures. Rebuild the
-        watcher against the same provider session first; the provider crash
+        watcher against the same provider generation first; the provider crash
         budget belongs to pump exit and injection failure.
         """
 
@@ -2031,11 +1955,6 @@ class SummonDriver:
             member_id=boot.member_id,
             name=boot.member_name,
             provider=boot.provider,
-            provider_session_id=(
-                live_handle.session_id
-                if live_handle.session_id is not None
-                else boot.provider_session_id
-            ),
         )
         run_handle = SummonRunHandle(
             member,
@@ -2099,11 +2018,6 @@ class SummonDriver:
 
         self._control_stop.clear()
         driver_pid, driver_start_time = self._require_evidence()
-        provider_session_id = (
-            self._handle.session_id
-            if self._handle is not None and self._handle.session_id is not None
-            else boot.provider_session_id
-        )
         if self._audit_start_ts is None:
             raise DriverError("rate audit start timestamp was not initialized")
         loop = ControlLoop(
@@ -2121,7 +2035,6 @@ class SummonDriver:
             ledger_queue_name=_LEDGER_QUEUE_NAME,
             driver_pid=driver_pid,
             driver_start_time=driver_start_time,
-            provider_session_id=provider_session_id,
             audit_start_ts=self._audit_start_ts,
             ready=self._control_ready,
         )

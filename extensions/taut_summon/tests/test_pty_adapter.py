@@ -277,7 +277,6 @@ def _spawn_fake(
         max_settle_s=0.5,
     )
     handle = PtyAdapter(spec).spawn(
-        session_id=None,
         system_prompt="ignored for PTY",
         env={
             "TAUT_FAKE_TUI_CONFIG": json.dumps(config),
@@ -387,7 +386,6 @@ def test_registry_maps_named_harnesses_to_pty_specs() -> None:
         assert isinstance(adapter, PtyAdapter)
         assert adapter.name == name
         assert adapter.argv == (binary,)
-        assert adapter.emits_session_events is False
     with pytest.raises(UnknownAdapterError, match="known adapters"):
         get_adapter("code")
 
@@ -444,7 +442,6 @@ def test_pty_close_retires_descendant_after_leader_exits_first(
             argv=(sys.executable, "-m", "taut_summon.scripted_provider"),
         )
     ).spawn(
-        session_id=None,
         system_prompt="ignored for PTY",
         env={"TAUT_SUMMON_SCENARIO": str(scenario_path)},
     )
@@ -500,7 +497,6 @@ def test_pty_observes_leader_exit_while_descendant_continuously_writes(
             argv=(sys.executable, "-m", "taut_summon.scripted_provider"),
         )
     ).spawn(
-        session_id=None,
         system_prompt="ignored for PTY",
         env={"TAUT_SUMMON_SCENARIO": str(scenario_path)},
     )
@@ -597,7 +593,6 @@ def test_pty_close_retires_domain_through_forced_signal_stages(
             argv=(sys.executable, "-m", "taut_summon.scripted_provider"),
         )
     ).spawn(
-        session_id=None,
         system_prompt="ignored for PTY",
         env={"TAUT_SUMMON_SCENARIO": str(scenario_path)},
     )
@@ -804,7 +799,6 @@ def test_spawn_failure_closes_master_and_slave_once(
 
     with pytest.raises(AdapterError, match="failed to spawn PTY harness"):
         PtyAdapter(PtySpec(name="broken", argv=("broken",))).spawn(
-            session_id=None,
             system_prompt="ignored",
             env={},
         )

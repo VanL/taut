@@ -14,7 +14,7 @@ from simplebroker.ext import SidecarSession
 from taut.persistence._components import PersistenceComponentCompatibilityError
 from taut_summon import _state
 
-_FIELDS = {
+_V1_FIELDS = {
     "type",
     "member_id",
     "token",
@@ -23,6 +23,7 @@ _FIELDS = {
     "wired",
     "updated_ts",
 }
+_V2_FIELDS = _V1_FIELDS - {"provider_session_id"}
 
 
 class SummonPersistenceComponent:
@@ -52,12 +53,13 @@ class SummonPersistenceComponent:
         *,
         core_member_ids: frozenset[str],
     ) -> None:
-        if version != 1:
+        if version not in {1, 2}:
             raise ValueError(f"unsupported taut-summon component version {version}")
+        expected_fields = _V1_FIELDS if version == 1 else _V2_FIELDS
         seen: set[str] = set()
         previous: str | None = None
         for record in records:
-            if set(record) != _FIELDS or record.get("type") != "session":
+            if set(record) != expected_fields or record.get("type") != "session":
                 raise ValueError("invalid taut-summon session record fields")
             member_id = record["member_id"]
             if (
@@ -71,8 +73,11 @@ class SummonPersistenceComponent:
                 or not isinstance(record["provider"], str)
                 or not record["provider"]
                 or (
-                    record["provider_session_id"] is not None
-                    and not isinstance(record["provider_session_id"], str)
+                    version == 1
+                    and (
+                        record["provider_session_id"] is not None
+                        and not isinstance(record["provider_session_id"], str)
+                    )
                 )
                 or not isinstance(record["wired"], bool)
                 or not _valid_updated_ts(record["updated_ts"])
@@ -92,7 +97,12 @@ class SummonPersistenceComponent:
         _state.load_persistence_records(
             session,
             (
-                {**record, "updated_ts": _updated_ts_as_int(record["updated_ts"])}
+                {
+                    key: value
+                    for key, value in record.items()
+                    if key != "provider_session_id"
+                }
+                | {"updated_ts": _updated_ts_as_int(record["updated_ts"])}
                 for record in records
             ),
         )

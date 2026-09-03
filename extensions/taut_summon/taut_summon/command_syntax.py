@@ -26,7 +26,6 @@ def provide_syntax() -> CommandSyntaxProvider:
         ),
         options=(
             OptionSyntax("provider", ("--provider",), True),
-            OptionSyntax("terminal", ("--terminal",)),
             OptionSyntax("attach", ("--attach",)),
             OptionSyntax("detach", ("--detach",)),
             OptionSyntax("takeover", ("--takeover",)),

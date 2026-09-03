@@ -63,11 +63,9 @@ def test_standalone_human_records_escape_all_dynamic_status_fields(
         for field in (
             "live.name",
             "live.provider",
-            "live.session",
             "status.name",
             "status.driver",
             "status.provider",
-            "status.session",
             "status.lag-thread",
             "status.detail-key",
             "status.detail-value",
@@ -78,7 +76,6 @@ def test_standalone_human_records_escape_all_dynamic_status_fields(
             member_id="m_" + "a" * 26,
             name=fields["live.name"],
             provider=fields["live.provider"],
-            provider_session_id=fields["live.session"],
         )
     )
     _print_status(
@@ -87,7 +84,6 @@ def test_standalone_human_records_escape_all_dynamic_status_fields(
             name=fields["status.name"],
             driver=fields["status.driver"],
             provider=fields["status.provider"],
-            provider_session_id=fields["status.session"],
             thread_count=1,
             cursor_lag={fields["status.lag-thread"]: 2},
             details={
@@ -101,8 +97,8 @@ def test_standalone_human_records_escape_all_dynamic_status_fields(
         assert f"summon.{field}:{escaped_suffix}" in output
     assert output.endswith("\n")
     lines = output.splitlines()
-    assert [line.count("\t") for line in lines] == [3, 6]
-    _assert_only_structural_newlines(output, expected_tabs=9)
+    assert [line.count("\t") for line in lines] == [2, 5]
+    _assert_only_structural_newlines(output, expected_tabs=7)
 
 
 def test_standalone_human_records_inherit_project_terminal_policy(
@@ -133,7 +129,6 @@ def test_standalone_human_records_inherit_project_terminal_policy(
             member_id="m_" + "a" * 26,
             name="MARK",
             provider="provider",
-            provider_session_id=None,
         )
     )
 
@@ -271,7 +266,6 @@ def test_native_summon_command_owns_safe_logging_without_replacing_host_handlers
         args = argparse.Namespace(
             name="reviewer",
             threads=["general"],
-            terminal=False,
             persona=None,
             system_prompt_file=None,
             rate_limit=None,
@@ -350,7 +344,6 @@ def test_native_summon_command_uses_authoritative_context_streams_for_attach_not
     args = argparse.Namespace(
         name="reviewer",
         threads=["general"],
-        terminal=False,
         persona=None,
         system_prompt_file=None,
         rate_limit=None,
@@ -812,7 +805,6 @@ def test_run_parses_placeholder_flags() -> None:
         [
             "run",
             "claude",
-            "--terminal",
             "--persona",
             "standing reviewer",
             "--system-prompt-file",
@@ -825,7 +817,6 @@ def test_run_parses_placeholder_flags() -> None:
     )
     request = run_request(parsed)
 
-    assert request.terminal is True
     assert request.persona == "standing reviewer"
     assert request.system_prompt_file == "prompt.md"
     assert request.rate_limit == 30
@@ -1013,7 +1004,7 @@ def test_cli_run_reports_missing_adapter_exit_1(
     assert rc == 1
     assert "no adapter named 'zz-unknown'" in err
     assert "known adapters:" in err
-    for name in ("claude", "claude-stream", "coder", "pty", "scripted"):
+    for name in ("claude", "coder", "pty", "scripted"):
         assert name in err
     assert out == ""
     assert "Traceback" not in err
@@ -1130,7 +1121,6 @@ def test_cli_stop_dead_driver_returns_exit_2_without_control_wait(
             member_id=member.member_id,
             token=member.token,
             provider="scripted",
-            provider_session_id=None,
             driver_pid=pid,
             driver_start_time=start,
             updated_ts=queue.generate_timestamp(),
@@ -1176,7 +1166,6 @@ def test_cli_status_bare_lists_live_sessions(
             member_id=member.member_id,
             token=member.token,
             provider="scripted",
-            provider_session_id="sess-live",
             driver_pid=pid,
             driver_start_time=start,
             updated_ts=queue.generate_timestamp(),
@@ -1187,7 +1176,7 @@ def test_cli_status_bare_lists_live_sessions(
     rc, out, err = run_summon_cli("status", "--db", db, cwd=tmp_path)
 
     assert rc == 0
-    assert out == "reviewer\tscripted\tlive\tsession=sess-live"
+    assert out == "reviewer\tscripted\tlive"
     assert err == ""
 
 

@@ -1339,7 +1339,6 @@ def test_summon_public_status_and_live_members_keep_correlated_fields() -> None:
         name="agent",
         driver="codex",
         provider="openai",
-        provider_session_id="session-1",
         thread_count=2,
         cursor_lag={"general": 3},
         details={"state": "ready"},
@@ -1348,7 +1347,6 @@ def test_summon_public_status_and_live_members_keep_correlated_fields() -> None:
         member_id="m_agent",
         name="agent",
         provider="openai",
-        provider_session_id="session-1",
     )
 
     rendered_status = _safe_projection(status)
@@ -1356,14 +1354,13 @@ def test_summon_public_status_and_live_members_keep_correlated_fields() -> None:
         "agent",
         "provider=openai",
         "driver=codex",
-        "session=session-1",
         "threads=2",
         "#general:3",
         "state=ready",
     ):
         assert expected in rendered_status
     rendered_member = _safe_projection(member)
-    for expected in ("agent", "openai", "live", "session=session-1"):
+    for expected in ("agent", "openai", "live"):
         assert expected in rendered_member
 
 
@@ -1460,7 +1457,6 @@ def test_broken_summon_startup_and_sync_operations_stay_visible(
                     persona=None,
                     system_prompt_file=None,
                     rate_limit=None,
-                    terminal=False,
                     attach=False,
                     detach=False,
                     takeover=False,
@@ -1478,7 +1474,7 @@ def test_native_and_textual_summon_routes_share_confirmation_before_suspend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from taut_summon import _adapter as adapter_module
-    from taut_summon._scripted import ScriptedAdapter
+    from taut_summon._pty import PtyAdapter, PtySpec
 
     from taut_tui import summon as tui_summon
     from taut_tui.app import TautApp
@@ -1489,15 +1485,12 @@ def test_native_and_textual_summon_routes_share_confirmation_before_suspend(
     TautClient.init(db_path=db_path)
     spawn_calls: list[str] = []
 
-    def forbidden_spawn(self: ScriptedAdapter, **_kwargs: object) -> object:
+    def forbidden_spawn(self: PtyAdapter, **_kwargs: object) -> object:
         spawn_calls.append(self.name)
         raise AssertionError("provider spawned before confirmation cancellation")
 
-    def grok_factory() -> ScriptedAdapter:
-        adapter = ScriptedAdapter()
-        adapter.name = "grok"
-        adapter.supports_attach = True
-        return adapter
+    def grok_factory() -> PtyAdapter:
+        return PtyAdapter(PtySpec(name="grok", argv=("unused",)))
 
     # This test owns host routing and the pre-spawn acknowledgement boundary,
     # not the POSIX-only PTY transport. The scripted provider is the public
@@ -1505,7 +1498,7 @@ def test_native_and_textual_summon_routes_share_confirmation_before_suspend(
     # so both exact route inputs still traverse provider resolution. Any
     # attempted spawn remains a firing failure.
     monkeypatch.setitem(adapter_module._FACTORIES, "grok", grok_factory)
-    monkeypatch.setattr(ScriptedAdapter, "spawn", forbidden_spawn)
+    monkeypatch.setattr(PtyAdapter, "spawn", forbidden_spawn)
     monkeypatch.setattr(tui_summon, "_standard_terminal_is_suitable", lambda: True)
 
     async def exercise() -> None:

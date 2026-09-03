@@ -84,7 +84,6 @@ class SummonStartSubmission:
     persona: str | None
     system_prompt_file: str | None
     rate_limit: int | None
-    terminal: bool
     attach: bool
     detach: bool
     takeover: bool
@@ -834,7 +833,6 @@ class SummonStartScreen(_TautModalScreen[SummonStartSubmission | None]):
             yield Input(id="summon-system-prompt", classes="form-field")
             yield Label("Rate limit", classes="field-label")
             yield Input(type="integer", id="summon-rate-limit", classes="form-field")
-            yield Checkbox("Terminal mode", id="summon-terminal")
             yield Checkbox("Attach", id="summon-attach")
             yield Checkbox("Detach", id="summon-detach")
             yield Checkbox("Take over stale claim", id="summon-takeover")
@@ -898,7 +896,6 @@ class SummonStartScreen(_TautModalScreen[SummonStartSubmission | None]):
                 persona=persona,
                 system_prompt_file=system_prompt_file,
                 rate_limit=rate_limit,
-                terminal=self.query_one("#summon-terminal", Checkbox).value,
                 attach=self.query_one("#summon-attach", Checkbox).value,
                 detach=self.query_one("#summon-detach", Checkbox).value,
                 takeover=self.query_one("#summon-takeover", Checkbox).value,

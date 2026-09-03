@@ -42,12 +42,10 @@
   `channel_show`, and `list_workspaces`; `destructiveHint=true` only for
   `message_delete` and `leave`; every other tool sets it false explicitly.
 
-- Summon's `claude-stream` adapter no longer treats a Claude Code event
-  family it does not know as harness death. Unknown top-level event types,
-  unknown `system` subtypes, and unknown assistant content blocks are logged
-  once per shape at warning level and skipped; `init` or `result` without a
-  session id, an assistant event without a content list, and malformed JSON
-  still raise `AdapterError`.
+- Summon now routes every named harness through one interactive PTY adapter.
+  The Claude-specific structured adapter, terminal-mode speech path, and
+  provider-session runtime API are removed. Released persistence version 1
+  records remain readable; new dumps use version 2 without the session field.
 
 - Core schema startup is now a read in the steady state. `ensure_schema`
   reads the stored version and load-guard rows in one ordinary session and

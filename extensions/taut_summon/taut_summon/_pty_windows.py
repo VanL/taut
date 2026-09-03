@@ -631,10 +631,6 @@ class WindowsPtyHandle:
         self._events.put(ActivityEvent(description="spawn"))
 
     @property
-    def session_id(self) -> None:
-        return None
-
-    @property
     def pid(self) -> int:
         return self._pid
 

@@ -80,7 +80,6 @@ def _status_reply() -> dict[str, Any]:
         "request_id": "req-1",
         "driver": "alive",
         "provider": "scripted",
-        "session_id": "sess-1",
         "thread_count": 1,
         "cursor_lag": {"general": 0},
         "control_health": "ok",
@@ -152,7 +151,6 @@ def _foreground_request(name: str) -> Any:
     return SummonRequest(
         name=name,
         threads=("general",),
-        terminal=False,
         persona=None,
         system_prompt_file=None,
         rate_limit=None,
@@ -241,7 +239,7 @@ def test_foreground_ready_callback_is_once_and_control_live_across_resume(
         monkeypatch,
         tmp_path,
         tag="ready-resume",
-        scenario={"session_id": "ready-session"},
+        scenario={},
     )
     controller = SummonController(db_path=db)
     ready = threading.Event()
@@ -274,9 +272,7 @@ def test_foreground_ready_callback_is_once_and_control_live_across_resume(
     assert callback_threads == [worker.ident]
     assert handle.member.name == "Scripted"
     assert handle.member.provider == "scripted"
-    assert handle.member.provider_session_id == "ready-session"
     assert callback_statuses[0].member_id == handle.member.member_id
-    assert callback_statuses[0].provider_session_id == "ready-session"
     with pytest.raises(AttributeError):
         handle.member = handle.member
 
@@ -520,7 +516,7 @@ def test_all_advertised_provider_names_resolve_to_pty_adapter() -> None:
 
 def test_structured_adapter_surface_is_absent() -> None:
     import taut_summon
-    from taut_summon import SummonController, _adapter, get_adapter
+    from taut_summon import _adapter
 
     assert "AssistantTextEvent" not in _adapter.__dict__
     assert "SessionEvent" not in _adapter.__dict__
@@ -530,10 +526,6 @@ def test_structured_adapter_surface_is_absent() -> None:
     assert "AssistantTextEvent" not in taut_summon.__all__
     assert "SessionEvent" not in taut_summon.__all__
     assert "ScriptedAdapter" not in taut_summon.__all__
-    for name in SummonController().provider_names():
-        adapter = get_adapter(name)
-        assert not hasattr(adapter, "supports_terminal_mode")
-        assert not hasattr(adapter, "emits_session_events")
 
 
 def test_claude_stream_is_unknown_and_not_advertised() -> None:
@@ -545,23 +537,20 @@ def test_claude_stream_is_unknown_and_not_advertised() -> None:
 
 
 def _stored_provider_request(name: str, provider: str | None) -> Any:
-    """Build through the public model while the deletion test is still red."""
+    """Build the public request used by legacy-provider recovery probes."""
     from taut_summon import SummonRequest
 
-    values: dict[str, Any] = {
-        "name": name,
-        "threads": ("general",),
-        "persona": None,
-        "system_prompt_file": None,
-        "rate_limit": None,
-        "attach": False,
-        "detach": True,
-        "provider_flag": provider,
-        "takeover": False,
-    }
-    if "terminal" in {field.name for field in fields(SummonRequest)}:
-        values["terminal"] = False
-    return SummonRequest(**values)
+    return SummonRequest(
+        name=name,
+        threads=("general",),
+        persona=None,
+        system_prompt_file=None,
+        rate_limit=None,
+        attach=False,
+        detach=True,
+        provider_flag=provider,
+        takeover=False,
+    )
 
 
 def _create_stored_provider_member(
@@ -588,11 +577,15 @@ def _create_stored_provider_member(
             member_id=member.member_id,
             token=member.token,
             provider=provider,
-            provider_session_id="released-v1-session",
             driver_pid=None if partial_evidence else driver_pid,
             driver_start_time=None if partial_evidence else driver_start_time,
             updated_ts=queue.generate_timestamp(),
         )
+        with queue.sidecar(transaction=True) as session:
+            session.run(
+                "UPDATE taut_summon_sessions SET provider_session_id = ? WHERE member_id = ?",
+                ("released-v1-session", member.member_id),
+            )
         if partial_evidence:
             with queue.sidecar(transaction=True) as session:
                 session.run(
@@ -716,6 +709,7 @@ def test_public_start_refuses_legacy_provider_recovery_after_predicate_loss(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    import taut_summon._driver as driver_module
     from taut_summon import (
         ShellSummonInteraction,
         SummonController,
@@ -730,24 +724,6 @@ def test_public_start_refuses_legacy_provider_recovery_after_predicate_loss(
         driver_pid=None,
         driver_start_time=None,
     )
-    queue = Queue("taut.summon_state", db_path=str(db))
-    try:
-        with queue.sidecar(transaction=True) as session:
-            session.run(
-                """
-                CREATE TRIGGER lose_legacy_provider_predicate
-                BEFORE UPDATE OF provider ON taut_summon_sessions
-                WHEN OLD.provider = 'claude-stream' AND NEW.provider = 'claude'
-                BEGIN
-                    DELETE FROM taut_summon_sessions
-                    WHERE member_id = OLD.member_id;
-                END
-                """,
-                (),
-            )
-    finally:
-        queue.close()
-
     supervised: list[str] = []
     monkeypatch.setattr(
         SummonDriver,
@@ -756,21 +732,51 @@ def test_public_start_refuses_legacy_provider_recovery_after_predicate_loss(
             supervised.append(boot.provider) or 0
         ),
     )
-    controller = SummonController(db_path=db)
-    interaction = ShellSummonInteraction(
-        input_stream=io.StringIO(), output_stream=io.StringIO()
-    )
+    original_liveness = driver_module.driver_liveness
+    contenders_ready = threading.Barrier(2)
 
-    with pytest.raises(SummonOperationError):
-        controller.run_foreground(
-            _stored_provider_request("reviewer", "claude"), interaction
+    def synchronized_liveness(row: Any) -> Any:
+        result = original_liveness(row)
+        contenders_ready.wait(timeout=5.0)
+        return result
+
+    monkeypatch.setattr(driver_module, "driver_liveness", synchronized_liveness)
+    outcomes: list[BaseException | None] = []
+
+    def run_contender() -> None:
+        controller = SummonController(db_path=db)
+        interaction = ShellSummonInteraction(
+            input_stream=io.StringIO(), output_stream=io.StringIO()
         )
-    assert supervised == []
+        try:
+            controller.run_foreground(
+                _stored_provider_request("reviewer", "claude"), interaction
+            )
+        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
+            outcomes.append(exc)
+        else:
+            outcomes.append(None)
+
+    contenders = [threading.Thread(target=run_contender) for _ in range(2)]
+    for contender in contenders:
+        contender.start()
+    for contender in contenders:
+        contender.join(timeout=10.0)
+
+    assert all(not contender.is_alive() for contender in contenders)
+    assert len(supervised) == 1
+    assert sum(outcome is None for outcome in outcomes) == 1
+    failures = [outcome for outcome in outcomes if outcome is not None]
+    assert len(failures) == 1
+    assert isinstance(failures[0], SummonOperationError)
+    assert "changed concurrently" in str(failures[0])
     queue = Queue("taut.summon_state", db_path=str(db))
     try:
-        assert get_session(queue, member_id) is None
+        row = get_session(queue, member_id)
     finally:
         queue.close()
+    assert row is not None
+    assert row["provider"] == "claude"
 
 
 def test_controller_empty_list_returns_empty_tuple_without_printing(
@@ -814,7 +820,6 @@ def test_controller_lists_live_sessions_as_typed_current_members(
             member_id=created[0][0],
             token=created[0][1],
             provider="scripted",
-            provider_session_id="sess-live",
             driver_pid=pid,
             driver_start_time=start,
             updated_ts=queue.generate_timestamp(),
@@ -824,7 +829,6 @@ def test_controller_lists_live_sessions_as_typed_current_members(
             member_id=created[1][0],
             token=created[1][1],
             provider="claude",
-            provider_session_id="sess-dead",
             updated_ts=queue.generate_timestamp(),
         )
     finally:
@@ -835,7 +839,6 @@ def test_controller_lists_live_sessions_as_typed_current_members(
             member_id=created[0][0],
             name="reviewer",
             provider="scripted",
-            provider_session_id="sess-live",
         ),
     )
 
@@ -856,10 +859,10 @@ def test_controller_status_and_stop_use_real_correlated_control_plane(
     assert first.name == "reviewer"
     assert first.driver == "alive"
     assert first.provider == "scripted"
-    assert first.provider_session_id
     assert first.thread_count == 1
     assert first.cursor_lag == {"general": 0}
     assert first.details == {
+        "awaiting_onboarding": "true",
         "control_health": "ok",
         "rate_breaches": 0,
         "rate_limited": False,

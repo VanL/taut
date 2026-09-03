@@ -311,7 +311,6 @@ def test_summon_start_screen_collects_every_typed_request_field() -> None:
             app.screen.query_one("#summon-system-prompt", Input).value = "prompt.md"
             app.screen.query_one("#summon-rate-limit", Input).value = "12"
             for selector in (
-                "#summon-terminal",
                 "#summon-attach",
                 "#summon-takeover",
             ):
@@ -328,7 +327,6 @@ def test_summon_start_screen_collects_every_typed_request_field() -> None:
             persona="careful",
             system_prompt_file="prompt.md",
             rate_limit=12,
-            terminal=True,
             attach=True,
             detach=False,
             takeover=True,

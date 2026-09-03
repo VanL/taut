@@ -167,19 +167,25 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 """
 _UPDATE_SESSION_RECORD = """
 UPDATE taut_summon_sessions
-SET token = ?, provider = ?, provider_session_id = ?,
+SET token = ?, provider = ?, provider_session_id = NULL,
     driver_pid = ?, driver_start_time = ?, updated_ts = ?
-WHERE member_id = ?
-"""
-_UPDATE_SESSION_PROVIDER_SESSION_ID = """
-UPDATE taut_summon_sessions
-SET provider_session_id = ?, updated_ts = ?
 WHERE member_id = ?
 """
 _UPDATE_SESSION_WIRED = """
 UPDATE taut_summon_sessions
 SET wired = ?, updated_ts = ?
 WHERE member_id = ?
+"""
+_REPLACE_LEGACY_PROVIDER = """
+UPDATE taut_summon_sessions
+SET provider = 'claude', provider_session_id = NULL,
+    driver_pid = NULL, driver_start_time = NULL, updated_ts = ?
+WHERE member_id = ? AND provider = 'claude-stream'
+  AND (driver_pid = ? OR (driver_pid IS NULL AND ? IS NULL))
+  AND (
+      driver_start_time = ?
+      OR (driver_start_time IS NULL AND ? IS NULL)
+  )
 """
 _UPDATE_DRIVER_FROM_EMPTY = """
 UPDATE taut_summon_sessions
@@ -522,7 +528,6 @@ def record_session(
     member_id: str,
     token: str,
     provider: str,
-    provider_session_id: str | None = None,
     driver_pid: int | None = None,
     driver_start_time: str | None = None,
     updated_ts: int,
@@ -547,7 +552,7 @@ def record_session(
                     member_id,
                     token,
                     provider,
-                    provider_session_id,
+                    None,
                     driver_pid,
                     driver_start_time,
                     0,
@@ -560,7 +565,6 @@ def record_session(
                 (
                     token,
                     provider,
-                    provider_session_id,
                     driver_pid,
                     driver_start_time,
                     updated_ts,
@@ -614,7 +618,6 @@ def persistence_records(queue: Queue) -> list[dict[str, Any]]:
                 "member_id": parsed["member_id"],
                 "token": parsed["token"],
                 "provider": parsed["provider"],
-                "provider_session_id": parsed["provider_session_id"],
                 "wired": parsed["wired"],
                 "updated_ts": parsed["updated_ts"],
             }
@@ -646,13 +649,49 @@ def load_persistence_records(
                 record["member_id"],
                 record["token"],
                 record["provider"],
-                record["provider_session_id"],
+                None,
                 None,
                 None,
                 1 if record["wired"] else 0,
                 record["updated_ts"],
             ),
         )
+
+
+def replace_legacy_provider(
+    queue: Queue,
+    *,
+    member_id: str,
+    expected_driver_pid: int | None,
+    expected_driver_start_time: str | None,
+    updated_ts: int,
+) -> SummonSessionRow:
+    """Replace one exact retired ``claude-stream`` row with ``claude``."""
+
+    with queue.sidecar(transaction=True) as session:
+        session.run(
+            _REPLACE_LEGACY_PROVIDER,
+            (
+                updated_ts,
+                member_id,
+                expected_driver_pid,
+                expected_driver_pid,
+                expected_driver_start_time,
+                expected_driver_start_time,
+            ),
+        )
+        replaced = _session_row(_one(session, _SESSION_SELECT_BY_MEMBER, (member_id,)))
+        if (
+            replaced is None
+            or replaced["provider"] != "claude"
+            or replaced["provider_session_id"] is not None
+            or (replaced["driver_pid"], replaced["driver_start_time"]) != (None, None)
+            or replaced["updated_ts"] != updated_ts
+        ):
+            raise SummonStateError(
+                f"member '{member_id}' legacy provider changed concurrently"
+            )
+    return replaced
 
 
 def driver_liveness(row: SummonSessionRow) -> _Liveness:
@@ -669,29 +708,6 @@ def driver_liveness(row: SummonSessionRow) -> _Liveness:
     if pid is None or start is None:
         return "indeterminate"
     return _evidence_liveness(pid, start)
-
-
-def update_session(
-    queue: Queue,
-    *,
-    member_id: str,
-    provider_session_id: str | None,
-    updated_ts: int,
-) -> SummonSessionRow:
-    """Update the provider session id (the event pump's ledger write)."""
-
-    with queue.sidecar(transaction=True) as session:
-        row = _one(session, _SESSION_SELECT_BY_MEMBER, (member_id,))
-        if row is None:
-            raise SummonStateError(f"no summon session for member '{member_id}'")
-        session.run(
-            _UPDATE_SESSION_PROVIDER_SESSION_ID,
-            (provider_session_id, updated_ts, member_id),
-        )
-    stored = get_session(queue, member_id)
-    if stored is None:
-        raise SummonStateError("updated session could not be read back")
-    return stored
 
 
 def get_wired(queue: Queue, member_id: str) -> bool:

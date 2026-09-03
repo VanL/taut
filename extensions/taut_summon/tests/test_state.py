@@ -47,7 +47,6 @@ from taut_summon._state import (
     release_claim,
     release_driver,
     set_wired,
-    update_session,
 )
 
 from taut.client import TautClient
@@ -221,7 +220,6 @@ def test_version_gate_refuses_older_schema(state_queue: Queue) -> None:
         member_id="m_refusal_probe",
         token="taut-refusal-token",
         provider="scripted",
-        provider_session_id="session-before-refusal",
         updated_ts=ts,
     )
     _set_meta_value(state_queue, SUMMON_SCHEMA_VERSION_KEY, "1")
@@ -384,7 +382,6 @@ def test_record_session_get_round_trip(state_queue: Queue) -> None:
         member_id="m_abc",
         token="taut-tok-1",
         provider="claude",
-        provider_session_id="sess-1",
         driver_pid=pid,
         driver_start_time=start,
         updated_ts=ts,
@@ -395,7 +392,7 @@ def test_record_session_get_round_trip(state_queue: Queue) -> None:
     assert row["member_id"] == "m_abc"
     assert row["token"] == "taut-tok-1"
     assert row["provider"] == "claude"
-    assert row["provider_session_id"] == "sess-1"
+    assert row["provider_session_id"] is None
     assert row["driver_pid"] == pid
     assert row["driver_start_time"] == start
     assert row["wired"] is False
@@ -410,7 +407,6 @@ def test_record_session_upsert_is_idempotent(state_queue: Queue) -> None:
         member_id="m_abc",
         token="taut-tok-1",
         provider="claude",
-        provider_session_id="sess-1",
         updated_ts=ts1,
     )
 
@@ -420,40 +416,13 @@ def test_record_session_upsert_is_idempotent(state_queue: Queue) -> None:
         member_id="m_abc",
         token="taut-tok-1",
         provider="claude",
-        provider_session_id="sess-2",
         updated_ts=ts2,
     )
 
     row = get_session(state_queue, "m_abc")
     assert row is not None
-    assert row["provider_session_id"] == "sess-2"
+    assert row["provider_session_id"] is None
     assert row["updated_ts"] == ts2
-
-
-def test_update_session_changes_provider_session_id(state_queue: Queue) -> None:
-    ensure_summon_schema(state_queue)
-    record_session(
-        state_queue,
-        member_id="m_abc",
-        token="taut-tok-1",
-        provider="claude",
-        updated_ts=state_queue.generate_timestamp(),
-    )
-
-    ts = state_queue.generate_timestamp()
-    update_session(
-        state_queue,
-        member_id="m_abc",
-        provider_session_id="sess-9",
-        updated_ts=ts,
-    )
-
-    row = get_session(state_queue, "m_abc")
-    assert row is not None
-    assert row["provider_session_id"] == "sess-9"
-    assert row["updated_ts"] == ts
-    # Untouched columns survive the partial update.
-    assert row["token"] == "taut-tok-1"
 
 
 def test_session_round_trip_uses_canonical_projection(state_queue: Queue) -> None:
@@ -464,7 +433,6 @@ def test_session_round_trip_uses_canonical_projection(state_queue: Queue) -> Non
         member_id="m_abc",
         token="taut-tok-1",
         provider="scripted",
-        provider_session_id="sess-1",
         updated_ts=state_queue.generate_timestamp(),
     )
     set_wired(
@@ -482,13 +450,9 @@ def test_session_round_trip_uses_canonical_projection(state_queue: Queue) -> Non
     )
     assert claimed["wired"] is True
 
-    row = update_session(
-        state_queue,
-        member_id="m_abc",
-        provider_session_id="sess-2",
-        updated_ts=state_queue.generate_timestamp(),
-    )
-    assert row["provider_session_id"] == "sess-2"
+    row = get_session(state_queue, "m_abc")
+    assert row is not None
+    assert row["provider_session_id"] is None
     assert row["driver_pid"] == pid
     assert row["driver_start_time"] == start
     assert row["wired"] is True
@@ -503,7 +467,7 @@ def test_session_round_trip_uses_canonical_projection(state_queue: Queue) -> Non
     rows = list_sessions(state_queue)
     assert len(rows) == 1
     assert rows[0]["member_id"] == "m_abc"
-    assert rows[0]["provider_session_id"] == "sess-2"
+    assert rows[0]["provider_session_id"] is None
     assert rows[0]["driver_pid"] is None
 
 
@@ -516,7 +480,6 @@ def test_get_session_shifted_row_shape_fails_without_retry(
         member_id="m_abc",
         token="taut-tok-1",
         provider="scripted",
-        provider_session_id="sess-1",
         updated_ts=state_queue.generate_timestamp(),
     )
 
@@ -600,7 +563,6 @@ def test_record_session_update_preserves_wired(state_queue: Queue) -> None:
         member_id="m_abc",
         token="taut-tok-2",
         provider="pty",
-        provider_session_id=None,
         updated_ts=state_queue.generate_timestamp(),
     )
 
@@ -1375,7 +1337,6 @@ def test_core_client_flow_is_oblivious_to_summon_state(summon_db: Path) -> None:
             member_id="m_summoned",
             token="taut-test-token",
             provider="claude",
-            provider_session_id="sess-1",
             driver_pid=pid,
             driver_start_time=start,
             updated_ts=ts,

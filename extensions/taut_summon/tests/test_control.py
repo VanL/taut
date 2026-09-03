@@ -583,14 +583,13 @@ def test_control_reactor_rejects_dynamic_topology(
         client.close()
 
 
-def test_status_snapshot_uses_live_session_id_without_ledger_read() -> None:
+def test_status_snapshot_never_reads_session_ledger() -> None:
     loop = _make_loop(rate_limit=60)
     loop._ledger = cast(Queue, _ExplodingLedger())
 
-    loop.update_session_id("sess-live")
     fields = loop._status_snapshot().as_fields()
 
-    assert fields["session_id"] == "sess-live"
+    assert "session_id" not in fields
     assert fields["driver"] == "alive"
 
 

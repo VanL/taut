@@ -104,10 +104,8 @@ class PtySpec:
 class PtyAdapter:
     """Spawn an interactive harness on a pseudo-terminal."""
 
-    supports_terminal_mode: bool = False
     supports_attach: bool = True
     orientation_via_inject: bool = True
-    emits_session_events: bool = False
 
     def __init__(self, spec: PtySpec | None = None) -> None:
         self._spec = spec or PtySpec(name="pty", argv=(os.environ.get("SHELL", "sh"),))
@@ -121,11 +119,10 @@ class PtyAdapter:
     def spawn(
         self,
         *,
-        session_id: str | None,
         system_prompt: str,
         env: Mapping[str, str],
     ) -> PtyHandle:
-        del session_id, system_prompt
+        del system_prompt
         master_fd, slave_fd = pty.openpty()
         child_env = dict(os.environ)
         child_env.pop("TAUT_AS", None)
@@ -267,10 +264,6 @@ class PtyHandle:
         self._awaiting_query: str | None = None
         self._awaiting_onboarding = False
         self._pending_events: queue.SimpleQueue[AdapterEvent] = queue.SimpleQueue()
-
-    @property
-    def session_id(self) -> str | None:
-        return None
 
     @property
     def pid(self) -> int:

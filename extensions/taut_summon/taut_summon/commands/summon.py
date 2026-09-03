@@ -68,11 +68,6 @@ def configure_parser(
         metavar="PROVIDER",
         help="Select the provider adapter explicitly for a chosen member name.",
     )
-    parser.add_argument(
-        "--terminal",
-        action="store_true",
-        help="Enable one-thread terminal mode when the adapter supports it.",
-    )
     terminal_mode = parser.add_mutually_exclusive_group()
     terminal_mode.add_argument(
         "--attach",
@@ -117,7 +112,6 @@ def request_from_args(args: argparse.Namespace) -> SummonRequest:
     return SummonRequest(
         name=args.name,
         threads=tuple(args.threads) if args.threads else ("general",),
-        terminal=args.terminal,
         persona=args.persona,
         system_prompt_file=args.system_prompt_file,
         rate_limit=args.rate_limit,

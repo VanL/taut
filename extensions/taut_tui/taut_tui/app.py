@@ -1576,7 +1576,6 @@ class TautApp(App[None]):
             request = summon.build_request(
                 name=str(values["name"]),
                 threads=tuple(cast(list[str], values.get("threads") or ["general"])),
-                terminal=bool(values.get("terminal")),
                 persona=cast(str | None, values.get("persona")),
                 system_prompt_file=cast(str | None, values.get("system_prompt_file")),
                 rate_limit=cast(int | None, values.get("rate_limit")),
@@ -1712,7 +1711,6 @@ class TautApp(App[None]):
             request = summon.build_request(
                 name=submission.name,
                 threads=submission.threads,
-                terminal=submission.terminal,
                 persona=submission.persona,
                 system_prompt_file=submission.system_prompt_file,
                 rate_limit=submission.rate_limit,
@@ -3348,7 +3346,6 @@ def _safe_projection(value: object) -> str:
 
     name = getattr(value, "name", None)
     provider = getattr(value, "provider", None)
-    session = getattr(value, "provider_session_id", None)
     driver = getattr(value, "driver", None)
     thread_count = getattr(value, "thread_count", None)
     cursor_lag = getattr(value, "cursor_lag", None)
@@ -3372,11 +3369,11 @@ def _safe_projection(value: object) -> str:
         suffix = f"\n{detail}" if detail else ""
         return (
             f"Summon status\n{name}\nprovider={provider}  driver={driver}\n"
-            f"session={session or '-'}  threads={thread_count}\nlag={lag}{suffix}"
+            f"threads={thread_count}\nlag={lag}{suffix}"
         )
     member_id = getattr(value, "member_id", None)
     if name is not None and provider is not None and member_id is not None:
-        return f"{name}  {provider}  live  session={session or '-'}"
+        return f"{name}  {provider}  live"
     member_name = getattr(value, "member_name", None)
     if member_name is not None:
         return str(member_name)

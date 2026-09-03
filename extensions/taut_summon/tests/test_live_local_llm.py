@@ -460,7 +460,6 @@ def _prewire_local_llm(db: Path) -> None:
                 member_id=member.member_id,
                 token=member.token,
                 provider="pty",
-                provider_session_id=None,
                 driver_pid=None,
                 driver_start_time=None,
                 updated_ts=queue.generate_timestamp(),

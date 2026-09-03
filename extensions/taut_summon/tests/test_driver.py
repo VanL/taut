@@ -58,11 +58,7 @@ from taut_summon._adapter import (
     ActivityEvent,
     AdapterError,
     AdapterExitedError,
-    AssistantTextEvent,
     ExitEvent,
-    SessionEvent,
-    adapter_names,
-    get_adapter,
 )
 from taut_summon._control import control_in_queue_name, control_out_queue_name
 from taut_summon._driver import (
@@ -89,10 +85,8 @@ from taut_summon.interaction import (
 from taut_summon.models import SummonOperationError, SummonRequest
 
 import taut.client._identity as core_identity_module
-from taut._constants import META_QUEUE_NAME
 from taut.client import Member, Message, TautClient
 from taut.identity import capture_process
-from taut.state import SQLITE_SQL_DIALECT, SqlSidecarTautState
 
 pty = pytest.importorskip("pty", reason="POSIX PTY tests require the pty module")
 
@@ -228,7 +222,6 @@ class _CountingHandle:
         self.close_calls = 0
         self.interrupt_calls = 0
         self.request_close_calls = 0
-        self.session_id: str | None = None
 
     def output_tail(self) -> str:
         return ""
@@ -251,9 +244,7 @@ class _AttachCapableAdapter:
 class _AttachUnsupportedAdapter:
     name = "scripted"
     supports_attach = False
-    supports_terminal_mode = False
     orientation_via_inject = False
-    emits_session_events = True
 
 
 class _RecordingInteraction:
@@ -326,7 +317,6 @@ def _run_request(*, attach: bool = False, detach: bool = False) -> SummonRequest
     return SummonRequest(
         name="ptybot",
         threads=("general",),
-        terminal=False,
         persona=None,
         system_prompt_file=None,
         rate_limit=None,
@@ -616,7 +606,6 @@ def _attach_boot() -> _BootstrapResult:
         member_name="ptybot",
         token="tok",
         provider="pty",
-        provider_session_id=None,
     )
 
 
@@ -908,31 +897,6 @@ def test_raw_attach_io_failure_becomes_driver_error_after_lease_restore() -> Non
     assert interaction.lease_events == ["acquire", "restore"]
 
 
-@pytest.mark.parametrize("name", adapter_names())
-def test_registered_adapter_declares_session_event_capability(
-    name: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.delenv("TAUT_SUMMON_PTY_ARGV", raising=False)
-
-    adapter = get_adapter(name)
-
-    assert adapter.emits_session_events is (name == "scripted")
-
-
-def test_non_session_adapter_skips_initial_session_wait(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    driver = _new_driver(_run_request())
-    adapter = get_adapter("claude-stream")
-    monkeypatch.setattr(
-        driver_module.time,
-        "monotonic",
-        lambda: pytest.fail("non-session adapter entered the session wait"),
-    )
-
-    driver._await_initial_session_event(adapter)
-
-
 def test_explicit_attach_refuses_before_unsupported_adapter_spawn(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -942,7 +906,6 @@ def test_explicit_attach_refuses_before_unsupported_adapter_spawn(
         member_name="ptybot",
         token="tok",
         provider="scripted",
-        provider_session_id=None,
     )
     monkeypatch.setattr(
         driver,
@@ -986,7 +949,6 @@ def test_harness_target_projection_keeps_path_env_and_redacts_server_target(
         member_name="reviewer",
         token="tok",
         provider="scripted",
-        provider_session_id=None,
     )
     driver = _new_driver(_run_request())
     sqlite_path = tmp_path / ".taut.db"
@@ -1454,7 +1416,6 @@ def test_harness_death_before_watcher_publication_stops_owner_before_run(
                     member_name="reviewer",
                     token="tok",
                     provider="scripted",
-                    provider_session_id=None,
                 )
             )
         except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
@@ -1543,7 +1504,6 @@ def test_live_watcher_after_bounded_join_is_fatal(
                     member_name="reviewer",
                     token="tok",
                     provider="scripted",
-                    provider_session_id=None,
                 )
             )
         except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
@@ -1614,7 +1574,6 @@ def test_watcher_failure_rebuilds_without_closing_provider(
             member_name="reviewer",
             token="tok",
             provider="scripted",
-            provider_session_id=None,
         )
     )
 
@@ -1627,10 +1586,6 @@ def test_watcher_failure_rebuilds_without_closing_provider(
 def test_pump_constructs_mouth_client_on_pump_thread(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class FakeQueue:
-        def generate_timestamp(self) -> int:
-            return 1
-
     class FakeMouth:
         created_on: ClassVar[list[int]] = []
         whoami_on: ClassVar[list[int]] = []
@@ -1639,10 +1594,6 @@ def test_pump_constructs_mouth_client_on_pump_thread(
         def __init__(self, **kwargs: Any) -> None:
             assert kwargs.get("persistent") is True
             self.created_on.append(threading.get_ident())
-
-        def queue(self, name: str) -> FakeQueue:
-            assert name == "taut.summon_state"
-            return FakeQueue()
 
         def whoami(self) -> None:
             self.whoami_on.append(threading.get_ident())
@@ -1665,8 +1616,6 @@ def test_pump_constructs_mouth_client_on_pump_thread(
         cast(Any, FakeHandle()),
         db_path=None,
         token="tok",
-        member_id="m_reviewer",
-        terminal_thread=None,
     )
     thread.join(timeout=5.0)
 
@@ -1684,11 +1633,6 @@ def test_stale_generation_events_cannot_mutate_active_or_external_state(
 ) -> None:
     effects: list[str] = []
 
-    class RecordingQueue:
-        def generate_timestamp(self) -> int:
-            effects.append("timestamp")
-            return 1
-
     class RecordingMouth:
         def whoami(self) -> None:
             effects.append("presence")
@@ -1696,45 +1640,28 @@ def test_stale_generation_events_cannot_mutate_active_or_external_state(
         def say(self, _thread: str, _text: str) -> None:
             effects.append("post")
 
-    class RecordingControl:
-        def update_session_id(self, _session_id: str) -> None:
-            effects.append("control-session")
-
-    monkeypatch.setattr(
-        driver_module,
-        "update_session",
-        lambda *_args, **_kwargs: effects.append("ledger-session"),
-    )
     driver = _new_driver(_run_request())
     stale = driver._activate_generation()
     active = driver._activate_generation()
-    driver._control_loop = cast(Any, RecordingControl())
     caplog.set_level("INFO", logger="taut_summon.driver")
 
     for event in (
-        SessionEvent("stale-session"),
         ActivityEvent("stale-activity"),
-        AssistantTextEvent("stale-assistant"),
         ExitEvent(97),
     ):
         driver._pump_event(
             event,
-            cast(Any, RecordingQueue()),
             cast(Any, RecordingMouth()),
-            "m_reviewer",
-            "general",
             0.0,
             generation=stale,
         )
     driver._finish_generation(stale)
 
     assert effects == []
-    assert not active.session_observed.is_set()
     assert active.exit.returncode is None
     assert not driver._harness_dead.is_set()
     assert not driver._wake.is_set()
     assert driver._exit_code is None
-    assert "stale-assistant" not in caplog.text
 
 
 def test_checked_pump_join_timeout_retires_generation_and_is_fatal() -> None:
@@ -1849,7 +1776,6 @@ def test_pump_join_timeout_prevents_next_generation_spawn(
 
     class HangingAfterExitHandle:
         pid = 123
-        session_id: str | None = None
 
         def events(self) -> Any:
             try:
@@ -1864,10 +1790,8 @@ def test_pump_join_timeout_prevents_next_generation_spawn(
 
     class FakeAdapter:
         name = "fake"
-        supports_terminal_mode = False
         supports_attach = False
         orientation_via_inject = False
-        emits_session_events = False
 
     driver = _new_driver(_run_request())
     boot = _BootstrapResult("m_reviewer", "reviewer", "tok", "fake", None)
@@ -1900,92 +1824,6 @@ def test_pump_join_timeout_prevents_next_generation_spawn(
     assert spawn_calls == [1]
 
 
-def test_session_ledger_broker_failure_is_foreground_fatal_without_resume(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-    recwarn: pytest.WarningsRecorder,
-) -> None:
-    """A real pump-side broker failure reaches the owner, never thread stderr."""
-
-    failing_ledger = Queue(
-        "taut.summon_state",
-        db_path=str(tmp_path / "missing-summon-schema.db"),
-    )
-    spawn_calls: list[int] = []
-
-    class PumpMouth:
-        def __init__(self, **_kwargs: Any) -> None:
-            pass
-
-        def queue(self, name: str) -> Queue:
-            assert name == "taut.summon_state"
-            return failing_ledger
-
-        def close(self) -> None:
-            pass
-
-    class SessionHandle:
-        pid = 123
-        session_id: str | None = None
-
-        def events(self) -> Any:
-            yield SessionEvent("session-that-cannot-be-recorded")
-
-        def close(self) -> None:
-            pass
-
-    class SessionAdapter:
-        name = "session-adapter"
-        supports_terminal_mode = False
-        supports_attach = False
-        orientation_via_inject = False
-        emits_session_events = True
-
-    driver = _new_driver(_run_request())
-    driver._backoff = ()
-    boot = _BootstrapResult(
-        "m_reviewer",
-        "reviewer",
-        "tok",
-        "session-adapter",
-        None,
-    )
-    monkeypatch.setattr(driver_module, "TautClient", PumpMouth)
-    monkeypatch.setattr(driver, "_require_adapter", lambda _provider: SessionAdapter())
-
-    def spawn(*_args: Any, **_kwargs: Any) -> SessionHandle:
-        spawn_calls.append(len(spawn_calls) + 1)
-        return SessionHandle()
-
-    monkeypatch.setattr(driver, "_spawn", spawn)
-    monkeypatch.setattr(driver, "_rejoin", lambda *_args: None)
-    monkeypatch.setattr(driver, "_ensure_threads", lambda *_args: None)
-    monkeypatch.setattr(driver, "_start_control_thread", lambda _boot: None)
-    monkeypatch.setattr(driver, "_raise_if_control_failed", lambda: None)
-
-    def wait_for_pump(*_args: Any) -> None:
-        assert driver._harness_dead.wait(timeout=2.0)
-
-    monkeypatch.setattr(driver, "_watch_until_wake", wait_for_pump)
-    monkeypatch.setattr(driver, "_run", lambda: driver._supervise(boot, "db"))
-
-    try:
-        with pytest.raises(SummonOperationError, match="event pump storage failed"):
-            driver.run()
-    finally:
-        failing_ledger.close()
-
-    captured = capsys.readouterr()
-    assert captured.out == ""
-    assert captured.err == ""
-    assert spawn_calls == [1]
-    assert not any(
-        issubclass(warning.category, pytest.PytestUnhandledThreadExceptionWarning)
-        for warning in recwarn
-    )
-
-
 class _ControlFailureWatcher:
     def __init__(self) -> None:
         self.request_stop_calls = 0
@@ -2010,7 +1848,6 @@ def _control_supervision_boot() -> _BootstrapResult:
         member_name="reviewer",
         token="tok",
         provider="scripted",
-        provider_session_id=None,
     )
 
 
@@ -2130,43 +1967,6 @@ def test_callback_absent_does_not_create_or_pass_a_control_readiness_gate(
     driver._control_thread.join(timeout=5.0)
 
     assert captured["ready"] is None
-
-
-@pytest.mark.parametrize(
-    ("live_session", "bootstrap_session", "expected"),
-    [
-        ("live-session", "bootstrap-session", "live-session"),
-        (None, "bootstrap-session", "bootstrap-session"),
-    ],
-)
-def test_foreground_handle_uses_exact_session_precedence(
-    live_session: str | None,
-    bootstrap_session: str | None,
-    expected: str | None,
-) -> None:
-    seen: list[Any] = []
-    driver = SummonDriver(
-        _run_request(),
-        interaction=ShellSummonInteraction(),
-        on_ready=seen.append,
-    )
-    handle = _CountingHandle()
-    handle.session_id = live_session
-    driver._handle = cast(Any, handle)
-    assert driver._control_ready is not None
-    driver._control_ready.set()
-    boot = _BootstrapResult(
-        member_id="m_reviewer",
-        member_name="Reviewer",
-        token="tok",
-        provider="scripted",
-        provider_session_id=bootstrap_session,
-    )
-
-    driver._await_control_and_publish_ready(boot, threading.Event())
-
-    assert len(seen) == 1
-    assert seen[0].member.provider_session_id == expected
 
 
 def test_foreground_control_readiness_timeout_requests_normal_stop(
@@ -2407,7 +2207,7 @@ def test_scripted_provider_owns_signal_cleanup_during_ready_publication(
     monkeypatch.setattr(
         scripted_provider,
         "_load_scenario",
-        lambda: {"announce_session": False},
+        dict,
     )
     monkeypatch.setattr(scripted_provider, "_install_sigint_cleanup", lambda _s: None)
     monkeypatch.setattr(scripted_provider, "_record", record)
@@ -2502,17 +2302,12 @@ def test_orientation_terminal_outcome_preserves_control_failure_and_tears_down(
             "provider generation exited before foreground readiness",
         ),
         (
-            False,
-            AdapterExitedError("provider exited during orientation"),
-            "cannot orient the harness: provider exited during orientation",
-        ),
-        (
             True,
             AdapterError("orientation write failed"),
             "cannot orient the harness: orientation write failed",
         ),
     ],
-    ids=("pending-terminal", "ready-terminal", "pending-ordinary"),
+    ids=("pending-terminal", "pending-ordinary"),
 )
 def test_orientation_failure_precedence_and_exact_teardown(
     monkeypatch: pytest.MonkeyPatch,
@@ -2573,6 +2368,36 @@ def test_orientation_failure_precedence_and_exact_teardown(
         assert any("orientation cleanup failed" in note for note in notes)
 
 
+def test_provider_exit_during_orientation_defers_teardown_to_resume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver = _new_driver(_run_request())
+    driver._on_ready = lambda _run: None
+    driver._ready_callback_invoked = True
+
+    class ExitedHandle(_CountingHandle):
+        def inject(self, _text: str) -> None:
+            raise AdapterExitedError("provider exited during orientation")
+
+    handle = ExitedHandle()
+    generation = driver._activate_generation()
+    running = types.SimpleNamespace(generation=generation, handle=handle, pump=None)
+    monkeypatch.setattr(driver, "_settle_for_orientation", lambda _handle: None)
+
+    outcome = driver._orient_running_generation(
+        cast(Any, running),
+        cast(Any, types.SimpleNamespace(orientation_via_inject=True)),
+        "orientation",
+        boot=cast(Any, types.SimpleNamespace(member_name="ptybot")),
+        availability=None,
+        attached_this_generation=False,
+    )
+
+    assert outcome == "exited"
+    assert handle.close_calls == 0
+    assert driver._active_generation is generation
+
+
 def test_orientation_terminal_outcome_during_shutdown_returns_shutdown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2616,9 +2441,7 @@ def test_stop_before_handle_publication_requests_close_on_published_handle(
     adapter = types.SimpleNamespace(
         name="scripted",
         supports_attach=False,
-        supports_terminal_mode=False,
         orientation_via_inject=False,
-        emits_session_events=False,
     )
     pump = threading.Thread(target=lambda: None)
     pump.start()
@@ -2643,7 +2466,6 @@ def test_stop_before_handle_publication_requests_close_on_published_handle(
     monkeypatch.setattr(driver, "_start_pump", lambda *_a, **_kw: pump)
     monkeypatch.setattr(driver, "_rejoin", lambda *_a, **_kw: None)
     monkeypatch.setattr(driver, "_ensure_threads", lambda *_a, **_kw: None)
-    monkeypatch.setattr(driver, "_await_initial_session_event", lambda *_a: None)
     monkeypatch.setattr(driver, "_raise_if_pump_failed", lambda *_a: None)
     monkeypatch.setattr(driver, "_start_control_thread", lambda *_a: None)
     monkeypatch.setattr(driver_module, "TautClient", FakeClient)
@@ -2654,7 +2476,6 @@ def test_stop_before_handle_publication_requests_close_on_published_handle(
             member_name="reviewer",
             token="tok",
             provider="scripted",
-            provider_session_id=None,
         ),
         "db",
     )
@@ -2672,7 +2493,6 @@ def test_pi_bootstrap_capitalizes_implied_name_and_preserves_chosen_name(
         request = SummonRequest(
             name=name,
             threads=("general",),
-            terminal=False,
             persona=None,
             system_prompt_file=None,
             rate_limit=None,
@@ -2914,45 +2734,6 @@ def test_resummon_replays_tail_and_filters_own_messages(
     assert second.stop() == 0
 
 
-def test_crash_resume_offers_stored_session_and_replays(
-    summon_db: Path, tmp_path: Path, driver_factory: Callable[..., DriverProcess]
-) -> None:
-    driver = driver_factory(
-        summon_db,
-        "scripted",
-        "general",
-        scenario={"session_id": "sess-crash-test"},
-    )
-    driver.wait_for_start()
-    say(summon_db, tmp_path, "general", "m-one")
-    driver.wait_for_message("m-one")
-
-    member = _member_by_name(summon_db, "scripted")
-    assert member is not None
-    wait_until(
-        lambda: (
-            (_session_row(summon_db, member.member_id) or {}).get("provider_session_id")
-            == "sess-crash-test"
-        ),
-        message="ledger session id",
-    )
-
-    # Kill the harness child (crash scenario, [SUM-11]) and write while
-    # it is dead.
-    os.kill(driver.child_pid(), signal.SIGKILL)
-    say(summon_db, tmp_path, "general", "m-two")
-
-    # One resume attempt with the stored session id: the scripted
-    # provider records the offered TAUT_SUMMON_SESSION; the missed
-    # message replays from the cursor (at-least-once, [SUM-5.4]).
-    driver.wait_for_start(2)
-    assert driver.starts()[1]["session"] == "sess-crash-test"
-    driver.wait_for_message("m-two", generation=1)
-    assert sum("m-one" in m for m in driver.messages()) == 1
-
-    assert driver.stop() == 0
-
-
 def test_repeated_crashes_back_off_and_exit_with_reason(
     summon_db: Path, tmp_path: Path, driver_factory: Callable[..., DriverProcess]
 ) -> None:
@@ -2977,231 +2758,6 @@ def test_repeated_crashes_back_off_and_exit_with_reason(
     assert row["driver_pid"] is None
 
 
-def test_event_pump_survives_flood_and_updates_session_ledger(
-    summon_db: Path, tmp_path: Path, driver_factory: Callable[..., DriverProcess]
-) -> None:
-    driver = driver_factory(
-        summon_db,
-        "scripted",
-        "general",
-        scenario={
-            "session_id": "sess-initial",
-            "on_start": [{"flood_activity": 500}, {"session": "sess-updated"}],
-        },
-    )
-    driver.wait_for_start()
-    wait_until(
-        lambda: _member_by_name(summon_db, "scripted") is not None,
-        message="summoned member",
-    )
-    member = _member_by_name(summon_db, "scripted")
-    assert member is not None
-
-    # The pump drained the flood (no stdout deadlock) and the session-id
-    # update landed in the ledger ([SUM-7.1]).
-    wait_until(
-        lambda: (
-            (_session_row(summon_db, member.member_id) or {}).get("provider_session_id")
-            == "sess-updated"
-        ),
-        message="session id ledger update",
-    )
-    # Injection still works after the flood.
-    say(summon_db, tmp_path, "general", "post-flood")
-    driver.wait_for_message("post-flood")
-
-    # This test owns pump throughput and ledger persistence, not POSIX signal
-    # delivery. Use the product STOP path so cleanup exercises the same shared
-    # teardown without adding an unrelated runner-sensitive signal boundary.
-    rc, _out, err = summon_cli("stop", "scripted", db=summon_db, cwd=tmp_path)
-    assert rc == 0, err
-    assert driver.wait() == 0
-
-
-def test_terminal_mode_posts_assistant_text_to_single_thread(
-    summon_db: Path, tmp_path: Path, driver_factory: Callable[..., DriverProcess]
-) -> None:
-    driver = driver_factory(
-        summon_db,
-        "scripted",
-        "general",
-        extra_args=("--terminal",),
-    )
-    driver.wait_for_start()
-
-    say(summon_db, tmp_path, "general", "hi")
-    driver.wait_for_message("[#general] van: hi")
-
-    def _echo_posted() -> bool:
-        try:
-            log = _log(summon_db, "general")
-        except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
-            return False
-        return any(
-            m.from_name == "Scripted" and m.text == "echo: [#general] van: hi"
-            for m in log
-        )
-
-    wait_until(_echo_posted, message="terminal-mode assistant post")
-
-    # Anti-loop ([SUM-5.3]/[SUM-6]): the member's own terminal-mode post is
-    # never re-injected into the harness. Settle behind a fresh marker, then
-    # assert the echoed text never appears in the provider's received log.
-    say(summon_db, tmp_path, "general", "settle-marker")
-    driver.wait_for_message("settle-marker")
-    assert not any("echo:" in m for m in driver.messages())
-
-    assert driver.stop() == 0
-
-
-def test_terminal_mode_ignores_blank_event_and_posts_next_text(
-    summon_db: Path,
-    tmp_path: Path,
-    driver_factory: Callable[..., DriverProcess],
-) -> None:
-    """[SUM-6, SUM-12] Blank core result is silent and pump stays live."""
-
-    blank = " \u00a0\u200b\u2060"
-    visible = "visible after blank"
-    driver = driver_factory(
-        summon_db,
-        "scripted",
-        "general",
-        scenario={
-            "on_start": [
-                {"assistant_text": blank},
-                {"assistant_text": visible},
-            ]
-        },
-        extra_args=("--terminal",),
-        tag="terminal-blank",
-    )
-    driver.wait_for_start()
-
-    def _visible_posted() -> bool:
-        try:
-            log = _log(summon_db, "general")
-        except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
-            return False
-        return any(
-            message.from_name == "Scripted" and message.text == visible
-            for message in log
-        )
-
-    wait_until(_visible_posted, message="visible post after blank event")
-    scripted_text = [
-        message.text
-        for message in _log(summon_db, "general")
-        if message.from_name == "Scripted" and message.kind == "message"
-    ]
-    assert scripted_text == [visible]
-    assert "terminal-mode post failed" not in driver.stderr_tail()
-    assert driver.stop() == 0
-
-
-def test_terminal_mode_still_logs_nonblank_core_post_failure(
-    summon_db: Path,
-    tmp_path: Path,
-    driver_factory: Callable[..., DriverProcess],
-) -> None:
-    """[SUM-6] Only BlankMessageError is silent."""
-
-    driver = driver_factory(
-        summon_db,
-        "scripted",
-        "general",
-        scenario={
-            "on_start": [
-                {"sleep": 1.5},
-                {"assistant_text": "visible but blocked"},
-            ]
-        },
-        extra_args=("--terminal",),
-        tag="terminal-post-error",
-    )
-    driver.wait_for_start()
-    queue = Queue(META_QUEUE_NAME, db_path=str(summon_db))
-    try:
-        SqlSidecarTautState(queue, SQLITE_SQL_DIALECT).start_channel_rename(
-            old_name="general",
-            new_name="ops",
-            affected=[{"old": "general", "new": "ops"}],
-            started_ts=queue.generate_timestamp(),
-        )
-    finally:
-        queue.close()
-
-    wait_until(
-        lambda: (
-            "terminal-mode post failed: incomplete channel rename"
-            in driver.stderr_tail()
-        ),
-        message="nonblank terminal post failure log",
-    )
-    assert driver.proc.poll() is None
-    assert driver.stop() == 0
-
-
-def test_noninteractive_driver_logging_escapes_assistant_terminal_controls(
-    summon_db: Path,
-    driver_factory: Callable[..., DriverProcess],
-) -> None:
-    probe = "assistant\x1b]52;c;Y2xpcGJvYXJk\x07\x9b\r\b\t\nrow"
-    escaped = r"assistant\x1b]52;c;Y2xpcGJvYXJk\a\x9b\r\b\t\nrow"
-    driver = driver_factory(
-        summon_db,
-        "scripted",
-        "general",
-        scenario={"on_start": [{"assistant_text": probe}]},
-    )
-    driver.wait_for_start()
-
-    wait_until(
-        lambda: escaped in driver.stderr_tail(),
-        message=f"escaped assistant log: {driver.stderr_tail()}",
-    )
-    output = driver.stderr_path.read_text(encoding="utf-8")
-    assert all(
-        character == "\n"
-        or not (ord(character) < 0x20 or 0x7F <= ord(character) <= 0x9F)
-        for character in output
-    )
-    assert driver.stop() == 0
-
-
-@PTY_XDIST_GROUP
-def test_pty_terminal_mode_is_disabled_by_capability(
-    summon_db: Path, tmp_path: Path, driver_factory: Callable[..., DriverProcess]
-) -> None:
-    pty_log = tmp_path / "pty-terminal-disabled.jsonl"
-    driver = driver_factory(
-        summon_db,
-        "ptybot",
-        "general",
-        provider="pty",
-        extra_args=("--terminal", "--detach"),
-        extra_env=_fake_pty_env(pty_log, {"queries": True, "modes": False}),
-        tag="pty-terminal-disabled",
-    )
-    wait_until(
-        lambda: _member_by_name(summon_db, "ptybot") is not None,
-        message="pty member",
-    )
-    member = _member_by_name(summon_db, "ptybot")
-    assert member is not None
-    wait_until(
-        lambda: _session_row(summon_db, member.member_id) is not None,
-        message="pty session row",
-    )
-
-    wait_until(
-        lambda: "not supported by provider 'pty'" in driver.stderr_tail(),
-        message=f"terminal capability warning; stderr: {driver.stderr_tail()}",
-    )
-    assert driver.stop() == 0
-
-
-@PTY_XDIST_GROUP
 def test_pty_detached_orientation_is_injected_before_chat(
     summon_db: Path, tmp_path: Path, driver_factory: Callable[..., DriverProcess]
 ) -> None:
@@ -3480,7 +3036,7 @@ def test_backpressure_blocked_inject_grows_unread_and_stop_still_works(
         summon_db,
         "scripted",
         "general",
-        scenario={"on_start": [{"stall": True}]},
+        scenario={"responses": [[{"stall": True}]]},
     )
     driver.wait_for_start()
     token = _member_token(summon_db, "scripted")
@@ -3507,8 +3063,8 @@ def test_backpressure_blocked_inject_grows_unread_and_stop_still_works(
 
     wait_until(lambda: _unread() >= 2, message="unread growth under stall")
     # Nothing beyond the write in flight reached the harness: the stalled
-    # provider records no message events at all.
-    assert driver.messages() == []
+    # Nothing beyond the orientation turn reached the harness.
+    assert len(driver.messages()) == 1
 
     # Stop completes despite the blocked inject: interrupt unblocks it
     # ([SUM-7.1]/[SUM-9] ordering), and the cursor lag survives.
@@ -3687,7 +3243,6 @@ def test_midbootstrap_fallback_conflict_reclaims_before_next_create(
     request = SummonRequest(
         name="reviewer",
         threads=("general",),
-        terminal=False,
         persona=None,
         system_prompt_file=None,
         rate_limit=None,
@@ -3732,7 +3287,6 @@ def test_direct_name_all_candidate_exhaustion_leaves_no_summon_debris(
     request = SummonRequest(
         name="reviewer",
         threads=("general",),
-        terminal=False,
         persona=None,
         system_prompt_file=None,
         rate_limit=None,
@@ -3797,7 +3351,6 @@ def test_multi_collision_then_post_insert_failure_reports_and_recovers_real_memb
     request = SummonRequest(
         name="reviewer",
         threads=("general",),
-        terminal=False,
         persona=None,
         system_prompt_file=None,
         rate_limit=None,
@@ -3940,7 +3493,6 @@ def test_first_summon_failure_releases_transient_name_claim(
     request = SummonRequest(
         name="reviewer",
         threads=("general",),
-        terminal=False,
         persona=None,
         system_prompt_file=None,
         rate_limit=None,
@@ -3987,7 +3539,6 @@ def test_post_create_failure_reports_real_residual_member_recovery(
     request = SummonRequest(
         name="reviewer",
         threads=("general",),
-        terminal=False,
         persona=None,
         system_prompt_file=None,
         rate_limit=None,
@@ -4312,7 +3863,7 @@ def test_default_persona_reaches_provider(
     # harness, parameterized by the member name.
     driver = driver_factory(summon_db, "scripted", "general", tag="persona")
     driver.wait_for_start()
-    prompt = driver.starts()[0]["env_system_prompt"]
+    prompt = driver.messages()[0]
     assert "## Your mouth" in prompt
     assert "'Scripted'" in prompt
     assert "#general" in prompt
@@ -4323,7 +3874,7 @@ def test_system_prompt_file_overrides_template(
     summon_db: Path, tmp_path: Path, driver_factory: Callable[..., DriverProcess]
 ) -> None:
     # --system-prompt-file replaces the template wholesale ([SUM-10]); the
-    # override reaches the provider (observable on the start line).
+    # override reaches the provider as its first interactive turn.
     prompt_file = tmp_path / "prompt.md"
     prompt_file.write_text("CUSTOM SYSTEM PROMPT MARKER", encoding="utf-8")
     driver = driver_factory(
@@ -4334,8 +3885,7 @@ def test_system_prompt_file_overrides_template(
         tag="override",
     )
     driver.wait_for_start()
-    start = driver.starts()[0]
-    assert start["env_system_prompt"] == "CUSTOM SYSTEM PROMPT MARKER"
+    assert driver.messages()[0] == "CUSTOM SYSTEM PROMPT MARKER"
     assert driver.stop() == 0
 
 
@@ -4352,7 +3902,8 @@ def test_mouth_proof_scripted_runs_taut_say(
         "general",
         scenario={
             "responses": [
-                [{"exec_taut": {"args": ["say", "general", "pong-from-mouth"]}}]
+                [],
+                [{"exec_taut": {"args": ["say", "general", "pong-from-mouth"]}}],
             ]
         },
         tag="mouth",
@@ -4391,7 +3942,7 @@ def test_repeated_failed_injects_do_not_advance_cursor(
         summon_db,
         "scripted",
         "general",
-        scenario={"on_start": [{"close_stdin": True}]},
+        scenario={"responses": [[{"close_stdin": True}]]},
         backoff="0.1,0.1",
         tag="wedged",
     )
@@ -4666,13 +4217,13 @@ def test_status_reports_live_driver_fields(
 
     rc, out, err = summon_cli("status", "reviewer", db=summon_db, cwd=tmp_path)
     assert rc == 0, err
-    # [SUM-9] STATUS fields: provider, driver liveness, session id, thread
-    # count, cursor-lag summary.
+    # [SUM-9] STATUS fields: provider, driver liveness, thread count, and
+    # cursor-lag summary.
     columns = out.split("\t")
     assert columns[0] == "reviewer"
     assert "provider=scripted" in columns
     assert "driver=alive" in columns
-    assert any(column.startswith("session=") for column in columns)
+    assert not any(column.startswith("session=") for column in columns)
     assert "threads=2" in columns
     assert any(column.startswith("lag=") for column in columns)
     assert driver.stop() == 0
@@ -4837,7 +4388,7 @@ def test_ping_responds_while_harness_busy(
         summon_db,
         "scripted",
         "general",
-        scenario={"on_start": [{"sleep": 30}]},
+        scenario={"responses": [[{"sleep": 30}]]},
         control_interval=0.1,
         tag="busy",
     )
@@ -4969,7 +4520,7 @@ def test_stop_while_inject_blocked_completes(
         summon_db,
         "scripted",
         "general",
-        scenario={"on_start": [{"stall": True}]},
+        scenario={"responses": [[{"stall": True}]]},
         control_interval=0.1,
         tag="stalled-stop",
     )
@@ -5013,6 +4564,7 @@ def test_rate_backstop_nudges_and_hard_breaches_on_flood(
         "general",
         scenario={
             "responses": [
+                [],
                 [{"exec_taut": {"args": ["say", "general", "spam"], "count": 2}}],
                 [],
                 [{"exec_taut": {"args": ["say", "general", "spam"], "count": 3}}],
@@ -5066,7 +4618,6 @@ def test_rate_audit_catches_late_thread_posts_before_first_reconciliation(
         "scripted",
         "general",
         scenario={
-            "announce_session": False,
             "on_start": [
                 {"exec_taut": {"args": ["-q", "join", "late-audit"]}},
                 {
@@ -5075,7 +4626,6 @@ def test_rate_audit_catches_late_thread_posts_before_first_reconciliation(
                         "count": 3,
                     }
                 },
-                {"session": "scripted-session"},
             ],
             "default_response": [],
         },
@@ -5112,10 +4662,7 @@ def test_rate_audit_ignores_multi_thread_bootstrap_notices_for_silent_provider(
         "dev",
         "ops",
         scenario={
-            "on_start": [
-                {"sleep": 0.5},
-                {"session": "silent-after-audits"},
-            ],
+            "on_start": [{"sleep": 0.5}],
             "default_response": [],
         },
         extra_args=("--rate-limit", "1"),
@@ -5126,17 +4673,10 @@ def test_rate_audit_ignores_multi_thread_bootstrap_notices_for_silent_provider(
     member = _member_by_name(summon_db, "scripted")
     assert member is not None
 
-    # The provider's delayed session event is a durable product barrier after
-    # several control audit cadences. If the three bootstrap notices were
-    # inside the window, limit=1 would have hard-breached and interrupted the
-    # provider before this clean state could be observed.
-    wait_until(
-        lambda: (
-            (_session_row(summon_db, member.member_id) or {}).get("provider_session_id")
-            == "silent-after-audits"
-        ),
-        message="silent provider post-audit session event",
-    )
+    # Let several control audit cadences pass after the provider becomes ready.
+    # If the three bootstrap notices were inside the window, limit=1 would have
+    # hard-breached and interrupted the provider before this clean state.
+    time.sleep(0.75)
     status = _control_request(summon_db, member.member_id, "STATUS")
     assert status is not None
     assert status["thread_count"] == 3
@@ -5162,6 +4702,7 @@ def test_rate_audit_process_leave_rejoin_resumes_on_fresh_live_queue(
         "general",
         scenario={
             "responses": [
+                [],
                 [
                     {
                         "exec_taut": {
@@ -5169,7 +4710,7 @@ def test_rate_audit_process_leave_rejoin_resumes_on_fresh_live_queue(
                             "count": 11,
                         }
                     }
-                ]
+                ],
             ],
             "default_response": [],
         },

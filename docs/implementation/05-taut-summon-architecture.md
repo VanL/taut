@@ -14,14 +14,11 @@ It does not restate the contract — that lives in the spec
 (`docs/specs/04-summon.md`, [SUM-1]–[SUM-13]). It explains *why* the code is
 shaped the way it is, and where to read and edit.
 
-Implementation status: [SUM] now promotes one PTY adapter with POSIX and
-Windows ConPTY backends, but that runtime migration is pending. The extension
-still ships the legacy scripted and `claude-stream` structured adapters, the
-POSIX-only universal PTY implementation, and the Job Object/pipe Windows
-structured path. Those modules are migration inputs, not the target
-architecture, and remain documented below only where the current code still
-owns behavior. The driver currently retains provider-session and structured-
-event branches until the deletion slice lands. The extension also ships
+Implementation status: the structured adapter runtime and provider-session
+API have been removed. Every provider registration now uses `PtyAdapter`, and
+the packaged `scripted` provider is a real interactive terminal child. The
+POSIX implementation remains in `_pty.py`; the promoted split into POSIX and
+Windows ConPTY mechanics is the next migration slice. The extension also ships
 `run`/`stop`/`status`, bootstrap, attach/detach, ears, event pump, shutdown,
 the persona template, the control plane, and the rate backstop. The control policy uses core's shared
 `BaseReactor` lifecycle and reports unexpected control-lane death to the
@@ -54,11 +51,10 @@ the SimpleBroker command layer whose option binding changed in 6.0.0 and still
 relies on the earlier reactor guarantees. The 5.2.0 reactor example remains the
 ownership-model provenance, not the supported runtime floor.
 
-Summon's current persistence adapter still writes component version 1 with the
-legacy provider-session field. The promoted target writes version 2 without
-that field, loads exact versions 1 and 2, and discards the version-1 field at
-the loader boundary. That implementation is pending. Timestamp formatting,
-ledger storage, and control-body numeric ownership do not change.
+Summon's persistence adapter writes component version 2 without the released
+provider-session field. It loads exact versions 1 and 2 and discards the
+version-1 field at the loader boundary. Timestamp formatting, ledger storage,
+and control-body numeric ownership do not change.
 
 ## Governing Spec References
 
@@ -89,23 +85,21 @@ and console mode/code-page snapshot and restoration. Registry, driver,
 readiness, terminal-query, injection, and event contracts remain platform-
 neutral.
 
-This boundary is not implemented yet. `_claude.py`, `_stream.py`,
-`_scripted.py`, `_win32_pipe.py`, `_win32_job.py`, and `_process_domain.py`
-remain current runtime owners pending their replacement proofs and deletion.
-The current typed provider-session fields, terminal-mode branches, persistence
-version-1 writer, and Windows process-test allowlist likewise remain until the
-dependent slices land. This note must not be read as evidence that Windows
-named providers already run through ConPTY.
+The public adapter and persistence deletions are implemented. The platform
+split is not: `_pty.py`, `_process_domain.py`, and `_win32_job.py` remain
+transitional owners until the ConPTY path is wired and its replacement proofs
+are green. This note must not be read as evidence that Windows named providers
+already run through ConPTY.
 
 ## Design Rationale
 
 ### Logical persistence contributor ([SUM-8], [PIO-5.3])
 
 Summon registers a lazy `taut-summon` persistence component for full-workspace
-dump/load. The component exports durable session continuity (`member_id`,
-token, provider, provider session id, wired state, and update timestamp) while
-excluding bootstrap claims and driver pid/start evidence. Restored sessions can
-resume their provider context but cannot falsely claim an old driver is live.
+dump/load. The component exports durable member continuity (`member_id`, token,
+provider, wired state, and update timestamp) while excluding bootstrap claims
+and driver pid/start evidence. Restored rows cannot falsely claim an old driver
+is live.
 
 Core owns framing, file and guard lifecycle, and supplies the Queue and shared
 SidecarSession. `persistence.py` owns logical validation; every SQL statement
@@ -155,11 +149,9 @@ event only for callback-bearing runs, so the existing callback-absent command
 path adds no readiness wait. Its bounded owner-thread wait also watches
 shutdown, first-generation death, watcher failure, and fatal control state.
 
-The handle freezes the collision-resolved bootstrap identity and applies the
-same provider-session precedence as STATUS initialization: the live adapter
-handle's non-`None` session id wins, otherwise the bootstrap or resumed id is
-retained. Its only authority is a closure over that exact driver's existing
-thread-safe `request_stop()`. The driver sets the handle's private completion
+The handle freezes the collision-resolved bootstrap identity. Its only
+authority is a closure over that exact driver's existing thread-safe
+`request_stop()`. The driver sets the handle's private completion
 event in `run()`'s outer `finally`; later stop requests therefore cannot resolve
 a renamed member or affect a replacement run. Callback failure remains inside
 the first generation's watcher and provider cleanup scopes. Ordinary
@@ -198,14 +190,12 @@ keeping the standalone executable useful outside the root CLI.
 ### Terminal, not runtime: ears and mouth ([SUM-2])
 
 Summon does not build an agent loop. The harness (Claude Code, Codex CLI,
-any resumable streaming CLI) already owns tool dispatch, session state,
+or another interactive CLI) already owns tool dispatch, session state,
 interruption, and permissions. Summon is the agent's *terminal*: it feeds
 chat into the harness's own control loop (the **ears**) and lets the agent
 speak by running the ordinary `taut` CLI (the **mouth**) in normal tool-using
-operation. Terminal mode is the narrow exception: parsed assistant text is
-posted through the driver-owned persistent mouth client because the harness has
-no separate tool path. This is the single most load-bearing decision in the
-design, and it is why the extension needs no general wire protocol and no core
+operation. Summon never interprets terminal output as speech. This is the
+load-bearing reason the extension needs no provider wire protocol and no core
 Summon domain logic. Core knows only its generic command-extension protocol and
 the two first-party ownership slots; the installed extension owns the command
 adapters and controller calls.
@@ -221,23 +211,16 @@ environment carries the explicit `TAUT_TOKEN` (the member's continuity token,
 clients. Config-backed targets such as Postgres are rediscovered from the
 child's inherited working directory; their DSN is never placed in `TAUT_DB`.
 Prompts and diagnostics use `BrokerTarget.display_target`, so any credentials
-in a server DSN remain redacted. The terminal-mode mouth path is reactor-owned by the driver and uses
-the driver's persistent client. The driver never posts chat on the member's
-behalf outside terminal mode — a hard invariant, because two speakers under one
-identity is the double-speak failure ([SUM-6]/[SUM-9]).
-
-Terminal mode delegates message validity to core. The event pump catches only
-public `BlankMessageError` before its general `TautError` branch. That exact
-typed result creates no row or failure log and the same provider generation
-continues. Every other post failure still reaches the existing error log. This
-keeps one classifier in core and avoids teaching Summon a second Unicode rule.
+in a server DSN remain redacted. The driver never posts chat on the member's
+behalf. That is a hard invariant because two speakers under one identity is the
+double-speak failure ([SUM-6]/[SUM-9]).
 
 ### Captive process, free agent ([SUM-2])
 
 The harness child *is* a captive process: the driver spawns it, owns its
 stdio, signals it, anchors presence to it, resumes it, and kills it. What is
-deliberately not captive is *meaning* — captured stdout is supervision
-telemetry (activity, session ids, diagnostics), never parsed into speech.
+deliberately not captive is *meaning*: captured terminal output is supervision
+telemetry and diagnostics, never parsed into speech.
 Sealing (`--exec "docker run -i ..."`) is composition over this boundary,
 not architecture.
 
@@ -274,7 +257,7 @@ running three concurrent lanes that a cold reader must keep distinct:
    locked database sections: reads and cursor writes are short SimpleBroker
    operations, removed membership handles are closed with `Queue.close()`, and
    shutdown closes the owned client. If the watcher exits, the supervisor
-   rebuilds the watcher over the same live provider session; only pump exit or
+   rebuilds the watcher over the same live provider generation; only pump exit or
    injection failure spends the harness crash budget. Transient CLI clients
    remain non-persistent.
    Multiline chat remains one user-role event. `format_injection()` indents
@@ -284,11 +267,10 @@ running three concurrent lanes that a cold reader must keep distinct:
    Notification events retain inbox claim semantics and are therefore at most
    once; the referenced source chat remains durable.
 2. **Event pump — a dedicated drain thread.** Consumes `events()` for the
-   life of the child ([SUM-7.1]): session ids to the ledger, `activity` to
-   member liveness via a rate-limited token-selected `whoami()` (the public
-   [IAN-3.3] side effect — never a private `_state` reach), assistant text to
-   the thread in terminal mode or the log otherwise, and `exit` to the
-   [SUM-11] resume path. An undrained stream is a child-stdout deadlock; the
+   life of the child ([SUM-7.1]): `activity` updates member liveness via a
+   rate-limited token-selected `whoami()` (the public [IAN-3.3] side effect,
+   never a private `_state` reach), and `exit` enters the [SUM-11] fresh-
+   generation recovery path. An undrained stream is a child-output deadlock; the
    pump exists to prevent it and participates in shutdown ordering. Each pump
    captures one immutable generation context; a lock-backed active-token check
    is atomic with every ledger, control, presence, chat, driver-field, and wake
@@ -362,19 +344,11 @@ job handle. The runner's existing outer Job Object is not grounds for an eager
 rejection: valid nested assignment is attempted, while an actual incompatible
 assignment fails closed without breakaway.
 
-Structured stdout cannot use pipe EOF as leader-liveness evidence because a
-descendant may inherit the write end. `_stream.py` therefore reads leased raw
-fds incrementally: POSIX uses nonblocking reads capped at 16 reads and 1 MiB
-per pump turn; Windows Python 3.11 uses the documented `PeekNamedPipe`
-readiness binding in `_win32_pipe.py` with the same read-count cap. These
-bounds keep a continuously writing descendant from starving leader
-observation. After a non-reaping leader-terminal observation, the reader makes
-one equally bounded drain of committed newline-delimited frames and emits the
-exact cached exit status without waiting for an inherited writer to close. A
-non-EOF partial fragment is not a protocol frame and is discarded. Blocking
-`close()` then retires the whole domain and releases the adapter streams. The
-PTY pump likewise checks leader status after every readable output turn, so a
-continuously readable master cannot defer terminal observation.
+The PTY pump checks leader status after every readable output turn, so a
+continuously readable terminal cannot defer terminal observation. It drains
+terminal output continuously for activity, query handling, attach display, and
+bounded diagnostics. It never waits for a newline-delimited provider frame or
+interprets screen output as speech.
 
 ### PTY adapter: capable terminal, not screen parser ([SUM-7.4])
 
@@ -609,8 +583,9 @@ bearing summon tables — the oblivious-core invariant):
 - `taut_summon_sessions` — **durable**. One row per summoned member,
   `member_id` primary key (created only after the member exists, so never
   NULL on any backend). Holds the member's continuity token (captured once at
-  creation, [SUM-6]), provider, provider session id, driver liveness
-  evidence, and the PTY `wired` flag.
+  creation, [SUM-6]), provider, driver liveness evidence, and the PTY `wired`
+  flag. The historical nullable provider-session column remains physical and
+  is always written as NULL.
 
 Names never key durable state ([IAN-4.4]: names are mutable). Every
 post-creation lookup — `stop`, `status`, re-summon — resolves the *current*
@@ -762,10 +737,9 @@ interrupts the harness and surfaces through STATUS plus logs — never posting
 to chat and never leaving an unconsumed control reply. It limits posting volume;
 it does not detect a semantic loop below the configured rate.
 
-PTY and stream close machines stay separate because their resources and
-interrupt mechanisms differ (fd epochs and terminal signals versus pipes and
-structured streams). STATUS reserved keys also remain separate from adapter
-display fields: they protect control-protocol ownership, not resource closure.
+POSIX PTY and Windows ConPTY mechanics remain separate because their resources
+and cancellation primitives differ. STATUS reserved keys remain separate from
+adapter display fields: they protect control-protocol ownership, not resource closure.
 The release-evidence predicate is shared because ledger release and CLI polling
 answer the same ownership question; those other similar-looking sets do not.
 
@@ -775,8 +749,8 @@ Summon follows the same ownership rule as Weft's `BaseTask`: SimpleBroker owns
 queue mechanics and retry; Taut owns domain state, control correlation, and
 handle lifetime. `TautClient.queue()` returns a plain `simplebroker.Queue`.
 Long-lived actors use persistent owned handles: the chat watcher, summon
-control loop, driver ledger client, watcher client, and terminal-mode mouth
-client. One-shot paths use transient handles: ordinary `taut say`, CLI
+control loop, driver ledger client, and watcher client. One-shot paths use
+transient handles: ordinary `taut say`, CLI
 `status`/`stop`, per-request reply queues, and short support reads outside
 loops. Owned lifetime ends with `Queue.close()` or `TautClient.close()`;
 `cleanup_connections()` is reserved for in-place recovery when the queue lease
@@ -828,35 +802,19 @@ deadline, not a ledger-polling loop.
 The extension holds to core's dependency posture: it imports from
 `simplebroker` and `simplebroker.ext` only, runs no SQL against broker-owned
 tables, and touches core through the public `TautClient`, `taut.identity`,
-`taut.addressing`, `taut.envelope`, and `taut.watcher` seams. The adapters
-supervise real child processes over real pipes; the shared stream-json plumbing
-lives in `extensions/taut_summon/taut_summon/_stream.py` so both shipped
-adapters share the [SUM-7.1] handle mechanics once. Real pipe injection uses
-serialized nonblocking raw writes and a lifecycle epoch: reusable `interrupt()`
-cancels active and queued old-epoch writes while leaving the next epoch open;
+`taut.addressing`, `taut.envelope`, and `taut.watcher` seams. The adapter
+supervises a real interactive child over one pseudo-terminal. Injection is
+serialized and guarded by a lifecycle epoch: reusable `interrupt()` cancels
+active and queued old-epoch writes while leaving the next epoch open;
 `request_close()` advances the epoch and permanently retires delivery before
-signaling. The writer uses a duplicated fd so cancellation checks never hold
-the lifecycle lock across I/O. Cancellation can follow a successfully written
-prefix, leaving a torn protocol line that a later reusable inject appends to;
-that bounded corruption belongs to the interrupted provider turn and is why
-callers must not treat a canceled inject as delivered. Runtimes without public
-nonblocking pipe controls retain the deterministic buffered fallback and do
-not satisfy the real pipe-full capability probe. Claude stream mode declares
-no bootstrap session event because the CLI emits nothing before its first
-injected turn; the driver therefore does not spend the generic session-event
-wait on that adapter.
+signaling. A duplicated descriptor or handle keeps cancellation checks from
+holding the lifecycle lock across I/O. Cancellation may follow a written
+prefix, so callers never treat an interrupted injection as delivered.
 
-Stream finalization deliberately closes before joining the event pump because
-a still-live provider can otherwise deadlock on undrained stdout. Closing a
-Python text stream can wake a concurrent iterator with the built-in
-`ValueError("I/O operation on closed file.")` instead of EOF. The shared reader
-normalizes only that exact type and diagnostic when terminal retirement is
-already published and the same stdout object reports closed, then emits the
-reaped child's final `ExitEvent`. Natural leader exit may instead emit the
-cached status before reap so the driver can enter whole-domain finalization;
-that path does not wait for inherited stdout EOF. Decode-error subclasses and
-every other read, malformed-frame, or adapter-translation failure remain fatal
-regardless of close state.
+The event pump continuously drains terminal output while the lifecycle owner
+performs bounded whole-domain finalization. Natural leader exit publishes the
+cached status before the one final reap; inherited descendant output cannot
+turn EOF into the liveness oracle.
 
 The extension CLI keeps one documented argparse inventory for `run`, `stop`,
 and `status`. Root help owns exit classes; each subcommand owns its syntax and
@@ -898,10 +856,9 @@ require a separately drained subprocess pipe.
 - **No daemon** ([TAUT-2]): the driver is foreground; `stop`/`status` are
   clients, not services.
 - **Mouth is CLI-only** ([SUM-6]): no extension code path posts chat under
-  the member's identity except terminal mode, which is single-thread by
-  construction.
-- **No summon wire protocol**: adapters translate provider-native streams
-  into the closed `AdapterEvent` union; a summon envelope would be drift.
+  the member's identity.
+- **No summon wire protocol**: the closed `AdapterEvent` union carries only
+  activity and exit; a provider envelope would be drift.
 - **Extension-owned state only**: `taut_summon_*` tables + the extension's
   own `taut_meta` version key + unregistered `sys.*` queues. The extension
   writes no core registry rows; core's schema gate stays oblivious.
@@ -938,12 +895,8 @@ require a separately drained subprocess pipe.
 | `extensions/taut_summon/taut_summon/_process_domain.py` | Shared atomic spawn boundary, capability-minimal process I/O view, POSIX non-reaping group owner, and platform dispatch ([SUM-7.1]) |
 | `extensions/taut_summon/taut_summon/_darwin_wait.py` | Narrow typed libc `waitid(..., WNOWAIT)` compatibility binding for macOS Python 3.11/3.12 |
 | `extensions/taut_summon/taut_summon/_win32_job.py` | Suspended pre-execution Job Object assignment, exact native-handle ownership, zero-active finalization, and leader reap |
-| `extensions/taut_summon/taut_summon/_win32_pipe.py` | Immediate `PeekNamedPipe` readiness for inherited-stdout-safe Windows stream framing |
-| `extensions/taut_summon/taut_summon/_stream.py` | Shared stream-json child-process mechanics, nonblocking write leases and cancellation epochs, reusable interruption, terminal-close request, and blocking finalization |
 | `extensions/taut_summon/taut_summon/_pty.py` | Universal interactive PTY adapter, terminal-query responder, attach bridge, and terminal-retirement fd-operation lifecycle |
-| `extensions/taut_summon/taut_summon/_scripted.py` | The `scripted` test adapter (real subprocess, fake model) — the anti-mocking seam |
 | `extensions/taut_summon/taut_summon/scripted_provider.py` | The scripted provider child, including readiness publication inside bounded physical-SIGINT cleanup ownership and signal-count evidence |
-| `extensions/taut_summon/taut_summon/_claude.py` | The `claude-stream` adapter: headless stream-json, resume, event translation; unknown event families and content blocks are warned once per shape and skipped, so a newer Claude Code release does not read as harness death, while malformed known events still raise |
 | `extensions/taut_summon/taut_summon/_persona.py` | The default persona template ([SUM-10]) and env assembly |
 | `extensions/taut_summon/tests/conftest.py` | The shared real-process driver harness (`DriverProcess`) and fixtures |
 | `extensions/taut_summon/tests/test_conformance.py` | The portable, parameterized [SUM-12] conformance suite |
@@ -958,8 +911,8 @@ require a separately drained subprocess pipe.
 | [SUM-3], distribution identity, `taut-chat` floor, command registration, name/provider resolution, CLI help, database discovery, and exit classes | `extensions/taut_summon/pyproject.toml`, `extensions/taut_summon/taut_summon/command_manifest.py`, `extensions/taut_summon/taut_summon/commands/`, `extensions/taut_summon/taut_summon/controller.py`, `extensions/taut_summon/taut_summon/cli.py` | `extensions/taut_summon/tests/test_controller.py`, `extensions/taut_summon/tests/test_summon_cli.py` parser-inventory, help-phrase, grammar, discovery, and exit-class tests; current installed-wheel ownership/parity/floor cases plus the historical `Requires-Dist: taut` diagnostic in `tests/test_core_summon_wheel_matrix.py`; real root adapter lifecycle in `extensions/taut_summon/tests/test_driver.py` |
 | [SUM-4], bootstrap, identity, presence | `extensions/taut_summon/taut_summon/_driver.py`, `extensions/taut_summon/taut_summon/_state.py` | `extensions/taut_summon/tests/test_driver.py` |
 | [SUM-5], ears injection contract | `extensions/taut_summon/taut_summon/_driver.py` | `extensions/taut_summon/tests/test_driver.py`, `extensions/taut_summon/tests/test_conformance.py` |
-| [SUM-6], mouth CLI contract | `extensions/taut_summon/taut_summon/_driver.py`, `extensions/taut_summon/taut_summon/_persona.py`, `extensions/taut_summon/taut_summon/_scripted.py`, `extensions/taut_summon/taut_summon/_claude.py`, `extensions/taut_summon/taut_summon/_pty.py` | `extensions/taut_summon/tests/test_driver.py`, including real-process blank-then-visible and nonblank-post-failure cases; real child identity cases in each adapter suite; `extensions/taut_summon/tests/test_persona.py`; installed paired exception proof in `tests/test_core_summon_wheel_matrix.py` |
-| [SUM-7.1], [SUM-7.2], adapters and process domains | `extensions/taut_summon/taut_summon/_adapter.py`, `extensions/taut_summon/taut_summon/_process_domain.py`, `extensions/taut_summon/taut_summon/_darwin_wait.py`, `extensions/taut_summon/taut_summon/_win32_job.py`, `extensions/taut_summon/taut_summon/_win32_pipe.py`, `extensions/taut_summon/taut_summon/_stream.py`, `extensions/taut_summon/taut_summon/_pty.py`, `extensions/taut_summon/taut_summon/_scripted.py`, `extensions/taut_summon/taut_summon/_claude.py` | `extensions/taut_summon/tests/test_process_domain.py`, `extensions/taut_summon/tests/test_win32_job.py`, `extensions/taut_summon/tests/test_win32_pipe.py`, `extensions/taut_summon/tests/test_scripted_adapter.py`, `extensions/taut_summon/tests/test_claude_adapter.py`, `extensions/taut_summon/tests/test_pty_adapter.py`, including real leader-first, inherited-stdout, TERM/KILL, explicit-escape, zero-active Job Object, nested-job assignment rejection, reusable interrupt, one-signal terminal request, reentry, and direct/concurrent finalization |
+| [SUM-6], mouth CLI contract | `extensions/taut_summon/taut_summon/_driver.py`, `extensions/taut_summon/taut_summon/_persona.py`, `extensions/taut_summon/taut_summon/_pty.py`, `extensions/taut_summon/taut_summon/scripted_provider.py` | `extensions/taut_summon/tests/test_driver.py` real child identity and mouth cases; `extensions/taut_summon/tests/test_persona.py`; installed paired exception proof in `tests/test_core_summon_wheel_matrix.py` |
+| [SUM-7.1], adapters and process domains | `extensions/taut_summon/taut_summon/_adapter.py`, `extensions/taut_summon/taut_summon/_process_domain.py`, `extensions/taut_summon/taut_summon/_darwin_wait.py`, `extensions/taut_summon/taut_summon/_win32_job.py`, `extensions/taut_summon/taut_summon/_pty.py`, `extensions/taut_summon/taut_summon/_pty_windows.py`, `extensions/taut_summon/taut_summon/_win32_io.py` | `extensions/taut_summon/tests/test_process_domain.py`, `extensions/taut_summon/tests/test_win32_job.py`, `extensions/taut_summon/tests/test_pty_adapter.py`, and `extensions/taut_summon/tests/test_pty_windows.py` |
 | [SUM-7.4], PTY shell adapter | `extensions/taut_summon/taut_summon/_pty.py`, `extensions/taut_summon/taut_summon/_driver.py` | `extensions/taut_summon/tests/test_pty_adapter.py`, PTY cases in `extensions/taut_summon/tests/test_driver.py`, `extensions/taut_summon/tests/test_interaction.py`, `extensions/taut_summon/tests/test_live_harness.py` |
 | [SUM-8], session ledger and guard | `extensions/taut_summon/taut_summon/_state.py` | `extensions/taut_summon/tests/test_state.py`, `extensions/taut_summon/tests/test_driver.py` |
 | [SUM-8], [PIO-5.3], durable session persistence and live-lease exclusion | `extensions/taut_summon/taut_summon/persistence_manifest.py`, `persistence.py`, `_state.py::persistence_records`, `persistence_is_fresh`, `load_persistence_records` | `extensions/taut_summon/tests/test_persistence.py`; cross-backend component coverage in `extensions/taut_pg/tests/test_persistence_io.py` |

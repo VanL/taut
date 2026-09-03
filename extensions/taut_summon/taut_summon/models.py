@@ -16,7 +16,6 @@ class SummonRequest:
 
     name: str
     threads: tuple[str, ...]
-    terminal: bool
     persona: str | None
     system_prompt_file: str | None
     rate_limit: int | None
@@ -33,7 +32,6 @@ class SummonedMember:
     member_id: str
     name: str
     provider: str
-    provider_session_id: str | None
 
 
 class SummonRunHandle:
@@ -80,7 +78,6 @@ class SummonStatus:
     name: str
     driver: str
     provider: str
-    provider_session_id: str | None
     thread_count: int
     cursor_lag: dict[str, int] = field(default_factory=dict)
     details: dict[str, JSONPrimitive] = field(default_factory=dict)

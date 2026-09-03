@@ -5,8 +5,8 @@ from taut.persistence import PersistenceComponentSpec
 summon = PersistenceComponentSpec(
     component_api_version=1,
     name="taut-summon",
-    write_version=1,
-    load_versions=frozenset({1}),
+    write_version=2,
+    load_versions=frozenset({1, 2}),
     schema_keys=frozenset({"summon_schema_version"}),
     implementation="taut_summon.persistence:create_component",
 )

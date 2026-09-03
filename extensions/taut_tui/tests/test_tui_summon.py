@@ -27,7 +27,6 @@ class _Member:
         self.member_id = f"id-{name}"
         self.name = name
         self.provider = "scripted"
-        self.provider_session_id = "session-1"
 
 
 class _Handle:
@@ -430,7 +429,6 @@ def test_native_request_builder_populates_every_public_field() -> None:
         request = operations.build_request(
             name="reviewer",
             threads=("dev", "ops"),
-            terminal=True,
             persona="careful",
             system_prompt_file="prompt.txt",
             rate_limit=12,
@@ -445,7 +443,6 @@ def test_native_request_builder_populates_every_public_field() -> None:
     assert request == SummonRequest(
         name="reviewer",
         threads=("dev", "ops"),
-        terminal=True,
         persona="careful",
         system_prompt_file="prompt.txt",
         rate_limit=12,
@@ -1798,7 +1795,6 @@ def _wire_gate_member(
     request = SummonRequest(
         name=name,
         threads=("general",),
-        terminal=False,
         persona=None,
         system_prompt_file=str(prompt_path),
         rate_limit=None,
@@ -1860,7 +1856,6 @@ def _gate_submission(name: str, prompt_path: Path) -> Any:
         persona=None,
         system_prompt_file=str(prompt_path),
         rate_limit=None,
-        terminal=False,
         attach=False,
         detach=False,
         takeover=False,
@@ -1873,7 +1868,6 @@ def _start_owned_gate_run(app: Any, name: str, prompt_path: Path) -> Any:
     request = summon.build_request(
         name=name,
         threads=("general",),
-        terminal=False,
         persona=None,
         system_prompt_file=str(prompt_path),
         rate_limit=None,

@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
@@ -48,24 +49,10 @@ class UnknownAdapterError(AdapterError):
 
 
 @dataclass(frozen=True, slots=True)
-class AssistantTextEvent:
-    """Assistant-authored text (posted to chat only in terminal mode)."""
-
-    text: str
-
-
-@dataclass(frozen=True, slots=True)
 class ActivityEvent:
     """Tool use or comparable liveness signal — feeds presence, never chat."""
 
     description: str
-
-
-@dataclass(frozen=True, slots=True)
-class SessionEvent:
-    """The provider announced or changed its session id (resume handle)."""
-
-    session_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,16 +62,11 @@ class ExitEvent:
     returncode: int
 
 
-AdapterEvent = AssistantTextEvent | ActivityEvent | SessionEvent | ExitEvent
+AdapterEvent = ActivityEvent | ExitEvent
 
 
 class AdapterHandle(Protocol):
     """A live harness child owned by an adapter."""
-
-    @property
-    def session_id(self) -> str | None:
-        """Current provider session id, updated as ``SessionEvent``s arrive."""
-        ...
 
     @property
     def pid(self) -> int:
@@ -117,7 +99,7 @@ class AdapterHandle(Protocol):
         ...
 
     def status_fields(self) -> dict[str, str]:
-        """Adapter-specific STATUS fields; empty for structured adapters."""
+        """Adapter-specific STATUS fields."""
         ...
 
     def wait_until_quiet(self) -> None:
@@ -132,10 +114,8 @@ class AdapterHandle(Protocol):
     def input_prompt_observed(self) -> bool:
         """Whether the harness has presented an input prompt since spawn.
 
-        PTY handles latch this on an observed bracketed-paste enable
-        ([SUM-7.4] input-prompt confirmation); structured adapters are
-        vacuously ``True`` because the driver consults the fact only on
-        ``orientation_via_inject`` adapters.
+        Handles latch this on an observed bracketed-paste enable
+        ([SUM-7.4] input-prompt confirmation).
         """
         ...
 
@@ -164,32 +144,28 @@ class ProviderAdapter(Protocol):
     """One provider harness family (claude, scripted, codex...)."""
 
     name: str
-    supports_terminal_mode: bool
     supports_attach: bool
     orientation_via_inject: bool
-    emits_session_events: bool
 
     def spawn(
         self,
         *,
-        session_id: str | None,
         system_prompt: str,
         env: Mapping[str, str],
     ) -> AdapterHandle:
-        """Start the harness child, resuming ``session_id`` when given."""
+        """Start the harness child."""
         ...
 
 
 def _scripted_factory() -> ProviderAdapter:
-    from taut_summon._scripted import ScriptedAdapter
+    from taut_summon._pty import PtyAdapter, PtySpec
 
-    return ScriptedAdapter()
-
-
-def _claude_factory() -> ProviderAdapter:
-    from taut_summon._claude import ClaudeAdapter
-
-    return ClaudeAdapter()
+    return PtyAdapter(
+        PtySpec(
+            name="scripted",
+            argv=(sys.executable, "-m", "taut_summon.scripted_provider"),
+        )
+    )
 
 
 def _pty_int_env(name: str, default: str) -> int:
@@ -247,7 +223,6 @@ def _pty_harness_factory(name: str, binary: str) -> Callable[[], ProviderAdapter
 
 _FACTORIES: dict[str, Callable[[], ProviderAdapter]] = {
     "claude": _pty_harness_factory("claude", "claude"),
-    "claude-stream": _claude_factory,
     "codex": _pty_harness_factory("codex", "codex"),
     "coder": _pty_harness_factory("coder", "coder"),
     "grok": _pty_harness_factory("grok", "grok"),

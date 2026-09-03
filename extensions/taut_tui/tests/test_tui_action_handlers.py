@@ -669,7 +669,6 @@ class _SummonMember:
     member_id = "m_summoned"
     name = "actual-summoned"
     provider = "scripted"
-    provider_session_id = "session-handler"
 
 
 class _SummonHandle:

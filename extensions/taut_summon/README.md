@@ -17,10 +17,10 @@ root verbs (`taut summon`, `taut dismiss`), the foreground driver
 (bootstrap, chat injection, event pump, crash-resume, clean shutdown), the
 session ledger with a single-driver guard and PTY `wired` flag, the control
 plane (STOP/STATUS/PING) with a rate backstop, the default persona, and the
-provider adapters are implemented. `pty` is the default adapter for the
-interactive harnesses (`claude`, `codex`, `coder`, `grok`, `qwen`, `kimi`,
-`opencode`, `pi`); `claude-stream` remains available for Claude Code's
-structured stream-json mode. See
+provider adapters are implemented. One interactive PTY adapter hosts every
+named harness (`claude`, `codex`, `coder`, `grok`, `qwen`, `kimi`, `opencode`,
+`pi`); there is no provider-specific protocol adapter. The POSIX backend is
+active while the Windows ConPTY backend is being integrated. See
 `docs/plans/2026-07-06-taut-summon-plan.md`,
 `docs/plans/2026-07-07-taut-summon-pty-harness-adapter-plan.md`, and
 `docs/implementation/05-taut-summon-architecture.md` for the driver design.
@@ -56,7 +56,6 @@ digests, and only then publishes the GitHub Release as immutable.
 ```bash
 taut summon claude              # summon a claude into #general
 taut summon reviewer --provider claude dev
-taut summon reviewer --provider claude-stream dev
 taut dismiss reviewer
 taut-summon status
 ```

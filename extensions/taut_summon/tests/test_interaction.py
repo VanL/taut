@@ -1282,7 +1282,6 @@ def test_controller_default_never_inspects_or_installs_signal_handlers(
         SummonRequest(
             name="scripted",
             threads=("general",),
-            terminal=False,
             persona=None,
             system_prompt_file=None,
             rate_limit=None,
@@ -1317,7 +1316,6 @@ def test_controller_rejects_worker_thread_signal_opt_in_before_lifecycle(
                 SummonRequest(
                     name="scripted",
                     threads=("general",),
-                    terminal=False,
                     persona=None,
                     system_prompt_file=None,
                     rate_limit=None,
@@ -1398,7 +1396,6 @@ def test_controller_signal_opt_in_restores_exact_handlers(
                 SummonRequest(
                     name="scripted",
                     threads=("general",),
-                    terminal=False,
                     persona=None,
                     system_prompt_file=None,
                     rate_limit=None,
@@ -1413,7 +1410,6 @@ def test_controller_signal_opt_in_restores_exact_handlers(
                     SummonRequest(
                         name="scripted",
                         threads=("general",),
-                        terminal=False,
                         persona=None,
                         system_prompt_file=None,
                         rate_limit=None,
@@ -1473,7 +1469,6 @@ def test_signal_install_failure_rolls_back_before_lifecycle(
             SummonRequest(
                 name="scripted",
                 threads=("general",),
-                terminal=False,
                 persona=None,
                 system_prompt_file=None,
                 rate_limit=None,
@@ -1530,7 +1525,6 @@ def test_signal_restore_failure_preserves_primary_failure_precedence(
             SummonRequest(
                 name="scripted",
                 threads=("general",),
-                terminal=False,
                 persona=None,
                 system_prompt_file=None,
                 rate_limit=None,
@@ -1570,7 +1564,6 @@ def test_controller_foreground_run_preserves_host_identity_environment(
     request = SummonRequest(
         name="scripted",
         threads=("general",),
-        terminal=False,
         persona=None,
         system_prompt_file=None,
         rate_limit=None,
@@ -1601,7 +1594,6 @@ def test_controller_foreground_run_preserves_absent_host_identity_environment(
         SummonRequest(
             name="scripted",
             threads=("general",),
-            terminal=False,
             persona=None,
             system_prompt_file=None,
             rate_limit=None,
@@ -1644,7 +1636,6 @@ def test_rich_host_identity_remains_usable_while_scripted_driver_runs(
                 SummonRequest(
                     name="hosted",
                     threads=("general",),
-                    terminal=False,
                     persona=None,
                     system_prompt_file=None,
                     rate_limit=None,
@@ -1743,7 +1734,6 @@ def test_controller_rejects_attach_and_detach_as_typed_request_error() -> None:
             SummonRequest(
                 name="reviewer",
                 threads=("general",),
-                terminal=False,
                 persona=None,
                 system_prompt_file=None,
                 rate_limit=None,
@@ -1782,7 +1772,6 @@ def test_rich_host_attach_decision_ends_before_real_pty_spawn(
     request = SummonRequest(
         name="cancelled-host",
         threads=("general",),
-        terminal=False,
         persona=None,
         system_prompt_file=None,
         rate_limit=None,
@@ -1879,7 +1868,6 @@ def test_rich_host_real_pty_lease_wires_once_then_wired_resume_skips_lease(  # n
     request = SummonRequest(
         name="hosted",
         threads=("general",),
-        terminal=False,
         persona=None,
         system_prompt_file=str(prompt_path),
         rate_limit=None,
@@ -2018,7 +2006,6 @@ def test_driver_stop_during_rich_host_attach_restores_and_releases_lease(
         SummonRequest(
             name="stopped-host",
             threads=("general",),
-            terminal=False,
             persona=None,
             system_prompt_file=None,
             rate_limit=None,
@@ -2079,7 +2066,6 @@ def test_controller_wraps_invalid_host_fd_failure_as_public_summon_error(
             SummonRequest(
                 name="invalid-host-fd",
                 threads=("general",),
-                terminal=False,
                 persona=None,
                 system_prompt_file=None,
                 rate_limit=None,
@@ -2134,7 +2120,6 @@ def _gate_request(name: str, prompt_path: Path, *, detach: bool = False) -> Any:
     return SummonRequest(
         name=name,
         threads=("general",),
-        terminal=False,
         persona=None,
         system_prompt_file=str(prompt_path),
         rate_limit=None,
