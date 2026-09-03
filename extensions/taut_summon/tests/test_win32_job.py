@@ -959,7 +959,6 @@ def test_temporary_native_conpty_qualification_probe() -> None:
     assert evidence["request_close"]["privileged_ctrl_c_written"] is True
     assert evidence["request_close"]["child_interrupt_count"] == 3
     assert evidence["request_close"]["normal_injection_remained_retired"] is True
-    assert "single-use" in evidence["request_close"]["second_privileged_rejected"]
     assert evidence["console"]["input_mode_restored"] is True
     assert evidence["console"]["output_mode_restored"] is True
     assert evidence["console"]["input_code_page_restored"] is True

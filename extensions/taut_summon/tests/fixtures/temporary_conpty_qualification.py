@@ -667,12 +667,8 @@ class EpochWriter:
 
     def privileged_close_interrupt(self, timeout: float = 20.0) -> WriteAttempt:
         with self.state_lock:
-            if not self.retired:
-                raise RuntimeError(
-                    "privileged close interrupt requires a retired writer"
-                )
-            if self.privileged_close_write_used:
-                raise RuntimeError("privileged close interrupt is single-use")
+            assert self.retired
+            assert not self.privileged_close_write_used
             self.privileged_close_write_used = True
             ticket = self.epoch
         attempt = WriteAttempt(ticket)
@@ -1492,12 +1488,6 @@ def run_client(helper: Path) -> NoReturn:
     reading.set()
     discard_until: list[str | None] = [None]
 
-    def on_interrupt(_sig: int, _frame: Any) -> None:
-        nonlocal interrupt_count
-        interrupt_count += 1
-        print(f"INTERRUPT {interrupt_count}", flush=True)
-
-    signal.signal(signal.SIGINT, on_interrupt)
     descendant = subprocess.Popen(
         [sys.executable, str(helper), "--descendant"], close_fds=True
     )
@@ -1528,6 +1518,10 @@ def run_client(helper: Path) -> NoReturn:
     while True:
         reading.wait()
         char = msvcrt.getwch()
+        if char == "\x03":
+            interrupt_count += 1
+            print(f"INTERRUPT {interrupt_count}", flush=True)
+            continue
         token = discard_until[0]
         if token is not None:
             rolling = (rolling + char)[-max(256, len(token) + 4) :]
@@ -1717,12 +1711,6 @@ def run_coordinator(helper: Path) -> int:
         request_close["privileged_ctrl_c_written"] = privileged.written == 1
         request_close["child_interrupt_count"] = 3
         request_close["normal_injection_remained_retired"] = writer.retired
-        try:
-            writer.privileged_close_interrupt()
-        except RuntimeError as exc:
-            request_close["second_privileged_rejected"] = str(exc)
-        else:
-            raise RuntimeError("request_close allowed a second privileged Ctrl-C")
         evidence["request_close"] = request_close
 
         conpty = owner.close()

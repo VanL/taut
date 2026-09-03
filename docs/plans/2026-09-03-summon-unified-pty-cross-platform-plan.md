@@ -1115,6 +1115,33 @@ post-send SGR-prefixed marker, which proves observable VT output without a
 screen-frame timing assumption. Rerun required; later ownership cases were not
 reached.
 
+Fifth hosted attempt: branch commit `c23a50a0216b418fd9d75d9e4308185b973e3af1`,
+Actions run `33802969328`, job `100806619157`, Windows Python 3.11.9. The
+pre-resume rollback, sole-reader attach routing, blocked attach-output
+cancellation, generation isolation, UTF-8 echo, and observable VT output all
+passed. Writing the documented Ctrl-C input byte did not invoke Python's
+`signal.SIGINT` handler in the ConPTY client. That expectation was stronger
+than [SUM-7.4], which promises a PTY Ctrl-C, and stronger than Microsoft's own
+ConPTY sample, which implements Ctrl-C by writing `"\x3"` to the input pipe.
+`GenerateConsoleCtrlEvent` is not added: its documented target is a process
+group sharing the caller's console, which is not the Summon host/ConPTY
+topology, and targeted `CTRL_C_EVENT` cannot be limited to the requested
+group. The probe client now observes the Ctrl-C terminal input sequence as an
+interactive raw-input harness would. Provider-specific cancellation remains
+the live-harness proof. Rerun required; the failure does not add a production
+native API or guard.
+
+The follow-up contract audit also removed two probe-only recovery branches
+around the privileged close write. No public caller may invoke that internal
+operation before retirement or invoke it twice: the winning public
+`request_close()` owns it and later terminal actions must no-op. Those states
+are programmer assertions, while the retained public firing proof is repeated
+`request_close()` producing exactly one Ctrl-C. The production conformance
+test must compose epoch cancellation and the Ctrl-C attempt in the public
+`interrupt()` operation; the probe qualifies those native primitives
+separately because its forced full-pipe condition requires an out-of-band
+release.
+
 ## Out of Scope
 
 - A generic structured-event adapter or mapping language.
