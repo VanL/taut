@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from conftest import DriverProcess
+from conftest import DriverProcess, taut_cli
 from simplebroker import Queue
 from taut_summon._state import (
     SUMMON_SCHEMA_VERSION,
@@ -830,6 +830,29 @@ def test_run_parses_placeholder_flags() -> None:
     assert request.system_prompt_file == "prompt.md"
     assert request.rate_limit == 30
     assert parsed.db_path == "x.taut.db"
+
+
+def test_terminal_flag_is_rejected_by_both_public_console_surfaces(
+    run_summon_cli: SummonCliRunner,
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / ".taut.db"
+
+    standalone_rc, standalone_out, standalone_err = run_summon_cli(
+        "run", "reviewer", "--terminal", cwd=tmp_path
+    )
+    core_rc, core_out, core_err = taut_cli(
+        "summon", "reviewer", "--terminal", db=db, cwd=tmp_path
+    )
+
+    assert standalone_rc == 1
+    assert standalone_out == ""
+    assert "unrecognized arguments: --terminal" in standalone_err
+    assert "Traceback" not in standalone_err
+    assert core_rc == 1
+    assert core_out == ""
+    assert "unrecognized arguments: --terminal" in core_err
+    assert "Traceback" not in core_err
 
 
 def test_cli_no_arguments_prints_help_and_exits_1(

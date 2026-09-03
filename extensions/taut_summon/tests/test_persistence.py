@@ -147,6 +147,130 @@ def test_summon_round_trip_keeps_continuity_and_clears_live_state(
         integer_queue.close()
 
 
+def test_summon_persistence_v2_manifest_and_dump_omit_provider_session_id(
+    tmp_path: Path,
+) -> None:
+    from taut_summon.persistence import create_component
+    from taut_summon.persistence_manifest import summon
+
+    source = tmp_path / "source.db"
+    TautClient.init(db_path=source)
+    client = TautClient(db_path=source, as_name="agent")
+    try:
+        client.join("general")
+        member = client.last_created_member
+        assert member is not None and member.token is not None
+    finally:
+        client.close()
+    queue = Queue(_state.LEDGER_QUEUE_NAME, db_path=str(source))
+    try:
+        _state.ensure_summon_schema(queue)
+        _state.record_session(
+            queue,
+            member_id=member.member_id,
+            token=member.token,
+            provider="claude",
+            provider_session_id="released-session-value",
+            updated_ts=1,
+        )
+        records = create_component().dump_records(queue)
+    finally:
+        queue.close()
+
+    assert summon.component_api_version == 1
+    assert summon.write_version == 2
+    assert summon.load_versions == frozenset({1, 2})
+    assert len(records) == 1
+    assert set(records[0]) == {
+        "type",
+        "member_id",
+        "token",
+        "provider",
+        "wired",
+        "updated_ts",
+    }
+    assert "provider_session_id" not in records[0]
+
+
+def test_summon_persistence_v2_loads_exact_shape_with_null_physical_session(
+    tmp_path: Path,
+) -> None:
+    from taut_summon.persistence import create_component
+
+    destination = tmp_path / "destination.db"
+    TautClient.init(db_path=destination)
+    client = TautClient(db_path=destination, as_name="agent")
+    try:
+        client.join("general")
+        member = client.last_created_member
+        assert member is not None and member.token is not None
+    finally:
+        client.close()
+    record = {
+        "type": "session",
+        "member_id": member.member_id,
+        "token": member.token,
+        "provider": "claude",
+        "wired": True,
+        "updated_ts": "0000000000000000001",
+    }
+    component = create_component()
+    component.validate_records(
+        2, [record], core_member_ids=frozenset({member.member_id})
+    )
+    queue = Queue(_state.LEDGER_QUEUE_NAME, db_path=str(destination))
+    try:
+        component.ensure_schema(queue)
+        with queue.sidecar(transaction=True) as session:
+            component.load_records(session, [record])
+        restored = _state.get_session(queue, member.member_id)
+    finally:
+        queue.close()
+
+    assert restored is not None
+    assert restored["provider_session_id"] is None
+
+
+def test_summon_persistence_exact_v1_load_discards_provider_session_id(
+    tmp_path: Path,
+) -> None:
+    from taut_summon.persistence import create_component
+
+    destination = tmp_path / "destination.db"
+    TautClient.init(db_path=destination)
+    client = TautClient(db_path=destination, as_name="agent")
+    try:
+        client.join("general")
+        member = client.last_created_member
+        assert member is not None and member.token is not None
+    finally:
+        client.close()
+    released_v1 = {
+        "type": "session",
+        "member_id": member.member_id,
+        "token": member.token,
+        "provider": "claude",
+        "provider_session_id": "released-session-value",
+        "wired": True,
+        "updated_ts": "0000000000000000001",
+    }
+    component = create_component()
+    component.validate_records(
+        1, [released_v1], core_member_ids=frozenset({member.member_id})
+    )
+    queue = Queue(_state.LEDGER_QUEUE_NAME, db_path=str(destination))
+    try:
+        component.ensure_schema(queue)
+        with queue.sidecar(transaction=True) as session:
+            component.load_records(session, [released_v1])
+        restored = _state.get_session(queue, member.member_id)
+    finally:
+        queue.close()
+
+    assert restored is not None
+    assert restored["provider_session_id"] is None
+
+
 @pytest.mark.parametrize(
     "updated_ts",
     [

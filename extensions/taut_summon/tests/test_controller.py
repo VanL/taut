@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import subprocess
@@ -38,13 +39,10 @@ EXPECTED_PUBLIC_EXPORTS = [
     "AdapterError",
     "AdapterEvent",
     "AdapterHandle",
-    "AssistantTextEvent",
     "DriverUnresponsive",
     "ExitEvent",
     "NothingSummoned",
     "ProviderAdapter",
-    "ScriptedAdapter",
-    "SessionEvent",
     "ShellSummonInteraction",
     "StopResult",
     "SummonController",
@@ -197,7 +195,6 @@ def test_public_controller_models_have_exact_fields() -> None:
     assert tuple(field.name for field in fields(SummonRequest)) == (
         "name",
         "threads",
-        "terminal",
         "persona",
         "system_prompt_file",
         "rate_limit",
@@ -210,14 +207,12 @@ def test_public_controller_models_have_exact_fields() -> None:
         "member_id",
         "name",
         "provider",
-        "provider_session_id",
     )
     assert tuple(field.name for field in fields(SummonStatus)) == (
         "member_id",
         "name",
         "driver",
         "provider",
-        "provider_session_id",
         "thread_count",
         "cursor_lag",
         "details",
@@ -501,12 +496,12 @@ def test_status_mapping_copies_structured_fields_and_excludes_protocol_keys() ->
     assert status.details == {"control_health": "ok"}
 
 
-def test_controller_provider_names_are_sorted_without_constructing_adapters() -> None:
-    from taut_summon import SummonController
+def test_all_advertised_provider_names_resolve_to_pty_adapter() -> None:
+    from taut_summon import SummonController, get_adapter
+    from taut_summon._pty import PtyAdapter
 
     assert SummonController().provider_names() == (
         "claude",
-        "claude-stream",
         "coder",
         "codex",
         "grok",
@@ -517,6 +512,265 @@ def test_controller_provider_names_are_sorted_without_constructing_adapters() ->
         "qwen",
         "scripted",
     )
+    assert all(
+        isinstance(get_adapter(name), PtyAdapter)
+        for name in SummonController().provider_names()
+    )
+
+
+def test_structured_adapter_surface_is_absent() -> None:
+    import taut_summon
+    from taut_summon import SummonController, _adapter, get_adapter
+
+    assert "AssistantTextEvent" not in _adapter.__dict__
+    assert "SessionEvent" not in _adapter.__dict__
+    assert "session_id" not in _adapter.AdapterHandle.__dict__
+    assert "supports_terminal_mode" not in _adapter.ProviderAdapter.__annotations__
+    assert "emits_session_events" not in _adapter.ProviderAdapter.__annotations__
+    assert "AssistantTextEvent" not in taut_summon.__all__
+    assert "SessionEvent" not in taut_summon.__all__
+    assert "ScriptedAdapter" not in taut_summon.__all__
+    for name in SummonController().provider_names():
+        adapter = get_adapter(name)
+        assert not hasattr(adapter, "supports_terminal_mode")
+        assert not hasattr(adapter, "emits_session_events")
+
+
+def test_claude_stream_is_unknown_and_not_advertised() -> None:
+    from taut_summon import SummonController, UnknownAdapterError, get_adapter
+
+    assert "claude-stream" not in SummonController().provider_names()
+    with pytest.raises(UnknownAdapterError, match="claude-stream"):
+        get_adapter("claude-stream")
+
+
+def _stored_provider_request(name: str, provider: str | None) -> Any:
+    """Build through the public model while the deletion test is still red."""
+    from taut_summon import SummonRequest
+
+    values: dict[str, Any] = {
+        "name": name,
+        "threads": ("general",),
+        "persona": None,
+        "system_prompt_file": None,
+        "rate_limit": None,
+        "attach": False,
+        "detach": True,
+        "provider_flag": provider,
+        "takeover": False,
+    }
+    if "terminal" in {field.name for field in fields(SummonRequest)}:
+        values["terminal"] = False
+    return SummonRequest(**values)
+
+
+def _create_stored_provider_member(
+    db: Path,
+    *,
+    provider: str,
+    driver_pid: int | None,
+    driver_start_time: str | None,
+) -> str:
+    TautClient.init(db_path=db)
+    client = TautClient(db_path=db, as_name="reviewer")
+    try:
+        client.join("general")
+        member = client.last_created_member
+        assert member is not None and member.token is not None
+    finally:
+        client.close()
+    queue = Queue("taut.summon_state", db_path=str(db))
+    try:
+        ensure_summon_schema(queue)
+        partial_evidence = (driver_pid is None) != (driver_start_time is None)
+        record_session(
+            queue,
+            member_id=member.member_id,
+            token=member.token,
+            provider=provider,
+            provider_session_id="released-v1-session",
+            driver_pid=None if partial_evidence else driver_pid,
+            driver_start_time=None if partial_evidence else driver_start_time,
+            updated_ts=queue.generate_timestamp(),
+        )
+        if partial_evidence:
+            with queue.sidecar(transaction=True) as session:
+                session.run(
+                    """
+                    UPDATE taut_summon_sessions
+                    SET driver_pid = ?, driver_start_time = ?
+                    WHERE member_id = ?
+                    """,
+                    (driver_pid, driver_start_time, member.member_id),
+                )
+    finally:
+        queue.close()
+    return member.member_id
+
+
+@pytest.mark.parametrize(
+    (
+        "case",
+        "stored_provider",
+        "evidence",
+        "requested_provider",
+        "accepted",
+        "diagnostic",
+    ),
+    (
+        ("absent", "claude-stream", "absent", "claude", True, None),
+        ("proven-dead", "claude-stream", "dead", "claude", True, None),
+        ("omitted", "claude-stream", "absent", None, False, "--provider claude"),
+        ("live", "claude-stream", "live", "claude", False, "live"),
+        ("pid-only", "claude-stream", "pid-only", "claude", False, "indeterminate"),
+        (
+            "start-only",
+            "claude-stream",
+            "start-only",
+            "claude",
+            False,
+            "indeterminate",
+        ),
+        ("other-provider", "scripted", "absent", "claude", False, "refusing"),
+    ),
+)
+def test_public_start_legacy_provider_recovery_matrix(
+    case: str,
+    stored_provider: str,
+    evidence: str,
+    requested_provider: str | None,
+    accepted: bool,
+    diagnostic: str | None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut_summon import (
+        ShellSummonInteraction,
+        SummonController,
+        SummonOperationError,
+    )
+    from taut_summon._driver import SummonDriver
+
+    if evidence == "live":
+        driver_pid, driver_start_time = capture_driver_evidence(os.getpid())
+    elif evidence == "dead":
+        driver_pid, driver_start_time = os.getpid(), "not-this-process-start"
+    elif evidence == "pid-only":
+        driver_pid, driver_start_time = os.getpid(), None
+    elif evidence == "start-only":
+        driver_pid, driver_start_time = None, "partial-start"
+    else:
+        driver_pid, driver_start_time = None, None
+
+    db = tmp_path / f"{case}.db"
+    member_id = _create_stored_provider_member(
+        db,
+        provider=stored_provider,
+        driver_pid=driver_pid,
+        driver_start_time=driver_start_time,
+    )
+    supervised: list[str] = []
+
+    def finish_after_bootstrap(
+        _driver: SummonDriver,
+        boot: Any,
+        _db_display: str,
+        *,
+        db_path: str | None = None,
+    ) -> int:
+        del db_path
+        supervised.append(boot.provider)
+        return 0
+
+    monkeypatch.setattr(SummonDriver, "_supervise", finish_after_bootstrap)
+    controller = SummonController(db_path=db)
+    interaction = ShellSummonInteraction(
+        input_stream=io.StringIO(), output_stream=io.StringIO()
+    )
+    request = _stored_provider_request("reviewer", requested_provider)
+
+    if accepted:
+        controller.run_foreground(request, interaction)
+        # The migration is one-time. A second explicit start is an ordinary
+        # same-provider resume, not another compatibility rewrite.
+        controller.run_foreground(request, interaction)
+        assert supervised == ["claude", "claude"]
+        expected_provider = "claude"
+    else:
+        assert diagnostic is not None
+        with pytest.raises(SummonOperationError, match=diagnostic):
+            controller.run_foreground(request, interaction)
+        assert supervised == []
+        expected_provider = stored_provider
+
+    queue = Queue("taut.summon_state", db_path=str(db))
+    try:
+        row = get_session(queue, member_id)
+    finally:
+        queue.close()
+    assert row is not None
+    assert row["provider"] == expected_provider
+
+
+def test_public_start_refuses_legacy_provider_recovery_after_predicate_loss(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut_summon import (
+        ShellSummonInteraction,
+        SummonController,
+        SummonOperationError,
+    )
+    from taut_summon._driver import SummonDriver
+
+    db = tmp_path / "predicate-loss.db"
+    member_id = _create_stored_provider_member(
+        db,
+        provider="claude-stream",
+        driver_pid=None,
+        driver_start_time=None,
+    )
+    queue = Queue("taut.summon_state", db_path=str(db))
+    try:
+        with queue.sidecar(transaction=True) as session:
+            session.run(
+                """
+                CREATE TRIGGER lose_legacy_provider_predicate
+                BEFORE UPDATE OF provider ON taut_summon_sessions
+                WHEN OLD.provider = 'claude-stream' AND NEW.provider = 'claude'
+                BEGIN
+                    DELETE FROM taut_summon_sessions
+                    WHERE member_id = OLD.member_id;
+                END
+                """,
+                (),
+            )
+    finally:
+        queue.close()
+
+    supervised: list[str] = []
+    monkeypatch.setattr(
+        SummonDriver,
+        "_supervise",
+        lambda _driver, boot, _display, **_kwargs: (
+            supervised.append(boot.provider) or 0
+        ),
+    )
+    controller = SummonController(db_path=db)
+    interaction = ShellSummonInteraction(
+        input_stream=io.StringIO(), output_stream=io.StringIO()
+    )
+
+    with pytest.raises(SummonOperationError):
+        controller.run_foreground(
+            _stored_provider_request("reviewer", "claude"), interaction
+        )
+    assert supervised == []
+    queue = Queue("taut.summon_state", db_path=str(db))
+    try:
+        assert get_session(queue, member_id) is None
+    finally:
+        queue.close()
 
 
 def test_controller_empty_list_returns_empty_tuple_without_printing(
@@ -797,7 +1051,7 @@ print(json.dumps({
 
 def test_package_facade_preserves_exact_public_exports_and_object_identity() -> None:
     import taut_summon
-    from taut_summon import _adapter, _scripted
+    from taut_summon import _adapter
     from taut_summon.controller import SummonController
     from taut_summon.interaction import (
         ShellSummonInteraction,
@@ -813,7 +1067,6 @@ def test_package_facade_preserves_exact_public_exports_and_object_identity() -> 
     )
     assert set(taut_summon.__all__) == set(EXPECTED_PUBLIC_EXPORTS)
     assert taut_summon.ActivityEvent is _adapter.ActivityEvent
-    assert taut_summon.ScriptedAdapter is _scripted.ScriptedAdapter
     assert taut_summon.adapter_names is _adapter.adapter_names
     assert taut_summon.get_adapter is _adapter.get_adapter
     assert taut_summon.SummonController is SummonController
