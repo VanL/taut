@@ -1,7 +1,6 @@
 """TEMPORARY hosted-Windows ConPTY qualification probe; delete after Slice 1."""
 
 # The coordinator must turn every worker and cleanup failure into its one JSON record.
-# ruff: noqa: BLE001, C901
 
 from __future__ import annotations
 
@@ -107,10 +106,10 @@ class PROCESS_INFORMATION(ctypes.Structure):
 
 
 class CHAR_UNION(ctypes.Union):
-    _fields_ = [
+    _fields_ = (
         ("UnicodeChar", ctypes.c_wchar),
         ("AsciiChar", ctypes.c_char),
-    ]
+    )
 
 
 class KEY_EVENT_RECORD(ctypes.Structure):
@@ -125,10 +124,10 @@ class KEY_EVENT_RECORD(ctypes.Structure):
 
 
 class INPUT_EVENT_UNION(ctypes.Union):
-    _fields_ = [
+    _fields_ = (
         ("KeyEvent", KEY_EVENT_RECORD),
         ("padding", ctypes.c_byte * 16),
-    ]
+    )
 
 
 class INPUT_RECORD(ctypes.Structure):
@@ -385,7 +384,7 @@ class AttachSink:
                     )
                 with self.successful_lock:
                     self.successful.extend(data)
-        except BaseException:
+        except BaseException:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-092] exception
             self.failure = traceback.format_exc()
             self.ready.set()
         finally:
@@ -395,7 +394,7 @@ class AttachSink:
                     self.native.close(
                         self.thread_handle, "CloseHandle(attach-sink-thread)"
                     )
-                except BaseException as exc:
+                except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-092] exception
                     self.close_failure = f"{type(exc).__name__}: {exc}"
             self.done.set()
 
@@ -526,7 +525,7 @@ class OutputDrain:
                         f"ConPTY output ReadFile failed with Win32 error {error}"
                     )
                 return
-        except BaseException:
+        except BaseException:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-092] exception
             self.failure = traceback.format_exc()
             self.ready.set()
         finally:
@@ -535,7 +534,7 @@ class OutputDrain:
                     self.native.close(
                         self.thread_handle, "CloseHandle(output-reader-thread)"
                     )
-                except BaseException:
+                except BaseException:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-092] exception
                     self.failure = (self.failure or "") + traceback.format_exc()
             self.done.set()
 
@@ -626,7 +625,7 @@ class EpochWriter:
                     if not ok:
                         attempt.error = int(ctypes.get_last_error())  # type: ignore[attr-defined]
                         self.events.append(f"writefile-error-{attempt.error}")
-                except BaseException:
+                except BaseException:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-092] exception
                     attempt.error = -1
                     attempt.failure = traceback.format_exc()
                     self.events.append("writefile-python-failure")
@@ -636,7 +635,7 @@ class EpochWriter:
                             self.native.close(
                                 thread_handle, "CloseHandle(writer-thread)"
                             )
-                        except BaseException as exc:
+                        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-092] exception
                             attempt.close_failure = f"{type(exc).__name__}: {exc}"
                     attempt.done.set()
 
@@ -695,7 +694,7 @@ class EpochWriter:
                         attempt.failure = (
                             f"privileged Ctrl-C short write: {count.value}"
                         )
-                except BaseException:
+                except BaseException:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-092] exception
                     attempt.failure = traceback.format_exc()
                 finally:
                     if thread_handle is not None:
@@ -703,7 +702,7 @@ class EpochWriter:
                             self.native.close(
                                 thread_handle, "CloseHandle(privileged-writer-thread)"
                             )
-                        except BaseException as exc:
+                        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-092] exception
                             attempt.close_failure = f"{type(exc).__name__}: {exc}"
                     attempt.done.set()
 
@@ -728,7 +727,7 @@ class EpochWriter:
             )
         return attempt
 
-    def cancel_blocked(
+    def cancel_blocked(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-092] exception
         self, active: WriteAttempt, queued: WriteAttempt, *, terminal: bool
     ) -> dict[str, Any]:
         if not active.ready.wait(5.0):
@@ -1171,7 +1170,9 @@ def pipe_attach_probe(native: Native) -> dict[str, Any]:
     }
 
 
-def run_console_probe(result_path: Path) -> int:
+def run_console_probe(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-092] exception
+    result_path: Path,
+) -> int:
     evidence: dict[str, Any] = {"ok": False}
     try:
         import msvcrt
@@ -1269,7 +1270,7 @@ def run_console_probe(result_path: Path) -> int:
                     )
                     received.extend(buf.raw[: count.value])
                 utf8_state["received"] = bytes(received)
-            except BaseException:
+            except BaseException:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-092] exception
                 utf8_state["failure"] = traceback.format_exc()
             finally:
                 utf8_done.set()
@@ -1287,7 +1288,7 @@ def run_console_probe(result_path: Path) -> int:
                 )
                 read_state["ok"] = bool(ok)
                 read_state["error"] = 0 if ok else int(ctypes.get_last_error())  # type: ignore[attr-defined]
-            except BaseException:
+            except BaseException:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-092] exception
                 read_state["failure"] = traceback.format_exc()
                 read_ready.set()
             finally:
@@ -1296,7 +1297,7 @@ def run_console_probe(result_path: Path) -> int:
                         native.close(
                             thread_handle, "CloseHandle(console-reader-thread)"
                         )
-                    except BaseException as exc:
+                    except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-092] exception
                         read_state["close_failure"] = f"{type(exc).__name__}: {exc}"
                 read_done.set()
 
@@ -1413,7 +1414,7 @@ def run_console_probe(result_path: Path) -> int:
             ):
                 try:
                     native.require_bool(operation, call())
-                except BaseException as exc:
+                except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-092] exception
                     restore_errors.append(f"{operation}: {exc}")
             restored_in = DWORD()
             restored_out = DWORD()
@@ -1466,7 +1467,7 @@ def run_console_probe(result_path: Path) -> int:
             if restore_errors:
                 raise RuntimeError("; ".join(restore_errors))
         evidence["ok"] = True
-    except BaseException as exc:
+    except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-092] exception
         evidence["failure"] = f"{type(exc).__name__}: {exc}"
         evidence["traceback"] = traceback.format_exc()
     result_path.write_text(json.dumps(evidence, sort_keys=True), encoding="utf-8")
@@ -1480,7 +1481,9 @@ def run_descendant() -> NoReturn:
         time.sleep(1.0)
 
 
-def run_client(helper: Path) -> NoReturn:
+def run_client(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-092] exception
+    helper: Path,
+) -> NoReturn:
     import msvcrt
 
     interrupt_count = 0
@@ -1559,7 +1562,9 @@ def run_client(helper: Path) -> NoReturn:
         command = ""
 
 
-def run_coordinator(helper: Path) -> int:
+def run_coordinator(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-092] exception
+    helper: Path,
+) -> int:
     evidence: dict[str, Any] = {"ok": False}
     owner: ConPtyOwner | None = None
     try:
@@ -1764,13 +1769,13 @@ def run_coordinator(helper: Path) -> int:
 
         evidence["native_calls"] = native.calls
         evidence["ok"] = True
-    except BaseException as exc:
+    except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-092] exception
         evidence["failure"] = f"{type(exc).__name__}: {exc}"
         evidence["traceback"] = traceback.format_exc()
         if owner is not None and not owner.closed:
             try:
                 owner.emergency_cleanup()
-            except BaseException as cleanup_exc:
+            except BaseException as cleanup_exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-092] exception
                 evidence["cleanup_failure"] = (
                     f"{type(cleanup_exc).__name__}: {cleanup_exc}"
                 )
