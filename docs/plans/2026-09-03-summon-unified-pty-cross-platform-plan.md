@@ -158,7 +158,7 @@ call later is a plan deviation and stop condition.
 | `CreatePipe` | Create non-inherited parent input-write/output-read ends plus ConPTY input-read/output-write ends | Pass NULL security attributes and `bInheritHandles=False`; retain the two ConPTY-facing handles through child creation, then close them immediately after successful `CreateProcessW`; retain and close the two parent ends in the Windows handle owner; close every created handle on partial setup |
 | `CreatePseudoConsole`, `ClosePseudoConsole` | Create and deterministically retire the terminal domain | One owned `HPCON`; exactly one lifecycle owner calls `ClosePseudoConsole` while the output reader remains active. No resize API is bound because Summon exposes no resize trigger. |
 | `InitializeProcThreadAttributeList`, `UpdateProcThreadAttribute`, `DeleteProcThreadAttributeList` | Put the `HPCON` into `STARTUPINFOEX` | One caller-allocated attribute-list buffer; delete the initialized list on every post-init exit, then release the buffer |
-| `CreateProcessW`, `ResumeThread`, `TerminateProcess` | Create the hosted CLI suspended, publish all ownership, then resume; terminate only an unresumable partial-spawn leader during failed setup | Retain the process handle through final exit inspection; close the primary thread handle after successful resume; close both on setup failure; `TerminateProcess` is pre-publication cleanup only, never normal terminal-domain close |
+| `CreateProcessW`, `ResumeThread`, `TerminateProcess` | Create the hosted CLI suspended, publish all ownership, then resume; terminate only an unresumable partial-spawn leader during failed setup | Use `STARTF_USESTDHANDLES` with null standard handles and `bInheritHandles=False` so a redirected parent cannot bypass ConPTY through duplicated standard handles; retain the process handle through final exit inspection; close the primary thread handle after successful resume; close both on setup failure; `TerminateProcess` is pre-publication cleanup only, never normal terminal-domain close |
 | `ReadFile`, `WriteFile` | Drain ConPTY output, write serialized ConPTY input, read attach input, and write attach output | Each blocking call has one identifiable thread owner; input writes share the adapter serializer; a dedicated attach-output writer consumes chunks enqueued by the sole non-blocking ConPTY observer; no second ConPTY output reader exists |
 | `GetConsoleMode`, `SetConsoleMode`, `GetConsoleCP`, `SetConsoleCP`, `GetConsoleOutputCP`, `SetConsoleOutputCP` | Snapshot, enter raw/VT input and VT/UTF-8 output, and restore a real console lease | Input and output modes and both code pages belong to the borrowed host console; restore every exact snapshot before releasing duplicated attach handles, including on cancellation and partial setup |
 | `GetCurrentProcess`, `DuplicateHandle` plus `msvcrt.get_osfhandle` | Turn borrowed CRT lease fds into lifetime-bounded Win32 handles | The lease's original fd/handle stays borrowed and is never closed; attach owns and closes only duplicates |
@@ -1076,6 +1076,16 @@ the branch commit SHA, Actions run and job IDs, Windows runner/Python identity,
 its single `TAUT_CONPTY_PROBE` JSON record, and the exact target test result.
 No spec promotion or production deletion may begin until that record satisfies
 the native API/ownership ledger and all Slice 1 stop gates.
+
+First hosted attempt: branch commit `19d60c48522c4950c2b1f0b96f1be24e7b8472bf`,
+Actions run `33801891208`, job `100803133629`, Windows Python 3.11.9. ConPTY
+creation, the deliberate pre-resume rollback, reader startup, and attached
+leader/descendant creation succeeded, but the child `READY` lines were copied
+to the coordinator's redirected stdout instead of ConPTY; the ConPTY reader
+saw only its initialization VT bytes. This is a real redirected-parent spawn
+path. The accepted correction is the documented node-pty pattern:
+`STARTF_USESTDHANDLES` with all three standard handles null and
+`bInheritHandles=False`. Rerun required; no later Slice 1 claim was reached.
 
 ## Out of Scope
 

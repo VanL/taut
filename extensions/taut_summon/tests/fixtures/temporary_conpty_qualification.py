@@ -50,6 +50,7 @@ CREATE_SUSPENDED = 0x00000004
 CREATE_NEW_CONSOLE = 0x00000010
 CREATE_UNICODE_ENVIRONMENT = 0x00000400
 EXTENDED_STARTUPINFO_PRESENT = 0x00080000
+STARTF_USESTDHANDLES = 0x00000100
 PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE = 0x00020016
 THREAD_TERMINATE = 0x0001
 DUPLICATE_SAME_ACCESS = 0x00000002
@@ -890,6 +891,10 @@ class ConPtyOwner:
         )
         startup = STARTUPINFOEXW()
         startup.StartupInfo.cb = ctypes.sizeof(STARTUPINFOEXW)
+        # A redirected parent can otherwise have its standard handles duplicated
+        # into the client even with bInheritHandles=False.  Null standard handles
+        # plus STARTF_USESTDHANDLES let the pseudoconsole supply the console I/O.
+        startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES
         startup.lpAttributeList = attr
         command = ctypes.create_unicode_buffer(
             subprocess.list2cmdline([sys.executable, str(self.helper), "--client"])
