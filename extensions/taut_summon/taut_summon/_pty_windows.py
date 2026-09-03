@@ -920,7 +920,10 @@ def _environment_block(env: Mapping[str, str]) -> ctypes.Array[Any]:
         f"{key}={value}"
         for key, value in sorted(env.items(), key=lambda item: item[0].upper())
     ]
-    return ctypes.create_unicode_buffer("\0".join(entries) + "\0\0")
+    contents = "\0".join(entries) + "\0\0"
+    # Keep the buffer at CreateProcessW's documented shape: one terminator for
+    # the final entry and one for the block, with no implicit extra element.
+    return ctypes.create_unicode_buffer(contents, len(contents))
 
 
 def _cleanup_failed_spawn(
@@ -1039,7 +1042,7 @@ def spawn_windows_pty(
                 EXTENDED_STARTUPINFO_PRESENT
                 | CREATE_UNICODE_ENVIRONMENT
                 | CREATE_SUSPENDED,
-                environment,
+                ctypes.cast(environment, LPVOID),
                 None,
                 ctypes.byref(startup.StartupInfo),
                 ctypes.byref(info),

@@ -319,6 +319,14 @@ def test_public_adapter_reports_missing_conpty_export(
         )
 
 
+def test_environment_block_is_sorted_and_exactly_double_terminated() -> None:
+    from taut_summon._pty_windows import _environment_block
+
+    block = _environment_block({"z_key": "last", "A_KEY": "first"})
+
+    assert "".join(block) == "A_KEY=first\0z_key=last\0\0"
+
+
 def test_attach_partial_duplicate_failure_closes_first_duplicate() -> None:
     from taut_summon._adapter import AdapterError
     from taut_summon._pty_windows import _AttachSession
