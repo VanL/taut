@@ -135,6 +135,100 @@ class _HostAbort(BaseException):
     pass
 
 
+class _HostTerminal:
+    """Test-owned terminal fds for the public attach lease."""
+
+    def __init__(
+        self,
+        *,
+        user_read_fd: int,
+        user_write_fd: int,
+        lease_input_fd: int,
+        lease_output_fd: int,
+    ) -> None:
+        self.user_read_fd = user_read_fd
+        self.user_write_fd = user_write_fd
+        self.lease_input_fd = lease_input_fd
+        self.lease_output_fd = lease_output_fd
+
+    @classmethod
+    def open(cls) -> _HostTerminal:
+        if os.name == "nt":
+            lease_input_fd, user_write_fd = os.pipe()
+            user_read_fd, lease_output_fd = os.pipe()
+            os.set_blocking(user_read_fd, False)
+            return cls(
+                user_read_fd=user_read_fd,
+                user_write_fd=user_write_fd,
+                lease_input_fd=lease_input_fd,
+                lease_output_fd=lease_output_fd,
+            )
+        import pty
+
+        user_fd, lease_fd = pty.openpty()
+        return cls(
+            user_read_fd=user_fd,
+            user_write_fd=user_fd,
+            lease_input_fd=lease_fd,
+            lease_output_fd=lease_fd,
+        )
+
+    def interaction(self) -> _PtyHostInteraction:
+        return _PtyHostInteraction(
+            input_fd=self.lease_input_fd,
+            output_fd=self.lease_output_fd,
+        )
+
+    def gated_interaction(
+        self, decision: bool | BaseException
+    ) -> _GatedAttachDecisionInteraction:
+        return _GatedAttachDecisionInteraction(
+            input_fd=self.lease_input_fd,
+            output_fd=self.lease_output_fd,
+            decision=decision,
+        )
+
+    def read_until(self, needle: bytes, *, timeout: float = 10.0) -> bytes:
+        deadline = time.monotonic() + timeout
+        output = b""
+        while time.monotonic() < deadline:
+            if os.name == "nt":
+                try:
+                    chunk = os.read(self.user_read_fd, 4096)
+                except BlockingIOError:
+                    time.sleep(0.05)
+                    continue
+                if not chunk:
+                    time.sleep(0.05)
+                    continue
+                output += chunk
+            else:
+                ready, _, _ = select.select([self.user_read_fd], [], [], 0.05)
+                if not ready:
+                    continue
+                output += os.read(self.user_read_fd, 4096)
+            if needle in output:
+                return output
+        return output
+
+    def write(self, data: bytes) -> None:
+        os.write(self.user_write_fd, data)
+
+    def close(self) -> None:
+        seen: set[int] = set()
+        for fd in (
+            self.user_read_fd,
+            self.user_write_fd,
+            self.lease_input_fd,
+            self.lease_output_fd,
+        ):
+            if fd in seen:
+                continue
+            seen.add(fd)
+            with suppress(OSError):
+                os.close(fd)
+
+
 class _PtyHostInteraction:
     """Deterministic rich host that owns real non-default terminal fds."""
 
@@ -1761,14 +1855,9 @@ def test_rich_host_attach_decision_ends_before_real_pty_spawn(
     from taut_summon import SummonOperationError, SummonRequest
     from taut_summon._driver import SummonDriver
 
-    pty = pytest.importorskip("pty", reason="host interaction requires a POSIX PTY")
     _configure_fake_pty(monkeypatch, tmp_path=tmp_path)
-    user_master, user_slave = pty.openpty()
-    interaction = _GatedAttachDecisionInteraction(
-        input_fd=user_slave,
-        output_fd=user_slave,
-        decision=decision,
-    )
+    terminal = _HostTerminal.open()
+    interaction = terminal.gated_interaction(decision)
     request = SummonRequest(
         name="cancelled-host",
         threads=("general",),
@@ -1835,31 +1924,30 @@ def test_rich_host_attach_decision_ends_before_real_pty_spawn(
         for driver in drivers:
             driver.request_stop()
         if thread.is_alive():
-            try:
-                os.write(user_master, b"\x1c\x1c")
-            except OSError:
-                pass
+            with suppress(OSError):
+                terminal.write(b"\x1c\x1c")
             thread.join(timeout=10.0)
-        os.close(user_master)
-        os.close(user_slave)
+        terminal.close()
 
 
 @pytest.mark.xdist_group("process")
 @pytest.mark.sqlite_only
+@pytest.mark.posix_only
 def test_rich_host_real_pty_lease_wires_once_then_wired_resume_skips_lease(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-040] exception
     summon_db: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    import pty
+
     from taut_summon import (
         SummonController,
         SummonRequest,
         TerminalIntent,
     )
     from taut_summon._driver import SummonDriver
-    from taut_summon._pty import PtyHandle
+    from taut_summon._pty_posix import PosixPtyHandle
 
-    pty = pytest.importorskip("pty", reason="host interaction requires a POSIX PTY")
     _configure_fake_pty(monkeypatch, tmp_path=tmp_path)
     user_master, user_slave = pty.openpty()
     prompt_marker = "orientation-race-probe"
@@ -1913,7 +2001,7 @@ def test_rich_host_real_pty_lease_wires_once_then_wired_resume_skips_lease(  # n
         control_close_request_completed = threading.Event()
         block_orientation_write = threading.Event()
         real_write = os.write
-        real_request_close = PtyHandle.request_close
+        real_request_close = PosixPtyHandle.request_close
 
         def controlled_write(fd: int, data: bytes) -> int:
             if (
@@ -1927,7 +2015,7 @@ def test_rich_host_real_pty_lease_wires_once_then_wired_resume_skips_lease(  # n
                     raise RuntimeError("test did not release the orientation write")
             return real_write(fd, data)
 
-        def observed_request_close(handle: PtyHandle) -> None:
+        def observed_request_close(handle: PosixPtyHandle) -> None:
             real_request_close(handle)
             if (
                 block_orientation_write.is_set()
@@ -1936,7 +2024,7 @@ def test_rich_host_real_pty_lease_wires_once_then_wired_resume_skips_lease(  # n
                 control_close_request_completed.set()
 
         monkeypatch.setattr(os, "write", controlled_write)
-        monkeypatch.setattr(PtyHandle, "request_close", observed_request_close)
+        monkeypatch.setattr(PosixPtyHandle, "request_close", observed_request_close)
 
         second = _GatedPtyHostInteraction(input_fd=user_slave, output_fd=user_slave)
         second_thread, second_failures = _start_foreground_run(
@@ -1998,10 +2086,9 @@ def test_driver_stop_during_rich_host_attach_restores_and_releases_lease(
     from taut_summon import SummonRequest, TerminalIntent
     from taut_summon._driver import SummonDriver
 
-    pty = pytest.importorskip("pty", reason="host interaction requires a POSIX PTY")
     _configure_fake_pty(monkeypatch, tmp_path=tmp_path)
-    user_master, user_slave = pty.openpty()
-    interaction = _PtyHostInteraction(input_fd=user_slave, output_fd=user_slave)
+    terminal = _HostTerminal.open()
+    interaction = terminal.interaction()
     driver = SummonDriver(
         SummonRequest(
             name="stopped-host",
@@ -2026,9 +2113,9 @@ def test_driver_stop_during_rich_host_attach_restores_and_releases_lease(
     thread = threading.Thread(target=run, daemon=True, name="stopped-rich-host")
     thread.start()
     try:
-        assert b"ready" in _read_pty_until(user_master, b"ready")
+        assert b"ready" in terminal.read_until(b"ready")
         driver.request_stop()
-        assert b"\x1b[?2004l" in _read_pty_until(user_master, b"\x1b[?2004l")
+        assert b"\x1b[?2004l" in terminal.read_until(b"\x1b[?2004l")
         thread.join(timeout=10.0)
 
         assert not thread.is_alive()
@@ -2045,8 +2132,7 @@ def test_driver_stop_during_rich_host_attach_restores_and_releases_lease(
         if thread.is_alive():
             driver.request_stop()
             thread.join(timeout=10.0)
-        os.close(user_master)
-        os.close(user_slave)
+        terminal.close()
 
 
 @pytest.mark.xdist_group("process")
@@ -2149,8 +2235,7 @@ def _wire_member_through_pretrusted_first_attach(
     *,
     db: Path,
     request: Any,
-    user_master: int,
-    user_slave: int,
+    terminal: _HostTerminal,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> _PtyHostInteraction:
@@ -2159,15 +2244,15 @@ def _wire_member_through_pretrusted_first_attach(
     from taut_summon import SummonController
 
     _configure_gate_pty(monkeypatch, tmp_path=tmp_path, pretrusted=True)
-    interaction = _PtyHostInteraction(input_fd=user_slave, output_fd=user_slave)
+    interaction = terminal.interaction()
     thread, failures = _start_foreground_run(
         db=db, request=request, interaction=interaction
     )
     try:
-        assert b"chat>" in _read_pty_until(user_master, b"chat>")
-        os.write(user_master, b"\x1c\x1c")
+        assert b"chat>" in terminal.read_until(b"chat>")
+        terminal.write(b"\x1c\x1c")
         # Drain the bridge's reset blast so its TCSADRAIN restore completes.
-        assert b"\x1b[?2004l" in _read_pty_until(user_master, b"\x1b[?2004l")
+        assert b"\x1b[?2004l" in terminal.read_until(b"\x1b[?2004l")
 
         def wired() -> bool:
             member = _member_by_name(db, request.name)
@@ -2192,20 +2277,16 @@ def test_setup_gate_offers_single_recovery_attach_and_completes_setup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    pytest.importorskip("pty", reason="setup recovery requires a POSIX PTY")
-    import pty as pty_module
-
     prompt_marker = "gate-orientation-probe"
     prompt_path = tmp_path / "gate-prompt.txt"
     prompt_path.write_text(prompt_marker, encoding="utf-8")
     request = _gate_request("gated", prompt_path)
-    user_master, user_slave = pty_module.openpty()
+    terminal = _HostTerminal.open()
     try:
         first_attach = _wire_member_through_pretrusted_first_attach(
             db=summon_db,
             request=request,
-            user_master=user_master,
-            user_slave=user_slave,
+            terminal=terminal,
             monkeypatch=monkeypatch,
             tmp_path=tmp_path,
         )
@@ -2218,7 +2299,7 @@ def test_setup_gate_offers_single_recovery_attach_and_completes_setup(
             monkeypatch, tmp_path=tmp_path / "run2", pretrusted=False
         )
         (tmp_path / "run2").mkdir(exist_ok=True)
-        interaction = _PtyHostInteraction(input_fd=user_slave, output_fd=user_slave)
+        interaction = terminal.interaction()
         thread, failures = _start_foreground_run(
             db=summon_db, request=request, interaction=interaction
         )
@@ -2239,14 +2320,12 @@ def test_setup_gate_offers_single_recovery_attach_and_completes_setup(
             assert [e["event"] for e in events if e["event"] == "input"] == []
 
             # Proceed: the recovery generation bridges; answer the gate.
-            assert b"Trust this folder?" in _read_pty_until(
-                user_master, b"Trust this folder?"
-            )
-            os.write(user_master, b"\x14")
-            assert b"chat>" in _read_pty_until(user_master, b"chat>")
-            os.write(user_master, b"\x1c\x1c")
+            assert b"Trust this folder?" in terminal.read_until(b"Trust this folder?")
+            terminal.write(b"\x14")
+            assert b"chat>" in terminal.read_until(b"chat>")
+            terminal.write(b"\x1c\x1c")
             # Drain the reset blast so the bridge's TCSADRAIN restore returns.
-            assert b"\x1b[?2004l" in _read_pty_until(user_master, b"\x1b[?2004l")
+            assert b"\x1b[?2004l" in terminal.read_until(b"\x1b[?2004l")
 
             # Detach resumes the detached flow: orientation reaches the chat.
             def oriented() -> bool:
@@ -2291,8 +2370,7 @@ def test_setup_gate_offers_single_recovery_attach_and_completes_setup(
         assert failures == []
         assert interaction.lease_events.count("enter") == 1
     finally:
-        os.close(user_master)
-        os.close(user_slave)
+        terminal.close()
 
 
 @pytest.mark.xdist_group("process")
@@ -2302,22 +2380,18 @@ def test_setup_gate_decline_continues_detached_and_enriches_give_up(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    pytest.importorskip("pty", reason="setup recovery requires a POSIX PTY")
-    import pty as pty_module
-
     from taut_summon import SummonOperationError
 
     prompt_path = tmp_path / "gate-prompt.txt"
     prompt_path.write_text("decline-orientation-probe", encoding="utf-8")
     request = _gate_request("declined", prompt_path)
     monkeypatch.setenv("TAUT_SUMMON_RESUME_BACKOFF", "0.1,0.1")
-    user_master, user_slave = pty_module.openpty()
+    terminal = _HostTerminal.open()
     try:
         _wire_member_through_pretrusted_first_attach(
             db=summon_db,
             request=request,
-            user_master=user_master,
-            user_slave=user_slave,
+            terminal=terminal,
             monkeypatch=monkeypatch,
             tmp_path=tmp_path,
         )
@@ -2326,9 +2400,7 @@ def test_setup_gate_decline_continues_detached_and_enriches_give_up(
         gate_log = _configure_gate_pty(
             monkeypatch, tmp_path=tmp_path / "run2", pretrusted=False
         )
-        interaction = _GatedAttachDecisionInteraction(
-            input_fd=user_slave, output_fd=user_slave, decision=False
-        )
+        interaction = terminal.gated_interaction(False)
         thread, failures = _start_foreground_run(
             db=summon_db, request=request, interaction=interaction
         )
@@ -2360,8 +2432,7 @@ def test_setup_gate_decline_continues_detached_and_enriches_give_up(
         ]
         assert declined_defaults, "detached continuation should reach the menu"
     finally:
-        os.close(user_master)
-        os.close(user_slave)
+        terminal.close()
 
 
 @pytest.mark.xdist_group("process")
@@ -2371,9 +2442,6 @@ def test_setup_gate_shutdown_during_offer_ends_cleanly(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    pytest.importorskip("pty", reason="setup recovery requires a POSIX PTY")
-    import pty as pty_module
-
     from taut_summon._driver import SummonDriver
 
     prompt_path = tmp_path / "gate-prompt.txt"
@@ -2387,13 +2455,12 @@ def test_setup_gate_shutdown_during_offer_ends_cleanly(
         drivers.append(driver)
 
     monkeypatch.setattr(SummonDriver, "__init__", observed_driver_init)
-    user_master, user_slave = pty_module.openpty()
+    terminal = _HostTerminal.open()
     try:
         _wire_member_through_pretrusted_first_attach(
             db=summon_db,
             request=request,
-            user_master=user_master,
-            user_slave=user_slave,
+            terminal=terminal,
             monkeypatch=monkeypatch,
             tmp_path=tmp_path,
         )
@@ -2402,9 +2469,7 @@ def test_setup_gate_shutdown_during_offer_ends_cleanly(
         gate_log = _configure_gate_pty(
             monkeypatch, tmp_path=tmp_path / "run2", pretrusted=False
         )
-        interaction = _GatedAttachDecisionInteraction(
-            input_fd=user_slave, output_fd=user_slave, decision=False
-        )
+        interaction = terminal.gated_interaction(False)
         thread, failures = _start_foreground_run(
             db=summon_db, request=request, interaction=interaction
         )
@@ -2423,8 +2488,7 @@ def test_setup_gate_shutdown_during_offer_ends_cleanly(
         inputs = [e for e in _gate_events(gate_log) if e["event"] == "input"]
         assert inputs == []
     finally:
-        os.close(user_master)
-        os.close(user_slave)
+        terminal.close()
 
 
 @pytest.mark.xdist_group("process")
@@ -2434,22 +2498,18 @@ def test_confirmed_input_prompt_never_offers_setup_recovery(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    pytest.importorskip("pty", reason="setup recovery requires a POSIX PTY")
-    import pty as pty_module
-
     from taut_summon import SummonController
 
     prompt_marker = "confirmed-orientation-probe"
     prompt_path = tmp_path / "gate-prompt.txt"
     prompt_path.write_text(prompt_marker, encoding="utf-8")
     request = _gate_request("prompted", prompt_path)
-    user_master, user_slave = pty_module.openpty()
+    terminal = _HostTerminal.open()
     try:
         _wire_member_through_pretrusted_first_attach(
             db=summon_db,
             request=request,
-            user_master=user_master,
-            user_slave=user_slave,
+            terminal=terminal,
             monkeypatch=monkeypatch,
             tmp_path=tmp_path,
         )
@@ -2458,7 +2518,7 @@ def test_confirmed_input_prompt_never_offers_setup_recovery(
         gate_log = _configure_gate_pty(
             monkeypatch, tmp_path=tmp_path / "run2", pretrusted=True
         )
-        interaction = _PtyHostInteraction(input_fd=user_slave, output_fd=user_slave)
+        interaction = terminal.interaction()
         thread, failures = _start_foreground_run(
             db=summon_db, request=request, interaction=interaction
         )
@@ -2478,8 +2538,7 @@ def test_confirmed_input_prompt_never_offers_setup_recovery(
         assert not thread.is_alive()
         assert failures == []
     finally:
-        os.close(user_master)
-        os.close(user_slave)
+        terminal.close()
 
 
 @pytest.mark.xdist_group("process")
@@ -2493,6 +2552,7 @@ def test_confirmed_input_prompt_never_offers_setup_recovery(
         ("fallhost", "non-supporting-host"),
     ],
 )
+@pytest.mark.posix_only
 def test_setup_gate_fall_through_variants_inject_after_settle(
     summon_db: Path,
     tmp_path: Path,
@@ -2504,9 +2564,6 @@ def test_setup_gate_fall_through_variants_inject_after_settle(
     today's inject-after-settle behavior with zero offers, through a real
     driver run against the real gate child."""
 
-    pytest.importorskip("pty", reason="setup recovery requires a POSIX PTY")
-    import pty as pty_module
-
     from taut_summon import SummonOperationError
 
     prompt_path = tmp_path / "gate-prompt.txt"
@@ -2516,23 +2573,22 @@ def test_setup_gate_fall_through_variants_inject_after_settle(
     # The real gate consumes the complete orientation line, then waits for a
     # test-only release byte. Send that byte only after the real inject call
     # returns so child exit cannot race the PTY's successful-write validation.
-    from taut_summon._pty import PtyHandle
+    from taut_summon._pty_posix import PosixPtyHandle
 
-    real_inject = PtyHandle.inject
+    real_inject = PosixPtyHandle.inject
 
-    def inject_then_release_gate(self: PtyHandle, text: str) -> None:
+    def inject_then_release_gate(self: PosixPtyHandle, text: str) -> None:
         real_inject(self, text)
         self._write_best_effort(b"\0")
 
-    monkeypatch.setattr(PtyHandle, "inject", inject_then_release_gate)
+    monkeypatch.setattr(PosixPtyHandle, "inject", inject_then_release_gate)
     monkeypatch.setenv("TAUT_GATE_WAIT_FOR_INJECT_RETURN", "1")
-    user_master, user_slave = pty_module.openpty()
+    terminal = _HostTerminal.open()
     try:
         _wire_member_through_pretrusted_first_attach(
             db=summon_db,
             request=request,
-            user_master=user_master,
-            user_slave=user_slave,
+            terminal=terminal,
             monkeypatch=monkeypatch,
             tmp_path=tmp_path,
         )
@@ -2545,17 +2601,19 @@ def test_setup_gate_fall_through_variants_inject_after_settle(
         run2_request = request
         if variant == "kill-switch":
             monkeypatch.setenv("TAUT_SUMMON_SETUP_RECOVERY", "0")
-            interaction = _PtyHostInteraction(input_fd=user_slave, output_fd=user_slave)
+            interaction = terminal.interaction()
         elif variant == "forced-detach":
             run2_request = _gate_request(member, prompt_path, detach=True)
-            interaction = _PtyHostInteraction(input_fd=user_slave, output_fd=user_slave)
+            interaction = terminal.interaction()
         elif variant == "no-tty":
             interaction = _NoTtyPtyHostInteraction(
-                input_fd=user_slave, output_fd=user_slave
+                input_fd=terminal.lease_input_fd,
+                output_fd=terminal.lease_output_fd,
             )
         else:
             interaction = _NonRecoveryPtyHostInteraction(
-                input_fd=user_slave, output_fd=user_slave
+                input_fd=terminal.lease_input_fd,
+                output_fd=terminal.lease_output_fd,
             )
         thread, failures = _start_foreground_run(
             db=summon_db, request=run2_request, interaction=interaction
@@ -2586,5 +2644,4 @@ def test_setup_gate_fall_through_variants_inject_after_settle(
         assert "last screen output:" in message
         assert f"taut summon --attach {member}" in message
     finally:
-        os.close(user_master)
-        os.close(user_slave)
+        terminal.close()

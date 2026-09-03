@@ -46,6 +46,9 @@
   The Claude-specific structured adapter, terminal-mode speech path, and
   provider-session runtime API are removed. Released persistence version 1
   records remain readable; new dumps use version 2 without the session field.
+  Windows uses ConPTY behind the same adapter boundary, and the Summon CI lanes
+  collect the full test directory on every platform with only native backend
+  primitives excluded by platform markers.
 
 - Core schema startup is now a read in the steady state. `ensure_schema`
   reads the stored version and load-guard rows in one ordinary session and

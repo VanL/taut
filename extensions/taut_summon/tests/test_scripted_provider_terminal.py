@@ -59,7 +59,9 @@ def test_scripted_provider_is_a_real_bracketed_paste_pty_child(
         },
     )
     observed: list[object] = []
-    pump = threading.Thread(target=lambda: observed.extend(handle.events()), daemon=True)
+    pump = threading.Thread(
+        target=lambda: observed.extend(handle.events()), daemon=True
+    )
     pump.start()
     try:
         deadline = time.monotonic() + 5.0

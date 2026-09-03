@@ -9,15 +9,20 @@ from __future__ import annotations
 
 import json
 import os
-import select
 import signal
 import subprocess
 import sys
-import tty
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any, NoReturn, Protocol
+
+
+class _TerminalInput(Protocol):
+    def receive(self, *, timeout: float | None = None) -> bytes | None: ...
+
+
+INPUT: _TerminalInput
 
 
 class _LocalLLMFailure(Exception):
@@ -39,14 +44,12 @@ def _record(path: Path | None, event: str, **fields: Any) -> None:
 
 
 def _read_line() -> bytes | None:
-    fd = sys.stdin.fileno()
     buf = b""
     while True:
-        ready, _, _ = select.select([fd], [], [], 0.05)
-        if not ready:
+        chunk = INPUT.receive(timeout=0.05)
+        if chunk == b"":
             continue
-        chunk = os.read(fd, 4096)
-        if not chunk:
+        if chunk is None:
             return None
         buf += chunk
         if b"\x03" in chunk:
@@ -186,7 +189,12 @@ def _post_sentinel(target: str, sentinel: str, *, log: Path | None) -> None:
 
 
 def main() -> int:
-    tty.setraw(sys.stdin.fileno())
+    global INPUT
+
+    from terminal_io import TerminalInput, configure_raw_input
+
+    configure_raw_input()
+    INPUT = TerminalInput()
     log = (
         Path(os.environ["TAUT_SUMMON_LOCAL_LLM_TUI_LOG"])
         if os.environ.get("TAUT_SUMMON_LOCAL_LLM_TUI_LOG")

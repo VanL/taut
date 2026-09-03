@@ -10,20 +10,27 @@ from __future__ import annotations
 
 import json
 import os
-import select
 import signal
 import subprocess
 import sys
 import time
-import tty
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 ESC = b"\x1b"
 BEL = b"\x07"
 ST = ESC + b"\\"
 REDRAW = True
 PENDING_INPUT = bytearray()
+
+
+class _TerminalInput(Protocol):
+    def receive(self, *, timeout: float | None = None) -> bytes | None: ...
+
+    def pause(self) -> None: ...
+
+
+INPUT: _TerminalInput
 
 
 def _write(data: bytes) -> None:
@@ -33,13 +40,11 @@ def _write(data: bytes) -> None:
 def _read_until(pattern: bytes, *, timeout: float = 5.0) -> bytes:
     deadline = time.monotonic() + timeout
     buf = b""
-    fd = sys.stdin.fileno()
     while time.monotonic() < deadline:
-        ready, _, _ = select.select([fd], [], [], 0.05)
-        if not ready:
+        chunk = INPUT.receive(timeout=0.05)
+        if chunk == b"":
             continue
-        chunk = os.read(fd, 4096)
-        if not chunk:
+        if chunk is None:
             break
         buf += chunk
         if pattern in buf:
@@ -156,7 +161,6 @@ def _run_queries(record_paths: list[Path], rows: int, cols: int) -> None:
 
 
 def _read_line() -> bytes | None:
-    fd = sys.stdin.fileno()
     buf = bytes(PENDING_INPUT)
     PENDING_INPUT.clear()
     while True:
@@ -167,13 +171,12 @@ def _read_line() -> bytes | None:
                 return buf
         elif b"\r" in buf or b"\n" in buf:
             return buf
-        ready, _, _ = select.select([fd], [], [], 0.05)
-        if not ready:
+        chunk = INPUT.receive(timeout=0.05)
+        if chunk == b"":
             if REDRAW:
                 _write(b"\x1b[2K\rready")
             continue
-        chunk = os.read(fd, 4096)
-        if not chunk:
+        if chunk is None:
             return None
         buf += chunk
 
@@ -236,6 +239,7 @@ def _run_startup(config: dict[str, object], record_paths: list[Path]) -> None:
                 "unknown_reply_window",
                 got=got.decode("latin1"),
             )
+            INPUT.pause()
             while True:
                 time.sleep(1)
     if config.get("onboarding"):
@@ -281,8 +285,12 @@ def _run_command_loop(record_paths: list[Path]) -> int:
 
 
 def main() -> int:
-    global REDRAW
-    tty.setraw(sys.stdin.fileno())
+    global INPUT, REDRAW
+
+    from terminal_io import TerminalInput, configure_raw_input
+
+    configure_raw_input()
+    INPUT = TerminalInput()
     config = json.loads(os.environ.get("TAUT_FAKE_TUI_CONFIG", "{}"))
     REDRAW = bool(config.get("redraw", True))
     record_paths = _record_paths_from_env()

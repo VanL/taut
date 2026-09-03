@@ -41,7 +41,6 @@ from taut_summon._win32_io import (
     STARTUPINFOEXW,
     STILL_ACTIVE,
     WAIT_OBJECT_0,
-    WAIT_TIMEOUT,
     ConsoleLease,
     NativeApi,
     Win32IoError,
@@ -50,8 +49,6 @@ from taut_summon._win32_io import (
 _CLEAN_PIPE_END = frozenset(
     {ERROR_BROKEN_PIPE, ERROR_NO_DATA, ERROR_PIPE_NOT_CONNECTED}
 )
-_TAIL_RAW_CAP = 4096
-_TAIL_TEXT_CAP = 1024
 _ACTIVITY_SECONDS = 10.0
 _CLOSE_TIMEOUT_S = 10.0
 _DETACH_RESET = b"\x1b[?1049l\x1b[?25h\x1b[0m\x1b[?2004l"
@@ -63,7 +60,16 @@ class TerminalIntegration(Protocol):
 
     def encode_injection(self, text: str) -> bytes: ...
 
-    def observe_output(self, data: bytes) -> None: ...
+    def observe_output(self, data: bytes) -> tuple[bytes, ...]: ...
+
+    def mark_stalled(self, *, now: float | None = None) -> None: ...
+
+    def mark_awaiting_onboarding(self) -> None: ...
+
+    def detach_matcher(self, chord: bytes) -> DetachMatcher: ...
+
+    @property
+    def unhandled_query_pending(self) -> bool: ...
 
     @property
     def input_prompt_observed(self) -> bool: ...
@@ -71,6 +77,10 @@ class TerminalIntegration(Protocol):
     def output_tail(self) -> str: ...
 
     def status_fields(self) -> dict[str, str]: ...
+
+
+class DetachMatcher(Protocol):
+    def feed(self, data: bytes) -> tuple[bytes, bool]: ...
 
 
 def _record_cleanup(failures: list[Exception], action: Callable[[], object]) -> None:
@@ -183,6 +193,9 @@ class _EpochWriter:
             with self._serializer:
                 thread_handle = self._api.open_current_thread()
                 self._api.write(self._handle, b"\x03")
+        except Win32IoError as exc:
+            if exc.error_code not in _CLEAN_PIPE_END:
+                self._close_failure = exc
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             self._close_failure = exc
         finally:
@@ -215,6 +228,57 @@ class _EpochWriter:
             raise AdapterError("PTY write interrupted")
         if self._retired:
             raise AdapterError("PTY master is closed")
+
+
+class _TerminalReplyWriter:
+    """Keep terminal-report replies off the sole ConPTY output drain."""
+
+    def __init__(self, writer: _EpochWriter) -> None:
+        self._writer = writer
+        self._items: queue.Queue[bytes | None] = queue.Queue(maxsize=64)
+        self._retired = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run,
+            name="taut-conpty-terminal-replies",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def enqueue(self, payload: bytes) -> None:
+        if self._retired.is_set():
+            return
+        try:
+            self._items.put_nowait(payload)
+        except queue.Full:
+            logger.debug("dropping terminal reply because its queue is full")
+
+    def request_close(self) -> None:
+        if self._retired.is_set():
+            return
+        self._retired.set()
+        while True:
+            try:
+                self._items.get_nowait()
+            except queue.Empty:
+                break
+        self._items.put_nowait(None)
+
+    def finish(self) -> None:
+        self._thread.join(_CLOSE_TIMEOUT_S)
+        if self._thread.is_alive():
+            raise AdapterError("ConPTY terminal reply writer did not stop")
+
+    def _run(self) -> None:
+        while True:
+            payload = self._items.get()
+            if payload is None or self._retired.is_set():
+                return
+            try:
+                self._writer.write(payload)
+            except AdapterError:
+                if self._retired.is_set():
+                    return
+                logger.debug("terminal reply write was interrupted", exc_info=True)
 
 
 class _AttachSink:
@@ -398,23 +462,6 @@ class _OutputDrain:
             self._owner._output_ended()
 
 
-class _DetachMatcher:
-    def __init__(self, chord: bytes) -> None:
-        if not chord:
-            raise AdapterError("detach chord must not be empty")
-        self._chord = chord
-        self._pending = b""
-
-    def feed(self, data: bytes) -> tuple[bytes, bool]:
-        combined = self._pending + data
-        index = combined.find(self._chord)
-        if index >= 0:
-            return combined[:index], True
-        keep = min(len(self._chord) - 1, len(combined))
-        self._pending = combined[-keep:] if keep else b""
-        return combined[:-keep] if keep else combined, False
-
-
 class _AttachSession:
     """One bounded foreground bridge over duplicated host handles."""
 
@@ -441,7 +488,7 @@ class _AttachSession:
             except (OSError, AdapterError) as cleanup:
                 exc.add_note(f"first attach duplicate cleanup also failed: {cleanup}")
             raise
-        self.matcher = _DetachMatcher(detach_chord)
+        self.matcher = owner._terminal.detach_matcher(detach_chord)
         self.done = threading.Event()
         self.chunks: queue.SimpleQueue[bytes | Exception | None] = queue.SimpleQueue()
         self.input_thread_handle: int | None = None
@@ -596,7 +643,6 @@ class WindowsPtyHandle:
         output_read: int,
         process_handle: int,
         pid: int,
-        stall_s: float,
         quiet_ms: int,
         max_settle_s: float,
         terminal: TerminalIntegration,
@@ -607,11 +653,11 @@ class WindowsPtyHandle:
         self._output_read: int | None = output_read
         self._process_handle: int | None = process_handle
         self._pid = pid
-        self._stall_s = stall_s
         self._quiet_s = quiet_ms / 1000
         self._max_settle_s = max_settle_s
         self._terminal = terminal
         self._writer = _EpochWriter(api, input_write)
+        self._reply_writer = _TerminalReplyWriter(self._writer)
         self._lock = threading.Condition()
         self._events_lock = threading.Lock()
         self._events_claimed = False
@@ -619,15 +665,23 @@ class WindowsPtyHandle:
         self._exit_ready = threading.Event()
         self._exit_emitted = False
         self._returncode: int | None = None
+        self._exit_monitor_failure: BaseException | None = None
         self._close_state = "open"
         self._close_error: str | None = None
         self._last_output = time.monotonic()
         self._last_activity = 0.0
         self._seen_output = threading.Event()
-        self._awaiting_onboarding = False
         self._attach_generation = 0
         self._drain = _OutputDrain(api, output_read, self)
         self._drain.start()
+        self._exit_monitor_done = threading.Event()
+        self._exit_monitor = threading.Thread(
+            target=self._monitor_process_exit,
+            args=(process_handle,),
+            name="taut-conpty-process-exit",
+            daemon=True,
+        )
+        self._exit_monitor.start()
         self._events.put(ActivityEvent(description="spawn"))
 
     @property
@@ -639,13 +693,10 @@ class WindowsPtyHandle:
         return self._terminal.input_prompt_observed
 
     def mark_awaiting_onboarding(self) -> None:
-        self._awaiting_onboarding = True
+        self._terminal.mark_awaiting_onboarding()
 
     def status_fields(self) -> dict[str, str]:
-        fields = self._terminal.status_fields()
-        if self._awaiting_onboarding:
-            fields["awaiting_onboarding"] = "true"
-        return fields
+        return self._terminal.status_fields()
 
     def output_tail(self) -> str:
         return self._terminal.output_tail()
@@ -653,9 +704,12 @@ class WindowsPtyHandle:
     def wait_until_quiet(self) -> None:
         deadline = time.monotonic() + self._max_settle_s
         while time.monotonic() < deadline:
+            now = time.monotonic()
+            self._terminal.mark_stalled(now=now)
             if (
                 self._seen_output.is_set()
-                and time.monotonic() - self._last_output >= self._quiet_s
+                and now - self._last_output >= self._quiet_s
+                and not self._terminal.unhandled_query_pending
             ):
                 return
             if self._exit_ready.wait(0.02):
@@ -673,6 +727,7 @@ class WindowsPtyHandle:
             if self._close_state != "open":
                 return
             self._close_state = "close_requested"
+        self._reply_writer.request_close()
         self._writer.request_close()
 
     def close(self) -> None:
@@ -697,6 +752,10 @@ class WindowsPtyHandle:
             except (OSError, RuntimeError, TypeError, ValueError) as exc:
                 close_failures.append(exc)
             try:
+                self._reply_writer.finish()
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                close_failures.append(exc)
+            try:
                 self._close_owned_domain()
             except (OSError, RuntimeError, TypeError, ValueError) as exc:
                 close_failures.append(exc)
@@ -710,7 +769,7 @@ class WindowsPtyHandle:
                 self._close_error = failure
                 self._close_state = "closed"
                 self._lock.notify_all()
-            self._publish_exit()
+            self._publish_recorded_exit()
         if failure:
             if primary is not None:
                 primary.add_note(f"adapter cleanup also failed: {failure}")
@@ -750,7 +809,9 @@ class WindowsPtyHandle:
         now = time.monotonic()
         with self._lock:
             self._last_output = now
-            self._terminal.observe_output(data)
+            replies = self._terminal.observe_output(data)
+        for reply in replies:
+            self._reply_writer.enqueue(reply)
         self._seen_output.set()
         if now - self._last_activity >= _ACTIVITY_SECONDS:
             self._last_activity = now
@@ -758,39 +819,43 @@ class WindowsPtyHandle:
 
     def _output_ended(self) -> None:
         self._exit_ready.set()
-        if self._close_state == "open":
-            self._publish_exit()
+        self._publish_recorded_exit()
 
-    def _publish_exit(self) -> None:
+    def _monitor_process_exit(self, process: int) -> None:
+        publish = False
+        try:
+            wait = int(self._api.WaitForSingleObject(HANDLE(process), 0xFFFFFFFF))
+            if wait != WAIT_OBJECT_0:
+                raise AdapterError(f"ConPTY child wait failed with result {wait}")
+            status = DWORD()
+            self._api.require_bool(
+                "GetExitCodeProcess",
+                self._api.GetExitCodeProcess(HANDLE(process), ctypes.byref(status)),
+            )
+            if status.value == STILL_ACTIVE:
+                raise AdapterError("ConPTY child remained active after exit wait")
+            with self._lock:
+                self._returncode = int(status.value)
+                publish = self._close_state == "open"
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            self._exit_monitor_failure = exc
+        finally:
+            self._exit_monitor_done.set()
+            self._exit_ready.set()
+        if publish:
+            self._publish_recorded_exit()
+
+    def _publish_recorded_exit(self) -> None:
         with self._lock:
-            if self._exit_emitted:
-                return
-            process = self._process_handle
-        if process is None:
-            if self._returncode is not None:
-                with self._lock:
-                    if self._exit_emitted:
-                        return
-                    self._exit_emitted = True
-                self._events.put(ExitEvent(returncode=self._returncode))
-            return
-        wait = int(self._api.WaitForSingleObject(HANDLE(process), 10_000))
-        if wait != WAIT_OBJECT_0:
-            if self._close_state == "closed":
-                self._events.put(ExitEvent(returncode=-1))
-            return
-        status = DWORD()
-        self._api.require_bool(
-            "GetExitCodeProcess",
-            self._api.GetExitCodeProcess(HANDLE(process), ctypes.byref(status)),
-        )
-        if status.value == STILL_ACTIVE:
-            return
-        with self._lock:
-            if self._exit_emitted:
+            if (
+                self._exit_emitted
+                or self._returncode is None
+                or self._close_state not in ("open", "closed")
+            ):
                 return
             self._exit_emitted = True
-        self._events.put(ExitEvent(returncode=int(status.value)))
+            returncode = self._returncode
+        self._events.put(ExitEvent(returncode=returncode))
 
     def _close_owned_domain(self) -> None:
         hpcon, process = self._hpcon, self._process_handle
@@ -800,7 +865,7 @@ class WindowsPtyHandle:
         self._hpcon = None
         failures: list[Exception] = []
         _record_cleanup(failures, self._drain.join_after_close)
-        _record_cleanup(failures, lambda: self._wait_for_closed_process(process))
+        _record_cleanup(failures, self._finish_exit_monitor)
         for handle in (process, self._input_write, self._output_read):
             _record_cleanup(failures, partial(self._api.close_handle, handle))
         self._process_handle = None
@@ -812,26 +877,22 @@ class WindowsPtyHandle:
                 error.add_note(str(failure))
             raise error
 
-    def _wait_for_closed_process(self, process: int) -> None:
-        wait = int(
-            self._api.WaitForSingleObject(HANDLE(process), int(_CLOSE_TIMEOUT_S * 1000))
-        )
-        if wait == WAIT_TIMEOUT:
+    def _finish_exit_monitor(self) -> None:
+        if not self._exit_monitor_done.wait(_CLOSE_TIMEOUT_S):
             raise AdapterError("ConPTY child tree did not exit after terminal close")
-        if wait != WAIT_OBJECT_0:
-            raise AdapterError(f"ConPTY child wait failed with result {wait}")
-        status = DWORD()
-        self._api.require_bool(
-            "GetExitCodeProcess",
-            self._api.GetExitCodeProcess(HANDLE(process), ctypes.byref(status)),
-        )
-        if status.value == STILL_ACTIVE:
-            raise AdapterError("ConPTY child remained active after terminal close")
-        self._returncode = int(status.value)
+        self._exit_monitor.join()
+        if self._exit_monitor_failure is not None:
+            raise AdapterError(
+                f"ConPTY child wait failed: {self._exit_monitor_failure}"
+            ) from self._exit_monitor_failure
 
     def _abort_pre_resume(self) -> None:
         """Roll back a child that was created but never published or resumed."""
 
+        with self._lock:
+            self._close_state = "closing"
+        self._reply_writer.request_close()
+        self._reply_writer.finish()
         process = self._process_handle
         if process is not None:
             self._api.require_bool(
@@ -845,6 +906,7 @@ class WindowsPtyHandle:
             self._api.ClosePseudoConsole(HPCON(self._hpcon))
             self._hpcon = None
         self._drain.join_after_close()
+        self._finish_exit_monitor()
         self._api.close_handle(self._process_handle)
         self._process_handle = None
         self._api.close_handle(self._input_write)
@@ -898,7 +960,6 @@ def spawn_windows_pty(
     env: Mapping[str, str],
     rows: int,
     cols: int,
-    stall_s: float,
     quiet_ms: int,
     max_settle_s: float,
     terminal: TerminalIntegration,
@@ -1001,7 +1062,6 @@ def spawn_windows_pty(
             output_read=output_read,
             process_handle=process_handle,
             pid=int(info.dwProcessId),
-            stall_s=stall_s,
             quiet_ms=quiet_ms,
             max_settle_s=max_settle_s,
             terminal=terminal,

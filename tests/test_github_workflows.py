@@ -429,7 +429,7 @@ def test_test_workflow_is_reusable_and_owns_canonical_release_artifacts() -> Non
                 "Run taut-summon extension unit tests",
                 (),
                 "extensions/taut_summon/tests",
-                "not xdist_group",
+                "not xdist_group and ${{ matrix.summon-platform-filter }}",
                 "auto",
                 "load",
             ): 1,
@@ -438,16 +438,10 @@ def test_test_workflow_is_reusable_and_owns_canonical_release_artifacts() -> Non
                 "Run taut-summon extension process tests",
                 (),
                 "extensions/taut_summon/tests",
-                "xdist_group and not requires_live_harness and not requires_local_llm",
-                "auto",
-                "load",
-            ): 1,
-            (
-                "summon-process",
-                "Run taut-summon Windows process tests",
-                (),
-                "extensions/taut_summon/tests/test_process_domain.py",
-                "xdist_group and not requires_live_harness and not requires_local_llm",
+                (
+                    "xdist_group and not requires_live_harness and not "
+                    "requires_local_llm and ${{ matrix.summon-platform-filter }}"
+                ),
                 "auto",
                 "load",
             ): 1,
@@ -547,37 +541,57 @@ def test_summon_process_matrix_covers_e2_platform_proofs() -> None:
 
     assert job["strategy"]["matrix"] == {
         "include": [
-            {"os": "ubuntu-latest", "python-version": "3.11"},
-            {"os": "ubuntu-latest", "python-version": "3.12"},
-            {"os": "ubuntu-latest", "python-version": "3.13"},
-            {"os": "ubuntu-latest", "python-version": "3.14"},
-            {"os": "macos-latest", "python-version": "3.11"},
-            {"os": "macos-latest", "python-version": "3.13"},
-            {"os": "macos-latest", "python-version": "3.14"},
-            {"os": "windows-latest", "python-version": "3.11"},
+            {
+                "os": "ubuntu-latest",
+                "python-version": version,
+                "summon-platform-filter": "not windows_only",
+            }
+            for version in ("3.11", "3.12", "3.13", "3.14")
+        ]
+        + [
+            {
+                "os": "macos-latest",
+                "python-version": version,
+                "summon-platform-filter": "not windows_only",
+            }
+            for version in ("3.11", "3.13", "3.14")
+        ]
+        + [
+            {
+                "os": "windows-latest",
+                "python-version": "3.11",
+                "summon-platform-filter": "not posix_only",
+            }
         ]
     }
 
 
-def test_summon_process_windows_row_avoids_posix_only_collection() -> None:
-    """The Windows proof must not import the PTY module during collection."""
+def test_summon_jobs_collect_full_tree_with_platform_markers() -> None:
+    """Common tests run everywhere; only backend primitives use platform markers."""
 
     document = _workflow_data("test.yml")
-    steps = _named_steps(document["jobs"]["summon-process"])
-    posix = steps["Run taut-summon extension process tests"]
-    windows = steps["Run taut-summon Windows process tests"]
+    jobs = document["jobs"]
+    for job_name in ("test", "summon-process"):
+        rows = jobs[job_name]["strategy"]["matrix"]["include"]
+        assert all(
+            row["summon-platform-filter"]
+            == (
+                "not posix_only"
+                if row["os"] == "windows-latest"
+                else "not windows_only"
+            )
+            for row in rows
+        )
 
-    assert posix["if"] == (
-        "${{ matrix.os != 'windows-latest' && "
-        "(matrix.os != 'ubuntu-latest' || matrix.python-version != '3.13') }}"
-    )
-    assert windows["if"] == "${{ matrix.os == 'windows-latest' }}"
-    windows_run = str(windows["run"])
-    assert "extensions/taut_summon/tests/test_process_domain.py" in windows_run
-    assert "extensions/taut_summon/tests/test_scripted_adapter.py" in windows_run
-    assert "extensions/taut_summon/tests/test_win32_job.py" in windows_run
-    assert "pytest extensions/taut_summon/tests " not in windows_run
-    assert "test_pty_adapter.py" not in windows_run
+    unit = _named_steps(jobs["test"])["Run taut-summon extension unit tests"]
+    process_steps = _named_steps(jobs["summon-process"])
+    process = process_steps["Run taut-summon extension process tests"]
+    assert "Run taut-summon Windows process tests" not in process_steps
+    for step in (unit, process):
+        run = str(step["run"])
+        assert "pytest extensions/taut_summon/tests " in run
+        assert "${{ matrix.summon-platform-filter }}" in run
+        assert not re.search(r"extensions/taut_summon/tests/[^ ]+\.py", run)
 
 
 def test_coverage_reuses_existing_ubuntu_lanes_and_aggregates_without_tests() -> None:
@@ -640,7 +654,7 @@ def test_coverage_reuses_existing_ubuntu_lanes_and_aggregates_without_tests() ->
                 "Run taut-summon extension unit tests with coverage",
                 wrapper,
                 "extensions/taut_summon/tests",
-                "not xdist_group",
+                "not xdist_group and not windows_only",
                 "auto",
                 "load",
             ): 1,
@@ -649,7 +663,10 @@ def test_coverage_reuses_existing_ubuntu_lanes_and_aggregates_without_tests() ->
                 "Run taut-summon extension process tests with coverage",
                 wrapper,
                 "extensions/taut_summon/tests",
-                "xdist_group and not requires_live_harness and not requires_local_llm",
+                (
+                    "xdist_group and not requires_live_harness and not "
+                    "requires_local_llm and not windows_only"
+                ),
                 "auto",
                 "load",
             ): 1,

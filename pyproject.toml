@@ -103,6 +103,8 @@ markers = [
     "shared: backend-agnostic tests that should pass on SQLite and Postgres",
     "sqlite_only: tests that validate built-in SQLite/path behavior",
     "pg_only: tests that validate the Postgres extension package",
+    "posix_only: tests of POSIX-only adapter primitives",
+    "windows_only: tests of Windows-only adapter primitives",
 ]
 
 [tool.mypy]

@@ -11,7 +11,6 @@ from __future__ import annotations
 import http.server
 import json
 import os
-import select
 import subprocess
 import sys
 import threading
@@ -26,6 +25,8 @@ from typing import Any, NoReturn, Self
 import pytest
 from conftest import _base_env, summon_cli, taut_cli
 from simplebroker import Queue
+from taut_summon._adapter import AdapterError, AdapterEvent, ExitEvent
+from taut_summon._pty import PtyAdapter, PtySpec
 from taut_summon._state import (
     ensure_summon_schema,
     get_session,
@@ -357,49 +358,56 @@ def _run_failing_local_llm_child(
     endpoint: str,
     request_timeout: float = 0.2,
 ) -> tuple[int, str, list[dict[str, object]]]:
-    pty = pytest.importorskip("pty", reason="local LLM child requires a POSIX PTY")
-    master_fd, slave_fd = pty.openpty()
     event_log = tmp_path / "child-events.jsonl"
     sentinel = "expected-child-error-sentinel"
-    env = os.environ.copy()
-    env.update(
-        {
+    handle = PtyAdapter(
+        PtySpec(
+            name="local-llm-error",
+            argv=(sys.executable, str(LOCAL_LLM_TUI)),
+            quiet_ms=10,
+            max_settle_s=2.0,
+        )
+    ).spawn(
+        system_prompt="unused",
+        env={
             "TAUT_SUMMON_LOCAL_LLM_ENDPOINT": endpoint,
             "TAUT_SUMMON_LOCAL_LLM_MODEL": "stub-model",
             "TAUT_SUMMON_LOCAL_LLM_TARGET": "general",
             "TAUT_SUMMON_LOCAL_LLM_SENTINEL": sentinel,
             "TAUT_SUMMON_LOCAL_LLM_TIMEOUT": str(request_timeout),
             "TAUT_SUMMON_LOCAL_LLM_TUI_LOG": str(event_log),
-        }
+        },
     )
-    proc = subprocess.Popen(
-        [sys.executable, str(LOCAL_LLM_TUI)],
-        stdin=slave_fd,
-        stdout=slave_fd,
-        stderr=subprocess.PIPE,
-        cwd=tmp_path,
-        env=env,
-    )
-    os.close(slave_fd)
+    events: list[AdapterEvent] = []
+    failures: list[BaseException] = []
+
+    def pump() -> None:
+        try:
+            events.extend(handle.events())
+        except AdapterError as exc:
+            failures.append(exc)
+
+    thread = threading.Thread(target=pump, daemon=True)
+    thread.start()
     try:
-        output = b""
         deadline = time.monotonic() + 2.0
-        while b"local-llm-ready" not in output and time.monotonic() < deadline:
-            ready, _, _ = select.select([master_fd], [], [], 0.05)
-            if ready:
-                output += os.read(master_fd, 4096)
-            elif proc.poll() is not None:
-                break
-        assert b"local-llm-ready" in output, output
-        os.write(master_fd, f"orientation {sentinel}\r".encode())
-        _stdout, stderr = proc.communicate(timeout=4.0)
+        while "local-llm-ready" not in handle.output_tail():
+            assert time.monotonic() < deadline, handle.output_tail()
+            time.sleep(0.01)
+        handle.inject(f"orientation {sentinel}")
+        thread.join(timeout=4.0)
+        assert not thread.is_alive(), handle.output_tail()
+        assert failures == []
     finally:
-        if proc.poll() is None:
-            proc.kill()
-            proc.wait(timeout=2.0)
-        os.close(master_fd)
-    assert stderr is not None
-    return proc.returncode, stderr.decode(errors="replace"), _entries(event_log)
+        handle.close()
+    exit_event = next(event for event in events if isinstance(event, ExitEvent))
+    error_lines = [
+        line
+        for line in handle.output_tail().splitlines()
+        if line.startswith("local LLM request failed")
+    ]
+    assert len(error_lines) == 1, handle.output_tail()
+    return exit_event.returncode, error_lines[0] + "\n", _entries(event_log)
 
 
 def _assert_concise_child_error(

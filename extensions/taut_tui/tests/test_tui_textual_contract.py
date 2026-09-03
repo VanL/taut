@@ -416,16 +416,15 @@ def test_retained_textual_pilot_click_focus_and_resize() -> None:
     ("control_byte", "label"),
     ((b"\x03", "Ctrl-C"), (b"\x04", "Ctrl-D")),
 )
+@pytest.mark.posix_only
 def test_shipped_tui_translates_real_pty_quit_control_bytes(
     control_byte: bytes,
     label: str,
 ) -> None:
-    if os.name == "nt":
-        pytest.skip("stdlib PTY proof is POSIX-only")
+    import fcntl
+    import pty
+    import termios
 
-    fcntl = pytest.importorskip("fcntl")
-    pty = pytest.importorskip("pty")
-    termios = pytest.importorskip("termios")
     child_source = textwrap.dedent(
         r"""
         import os
@@ -503,13 +502,12 @@ def test_shipped_tui_translates_real_pty_quit_control_bytes(
     assert b"GUARDED-QUIT" in captured
 
 
+@pytest.mark.posix_only
 def test_real_textual_pty_never_emits_untrusted_terminal_control_payload() -> None:
-    if os.name == "nt":
-        pytest.skip("stdlib PTY proof is POSIX-only")
+    import fcntl
+    import pty
+    import termios
 
-    fcntl = pytest.importorskip("fcntl")
-    pty = pytest.importorskip("pty")
-    termios = pytest.importorskip("termios")
     child_source = textwrap.dedent(
         r"""
         from textual.app import App
@@ -586,13 +584,12 @@ def test_real_textual_pty_never_emits_untrusted_terminal_control_payload() -> No
     assert b"\\x1b]8;;https://evil.invalid\\a" in captured
 
 
+@pytest.mark.posix_only
 def test_retained_textual_suspend_grants_exclusive_real_pty_lease() -> None:
-    if os.name == "nt":
-        pytest.skip("stdlib PTY proof is POSIX-only")
+    import fcntl
+    import pty
+    import termios
 
-    fcntl = pytest.importorskip("fcntl")
-    pty = pytest.importorskip("pty")
-    termios = pytest.importorskip("termios")
     child_source = textwrap.dedent(
         r"""
         import json

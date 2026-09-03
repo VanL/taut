@@ -17,8 +17,8 @@ shaped the way it is, and where to read and edit.
 Implementation status: the structured adapter runtime and provider-session
 API have been removed. Every provider registration now uses `PtyAdapter`, and
 the packaged `scripted` provider is a real interactive terminal child. The
-POSIX implementation remains in `_pty.py`; the promoted split into POSIX and
-Windows ConPTY mechanics is the next migration slice. The extension also ships
+platform-neutral terminal state remains in `_pty.py`; `_pty_posix.py` owns the
+POSIX lifecycle and `_pty_windows.py` owns ConPTY. The extension also ships
 `run`/`stop`/`status`, bootstrap, attach/detach, ears, event pump, shutdown,
 the persona template, the control plane, and the rate backstop. The control policy uses core's shared
 `BaseReactor` lifecycle and reports unexpected control-lane death to the
@@ -85,11 +85,10 @@ and console mode/code-page snapshot and restoration. Registry, driver,
 readiness, terminal-query, injection, and event contracts remain platform-
 neutral.
 
-The public adapter and persistence deletions are implemented. The platform
-split is not: `_pty.py`, `_process_domain.py`, and `_win32_job.py` remain
-transitional owners until the ConPTY path is wired and its replacement proofs
-are green. This note must not be read as evidence that Windows named providers
-already run through ConPTY.
+The public adapter, persistence deletion, and platform split are implemented.
+Every named provider reaches the same `PtyAdapter`; its one spawn boundary
+selects `_pty_posix.py` or `_pty_windows.py`. Windows named providers therefore
+run through ConPTY rather than a vendor-specific stream path.
 
 ## Design Rationale
 
@@ -306,12 +305,11 @@ replacing the control diagnostic.
 
 ### Owned process domains ([SUM-7.1])
 
-`extensions/taut_summon/taut_summon/_process_domain.py` is the sole provider-
-process lifecycle owner. Adapter spawn receives an atomic pair: a `ProcessIO`
-view containing only PID and borrowed stdin/stdout, plus a `ProcessDomain`
-capability. The raw `Popen` remains private to that domain, so stream and PTY
-code cannot accidentally reap through `poll()` or `wait()`. Adapters still own
-protocol parsing, graceful request shape, pipes, and PTY fds; the domain owns
+`_process_domain_posix.py` is the POSIX provider-process lifecycle owner.
+Adapter spawn receives an atomic pair: a `ProcessIO` view containing only PID
+and borrowed stdin/stdout, plus a `ProcessDomain` capability. The raw `Popen`
+remains private to that domain, so PTY code cannot accidentally reap through
+`poll()` or `wait()`. The POSIX PTY backend owns its fds; the domain owns
 containment, terminal observation, forced retirement, and the one leader reap.
 
 On POSIX, spawn forces a new session and saves the leader PID as the process-
@@ -333,16 +331,14 @@ This is bounded best-effort group retirement, not atomic proof that a numeric
 POSIX group is empty. A descendant that deliberately creates a new session is
 outside the retained capability and must have an explicit external lifetime.
 
-On Windows, `_win32_job.py` creates and configures a kill-on-close Job Object,
-starts the provider with `CREATE_SUSPENDED`, assigns it before execution,
-recovers exactly one primary thread through the documented Toolhelp snapshot,
-and resumes only after assignment. Setup failure terminates and reaps the
-suspended child and releases every acquired handle before returning an error.
-Terminal finalization queries the retained job, terminates it when nonempty,
-requires zero active processes, performs the one leader wait, and closes the
-job handle. The runner's existing outer Job Object is not grounds for an eager
-rejection: valid nested assignment is attempted, while an actual incompatible
-assignment fails closed without breakaway.
+On Windows, `_pty_windows.py` creates the ConPTY and starts the provider with
+`CREATE_SUSPENDED`, attaching the pseudoconsole before the primary thread can
+run. ConPTY owns the attached process tree: closing it retires the leader and
+descendants, after which one monitor records the leader exit and publishes one
+`ExitEvent`. Setup failure terminates the unpublished suspended child and
+releases every acquired pseudoconsole, process, thread, and pipe handle. The
+sole output drain never waits for process exit or blocks on a terminal reply;
+reply writes use the serialized, cancellable input writer on a separate owner.
 
 The PTY pump checks leader status after every readable output turn, so a
 continuously readable terminal cannot defer terminal observation. It drains
@@ -892,10 +888,12 @@ require a separately drained subprocess pipe.
 | `extensions/taut_summon/taut_summon/_state.py` | The two-table ledger, claim/session helpers, single-driver guard evidence ([SUM-8]) |
 | `extensions/taut_summon/taut_summon/_control.py` | Fixed `_ControlReactor`, between-turn replacement supervisor, client, `sys.*` queue derivation, rate backstop ([SUM-9]/[SUM-10]/[SUM-11]) |
 | `extensions/taut_summon/taut_summon/_adapter.py` | `AdapterHandle` lifecycle, `ProviderAdapter` protocol, `AdapterEvent` union, adapter registry ([SUM-7.1]) |
-| `extensions/taut_summon/taut_summon/_process_domain.py` | Shared atomic spawn boundary, capability-minimal process I/O view, POSIX non-reaping group owner, and platform dispatch ([SUM-7.1]) |
+| `extensions/taut_summon/taut_summon/_process_domain_posix.py` | POSIX atomic spawn boundary, capability-minimal process I/O view, non-reaping group owner, and one leader reap ([SUM-7.1]) |
 | `extensions/taut_summon/taut_summon/_darwin_wait.py` | Narrow typed libc `waitid(..., WNOWAIT)` compatibility binding for macOS Python 3.11/3.12 |
-| `extensions/taut_summon/taut_summon/_win32_job.py` | Suspended pre-execution Job Object assignment, exact native-handle ownership, zero-active finalization, and leader reap |
-| `extensions/taut_summon/taut_summon/_pty.py` | Universal interactive PTY adapter, terminal-query responder, attach bridge, and terminal-retirement fd-operation lifecycle |
+| `extensions/taut_summon/taut_summon/_pty.py` | Platform-neutral interactive adapter, validation and dispatch, terminal state, query responder, injection framing, and detach matching |
+| `extensions/taut_summon/taut_summon/_pty_posix.py` | POSIX PTY fd, attach, signal, write-cancellation, and terminal-retirement lifecycle |
+| `extensions/taut_summon/taut_summon/_pty_windows.py` | Windows ConPTY creation, continuous output drain, attach generations, cancellable input, and process-tree retirement |
+| `extensions/taut_summon/taut_summon/_win32_io.py` | Typed Win32 calls, exact-thread I/O cancellation, duplicated handles, and console mode/code-page restoration |
 | `extensions/taut_summon/taut_summon/scripted_provider.py` | The scripted provider child, including readiness publication inside bounded physical-SIGINT cleanup ownership and signal-count evidence |
 | `extensions/taut_summon/taut_summon/_persona.py` | The default persona template ([SUM-10]) and env assembly |
 | `extensions/taut_summon/tests/conftest.py` | The shared real-process driver harness (`DriverProcess`) and fixtures |
@@ -912,8 +910,8 @@ require a separately drained subprocess pipe.
 | [SUM-4], bootstrap, identity, presence | `extensions/taut_summon/taut_summon/_driver.py`, `extensions/taut_summon/taut_summon/_state.py` | `extensions/taut_summon/tests/test_driver.py` |
 | [SUM-5], ears injection contract | `extensions/taut_summon/taut_summon/_driver.py` | `extensions/taut_summon/tests/test_driver.py`, `extensions/taut_summon/tests/test_conformance.py` |
 | [SUM-6], mouth CLI contract | `extensions/taut_summon/taut_summon/_driver.py`, `extensions/taut_summon/taut_summon/_persona.py`, `extensions/taut_summon/taut_summon/_pty.py`, `extensions/taut_summon/taut_summon/scripted_provider.py` | `extensions/taut_summon/tests/test_driver.py` real child identity and mouth cases; `extensions/taut_summon/tests/test_persona.py`; installed paired exception proof in `tests/test_core_summon_wheel_matrix.py` |
-| [SUM-7.1], adapters and process domains | `extensions/taut_summon/taut_summon/_adapter.py`, `extensions/taut_summon/taut_summon/_process_domain.py`, `extensions/taut_summon/taut_summon/_darwin_wait.py`, `extensions/taut_summon/taut_summon/_win32_job.py`, `extensions/taut_summon/taut_summon/_pty.py`, `extensions/taut_summon/taut_summon/_pty_windows.py`, `extensions/taut_summon/taut_summon/_win32_io.py` | `extensions/taut_summon/tests/test_process_domain.py`, `extensions/taut_summon/tests/test_win32_job.py`, `extensions/taut_summon/tests/test_pty_adapter.py`, and `extensions/taut_summon/tests/test_pty_windows.py` |
-| [SUM-7.4], PTY shell adapter | `extensions/taut_summon/taut_summon/_pty.py`, `extensions/taut_summon/taut_summon/_driver.py` | `extensions/taut_summon/tests/test_pty_adapter.py`, PTY cases in `extensions/taut_summon/tests/test_driver.py`, `extensions/taut_summon/tests/test_interaction.py`, `extensions/taut_summon/tests/test_live_harness.py` |
+| [SUM-7.1], adapters and process domains | `extensions/taut_summon/taut_summon/_adapter.py`, `extensions/taut_summon/taut_summon/_process_domain_posix.py`, `extensions/taut_summon/taut_summon/_darwin_wait.py`, `extensions/taut_summon/taut_summon/_pty.py`, `extensions/taut_summon/taut_summon/_pty_posix.py`, `extensions/taut_summon/taut_summon/_pty_windows.py`, `extensions/taut_summon/taut_summon/_win32_io.py` | `extensions/taut_summon/tests/test_pty_posix.py`, `extensions/taut_summon/tests/test_pty_adapter.py`, and `extensions/taut_summon/tests/test_pty_windows.py` |
+| [SUM-7.4], PTY shell adapter | `extensions/taut_summon/taut_summon/_pty.py`, `extensions/taut_summon/taut_summon/_pty_posix.py`, `extensions/taut_summon/taut_summon/_pty_windows.py`, `extensions/taut_summon/taut_summon/_driver.py` | `extensions/taut_summon/tests/test_pty_adapter.py`, platform primitive cases in `extensions/taut_summon/tests/test_pty_posix.py` and `extensions/taut_summon/tests/test_pty_windows.py`, plus driver, interaction, and live-harness cases |
 | [SUM-8], session ledger and guard | `extensions/taut_summon/taut_summon/_state.py` | `extensions/taut_summon/tests/test_state.py`, `extensions/taut_summon/tests/test_driver.py` |
 | [SUM-8], [PIO-5.3], durable session persistence and live-lease exclusion | `extensions/taut_summon/taut_summon/persistence_manifest.py`, `persistence.py`, `_state.py::persistence_records`, `persistence_is_fresh`, `load_persistence_records` | `extensions/taut_summon/tests/test_persistence.py`; cross-backend component coverage in `extensions/taut_pg/tests/test_persistence_io.py` |
 | [SUM-9], [SUM-10], [SUM-11], control lifecycle, backstop, recovery, and fatal supervision | `extensions/taut_summon/taut_summon/_control.py::_ControlReactor`, `extensions/taut_summon/taut_summon/_control.py::ControlLoop`, `extensions/taut_summon/taut_summon/_driver.py::SummonDriver._run_control_loop`, `_report_control_failure`, `_raise_if_control_failed` | `extensions/taut_summon/tests/test_control.py` fixed topology, ownership, native wake, inter-turn recovery, audit, partial-bundle, and close tests; `extensions/taut_summon/tests/test_driver.py` publication-race, request ordering, physical STOP signal-count, fatal-control, and PING cases |

@@ -10,16 +10,18 @@ import sys
 import threading
 import time
 from collections.abc import Callable
-from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
-import taut_summon._process_domain as process_domain_module
-import taut_summon._win32_job as win32_job_module
+import taut_summon._process_domain_posix as process_domain_module
 from taut_summon._adapter import AdapterError
-from taut_summon._process_domain import PosixProcessDomain
+from taut_summon._process_domain_posix import PosixProcessDomain, spawn_process
 
-pytestmark = [pytest.mark.sqlite_only, pytest.mark.xdist_group("process")]
+pytestmark = [
+    pytest.mark.posix_only,
+    pytest.mark.sqlite_only,
+    pytest.mark.xdist_group("process"),
+]
 
 
 class _FakeProcess:
@@ -48,51 +50,6 @@ def _domain_for_fake(proc: _FakeProcess) -> PosixProcessDomain:
     return PosixProcessDomain(cast(subprocess.Popen[Any], proc))
 
 
-def test_shared_spawn_factory_publishes_windows_io_only_after_job_setup(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    stdin = object()
-    stdout = object()
-    domain = object()
-    proc = SimpleNamespace(pid=4312, stdin=stdin, stdout=stdout)
-    calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
-
-    def fake_spawn(argv: tuple[str, ...], **kwargs: object) -> SimpleNamespace:
-        calls.append((tuple(argv), kwargs))
-        return SimpleNamespace(proc=proc, domain=domain)
-
-    monkeypatch.setattr(process_domain_module, "_PLATFORM_NAME", "nt")
-    monkeypatch.setattr(win32_job_module, "spawn_windows_process", fake_spawn)
-
-    spawned = process_domain_module.spawn_process(
-        ("provider", "--stream"),
-        stdin=stdin,
-        stdout=stdout,
-        creationflags=0x200,
-    )
-
-    assert spawned.process.pid == 4312
-    assert spawned.process.stdin is stdin
-    assert spawned.process.stdout is stdout
-    assert spawned.domain is domain
-    assert calls == [
-        (
-            ("provider", "--stream"),
-            {
-                "creationflags": 0x200,
-                "stdin": stdin,
-                "stdout": stdout,
-                "stderr": None,
-                "env": None,
-                "text": None,
-                "encoding": None,
-                "bufsize": -1,
-                "close_fds": True,
-            },
-        )
-    ]
-
-
 def _eventually_observe(
     observe: Callable[[], tuple[int, int, int] | None],
     *,
@@ -105,6 +62,27 @@ def _eventually_observe(
             return result
         assert time.monotonic() < deadline, "child exit was not observable"
         time.sleep(0.01)
+
+
+def test_spawn_process_starts_new_session_and_publishes_io() -> None:
+    spawned = spawn_process(
+        (
+            sys.executable,
+            "-c",
+            "import os; print(os.getpid() == os.getpgrp(), flush=True)",
+        ),
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    domain = cast(PosixProcessDomain, spawned.domain)
+    try:
+        assert spawned.process.pid > 0
+        assert spawned.process.stdout is not None
+        assert spawned.process.stdout.readline().strip() == "True"
+        assert domain.wait_for_leader_exit(5.0) == 0
+        assert domain.finalize(graceful_timeout=0.0) == 0
+    finally:
+        domain.finalize(graceful_timeout=0.0)
 
 
 @pytest.mark.skipif(
@@ -146,7 +124,6 @@ def test_darwin_waitid_observes_without_reaping(
             proc.wait(timeout=5.0)
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX process-group invariant")
 def test_finalize_signals_only_before_the_one_leader_reap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -213,7 +190,6 @@ def test_linux_natural_exit_does_not_require_zero_signal_group_absence() -> None
             proc.wait(timeout=5.0)
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX process-group invariant")
 def test_finalize_uses_bounded_signal_stages_without_zero_signal_probe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -224,11 +200,7 @@ def test_finalize_uses_bounded_signal_stages_without_zero_signal_probe(
     signals: list[int] = []
     stages: list[tuple[str, float | int | None]] = []
 
-    monkeypatch.setattr(
-        process_domain_module,
-        "_observe_exit",
-        lambda pid: (pid, 1, 7),
-    )
+    monkeypatch.setattr(process_domain_module, "_observe_exit", lambda pid: (1, 7))
 
     def record_signal(pgid: int, sig: int) -> None:
         assert domain._reaped is False, "killpg called after leader reap"
@@ -265,7 +237,6 @@ def test_finalize_uses_bounded_signal_stages_without_zero_signal_probe(
     assert signals == [signal.SIGTERM, signal.SIGKILL]
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX process-group invariant")
 def test_finalize_reaps_terminal_leader_after_term_delivery_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -274,12 +245,7 @@ def test_finalize_reaps_terminal_leader_after_term_delivery_error(
     proc = _FakeProcess()
     domain = _domain_for_fake(proc)
     signals: list[int] = []
-
-    monkeypatch.setattr(
-        process_domain_module,
-        "_observe_exit",
-        lambda pid: (pid, 1, 7),
-    )
+    monkeypatch.setattr(process_domain_module, "_observe_exit", lambda pid: (1, 7))
 
     def fail_term(pgid: int, sig: int) -> None:
         assert domain._reaped is False, "killpg called after leader reap"
@@ -302,7 +268,6 @@ def test_finalize_reaps_terminal_leader_after_term_delivery_error(
     assert domain._reaped is True
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX process-group invariant")
 def test_finalize_aggregates_signal_errors_and_rethrows_without_reentry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -311,12 +276,7 @@ def test_finalize_aggregates_signal_errors_and_rethrows_without_reentry(
     proc = _FakeProcess()
     domain = _domain_for_fake(proc)
     signals: list[int] = []
-
-    monkeypatch.setattr(
-        process_domain_module,
-        "_observe_exit",
-        lambda pid: (pid, 1, 7),
-    )
+    monkeypatch.setattr(process_domain_module, "_observe_exit", lambda pid: (1, 7))
 
     def fail_signal(pgid: int, sig: int) -> None:
         assert domain._reaped is False, "killpg called after leader reap"
@@ -355,53 +315,6 @@ def test_finalize_aggregates_signal_errors_and_rethrows_without_reentry(
     assert proc.wait_calls == [0.0]
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX process-group invariant")
-def test_finalize_marks_reaped_before_reporting_cached_status_mismatch(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A successful wait is final even when its status contradicts waitid."""
-
-    proc = _FakeProcess(returncode=8)
-    domain = _domain_for_fake(proc)
-    signals: list[int] = []
-
-    monkeypatch.setattr(
-        process_domain_module,
-        "_observe_exit",
-        lambda pid: (pid, 1, 7),
-    )
-
-    def record_signal(pgid: int, sig: int) -> None:
-        assert domain._reaped is False, "killpg called after leader reap"
-        assert pgid == proc.pid
-        signals.append(sig)
-
-    monkeypatch.setattr(os, "killpg", record_signal)
-
-    with pytest.raises(AdapterError, match="reap changed status from 7 to 8") as first:
-        domain.finalize(
-            graceful_timeout=0.0,
-            term_timeout=0.0,
-            kill_timeout=0.0,
-        )
-
-    assert domain._reaped is True
-    assert proc.wait_calls == [0.0]
-    assert signals == [signal.SIGTERM, signal.SIGKILL]
-
-    with pytest.raises(AdapterError) as repeated:
-        domain.finalize(
-            graceful_timeout=0.0,
-            term_timeout=0.0,
-            kill_timeout=0.0,
-        )
-
-    assert repeated.value is first.value
-    assert proc.wait_calls == [0.0]
-    assert signals == [signal.SIGTERM, signal.SIGKILL]
-
-
-@pytest.mark.skipif(os.name == "nt", reason="POSIX process-group invariant")
 @pytest.mark.parametrize(
     "wait_error",
     [
@@ -418,17 +331,8 @@ def test_finalize_rethrows_leader_reap_failure_without_second_wait(
     proc = _FakeProcess(wait_error=wait_error)
     domain = _domain_for_fake(proc)
     signals: list[int] = []
-
-    monkeypatch.setattr(
-        process_domain_module,
-        "_observe_exit",
-        lambda pid: (pid, 1, 7),
-    )
-    monkeypatch.setattr(
-        os,
-        "killpg",
-        lambda pgid, sig: signals.append(sig),
-    )
+    monkeypatch.setattr(process_domain_module, "_observe_exit", lambda pid: (1, 7))
+    monkeypatch.setattr(os, "killpg", lambda pgid, sig: signals.append(sig))
 
     with pytest.raises(AdapterError, match="provider leader reap failed") as first:
         domain.finalize(
@@ -453,7 +357,6 @@ def test_finalize_rethrows_leader_reap_failure_without_second_wait(
     assert signals == [signal.SIGTERM, signal.SIGKILL]
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX process-group invariant")
 def test_finalize_accepts_esrch_for_each_signal_stage(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -462,12 +365,7 @@ def test_finalize_accepts_esrch_for_each_signal_stage(
     proc = _FakeProcess()
     domain = _domain_for_fake(proc)
     signals: list[int] = []
-
-    monkeypatch.setattr(
-        process_domain_module,
-        "_observe_exit",
-        lambda pid: (pid, 1, 7),
-    )
+    monkeypatch.setattr(process_domain_module, "_observe_exit", lambda pid: (1, 7))
 
     def no_target(pgid: int, sig: int) -> None:
         signals.append(sig)
@@ -487,7 +385,6 @@ def test_finalize_accepts_esrch_for_each_signal_stage(
     assert proc.wait_calls == [0.0]
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX process-group invariant")
 def test_darwin_eperm_is_accepted_only_after_terminal_observation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -496,11 +393,7 @@ def test_darwin_eperm_is_accepted_only_after_terminal_observation(
     terminal_proc = _FakeProcess()
     terminal_domain = _domain_for_fake(terminal_proc)
     monkeypatch.setattr(process_domain_module.sys, "platform", "darwin")
-    monkeypatch.setattr(
-        process_domain_module,
-        "_observe_exit",
-        lambda pid: (pid, 1, 7),
-    )
+    monkeypatch.setattr(process_domain_module, "_observe_exit", lambda pid: (1, 7))
 
     def fail_permission(pgid: int, sig: int) -> None:
         assert pgid in (terminal_proc.pid, 4313)
@@ -526,7 +419,6 @@ def test_darwin_eperm_is_accepted_only_after_terminal_observation(
         live_domain.signal_group(signal.SIGTERM)
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX process-group invariant")
 def test_finalize_stores_terminal_observation_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -535,13 +427,8 @@ def test_finalize_stores_terminal_observation_timeout(
     proc = _FakeProcess()
     domain = _domain_for_fake(proc)
     signals: list[int] = []
-
     monkeypatch.setattr(process_domain_module, "_observe_exit", lambda pid: None)
-    monkeypatch.setattr(
-        os,
-        "killpg",
-        lambda pgid, sig: signals.append(sig),
-    )
+    monkeypatch.setattr(os, "killpg", lambda pgid, sig: signals.append(sig))
 
     with pytest.raises(AdapterError, match="did not exit after SIGKILL") as first:
         domain.finalize(

@@ -20,10 +20,6 @@ runnable by file path without a ``PYTHONPATH`` arrangement.
 - ``{"exit": CODE}`` — crash scenario: exit immediately with CODE.
 - ``{"stall": true}`` — stop reading stdin forever (blocked-inject
   scenario; only an interrupt/kill ends the process).
-- ``{"close_stdin": true}`` — close the stdin file descriptor (fd 0) then
-  block forever: an inject large enough to overflow the pipe buffer fails
-  with a broken pipe while the process stays alive (the repeated-failed-
-  inject scenario for [SUM-5.4]/[TAUT-8.4]).
 - ``{"spawn_descendant": {...}}`` — spawn one real descendant and publish its
   PID to the required ``pid_file``. The options exercise [SUM-12] process-
   domain cases: ``inherit_stdout``, ``ignore_sigint``, ``ignore_sigterm``,
@@ -138,6 +134,9 @@ class _InterruptController:
         self._cleanup_release = threading.Event()
         self._signal_count = 0
         self._release_source = "watchdog"
+        self._ignore_terminal_interrupt = bool(
+            scenario.get("ignore_terminal_interrupt", False)
+        )
 
         raw_seconds = scenario.get("sigint_cleanup_seconds")
         if raw_seconds is not None:
@@ -155,6 +154,8 @@ class _InterruptController:
     def interrupt(self) -> None:
         self._signal_count += 1
         _record({"event": "signal", "signal": "SIGINT", "count": self._signal_count})
+        if self._ignore_terminal_interrupt:
+            return
         if self._seconds is None:
             raise KeyboardInterrupt
         if self._signal_count > 1:
@@ -272,16 +273,6 @@ def _run_steps(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-036] exception
         elif "exit" in step:
             sys.exit(int(step["exit"]))
         elif "stall" in step:
-            while True:
-                time.sleep(3600)
-        elif "close_stdin" in step:
-            # Close the underlying fd (fd 0) so the pipe's read end is truly
-            # gone; a large enough inject then fails with EPIPE. Closing the
-            # Python wrapper alone does not close the fd on CPython.
-            try:
-                os.close(0)
-            except OSError:
-                pass
             while True:
                 time.sleep(3600)
         elif "spawn_descendant" in step:

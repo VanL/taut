@@ -20,7 +20,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import select
 import signal
 import subprocess
 import sys
@@ -87,8 +86,6 @@ from taut_summon.models import SummonOperationError, SummonRequest
 import taut.client._identity as core_identity_module
 from taut.client import Member, Message, TautClient
 from taut.identity import capture_process
-
-pty = pytest.importorskip("pty", reason="POSIX PTY tests require the pty module")
 
 FAKE_TUI = Path(__file__).with_name("fixtures") / "fake_tui.py"
 PROCESS_XDIST_GROUP = pytest.mark.xdist_group("process")
@@ -172,6 +169,8 @@ def _start_scripted_signal_cleanup(
 
 
 def _read_pty_until(fd: int, needle: bytes, *, timeout: float = 5.0) -> bytes:
+    import select
+
     deadline = time.monotonic() + timeout
     out = b""
     while time.monotonic() < deadline:
@@ -2120,10 +2119,7 @@ def test_format_multiline_notice_preserves_text_and_indents_continuations() -> N
 # --- bootstrap and lifecycle --------------------------------------------------
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="scripted-provider SIGINT recording is a POSIX child-boundary proof",
-)
+@pytest.mark.posix_only
 def test_scripted_provider_records_bounded_single_sigint_cleanup(
     tmp_path: Path,
 ) -> None:
@@ -2151,10 +2147,7 @@ def test_scripted_provider_records_bounded_single_sigint_cleanup(
     )
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="scripted-provider SIGINT recording is a POSIX child-boundary proof",
-)
+@pytest.mark.posix_only
 def test_scripted_provider_records_reentrant_sigint_cleanup(
     tmp_path: Path,
 ) -> None:
@@ -2910,9 +2903,12 @@ def test_pty_detached_pre_pump_failure_reaps_child(
 
 
 @PTY_XDIST_GROUP
+@pytest.mark.posix_only
 def test_pty_first_run_acknowledges_before_spawn_then_detaches_and_sets_wired(
     summon_db: Path, tmp_path: Path
 ) -> None:
+    import pty
+
     pty_log = tmp_path / "pty-attach-driver.jsonl"
     env = _base_env()
     env.update(
@@ -3925,43 +3921,6 @@ def test_mouth_proof_scripted_runs_taut_say(
     assert driver.stop() == 0
 
 
-# --- carry-in: repeated failed injects never poison-advance the cursor --------
-
-
-def test_repeated_failed_injects_do_not_advance_cursor(
-    summon_db: Path, tmp_path: Path, driver_factory: Callable[..., DriverProcess]
-) -> None:
-    # The provider closes its stdin fd every generation, so a large inject
-    # fails with a broken pipe (the child stays alive — this is the
-    # inject-failure halt path, not a harness exit). The halt stops the
-    # watcher directly, so [TAUT-8.4]'s 3-strikes poison advance can never
-    # fire; the cursor stays put and a later driver re-sees the message
-    # ([SUM-5.4]).
-    marker = "must-survive-" + "x" * 200_000  # larger than the pipe buffer
-    wedged = driver_factory(
-        summon_db,
-        "scripted",
-        "general",
-        scenario={"responses": [[{"close_stdin": True}]]},
-        backoff="0.1,0.1",
-        tag="wedged",
-    )
-    wedged.wait_for_start()
-    say(summon_db, tmp_path, "general", marker)
-
-    # It never delivers the message: it exhausts its resume budget on
-    # repeated inject failures and gives up.
-    assert wedged.wait() == 1
-    assert "giving up" in wedged.stderr_tail()
-    assert not any("must-survive" in m for m in wedged.messages())
-
-    # A fresh, echoing driver replays it from the intact cursor.
-    recover = driver_factory(summon_db, "scripted", "general", tag="recover")
-    recover.wait_for_start()
-    recover.wait_for_message("must-survive-")
-    assert recover.stop() == 0
-
-
 # --- carry-in: post-claim fatal error releases the driver slot ----------------
 
 
@@ -4450,10 +4409,7 @@ def test_malformed_control_body_does_not_crash_loop(
     assert driver.stop() == 0
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="driver SIGINT signal counting is a POSIX child-boundary proof",
-)
+@pytest.mark.posix_only
 def test_driver_sigint_sends_one_graceful_signal_to_provider(
     summon_db: Path,
     driver_factory: Callable[..., DriverProcess],
@@ -4476,10 +4432,7 @@ def test_driver_sigint_sends_one_graceful_signal_to_provider(
     assert any(entry.get("event") == "cleanup-release" for entry in entries)
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="control STOP signal counting is a POSIX child-boundary proof",
-)
+@pytest.mark.posix_only
 def test_control_stop_sends_one_graceful_signal_to_provider(
     summon_db: Path,
     tmp_path: Path,

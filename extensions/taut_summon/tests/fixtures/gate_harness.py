@@ -18,8 +18,9 @@ from __future__ import annotations
 
 import json
 import os
-import sys
-import tty
+from typing import Any
+
+INPUT: Any
 
 
 def _log(event: str, **fields: object) -> None:
@@ -34,26 +35,40 @@ def _write(data: bytes) -> None:
     os.write(1, data)
 
 
-def _chat_loop() -> int:
+def _chat_loop(initial: bytes = b"") -> int:
     _write(b"\x1b[?2004h\r\nchat> ")
     _log("chat_ready")
-    buffer = b""
+    buffer = initial
     while True:
-        chunk = os.read(0, 1024)
-        if not chunk:
-            return 0
-        buffer += chunk
         while b"\r" in buffer:
             line, _, buffer = buffer.partition(b"\r")
             _log("input", raw=line.decode("latin1"))
             _write(b"\r\necho:" + line.replace(b"\x1b", b"") + b"\r\nchat> ")
+        chunk = INPUT.receive()
+        if chunk is None:
+            return 0
+        if chunk == b"":
+            continue
+        buffer += chunk
 
 
-def main() -> int:
-    tty.setraw(sys.stdin.fileno())
-    _log("start", pid=os.getpid())
-    if os.environ.get("TAUT_GATE_PRETRUSTED") == "1":
-        return _chat_loop()
+def _decline(initial: bytes = b"") -> int:
+    _log("declined_default")
+    if os.environ.get("TAUT_GATE_WAIT_FOR_INJECT_RETURN") == "1":
+        if b"\0" in initial:
+            _write(b"\r\nBye!\r\n")
+            return 0
+        while True:
+            release = INPUT.receive()
+            if release is None:
+                return 0
+            if b"\0" in release:
+                break
+    _write(b"\r\nBye!\r\n")
+    return 0
+
+
+def _gate_loop() -> int:
     _write(
         b"\x1b[2J\x1b[H  Trust this folder?\r\n\r\n"
         b"     Trust this folder\r\n"
@@ -61,23 +76,31 @@ def main() -> int:
     )
     _log("menu")
     while True:
-        char = os.read(0, 1)
-        if not char:
+        chunk = INPUT.receive()
+        if chunk is None:
             return 0
-        if char in (b"\r", b"\n"):
-            _log("declined_default")
-            if os.environ.get("TAUT_GATE_WAIT_FOR_INJECT_RETURN") == "1":
-                while True:
-                    release = os.read(0, 1)
-                    if not release:
-                        return 0
-                    if release == b"\0":
-                        break
-            _write(b"\r\nBye!\r\n")
-            return 0
-        if char == b"\x14":
-            _log("trusted")
-            return _chat_loop()
+        if chunk == b"":
+            continue
+        for index, char in enumerate(chunk):
+            byte = bytes((char,))
+            if byte == b"\x14":
+                _log("trusted")
+                return _chat_loop(chunk[index + 1 :])
+            if byte in (b"\r", b"\n"):
+                return _decline(chunk[index + 1 :])
+
+
+def main() -> int:
+    global INPUT
+
+    from terminal_io import TerminalInput, configure_raw_input
+
+    configure_raw_input()
+    INPUT = TerminalInput()
+    _log("start", pid=os.getpid())
+    if os.environ.get("TAUT_GATE_PRETRUSTED") == "1":
+        return _chat_loop()
+    return _gate_loop()
 
 
 if __name__ == "__main__":

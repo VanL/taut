@@ -1914,6 +1914,7 @@ def _prepare_gate_recovery(
     return db, prompt_path, log
 
 
+@pytest.mark.posix_only
 def test_setup_recovery_offer_reaches_a_pending_owned_tui_and_completes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1925,7 +1926,6 @@ def test_setup_recovery_offer_reaches_a_pending_owned_tui_and_completes(
     single worker request here cannot race a second acknowledgement.
     """
 
-    pytest.importorskip("pty", reason="setup recovery requires a POSIX PTY")
     import asyncio
     import pty as pty_module
 
@@ -2003,6 +2003,7 @@ def test_setup_recovery_offer_reaches_a_pending_owned_tui_and_completes(
         os.close(user_slave)
 
 
+@pytest.mark.posix_only
 def test_setup_recovery_decline_continues_detached_with_enriched_give_up(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2013,7 +2014,6 @@ def test_setup_recovery_decline_continues_detached_with_enriched_give_up(
     the next generation starts without an acknowledged attach.
     """
 
-    pytest.importorskip("pty", reason="setup recovery requires a POSIX PTY")
     import asyncio
     import pty as pty_module
 
@@ -2075,13 +2075,13 @@ def test_setup_recovery_decline_continues_detached_with_enriched_give_up(
         os.close(user_slave)
 
 
+@pytest.mark.posix_only
 def test_host_shutdown_during_offer_spawns_nothing_further(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """[TUI-11.3] closing the TUI over a pending offer takes the shutdown class."""
 
-    pytest.importorskip("pty", reason="setup recovery requires a POSIX PTY")
     import asyncio
     import pty as pty_module
 

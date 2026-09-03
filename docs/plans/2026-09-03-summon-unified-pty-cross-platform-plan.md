@@ -694,7 +694,7 @@ historical records; do not rewrite them.
 | Provider conformance and scripted real-process flows | run | run | run | Same `scripted` registry and child path as production PTY |
 | Shared terminal parsing, query response, paste framing, readiness, output tail | run | run | run | Pure helpers or selected production backend; no POSIX imports |
 | Live named-provider tests | opt-in/installed | opt-in/installed | opt-in/installed | Existing explicit live markers only |
-| POSIX fd, termios, signals, process groups, raw host attach | run | run | skip | `posix_only` marker in `test_pty_posix.py` only |
+| POSIX fd, termios, signals, process groups, raw host attach | run | run | skip | `posix_only` on the individual native test; process-domain tests live in `test_pty_posix.py` |
 | Windows ConPTY creation, channel cancellation, terminal-domain close | skip | skip | run | `windows_only` marker in `test_pty_windows.py` only |
 
 Add `posix_only` and `windows_only` marker declarations. The workflow invokes
@@ -1069,6 +1069,7 @@ Cross-model observations, preserved verbatim and dispositioned as clarifications
 
 | Spec ref | Planned behavior | Actual behavior | Rationale | Spec proposal |
 |---|---|---|---|---|
+| [SUM-12] | Put every POSIX primitive in `test_pty_posix.py`. | Process-domain primitives moved; 45 PTY fd/signal/attach cases remain individually marked in `test_pty_adapter.py`. | Those cases share the real scripted-child and adapter harness with common tests. A physical move would duplicate or expose test-only helpers without changing Windows collection. Individual marker selection is exact and the full-directory CI gate proves the required boundary. | Keep the behavioral rule; do not require filename confinement. |
 
 ## Execution Log
 
@@ -1170,6 +1171,28 @@ coordinator's JSON on success, so the disposable outer test now republishes
 that already-validated single record for durable Actions evidence. One
 evidence-only rerun is required; no probe behavior or production design
 changed.
+
+Eighth hosted attempt: branch commit `0dd031416ab7c4f76e77bcda269b235a4bea4cfe`,
+Actions run `33804256714`, Windows process job `100810817917`, Windows Python
+3.11.9. The target selection completed with `6 passed, 17 skipped`; its
+republished `TAUT_CONPTY_PROBE` record covered the full native API and ownership
+ledger. Unrelated jobs failed because the disposable qualification commit
+intentionally contained only the probe slice. The probe was then deleted, as
+planned, before production integration.
+
+Slices 2 through 7 replaced the structured runtime and provider-session API,
+split the portable terminal state from POSIX and Windows mechanics, wired
+ConPTY through the public `PtyAdapter`, removed the Job Object and pipe-only
+owners, and changed CI from a Windows filename allowlist to full-directory
+collection with platform markers. A fresh implementation review found two
+reachable Windows defects: natural exit could make the later close gesture
+report a broken pipe, and quiet settling returned before an unsupported query
+could reach its stall threshold. Clean pipe-end writes are now accepted during
+close, pending unknown queries settle through `stall_s`, and public hosted
+tests fire both paths. One stream-era `close_stdin` fixture/test was deleted:
+keeping the terminal process alive also keeps the pseudoterminal input owner
+alive, so its claimed broken-write path was not reproducible through the PTY
+API on either platform.
 
 ## Out of Scope
 

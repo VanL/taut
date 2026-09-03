@@ -50,6 +50,7 @@ minversion = "7.0"
 testpaths = ["tests"]
 addopts = "-ra -q --strict-markers"
 markers = [
+    "posix_only: tests of POSIX adapter primitives",
     "sqlite_only: tests that validate built-in SQLite/path behavior",
     "tui_only: tests that validate the TUI",
 ]

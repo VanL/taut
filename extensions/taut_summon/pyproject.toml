@@ -71,4 +71,6 @@ markers = [
     "requires_pi: live smoke tests that spawn the installed pi CLI",
     "xdist_group: select test-local process topologies; co-locate in broad loadgroup runs, selection-only in isolated load lanes",
     "sqlite_only: tests that validate built-in SQLite/path behavior",
+    "posix_only: tests of POSIX adapter primitives",
+    "windows_only: tests of Windows adapter primitives",
 ]

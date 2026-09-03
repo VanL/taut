@@ -21,10 +21,11 @@ import threading
 import time
 import types
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Self, cast
+from typing import Any, Self, cast
 
 import psutil
 import pytest
+import taut_summon._pty as _pty_module
 from taut_summon._adapter import (
     ActivityEvent,
     AdapterError,
@@ -36,28 +37,26 @@ from taut_summon._adapter import (
     adapter_names,
     get_adapter,
 )
-from taut_summon._process_domain import ProcessIO
-
-pty = pytest.importorskip("pty", reason="POSIX PTY tests require the pty module")
-termios = pytest.importorskip(
-    "termios", reason="POSIX PTY tests require terminal attributes"
+from taut_summon._pty import (
+    PtyAdapter,
+    PtySpec,
+    _TerminalResponder,
 )
-if TYPE_CHECKING:
-    import taut_summon._pty as _pty_module
-    from taut_summon._pty import (
-        PtyAdapter,
-        PtyHandle,
-        PtySpec,
-        _TerminalResponder,
-    )
+
+if os.name != "nt":
+    import pty
+    import termios
+
+    import taut_summon._pty_posix as _pty_posix_module
+    from taut_summon._process_domain_posix import ProcessIO
+    from taut_summon._pty_posix import PosixPtyHandle as PtyHandle
 else:
-    _pty_module = pytest.importorskip(
-        "taut_summon._pty", reason="POSIX PTY tests require fcntl/termios"
-    )
-    PtyAdapter = _pty_module.PtyAdapter
-    PtyHandle = _pty_module.PtyHandle
-    PtySpec = _pty_module.PtySpec
-    _TerminalResponder = _pty_module._TerminalResponder
+    # Names used only inside tests marked ``posix_only``. Keeping the POSIX
+    # backend import behind the platform boundary lets common adapter and
+    # terminal-semantics tests collect on Windows.
+    pty = cast(Any, None)
+    termios = cast(Any, None)
+    _pty_posix_module = cast(Any, None)
 
 _TERMINAL_RESPONSE_BUFFER_LIMIT = _pty_module._TERMINAL_RESPONSE_BUFFER_LIMIT
 
@@ -68,6 +67,7 @@ FAKE_TUI = Path(__file__).with_name("fixtures") / "fake_tui.py"
 # process-heavy group so host PTY/process pressure does not become the behavior
 # under test.
 pytestmark = [pytest.mark.xdist_group("process"), pytest.mark.sqlite_only]
+posix_only = pytest.mark.posix_only
 
 
 class EventPump:
@@ -265,7 +265,7 @@ def _spawn_fake(
     cols: int = 80,
     stall_s: float = 0.5,
     env: dict[str, str] | None = None,
-) -> tuple[PtyHandle, Path]:
+) -> tuple[Any, Path]:
     log = tmp_path / "fake-tui.jsonl"
     spec = PtySpec(
         name="fake",
@@ -286,7 +286,6 @@ def _spawn_fake(
             **(env or {}),
         },
     )
-    assert isinstance(handle, PtyHandle)
     return handle, log
 
 
@@ -301,7 +300,11 @@ def _fake_tui_module() -> types.ModuleType:
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    sys.path.insert(0, str(FAKE_TUI.parent))
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.pop(0)
     return module
 
 
@@ -414,6 +417,7 @@ def test_spawn_replaces_inherited_host_identity_in_real_pty_child(
     assert os.environ["TAUT_TOKEN"] == "host-token"
 
 
+@posix_only
 def test_pty_close_retires_descendant_after_leader_exits_first(
     tmp_path: Path,
 ) -> None:
@@ -463,6 +467,7 @@ def test_pty_close_retires_descendant_after_leader_exits_first(
             _cleanup_exact_process(identity)
 
 
+@posix_only
 def test_pty_observes_leader_exit_while_descendant_continuously_writes(
     tmp_path: Path,
 ) -> None:
@@ -521,6 +526,7 @@ def test_pty_observes_leader_exit_while_descendant_continuously_writes(
             _cleanup_exact_process(identity)
 
 
+@posix_only
 def test_pty_observes_terminal_leader_after_each_readable_output_turn(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -544,8 +550,8 @@ def test_pty_observes_terminal_leader_after_each_readable_output_turn(
         assert read_calls == 1, "leader status was not checked after readable output"
         return b"busy output"
 
-    monkeypatch.setattr(_pty_module.select, "select", always_readable)
-    monkeypatch.setattr(_pty_module.os, "read", read_once)
+    monkeypatch.setattr(_pty_posix_module.select, "select", always_readable)
+    monkeypatch.setattr(_pty_posix_module.os, "read", read_once)
     try:
         events = list(handle.events())
     finally:
@@ -555,9 +561,10 @@ def test_pty_observes_terminal_leader_after_each_readable_output_turn(
     assert events[-1] == ExitEvent(returncode=0)
 
 
+@posix_only
 @pytest.mark.parametrize(
     ("ignore_sigterm", "expected_returncode"),
-    [(False, -signal.SIGTERM), (True, -signal.SIGKILL)],
+    [(False, -signal.SIGTERM), (True, -getattr(signal, "SIGKILL", signal.SIGTERM))],
     ids=["term", "kill"],
 )
 def test_pty_close_retires_domain_through_forced_signal_stages(
@@ -572,6 +579,7 @@ def test_pty_close_retires_domain_through_forced_signal_stages(
     scenario_path.write_text(
         json.dumps(
             {
+                "ignore_terminal_interrupt": True,
                 "on_start": [
                     {
                         "spawn_descendant": {
@@ -582,7 +590,7 @@ def test_pty_close_retires_domain_through_forced_signal_stages(
                             "leader_ignore_sigterm": ignore_sigterm,
                         }
                     }
-                ]
+                ],
             }
         ),
         encoding="utf-8",
@@ -627,17 +635,17 @@ def test_fake_tui_preserves_input_that_arrives_before_query_reply() -> None:
     )
 
 
+@posix_only
 def test_wait_until_quiet_waits_for_first_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     handle = object.__new__(PtyHandle)
     handle._reader_started_event = threading.Event()
     handle._reader_started_event.set()
-    handle._seen_output = threading.Event()
+    handle._terminal = _pty_module._TerminalState(rows=24, cols=80, stall_s=1.0)
     handle._lifecycle_lock = threading.RLock()
     handle._retired = False
     handle._master_closed = False
-    handle._last_output_ts = 0.0
     handle._quiet_s = 0.1
     handle._max_settle_s = 1.0
     now = 100.0
@@ -653,8 +661,7 @@ def test_wait_until_quiet_waits_for_first_output(
         now += seconds
         if first_output_at is None:
             first_output_at = now
-            handle._last_output_ts = now
-            handle._seen_output.set()
+            handle._terminal.observe_output(b"first output")
 
     class ControlledWake:
         def wait(self, timeout: float | None = None) -> bool:
@@ -668,6 +675,11 @@ def test_wait_until_quiet_waits_for_first_output(
     handle._settle_wake = cast(Any, ControlledWake())
 
     monkeypatch.setattr(
+        _pty_posix_module,
+        "time",
+        types.SimpleNamespace(monotonic=monotonic),
+    )
+    monkeypatch.setattr(
         _pty_module,
         "time",
         types.SimpleNamespace(monotonic=monotonic),
@@ -680,6 +692,7 @@ def test_wait_until_quiet_waits_for_first_output(
     assert now - first_output_at >= handle._quiet_s
 
 
+@posix_only
 def test_wait_until_quiet_spends_one_total_settle_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -720,6 +733,7 @@ def test_wait_until_quiet_spends_one_total_settle_budget(
     assert now == pytest.approx(11.0)
 
 
+@posix_only
 def test_request_close_interrupts_pty_settle_wait(tmp_path: Path) -> None:
     handle, _log = _spawn_fake(
         tmp_path, {"queries": False, "modes": False, "redraw": False}
@@ -743,30 +757,31 @@ def test_request_close_interrupts_pty_settle_wait(tmp_path: Path) -> None:
     assert isinstance(pump.drain_until_exit(), ExitEvent)
 
 
+@posix_only
 def test_master_is_published_nonblocking_once_without_losing_flags(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     real_openpty = pty.openpty
-    real_fcntl = _pty_module.fcntl.fcntl
+    real_fcntl = _pty_posix_module.fcntl.fcntl
     set_calls: list[int] = []
 
     def openpty_with_unrelated_flag() -> tuple[int, int]:
         master_fd, slave_fd = real_openpty()
-        flags = real_fcntl(master_fd, _pty_module.fcntl.F_GETFL)
+        flags = real_fcntl(master_fd, _pty_posix_module.fcntl.F_GETFL)
         real_fcntl(
             master_fd,
-            _pty_module.fcntl.F_SETFL,
+            _pty_posix_module.fcntl.F_SETFL,
             flags | os.O_APPEND,
         )
         return master_fd, slave_fd
 
     def recording_fcntl(fd: int, operation: int, argument: int = 0) -> int:
-        if operation == _pty_module.fcntl.F_SETFL:
+        if operation == _pty_posix_module.fcntl.F_SETFL:
             set_calls.append(argument)
         return int(real_fcntl(fd, operation, argument))
 
     monkeypatch.setattr(pty, "openpty", openpty_with_unrelated_flag)
-    monkeypatch.setattr(_pty_module.fcntl, "fcntl", recording_fcntl)
+    monkeypatch.setattr(_pty_posix_module.fcntl, "fcntl", recording_fcntl)
     handle, log = _spawn_fake(
         tmp_path, {"queries": False, "modes": False, "redraw": False}
     )
@@ -783,19 +798,20 @@ def test_master_is_published_nonblocking_once_without_losing_flags(
     assert set_calls[0] & os.O_APPEND
 
 
+@posix_only
 def test_spawn_failure_closes_master_and_slave_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     close_calls: list[int] = []
     monkeypatch.setattr(pty, "openpty", lambda: (40, 41))
-    monkeypatch.setattr(_pty_module, "_set_winsize", lambda *_args: None)
-    monkeypatch.setattr(_pty_module, "_set_nonblocking", lambda _fd: None)
+    monkeypatch.setattr(_pty_posix_module, "_set_winsize", lambda *_args: None)
+    monkeypatch.setattr(_pty_posix_module, "_set_nonblocking", lambda _fd: None)
     monkeypatch.setattr(
-        _pty_module,
+        _pty_posix_module,
         "spawn_process",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("spawn failed")),
     )
-    monkeypatch.setattr(_pty_module.os, "close", close_calls.append)
+    monkeypatch.setattr(_pty_posix_module.os, "close", close_calls.append)
 
     with pytest.raises(AdapterError, match="failed to spawn PTY harness"):
         PtyAdapter(PtySpec(name="broken", argv=("broken",))).spawn(
@@ -837,6 +853,7 @@ def test_pty_spec_rejects_unsafe_spawn_and_timing_values(
         PtyAdapter(spec)
 
 
+@posix_only
 def test_write_select_close_race_is_adapter_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -846,12 +863,12 @@ def test_write_select_close_race_is_adapter_error(
     handle = _boundary_pty_handle(proc, master_fd)
 
     monkeypatch.setattr(
-        _pty_module.os,
+        _pty_posix_module.os,
         "write",
         lambda _fd, _data: (_ for _ in ()).throw(BlockingIOError()),
     )
     monkeypatch.setattr(
-        _pty_module.select,
+        _pty_posix_module.select,
         "select",
         lambda *_args: (_ for _ in ()).throw(ValueError("fd closed")),
     )
@@ -865,6 +882,7 @@ def test_write_select_close_race_is_adapter_error(
         peer_socket.close()
 
 
+@posix_only
 def test_failed_best_effort_query_reply_does_not_kill_event_pump(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -891,8 +909,8 @@ def test_failed_best_effort_query_reply_does_not_kill_event_pump(
             raise OSError("master closed during reply wait")
         return real_select(readers, writers, errors, timeout)
 
-    monkeypatch.setattr(_pty_module.os, "write", controlled_write)
-    monkeypatch.setattr(_pty_module.select, "select", controlled_select)
+    monkeypatch.setattr(_pty_posix_module.os, "write", controlled_write)
+    monkeypatch.setattr(_pty_posix_module.select, "select", controlled_select)
     pump = EventPump(handle)
     assert reply_blocked.wait(timeout=2.0)
     try:
@@ -946,6 +964,7 @@ def test_pty_responder_answers_startup_queries_and_clamps_size(
         assert isinstance(pump.drain_until_exit(), ExitEvent)
 
 
+@posix_only
 def test_query_reply_waits_for_partial_injection_writer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -970,7 +989,7 @@ def test_query_reply_waits_for_partial_injection_writer(
             return written
         return real_write(fd, data)
 
-    monkeypatch.setattr(_pty_module.os, "write", controlled_write)
+    monkeypatch.setattr(_pty_posix_module.os, "write", controlled_write)
     failures: list[BaseException] = []
 
     def inject() -> None:
@@ -1070,9 +1089,9 @@ def test_bracketed_paste_preserves_newlines_after_sanitizing(
     try:
         # Wait until the reader has observed the fake TUI's bracketed-paste enable.
         deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline and not handle._bracketed_paste:
+        while time.monotonic() < deadline and not handle.input_prompt_observed:
             time.sleep(0.05)
-        assert handle._bracketed_paste is True
+        assert handle.input_prompt_observed is True
 
         handle.inject("one\ntwo\x1b[201~\x7f")
         deadline = time.monotonic() + 5.0
@@ -1123,6 +1142,7 @@ def test_unknown_report_shaped_query_sets_status_without_reply(
     assert isinstance(pump.drain_until_exit(), ExitEvent)
 
 
+@posix_only
 def test_close_does_not_block_behind_full_pty_input_queue(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1150,7 +1170,7 @@ def test_close_does_not_block_behind_full_pty_input_queue(
                 input_queue_full.set()
             raise
 
-    monkeypatch.setattr(_pty_module.os, "write", observed_write)
+    monkeypatch.setattr(_pty_posix_module.os, "write", observed_write)
 
     def _inject_large() -> None:
         try:
@@ -1174,6 +1194,7 @@ def test_close_does_not_block_behind_full_pty_input_queue(
     assert not injector.is_alive()
 
 
+@posix_only
 def test_close_rereads_reader_ownership_after_reap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1188,7 +1209,7 @@ def test_close_rereads_reader_ownership_after_reap(
             close_threads.append(threading.current_thread())
         real_close(fd)
 
-    monkeypatch.setattr(_pty_module.os, "close", recording_close)
+    monkeypatch.setattr(_pty_posix_module.os, "close", recording_close)
     failures: list[BaseException] = []
 
     def close() -> None:
@@ -1214,6 +1235,7 @@ def test_close_rereads_reader_ownership_after_reap(
     assert close_threads[0] is not closer
 
 
+@posix_only
 def test_concurrent_close_has_one_reap_and_fd_owner() -> None:
     master_fd, writer_fd = os.pipe()
     proc = _ScheduledPtyProcess()
@@ -1252,6 +1274,7 @@ def test_concurrent_close_has_one_reap_and_fd_owner() -> None:
     assert handle._master_closed is True
 
 
+@posix_only
 def test_request_close_sends_one_ctrl_c_before_final_reap() -> None:
     master_socket, child_socket = socket.socketpair()
     proc = _ScheduledPtyProcess()
@@ -1284,6 +1307,7 @@ def test_request_close_sends_one_ctrl_c_before_final_reap() -> None:
     assert handle._master_closed is True
 
 
+@posix_only
 def test_request_close_cancels_active_and_queued_pty_writes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1312,7 +1336,7 @@ def test_request_close_cancels_active_and_queued_pty_writes(
             queued_write_started.set()
         return real_write(fd, data)
 
-    monkeypatch.setattr(_pty_module.os, "write", controlled_write)
+    monkeypatch.setattr(_pty_posix_module.os, "write", controlled_write)
 
     def inject(text: str) -> None:
         try:
@@ -1352,6 +1376,7 @@ def test_request_close_cancels_active_and_queued_pty_writes(
     assert not queued_write_started.is_set()
 
 
+@posix_only
 def test_request_close_dup_failure_commits_retirement_before_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1365,7 +1390,7 @@ def test_request_close_dup_failure_commits_retirement_before_fallback(
         assert fd == master_fd
         raise OSError(errno.EMFILE, "sentinel close-request dup exhaustion")
 
-    monkeypatch.setattr(_pty_module.os, "dup", failing_dup)
+    monkeypatch.setattr(_pty_posix_module.os, "dup", failing_dup)
     monkeypatch.setattr(
         handle,
         "_signal_process_group",
@@ -1386,6 +1411,7 @@ def test_request_close_dup_failure_commits_retirement_before_fallback(
     assert handle._master_closed is True
 
 
+@posix_only
 def test_inject_refuses_after_pty_close_publishes_closing() -> None:
     master_socket, child_socket = socket.socketpair()
     proc = _ScheduledPtyProcess()
@@ -1405,6 +1431,7 @@ def test_inject_refuses_after_pty_close_publishes_closing() -> None:
         child_socket.close()
 
 
+@posix_only
 def test_inject_classifies_observed_master_close_as_terminal() -> None:
     master_socket, child_socket = socket.socketpair()
     proc = _ScheduledPtyProcess()
@@ -1420,6 +1447,7 @@ def test_inject_classifies_observed_master_close_as_terminal() -> None:
     child_socket.close()
 
 
+@posix_only
 def test_inject_classifies_observed_leader_exit_as_terminal() -> None:
     master_socket, child_socket = socket.socketpair()
     proc = _ScheduledPtyProcess()
@@ -1433,6 +1461,7 @@ def test_inject_classifies_observed_leader_exit_as_terminal() -> None:
     child_socket.close()
 
 
+@posix_only
 def test_queued_pty_inject_rechecks_retirement_under_serialization() -> None:
     master_socket, child_socket = socket.socketpair()
     proc = _ScheduledPtyProcess()
@@ -1469,6 +1498,7 @@ def test_queued_pty_inject_rechecks_retirement_under_serialization() -> None:
     assert delivered == b"\x03"
 
 
+@posix_only
 def test_interrupt_write_is_atomic_with_close_and_retirement(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1493,7 +1523,7 @@ def test_interrupt_write_is_atomic_with_close_and_retirement(
             assert release_interrupt.wait(timeout=2.0)
         return real_write(fd, data)
 
-    monkeypatch.setattr(_pty_module.os, "write", controlled_write)
+    monkeypatch.setattr(_pty_posix_module.os, "write", controlled_write)
     monkeypatch.setattr(
         handle, "_wait_for_active_operations", observed_wait_for_operations
     )
@@ -1526,6 +1556,7 @@ def test_interrupt_write_is_atomic_with_close_and_retirement(
     assert not closer.is_alive()
 
 
+@posix_only
 def test_interrupt_dup_failure_keeps_close_from_reaping_before_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1552,7 +1583,7 @@ def test_interrupt_dup_failure_keeps_close_from_reaping_before_fallback(
         close_waiting_for_operations.set()
         real_wait_for_operations()
 
-    monkeypatch.setattr(_pty_module.os, "dup", controlled_dup)
+    monkeypatch.setattr(_pty_posix_module.os, "dup", controlled_dup)
     monkeypatch.setattr(handle, "_signal_process_group", controlled_fallback)
     monkeypatch.setattr(
         handle, "_wait_for_active_operations", observed_wait_for_operations
@@ -1578,6 +1609,7 @@ def test_interrupt_dup_failure_keeps_close_from_reaping_before_fallback(
     assert not closer.is_alive()
 
 
+@posix_only
 def test_interrupt_lease_survives_canonical_fd_close_and_numeric_reuse(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1595,7 +1627,7 @@ def test_interrupt_lease_survives_canonical_fd_close_and_numeric_reuse(
             assert release_interrupt.wait(timeout=2.0)
         return real_write(fd, data)
 
-    monkeypatch.setattr(_pty_module.os, "write", controlled_write)
+    monkeypatch.setattr(_pty_posix_module.os, "write", controlled_write)
     interruptor = threading.Thread(target=handle.interrupt, name="interruptor")
     interruptor.start()
     assert interrupt_at_write.wait(timeout=1.0)
@@ -1626,6 +1658,7 @@ def test_interrupt_lease_survives_canonical_fd_close_and_numeric_reuse(
     assert not interruptor.is_alive()
 
 
+@posix_only
 def test_interrupt_is_safe_when_signal_reenters_fd_lease_registration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1643,7 +1676,7 @@ def test_interrupt_is_safe_when_signal_reenters_fd_lease_registration(
             signal.raise_signal(signal.SIGUSR1)
         return real_dup(fd)
 
-    monkeypatch.setattr(_pty_module.os, "dup", controlled_dup)
+    monkeypatch.setattr(_pty_posix_module.os, "dup", controlled_dup)
     prior_handler = signal.signal(
         signal.SIGUSR1, lambda _signum, _frame: handle.interrupt()
     )
@@ -1662,6 +1695,7 @@ def test_interrupt_is_safe_when_signal_reenters_fd_lease_registration(
     assert received == b"\x03"
 
 
+@posix_only
 def test_request_close_is_safe_when_signal_reenters_fd_lease_registration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1679,7 +1713,7 @@ def test_request_close_is_safe_when_signal_reenters_fd_lease_registration(
             signal.raise_signal(signal.SIGUSR1)
         return real_dup(fd)
 
-    monkeypatch.setattr(_pty_module.os, "dup", controlled_dup)
+    monkeypatch.setattr(_pty_posix_module.os, "dup", controlled_dup)
     prior_handler = signal.signal(
         signal.SIGUSR1, lambda _signum, _frame: handle.request_close()
     )
@@ -1700,6 +1734,7 @@ def test_request_close_is_safe_when_signal_reenters_fd_lease_registration(
     assert raised
 
 
+@posix_only
 @pytest.mark.parametrize("failure_point", ["write", "select", "zero"])
 def test_interrupt_wins_over_inflight_pty_io_error(
     monkeypatch: pytest.MonkeyPatch,
@@ -1737,9 +1772,9 @@ def test_interrupt_wins_over_inflight_pty_io_error(
         assert release_io.wait(timeout=2.0)
         raise OSError(errno.EBADF, "sentinel select race")
 
-    monkeypatch.setattr(_pty_module.os, "write", controlled_write)
+    monkeypatch.setattr(_pty_posix_module.os, "write", controlled_write)
     if failure_point == "select":
-        monkeypatch.setattr(_pty_module.select, "select", controlled_select)
+        monkeypatch.setattr(_pty_posix_module.select, "select", controlled_select)
 
     def inject() -> None:
         try:
@@ -1763,6 +1798,7 @@ def test_interrupt_wins_over_inflight_pty_io_error(
     assert str(failures[0]) == "PTY write interrupted"
 
 
+@posix_only
 def test_interrupt_cancellation_outranks_concurrent_reader_close(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1783,7 +1819,7 @@ def test_interrupt_cancellation_outranks_concurrent_reader_close(
             raise BlockingIOError()
         return real_write(fd, data)
 
-    monkeypatch.setattr(_pty_module.os, "write", controlled_write)
+    monkeypatch.setattr(_pty_posix_module.os, "write", controlled_write)
 
     def inject() -> None:
         try:
@@ -1810,6 +1846,7 @@ def test_interrupt_cancellation_outranks_concurrent_reader_close(
     assert str(failures[0]) == "PTY write interrupted"
 
 
+@posix_only
 def test_interrupt_at_write_lease_retirement_cancels_completed_write(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1841,6 +1878,7 @@ def test_interrupt_at_write_lease_retirement_cancels_completed_write(
     assert interrupt_published
 
 
+@posix_only
 def test_final_reap_failure_retires_master_and_is_terminal() -> None:
     master_socket, peer_socket = socket.socketpair()
     master_fd = master_socket.detach()
@@ -1859,6 +1897,7 @@ def test_final_reap_failure_retires_master_and_is_terminal() -> None:
     peer_socket.close()
 
 
+@posix_only
 def test_final_reap_failure_unblocks_reader_without_second_reap() -> None:
     master_socket, peer_socket = socket.socketpair()
     proc = _NeverReapsPtyProcess()
@@ -1876,6 +1915,7 @@ def test_final_reap_failure_unblocks_reader_without_second_reap() -> None:
     peer_socket.close()
 
 
+@posix_only
 def test_final_reap_failure_does_not_mask_active_primary_error() -> None:
     master_socket, peer_socket = socket.socketpair()
     proc = _NeverReapsPtyProcess()
@@ -1895,6 +1935,7 @@ def test_final_reap_failure_does_not_mask_active_primary_error() -> None:
     peer_socket.close()
 
 
+@posix_only
 def test_fd_cleanup_error_does_not_replace_reap_or_active_primary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1910,7 +1951,7 @@ def test_fd_cleanup_error_does_not_replace_reap_or_active_primary(
             raise OSError("sentinel fd cleanup failure")
         real_close(fd)
 
-    monkeypatch.setattr(_pty_module.os, "close", failing_close)
+    monkeypatch.setattr(_pty_posix_module.os, "close", failing_close)
     try:
         try:
             raise primary
@@ -1926,6 +1967,7 @@ def test_fd_cleanup_error_does_not_replace_reap_or_active_primary(
     assert handle._close_error == "PTY child did not exit after SIGKILL"
 
 
+@posix_only
 def test_close_dup_failure_still_retires_reaps_and_closes_master(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1942,7 +1984,7 @@ def test_close_dup_failure_still_retires_reaps_and_closes_master(
             raise OSError(errno.EMFILE, "sentinel dup exhaustion")
         return real_dup(fd)
 
-    monkeypatch.setattr(_pty_module.os, "dup", failing_dup)
+    monkeypatch.setattr(_pty_posix_module.os, "dup", failing_dup)
 
     with pytest.raises(AdapterError, match="did not exit after SIGKILL"):
         handle.close()
@@ -1955,6 +1997,7 @@ def test_close_dup_failure_still_retires_reaps_and_closes_master(
     peer_socket.close()
 
 
+@posix_only
 def test_interrupt_unblocks_full_pty_input_queue(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1983,7 +2026,7 @@ def test_interrupt_unblocks_full_pty_input_queue(
                 input_queue_full.set()
             raise
 
-    monkeypatch.setattr(_pty_module.os, "write", observed_write)
+    monkeypatch.setattr(_pty_posix_module.os, "write", observed_write)
 
     def _inject_large() -> None:
         try:
@@ -2008,6 +2051,7 @@ def test_interrupt_unblocks_full_pty_input_queue(
     pump.drain_until_exit(timeout=5.0)
 
 
+@posix_only
 def test_interrupt_cancels_active_and_queued_writes_then_rearms(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2037,7 +2081,7 @@ def test_interrupt_cancels_active_and_queued_writes_then_rearms(
             old_queued_write.set()
         return real_write(fd, data)
 
-    monkeypatch.setattr(_pty_module.os, "write", controlled_write)
+    monkeypatch.setattr(_pty_posix_module.os, "write", controlled_write)
     failures: list[BaseException] = []
 
     def inject(text: str) -> None:
@@ -2091,6 +2135,7 @@ def test_interrupt_cancels_active_and_queued_writes_then_rearms(
     assert not old_queued_write.is_set()
 
 
+@posix_only
 def test_activity_is_coarse_not_per_redraw(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2123,13 +2168,11 @@ def test_activity_is_coarse_not_per_redraw(
             return chunks.pop(0)
         return real_read(fd, size)
 
-    monkeypatch.setattr(
-        _pty_module,
-        "time",
-        types.SimpleNamespace(monotonic=monotonic, sleep=lambda _seconds: None),
-    )
-    monkeypatch.setattr(_pty_module.select, "select", controlled_select)
-    monkeypatch.setattr(_pty_module.os, "read", controlled_read)
+    fake_time = types.SimpleNamespace(monotonic=monotonic, sleep=lambda _seconds: None)
+    monkeypatch.setattr(_pty_module, "time", fake_time)
+    monkeypatch.setattr(_pty_posix_module, "time", fake_time)
+    monkeypatch.setattr(_pty_posix_module.select, "select", controlled_select)
+    monkeypatch.setattr(_pty_posix_module.os, "read", controlled_read)
 
     events = handle.events()
     try:
@@ -2156,6 +2199,7 @@ def test_activity_is_coarse_not_per_redraw(
         os.close(writer_fd)
 
 
+@posix_only
 def test_attach_bridges_and_split_chord_detaches_with_reset(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2229,6 +2273,7 @@ def test_attach_bridges_and_split_chord_detaches_with_reset(
         os.close(user_slave)
 
 
+@posix_only
 def test_attach_passively_retains_output_and_bracketed_paste_mode(
     tmp_path: Path,
 ) -> None:
@@ -2260,7 +2305,7 @@ def test_attach_passively_retains_output_and_bracketed_paste_mode(
         thread.join(timeout=5.0)
 
         assert result == ["detached"]
-        assert handle._seen_output.is_set()
+        assert handle._terminal.seen_output
         assert handle._bracketed_paste is True
 
         handle.inject("first line\nsecond line")
@@ -2305,7 +2350,7 @@ def test_input_prompt_observed_latches_across_paste_disable(
         assert handle.input_prompt_observed is True
         # A later paste-mode disable (alt-screen exit) must not unconfirm.
         handle._observe_output(b"\x1b[?2004l")
-        assert handle._bracketed_paste is False
+        assert handle._terminal.bracketed_paste is False
         assert handle.input_prompt_observed is True
     finally:
         handle.close()
@@ -2331,7 +2376,7 @@ def test_input_prompt_latch_survives_enable_and_disable_in_one_chunk(
     pump = EventPump(handle)
     try:
         handle._observe_output(b"\x1b[?2004hmenu\x1b[?2004l")
-        assert handle._bracketed_paste is False
+        assert handle._terminal.bracketed_paste is False
         assert handle.input_prompt_observed is True
     finally:
         handle.close()
@@ -2409,6 +2454,7 @@ def test_output_tail_is_bounded_control_stripped_text(tmp_path: Path) -> None:
     assert isinstance(pump.drain_until_exit(), ExitEvent)
 
 
+@posix_only
 def test_attach_passive_observation_emits_no_query_reply_or_diagnostic(
     tmp_path: Path,
 ) -> None:
@@ -2465,6 +2511,7 @@ def test_attach_passive_observation_emits_no_query_reply_or_diagnostic(
         os.close(user_slave)
 
 
+@posix_only
 def test_attach_forwards_escape_prefixed_input(
     tmp_path: Path,
 ) -> None:
@@ -2502,6 +2549,7 @@ def test_attach_forwards_escape_prefixed_input(
         os.close(user_slave)
 
 
+@posix_only
 def test_attach_forwarding_serializes_with_injection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2548,7 +2596,7 @@ def test_attach_forwarding_serializes_with_injection(
             return written
         return real_write(fd, data)
 
-    monkeypatch.setattr(_pty_module.os, "write", controlled_write)
+    monkeypatch.setattr(_pty_posix_module.os, "write", controlled_write)
     failures: list[BaseException] = []
 
     def inject() -> None:
@@ -2585,6 +2633,7 @@ def test_attach_forwarding_serializes_with_injection(
     assert input_stream == "human\ragent\r"
 
 
+@posix_only
 def test_attach_shutdown_wake_exits_bridge(
     tmp_path: Path,
 ) -> None:
@@ -2620,6 +2669,7 @@ def test_attach_shutdown_wake_exits_bridge(
         os.close(user_slave)
 
 
+@posix_only
 def test_attach_output_failure_still_restores_input_termios(tmp_path: Path) -> None:
     handle, _log = _spawn_fake(
         tmp_path, {"queries": False, "modes": False, "redraw": False}

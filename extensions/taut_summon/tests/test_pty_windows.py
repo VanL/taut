@@ -8,8 +8,13 @@ from typing import Any, Protocol, cast
 
 import psutil
 import pytest
+from taut_summon._pty import _DetachChordMatcher
 
-pytestmark = pytest.mark.xdist_group("process")
+pytestmark = [
+    pytest.mark.windows_only,
+    pytest.mark.xdist_group("process"),
+    pytest.mark.sqlite_only,
+]
 
 
 class _Terminal:
@@ -22,8 +27,19 @@ class _Terminal:
             + b"\r"
         )
 
-    def observe_output(self, data: bytes) -> None:
+    def observe_output(self, data: bytes) -> tuple[bytes, ...]:
         self.data.extend(data)
+        return ()
+
+    def mark_stalled(self, *, now: float | None = None) -> None:
+        del now
+
+    def mark_awaiting_onboarding(self) -> None:
+        pass
+
+    @staticmethod
+    def detach_matcher(chord: bytes) -> _DetachChordMatcher:
+        return _DetachChordMatcher(chord)
 
     @property
     def input_prompt_observed(self) -> bool:
@@ -54,8 +70,18 @@ def _child_argv() -> tuple[str, ...]:
     source = r"""
 import msvcrt, os, signal, subprocess, sys, time
 signal.signal(signal.SIGINT, lambda *_: print("INT signal", flush=True))
+sys.stdout.write("\x1b[6n")
+sys.stdout.flush()
+report = ""
+while not report.endswith("R"):
+    report += msvcrt.getwch()
+print("QUERY_REPLY " + repr(report), flush=True)
 desc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])
-print(f"READY {os.getpid()} {desc.pid}", flush=True)
+print(
+    f"READY {os.getpid()} {desc.pid} "
+    f"{os.environ.get('TAUT_AS')} {os.environ.get('TAUT_TOKEN')}",
+    flush=True,
+)
 line = ""
 discard = False
 while True:
@@ -83,26 +109,84 @@ while True:
 
 
 @pytest.mark.skipif(os.name != "nt", reason="requires Windows ConPTY")
-def test_real_conpty_interrupt_and_domain_close() -> None:
-    from taut_summon._adapter import AdapterError, ExitEvent
-    from taut_summon._pty_windows import spawn_windows_pty
+def test_public_pty_adapter_reports_natural_exit_without_close_error() -> None:
+    from taut_summon._adapter import ExitEvent
+    from taut_summon._pty import PtyAdapter, PtySpec
 
-    handle = spawn_windows_pty(
-        argv=_child_argv(),
-        env=dict(os.environ),
-        rows=24,
-        cols=80,
-        stall_s=2.0,
-        quiet_ms=10,
-        max_settle_s=2.0,
-        terminal=_Terminal(),
+    handle = PtyAdapter(
+        PtySpec(
+            name="windows-natural-exit",
+            argv=(
+                sys.executable,
+                "-c",
+                "print('done', flush=True); raise SystemExit(7)",
+            ),
+        )
+    ).spawn(system_prompt="unused", env={})
+    events: list[object] = []
+    pump = threading.Thread(target=lambda: events.extend(handle.events()))
+    pump.start()
+    pump.join(timeout=10.0)
+    assert not pump.is_alive()
+    assert [event.returncode for event in events if isinstance(event, ExitEvent)] == [7]
+    handle.close()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows ConPTY")
+def test_public_pty_adapter_surfaces_unknown_query_stall() -> None:
+    from taut_summon._pty import PtyAdapter, PtySpec
+
+    source = "import sys,time; sys.stdout.write('\\x1b[?15n'); sys.stdout.flush(); time.sleep(30)"
+    handle = PtyAdapter(
+        PtySpec(
+            name="windows-query-stall",
+            argv=(sys.executable, "-c", source),
+            stall_s=0.1,
+            quiet_ms=10,
+            max_settle_s=1.0,
+        )
+    ).spawn(system_prompt="unused", env={})
+    pump = threading.Thread(target=lambda: list(handle.events()))
+    pump.start()
+    try:
+        handle.wait_until_quiet()
+        assert handle.status_fields()["awaiting_query"] == "[?15n"
+    finally:
+        handle.close()
+        pump.join(timeout=10.0)
+        assert not pump.is_alive()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows ConPTY")
+def test_public_pty_adapter_runs_conpty_and_retires_domain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut_summon._adapter import AdapterError, ExitEvent
+    from taut_summon._pty import PtyAdapter, PtySpec
+
+    monkeypatch.setenv("taut_as", "stale-as")
+    monkeypatch.setenv("taut_token", "stale-token")
+    handle = PtyAdapter(
+        PtySpec(
+            name="windows-proof",
+            argv=_child_argv(),
+            stall_s=2.0,
+            quiet_ms=10,
+            max_settle_s=2.0,
+        )
+    ).spawn(
+        system_prompt="unused",
+        env={"TAUT_AS": "proof-as", "TAUT_TOKEN": "proof-token"},
     )
     events: list[object] = []
     pump = threading.Thread(target=lambda: events.extend(handle.events()))
     pump.start()
     ready = _wait_for_tail(handle, "READY")
     ready_line = next(line for line in ready.splitlines() if "READY" in line)
-    _, leader_text, descendant_text = ready_line.split()[-3:]
+    _, leader_text, descendant_text, child_as, child_token = ready_line.split()[-5:]
+    assert child_as == "proof-as"
+    assert child_token == "proof-token"
+    assert "QUERY_REPLY '\\x1b[1;1R'" in ready
     leader = psutil.Process(int(leader_text))
     descendant = psutil.Process(int(descendant_text))
 
@@ -201,9 +285,14 @@ def test_console_snapshot_restores_exact_values_after_partial_setup() -> None:
     ]
 
 
-def test_missing_conpty_export_is_a_stable_adapter_error() -> None:
+@pytest.mark.skipif(os.name != "nt", reason="requires public Windows dispatch")
+def test_public_adapter_reports_missing_conpty_export(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut_summon import _pty_windows
     from taut_summon._adapter import AdapterError
-    from taut_summon._win32_io import NativeApi
+    from taut_summon._pty import PtyAdapter, PtySpec
+    from taut_summon._win32_io import NativeApi as RealNativeApi
 
     class Function:
         argtypes: object
@@ -215,11 +304,19 @@ def test_missing_conpty_export_is_a_stable_adapter_error() -> None:
     class MissingConPtyLibrary:
         CreatePipe = Function()
 
+    monkeypatch.setattr(
+        _pty_windows,
+        "NativeApi",
+        lambda: RealNativeApi(library=MissingConPtyLibrary(), last_error=lambda: 127),
+    )
     with pytest.raises(
         AdapterError,
         match="Windows ConPTY initialization is unavailable: missing CreatePseudoConsole",
     ):
-        NativeApi(library=MissingConPtyLibrary(), last_error=lambda: 127)
+        PtyAdapter(PtySpec(name="missing-conpty", argv=("cmd.exe",))).spawn(
+            system_prompt="unused",
+            env={},
+        )
 
 
 def test_attach_partial_duplicate_failure_closes_first_duplicate() -> None:
@@ -297,7 +394,12 @@ def test_attach_route_failure_retires_started_sink_before_handles_close() -> Non
     owner = type(
         "Owner",
         (),
-        {"_api": api, "_attach_generation": 0, "_drain": drain},
+        {
+            "_api": api,
+            "_attach_generation": 0,
+            "_drain": drain,
+            "_terminal": _Terminal(),
+        },
     )()
     session = _AttachSession(
         cast(Any, owner),
