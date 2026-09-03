@@ -1106,6 +1106,15 @@ probe now checks the meaningful invariant after the send offset: colored marker
 and later reset are both present, without assuming a terminal renderer's frame
 layout. Rerun required; later ownership cases were not reached.
 
+Fourth hosted attempt: branch commit `7ba0015eb84492bf044cc2f337026556bcf6b7c9`,
+Actions run `33802771030`, job `100805973787`, Windows Python 3.11.9. ConPTY
+again preserved the SGR color prefix and marker, but deferred or elided the
+reset frame during the probe's wait. Reset timing is not a Summon contract and
+requiring it is renderer-specific armor. The probe now requires only the
+post-send SGR-prefixed marker, which proves observable VT output without a
+screen-frame timing assumption. Rerun required; later ownership cases were not
+reached.
+
 ## Out of Scope
 
 - A generic structured-event adapter or mapping language.

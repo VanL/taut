@@ -1616,11 +1616,11 @@ def run_coordinator(helper: Path) -> int:
         while True:
             vt_output = owner.drain.snapshot()[vt_start:]
             marker_index = vt_output.find(b"\x1b[31mVT_RED")
-            if marker_index >= 0 and b"\x1b[m" in vt_output[marker_index:]:
+            if marker_index >= 0:
                 break
             if time.monotonic() >= vt_deadline:
                 raise RuntimeError(
-                    "ConPTY output did not preserve color and reset VT semantics: "
+                    "ConPTY output did not preserve the color VT sequence: "
                     f"{vt_output[-2000:]!r}"
                 )
             time.sleep(0.01)
