@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ctypes
-import json
 import os
 import signal
 import subprocess
@@ -12,7 +11,6 @@ import time
 from pathlib import Path
 from typing import Any, cast
 
-import psutil
 import pytest
 import taut_summon._win32_job as win32_job_module
 from taut_summon._adapter import AdapterError
@@ -876,111 +874,3 @@ finally:
         assert outer.domain.wait_for_leader_exit(5.0) == 0
     finally:
         outer.domain.finalize()
-
-
-@pytest.mark.skipif(
-    os.name != "nt", reason="native ConPTY qualification is Windows-only"
-)
-@pytest.mark.xdist_group("process")
-def test_temporary_native_conpty_qualification_probe() -> None:
-    """TEMPORARY: qualify the proposed ConPTY ownership design before promotion."""
-
-    helper = Path(__file__).with_name("fixtures") / "temporary_conpty_qualification.py"
-    process = subprocess.Popen(
-        [sys.executable, str(helper), "--coordinator"],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        close_fds=True,
-    )
-    try:
-        stdout, stderr = process.communicate(timeout=120.0)
-    except subprocess.TimeoutExpired:
-        try:
-            owner = psutil.Process(process.pid)
-            descendants = owner.children(recursive=True)
-        except (psutil.Error, OSError):
-            descendants = []
-        for descendant in reversed(descendants):
-            try:
-                descendant.kill()
-            except (psutil.Error, OSError):
-                pass
-        try:
-            process.kill()
-        except ProcessLookupError:
-            pass
-        stdout, stderr = process.communicate(timeout=10.0)
-        pytest.fail(
-            "native ConPTY qualification coordinator exceeded 120 seconds\n"
-            f"stdout:\n{stdout}\nstderr:\n{stderr}"
-        )
-
-    records = [
-        line.removeprefix("TAUT_CONPTY_PROBE=")
-        for line in stdout.splitlines()
-        if line.startswith("TAUT_CONPTY_PROBE=")
-    ]
-    assert process.returncode == 0, f"stdout:\n{stdout}\nstderr:\n{stderr}"
-    assert len(records) == 1, f"stdout:\n{stdout}\nstderr:\n{stderr}"
-    print(f"TAUT_CONPTY_PROBE={records[0]}")
-    evidence = json.loads(records[0])
-    assert evidence["ok"] is True
-    assert evidence["pre_resume_failure"]["injected_after_create_before_resume"] is True
-    assert evidence["pre_resume_failure"]["terminate_process"] is True
-    assert evidence["pre_resume_failure"]["bounded_wait_result"] == 0
-    assert evidence["pre_resume_failure"]["process_absent"] is True
-    assert evidence["pre_resume_failure"]["reader_terminal_error"] == 109
-    assert evidence["attach_output"]["first_generation"]["cancelled"] is True
-    assert evidence["attach_output"]["first_generation"]["write_error"] == 995
-    assert evidence["attach_output"]["first_generation"]["discarded_queue_items"] > 0
-    assert evidence["attach_output"]["later_generation_received_output"] is True
-    assert evidence["attach_output"]["old_generation_rejected_reuse"] is True
-    assert evidence["attach_output"]["sole_reader"] == "conpty-output-drain"
-    assert evidence["conpty"]["leader_absent"] is True
-    assert evidence["conpty"]["descendant_absent"] is True
-    assert evidence["conpty"]["reader_alive_at_close"] is True
-    assert evidence["conpty"]["reader_terminal_error"] == 109
-    assert evidence["conpty"]["cleanup_order"][:3] == [
-        "conpty-input-read-after-create-process",
-        "conpty-output-write-after-create-process",
-        "primary-thread-after-resume",
-    ]
-    assert evidence["io"]["utf8_vt_round_trip"] is True
-    assert evidence["interrupt"]["first_ctrl_c"] == 1
-    assert evidence["interrupt"]["post_cancel_ctrl_c"] == 2
-    assert evidence["interrupt"]["blocked_write_error"] == 995
-    assert evidence["interrupt"]["queued_entered_writefile"] is False
-    assert evidence["request_close"]["blocked_write_error"] == 995
-    assert evidence["request_close"]["queued_entered_writefile"] is False
-    assert evidence["request_close"]["rearmed"] is False
-    assert evidence["request_close"]["privileged_ctrl_c_written"] is True
-    assert evidence["request_close"]["child_interrupt_count"] == 3
-    assert evidence["request_close"]["delivery"] in {"byte", "signal"}
-    assert evidence["request_close"]["normal_injection_remained_retired"] is True
-    assert evidence["console"]["input_mode_restored"] is True
-    assert evidence["console"]["output_mode_restored"] is True
-    assert evidence["console"]["input_code_page_restored"] is True
-    assert evidence["console"]["output_code_page_restored"] is True
-    assert evidence["console"]["blocked_read_error"] == 995
-    assert evidence["console"]["borrowed_handle_valid"] is True
-    assert evidence["console"]["utf8_input_exact"] is True
-    assert (
-        evidence["console"]["utf8_output_byte_count"]
-        == evidence["console"]["utf8_output_expected_byte_count"]
-    )
-    assert evidence["console"]["test_only_input_api"] == "WriteConsoleInputW"
-    assert evidence["pipe_attach"]["classification_error"] == 6
-    assert evidence["pipe_attach"]["forwarded"] == "before"
-    assert evidence["pipe_attach"]["detached"] is True
-    assert evidence["pipe_attach"]["set_console_mode_calls"] == 0
-    calls = {call["operation"]: call for call in evidence["native_calls"]}
-    assert calls["CreatePseudoConsole"] == {
-        "operation": "CreatePseudoConsole",
-        "result": 0,
-        "error": None,
-    }
-    assert calls["InitializeProcThreadAttributeList(size)"]["error"] == 122
