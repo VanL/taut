@@ -76,10 +76,40 @@ def _configure_terminal_input() -> None:
     if not os.isatty(0):
         return
     if os.name == "nt":
-        # The CR-delimited parser does not need Windows raw mode, and processed
-        # input intentionally routes Ctrl-C to the installed signal handler.
-        # GitHub's runner also exposes a CRT tty whose fd is not a Win32 console
-        # handle, so probing GetConsoleMode rejects a real supported path.
+        import ctypes
+        import msvcrt
+
+        ctypes_api: Any = ctypes
+        msvcrt_api: Any = msvcrt
+        kernel32 = ctypes_api.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetConsoleMode.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_uint32),
+        ]
+        kernel32.GetConsoleMode.restype = ctypes.c_int
+        kernel32.SetConsoleMode.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        kernel32.SetConsoleMode.restype = ctypes.c_int
+        # A ConPTY child launched below a redirected host can have a CRT tty fd
+        # that is not itself accepted by GetConsoleMode. CONIN$ names the
+        # hosted console input buffer whose mode controls that same byte stream.
+        console_fd = os.open(
+            "CONIN$",
+            os.O_RDWR | int(getattr(os, "O_BINARY", 0)),
+        )
+        try:
+            handle = msvcrt_api.get_osfhandle(console_fd)
+            mode = ctypes.c_uint32()
+            if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+                raise OSError(
+                    ctypes_api.get_last_error(), "GetConsoleMode(CONIN$) failed"
+                )
+            raw_mode = (mode.value & ~(0x0001 | 0x0002 | 0x0004)) | 0x0200
+            if not kernel32.SetConsoleMode(handle, raw_mode):
+                raise OSError(
+                    ctypes_api.get_last_error(), "SetConsoleMode(CONIN$) failed"
+                )
+        finally:
+            os.close(console_fd)
         return
 
     import tty

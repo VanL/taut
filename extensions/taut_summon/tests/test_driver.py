@@ -2203,6 +2203,7 @@ def test_scripted_provider_owns_signal_cleanup_during_ready_publication(
         dict,
     )
     monkeypatch.setattr(scripted_provider, "_install_sigint_cleanup", lambda _s: None)
+    monkeypatch.setattr(scripted_provider, "_configure_terminal_input", lambda: None)
     monkeypatch.setattr(scripted_provider, "_record", record)
 
     assert scripted_provider.main() == 0
