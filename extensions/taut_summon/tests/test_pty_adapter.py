@@ -715,11 +715,9 @@ def test_wait_until_quiet_spends_one_total_settle_budget(
 
     handle._reader_started_event = cast(Any, ReaderStart())
     handle._settle_wake = cast(Any, BudgetWake())
-    handle._seen_output = threading.Event()
     handle._lifecycle_lock = threading.RLock()
     handle._retired = False
     handle._master_closed = False
-    handle._last_output_ts = 0.0
     handle._quiet_s = 0.1
     handle._max_settle_s = 1.0
     monkeypatch.setattr(
@@ -1137,6 +1135,34 @@ def test_unknown_report_shaped_query_sets_status_without_reply(
             entry for entry in _entries(log) if entry["event"] == "unknown_reply_window"
         ][-1]
         assert window["got"] == ""
+    finally:
+        handle.close()
+    assert isinstance(pump.drain_until_exit(), ExitEvent)
+
+
+def test_wait_until_quiet_holds_unknown_query_through_stall_threshold(
+    tmp_path: Path,
+) -> None:
+    stall_s = 0.2
+    handle, log = _spawn_fake(
+        tmp_path,
+        {
+            "queries": False,
+            "modes": False,
+            "unknown_query": "[?15n",
+            "unknown_blocks": True,
+        },
+        stall_s=stall_s,
+    )
+    pump = EventPump(handle)
+    try:
+        started = time.monotonic()
+        handle.wait_until_quiet()
+        elapsed = time.monotonic() - started
+
+        assert elapsed >= stall_s * 0.8
+        assert handle.status_fields()["awaiting_query"] == "[?15n"
+        _wait_for(log, "unknown_reply_window")
     finally:
         handle.close()
     assert isinstance(pump.drain_until_exit(), ExitEvent)

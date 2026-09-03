@@ -71,6 +71,7 @@ class STARTUPINFOW(ctypes.Structure):
         ("dwXCountChars", DWORD),
         ("dwYCountChars", DWORD),
         ("dwFillAttribute", DWORD),
+        ("dwFlags", DWORD),
         ("wShowWindow", WORD),
         ("cbReserved2", WORD),
         ("lpReserved2", ctypes.POINTER(ctypes.c_ubyte)),
@@ -346,9 +347,9 @@ class ConsoleApi(Protocol):
 @dataclass(frozen=True, slots=True)
 class _ConsoleSnapshot:
     input_mode: int
-    output_mode: int
+    output_mode: int | None
     input_cp: int
-    output_cp: int
+    output_cp: int | None
 
 
 class ConsoleLease:
@@ -363,11 +364,19 @@ class ConsoleLease:
         self._snapshot: _ConsoleSnapshot | None = None
 
     def enter(self) -> None:
+        try:
+            output_mode = self._api.get_console_mode(self._output)
+        except Win32IoError as exc:
+            if exc.error_code != ERROR_INVALID_HANDLE:
+                raise
+            output_mode = None
         snapshot = _ConsoleSnapshot(
             input_mode=self._api.get_console_mode(self._input),
-            output_mode=self._api.get_console_mode(self._output),
+            output_mode=output_mode,
             input_cp=self._api.get_console_cp(),
-            output_cp=self._api.get_console_output_cp(),
+            output_cp=(
+                self._api.get_console_output_cp() if output_mode is not None else None
+            ),
         )
         self._snapshot = snapshot
         try:
@@ -380,15 +389,17 @@ class ConsoleLease:
                 | ENABLE_PROCESSED_INPUT
                 | ENABLE_VIRTUAL_TERMINAL_INPUT
             )
-            output_mode = (
-                snapshot.output_mode
-                | ENABLE_PROCESSED_OUTPUT
-                | ENABLE_VIRTUAL_TERMINAL_PROCESSING
-            )
             self._api.set_console_mode(self._input, input_mode)
-            self._api.set_console_mode(self._output, output_mode)
+            if snapshot.output_mode is not None:
+                output_mode = (
+                    snapshot.output_mode
+                    | ENABLE_PROCESSED_OUTPUT
+                    | ENABLE_VIRTUAL_TERMINAL_PROCESSING
+                )
+                self._api.set_console_mode(self._output, output_mode)
             self._api.set_console_cp(CP_UTF8)
-            self._api.set_console_output_cp(CP_UTF8)
+            if snapshot.output_mode is not None:
+                self._api.set_console_output_cp(CP_UTF8)
         except Exception:
             self.restore()
             raise
@@ -398,12 +409,18 @@ class ConsoleLease:
         if snapshot is None:
             return
         failures: list[BaseException] = []
-        restorers = (
+        restorers: list[Callable[[], None]] = [
             lambda: self._api.set_console_mode(self._input, snapshot.input_mode),
-            lambda: self._api.set_console_mode(self._output, snapshot.output_mode),
-            lambda: self._api.set_console_cp(snapshot.input_cp),
-            lambda: self._api.set_console_output_cp(snapshot.output_cp),
-        )
+        ]
+        if snapshot.output_mode is not None:
+            output_mode = snapshot.output_mode
+            restorers.append(
+                lambda: self._api.set_console_mode(self._output, output_mode)
+            )
+        restorers.append(lambda: self._api.set_console_cp(snapshot.input_cp))
+        if snapshot.output_cp is not None:
+            output_cp = snapshot.output_cp
+            restorers.append(lambda: self._api.set_console_output_cp(output_cp))
         for restore in restorers:
             try:
                 restore()

@@ -165,9 +165,11 @@ class PosixPtyHandle:
                 if self._retired or self._master_closed:
                     return
             now = time.monotonic()
+            self._terminal.mark_stalled(now=now)
             if (
                 self._terminal.seen_output
                 and now - self._terminal.last_output_ts >= self._quiet_s
+                and not self._terminal.unhandled_query_pending
             ):
                 return
             remaining = deadline - now

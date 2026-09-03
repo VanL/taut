@@ -17,6 +17,22 @@ pytestmark = [
 ]
 
 
+def test_win32_process_structures_match_x64_abi() -> None:
+    import ctypes
+
+    from taut_summon._win32_io import (
+        PROCESS_INFORMATION,
+        STARTUPINFOEXW,
+        STARTUPINFOW,
+    )
+
+    assert ctypes.sizeof(ctypes.c_void_p) == 8
+    assert ctypes.sizeof(STARTUPINFOW) == 104
+    assert ctypes.sizeof(STARTUPINFOEXW) == 112
+    assert ctypes.sizeof(PROCESS_INFORMATION) == 24
+    assert STARTUPINFOW.dwFlags.offset == 60
+
+
 class _Terminal:
     def __init__(self) -> None:
         self.data = bytearray()
@@ -282,6 +298,49 @@ def test_console_snapshot_restores_exact_values_after_partial_setup() -> None:
         ("mode-12", 0x003),
         ("input-cp", 437),
         ("output-cp", 1252),
+    ]
+
+
+def test_console_lease_supports_console_input_with_redirected_output() -> None:
+    from taut_summon._win32_io import ConsoleLease, Win32IoError
+
+    class RedirectedOutputApi:
+        def __init__(self) -> None:
+            self.input_mode = 0x1F7
+            self.input_cp = 437
+            self.calls: list[tuple[str, int]] = []
+
+        def get_console_mode(self, handle: int) -> int:
+            if handle == 12:
+                raise Win32IoError("GetConsoleMode", 6)
+            return self.input_mode
+
+        def set_console_mode(self, handle: int, value: int) -> None:
+            self.calls.append((f"mode-{handle}", value))
+
+        def get_console_cp(self) -> int:
+            return self.input_cp
+
+        def set_console_cp(self, value: int) -> None:
+            self.calls.append(("input-cp", value))
+
+        def get_console_output_cp(self) -> int:
+            raise AssertionError("redirected output has no console code page")
+
+        def set_console_output_cp(self, value: int) -> None:
+            raise AssertionError(f"unexpected output code-page write: {value}")
+
+    api = RedirectedOutputApi()
+    lease = ConsoleLease(api=api, input_handle=11, output_handle=12)
+
+    lease.enter()
+    lease.restore()
+
+    assert api.calls == [
+        ("mode-11", 0x3B1),
+        ("input-cp", 65001),
+        ("mode-11", 0x1F7),
+        ("input-cp", 437),
     ]
 
 
