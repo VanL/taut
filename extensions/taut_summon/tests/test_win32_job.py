@@ -926,6 +926,7 @@ def test_temporary_native_conpty_qualification_probe() -> None:
     ]
     assert process.returncode == 0, f"stdout:\n{stdout}\nstderr:\n{stderr}"
     assert len(records) == 1, f"stdout:\n{stdout}\nstderr:\n{stderr}"
+    print(f"TAUT_CONPTY_PROBE={records[0]}")
     evidence = json.loads(records[0])
     assert evidence["ok"] is True
     assert evidence["pre_resume_failure"]["injected_after_create_before_resume"] is True

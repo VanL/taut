@@ -1157,6 +1157,20 @@ Ruff 0.16.6 considers unused; they were removed and checked against the CI
 version. Rerun required; descendant close and console-lease cases were not
 reached.
 
+Seventh hosted attempt: branch commit `e1e1ae6` (full SHA recorded by the
+Actions run), Actions run `33804006033`, job `100809997417`, Windows Python
+3.11.9. The Windows process selection completed with `6 passed, 17 skipped in
+6.28s`; the native ConPTY qualification passed every assertion in the API and
+ownership ledger, including pre-resume rollback, sole-reader attach routing,
+blocked writer cancellation and epoch rearm/retirement, two raw-ETX reusable
+interrupts, one graceful close interrupt, UTF-8 and VT I/O, exact console
+mode/code-page restoration, pipe-backed attach classification, reader-close
+ordering, and leader plus descendant absence after close. Pytest captured the
+coordinator's JSON on success, so the disposable outer test now republishes
+that already-validated single record for durable Actions evidence. One
+evidence-only rerun is required; no probe behavior or production design
+changed.
+
 ## Out of Scope
 
 - A generic structured-event adapter or mapping language.
