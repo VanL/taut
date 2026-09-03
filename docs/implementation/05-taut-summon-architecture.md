@@ -14,11 +14,16 @@ It does not restate the contract — that lives in the spec
 (`docs/specs/04-summon.md`, [SUM-1]–[SUM-13]). It explains *why* the code is
 shaped the way it is, and where to read and edit.
 
-Implementation status: the extension ships `run`/`stop`/`status`, the
-scripted adapter, the universal PTY adapter for interactive harnesses, the
-`claude-stream` structured adapter, the driver (bootstrap, attach/detach,
-ears, event pump, resume, shutdown), the persona template, the control
-plane, and the rate backstop. The control policy uses core's shared
+Implementation status: [SUM] now promotes one PTY adapter with POSIX and
+Windows ConPTY backends, but that runtime migration is pending. The extension
+still ships the legacy scripted and `claude-stream` structured adapters, the
+POSIX-only universal PTY implementation, and the Job Object/pipe Windows
+structured path. Those modules are migration inputs, not the target
+architecture, and remain documented below only where the current code still
+owns behavior. The driver currently retains provider-session and structured-
+event branches until the deletion slice lands. The extension also ships
+`run`/`stop`/`status`, bootstrap, attach/detach, ears, event pump, shutdown,
+the persona template, the control plane, and the rate backstop. The control policy uses core's shared
 `BaseReactor` lifecycle and reports unexpected control-lane death to the
 foreground driver. A lazy public facade exposes typed models and a
 `SummonController`; the standalone CLI is a renderer over that controller and
@@ -49,12 +54,11 @@ the SimpleBroker command layer whose option binding changed in 6.0.0 and still
 relies on the earlier reactor guarantees. The 5.2.0 reactor example remains the
 ownership-model provenance, not the supported runtime floor.
 
-Summon's persistence adapter is the only Summon JSON boundary affected by the
-7.0.0 formatter contract. It copies logical session records and formats only
-`updated_ts` on dump. Validation accepts canonical strings or exact JSON
-integer tokens; load formats and converts that field back to `int` before
-calling the existing sidecar loader. Ledger storage and control bodies remain
-numeric.
+Summon's current persistence adapter still writes component version 1 with the
+legacy provider-session field. The promoted target writes version 2 without
+that field, loads exact versions 1 and 2, and discards the version-1 field at
+the loader boundary. That implementation is pending. Timestamp formatting,
+ledger storage, and control-body numeric ownership do not change.
 
 ## Governing Spec References
 
@@ -67,6 +71,31 @@ numeric.
 - `docs/specs/03-identity-addressing-notifications.md` [IAN-3.3] claim
   association, [IAN-3.4] rejoin, [IAN-4.4] name changes, [IAN-6.1] queue
   classes (amended by the summon plan's D3), [IAN-9] failure-mode robustness
+
+### Promoted target and transition boundary
+
+The target has one production `PtyAdapter`. Provider registrations contain
+only executable argv and existing `PtySpec` values; none parses a provider
+reply protocol. The packaged `scripted` registration uses that same adapter
+and a real interactive child. Terminal output feeds activity, terminal-query
+responses, attach display, and a bounded diagnostic tail, never chat speech.
+
+Platform ownership sits below the adapter. `_pty_posix.py` and
+`_process_domain_posix.py` retain the current POSIX fd, signal, and process-
+group rules. `_pty_windows.py` owns ConPTY creation, synchronous input/output,
+continuous drain, and terminal-session close. `_win32_io.py` is limited to
+duplicated Win32 handles, synchronous reads/writes, exact-thread cancellation,
+and console mode/code-page snapshot and restoration. Registry, driver,
+readiness, terminal-query, injection, and event contracts remain platform-
+neutral.
+
+This boundary is not implemented yet. `_claude.py`, `_stream.py`,
+`_scripted.py`, `_win32_pipe.py`, `_win32_job.py`, and `_process_domain.py`
+remain current runtime owners pending their replacement proofs and deletion.
+The current typed provider-session fields, terminal-mode branches, persistence
+version-1 writer, and Windows process-test allowlist likewise remain until the
+dependent slices land. This note must not be read as evidence that Windows
+named providers already run through ConPTY.
 
 ## Design Rationale
 
@@ -1006,6 +1035,10 @@ from manufacturing invalid evidence.
 
 ## Related Plans
 
+- `docs/plans/2026-09-03-summon-unified-pty-cross-platform-plan.md` — promotes
+  the one-adapter target, Windows ConPTY owner boundary, structured-runtime
+  deletion, persistence version 2, and cross-platform test topology tracked by
+  the transition note above.
 - `docs/plans/2026-08-25-semantic-compatibility-hardening-plan.md` — authentic
   version-2 migration fixture and collision-preserving proof.
 - `docs/plans/2026-08-17-summon-shell-cancel-portability-plan.md` — Windows

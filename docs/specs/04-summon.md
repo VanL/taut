@@ -18,11 +18,10 @@ as **(L1)** and **(L2)** throughout:
 
 ## 1. Purpose and Scope [SUM-1]
 
-`taut summon` hosts an existing agent harness (any interactive CLI, or a
-resumable streaming CLI where one is available) as an ordinary member of a
-taut workspace. Summon does not build an agent loop, a task
-runtime, or a sandbox; the harness already owns tool dispatch, session
-state, interruption, and permissions. Summon is the agent's **terminal**:
+`taut summon` hosts any interactive agent CLI as an ordinary member of a
+taut workspace. Summon does not build an agent loop, a task runtime, a
+provider protocol adapter, or a sandbox; the harness already owns tool
+dispatch, session state, interruption, and permissions. Summon is the agent's **terminal**:
 it feeds chat into the harness's own control loop, and the agent speaks
 through the same CLI verbs a human uses, selected as its member by its
 continuity token ([TAUT-5]: continuity, never authentication).
@@ -39,18 +38,13 @@ only), and any daemon.
 
 ## 2. Mental Model [SUM-2]
 
-**Ears and mouth.** The summoned member's *ears* are an injected stream:
-the summon driver watches every thread the member has joined plus its
-notification inbox, and pushes each message into the harness's live
-session as it arrives. The ordinary member *mouth and hands* are the taut CLI
-itself: the agent speaks by running `taut say <thread> ...` as an ordinary
-tool call, selected as its member by its continuity token ([TAUT-5]:
-continuity, not authentication). In terminal mode, parsed
-`AssistantTextEvent` speech is the narrow exception: it is posted by the
-driver-owned mouth client through the driver's persistent handle because the
-harness has no separate tool call path. Summon never otherwise interprets or
-routes agent output (L1: explicit, inspectable actions; L2: a person chooses
-where to speak — nobody transcribes their mumbling into the right channel).
+**Ears and mouth.** The summoned member's *ears* are an injected stream: the
+summon driver watches every thread the member has joined plus its notification
+inbox and pushes each message into the harness's live terminal. The ordinary
+member *mouth and hands* are the taut CLI itself. The agent speaks by running
+`taut say`, `taut reply`, or another explicit Taut command, selected as its
+member by its continuity token. Summon never interprets or routes terminal
+output as speech.
 
 **The driver is a terminal emulator, not a manager.** One foreground
 process per summoned member, exactly like `taut watch`: it exists while
@@ -62,36 +56,20 @@ mentions, DMs, and history work identically to a human member. Every
 capability difference between a summoned agent and a human member is a
 spec defect (L2 stated as an invariant).
 
-**Captive process, free agent.** The harness child *is* a captive
-process: the driver spawns it, owns its stdio, signals it, anchors
-presence to it, resumes it, and kills it. What is deliberately not
-captive is meaning: captured stdin carries the ears; for a structured
-streaming adapter, captured stdout is supervision telemetry (activity,
-session ids, diagnostics). For the PTY adapter ([SUM-7.4]) there is no
-structured stream: the master carries the harness's raw TUI, read only
-for coarse liveness, the terminal-query responder, and diagnostics — no
-session ids, never parsed as speech. In both cases stdout is never
-speech; the mouth is `taut say`; and the conversation loop belongs to
-the harness. Full
-captivity (sealing) is composition, not architecture: wrap the spawn
-command (`--exec "docker run -i ..."`) and the same driver supervises a
-sealed instance.
+**Captive process, free agent.** The harness child is a captive process: the
+driver spawns it on an operating-system pseudoterminal, owns its terminal I/O,
+signals it, anchors presence to it, and retires its terminal domain. The
+terminal output is read only for coarse activity, bounded terminal-query
+replies, attach display, and diagnostics. Conversation state belongs to the
+harness and is not parsed or persisted by Summon.
 
-Lifecycle captivity includes the provider leader and every descendant that
-remains in the platform containment domain created for that provider
-generation. Terminal finalization applies the platform's bounded retirement
-guarantee even when the provider leader exits first. On Windows the retained
-Job Object is a durable kernel capability and finalization requires zero
-active job processes. Portable POSIX process groups expose only a numeric
-identifier: Taut pins that identity by keeping the group leader unreaped
-through group signaling, but cannot atomically prove group emptiness after
-reaping and therefore does not claim that stronger guarantee. This is
-resource ownership, not a sandbox or security boundary: Taut does not inspect
-arbitrary system ancestry, prevent a process from deliberately escaping the
-domain where the operating system permits it, or reclaim processes launched
-through an external supervisor. Work intended to survive `dismiss` must use
-such an explicit external lifetime rather than relying on accidental
-orphaning.
+Lifecycle captivity includes the provider leader and descendants that remain
+attached to its terminal domain. POSIX retains the process-group guarantee
+defined in [SUM-7.4]. Windows owns one ConPTY session and closes that session
+while its output remains drained; the real-process acceptance test must show
+that an attached descendant is absent afterward. Neither mechanism is a
+sandbox and neither chases a process that deliberately escapes its platform
+terminal domain.
 
 ## 3. Packaging [SUM-3]
 
@@ -101,6 +79,8 @@ orphaning.
   `taut`. It adds no third-party runtime package beyond the existing provider
   requirements. The provider harness is an external executable, not a
   dependency.
+- Summon's Windows ConPTY support uses the operating-system API through a
+  narrow standard-library boundary and adds no runtime package.
 - Surface: the separately installed `taut-summon` distribution registers two
   first-party command slots through the core `taut.commands` entry-point
   interface ([TAUT-8.6]):
@@ -320,12 +300,11 @@ own-send history, so [SUM-10] audits separately.) Consequences, all required:
   a small tail on restart (harnesses tolerate duplicate user messages
   far better than lost ones). Named residual: a harness that crashes
   *after* reading but before processing an event may lose it from that
-  provider session while the cursor has advanced — that window belongs
-  to the provider's session durability, and the recovery story is the
-  standing one ([SUM-7.3]): the chat history is the durable
+  harness generation while the cursor has advanced — that window belongs
+  to the harness's own durability, and the recovery story is the standing
+  one ([SUM-7.3]): the chat history is the durable
   conversation, reachable to the agent itself via `taut log`. Adapters
-  whose protocol offers an ingestion acknowledgment should await it
-  before returning; none is required.
+  are not required to infer an ingestion acknowledgment from terminal output.
 - **Restart replay:** a new driver (or a fresh harness session after a
   crash) starts by injecting everything after each stored cursor — the
   chat history is the durable conversation ([SUM-7.3]).
@@ -357,22 +336,12 @@ own-send history, so [SUM-10] audits separately.) Consequences, all required:
   or change unrelated inherited variables. The agent speaks with ordinary
   CLI calls; replies route wherever the agent says (`taut say dev ...`,
   `taut reply`, `taut say @van ...`).
-- **stdout is diagnostics, not speech.** In multi-thread operation the
-  driver never posts harness output to chat. Assistant text that arrives
-  unrouted goes to the driver's log. Exception — *terminal mode*: when
-  summoned with exactly one thread and `--terminal`, the adapter posts
-  assistant text blocks to that thread, preserving the degenerate
-  single-channel case for harnesses without tool access.
-  Terminal mode requires a parsed reply and is therefore supported only by
-  structured streaming adapters ([SUM-7.2] `claude-stream`), not the PTY
-  adapter ([SUM-7.4]), which never parses the screen. An adapter declares
-  `supports_terminal_mode`; the driver checks it before enabling terminal
-  mode and warns + disables when false. To *watch* a PTY-hosted agent, a
-  human attaches ([SUM-7.4]) rather than having assistant text mirrored to
-  chat. A terminal-mode assistant event rejected by core with
-  `BlankMessageError` is a silent no-op: Summon writes no chat row, logs no
-  terminal-mode post failure, and continues the same generation. Every other
-  posting failure retains the existing error and supervision behavior.
+- **Terminal output is diagnostics, not speech.** The driver never posts
+  harness terminal output to chat and never parses a provider reply envelope.
+  Output may update coarse activity, answer a finite set of terminal queries,
+  feed an explicit human attach, and contribute a bounded control-stripped
+  diagnostic tail. The agent's only mouth is an explicit Taut command. A human
+  watches a hosted agent through attach, not through output mirroring.
 - The persona template ([SUM-10]) makes the mouth contract explicit to
   the agent, including "never answer in a thread other than the one you
   mean" and "if you cannot run taut, say nothing rather than print to
@@ -382,47 +351,35 @@ own-send history, so [SUM-10] audits separately.) Consequences, all required:
 
 ### [SUM-7.1] Adapter interface
 
-An adapter owns exactly four things:
+The provider adapter surface is deliberately terminal-shaped:
 
 ```python
 class ProviderAdapter(Protocol):
-    supports_terminal_mode: bool
     supports_attach: bool
     orientation_via_inject: bool
-    emits_session_events: bool
 
-    def spawn(self, *, session_id: str | None, system_prompt: str,
+    def spawn(self, *, system_prompt: str,
               env: Mapping[str, str]) -> AdapterHandle: ...
     # AdapterHandle:
-    def inject(self, text: str) -> None          # one flushed user-role event
-    def events(self) -> Iterator[AdapterEvent]   # typed output stream
-    def interrupt(self) -> None                  # reusable nonterminal cancel
-    def request_close(self) -> None              # nonblocking terminal retirement
-    def close(self) -> None                      # bounded domain finalize/reap/release
-    # .session_id property: provider session for resume
+    def inject(self, text: str) -> None: ...
+    def events(self) -> Iterator[ActivityEvent | ExitEvent]: ...
+    def interrupt(self) -> None: ...
+    def request_close(self) -> None: ...
+    def close(self) -> None: ...
 ```
 
-`AdapterEvent` is a small closed union: `assistant_text`, `activity`
-(tool use — feeds presence, never posted), `session` (id updates),
-`exit`. There is **no summon-defined wire protocol**: the wire format is
-the provider's own streaming envelope (Claude Code `stream-json`, Codex
-JSONL). Adapters translate; they do not define. A provider line the
-adapter does not recognize (a new top-level event type, a `system` event
-without a subtype, an `assistant` content block of an unknown type) is
-logged at WARNING once per distinct shape per handle and skipped, so a
-provider release that adds an event family degrades to a log line rather
-than a respawn loop; an `assistant` event whose blocks are all unknown
-yields nothing, a mix yields the known text. Malformed JSON and protocol
-violations on known events (`init` or `result` without a session id) stay
-`AdapterError`.
+Summon defines no provider event protocol. All production providers use the
+interactive PTY adapter. The adapter emits coarse `ActivityEvent` values and
+exactly one terminal `ExitEvent`; it emits no assistant-text or provider-
+session event. `inject()` is flushed at the child terminal boundary.
 
 Contract requirements on every adapter: `inject()` returns only after a
 flushed write and surfaces failures synchronously ([SUM-5.4]);
 `interrupt()`, `request_close()`, and `close()` are thread-safe and unblock
 any in-flight `inject()` ([SUM-9] depends on this to stop a stalled harness);
 `events()` must be **drained continuously by the driver**. The driver owns a
-dedicated event-pump thread for the life of the child (session-id updates to
-the ledger; `activity` → member activity via the public seam: a rate-limited
+dedicated event-pump thread for the life of the child (`activity` → member
+activity via the public seam: a rate-limited
 token-selected resolution (`whoami()` on a token client updates
 `last_active_ts` as a side effect of [IAN-3.3] step 2 — at most once per
 activity window, never a private `_state` call); diagnostics to the log;
@@ -433,45 +390,24 @@ ownership-checked release. An undrained stream is a child-stdout deadlock;
 waiting for pump exit before close is not valid because a provider may remain
 alive after its graceful interrupt.
 
-Every spawn creates one owned process domain before the provider is allowed to
-execute. On POSIX the provider is the leader of a new session/process group,
-and the domain owner is the only code allowed to reap it. Natural exit is
-observed without reaping so the leader continues to pin the numeric process-
-group identity until terminal signaling finishes. On Windows the provider is
-created suspended, assigned to a Job Object configured to terminate its
-members when the job is closed, and resumed only after the assignment
-succeeds. A setup or assignment failure terminates and reaps the suspended
-child and releases every native handle before returning `AdapterError`; there
-is no direct-child-only fallback. If an outer Windows Job Object prevents a
-valid nested assignment, spawn fails rather than requesting breakaway from
-the host job. The adapter retains the provider PID as [SUM-4] identity
-evidence while the domain owner retains the separate cleanup capability.
+`PtyAdapter.spawn()` selects a POSIX PTY or Windows ConPTY implementation. The
+registry and driver do not branch by platform. POSIX process groups and
+Windows ConPTY sessions are platform-specific owned capabilities. Both
+implementations preserve reusable interrupt, one terminal close request,
+bounded finalization, serialized writes, continuous output drain, and one
+exit event. Windows may not fall back to plain pipes or direct-child-only
+cleanup when ConPTY setup fails.
 
-When blocking `close()` releases a structured stdout stream while its event
-pump is blocked in iteration, the resulting read is normal EOF only when it is
-the exact built-in `ValueError` with the text-stream closed-file diagnostic,
-terminal retirement is published, and that same stream reports closed.
-Decode-error subclasses and every other read, framing, or translation failure
-remain fatal regardless of close state. The normal owned-close path still
-emits one final `exit` event after child reap.
-
-An adapter that has no structured wire envelope (the PTY adapter,
-[SUM-7.4]) emits only the `activity` and `exit` members of the event
-union — a permitted subset. The driver's pump tolerates a stream that
-never yields `assistant_text` or `session`, and a `None` `session_id`
-degrades to a fresh spawn plus replay ([SUM-7.3]). Such an adapter must
-define `activity` as **coarse lifecycle liveness**: spawn, injection, or
-an output burst after an idle gap, never per-byte. A constantly redrawing
-idle TUI must not keep `last_active_ts` fresh forever. Member presence
-remains anchored to the harness child process being alive ([SUM-4]),
+The adapter defines `activity` as **coarse lifecycle liveness**: spawn,
+injection, or an output burst after an idle gap, never per-byte. A constantly
+redrawing idle TUI must not keep `last_active_ts` fresh forever. Member
+presence remains anchored to the harness child process being alive ([SUM-4]),
 independent of output.
 
-`emits_session_events` declares whether startup may wait for a `SessionEvent`;
-adapters that declare false never pay that wait. `interrupt()` remains
-reusable, nonterminal cancellation. It preserves the existing provider-
-specific signal or PTY Ctrl-C behavior, aborts adapter writes in flight, and
-leaves a surviving handle and process domain open. It does not perform
-terminal domain escalation.
+`interrupt()` remains reusable, nonterminal cancellation. It preserves PTY
+Ctrl-C behavior, aborts adapter writes in flight, and leaves a surviving
+handle and terminal domain open. It does not perform terminal-domain
+escalation.
 
 `request_close()` is the nonblocking terminal-retirement operation. Under the
 handle's reentrant lifecycle lock it atomically changes `open` to
@@ -489,14 +425,15 @@ observes leader exit without reaping, sends the bounded SIGTERM/SIGKILL ladder
 to the process group while the unreaped leader still pins the group identity,
 and only then reaps the leader. It never signals the numeric process-group ID
 after leader reap and does not claim an atomic group-empty proof. On Windows
-it terminates the owned Job Object, waits boundedly for zero active processes,
-and reaps the leader. Direct provider exit does not bypass either platform's
-descendant-retirement step. Finalization then releases streams, fds, and
-native domain handles in adapter-specific order. A POSIX no-signalable-target
+it closes the owned ConPTY session while output remains drained, proves the
+attached descendant is absent, and reaps the leader. Direct provider exit does
+not bypass either platform's descendant-retirement step. Finalization then
+releases streams, fds, and native terminal handles in adapter-specific order.
+A POSIX no-signalable-target
 result is successful completion of that ladder stage: `ESRCH`, or Darwin
 `EPERM` only after non-reaping observation has already established that the
-leader is terminal. Any other failed group signal, leader reap, Job Object
-operation, or Windows zero-active-process check is terminal `AdapterError`;
+leader is terminal. Any other failed group signal, leader reap, ConPTY
+operation, or Windows attached-descendant check is terminal `AdapterError`;
 under an existing primary failure it is attached as a cleanup note rather than
 replacing the primary. No cleanup path scans unrelated process ancestry or
 signals a process outside the still-retained platform capability.
@@ -504,30 +441,24 @@ signals a process outside the still-retained platform capability.
 at any point in close and must not wait on a non-reentrant lock owned by the
 interrupted frame.
 
-Adapter capabilities are part of the interface. `supports_terminal_mode`
-controls whether `--terminal` may mirror parsed assistant text to chat.
-`supports_attach` controls whether the driver may bridge a human terminal
+Adapter capabilities are part of the interface. `supports_attach` controls
+whether the driver may bridge a human terminal
 before the pump starts. `orientation_via_inject` controls whether the
 persona/orientation is delivered by a first injected turn rather than a
 spawn-time system-prompt flag.
 
 ### [SUM-7.2] Adapters shipped
 
-- `pty` — the universal shell adapter ([SUM-7.4]). Hosts interactive
-  agent CLIs over a pseudo-terminal. It is the default host for every
-  named provider (`claude`, `codex`, `coder`, `grok`, `qwen`, `kimi`,
-  `opencode`, `pi`, ...). Provider entries are binaries plus optional
-  spawn quirks, not per-provider protocol code.
-- `claude-stream` — Claude Code headless streaming (`--input-format
-  stream-json --output-format stream-json`, resume via the harness's
-  session mechanism). Exact flags are adapter implementation detail,
-  verified against the installed CLI at implementation time, not
-  contract.
-- `scripted` — a test adapter spawning a real subprocess running a
-  scripted provider (a small Python program speaking the same
-  stream-json shapes). This is the anti-mocking seam: real process, real
-  pipes, real protocol, fake model. It ships in the package (not tests/)
-  so downstream integrators can use it (L1).
+- `pty` is the sole production adapter. It hosts every named provider
+  (`claude`, `codex`, `coder`, `grok`, `qwen`, `kimi`, `opencode`, `pi`, and
+  future interactive CLIs) through the same terminal path. Provider entries
+  contain only the executable argv and values already represented by
+  `PtySpec`; they are not protocol adapters.
+- `scripted` is a packaged test registration for the same PTY adapter. Its
+  real interactive child publishes terminal readiness, accepts terminal
+  input, records received turns, and exercises explicit Taut commands. It is
+  the anti-mocking seam for downstream conformance and contains no second
+  adapter or wire protocol.
 
 ### [SUM-7.4] PTY shell adapter
 
@@ -540,22 +471,35 @@ unchanged. They are terminal transport, not Taut-owned text rendering, and
 are exempt from [TAUT-6.4]. Sanitizing this byte stream would corrupt the
 hosted terminal protocol.
 
-**Spawn.** The adapter uses `pty.openpty()` and the shared [SUM-7.1] POSIX
-process-domain spawn owner to launch `argv` with the slave as
-stdin/stdout/stderr in a new session/process group; the parent closes the
-slave immediately and owns the master. The shared owner, not a second PTY-only
-escalation implementation, retains the process-group identity. The harness
-argv is its normal interactive launch. `TERM=xterm-256color` and a real window size
-(`TIOCSWINSZ`) are set; `TERM=dumb` is forbidden because it breaks these
-TUIs. PTY configuration is validated before fd publication: argv is a
+**Spawn.** `PtyAdapter` validates one `PtySpec`, then selects a platform
+implementation below the adapter boundary. On POSIX, `pty.openpty()` and the
+shared POSIX process-domain owner retain the current fd and process-group
+behavior. On Windows, the adapter calls the documented `CreatePseudoConsole`
+and `ClosePseudoConsole` APIs through `ctypes`, passes the pseudoconsole in
+`STARTUPINFOEX`, and owns the input/output pipe handles. ConPTY input and
+output are serviced on independent threads. Output remains drained through
+close, and `ClosePseudoConsole` owns the terminal session rather than only the
+leader PID. The registry, driver, readiness policy, terminal-query responder,
+injection framing, diagnostics, and adapter event contract remain platform-
+neutral.
+
+The harness argv is its normal interactive launch. `TERM=xterm-256color` and
+a real window size are set; `TERM=dumb` is forbidden because it breaks these
+TUIs. PTY configuration is validated before handle publication: argv is a
 non-empty sequence of non-empty strings; rows and columns are integers in
 `1..65535`; stall and maximum-settle durations are finite positive numbers;
 and quiet milliseconds is a non-negative integer whose seconds conversion is
 finite. Timing values must be representable by the runtime float used for
 deadlines. Invalid configuration and
-any pre-publication setup/spawn exception close both PTY fds and surface as
-`AdapterError`. The threaded driver must use `start_new_session=True`, never
-`preexec_fn` or `pty.fork()`.
+any pre-publication setup/spawn exception releases every acquired terminal
+resource and surfaces as `AdapterError`.
+The POSIX threaded driver uses `start_new_session=True`, never `preexec_fn` or
+`pty.fork()`.
+
+Validation exists only for values constructible through `PtySpec` or the
+documented `TAUT_SUMMON_PTY_*` environment variables. Platform setup errors
+are normalized to `AdapterError` at `PtyAdapter.spawn()`. The adapter does not
+validate speculative provider profiles or unreachable internal states.
 
 **Terminal-query responder.** A reader over the master answers only a
 finite set of report-request families that common TUIs send at startup.
@@ -603,7 +547,7 @@ Adapter-specific STATUS fields are transported by
 loop into the `_status_fields()` `as_fields()` output. Values must be
 JSON-serializable primitives; raw `bytes` are forbidden. Keys must not
 collide with snapshot keys (`driver`, `rate_limited`, `rate_breaches`,
-`provider`, `session_id`, `thread_count`, `cursor_lag`, `control_health`,
+`provider`, `thread_count`, `cursor_lag`, `control_health`,
 `health_detail`) or envelope keys (`command`, `status`, `request_id`).
 A collision is a programming error and is tested.
 
@@ -673,6 +617,16 @@ the harness PTY, detach result, reset bytes, driver lifecycle, and the rule
 that chat is not injected until the watcher starts after detach. The
 interaction never receives the provider handle, reads Summon state, or writes
 control messages.
+
+On Windows, attach converts the lease's input/output fds to owned Win32
+handles. A console input handle is switched from line/echo processing to
+virtual-terminal input after its exact mode is saved; restoration occurs on
+every exit. A dedicated blocking `ReadFile` owner scans the existing detach
+chord and is cancelled with `CancelSynchronousIo` during detach or shutdown.
+Non-console handles supplied by a rich host skip console-mode mutation but use
+the same owned read/cancel path. Output uses the lease's output handle. A
+failed mode change, cancellation, restoration, or write follows the existing
+attach failure-priority rules; there is no fallback to cooked `input()`.
 
 On every bridge exit path, summon restores the local tty with a fixed,
 idempotent reset blast before `termios.tcsetattr(TCSADRAIN)`: `CAN`
@@ -875,12 +829,10 @@ Before the first injected chat turn, the current PTY reader publishes
 (default 10s). Starting the pump after attach does not erase prior observed
 output or terminal input modes. Settle never reads the master and is not a
 readiness signal. Orientation remains an explicit driver step gated by
-`orientation_via_inject`; PTY sets it true, while structured adapters set it
-false and receive the persona at spawn.
+`orientation_via_inject`; the PTY adapter injects it as the first turn.
 
 Output is never parsed as speech. The PTY reader exists for liveness,
-diagnostics, query response, and attach bridging only. Terminal mode is
-unsupported for PTY.
+diagnostics, query response, and attach bridging only.
 
 The PTY handle additionally retains a bounded tail of raw harness output
 (final bytes only, fixed cap) for diagnostics. The tail is exposed as
@@ -898,20 +850,20 @@ and read-only; it never emits terminal replies, never blocks the reader,
 and its failure never changes a driver outcome.
 
 Interrupt writes raw `\x03` for the harness key reader; shutdown escalates
-with SIGTERM/SIGKILL per the fd ownership rule. STOP and SIGINT interrupt the
+with the platform terminal-domain escalation per the ownership rule. STOP and
+SIGINT interrupt the
 current handle immediately, including during pre-watch settle/orientation. If
 shutdown races an orientation `inject()` and the adapter reports interruption,
-that is a clean stop rather than a startup failure. Session continuity follows
-[SUM-7.3]: PTY has no structured provider resume, so a fresh interactive
-session plus cursor replay recovers the conversation.
+that is a clean stop rather than a startup failure. A fresh interactive
+session plus cursor replay recovers the conversation under [SUM-7.3].
 
 ### [SUM-7.3] Session continuity
 
-Session persistence belongs to the harness. The adapter reports the
-provider session id; the driver persists it ([SUM-8]) and offers it back
-at the next spawn. A provider whose session cannot resume degrades to a
-fresh session plus cursor replay ([SUM-5.4]) — the chat history *is* the
-durable conversation; the harness session is an optimization of it.
+Session persistence belongs entirely to the harness. Summon neither receives
+nor stores a provider session id. Every provider-generation restart starts a
+fresh interactive process and replays unread chat through the existing cursor
+contract. Chat history is the durable conversation; provider-local state is
+outside Summon's recovery guarantee.
 
 ## 8. Session Ledger and Single-Driver Guard [SUM-8]
 
@@ -937,12 +889,12 @@ durable conversation; the harness session is an optimization of it.
     plus normalized lookup keeps a late version-2 writer visible and unique
     after migration.
   - `taut_summon_sessions` — **durable**. One row per summoned member:
-    `member_id` PRIMARY KEY (created only after the member exists, so
-    never NULL on any backend), the member's continuity token (captured
-    at creation — output-visible once, per [TAUT-8.2]; storing it is
-    consistent with [TAUT-9]: db access is already membership),
-    provider name, provider session id, driver pid + start-time
-    evidence, the PTY onboarding `wired` flag, and updated timestamp.
+    `member_id` PRIMARY KEY (created only after the member exists, so never
+    NULL on any backend), the member's continuity token (captured at creation,
+    output-visible once per [TAUT-8.2]), provider name, driver pid/start-time
+    evidence, the PTY onboarding `wired` flag, and updated timestamp. The
+    historical nullable `provider_session_id` SQL column remains physical
+    compatibility ballast in schema version 3, but new writes leave it NULL.
 - **Names never key durable state.** Names are mutable current values,
   not identity ([IAN-2.2]; `set name` can rename a summoned member
   mid-run like anyone else). Every post-creation lookup — `stop NAME`,
@@ -960,12 +912,16 @@ durable conversation; the harness session is an optimization of it.
   reads use the canonical session projection rather than `SELECT *` or
   runtime-assembled column lists.
 - **Persistence I/O:** Summon participates through the `taut-summon` component
-  [PIO-5.3]. Durable session continuity (`member_id`, token, provider, provider
-  session id, wired, and updated timestamp) is exported. Bootstrap claims and
-  driver pid/start-time evidence are transient and are never exported;
-  restored driver evidence is null. The component writer represents
-  `updated_ts` as [TAUT-3.5]'s canonical string; accepted string or exact JSON
-  integer input is normalized to an integer before the Summon sidecar write.
+  [PIO-5.3]. Persistence component version 2 exports `member_id`, token,
+  provider, wired, and updated timestamp. The historical
+  `provider_session_id` field is not part of the typed model, status output, or
+  version-2 record, and version 2 rejects it. The exact version-1 reader still
+  requires that field, validates it as string or null, and discards it.
+  Bootstrap claims and driver pid/start-time evidence are transient and are
+  never exported; restored driver evidence is null. The component writer
+  represents `updated_ts` as [TAUT-3.5]'s canonical string; accepted string or
+  exact JSON integer input is normalized to an integer before the Summon
+  sidecar write.
 - **Single-driver guard:** `run` refuses when the ledger row shows a
   live driver (pid + start-time still alive, same evidence style as
   presence). Two drivers injecting into two harness sessions as one
@@ -993,6 +949,16 @@ durable conversation; the harness session is an optimization of it.
   `release_driver` must not write `wired` because they run on re-summon and
   cleanup. The only writers are `set_wired(queue, member_id, value)` and
   fresh-row default `0`; callers read through `get_wired(queue, member_id)`.
+
+A stored provider value of `claude-stream` is not silently rewritten. Public
+start without an explicit replacement returns a handled diagnostic. If driver
+evidence is absent, or a complete pid/start-time pair is proven dead, an
+explicit `--provider claude` start performs one transactionally predicated
+rewrite from exactly `claude-stream` to `claude`. The predicate includes the
+exact classified driver evidence, clears stale evidence, and fails if the row
+changes concurrently. Live evidence, either partial-evidence orientation, and
+every other stored-provider mismatch remain errors. Status may display the
+stored legacy provider value before replacement.
 
 Migration compatibility is defined by the predecessor's named semantic
 schema, not physical column order. The v2 to v3 proof starts from a checked-in
@@ -1112,13 +1078,12 @@ exits and preserve release-before-ACK ordering.
   ledger, and exits 0. SIGINT to the driver uses the same path. If shutdown or
   fatal control failure was published while spawn was returning, handle
   publication rechecks those events and requests close on that exact handle.
-- STATUS returns driver liveness, provider, session id, thread count,
-  cursor lag summary. PING is STATUS minus detail. Primary fields come from
-  driver-owned memory and adapter status; the session ledger remains the
-  durable resume and generation-fence authority, but STATUS/PING must not read
-  the ledger just to answer a live correlated request. Both work while the
-  harness is mid-turn (control responsiveness during idle *and* busy is a
-  conformance item).
+- STATUS returns driver liveness, provider, thread count, and cursor lag
+  summary. PING is STATUS minus detail. Primary fields come from driver-owned
+  memory and adapter status; the session ledger remains the durable generation-
+  fence authority, but STATUS/PING must not read the ledger just to answer a
+  live correlated request. Both work while the harness is mid-turn (control
+  responsiveness during idle *and* busy is a conformance item).
 - Replies use a per-request queue `sys.rsp_<member-id>_<request_id>` so
   concurrent control clients cannot consume each other's answers. Control
   reads and writes call SimpleBroker directly; SQLite lock/busy retry belongs
@@ -1221,8 +1186,9 @@ exits and preserve release-before-ACK ordering.
 
 ## 11. Failure Modes [SUM-11]
 
-- Harness crash: driver observes `exit`, marks ledger, attempts one
-  resume (session id, then cursor replay); repeated crashes back off and
+- Harness crash: driver observes `exit`, marks ledger, attempts one fresh
+  interactive spawn and resumes delivery from durable chat cursors; repeated
+  crashes back off and
   exit with the reason on ctrl_out and stderr. Never auto-posts to chat
   as the member. A suspected setup gate escalates before injection per
   [SUM-7.4] setup-recovery instead of spending crash budget. The
@@ -1232,8 +1198,8 @@ exits and preserve release-before-ACK ordering.
   exact `taut summon --attach <name>` recovery command.
 - Watcher crash: driver rebuilds the watcher over the same live harness before
   spending any harness crash budget. Repeated watcher rebuild failure is a
-  driver failure; pump exit or injection failure remains the harness-resume
-  path.
+  driver failure; reader exit or injection failure remains the fresh-
+  generation recovery path.
   Each watcher attempt owns a fresh stop token and captures the immutable
   harness-generation death event it serves. Foreground teardown publishes the
   attempt stop before inspecting the watcher object. After constructing and
@@ -1273,7 +1239,7 @@ exits and preserve release-before-ACK ordering.
   completion, exit, readiness, and wake state. The pump mutates only that local
   context and, immediately before every shared or external side effect, proves
   that its token is still active. A stale pump may not update driver fields,
-  durable ledger state, control session, presence, terminal-mode chat, or wake
+  durable ledger state, control state, presence, or wake
   state for any adapter event. The token is retired before a generation is
   abandoned. One checked-join helper owns every pump join; timeout prevents
   generation N+1. During normal STOP/resume it is the primary fatal error and
@@ -1282,19 +1248,26 @@ exits and preserve release-before-ACK ordering.
 
 ## 12. Verification Expectations [SUM-12]
 
-- Anti-mocking floor unchanged: broker, sidecar, and CLI are never
-  mocked. The provider seam is the `scripted` adapter — a **real
-  subprocess speaking the real stream shapes**; only the model is fake.
-- The **conformance suite** obligated by [TAUT-12.3] ships as tests
-  parameterized over `ProviderAdapter` + driver, portable so Weft can
-  run them against its agent lane. Named items: control responsiveness
-  while idle and while mid-turn; restart with conversation scope intact
-  (session resume and fresh-session replay both); backpressure when the
-  agent is slower than the chat; clean shutdown on stop with no
-  double-speak; single-driver guard; injection format stability. The
-  portable suite has no live-provider placeholder parameter: a provider
-  either supplies a real reusable harness factory with explicit capability
-  gates, or it belongs in the live lanes below.
+- The provider seam is the packaged `scripted` registration over the production
+  PTY adapter and a real interactive child. Broker, sidecar, CLI, child
+  process, and PTY/ConPTY are not mocked. Driver, controller, CLI,
+  persistence, conformance, and shared terminal-behavior tests collect and run
+  on Linux, macOS, and Windows. Only tests whose subject is a POSIX fd/process-
+  group primitive or a Windows ConPTY primitive carry a platform marker or
+  skip.
+- CI runs the same complete non-live Summon selection on each operating
+  system; it does not use a Windows file allowlist. POSIX primitive tests prove
+  the unreaped-leader process-group ladder. Windows primitive tests prove real
+  ConPTY spawn, input, output drain, reusable interrupt, bounded close, and
+  attached-descendant retirement. Common adapter conformance is parameterized
+  over the platform implementation selected by production code.
+- Every new guard includes a firing proof through a current CLI or public typed
+  API path. A guard with no constructible production input/state is removed
+  rather than preserved as defensive ceremony.
+- The **conformance suite** obligated by [TAUT-12.3] proves control
+  responsiveness while idle and mid-turn, fresh-generation replay,
+  backpressure, clean shutdown without double-speak, the single-driver guard,
+  and injection format stability.
 - Driver tests run real multi-process flows (a second CLI process
   writing to the watched thread), matching [TAUT-11] discipline.
 - Standalone and installed-console tests prove one outer debug capture for an
@@ -1302,18 +1275,13 @@ exits and preserve release-before-ACK ordering.
   enable/disable observation, the same re-raised exception and cleanup order,
   and no duplicate capture inside driver supervision. The setting and local
   queue remain real.
-- A real scripted-provider process emits a blank assistant event followed by
-  visible text in terminal mode. Against a real broker and driver, the blank
-  event creates no message or error log, the visible event posts exactly, and
-  STOP remains responsive.
 - Schema tests install the historical version-2 fixture directly and prove
   successful normalization plus fail-before-mutation handling for colliding
   case variants on real SQLite and PostgreSQL sidecars.
-- Deterministic PTY lifecycle is proven against a fake interactive
-  harness: a real subprocess over a real PTY that models a TUI
-  (alternate screen, terminal queries, continuous redraw, delayed
-  readiness, optional bracketed paste, and optional onboarding prompt),
-  not a mocked PTY. This is the anti-mocking seam for [SUM-7.4].
+- Deterministic PTY lifecycle is proven against the packaged scripted child
+  over the production platform PTY. It models a TUI with alternate screen,
+  terminal queries, continuous redraw, delayed readiness, optional bracketed
+  paste, and optional onboarding prompt.
 - Live harness reachability is gated per registered PTY harness:
   `requires_<name>` tests summon the real CLI detached, assuming a
   pre-onboarded/authed harness, and assert detached `STATUS` reaches a usable
@@ -1384,17 +1352,17 @@ exits and preserve release-before-ACK ordering.
   release confirmation, fatal STATUS-key collision supervision,
   old-backlog/exact-boundary rate audit, bare status success, dead-driver stop,
   unknown-verb reply, persona re-summon, unsupported attach, malformed
-  ledger/configuration diagnostics, registry-wide session-event capability,
-  the 8.0.0 floor, and ordered release invocation with fresh built artifacts.
+  ledger/configuration diagnostics, the 8.0.0 floor, and ordered release
+  invocation with fresh built artifacts.
 
 Terminal-retirement conformance observes the child boundary, not only handle
-method counts. Stream and PTY tests prove `request_close()` is nonblocking,
+method counts. PTY tests prove `request_close()` is nonblocking,
 publishes retirement before signaling, cancels active and queued writes,
 refuses later injection, is idempotent under repeated requests and
 signal-handler reentry, and composes with direct and concurrent `close()` while
 delivering one graceful SIGINT or Ctrl-C for that retirement. Separate tests
 preserve reusable `interrupt()` and inject-after-interrupt. Real
-scripted-provider process tests make the first SIGINT enter an observable,
+scripted-provider process tests make the first graceful interrupt enter an observable,
 bounded cleanup gate and record every reentrant signal; correlated control
 STOP and direct driver SIGINT each record one graceful signal and exit cleanly.
 The assertion counts signals after cleanup rather than waiting for a target
@@ -1407,12 +1375,12 @@ provider remains alive, when the provider exits first, and when the descendant
 inherits stdout and would otherwise delay EOF. Normal descendant processes
 must be absent after close in those firing probes. POSIX proof covers non-
 reaping natural-exit observation, safe group identity through graceful exit,
-SIGTERM, and SIGKILL stages for both stream and PTY handles, and the rule that
+SIGTERM and SIGKILL stages for PTY handles, and the rule that
 no group signal occurs after leader reap; it is evidence for the bounded
 retirement algorithm, not an atomic proof that a numeric process group is
-empty. Windows proof covers suspended spawn, pre-execution Job Object
-assignment, resume, job termination, zero active processes, outer-job
-assignment failure, and cleanup. Existing tests continue to prove that reusable
+empty. Windows proof covers real ConPTY spawn, input, output drain, reusable
+interrupt, bounded close, and attached-descendant retirement. Existing tests
+continue to prove that reusable
 `interrupt()` does not retire the handle and that exactly one graceful close
 signal is sent. A POSIX-only boundary probe may show that a child which
 deliberately creates a new session is outside the owned domain, but the test
@@ -1537,14 +1505,13 @@ and `stop()` operations from other threads, and before entering long-running
 supervision. The owner waits only when a callback was supplied; that wait is
 bounded to 30 seconds and aborts early on control failure, shutdown, or first-
 generation death. A timeout or aborted readiness wait follows the normal
-failing-startup cleanup path. Provider-generation resume does not invoke the
+failing-startup cleanup path. A fresh provider generation does not invoke the
 callback again.
 
 The `SummonRunHandle` contains the actual `SummonedMember`: member id,
-collision-resolved current name, provider, and the live handle's provider
-session id when it is not `None`, otherwise the resumed bootstrap session id.
-It exposes that value as immutable field `member: SummonedMember` and one
-method, `request_stop() -> None`. That method is thread-safe, nonblocking,
+collision-resolved current name, and provider. It exposes that value as
+immutable field `member: SummonedMember` and one method,
+`request_stop() -> None`. That method is thread-safe, nonblocking,
 idempotent, and bound to this exact foreground run; it requests the existing
 driver-owned shutdown path without resolving a mutable member name or
 affecting a replacement driver. The driver marks the handle completed in the
@@ -1569,9 +1536,9 @@ does not transfer driver, terminal, signal, process, ledger, teardown, or
 release ownership.
 
 Verification uses the public controller with a real scripted child and real
-control exchange. It proves exact once-only delivery across provider crash and
-resume, actual auto-renamed and re-summoned identity, the exact provider
-session-id precedence, concurrent status at the readiness boundary, run-scoped
+control exchange. It proves exact once-only callback delivery across a fresh-
+generation restart, actual auto-renamed and re-summoned identity, exact
+member/provider delivery, concurrent status at the readiness boundary, run-scoped
 stop after post-readiness member rename, idempotent stop before and after
 completion, bounded control-open failure, callback-failure teardown and
 evidence release, no callback before startup failure, and unchanged CLI
@@ -1586,11 +1553,11 @@ confirmed stop result; and a blocking foreground run with keyword-only
 `on_ready: Callable[[SummonRunHandle], None] | None = None` that returns no
 value on clean completion. `list_live()` returns an empty tuple when no database or no
 live rows exist; command adapters, not embedders, translate that empty result to
-the nothing-summoned exit class. The request model contains `name`, `threads`, `terminal`,
+the nothing-summoned exit class. The request model contains `name`, `threads`,
 `persona`, `system_prompt_file`, `rate_limit`, `attach`, `detach`,
 `provider_flag`, and `takeover`; the database path belongs to the controller.
-A live summary contains member id, current name, provider, and optional provider
-session id. A stop result contains member id and current name. Status contains
+A live summary contains member id, current name, and provider. A stop result
+contains member id and current name. Status contains
 those identity/provider values plus driver, thread count, cursor lag, and
 defensive copies of remaining validated JSON-primitive detail fields; it never
 exposes a raw reply.
@@ -1605,8 +1572,8 @@ public operation errors to exit 1.
 process environment and signal APIs. It proves environment non-mutation
 during and after a real rich-host lifecycle; default signal non-ownership;
 exact opt-in restoration on clean and failing exits; invalid worker-thread
-opt-in; exact child `TAUT_TOKEN` with absent child `TAUT_AS` through all three
-shipped adapter families; and unchanged CLI SIGINT/STOP release. Tests that
+opt-in; exact child `TAUT_TOKEN` with absent child `TAUT_AS` through the single
+PTY adapter on each supported platform; and unchanged CLI SIGINT/STOP release. Tests that
 clear ambient identity, disable signal installation, or run only off the main
 thread do not satisfy this boundary by themselves.
 
@@ -1639,6 +1606,10 @@ tail plus the `--attach` instruction.
 
 ## Related Plans
 
+- `docs/plans/2026-09-03-summon-unified-pty-cross-platform-plan.md` — removes
+  the vendor-specific structured adapter and terminal-output speech path,
+  promotes one PTY adapter for every provider, and adds the Windows ConPTY
+  backend and cross-platform verification contract.
 - `docs/plans/2026-08-25-semantic-compatibility-hardening-plan.md` — replaces
   target-shaped downgrade setup with a provenance-pinned Summon v2 migration
   fixture shared across real SQLite and PostgreSQL sidecars.
@@ -1670,9 +1641,6 @@ tail plus the `--attach` instruction.
 - `docs/plans/2026-08-14-debug-failure-capture-plan.md` — assigns one debug
   containment owner to each Summon console path without changing driver
   supervision or cleanup priority.
-- `docs/plans/2026-08-14-summon-stream-close-race-plan.md` — narrows
-  close-induced stream EOF normalization without hiding open-stream, decoding,
-  framing, or translation failures.
 - `docs/plans/2026-08-14-review-findings-remediation-plan.md` — review-driven
   lifecycle, contract-proof, diagnostic, and release-gate remediation for
   the coordinated 0.9.0 candidate.
@@ -1691,8 +1659,6 @@ tail plus the `--attach` instruction.
   temporary CLI signal ownership.
 - `docs/plans/2026-07-31-simplebroker-6-reconciliation-plan.md` —
   SimpleBroker 6.0.0 and SimpleBroker-PG 3.5.0 compatibility reconciliation.
-- `docs/plans/2026-07-14-blank-message-no-op-plan.md` — silent terminal-mode
-  handling for core-filtered blank assistant events.
 - retired: 2026-07-14-terminal-output-safety-plan — shared terminal-text
   safety defaults for Summon command/diagnostic output, coordinated core floor,
   and an explicit byte-transparent PTY exemption; source `281f04fa`; see the

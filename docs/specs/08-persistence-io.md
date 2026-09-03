@@ -419,22 +419,30 @@ each owned state family as durable or transient in its component contract.
 
 ### [PIO-5.3] Summon component
 
-When installed Summon state exists, `taut-summon` contributes component
-`taut-summon` version 1. It exports one `session` record per
-`taut_summon_sessions` row with:
+When installed Summon state exists, `taut-summon` contributes one `session`
+record per `taut_summon_sessions` row. Persistence component version 2 exports
+the exact fields:
 
 ```text
-member_id, token, provider, provider_session_id, wired, updated_ts
+member_id, token, provider, wired, updated_ts
 ```
 
 It does not export `taut_summon_claims`, `driver_pid`, or
 `driver_start_time`. Load initializes the current Summon schema, verifies every
 session member exists in `taut-core`, inserts the logical session, and leaves
-driver evidence null. Provider-session continuity and the durable wired flag
-survive; no restored row claims that an old process is live.
-The version-1 writer emits `updated_ts` as [TAUT-3.5]'s canonical string. Its
-reader accepts that string or an exact JSON integer token and normalizes either
-to an integer before the Summon sidecar write. The same invalid token forms as
+driver evidence null. The durable wired flag survives; no restored row claims
+that an old process is live. The version-2 reader requires exactly the field
+shape above and rejects `provider_session_id`. The exact component-version-1
+reader continues to require the released `provider_session_id` field,
+validates it as string or null, and discards it. The manifest writes version 2
+and loads versions 1 and 2. This one-way read compatibility does not preserve a
+provider-session runtime API. It changes the component record `write_version`
+and `load_versions`; the persistence protocol's `component_api_version`
+remains 1.
+
+The writer emits `updated_ts` as [TAUT-3.5]'s canonical string. Both readers
+accept that string or an exact JSON integer token and normalize either to an
+integer before the Summon sidecar write. The same invalid token forms as
 [PIO-4.4] are rejected.
 
 ### [PIO-5.4] Unknown durable extension state fails closed
