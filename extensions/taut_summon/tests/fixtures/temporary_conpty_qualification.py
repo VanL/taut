@@ -1610,8 +1610,20 @@ def run_coordinator(helper: Path) -> int:
         writer.write(f"ECHO:{echo_text}\r".encode())
         expected_echo = base64.b64encode(echo_text.encode("utf-8"))
         owner.drain.wait_for(b"ECHO " + expected_echo)
+        vt_start = len(owner.drain.snapshot())
         writer.write(b"VT\r")
-        owner.drain.wait_for(b"\x1b[31mVT_RED\x1b[0m")
+        vt_deadline = time.monotonic() + 10.0
+        while True:
+            vt_output = owner.drain.snapshot()[vt_start:]
+            marker_index = vt_output.find(b"\x1b[31mVT_RED")
+            if marker_index >= 0 and b"\x1b[m" in vt_output[marker_index:]:
+                break
+            if time.monotonic() >= vt_deadline:
+                raise RuntimeError(
+                    "ConPTY output did not preserve color and reset VT semantics: "
+                    f"{vt_output[-2000:]!r}"
+                )
+            time.sleep(0.01)
         evidence["io"] = {
             "utf8_vt_round_trip": True,
             "echo_base64": expected_echo.decode("ascii"),

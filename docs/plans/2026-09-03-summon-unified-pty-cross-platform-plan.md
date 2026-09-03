@@ -1097,6 +1097,15 @@ removed those terminal controls. The probe now tests exact UTF-8 text echo,
 observable SGR output, and Ctrl-C input separately. Rerun required; the failure
 does not change the production design.
 
+Third hosted attempt: branch commit `11f823e5f3ae7e493ce8b258e8ea19489c616df4`,
+Actions run `33802570688`, job `100805335819`, Windows Python 3.11.9. Exact
+UTF-8 text echo passed. The probe expected a contiguous ANSI SGR/reset byte
+string, but ConPTY emitted terminal screen-update output with the colored text,
+a rendered newline, and a normalized reset (`ESC[m`) as separate updates. The
+probe now checks the meaningful invariant after the send offset: colored marker
+and later reset are both present, without assuming a terminal renderer's frame
+layout. Rerun required; later ownership cases were not reached.
+
 ## Out of Scope
 
 - A generic structured-event adapter or mapping language.
