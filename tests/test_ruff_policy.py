@@ -29,8 +29,8 @@ EXTENSIONLESS_PYTHON = {
 REVIEWED_FAMILIES = ["E", "W", "F", "I", "B", "C901", "C4", "UP"]
 GLOBAL_IGNORES = ["E501", "B008"]
 RAW_RULE_COUNTS = {
-    "BLE001": 145,
-    "C901": 38,
+    "BLE001": 132,
+    "C901": 37,
     "DTZ006": 1,
     "F401": 1,
     "FLY002": 16,
@@ -42,7 +42,7 @@ RAW_RULE_COUNTS = {
     "S110": 3,
     "SIM115": 3,
     "SIM117": 7,
-    "TRY004": 15,
+    "TRY004": 12,
 }
 RETIRED_GROUP_NUMBERS = {
     1,
@@ -59,6 +59,7 @@ RETIRED_GROUP_NUMBERS = {
     28,
     29,
     33,
+    35,
     37,
     38,
     39,
@@ -72,6 +73,7 @@ RETIRED_GROUP_NUMBERS = {
     57,
     59,
     62,
+    91,
 }
 
 

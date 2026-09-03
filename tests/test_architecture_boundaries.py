@@ -618,6 +618,7 @@ def test_first_party_terminal_sink_inventory_is_explicit() -> None:
         *sorted(Path("extensions/taut_summon/taut_summon/commands").glob("*.py")),
         Path("extensions/taut_summon/taut_summon/scripted_provider.py"),
         Path("extensions/taut_summon/taut_summon/_pty.py"),
+        Path("extensions/taut_summon/taut_summon/_pty_posix.py"),
     ]
     sinks: list[tuple[str, str, str]] = []
     for relative_path in relative_paths:
@@ -698,18 +699,13 @@ def test_first_party_terminal_sink_inventory_is_explicit() -> None:
         ),
         (
             "extensions/taut_summon/taut_summon/scripted_provider.py",
-            "_emit",
-            "print",
-        ),
-        (
-            "extensions/taut_summon/taut_summon/scripted_provider.py",
             "_record",
             ".write",
         ),
         (
             "extensions/taut_summon/taut_summon/scripted_provider.py",
-            "_emit_raw",
-            "print",
+            "_write_terminal",
+            "os.write",
         ),
         (
             "extensions/taut_summon/taut_summon/scripted_provider.py",
@@ -717,28 +713,33 @@ def test_first_party_terminal_sink_inventory_is_explicit() -> None:
             "print",
         ),
         (
-            "extensions/taut_summon/taut_summon/_pty.py",
-            "PtyHandle.attach._forward_wake",
+            "extensions/taut_summon/taut_summon/scripted_provider.py",
+            "main",
             "os.write",
         ),
         (
-            "extensions/taut_summon/taut_summon/_pty.py",
-            "PtyHandle.attach",
+            "extensions/taut_summon/taut_summon/_pty_posix.py",
+            "PosixPtyHandle.attach._forward_wake",
             "os.write",
         ),
         (
-            "extensions/taut_summon/taut_summon/_pty.py",
-            "PtyHandle.attach",
+            "extensions/taut_summon/taut_summon/_pty_posix.py",
+            "PosixPtyHandle.attach",
             "os.write",
         ),
         (
-            "extensions/taut_summon/taut_summon/_pty.py",
-            "PtyHandle._write_all",
+            "extensions/taut_summon/taut_summon/_pty_posix.py",
+            "PosixPtyHandle.attach",
             "os.write",
         ),
         (
-            "extensions/taut_summon/taut_summon/_pty.py",
-            "PtyHandle._write_interrupt_fd_best_effort",
+            "extensions/taut_summon/taut_summon/_pty_posix.py",
+            "PosixPtyHandle._write_all",
+            "os.write",
+        ),
+        (
+            "extensions/taut_summon/taut_summon/_pty_posix.py",
+            "PosixPtyHandle._write_interrupt_fd_best_effort",
             "os.write",
         ),
     ]
