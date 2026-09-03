@@ -1142,6 +1142,21 @@ test must compose epoch cancellation and the Ctrl-C attempt in the public
 separately because its forced full-pipe condition requires an out-of-band
 release.
 
+Sixth hosted attempt: branch commit `d56f8c9bfdc2a584c0a7bcf56078c818f2e83d0c`,
+Actions run `33803682993`, job `100808928115`, Windows Python 3.11.9. Both
+reusable Ctrl-C gestures reached the active raw key reader as ETX and the
+client survived and accepted later input. During terminal `request_close()`,
+the fixture had deliberately paused key reads to fill the ConPTY pipe; that
+Ctrl-C was translated into a Windows control signal and Python's default
+handler exited the client before the expected marker. This is valid provider
+behavior and does not justify a production delivery branch. The fixture now
+has one observer for both raw ETX and control-signal delivery so it can survive
+the graceful terminal gesture and continue to qualify pseudoconsole/domain
+close. The run's separate lint job also found two `RUF012` suppressions that
+Ruff 0.16.6 considers unused; they were removed and checked against the CI
+version. Rerun required; descendant close and console-lease cases were not
+reached.
+
 ## Out of Scope
 
 - A generic structured-event adapter or mapping language.

@@ -1488,6 +1488,13 @@ def run_client(helper: Path) -> NoReturn:
     reading.set()
     discard_until: list[str | None] = [None]
 
+    def publish_interrupt(source: str) -> None:
+        nonlocal interrupt_count
+        interrupt_count += 1
+        print(f"INTERRUPT {interrupt_count} {source}", flush=True)
+
+    signal.signal(signal.SIGINT, lambda _sig, _frame: publish_interrupt("signal"))
+
     descendant = subprocess.Popen(
         [sys.executable, str(helper), "--descendant"], close_fds=True
     )
@@ -1519,8 +1526,7 @@ def run_client(helper: Path) -> NoReturn:
         reading.wait()
         char = msvcrt.getwch()
         if char == "\x03":
-            interrupt_count += 1
-            print(f"INTERRUPT {interrupt_count}", flush=True)
+            publish_interrupt("byte")
             continue
         token = discard_until[0]
         if token is not None:
@@ -1669,7 +1675,7 @@ def run_coordinator(helper: Path) -> int:
         }
 
         writer.write(b"\x03")
-        owner.drain.wait_for(b"INTERRUPT 1")
+        owner.drain.wait_for(b"INTERRUPT 1 byte")
 
         writer.write(b"PAUSE1\r")
         owner.drain.wait_for(b"PAUSED PAUSE1")
@@ -1683,7 +1689,7 @@ def run_coordinator(helper: Path) -> int:
         writer.write(f"SYNC:{token}\r".encode("ascii"), timeout=20.0)
         owner.drain.wait_for(f"SYNCED {token}".encode(), timeout=20.0)
         writer.write(b"\x03")
-        owner.drain.wait_for(b"INTERRUPT 2")
+        owner.drain.wait_for(b"INTERRUPT 2 byte")
         evidence["interrupt"] = {
             **interrupt,
             "first_ctrl_c": 1,
@@ -1707,9 +1713,12 @@ def run_coordinator(helper: Path) -> int:
         else:
             raise RuntimeError("request_close allowed a later ConPTY input write")
         privileged = writer.privileged_close_interrupt()
-        owner.drain.wait_for(b"INTERRUPT 3", timeout=20.0)
+        close_delivery = owner.drain.wait_for(b"INTERRUPT 3", timeout=20.0)
         request_close["privileged_ctrl_c_written"] = privileged.written == 1
         request_close["child_interrupt_count"] = 3
+        request_close["delivery"] = (
+            "signal" if b"INTERRUPT 3 signal" in close_delivery else "byte"
+        )
         request_close["normal_injection_remained_retired"] = writer.retired
         evidence["request_close"] = request_close
 
