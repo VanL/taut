@@ -1,49 +1,21 @@
-"""The scripted provider: a real child process with a fake model.
+"""A deterministic interactive terminal child for Summon conformance tests.
 
-This program is the anti-mocking seam of [SUM-7.2]/[SUM-12]: the
-``scripted`` adapter spawns it as a genuine subprocess and speaks
-claude-style stream-json over real pipes — real process, real pipes,
-real protocol framing; only the model is scripted. It ships in the
-package (not tests/) so downstream integrators (weft's conformance run)
-can use it.
+The packaged ``scripted`` provider is the anti-mocking seam for the one PTY
+adapter. It is a real subprocess attached to a POSIX PTY or Windows ConPTY.
+It announces readiness by enabling bracketed paste, accepts bracketed-paste or
+plain line input, and records received turns. Screen output is terminal
+activity only. It is never interpreted as a model reply.
 
-It is deliberately standalone: stdlib only, no taut or taut_summon
-imports, runnable by file path without any ``PYTHONPATH`` arrangement.
+The program is deliberately standalone: stdlib only, no Taut imports, and
+runnable by file path without a ``PYTHONPATH`` arrangement.
 
-Wire protocol (the claude stream-json subset the adapter translates):
+``TAUT_SUMMON_SCENARIO`` may name a JSON object with ``on_start``, indexed
+``responses``, and ``default_response`` step lists. Supported steps are:
 
-- stdin, one JSON object per line:
-  ``{"type": "user", "message": {"role": "user", "content":
-  [{"type": "text", "text": ...}]}}``
-- stdout, one JSON object per line:
-  - ``{"type": "system", "subtype": "init", "session_id": SID}``
-  - ``{"type": "assistant", "message": {"role": "assistant", "content":
-    [{"type": "text", "text": ...}]}, "session_id": SID}``
-  - ``{"type": "assistant", "message": {"role": "assistant", "content":
-    [{"type": "tool_use", "id": ..., "name": ..., "input": {}}]},
-    "session_id": SID}``
-
-Behavior is directed by a JSON scenario file named by the
-``TAUT_SUMMON_SCENARIO`` environment variable:
-
-.. code-block:: json
-
-    {
-      "session_id": "sess-1",
-      "announce_session": true,
-      "on_start": [STEP, ...],
-      "responses": [[STEP, ...], ...],
-      "default_response": [STEP, ...]
-    }
-
-``responses[i]`` runs for the i-th injected message; later messages fall
-back to ``default_response`` (default: echo). Steps, one key each:
-
-- ``{"assistant_text": TEXT}`` — emit assistant text; ``{text}`` expands
-  to the incoming message text.
-- ``{"activity": NAME}`` — emit one tool_use event.
-- ``{"session": SID}`` — announce a new session id.
-- ``{"flood_activity": N}`` — emit N tool_use events back to back.
+- ``{"terminal_text": TEXT}`` writes terminal output; ``{text}`` expands to
+  the incoming turn.
+- ``{"activity": NAME}`` and ``{"flood_activity": N}`` write deterministic
+  terminal activity.
 - ``{"sleep": SECONDS}`` — delay scenario.
 - ``{"exit": CODE}`` — crash scenario: exit immediately with CODE.
 - ``{"stall": true}`` — stop reading stdin forever (blocked-inject
@@ -69,9 +41,6 @@ back to ``default_response`` (default: echo). Steps, one key each:
   ([SUM-6]); this is the agent speaking through its mouth for real — the
   end-to-end mouth-credential proof, and the flood source for the [SUM-10]
   rate-backstop test.
-- ``{"raw_line": LINE}`` — emit LINE verbatim (malformed/unknown-shape
-  scenarios).
-
 The top-level ``sigint_cleanup_seconds`` option enables the [SUM-12]
 terminal-retirement probe. The provider records every SIGINT, keeps the first
 handler inside one bounded cleanup gate so a reentrant signal remains
@@ -79,22 +48,9 @@ observable, then exits normally. A second signal releases the gate early; a
 watchdog releases it at the configured upper bound when no second signal
 arrives.
 
-The provider resumes the session id given via ``TAUT_SUMMON_SESSION``
-(set by the adapter from ``spawn(session_id=...)``) in preference to the
-scenario's ``session_id``.
-
 When ``TAUT_SUMMON_RECEIVED_LOG`` names a file, the provider appends one
-JSON line per observable step so driver tests can assert what actually
-reached the harness process ([SUM-5.4]'s process-boundary ledger, made
-visible):
-
-- on start: ``{"event": "start", "pid": ..., "session": <resumed session
-  id or null>, "env_token": $TAUT_TOKEN, "env_db": $TAUT_DB,
-  "env_system_prompt": $TAUT_SUMMON_SYSTEM_PROMPT}`` — the session field
-  proves resume offers ([SUM-7.3]), the token/db fields prove the conditional
-  mouth selector contract ([SUM-6]), and the system-prompt field proves the
-  persona / ``--system-prompt-file`` override reached the provider
-  ([SUM-10]).
+JSON line per observable step. The start entry records mouth credentials and
+the per-turn entry records the exact terminal text received.
 - per injected message: ``{"event": "message", "pid": ..., "text": ...}``.
 """
 
@@ -109,17 +65,13 @@ import threading
 import time
 from typing import Any
 
-from taut import escape_terminal_text
-
-_POLICY_ERROR_MESSAGE = "terminal output policy is unavailable"
+_BRACKETED_PASTE_ENABLE = b"\x1b[?2004h"
+_BRACKETED_PASTE_START = b"\x1b[200~"
+_BRACKETED_PASTE_END = b"\x1b[201~"
 
 
 class _SignalCleanupComplete(Exception):
     """Unwind the provider's main loop after bounded SIGINT cleanup."""
-
-
-def _emit(payload: dict[str, Any]) -> None:
-    print(json.dumps(payload, separators=(",", ":")), flush=True)
 
 
 def _record(payload: dict[str, Any]) -> None:
@@ -132,53 +84,13 @@ def _record(payload: dict[str, Any]) -> None:
         handle.flush()
 
 
-def _emit_raw(line: str) -> None:
-    print(line, flush=True)
-
-
 def _write_stderr(body: str) -> None:
-    try:
-        rendered = escape_terminal_text(body)
-    except RuntimeError:
-        rendered = _POLICY_ERROR_MESSAGE
+    rendered = body.encode("unicode_escape", errors="backslashreplace").decode()
     print(rendered, file=sys.stderr, flush=True)
 
 
-def _emit_init(session_id: str) -> None:
-    _emit({"type": "system", "subtype": "init", "session_id": session_id})
-
-
-def _emit_assistant_text(text: str, session_id: str) -> None:
-    _emit(
-        {
-            "type": "assistant",
-            "message": {
-                "role": "assistant",
-                "content": [{"type": "text", "text": text}],
-            },
-            "session_id": session_id,
-        }
-    )
-
-
-def _emit_activity(name: str, index: int, session_id: str) -> None:
-    _emit(
-        {
-            "type": "assistant",
-            "message": {
-                "role": "assistant",
-                "content": [
-                    {
-                        "type": "tool_use",
-                        "id": f"tool_{index}",
-                        "name": name,
-                        "input": {},
-                    }
-                ],
-            },
-            "session_id": session_id,
-        }
-    )
+def _write_terminal(body: str) -> None:
+    os.write(1, body.encode("utf-8", errors="replace"))
 
 
 def _load_scenario() -> dict[str, Any]:
@@ -192,64 +104,124 @@ def _load_scenario() -> dict[str, Any]:
     return loaded
 
 
-def _install_sigint_cleanup(scenario: dict[str, Any]) -> None:
-    raw_seconds = scenario.get("sigint_cleanup_seconds")
-    if raw_seconds is None:
-        return
-    seconds = float(raw_seconds)
-    if seconds <= 0:
-        raise ValueError("sigint_cleanup_seconds must be greater than zero")
+class _InterruptController:
+    """Record terminal interrupts and expose the bounded cleanup scenario."""
 
-    cleanup_release = threading.Event()
-    signal_count = 0
-    release_source = "watchdog"
+    def __init__(self, scenario: dict[str, Any]) -> None:
+        self._seconds: float | None = None
+        self._cleanup_release = threading.Event()
+        self._signal_count = 0
+        self._release_source = "watchdog"
 
-    def release_from_watchdog() -> None:
-        nonlocal release_source
-        release_source = "watchdog"
-        cleanup_release.set()
+        raw_seconds = scenario.get("sigint_cleanup_seconds")
+        if raw_seconds is not None:
+            seconds = float(raw_seconds)
+            if seconds <= 0:
+                raise ValueError("sigint_cleanup_seconds must be greater than zero")
+            self._seconds = seconds
 
-    def handle_sigint(_signum: int, _frame: Any) -> None:
-        nonlocal release_source, signal_count
-        signal_count += 1
-        _record({"event": "signal", "signal": "SIGINT", "count": signal_count})
-        if signal_count > 1:
-            release_source = "reentrant"
-            cleanup_release.set()
+    def install(self) -> None:
+        signal.signal(signal.SIGINT, self._handle_signal)
+
+    def _handle_signal(self, _signum: int, _frame: Any) -> None:
+        self.interrupt()
+
+    def interrupt(self) -> None:
+        self._signal_count += 1
+        _record(
+            {"event": "signal", "signal": "SIGINT", "count": self._signal_count}
+        )
+        if self._seconds is None:
+            raise KeyboardInterrupt
+        if self._signal_count > 1:
+            self._release_source = "reentrant"
+            self._cleanup_release.set()
             return
 
         _record({"event": "first-signal-entered"})
-        watchdog = threading.Timer(seconds, release_from_watchdog)
+        watchdog = threading.Timer(self._seconds, self._release_from_watchdog)
         watchdog.daemon = True
         watchdog.start()
-        cleanup_release.wait(timeout=seconds + 1.0)
+        self._cleanup_release.wait(timeout=self._seconds + 1.0)
         watchdog.cancel()
-        _record({"event": "cleanup-release", "source": release_source})
+        _record({"event": "cleanup-release", "source": self._release_source})
         raise _SignalCleanupComplete
 
-    signal.signal(signal.SIGINT, handle_sigint)
+    def _release_from_watchdog(self) -> None:
+        self._release_source = "watchdog"
+        self._cleanup_release.set()
 
 
-def _extract_text(event: dict[str, Any]) -> str:
-    if event.get("type") != "user":
-        raise ValueError(f"expected a user event, got {event.get('type')!r}")
-    message = event.get("message")
-    if not isinstance(message, dict):
-        raise ValueError("user event carries no message object")  # noqa: TRY004 approved [DOM-10.2.1] [RUFF-SUP-073] exception
-    content = message.get("content")
-    if not isinstance(content, list):
-        raise ValueError("user message carries no content list")  # noqa: TRY004 approved [DOM-10.2.1] [RUFF-SUP-073] exception
-    parts = [
-        str(block.get("text", ""))
-        for block in content
-        if isinstance(block, dict) and block.get("type") == "text"
-    ]
-    return "".join(parts)
+def _install_sigint_cleanup(scenario: dict[str, Any]) -> _InterruptController:
+    controller = _InterruptController(scenario)
+    controller.install()
+    return controller
+
+
+class _TerminalInputParser:
+    """Incrementally decode bracketed-paste frames and plain terminal lines."""
+
+    def __init__(self) -> None:
+        self._buffer = bytearray()
+        self._in_paste = False
+
+    def feed(self, data: bytes) -> tuple[list[str], int]:
+        self._buffer.extend(data)
+        turns: list[str] = []
+        interrupts = 0
+        while self._buffer:
+            if self._in_paste:
+                if not self._consume_paste(turns):
+                    break
+            else:
+                progressed, found_interrupt = self._consume_normal(turns)
+                interrupts += found_interrupt
+                if not progressed:
+                    break
+        return turns, interrupts
+
+    def _consume_paste(self, turns: list[str]) -> bool:
+        end = self._buffer.find(_BRACKETED_PASTE_END)
+        if end < 0:
+            return False
+        turns.append(bytes(self._buffer[:end]).decode("utf-8", errors="replace"))
+        del self._buffer[: end + len(_BRACKETED_PASTE_END)]
+        self._in_paste = False
+        return True
+
+    def _consume_normal(self, turns: list[str]) -> tuple[bool, int]:
+        start = self._buffer.find(_BRACKETED_PASTE_START)
+        line_end = _first_line_end(self._buffer)
+        interrupt = self._buffer.find(3)
+        candidates = [index for index in (start, line_end, interrupt) if index >= 0]
+        if not candidates:
+            return False, 0
+        next_index = min(candidates)
+        raw = bytes(self._buffer[:next_index])
+        if raw:
+            turns.append(raw.decode("utf-8", errors="replace"))
+        if next_index == start:
+            del self._buffer[: start + len(_BRACKETED_PASTE_START)]
+            self._in_paste = True
+        elif next_index == interrupt:
+            del self._buffer[: interrupt + 1]
+            return True, 1
+        else:
+            del self._buffer[: line_end + 1]
+            if self._buffer[:1] in (b"\r", b"\n"):
+                del self._buffer[:1]
+        return True, 0
+
+
+def _first_line_end(buffer: bytearray) -> int:
+    carriage = buffer.find(13)
+    newline = buffer.find(10)
+    found = [index for index in (carriage, newline) if index >= 0]
+    return min(found) if found else -1
 
 
 class _State:
-    def __init__(self, session_id: str) -> None:
-        self.session_id = session_id
+    def __init__(self) -> None:
         self.activity_index = 0
 
 
@@ -259,21 +231,18 @@ def _run_steps(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-036] exception
     message_text: str,
 ) -> None:
     for step in steps:
-        if "assistant_text" in step:
-            text = str(step["assistant_text"]).replace("{text}", message_text)
-            _emit_assistant_text(text, state.session_id)
+        if "terminal_text" in step:
+            text = str(step["terminal_text"]).replace("{text}", message_text)
+            _write_terminal(text)
         elif "activity" in step:
             state.activity_index += 1
-            _emit_activity(
-                str(step["activity"]), state.activity_index, state.session_id
+            _write_terminal(
+                f"[activity {state.activity_index}: {step['activity']}]\r\n"
             )
-        elif "session" in step:
-            state.session_id = str(step["session"])
-            _emit_init(state.session_id)
         elif "flood_activity" in step:
             for _ in range(int(step["flood_activity"])):
                 state.activity_index += 1
-                _emit_activity("flood", state.activity_index, state.session_id)
+                _write_terminal(f"[activity {state.activity_index}: flood]\r\n")
         elif "sleep" in step:
             time.sleep(float(step["sleep"]))
         elif "exit" in step:
@@ -295,8 +264,6 @@ def _run_steps(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-036] exception
             _spawn_descendant(step["spawn_descendant"])
         elif "exec_taut" in step:
             _exec_taut(step["exec_taut"])
-        elif "raw_line" in step:
-            _emit_raw(str(step["raw_line"]))
         else:
             raise ValueError(f"unknown scenario step: {step!r}")
 
@@ -497,60 +464,49 @@ def _exec_taut(spec: Any) -> None:
 def main() -> int:
     try:
         scenario = _load_scenario()
-        _install_sigint_cleanup(scenario)
+        interrupts = _install_sigint_cleanup(scenario)
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
         _write_stderr(f"scripted provider: bad scenario: {exc}")
         return 2
 
-    session_id = (
-        os.environ.get("TAUT_SUMMON_SESSION")
-        or str(scenario.get("session_id") or "")
-        or "scripted-session"
-    )
-    state = _State(session_id)
+    state = _State()
+    parser = _TerminalInputParser()
     try:
         _record(
             {
                 "event": "start",
-                "session": os.environ.get("TAUT_SUMMON_SESSION"),
                 "env_as": os.environ.get("TAUT_AS"),
                 "env_token": os.environ.get("TAUT_TOKEN"),
                 "env_db": os.environ.get("TAUT_DB"),
-                "env_system_prompt": os.environ.get("TAUT_SUMMON_SYSTEM_PROMPT"),
             }
         )
+        os.write(1, _BRACKETED_PASTE_ENABLE)
+        _write_terminal("scripted> ")
         _record({"event": "provider-ready"})
-        if scenario.get("announce_session", True):
-            _emit_init(state.session_id)
 
         responses = scenario.get("responses", [])
-        default_response = scenario.get(
-            "default_response", [{"assistant_text": "echo: {text}"}]
-        )
+        default_response = scenario.get("default_response", [])
         _run_steps(list(scenario.get("on_start", [])), state, "")
 
         index = 0
         while True:
-            line = sys.stdin.readline()
-            if not line:
+            data = os.read(0, 4096)
+            if not data:
                 return 0
-            stripped = line.strip()
-            if not stripped:
-                continue
-            event = json.loads(stripped)
-            if not isinstance(event, dict):
-                raise ValueError("stdin event must be a JSON object")  # noqa: TRY004 approved [DOM-10.2.1] [RUFF-SUP-073] exception
-            text = _extract_text(event)
-            _record({"event": "message", "text": text})
-            steps = responses[index] if index < len(responses) else default_response
-            index += 1
-            _run_steps(list(steps), state, text)
+            turns, interrupt_count = parser.feed(data)
+            for _ in range(interrupt_count):
+                interrupts.interrupt()
+            for text in turns:
+                _record({"event": "message", "text": text})
+                steps = responses[index] if index < len(responses) else default_response
+                index += 1
+                _run_steps(list(steps), state, text)
     except _SignalCleanupComplete:
         return 0
     except KeyboardInterrupt:
         return 130
-    except (ValueError, json.JSONDecodeError) as exc:
-        _write_stderr(f"scripted provider: protocol error: {exc}")
+    except (OSError, TypeError, ValueError) as exc:
+        _write_stderr(f"scripted provider: terminal error: {exc}")
         return 2
 
 
