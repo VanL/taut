@@ -107,7 +107,7 @@ class PROCESS_INFORMATION(ctypes.Structure):
 
 
 class CHAR_UNION(ctypes.Union):
-    _fields_ = [  # noqa: RUF012
+    _fields_ = [
         ("UnicodeChar", ctypes.c_wchar),
         ("AsciiChar", ctypes.c_char),
     ]
@@ -125,7 +125,7 @@ class KEY_EVENT_RECORD(ctypes.Structure):
 
 
 class INPUT_EVENT_UNION(ctypes.Union):
-    _fields_ = [  # noqa: RUF012
+    _fields_ = [
         ("KeyEvent", KEY_EVENT_RECORD),
         ("padding", ctypes.c_byte * 16),
     ]
