@@ -76,10 +76,10 @@ def _configure_terminal_input() -> None:
     if not os.isatty(0):
         return
     if os.name == "nt":
-        # ConPTY owns the hosted console's input mode. GitHub's runner also
-        # exposes a CRT tty whose fd is not a Win32 console handle. In both
-        # cases the provider consumes the delivered terminal byte stream; a
-        # GetConsoleMode probe would reject these real paths before startup.
+        # The CR-delimited parser does not need Windows raw mode, and processed
+        # input intentionally routes Ctrl-C to the installed signal handler.
+        # GitHub's runner also exposes a CRT tty whose fd is not a Win32 console
+        # handle, so probing GetConsoleMode rejects a real supported path.
         return
 
     import tty
