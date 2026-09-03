@@ -71,31 +71,15 @@ class _SignalCleanupComplete(Exception):
 
 
 def _configure_terminal_input() -> None:
-    """Enter raw input when fd 0 is an interactive terminal."""
+    """Enter raw input where the child owns the terminal mode."""
 
     if not os.isatty(0):
         return
     if os.name == "nt":
-        import ctypes
-        import msvcrt
-
-        ctypes_api: Any = ctypes
-        msvcrt_api: Any = msvcrt
-        kernel32 = ctypes_api.WinDLL("kernel32", use_last_error=True)
-        kernel32.GetConsoleMode.argtypes = [
-            ctypes.c_void_p,
-            ctypes.POINTER(ctypes.c_uint32),
-        ]
-        kernel32.GetConsoleMode.restype = ctypes.c_int
-        kernel32.SetConsoleMode.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
-        kernel32.SetConsoleMode.restype = ctypes.c_int
-        handle = msvcrt_api.get_osfhandle(0)
-        mode = ctypes.c_uint32()
-        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
-            raise OSError(ctypes_api.get_last_error(), "GetConsoleMode(stdin) failed")
-        raw_mode = (mode.value & ~(0x0001 | 0x0002 | 0x0004)) | 0x0200
-        if not kernel32.SetConsoleMode(handle, raw_mode):
-            raise OSError(ctypes_api.get_last_error(), "SetConsoleMode(stdin) failed")
+        # ConPTY owns the hosted console's input mode. GitHub's runner also
+        # exposes a CRT tty whose fd is not a Win32 console handle. In both
+        # cases the provider consumes the delivered terminal byte stream; a
+        # GetConsoleMode probe would reject these real paths before startup.
         return
 
     import tty
