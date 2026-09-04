@@ -339,6 +339,12 @@ descendants, after which one monitor records the leader exit and publishes one
 releases every acquired pseudoconsole, process, thread, and pipe handle. The
 sole output drain never waits for process exit or blocks on a terminal reply;
 reply writes use the serialized, cancellable input writer on a separate owner.
+The drain starts on the first operation that needs output consumption: attach
+routing, detached event or settle consumption, or teardown. Publishing an
+attach sink before that start preserves one-shot startup prompts for the human
+path without replaying already-observed terminal queries. While a sink is
+routed, observation is passive and the host terminal owns replies; after
+detach, the same drain resumes Summon's bounded query responder.
 
 The PTY pump checks leader status after every readable output turn, so a
 continuously readable terminal cannot defer terminal observation. It drains

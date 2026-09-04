@@ -60,7 +60,9 @@ class TerminalIntegration(Protocol):
 
     def encode_injection(self, text: str) -> bytes: ...
 
-    def observe_output(self, data: bytes) -> tuple[bytes, ...]: ...
+    def observe_output(
+        self, data: bytes, *, answer_queries: bool = True
+    ) -> tuple[bytes, ...]: ...
 
     def mark_stalled(self, *, now: float | None = None) -> None: ...
 
@@ -224,10 +226,12 @@ class _EpochWriter:
                 self._state.wait(remaining)
 
     def _validate(self, epoch: int) -> None:
-        if epoch != self._epoch or self._interrupting:
+        if epoch != self._epoch:
             raise AdapterError("PTY write interrupted")
         if self._retired:
             raise AdapterError("PTY master is closed")
+        if self._interrupting:
+            raise AdapterError("PTY write interrupted")
 
 
 class _TerminalReplyWriter:
@@ -391,6 +395,8 @@ class _OutputDrain:
         self._owner = owner
         self._routing_lock = threading.Lock()
         self._sink: tuple[int, _AttachSink] | None = None
+        self._start_lock = threading.Lock()
+        self._started = False
         self._thread_handle: int | None = None
         self._done = threading.Event()
         self.failure: BaseException | None = None
@@ -399,13 +405,18 @@ class _OutputDrain:
         )
 
     def start(self) -> None:
-        self._thread.start()
+        with self._start_lock:
+            if self._started:
+                return
+            self._started = True
+            self._thread.start()
 
     def route(self, generation: int, sink: _AttachSink) -> None:
         with self._routing_lock:
             if self._sink is not None:
                 raise AdapterError("a terminal is already attached")
             self._sink = (generation, sink)
+        self.start()
 
     def unroute(self, generation: int) -> _AttachSink:
         with self._routing_lock:
@@ -444,11 +455,13 @@ class _OutputDrain:
                     return
                 if not data:
                     continue
-                self._owner._observe_output(data)
                 with self._routing_lock:
                     if self._sink is not None:
                         generation, sink = self._sink
+                        self._owner._observe_output(data, answer_queries=False)
                         sink.enqueue(generation, data)
+                    else:
+                        self._owner._observe_output(data)
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             self.failure = exc
         finally:
@@ -673,7 +686,6 @@ class WindowsPtyHandle:
         self._seen_output = threading.Event()
         self._attach_generation = 0
         self._drain = _OutputDrain(api, output_read, self)
-        self._drain.start()
         self._exit_monitor_done = threading.Event()
         self._exit_monitor = threading.Thread(
             target=self._monitor_process_exit,
@@ -702,6 +714,7 @@ class WindowsPtyHandle:
         return self._terminal.output_tail()
 
     def wait_until_quiet(self) -> None:
+        self._drain.start()
         deadline = time.monotonic() + self._max_settle_s
         while time.monotonic() < deadline:
             now = time.monotonic()
@@ -777,6 +790,7 @@ class WindowsPtyHandle:
                 raise AdapterError(failure)
 
     def events(self) -> Iterator[AdapterEvent]:
+        self._drain.start()
         with self._events_lock:
             if self._events_claimed:
                 raise AdapterError("events() already has a consumer")
@@ -805,11 +819,11 @@ class WindowsPtyHandle:
             detach_chord=detach_chord,
         ).run()
 
-    def _observe_output(self, data: bytes) -> None:
+    def _observe_output(self, data: bytes, *, answer_queries: bool = True) -> None:
         now = time.monotonic()
         with self._lock:
             self._last_output = now
-            replies = self._terminal.observe_output(data)
+            replies = self._terminal.observe_output(data, answer_queries=answer_queries)
         for reply in replies:
             self._reply_writer.enqueue(reply)
         self._seen_output.set()
@@ -861,6 +875,7 @@ class WindowsPtyHandle:
         hpcon, process = self._hpcon, self._process_handle
         if hpcon is None or process is None:
             return
+        self._drain.start()
         self._api.ClosePseudoConsole(HPCON(hpcon))
         self._hpcon = None
         failures: list[Exception] = []
@@ -903,6 +918,7 @@ class WindowsPtyHandle:
             if wait != WAIT_OBJECT_0:
                 raise AdapterError(f"partial ConPTY child wait returned {wait}")
         if self._hpcon is not None:
+            self._drain.start()
             self._api.ClosePseudoConsole(HPCON(self._hpcon))
             self._hpcon = None
         self._drain.join_after_close()

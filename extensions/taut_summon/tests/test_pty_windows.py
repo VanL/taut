@@ -9,6 +9,7 @@ from typing import Any, Protocol, cast
 
 import psutil
 import pytest
+from taut_summon._adapter import AdapterError
 from taut_summon._pty import _DetachChordMatcher
 
 pytestmark = [
@@ -44,7 +45,10 @@ class _Terminal:
             + b"\r"
         )
 
-    def observe_output(self, data: bytes) -> tuple[bytes, ...]:
+    def observe_output(
+        self, data: bytes, *, answer_queries: bool = True
+    ) -> tuple[bytes, ...]:
+        del answer_queries
         self.data.extend(data)
         return ()
 
@@ -90,6 +94,87 @@ def _wait_until_true(predicate: Callable[[], bool], timeout: float = 10.0) -> bo
             return True
         time.sleep(0.02)
     return False
+
+
+class _TrackingSerializer:
+    def __init__(self, queued_waiting: threading.Event) -> None:
+        self.lock = threading.Lock()
+        self.queued_waiting = queued_waiting
+
+    def __enter__(self) -> None:
+        if threading.current_thread().name.startswith("queued"):
+            self.queued_waiting.set()
+        self.lock.acquire()
+
+    def __exit__(self, *_args: object) -> None:
+        self.lock.release()
+
+
+def _blocked_epoch_write(writer: Any, errors: list[BaseException]) -> None:
+    try:
+        writer.write(b"x" * 1_000_000)
+    except AdapterError as exc:
+        errors.append(exc)
+
+
+def _drain_windows_pipe(api: Any, read_handle: int, marker: bytes) -> None:
+    observed = b""
+    try:
+        while marker not in observed:
+            observed = (observed + api.read(read_handle))[-4096:]
+    except OSError:
+        return
+
+
+def _epoch_writer_active(writer: Any) -> bool:
+    with writer._state:
+        return writer._active is not None
+
+
+class _DrainApi:
+    def __init__(self, release_second: threading.Event) -> None:
+        self.release_second = release_second
+        self.reads = 0
+
+    def open_current_thread(self) -> int:
+        return 91
+
+    def close_handle(self, _handle: int) -> None:
+        return
+
+    def read(self, _handle: int) -> bytes:
+        from taut_summon._win32_io import ERROR_BROKEN_PIPE, Win32IoError
+
+        self.reads += 1
+        if self.reads == 1:
+            return b"one-shot prompt"
+        assert self.release_second.wait(timeout=10.0)
+        if self.reads == 2:
+            return b"detached output"
+        raise Win32IoError("ReadFile", ERROR_BROKEN_PIPE)
+
+
+class _DrainOwner:
+    def __init__(self) -> None:
+        self.observed: list[tuple[bytes, bool]] = []
+        self.ended = threading.Event()
+
+    def _observe_output(self, data: bytes, *, answer_queries: bool = True) -> None:
+        self.observed.append((data, answer_queries))
+
+    def _output_ended(self) -> None:
+        self.ended.set()
+
+
+class _DrainSink:
+    def __init__(self) -> None:
+        self.items: list[bytes] = []
+        self.received = threading.Event()
+
+    def enqueue(self, generation: int, data: bytes) -> None:
+        assert generation == 7
+        self.items.append(data)
+        self.received.set()
 
 
 def _child_argv() -> tuple[str, ...]:
@@ -159,6 +244,23 @@ def test_public_pty_adapter_reports_natural_exit_without_close_error() -> None:
 
 
 @pytest.mark.skipif(os.name != "nt", reason="requires Windows ConPTY")
+def test_public_pty_adapter_closes_before_output_consumption() -> None:
+    from taut_summon._pty import PtyAdapter, PtySpec
+
+    handle = PtyAdapter(
+        PtySpec(
+            name="windows-close-before-consumption",
+            argv=(sys.executable, "-c", "import time; time.sleep(300)"),
+        )
+    ).spawn(system_prompt="unused", env={})
+
+    started = time.monotonic()
+    handle.close()
+
+    assert time.monotonic() - started < 10.0
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows ConPTY")
 def test_public_pty_adapter_runs_conpty_and_retires_domain(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -193,58 +295,119 @@ def test_public_pty_adapter_runs_conpty_and_retires_domain(
 
     handle.inject("héllo")
     _wait_for_tail(handle, "ECHO héllo")
-    handle.inject("PAUSE_INTERRUPT")
-    _wait_for_tail(handle, "PAUSED PAUSE_INTERRUPT")
-    write_errors: list[AdapterError] = []
-
-    def blocked_inject(payload: str) -> None:
-        try:
-            handle.inject(payload)
-        except AdapterError as exc:
-            write_errors.append(exc)
-
-    def writer_is_active() -> bool:
-        windows_handle = cast(Any, handle)
-        with windows_handle._writer._state:
-            return windows_handle._writer._active is not None
-
-    active = threading.Thread(target=blocked_inject, args=("x" * (64 * 1024 * 1024),))
-    queued = threading.Thread(target=blocked_inject, args=("old queued writer",))
-    active.start()
-    assert _wait_until_true(writer_is_active)
-    queued.start()
-    time.sleep(0.1)
     handle.interrupt()
-    active.join(timeout=10.0)
-    queued.join(timeout=10.0)
-    assert not active.is_alive()
-    assert not queued.is_alive()
-    assert len(write_errors) == 2
-    assert all("interrupted" in str(error) for error in write_errors)
     _wait_for_tail(handle, "INT byte")
     handle.inject("after")
     _wait_for_tail(handle, "ECHO after")
 
-    handle.inject("PAUSE_CLOSE")
-    _wait_for_tail(handle, "PAUSED PAUSE_CLOSE")
-    closing = threading.Thread(target=lambda: blocked_inject("y" * (64 * 1024 * 1024)))
-    closing.start()
-    assert _wait_until_true(writer_is_active)
     started = time.monotonic()
     handle.request_close()
     assert time.monotonic() - started < 0.5
     with pytest.raises(AdapterError, match="closed"):
         handle.inject("rejected")
     handle.close()
-    closing.join(timeout=10.0)
-    assert not closing.is_alive()
-    assert len(write_errors) == 3
-    assert "interrupted" in str(write_errors[-1])
     pump.join(timeout=10.0)
     assert not pump.is_alive()
     assert sum(isinstance(event, ExitEvent) for event in events) == 1
     assert not leader.is_running()
     assert not descendant.is_running()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows pipe cancellation")
+def test_epoch_writer_cancels_a_real_blocked_windows_write() -> None:
+    from taut_summon._adapter import AdapterError
+    from taut_summon._pty_windows import NativeApi, _EpochWriter
+
+    api = NativeApi()
+    read_handle, write_handle = api.create_pipe()
+    writer = _EpochWriter(api, write_handle)
+    errors: list[BaseException] = []
+    queued_waiting = threading.Event()
+    writer._serializer = _TrackingSerializer(queued_waiting)  # type: ignore[assignment]
+
+    def start_blocked_pair(label: str) -> tuple[threading.Thread, threading.Thread]:
+        queued_waiting.clear()
+        active = threading.Thread(
+            target=lambda: _blocked_epoch_write(writer, errors),
+            name=f"active-{label}",
+        )
+        queued = threading.Thread(
+            target=lambda: _blocked_epoch_write(writer, errors),
+            name=f"queued-{label}",
+        )
+        active.start()
+        assert _wait_until_true(lambda: _epoch_writer_active(writer))
+        queued.start()
+        assert queued_waiting.wait(timeout=10.0)
+        return active, queued
+
+    threads: list[threading.Thread] = []
+    try:
+        active, queued = start_blocked_pair("interrupt")
+        threads.extend((active, queued))
+        interrupted = threading.Thread(target=writer.interrupt)
+        interrupted.start()
+        drainer = threading.Thread(
+            target=_drain_windows_pipe, args=(api, read_handle, b"\x03")
+        )
+        drainer.start()
+        threads.extend((interrupted, drainer))
+        for thread in threads:
+            thread.join(timeout=10.0)
+            assert not thread.is_alive()
+        assert len(errors) == 2
+        assert all("interrupted" in str(error) for error in errors)
+
+        active, queued = start_blocked_pair("close")
+        threads.extend((active, queued))
+        writer.request_close()
+        with pytest.raises(AdapterError, match="closed"):
+            writer.write(b"rejected")
+        closer_drain = threading.Thread(
+            target=_drain_windows_pipe, args=(api, read_handle, b"\x03")
+        )
+        closer_drain.start()
+        threads.append(closer_drain)
+        writer.finish_close_request()
+        for thread in (active, queued, closer_drain):
+            thread.join(timeout=10.0)
+            assert not thread.is_alive()
+        assert len(errors) == 4
+        assert all("interrupted" in str(error) for error in errors)
+    finally:
+        writer.request_close()
+        cleanup_drain = threading.Thread(
+            target=_drain_windows_pipe, args=(api, read_handle, b"\x03")
+        )
+        cleanup_drain.start()
+        try:
+            writer.finish_close_request()
+        finally:
+            api.close_handle(write_handle)
+            cleanup_drain.join(timeout=10.0)
+            for thread in threads:
+                thread.join(timeout=1.0)
+        api.close_handle(read_handle)
+
+
+def test_output_drain_routes_before_start_and_observes_attach_passively() -> None:
+    from taut_summon._pty_windows import _OutputDrain
+
+    release_second = threading.Event()
+    owner = _DrainOwner()
+    sink = _DrainSink()
+    drain = _OutputDrain(cast(Any, _DrainApi(release_second)), 41, cast(Any, owner))
+
+    drain.route(7, cast(Any, sink))
+    assert sink.received.wait(timeout=10.0)
+    assert sink.items == [b"one-shot prompt"]
+    assert owner.observed == [(b"one-shot prompt", False)]
+
+    assert drain.unroute(7) is sink
+    release_second.set()
+    drain.join_after_close()
+    assert owner.ended.is_set()
+    assert owner.observed[-1] == (b"detached output", True)
 
 
 def test_console_snapshot_restores_exact_values_after_partial_setup() -> None:
