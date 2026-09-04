@@ -89,27 +89,17 @@ def _configure_terminal_input() -> None:
         kernel32.GetConsoleMode.restype = ctypes.c_int
         kernel32.SetConsoleMode.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
         kernel32.SetConsoleMode.restype = ctypes.c_int
-        # A ConPTY child launched below a redirected host can have a CRT tty fd
-        # that is not itself accepted by GetConsoleMode. CONIN$ names the
-        # hosted console input buffer whose mode controls that same byte stream.
-        console_fd = os.open(
-            "CONIN$",
-            os.O_RDWR | int(getattr(os, "O_BINARY", 0)),
-        )
-        try:
-            handle = msvcrt_api.get_osfhandle(console_fd)
-            mode = ctypes.c_uint32()
-            if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
-                raise OSError(
-                    ctypes_api.get_last_error(), "GetConsoleMode(CONIN$) failed"
-                )
-            raw_mode = (mode.value & ~(0x0001 | 0x0002 | 0x0004)) | 0x0200
-            if not kernel32.SetConsoleMode(handle, raw_mode):
-                raise OSError(
-                    ctypes_api.get_last_error(), "SetConsoleMode(CONIN$) failed"
-                )
-        finally:
-            os.close(console_fd)
+        # Configure the actual standard-input handle supplied by ConPTY. Do
+        # not reopen the process console by name: nested drivers can redirect
+        # their own standard streams while the child still owns a valid
+        # pseudoconsole input handle.
+        handle = msvcrt_api.get_osfhandle(0)
+        mode = ctypes.c_uint32()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            raise OSError(ctypes_api.get_last_error(), "GetConsoleMode(stdin) failed")
+        raw_mode = (mode.value & ~(0x0001 | 0x0002 | 0x0004)) | 0x0200
+        if not kernel32.SetConsoleMode(handle, raw_mode):
+            raise OSError(ctypes_api.get_last_error(), "SetConsoleMode(stdin) failed")
         return
 
     import tty
