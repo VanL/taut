@@ -474,7 +474,9 @@ def test_backpressure_surfaces_as_unread(harness: ConformanceHarness) -> None:
 
     # A message larger than the pipe buffer blocks the in-flight inject;
     # later messages accumulate as honest unread.
-    harness.peer_say("general", "x" * 200_000)
+    # Stay below TAUT_MAX_MESSAGE_SIZE while exceeding either PTY backend's
+    # immediately writable input window.
+    harness.peer_say("general", "x" * 10_000_000)
     harness.peer_say("general", "tail-1")
     harness.peer_say("general", "tail-2")
 
@@ -692,7 +694,14 @@ def test_probe_garbage_scenario_file_fails_clean(
     env["TAUT_SUMMON_SCENARIO"] = str(garbage)
     env["TAUT_SUMMON_RESUME_BACKOFF"] = "0.1,0.1"
     rc, out, err = _run_summon(
-        "run", "scripted", "general", "--db", str(summon_db), cwd=tmp_path, env=env
+        "run",
+        "scripted",
+        "general",
+        "--db",
+        str(summon_db),
+        "--detach",
+        cwd=tmp_path,
+        env=env,
     )
     assert rc == 1
     assert out == ""

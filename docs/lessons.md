@@ -831,6 +831,15 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   to raise; otherwise cleanup can turn a protocol assertion into an abrupt
   coverage-finalizer race.
 
+- 2026-09-03: A throwaway native-platform qualification can pass while the
+  production binding is broken if the probe copies ABI declarations instead
+  of importing them. Exercise the production boundary whenever possible. When
+  bootstrap order makes that impossible, add production-side layout assertions
+  for every copied structure, including size and critical field offsets. A
+  Python `ctypes.Structure` instance may accept an undeclared Python attribute,
+  so setting a missing field is not proof that the native memory layout
+  contains it.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

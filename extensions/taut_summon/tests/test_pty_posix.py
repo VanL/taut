@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import errno
+import json
 import os
 import signal
 import subprocess
@@ -10,12 +11,14 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
 import taut_summon._process_domain_posix as process_domain_module
-from taut_summon._adapter import AdapterError
+from taut_summon._adapter import AdapterError, ExitEvent
 from taut_summon._process_domain_posix import PosixProcessDomain, spawn_process
+from taut_summon._pty import PtyAdapter, PtySpec
 
 pytestmark = [
     pytest.mark.posix_only,
@@ -62,6 +65,71 @@ def _eventually_observe(
             return result
         assert time.monotonic() < deadline, "child exit was not observable"
         time.sleep(0.01)
+
+
+def _fixture_entries(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def test_posix_wait_until_quiet_holds_unknown_query_through_stall_threshold(
+    tmp_path: Path,
+) -> None:
+    """POSIX exposes unknown terminal queries that ConPTY consumes itself."""
+
+    stall_s = 0.2
+    received = tmp_path / "received.jsonl"
+    fake_tui = Path(__file__).with_name("fixtures") / "fake_tui.py"
+    config = {
+        "queries": False,
+        "modes": False,
+        "unknown_query": "[?15n",
+        "unknown_blocks": True,
+    }
+    handle = PtyAdapter(
+        PtySpec(
+            name="posix-unknown-query",
+            argv=(sys.executable, str(fake_tui)),
+            stall_s=stall_s,
+            quiet_ms=50,
+            max_settle_s=0.5,
+        )
+    ).spawn(
+        system_prompt="unused",
+        env={
+            "TAUT_FAKE_TUI_CONFIG": json.dumps(config),
+            "TAUT_FAKE_TUI_LOG": str(received),
+        },
+    )
+    observed: list[object] = []
+    pump = threading.Thread(
+        target=lambda: observed.extend(handle.events()), daemon=True
+    )
+    pump.start()
+    try:
+        started = time.monotonic()
+        handle.wait_until_quiet()
+        elapsed = time.monotonic() - started
+
+        assert elapsed >= stall_s * 0.8
+        assert handle.status_fields()["awaiting_query"] == "[?15n"
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if any(
+                entry.get("event") == "unknown_reply_window"
+                for entry in _fixture_entries(received)
+            ):
+                break
+            time.sleep(0.05)
+        else:
+            pytest.fail(f"unknown query window missing: {_fixture_entries(received)!r}")
+    finally:
+        handle.close()
+        pump.join(timeout=5.0)
+
+    assert not pump.is_alive()
+    assert any(isinstance(event, ExitEvent) for event in observed)
 
 
 def test_spawn_process_starts_new_session_and_publishes_io() -> None:

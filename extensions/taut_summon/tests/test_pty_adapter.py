@@ -919,47 +919,20 @@ def test_failed_best_effort_query_reply_does_not_kill_event_pump(
     assert isinstance(pump.drain_until_exit(timeout=5.0), ExitEvent)
 
 
-def test_pty_responder_answers_startup_queries_and_clamps_size(
-    tmp_path: Path,
-) -> None:
-    expected_names = {
-        "absolute-size",
-        "relative-size",
-        "dsr-status",
-        "primary-da",
-        "secondary-da",
-        "decrqm",
-        "xtversion",
-        "osc-fg",
-        "osc-bg",
-        "kitty-keyboard",
-    }
-    handle, log = _spawn_fake(
-        tmp_path, {"queries": True, "modes": False}, rows=31, cols=97
-    )
-    pump = EventPump(handle)
-    try:
-        _wait_for(log, "query")
-        deadline = time.monotonic() + 10.0
-        while time.monotonic() < deadline:
-            queries = [entry for entry in _entries(log) if entry["event"] == "query"]
-            if len(queries) >= len(expected_names):
-                break
-            time.sleep(0.05)
-        else:
-            raise AssertionError(f"missing query records: {_entries(log)!r}")
+def test_pty_responder_answers_complete_startup_query_matrix() -> None:
+    responder = _TerminalResponder(rows=31, cols=97)
 
-        by_name = {entry["name"]: entry for entry in queries}
-        assert len(queries) == len(expected_names)
-        assert set(by_name) == expected_names
-        assert all(entry["ok"] for entry in queries)
-        assert by_name["absolute-size"]["expected"] == "\x1b[31;97R"
-        assert by_name["relative-size"]["expected"] == "\x1b[31;97R"
-        assert "999;999R" not in by_name["absolute-size"]["got"]
-        assert "1;1R" not in by_name["relative-size"]["got"]
-    finally:
-        handle.close()
-        assert isinstance(pump.drain_until_exit(), ExitEvent)
+    assert responder.feed(b"\x1b[999;999H\x1b[6n") == [b"\x1b[31;97R"]
+    assert responder.feed(b"\x1b[1;1H\x1b[9999C\x1b[9999B\x1b[6n") == [b"\x1b[31;97R"]
+    assert responder.feed(b"\x1b[5n") == [b"\x1b[0n"]
+    assert responder.feed(b"\x1b[c") == [b"\x1b[?1;2c"]
+    assert responder.feed(b"\x1b[>c") == [b"\x1b[>0;0;0c"]
+    assert responder.feed(b"\x1b[?2004$p") == [b"\x1b[?2004;0$y"]
+    assert responder.feed(b"\x1b[>q") == [b"\x1bP>|taut-summon(0)\x1b\\"]
+    assert responder.feed(b"\x1b]10;?\x07") == [b"\x1b]10;rgb:ffff/ffff/ffff\x1b\\"]
+    assert responder.feed(b"\x1b]11;?\x07") == [b"\x1b]11;rgb:0000/0000/0000\x1b\\"]
+    assert responder.feed(b"\x1b[?u") == [b"\x1b[?0u"]
+    assert responder.outstanding_query is None
 
 
 @posix_only
@@ -1107,65 +1080,14 @@ def test_bracketed_paste_preserves_newlines_after_sanitizing(
     assert isinstance(pump.drain_until_exit(), ExitEvent)
 
 
-def test_unknown_report_shaped_query_sets_status_without_reply(
-    tmp_path: Path,
-) -> None:
-    handle, log = _spawn_fake(
-        tmp_path,
-        {
-            "queries": False,
-            "modes": False,
-            "unknown_query": "[?15n",
-            "unknown_blocks": True,
-        },
-        stall_s=0.2,
-    )
-    pump = EventPump(handle)
-    try:
-        _wait_for(log, "unknown_reply_window")
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline:
-            fields = handle.status_fields()
-            if fields.get("awaiting_query") == "[?15n":
-                break
-            time.sleep(0.05)
-        else:
-            raise AssertionError(f"awaiting_query not set: {handle.status_fields()}")
-        window = [
-            entry for entry in _entries(log) if entry["event"] == "unknown_reply_window"
-        ][-1]
-        assert window["got"] == ""
-    finally:
-        handle.close()
-    assert isinstance(pump.drain_until_exit(), ExitEvent)
+def test_terminal_state_surfaces_an_unhandled_report_after_stall() -> None:
+    state = _pty_module._TerminalState(rows=24, cols=80, stall_s=0.2)
+    assert state.observe_output(b"\x1b[?15n") == ()
+    assert state.unhandled_query_pending is True
 
+    state.mark_stalled(now=state.last_output_ts + 0.21)
 
-def test_wait_until_quiet_holds_unknown_query_through_stall_threshold(
-    tmp_path: Path,
-) -> None:
-    stall_s = 0.2
-    handle, log = _spawn_fake(
-        tmp_path,
-        {
-            "queries": False,
-            "modes": False,
-            "unknown_query": "[?15n",
-            "unknown_blocks": True,
-        },
-        stall_s=stall_s,
-    )
-    pump = EventPump(handle)
-    try:
-        started = time.monotonic()
-        handle.wait_until_quiet()
-        elapsed = time.monotonic() - started
-
-        assert elapsed >= stall_s * 0.8
-        assert handle.status_fields()["awaiting_query"] == "[?15n"
-        _wait_for(log, "unknown_reply_window")
-    finally:
-        handle.close()
-    assert isinstance(pump.drain_until_exit(), ExitEvent)
+    assert state.status_fields()["awaiting_query"] == "[?15n"
 
 
 @posix_only

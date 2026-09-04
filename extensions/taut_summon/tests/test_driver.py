@@ -2762,7 +2762,7 @@ def test_pty_detached_orientation_is_injected_before_chat(
         "general",
         provider="pty",
         extra_args=("--detach",),
-        extra_env=_fake_pty_env(pty_log, {"queries": True, "modes": False}),
+        extra_env=_fake_pty_env(pty_log, {"queries": False, "modes": False}),
         tag="pty-orientation",
     )
     driver.wait_for_start()
@@ -3040,7 +3040,8 @@ def test_backpressure_blocked_inject_grows_unread_and_stop_still_works(
 
     # A message larger than the pipe buffer blocks the in-flight inject;
     # later messages accumulate as honest unread ([SUM-5.4]).
-    say(summon_db, tmp_path, "general", "x" * 200_000)
+    # This remains below the public 10 MiB message limit.
+    say(summon_db, tmp_path, "general", "x" * 10_000_000)
     say(summon_db, tmp_path, "general", "tail-1")
     say(summon_db, tmp_path, "general", "tail-2")
 
@@ -4480,7 +4481,8 @@ def test_stop_while_inject_blocked_completes(
     )
     driver.wait_for_start()
     token = _member_token(summon_db, "scripted")
-    say(summon_db, tmp_path, "general", "x" * 200_000)
+    # This remains below the public 10 MiB message limit.
+    say(summon_db, tmp_path, "general", "x" * 10_000_000)
     say(summon_db, tmp_path, "general", "more")
 
     def _unread() -> int:

@@ -135,6 +135,40 @@ class _HostAbort(BaseException):
     pass
 
 
+def _windows_pipe_available(fd: int) -> int:
+    """Return readable bytes for a test-owned Windows anonymous pipe."""
+
+    import ctypes
+    import msvcrt
+
+    ctypes_api: Any = ctypes
+    msvcrt_api: Any = msvcrt
+    kernel32 = ctypes_api.WinDLL("kernel32", use_last_error=True)
+    kernel32.PeekNamedPipe.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_uint32),
+        ctypes.c_void_p,
+    ]
+    kernel32.PeekNamedPipe.restype = ctypes.c_int
+    available = ctypes.c_uint32()
+    if not kernel32.PeekNamedPipe(
+        ctypes.c_void_p(msvcrt_api.get_osfhandle(fd)),
+        None,
+        0,
+        None,
+        ctypes.byref(available),
+        None,
+    ):
+        error = ctypes_api.get_last_error()
+        if error in (6, 109):
+            return 0
+        raise OSError(error, "PeekNamedPipe failed")
+    return int(available.value)
+
+
 class _HostTerminal:
     """Test-owned terminal fds for the public attach lease."""
 
@@ -156,7 +190,6 @@ class _HostTerminal:
         if os.name == "nt":
             lease_input_fd, user_write_fd = os.pipe()
             user_read_fd, lease_output_fd = os.pipe()
-            os.set_blocking(user_read_fd, False)
             return cls(
                 user_read_fd=user_read_fd,
                 user_write_fd=user_write_fd,
@@ -193,11 +226,11 @@ class _HostTerminal:
         output = b""
         while time.monotonic() < deadline:
             if os.name == "nt":
-                try:
-                    chunk = os.read(self.user_read_fd, 4096)
-                except BlockingIOError:
+                available = _windows_pipe_available(self.user_read_fd)
+                if available == 0:
                     time.sleep(0.05)
                     continue
+                chunk = os.read(self.user_read_fd, min(available, 4096))
                 if not chunk:
                     time.sleep(0.05)
                     continue

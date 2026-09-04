@@ -4,6 +4,7 @@ import os
 import sys
 import threading
 import time
+from collections.abc import Callable
 from typing import Any, Protocol, cast
 
 import psutil
@@ -82,6 +83,15 @@ def _wait_for_tail(handle: _TailHandle, marker: str, timeout: float = 10.0) -> s
     pytest.fail(f"ConPTY tail did not contain {marker!r}: {tail!r}")
 
 
+def _wait_until_true(predicate: Callable[[], bool], timeout: float = 10.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return False
+
+
 def _child_argv() -> tuple[str, ...]:
     source = r"""
 import msvcrt, os, signal, subprocess, sys, time
@@ -149,31 +159,6 @@ def test_public_pty_adapter_reports_natural_exit_without_close_error() -> None:
 
 
 @pytest.mark.skipif(os.name != "nt", reason="requires Windows ConPTY")
-def test_public_pty_adapter_surfaces_unknown_query_stall() -> None:
-    from taut_summon._pty import PtyAdapter, PtySpec
-
-    source = "import sys,time; sys.stdout.write('\\x1b[?15n'); sys.stdout.flush(); time.sleep(30)"
-    handle = PtyAdapter(
-        PtySpec(
-            name="windows-query-stall",
-            argv=(sys.executable, "-c", source),
-            stall_s=0.1,
-            quiet_ms=10,
-            max_settle_s=1.0,
-        )
-    ).spawn(system_prompt="unused", env={})
-    pump = threading.Thread(target=lambda: list(handle.events()))
-    pump.start()
-    try:
-        handle.wait_until_quiet()
-        assert handle.status_fields()["awaiting_query"] == "[?15n"
-    finally:
-        handle.close()
-        pump.join(timeout=10.0)
-        assert not pump.is_alive()
-
-
-@pytest.mark.skipif(os.name != "nt", reason="requires Windows ConPTY")
 def test_public_pty_adapter_runs_conpty_and_retires_domain(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -218,10 +203,15 @@ def test_public_pty_adapter_runs_conpty_and_retires_domain(
         except AdapterError as exc:
             write_errors.append(exc)
 
+    def writer_is_active() -> bool:
+        windows_handle = cast(Any, handle)
+        with windows_handle._writer._state:
+            return windows_handle._writer._active is not None
+
     active = threading.Thread(target=blocked_inject, args=("x" * (64 * 1024 * 1024),))
     queued = threading.Thread(target=blocked_inject, args=("old queued writer",))
     active.start()
-    time.sleep(0.1)
+    assert _wait_until_true(writer_is_active)
     queued.start()
     time.sleep(0.1)
     handle.interrupt()
@@ -239,7 +229,7 @@ def test_public_pty_adapter_runs_conpty_and_retires_domain(
     _wait_for_tail(handle, "PAUSED PAUSE_CLOSE")
     closing = threading.Thread(target=lambda: blocked_inject("y" * (64 * 1024 * 1024)))
     closing.start()
-    time.sleep(0.1)
+    assert _wait_until_true(writer_is_active)
     started = time.monotonic()
     handle.request_close()
     assert time.monotonic() - started < 0.5

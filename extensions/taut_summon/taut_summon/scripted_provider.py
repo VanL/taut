@@ -89,6 +89,8 @@ def _configure_terminal_input() -> None:
         kernel32.GetConsoleMode.restype = ctypes.c_int
         kernel32.SetConsoleMode.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
         kernel32.SetConsoleMode.restype = ctypes.c_int
+        kernel32.SetConsoleCP.argtypes = [ctypes.c_uint32]
+        kernel32.SetConsoleCP.restype = ctypes.c_int
         # A ConPTY child launched below a redirected host can have a CRT tty fd
         # that is not itself accepted by GetConsoleMode. CONIN$ names the
         # hosted console input buffer whose mode controls that same byte stream.
@@ -108,6 +110,8 @@ def _configure_terminal_input() -> None:
                 raise OSError(
                     ctypes_api.get_last_error(), "SetConsoleMode(CONIN$) failed"
                 )
+            if not kernel32.SetConsoleCP(65001):
+                raise OSError(ctypes_api.get_last_error(), "SetConsoleCP(UTF-8) failed")
         finally:
             os.close(console_fd)
         return

@@ -528,13 +528,25 @@ class DriverProcess:
             return None
         return matches[-1].group("member_id")
 
+    def _current_member_name(self) -> str:
+        member_id = self._last_summoned_member_id()
+        if member_id is not None:
+            for member in _who(self.db):
+                if member.member_id == member_id:
+                    return str(member.name)
+        return self.name
+
     # --- lifecycle --------------------------------------------------------
 
     def stop(self, *, timeout: float = _DEADLINE) -> int:
         if self.proc.poll() is None:
             if os.name == "nt":
                 rc, _out, _err = summon_cli(
-                    "stop", self.name, db=self.db, cwd=self.tmp_path, timeout=timeout
+                    "stop",
+                    self._current_member_name(),
+                    db=self.db,
+                    cwd=self.tmp_path,
+                    timeout=timeout,
                 )
                 if rc != 0 and self.proc.poll() is None:
                     self.proc.terminate()
