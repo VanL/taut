@@ -1114,7 +1114,7 @@ def test_driver_ledger_client_is_persistent_and_foreground_owned(
     monkeypatch.setattr(driver_module, "capture_driver_evidence", lambda: (1, "s"))
 
     driver = _new_driver(_run_request())
-    boot = _BootstrapResult("m_reviewer", "reviewer", "tok", "scripted", None)
+    boot = _BootstrapResult("m_reviewer", "reviewer", "tok", "scripted", False)
     monkeypatch.setattr(driver, "_bootstrap", lambda _client: boot)
     monkeypatch.setattr(driver, "_supervise", lambda _boot, _display, **_kwargs: 0)
     monkeypatch.setattr(driver, "_release", lambda: None)
@@ -1166,7 +1166,7 @@ def test_foreground_run_remains_live_while_control_owner_survives_cleanup(
         interaction=ShellSummonInteraction(),
         on_ready=record_ready,
     )
-    boot = _BootstrapResult("m_reviewer", "reviewer", "tok", "scripted", None)
+    boot = _BootstrapResult("m_reviewer", "reviewer", "tok", "scripted", False)
     adapter_handle = _CountingHandle()
     driver._handle = cast(Any, adapter_handle)
     assert driver._control_ready is not None
@@ -1240,7 +1240,7 @@ def test_surviving_control_owner_cleanup_does_not_replace_primary_failure(
     monkeypatch.setattr(driver_module, "_HALT_ACK_TIMEOUT_SECONDS", 0.01)
 
     driver = _new_driver(_run_request())
-    boot = _BootstrapResult("m_reviewer", "reviewer", "tok", "scripted", None)
+    boot = _BootstrapResult("m_reviewer", "reviewer", "tok", "scripted", False)
     primary = DriverError("primary supervision failure")
     supervision_failed = threading.Event()
     monkeypatch.setattr(driver, "_bootstrap", lambda _client: boot)
@@ -1793,7 +1793,7 @@ def test_pump_join_timeout_prevents_next_generation_spawn(
         orientation_via_inject = False
 
     driver = _new_driver(_run_request())
-    boot = _BootstrapResult("m_reviewer", "reviewer", "tok", "fake", None)
+    boot = _BootstrapResult("m_reviewer", "reviewer", "tok", "fake", False)
     monkeypatch.setattr(driver_module, "_PUMP_JOIN_TIMEOUT_SECONDS", 0.01)
     monkeypatch.setattr(driver_module, "TautClient", FakeClient)
     monkeypatch.setattr(driver, "_require_adapter", lambda _provider: FakeAdapter())
@@ -2815,7 +2815,7 @@ def test_pty_status_reports_awaiting_query(
             {
                 "queries": False,
                 "modes": False,
-                "unknown_query": "[?15n",
+                "unknown_query": "[?9999u",
                 "unknown_blocks": True,
             },
             stall_s=0.2,
@@ -2835,7 +2835,7 @@ def test_pty_status_reports_awaiting_query(
     )
     wait_until(
         lambda: any(
-            entry["event"] == "unknown_query" and entry["query"].endswith("[?15n")
+            entry["event"] == "unknown_query" and entry["query"].endswith("[?9999u")
             for entry in _fake_tui_entries(pty_log)
         ),
         message="fake TUI unknown query",
@@ -2846,12 +2846,12 @@ def test_pty_status_reports_awaiting_query(
             reply = _control_request(summon_db, member.member_id, "STATUS", timeout=5.0)
         except Exception:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-071] exception
             return False
-        return reply is not None and reply.get("awaiting_query") == "[?15n"
+        return reply is not None and reply.get("awaiting_query") == "[?9999u"
 
     wait_until(_status_has_query, message="awaiting_query status")
     rc, out, err = summon_cli("status", "ptybot", db=summon_db, cwd=tmp_path)
     assert rc == 0, err
-    assert "awaiting_query=[?15n" in out
+    assert "awaiting_query=[?9999u" in out
     assert driver.stop() == 0
 
 
