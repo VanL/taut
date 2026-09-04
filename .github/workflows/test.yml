@@ -216,18 +216,10 @@ jobs:
           uv pip install --system -e ".[dev]" -e "./extensions/taut_summon[dev]"
 
       - name: Run taut-summon extension process tests
-        if: ${{ matrix.os != 'windows-latest' && (matrix.os != 'ubuntu-latest' || matrix.python-version != '3.13') }}
+        if: ${{ matrix.os != 'ubuntu-latest' || matrix.python-version != '3.13' }}
         timeout-minutes: 15
         run: |
           pytest extensions/taut_summon/tests -v --tb=short -m "xdist_group and not requires_live_harness and not requires_local_llm and ${{ matrix.summon-platform-filter }}" -n auto --dist load
-
-      # Disposable branch qualification: isolate one real nested ConPTY launch
-      # before attributing the full Windows lane failure to concurrency.
-      - name: Probe one Windows Summon process topology
-        if: ${{ matrix.os == 'windows-latest' }}
-        timeout-minutes: 3
-        run: |
-          pytest extensions/taut_summon/tests/test_driver.py::test_first_summon_creates_agent_member_with_ledger_row -vv --tb=long -n 0
 
       - name: Run taut-summon extension process tests with coverage
         id: summon_process_coverage
