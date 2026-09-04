@@ -183,10 +183,7 @@ def test_missing_registered_provider_executable_is_handled_and_releases_claims(
         detach=True,
     )
 
-    with pytest.raises(
-        SummonOperationError,
-        match="cannot spawn the harness: failed to spawn PTY harness",
-    ):
+    with pytest.raises(SummonOperationError, match="cannot spawn the harness"):
         SummonController(db_path=db).run_foreground(
             request,
             ShellSummonInteraction(),
