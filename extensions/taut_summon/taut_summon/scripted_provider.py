@@ -488,8 +488,10 @@ def _exec_taut(spec: Any) -> None:
 
 
 def main() -> int:
+    _record({"event": "provider-phase", "phase": "main-enter"})
     try:
         scenario = _load_scenario()
+        _record({"event": "provider-phase", "phase": "scenario-ready"})
         interrupts = _install_sigint_cleanup(scenario)
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
         _record({"event": "provider-error", "phase": "scenario", "error": str(exc)})
@@ -499,7 +501,9 @@ def main() -> int:
     state = _State()
     parser = _TerminalInputParser()
     try:
+        _record({"event": "provider-phase", "phase": "terminal-config-enter"})
         _configure_terminal_input()
+        _record({"event": "provider-phase", "phase": "terminal-config-ready"})
         _record(
             {
                 "event": "start",

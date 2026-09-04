@@ -443,11 +443,17 @@ class DriverProcess:
                 len([entry for entry in entries if entry["event"] == "start"]) >= count
             )
 
-        wait_until(
-            started,
-            timeout=timeout,
-            message=f"{count} provider start(s); stderr: {self.stderr_tail()}",
-        )
+        try:
+            wait_until(
+                started,
+                timeout=timeout,
+                message=f"{count} provider start(s)",
+            )
+        except AssertionError as exc:
+            raise AssertionError(
+                f"{exc}; driver_rc={self.proc.poll()!r}; "
+                f"entries={self.entries()!r}; stderr: {self.stderr_tail()}"
+            ) from None
         if not bootstrap:
             return
 
