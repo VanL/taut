@@ -953,7 +953,7 @@ def test_local_sink_failure_is_contained(
     real_write = Queue.write
     real_close = Queue.close
 
-    def fail_write(queue: Queue, message: str, **kwargs: object) -> object:
+    def fail_write(queue: Queue, message: str, **kwargs: int | None) -> object:
         if queue.name == "taut.debug":
             raise RuntimeError("debug write failed")
         return real_write(queue, message, **kwargs)
