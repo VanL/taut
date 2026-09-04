@@ -2,7 +2,8 @@
 
 Date: 2026-09-03
 
-Status: Active; fresh-eyes and cross-model plan reviews passed
+Status: Completed; implementation, fresh-eyes, cross-model, local, and hosted
+Windows verification passed
 
 Class: 5. This changes the public Summon CLI and typed API, removes a shipped
 adapter and persistence fields, replaces Windows process ownership, and changes
@@ -83,8 +84,9 @@ grow bindings beyond the functions exercised by a current Summon CLI/API path.
   `5dd7160708e12b4a973a85b7b2ed61247a1fcb50`.
 - `docs/implementation/05-taut-summon-architecture.md` blob:
   `5772c922883a22c6c6e7bb68048870afc521ace3`.
-- Promotion baseline: pending. Record the commit SHA or the baseline plus exact
-  spec diff after Slice 1 promotes the reviewed text.
+- Promotion baseline: `32ec8594bb3122073d9d84f1aebbc726dd23fa2d`.
+  This promoted the reviewed unified-PTY contract after the disposable ConPTY
+  qualification passed and before production code depended on that contract.
 
 ## Context and Key Files
 
@@ -1052,6 +1054,9 @@ those fixes.
 | Fresh eyes | repository subagent, read-only, rounds 1–4, 2026-09-03 | PASS | Initial F1–F8: incomplete spec/suppression delta, unqualified pywinpty lifecycle and ordering, unreachable legacy recovery, unspecified Windows attach, persistence-version misuse, wrong public API/exit evidence, incomplete file/skip census, and nonexistent arm64 lane. Follow-up N1: blocked ConPTY input writer lacked a cancellable owner. | All accepted and reproduced. The plan now ties suppression edits to symbol moves/deletion; uses a pre-spec native ConPTY qualification gate; defines exact legacy CAS states; specifies one-reader attach routing and handle ownership; promotes persistence v2 with an exact v1 reader; corrects public firing paths; completes the deletion/test census; limits hosted execution to available x64; and assigns blocked input writes to an epoch-controlled cancellable owner. Round 4 passed with no scoped blocker. |
 | Cross-model | Claude Opus 2.1.207, read-only plan mode with `Read,Grep,Glob`, 2026-09-03 | PASS | P2-1 make the v2 state-loader field drop explicit; P2-2 define separate persistence v1/v2 field sets and fresh-dump proof; P2-3 place legacy CAS in the existing re-summon refusal branch. Observations: state `_darwin_wait.py` disposition and distinguish component record version from component API version. | All reproduced and accepted. Slice 5 now names the exact dump/load functions, v1/v2 normalization boundary, v2 load and fresh-dump firing tests, unchanged `component_api_version=1`, and the existing `_driver._bootstrap()` mismatch branch as the sole CAS site. Current ownership now states that `_darwin_wait.py` remains the Darwin helper under the renamed POSIX process-domain owner. No new guard or scope was added. |
 | Slice 1 preflight | repository subagents, read-only code/API audit plus scoped fresh-eyes rounds, 2026-09-03 | PASS after correction | `ResizePseudoConsole` and `SetHandleInformation` had no public firing path; direct attach-sink writes could block the sole ConPTY drain; pipe-handle cleanup preceded child creation; classic-console output/UTF-8 restoration was incomplete; HRESULT/error-sentinel evidence was conflated; attach-writer timeout ownership was ambiguous. | All accepted. The two unreachable bindings were deleted from the plan. Pipe ends now survive through child creation. Attach output has a separate generation-tagged cancellable writer. Input/output modes and code pages restore exactly. Error evidence follows each documented return domain. A timed-out sink handle is quarantined until writer exit and cannot be reused. The final scoped review passed. |
+| Completed-work fresh eyes | repository subagent, read-only implementation review with portability follow-up, 2026-09-03 | PASS after correction | Three public backpressure tests and shared query/parser behavior were still hidden behind POSIX markers; one status probe used a platform-recognized terminal query. | All reproduced and accepted. Backpressure now uses a public-valid payload and runs as common behavior; parser/state tests are common; only the real POSIX transport query remains platform-specific; the status probe uses a genuinely unknown sequence. Follow-up found no blocker. |
+| Completed-work cross-model | GPT-5.5, read-only implementation review with portability follow-up, 2026-09-03 | PASS after correction | Independently identified the same unjustified common-test exclusions and requested proof that the replacement paths remained public and portable. | The corrected tests use public controller/driver routes and directory-wide collection. Follow-up passed with no scoped blocker. |
+| Windows attach and writer slices | two independent repository subagents, read-only focused reviews, 2026-09-03 | PASS after correction | Eager output drain could consume the startup prompt before attach; a 64 MiB ConPTY blocking assumption was not contractual; writer validation could misclassify an old-epoch interrupt. | Drain startup is lazy and idempotent; attach publishes its sink before draining; the renderer-size assumption was deleted; real unread Win32 pipes fire active and queued writer interruption/close; validation now gives epoch retirement the required precedence. Both focused follow-ups passed. |
 
 Cross-model findings, preserved verbatim:
 
@@ -1073,11 +1078,12 @@ Cross-model observations, preserved verbatim and dispositioned as clarifications
 
 ## Execution Log
 
-Slice 1 hosted-Windows evidence is pending. The disposable CI probe must record
-the branch commit SHA, Actions run and job IDs, Windows runner/Python identity,
-its single `TAUT_CONPTY_PROBE` JSON record, and the exact target test result.
-No spec promotion or production deletion may begin until that record satisfies
-the native API/ownership ledger and all Slice 1 stop gates.
+Slice 1 hosted-Windows evidence was recorded before contract promotion. The
+disposable CI probe recorded the branch commit SHA, Actions run and job IDs,
+Windows runner/Python identity, its single `TAUT_CONPTY_PROBE` JSON record, and
+the exact target test result. No spec promotion or production deletion began
+until that record satisfied the native API/ownership ledger and all Slice 1
+stop gates.
 
 First hosted attempt: branch commit `19d60c48522c4950c2b1f0b96f1be24e7b8472bf`,
 Actions run `33801891208`, job `100803133629`, Windows Python 3.11.9. ConPTY
@@ -1194,6 +1200,37 @@ keeping the terminal process alive also keeps the pseudoterminal input owner
 alive, so its claimed broken-write path was not reproducible through the PTY
 API on either platform.
 
+The first full Windows integration runs exposed and corrected two test-design
+mistakes rather than adding production branches. An eager ConPTY drain lost
+startup bytes before attach; lazy drain ownership fixed the reachable attach
+path. A later attempt forced the scripted byte-oriented child to use wide
+console character reads solely to preserve one supplementary-plane emoji.
+That changed bracketed-paste framing and split real multiline injections into
+separate turns. The wide-input specialization and emoji assertion were
+deleted. The fixture again reads the PTY byte stream used by the production
+adapter, retains UTF-8/BMP coverage, and leaves a real harness free to select
+its own Windows console API. This is the accepted anti-over-armor disposition.
+
+Final hosted verification: branch commit
+`1c5f4c83cf0945a1f7a557b0271c78c50ae7ec9b`, Actions run
+`33831244048`, 2026-09-04, completed successfully across every job. The
+Windows Summon process job `100894509870` ran the complete process selection
+with `214 passed`. Windows root/unit jobs passed on Python 3.11, 3.12, 3.13,
+and 3.14 (`100894510068`, `100894510006`, `100894510034`, and
+`100894509944`). Lint job `100894509901` and packaging job `100894509852`
+also passed. Collection contains 517 common tests, 72 POSIX primitive tests,
+and 12 Windows primitive tests; the workflow selects the whole Summon test
+directory and filters only by those semantic markers.
+
+Final local verification ran the complete non-Windows Summon selection with no
+failures. Four expected skips remained: one unavailable local Ollama model,
+two direct Darwin fallback cases, and one Linux zombie process-group
+regression. Ruff, formatting, production mypy, documentation/CLI claim gates,
+workflow architecture tests, wheel build and contents, persistence manifest
+v1/v2 compatibility, and the relevant core/TUI tests also passed during the
+recorded slices. PyYAML was already available through the development
+environment and no new direct dependency was necessary.
+
 ## Out of Scope
 
 - A generic structured-event adapter or mapping language.
@@ -1211,20 +1248,20 @@ API on either platform.
 
 ## Fresh-Eyes Checklist
 
-- [ ] Every named path, flag, symbol, marker, workflow step, and spec anchor
+- [x] Every named path, flag, symbol, marker, workflow step, and spec anchor
   exists at the recorded baseline.
-- [ ] The deletion ledger covers imports, public exports, tests, docs,
+- [x] The deletion ledger covers imports, public exports, tests, docs,
   persistence, build artifacts, and Windows helpers.
-- [ ] Each guard-register cause is constructible through the named current CLI
+- [x] Each guard-register cause is constructible through the named current CLI
   or API path; unreachable guards were removed.
-- [ ] No common test gained a platform skip and the CI plan has no filename
+- [x] No common test gained a platform skip and the CI plan has no filename
   allowlist.
-- [ ] The scripted seam uses the production PTY adapter and real subprocess.
-- [ ] Windows proof observes an attached descendant, not only the leader.
-- [ ] Native `ClosePseudoConsole` and host-console cancellation/restoration are
+- [x] The scripted seam uses the production PTY adapter and real subprocess.
+- [x] Windows proof observes an attached descendant, not only the leader.
+- [x] Native `ClosePseudoConsole` and host-console cancellation/restoration are
   qualified before the spec or deletion slices proceed.
-- [ ] The physical schema decision avoids an unnecessary destructive migration
+- [x] The physical schema decision avoids an unnecessary destructive migration
   while preserving a real old-dump path.
-- [ ] Failure priority, rollback, stop gates, and native-boundary limits are clear.
-- [ ] Proposed spec text deletes the second protocol before code depends on the
+- [x] Failure priority, rollback, stop gates, and native-boundary limits are clear.
+- [x] Proposed spec text deletes the second protocol before code depends on the
   new contract.
