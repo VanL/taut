@@ -70,11 +70,11 @@ class _SignalCleanupComplete(Exception):
     """Unwind the provider's main loop after bounded SIGINT cleanup."""
 
 
-def _configure_terminal_input() -> bool:
+def _configure_terminal_input() -> None:
     """Enter raw input where the child owns the terminal mode."""
 
     if not os.isatty(0):
-        return False
+        return
     if os.name == "nt":
         import ctypes
         import msvcrt
@@ -114,32 +114,11 @@ def _configure_terminal_input() -> bool:
                 raise OSError(ctypes_api.get_last_error(), "SetConsoleCP(UTF-8) failed")
         finally:
             os.close(console_fd)
-        return True
+        return
 
     import tty
 
     tty.setraw(0)
-    return False
-
-
-def _read_terminal_input(wide_console: bool) -> bytes:
-    if not wide_console:
-        return os.read(0, 4096)
-
-    import msvcrt
-
-    msvcrt_api: Any = msvcrt
-    first = str(msvcrt_api.getwch())
-    if 0xD800 <= ord(first) <= 0xDBFF:
-        second = str(msvcrt_api.getwch())
-        text = (
-            (first + second)
-            .encode("utf-16-le", errors="surrogatepass")
-            .decode("utf-16-le")
-        )
-    else:
-        text = first
-    return text.encode("utf-8")
 
 
 def _record(payload: dict[str, Any]) -> None:
@@ -523,7 +502,6 @@ def _exec_taut(spec: Any) -> None:
 
 
 def main() -> int:
-    wide_console = False
     try:
         scenario = _load_scenario()
         interrupts = _install_sigint_cleanup(scenario)
@@ -535,7 +513,7 @@ def main() -> int:
     state = _State()
     parser = _TerminalInputParser()
     try:
-        wide_console = _configure_terminal_input()
+        _configure_terminal_input()
         _record(
             {
                 "event": "start",
@@ -554,7 +532,7 @@ def main() -> int:
 
         index = 0
         while True:
-            data = _read_terminal_input(wide_console)
+            data = os.read(0, 4096)
             if not data:
                 return 0
             turns, interrupt_count = parser.feed(data)

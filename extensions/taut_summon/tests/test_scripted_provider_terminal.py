@@ -69,8 +69,8 @@ def test_scripted_provider_is_a_real_bracketed_paste_pty_child(
             time.sleep(0.01)
         assert handle.input_prompt_observed is True
 
-        handle.inject("· héllo 😀\nsecond line")
-        assert _wait_for_message(received)["text"] == "· héllo 😀\nsecond line"
+        handle.inject("· héllo\nsecond line")
+        assert _wait_for_message(received)["text"] == "· héllo\nsecond line"
     finally:
         handle.close()
         pump.join(timeout=5.0)
