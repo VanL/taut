@@ -502,6 +502,7 @@ def main() -> int:
         scenario = _load_scenario()
         interrupts = _install_sigint_cleanup(scenario)
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        _record({"event": "provider-error", "phase": "scenario", "error": str(exc)})
         _write_stderr(f"scripted provider: bad scenario: {exc}")
         return 2
 
@@ -543,6 +544,7 @@ def main() -> int:
     except KeyboardInterrupt:
         return 130
     except (OSError, TypeError, ValueError) as exc:
+        _record({"event": "provider-error", "phase": "terminal", "error": str(exc)})
         _write_stderr(f"scripted provider: terminal error: {exc}")
         return 2
 

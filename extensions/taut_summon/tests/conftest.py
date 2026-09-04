@@ -429,8 +429,22 @@ class DriverProcess:
         timeout: float = _DEADLINE,
         bootstrap: bool = True,
     ) -> None:
+        def started() -> bool:
+            entries = self.entries()
+            failures = [
+                entry for entry in entries if entry["event"] == "provider-error"
+            ]
+            if failures:
+                raise AssertionError(
+                    f"provider failed before start: {failures[-1]}; "
+                    f"stderr: {self.stderr_tail()}"
+                )
+            return (
+                len([entry for entry in entries if entry["event"] == "start"]) >= count
+            )
+
         wait_until(
-            lambda: len(self.starts()) >= count,
+            started,
             timeout=timeout,
             message=f"{count} provider start(s); stderr: {self.stderr_tail()}",
         )
