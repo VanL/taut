@@ -725,12 +725,17 @@ def test_public_start_refuses_legacy_provider_recovery_after_predicate_loss(
         driver_start_time=None,
     )
     supervised: list[str] = []
+
+    def record_supervision(
+        _driver: Any, boot: Any, _display: str, **_kwargs: Any
+    ) -> int:
+        supervised.append(boot.provider)
+        return 0
+
     monkeypatch.setattr(
         SummonDriver,
         "_supervise",
-        lambda _driver, boot, _display, **_kwargs: (
-            supervised.append(boot.provider) or 0
-        ),
+        record_supervision,
     )
     original_liveness = driver_module.driver_liveness
     contenders_ready = threading.Barrier(2)
