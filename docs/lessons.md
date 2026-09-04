@@ -840,6 +840,14 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   so setting a missing field is not proof that the native memory layout
   contains it.
 
+- 2026-09-03: Patching a function through an imported stdlib module object
+  changes that module globally in the test process. Replacing
+  `feature.time.monotonic` can therefore freeze pytest, xdist, and unrelated
+  threads, turning a fast unit test into a job-level timeout. Code with a
+  simulated clock should own narrow module-local callables such as
+  `_monotonic` and `_sleep`; tests patch those names, not the shared `time`
+  module.
+
 ## Starter Lessons
 
 - Keep canonical agent guidance in shared repo-owned docs and make root agent

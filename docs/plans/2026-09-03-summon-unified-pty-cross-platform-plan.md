@@ -2,7 +2,8 @@
 
 Date: 2026-09-03
 
-Status: Active; final-tip review corrections in progress
+Status: Completed; implementation, final-tip reviews, local verification, and
+the full hosted matrix passed
 
 Class: 5. This changes the public Summon CLI and typed API, removes a shipped
 adapter and persistence fields, replaces Windows process ownership, and changes
@@ -1056,6 +1057,8 @@ those fixes.
 | Completed-work fresh eyes | repository subagent, read-only implementation review with portability follow-up, 2026-09-03 | PASS after correction | Three public backpressure tests and shared query/parser behavior were still hidden behind POSIX markers; one status probe used a platform-recognized terminal query. | All reproduced and accepted. Backpressure now uses a public-valid payload and runs as common behavior; parser/state tests are common; only the real POSIX transport query remains platform-specific; the status probe uses a genuinely unknown sequence. Follow-up found no blocker. |
 | Completed-work cross-model | GPT-5.5, read-only implementation review with portability follow-up, 2026-09-03 | PASS after correction | Independently identified the same unjustified common-test exclusions and requested proof that the replacement paths remained public and portable. | The corrected tests use public controller/driver routes and directory-wide collection. Follow-up passed with no scoped blocker. |
 | Windows attach and writer slices | two independent repository subagents, read-only focused reviews, 2026-09-03 | PASS after correction | Eager output drain could consume the startup prompt before attach; a 64 MiB ConPTY blocking assumption was not contractual; writer validation could misclassify an old-epoch interrupt. | Drain startup is lazy and idempotent; attach publishes its sink before draining; the renderer-size assumption was deleted; real unread Win32 pipes fire active and queued writer interruption/close; validation now gives epoch retirement the required precedence. Both focused follow-ups passed. |
+| Final-tip portability and deletion audit | GPT-5.5 repository subagent, read-only full-diff review plus two follow-ups, 2026-09-03 | PASS after correction | A registered missing executable had only a private adapter test; active architecture prose still described the deleted stream path; the first public test matched POSIX-only backend wording. | Added a common controller test through registered `codex` with an empty PATH. It proves the portable handled error, retained durable identity/session required by token-before-spawn ordering, and cleared transient name/driver claims. Architecture prose now describes the shared adapter and both platform backends. The test matches only the controller-owned diagnostic prefix. Two follow-ups passed. |
+| Hosted follow-up defects | GPT-5.5 portability reviewer and Windows lifecycle reviewer, read-only focused reviews, 2026-09-03 | PASS | Windows STOP in one fallback-name test raced its deliberately bypassed readiness barrier; a root developer-script test mutated the shared stdlib clock and froze pytest/xdist. | The test now waits for real PING and stops the discovered public name; no production retry or alias was added. Polling tests patch module-local clock/sleep callables instead of global `time`. Both focused reviews and the final hosted matrix passed. |
 
 Cross-model findings, preserved verbatim:
 
@@ -1211,15 +1214,15 @@ adapter, retains UTF-8/BMP coverage, and leaves a real harness free to select
 its own Windows console API. This is the accepted anti-over-armor disposition.
 
 Final hosted verification: branch commit
-`1c5f4c83cf0945a1f7a557b0271c78c50ae7ec9b`, Actions run
-`33831244048`, 2026-09-04, completed successfully across every job. The
-Windows Summon process job `100894509870` ran the complete process selection
-with `214 passed`. Windows root/unit jobs passed on Python 3.11, 3.12, 3.13,
-and 3.14 (`100894510068`, `100894510006`, `100894510034`, and
-`100894509944`). Lint job `100894509901` and packaging job `100894509852`
-also passed. Collection contains 517 common tests, 72 POSIX primitive tests,
-and 12 Windows primitive tests; the workflow selects the whole Summon test
-directory and filters only by those semantic markers.
+`b3296c779917397c40005048739e77b8b53291ba`, Actions run `33834823459`,
+2026-09-04, completed successfully across every job. The Windows Summon
+process job `100905061772` ran the complete process selection with `215
+passed`. Windows root/unit jobs passed on Python 3.11, 3.12, 3.13, and 3.14
+(`100905061902`, `100905062020`, `100905061942`, and `100905061862`). Lint
+job `100905061747` and packaging job `100905061758` also passed. Collection
+contains 518 common tests, 72 POSIX primitive tests, and 12 Windows primitive
+tests; the workflow selects the whole Summon test directory and filters only
+by those semantic markers.
 
 Final local verification ran the complete non-Windows Summon selection with no
 failures. Four expected skips remained: one unavailable local Ollama model,
@@ -1229,6 +1232,17 @@ workflow architecture tests, wheel build and contents, persistence manifest
 v1/v2 compatibility, and the relevant core/TUI tests also passed during the
 recorded slices. PyYAML was already available through the development
 environment and no new direct dependency was necessary.
+
+Two post-review hosted failures were fixed before that final run. The first
+was a Windows-only test-harness race: a fallback-name test skipped the normal
+ready barrier, then attempted CLI STOP using the rejected implied name before
+the ready log identified the actual member. The test now waits for PING and
+passes the already-discovered fallback name to the helper. The second was an
+unrelated root-suite timeout encountered during verification: tests patched
+`scripts.time.monotonic`, which mutates the shared stdlib module and froze
+pytest/xdist timing. `_scripts.py` now exposes narrow module-local monotonic
+and sleep callables for those polling tests. No runtime policy or retry branch
+was added for either test defect.
 
 ## Out of Scope
 
