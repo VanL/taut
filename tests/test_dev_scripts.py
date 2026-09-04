@@ -204,8 +204,8 @@ def test_wait_for_postgres_polls_until_host_port_accepts_connections(
     times = iter([0.0, 0.0, 0.0, 0.0])
     sleeps: list[float] = []
 
-    monkeypatch.setattr(scripts.time, "monotonic", lambda: next(times))
-    monkeypatch.setattr(scripts.time, "sleep", lambda seconds: sleeps.append(seconds))
+    monkeypatch.setattr(scripts, "_monotonic", lambda: next(times))
+    monkeypatch.setattr(scripts, "_sleep", lambda seconds: sleeps.append(seconds))
     monkeypatch.setattr(scripts, "_docker_port", lambda _container: next(ports))
     monkeypatch.setattr(
         scripts,
@@ -229,8 +229,8 @@ def test_wait_for_postgres_raises_last_readiness_error(
 ) -> None:
     times = iter([0.0, 0.0, 2.0])
 
-    monkeypatch.setattr(scripts.time, "monotonic", lambda: next(times, 3.0))
-    monkeypatch.setattr(scripts.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(scripts, "_monotonic", lambda: next(times, 3.0))
+    monkeypatch.setattr(scripts, "_sleep", lambda _seconds: None)
     monkeypatch.setattr(scripts, "_docker_port", lambda _container: "15432")
 
     def fake_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -398,7 +398,7 @@ def test_verify_postgres_test_dsn_from_env_reports_timeout(
     monkeypatch.setattr(scripts.importlib, "import_module", lambda _name: FakePsycopg)
     monkeypatch.setenv("SIMPLEBROKER_PG_TEST_DSN", "postgresql://example")
     monkeypatch.setenv("SIMPLEBROKER_PG_TEST_DSN_READY_TIMEOUT", "0")
-    monkeypatch.setattr(scripts.time, "monotonic", lambda: 0.0)
+    monkeypatch.setattr(scripts, "_monotonic", lambda: 0.0)
 
     with pytest.raises(FakeOperationalError):
         scripts._verify_postgres_test_dsn_from_env()

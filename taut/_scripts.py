@@ -14,9 +14,10 @@ import shutil
 import socket
 import subprocess
 import sys
-import time
 import uuid
 from pathlib import Path
+from time import monotonic as _monotonic
+from time import sleep as _sleep
 from typing import Any, cast
 from urllib.parse import quote, urlsplit, urlunsplit
 
@@ -117,14 +118,14 @@ def _host_port_accepts_connections(
 def _wait_for_postgres(container_name: str, *, timeout_seconds: float = 60.0) -> str:
     """Wait for the Postgres container to accept connections and return its port."""
 
-    deadline = time.monotonic() + timeout_seconds
+    deadline = _monotonic() + timeout_seconds
     last_error = "container did not start"
 
-    while time.monotonic() < deadline:
+    while _monotonic() < deadline:
         port = _docker_port(container_name)
         if port is None:
             last_error = "waiting for published port"
-            time.sleep(1.0)
+            _sleep(1.0)
             continue
 
         result = subprocess.run(
@@ -152,13 +153,13 @@ def _wait_for_postgres(container_name: str, *, timeout_seconds: float = 60.0) ->
             last_error = (
                 f"waiting for host connection to 127.0.0.1:{port}: {host_error}"
             )
-            time.sleep(1.0)
+            _sleep(1.0)
             continue
 
         last_error = (
             result.stderr.strip() or result.stdout.strip() or "pg_isready failed"
         )
-        time.sleep(1.0)
+        _sleep(1.0)
 
     raise RuntimeError(f"Postgres did not become ready: {last_error}")
 
@@ -248,7 +249,7 @@ def _verify_postgres_test_dsn_from_env() -> None:
     psycopg = cast(Any, importlib.import_module("psycopg"))
 
     dsn = os.environ["SIMPLEBROKER_PG_TEST_DSN"]
-    deadline = time.monotonic() + float(
+    deadline = _monotonic() + float(
         os.environ.get("SIMPLEBROKER_PG_TEST_DSN_READY_TIMEOUT", "60")
     )
     retry_interval = float(
@@ -265,10 +266,10 @@ def _verify_postgres_test_dsn_from_env() -> None:
             return
         except psycopg.OperationalError as exc:
             last_error = f"{type(exc).__name__}: {exc}"
-            if time.monotonic() >= deadline:
+            if _monotonic() >= deadline:
                 print(f"Postgres test DSN was not ready: {last_error}", file=sys.stderr)
                 raise
-            time.sleep(retry_interval)
+            _sleep(retry_interval)
 
 
 def _verify_postgres_test_dsn(dsn: str, *, timeout_seconds: float = 60.0) -> None:
