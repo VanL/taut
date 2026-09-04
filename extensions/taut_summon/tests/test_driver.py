@@ -2207,14 +2207,7 @@ def test_scripted_provider_owns_signal_cleanup_during_ready_publication(
     monkeypatch.setattr(scripted_provider, "_record", record)
 
     assert scripted_provider.main() == 0
-    assert events == [
-        "provider-phase",
-        "provider-phase",
-        "provider-phase",
-        "provider-phase",
-        "start",
-        "provider-ready",
-    ]
+    assert events == ["start", "provider-ready"]
 
 
 def test_request_stop_requests_terminal_close_before_wake() -> None:

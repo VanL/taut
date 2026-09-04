@@ -89,17 +89,27 @@ def _configure_terminal_input() -> None:
         kernel32.GetConsoleMode.restype = ctypes.c_int
         kernel32.SetConsoleMode.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
         kernel32.SetConsoleMode.restype = ctypes.c_int
-        # Configure the actual standard-input handle supplied by ConPTY. Do
-        # not reopen the process console by name: nested drivers can redirect
-        # their own standard streams while the child still owns a valid
-        # pseudoconsole input handle.
-        handle = msvcrt_api.get_osfhandle(0)
-        mode = ctypes.c_uint32()
-        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
-            raise OSError(ctypes_api.get_last_error(), "GetConsoleMode(stdin) failed")
-        raw_mode = (mode.value & ~(0x0001 | 0x0002 | 0x0004)) | 0x0200
-        if not kernel32.SetConsoleMode(handle, raw_mode):
-            raise OSError(ctypes_api.get_last_error(), "SetConsoleMode(stdin) failed")
+        # A ConPTY child launched below a redirected host can have a CRT tty fd
+        # that is not itself accepted by GetConsoleMode. CONIN$ names the
+        # hosted console input buffer whose mode controls that same byte stream.
+        console_fd = os.open(
+            "CONIN$",
+            os.O_RDWR | int(getattr(os, "O_BINARY", 0)),
+        )
+        try:
+            handle = msvcrt_api.get_osfhandle(console_fd)
+            mode = ctypes.c_uint32()
+            if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+                raise OSError(
+                    ctypes_api.get_last_error(), "GetConsoleMode(CONIN$) failed"
+                )
+            raw_mode = (mode.value & ~(0x0001 | 0x0002 | 0x0004)) | 0x0200
+            if not kernel32.SetConsoleMode(handle, raw_mode):
+                raise OSError(
+                    ctypes_api.get_last_error(), "SetConsoleMode(CONIN$) failed"
+                )
+        finally:
+            os.close(console_fd)
         return
 
     import tty
@@ -488,10 +498,8 @@ def _exec_taut(spec: Any) -> None:
 
 
 def main() -> int:
-    _record({"event": "provider-phase", "phase": "main-enter"})
     try:
         scenario = _load_scenario()
-        _record({"event": "provider-phase", "phase": "scenario-ready"})
         interrupts = _install_sigint_cleanup(scenario)
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
         _record({"event": "provider-error", "phase": "scenario", "error": str(exc)})
@@ -501,9 +509,7 @@ def main() -> int:
     state = _State()
     parser = _TerminalInputParser()
     try:
-        _record({"event": "provider-phase", "phase": "terminal-config-enter"})
         _configure_terminal_input()
-        _record({"event": "provider-phase", "phase": "terminal-config-ready"})
         _record(
             {
                 "event": "start",

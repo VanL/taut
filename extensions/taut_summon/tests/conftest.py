@@ -382,6 +382,8 @@ class DriverProcess:
             command.extend(["--db", str(db)])
         if provider is not None:
             command.extend(["--provider", provider])
+        if "--attach" not in extra_args and "--detach" not in extra_args:
+            command.append("--detach")
         command.extend(extra_args)
         self._stderr_file = open(self.stderr_path, "w", encoding="utf-8")  # noqa: SIM115 approved [DOM-10.2.1] [RUFF-SUP-076] exception
         self.proc = subprocess.Popen(
