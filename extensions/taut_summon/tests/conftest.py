@@ -538,12 +538,17 @@ class DriverProcess:
 
     # --- lifecycle --------------------------------------------------------
 
-    def stop(self, *, timeout: float = _DEADLINE) -> int:
+    def stop(
+        self,
+        *,
+        timeout: float = _DEADLINE,
+        member_name: str | None = None,
+    ) -> int:
         if self.proc.poll() is None:
             if os.name == "nt":
                 rc, _out, _err = summon_cli(
                     "stop",
-                    self._current_member_name(),
+                    member_name or self._current_member_name(),
                     db=self.db,
                     cwd=self.tmp_path,
                     timeout=timeout,

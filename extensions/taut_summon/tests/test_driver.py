@@ -36,6 +36,7 @@ import taut_summon._driver as driver_module
 from conftest import (
     _DEADLINE,
     DriverProcess,
+    _await_control_request,
     _base_env,
     _control_request,
     _ctl_out_messages,
@@ -3171,13 +3172,20 @@ def test_step0_claim_collision_falls_back_for_implied_name(
             message="pool-fallback member",
         )
         assert fallback is not None
-        _wait_for_session_row(
+        session_row = _wait_for_session_row(
             summon_db,
             fallback.member_id,
             message="pool-fallback member session row",
         )
+        _await_control_request(
+            summon_db,
+            fallback.member_id,
+            "PING",
+            driver=driver,
+            session_row=session_row,
+        )
         assert _member_by_name(summon_db, "scripted") is None
-        assert driver.stop() == 0
+        assert driver.stop(member_name=fallback.name) == 0
     finally:
         child.kill()
         child.wait()
