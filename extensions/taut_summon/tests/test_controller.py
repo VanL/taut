@@ -22,6 +22,7 @@ from taut_summon._control import control_in_queue_name
 from taut_summon._state import (
     capture_driver_evidence,
     ensure_summon_schema,
+    get_claim,
     get_session,
     record_session,
 )
@@ -156,6 +157,59 @@ def _foreground_request(name: str) -> Any:
         rate_limit=None,
         detach=True,
     )
+
+
+def test_missing_registered_provider_executable_is_handled_and_releases_claims(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut_summon import (
+        ShellSummonInteraction,
+        SummonController,
+        SummonOperationError,
+        SummonRequest,
+    )
+
+    db = tmp_path / ".taut.db"
+    _create_foreground_project(db)
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-path"))
+    request = SummonRequest(
+        name="reviewer",
+        threads=("general",),
+        persona=None,
+        system_prompt_file=None,
+        rate_limit=None,
+        provider_flag="codex",
+        detach=True,
+    )
+
+    with pytest.raises(
+        SummonOperationError,
+        match="cannot spawn the harness: failed to spawn PTY harness",
+    ):
+        SummonController(db_path=db).run_foreground(
+            request,
+            ShellSummonInteraction(),
+        )
+
+    client = TautClient(db_path=db)
+    try:
+        members = [member for member in client.who() if member.name == "reviewer"]
+    finally:
+        client.close()
+    assert len(members) == 1
+
+    queue = Queue("taut.summon_state", db_path=str(db))
+    try:
+        row = get_session(queue, members[0].member_id)
+        claim = get_claim(queue, name="reviewer", provider="codex")
+    finally:
+        queue.close()
+    assert row is not None
+    assert row["provider"] == "codex"
+    assert row["driver_pid"] is None
+    assert row["driver_start_time"] is None
+    assert claim is None
 
 
 def _received_entries(path: Path) -> list[dict[str, Any]]:

@@ -355,10 +355,13 @@ interprets screen output as speech.
 ### PTY adapter: capable terminal, not screen parser ([SUM-7.4])
 
 `extensions/taut_summon/taut_summon/_pty.py` is the default host for
-interactive CLIs. It uses stdlib `pty.openpty()` and the shared POSIX process-
-domain spawn; no `pexpect`, `ptyprocess`, `tmux`, or screen emulator is in the
-dependency surface. The child sees a real PTY with `TERM=xterm-256color`, and
-the parent owns exactly one master fd.
+interactive CLIs. It owns provider-neutral terminal parsing, readiness,
+injection, events, and lifecycle coordination; it selects `_pty_posix.py` or
+`_pty_windows.py` only at the process/terminal boundary. POSIX uses stdlib
+`pty.openpty()` plus the shared process-group owner and holds one master fd.
+Windows uses one ConPTY plus its input/output pipe ends and process handle. No
+`pexpect`, `ptyprocess`, `tmux`, or screen emulator is in the dependency
+surface. Both backends present `TERM=xterm-256color` to the child.
 
 The PTY reader deliberately does not parse the TUI as speech. It reads raw
 bytes for three reasons only: finite terminal-query replies, coarse liveness,
@@ -378,7 +381,7 @@ The pump start point depends on the cached host decision. Forced detach,
 the pump starts immediately after spawn and keeps the terminal-query responder
 live while SQLite and queue setup run. `AVAILABLE` and historical `NO_TTY`
 remain delayed through `rejoin` and thread bootstrap. The driver then either
-lets the first-generation attach bridge own the master until detach or records
+lets the first-generation attach bridge own the terminal route until detach or records
 the detached reason before starting the pump. Later crash generations reuse
 the same decision and never acquire another lease. These paths preserve the
 single-reader invariant and the shipped shell ordering.
@@ -399,8 +402,7 @@ teardown uses `sys.exception()` to preserve a real primary failure, so calling
 it from the expected cancellation handler would relabel `PTY write interrupted`
 as a fatal shutdown error and make a confirmed ledger release return a false
 STOP failure. The rich-host regression pins the real write lease, control
-close request, and teardown order with events. Structured adapters keep the
-spawn-time system-prompt path.
+close request, and teardown order with events.
 
 PTY writes distinguish an ordinary adapter fault from a terminal provider
 outcome with an internal, non-exported `AdapterExitedError`. This closes the
@@ -413,30 +415,31 @@ Classification never waits for the pump thread; normal teardown still joins it
 and keeps cleanup failures subordinate to the selected primary error.
 
 PTY construction validates argv, unsigned-short terminal dimensions, and
-finite timing values before publishing a handle. Any setup or `Popen` failure
-closes both fds and becomes `AdapterError`, so malformed environment knobs
-cannot leak a master or escape the CLI as a traceback. The master is made
-nonblocking once before publication. All ordinary writers (injection, attach,
-and terminal replies) share one serializer and a method-entry write epoch;
-interrupt cancels active and queued old-epoch writes without acquiring that
-serializer and leaves the next epoch reusable. Write-side leases below pin fd
-identity while syscalls run outside the lifecycle lock; readiness-wait errors
-from concurrent close are normalized to the newer lifecycle state.
+finite timing values before selecting a backend or publishing a handle. Any
+setup or process-spawn failure closes every backend-owned fd/handle and becomes
+`AdapterError`, so malformed environment knobs or a missing registered
+provider executable cannot escape the CLI/controller as a traceback. All
+ordinary writers (injection, attach input, and terminal replies) share one
+serializer and a method-entry write epoch; interrupt cancels active and queued
+old-epoch writes without acquiring that serializer and leaves the next epoch
+reusable. Readiness-wait errors from concurrent close are normalized to the
+newer lifecycle state.
 
-The fd lifecycle is the load-bearing boundary. `PtyHandle.request_close()`
+On POSIX, the fd lifecycle is the load-bearing boundary. The master is made
+nonblocking once before publication. `PosixPtyHandle.request_close()`
 publishes terminal retirement and owns one graceful Ctrl-C without waiting.
-`PtyHandle.close()` ensures that request exists, drains operations, delegates
+`PosixPtyHandle.close()` ensures that request exists, drains operations, delegates
 the bounded group ladder and leader reap to the shared domain, and closes the
 master only if no reader has started. Once the pump owns the master, the reader
 closes it on EOF/EIO. Leader exit is a non-reaping observation and cannot skip
 domain retirement. The driver closes the handle and joins any already-started
 pump on exceptions through bootstrap and the pump hand-off, so a failed rejoin
-or thread join cannot leak a master fd or leave a zombie. Stream and PTY
-handles publish `close_requested` before the graceful signal, so injections
+or thread join cannot leak a master fd or leave a zombie. Every PTY handle
+publishes `close_requested` before the graceful signal, so injections
 that begin after terminal retirement fail synchronously; concurrent close
 callers observe the same terminal result.
 
-Write-side fd lifetime is carried by lifecycle-registered operation tokens and
+POSIX write-side fd lifetime is carried by lifecycle-registered operation tokens and
 duplicated master fds. Normal writers snapshot their epoch before
 serialization, lease a duplicate under the reentrant lifecycle lock, and
 perform nonblocking write/wait syscalls outside it. Reusable `interrupt()` and

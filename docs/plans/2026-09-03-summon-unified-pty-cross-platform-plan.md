@@ -2,8 +2,7 @@
 
 Date: 2026-09-03
 
-Status: Completed; implementation, fresh-eyes, cross-model, local, and hosted
-Windows verification passed
+Status: Active; final-tip review corrections in progress
 
 Class: 5. This changes the public Summon CLI and typed API, removes a shipped
 adapter and persistence fields, replaces Windows process ownership, and changes
@@ -349,7 +348,7 @@ may be added without first adding a row here.
 | Legacy stored `claude-stream` session | `taut summon NAME` and `SummonController.run_foreground()` against a pre-change sidecar/dump | Durable v3 row names `claude-stream`; replacement is omitted, names another provider, has live or partial driver evidence, or explicitly selects `claude` after driver evidence is absent or a complete pid/start-time pair is proven dead | Real SQLite fixtures exercise absent-evidence and proven-dead compare-and-set replacement, plus omitted, other-provider, live, both partial-evidence, and predicate-loss refusals through console and controller |
 | Removed terminal flag | `taut summon ... --terminal` and `taut-summon run ... --terminal` | User invokes a removed public option | Both parsers reject with their existing usage-error exit 1 and no traceback; no custom compatibility guard |
 | Malformed PTY environment values | `taut summon NAME --provider pty` and `SummonController.run_foreground()` with `TAUT_SUMMON_PTY_*` environment | Existing public environment variable is invalid | CLI and typed API firing tests assert the handled error; private `get_adapter("pty")` tests are supporting evidence only |
-| PTY executable missing | Either public console or controller selecting a registered provider whose executable is absent | PATH has no requested binary | Cross-platform public-path test asserts handled spawn failure and no member/claim leak |
+| PTY executable missing | Either public console or controller selecting a registered provider whose executable is absent | PATH has no requested binary | Cross-platform public-path test asserts handled spawn failure, retention of the already-published durable member/session required by token-before-spawn ordering, and release of transient name and driver claims |
 | Windows PTY runtime unavailable | Public console/controller on Windows | Required ConPTY function is absent or `CreatePseudoConsole` fails | Windows backend boundary injection plus one public CLI test; diagnostic names Windows PTY initialization, never Claude |
 | Windows ConPTY read/write/close failure | Public console/controller on Windows | Real child closes a channel, blocks a write, exits first, or leaves a descendant | Real ConPTY lifecycle tests plus driver STOP tests assert bounded exit and original-error priority |
 | POSIX PTY fd/signal failure | Public console/controller on POSIX | Real child closes master, exits first, or survives graceful signal | Existing real PTY/process-group probes moved to explicit POSIX modules |

@@ -51,7 +51,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 
 | Plan | Status | Exemplar | Note |
 |------|--------|----------|------|
-| `2026-09-03-summon-unified-pty-cross-platform-plan.md` | completed | no | Removed the Claude structured adapter and terminal-mode/session protocol; one PTY/ConPTY path now serves all providers, full-directory Summon CI passed on Windows, macOS, and Linux, and fresh-eyes plus cross-model completed-work reviews passed. |
+| `2026-09-03-summon-unified-pty-cross-platform-plan.md` | active | no | Implementation and hosted matrix passed; final-tip review corrections are in progress for a missing public spawn-failure proof and stale architecture prose. |
 | `2026-09-01-release-ci-test-determinism-plan.md` | completed | no | Class 4 exact-SHA release-blocker correction across root, Summon, and TUI test harnesses plus existing TUI diagnostic-precedence restoration; preserves assertions, timeout budgets, parallelism, and all release gates. |
 | `2026-08-28-simplebroker-8-reconciliation-plan.md` | completed | no | Independently reviewed Class 5 hardened SimpleBroker 8.0.0 / SimpleBroker-PG 4.0.0 reconciliation; implementation, verification, and owner-authorized targeted closeout passed. |
 | `2026-08-25-semantic-compatibility-hardening-plan.md` | active | no | Class 5 hardened plan rebased on SimpleBroker 8 and landed E2; owner-ratified spec delta is promoted, and implementation is active across strict config compatibility, version-first search, Windows identity classification, doctor parity, authentic Summon migration, semantic PostgreSQL conformance, and first-party discovery. |
