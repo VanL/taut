@@ -93,8 +93,8 @@
   state, and related navigation state instead of resetting the user's work.
 
 - Debug output keeps valid JSON structure while redacting credential-bearing
-  values. Structured diagnostics remain machine-readable without exposing
-  tokens or secrets.
+  values. Structured diagnostics remain machine-readable while recognized
+  credential-value spans are redacted.
 
 ## 0.9.6 - 2026-09-01
 
