@@ -21,7 +21,8 @@ from taut_summon._state import (
 
 import taut.state._sql as sql_state
 from taut import addressing, identity
-from taut._constants import META_QUEUE_NAME, load_config
+from taut._config import load_config
+from taut._constants import META_QUEUE_NAME
 from taut._exceptions import (
     BlankMessageError,
     EmptyResultError,

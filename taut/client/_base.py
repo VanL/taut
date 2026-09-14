@@ -3,25 +3,22 @@
 from __future__ import annotations
 
 import json
-import os
 import tomllib
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, NoReturn
 
-from simplebroker import BrokerTarget, Queue, ResolvedConfig, resolve_broker_target
+from simplebroker import BrokerTarget, Config, Queue, resolve_broker_target
 
 from taut import addressing, identity
+from taut._config import load_config
 from taut._constants import (
     MEMBER_ID_RE,
     META_QUEUE_NAME,
     NO_DATABASE_MESSAGE,
     PROJECT_CONFIG_NAME,
-    freeze_broker_config,
-    load_config,
 )
 from taut._exceptions import (
     NotFoundError,
@@ -137,7 +134,7 @@ def _direct_message_context_for_state(
 class _ClientBase(ABC):
     """Shared state and cross-mixin type contract for TautClient."""
 
-    config: ResolvedConfig
+    config: Config
     target: BrokerTarget | str
     as_name: str | None
     token: str | None
@@ -158,7 +155,7 @@ class _ClientBase(ABC):
         *,
         db_path: str | Path | None = None,
         broker_target: BrokerTarget | None = None,
-        broker_config: Mapping[str, Any] | None = None,
+        broker_config: Config | None = None,
         as_name: str | None = None,
         token: str | None = None,
         identity_capture: identity.IdentityCapture | None = None,
@@ -171,19 +168,15 @@ class _ClientBase(ABC):
             )
         if broker_target is not None and db_path is not None:
             raise ValueError("broker_target cannot be combined with db_path")
-        self.config = (
-            load_config()
-            if broker_config is None
-            else freeze_broker_config(broker_config)
-        )
+        self.config = load_config() if broker_config is None else broker_config
         self.target = self._resolve_target(db_path, broker_target=broker_target)
         reaction_config_path = (
             self.target.config_path if isinstance(self.target, BrokerTarget) else None
         )
         self._reaction_values = load_reaction_values(reaction_config_path)
         if inherit_environment_identity:
-            self.as_name = as_name or os.environ.get("TAUT_AS")
-            self.token = token or os.environ.get("TAUT_TOKEN")
+            self.as_name = as_name or str(self.config["AS"]) or None
+            self.token = token or str(self.config["TOKEN"]) or None
         else:
             self.as_name = as_name
             self.token = token
@@ -300,7 +293,7 @@ class _ClientBase(ABC):
                 broker_target,
                 backend_options=deepcopy(dict(broker_target.backend_options)),
             )
-        explicit = db_path or os.environ.get("TAUT_DB")
+        explicit = db_path or str(self.config["DB"]) or None
         if explicit is not None:
             path = Path(explicit).expanduser().resolve()
             if not path.is_file():
@@ -311,7 +304,7 @@ class _ClientBase(ABC):
         except (tomllib.TOMLDecodeError, ValueError) as exc:
             _raise_invalid_project_config(
                 exc,
-                str(self.config["BROKER_PROJECT_CONFIG_NAME"]),
+                str(self.config["PROJECT_CONFIG_NAME"]),
             )
         except RuntimeError as exc:
             hinted = backend_install_hint_error(exc)

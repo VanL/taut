@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Any
+from simplebroker import BrokerTarget, Config, Queue
 
-from simplebroker import BrokerTarget, Queue, ResolvedConfig
-
-from taut._constants import META_QUEUE_NAME, freeze_broker_config
+from taut._constants import META_QUEUE_NAME
 from taut._watch_runtime import TautWatchRuntime, WatchedThread
 from taut.state import SqlSidecarTautState, dialect_for_taut_target
 
@@ -22,14 +19,14 @@ class _OwnedWatchRuntime:
     def __init__(
         self,
         target: BrokerTarget | str,
-        config: Mapping[str, Any],
+        config: Config,
         *,
         persistent: bool,
         member_id: str | None = None,
         thread_display_names: dict[str, str] | None = None,
     ) -> None:
         self.target = target
-        self.config: ResolvedConfig = freeze_broker_config(config)
+        self.config = config
         queue = Queue(
             META_QUEUE_NAME,
             db_path=target,

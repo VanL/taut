@@ -16,7 +16,8 @@ import pytest
 from simplebroker import Queue, target_for_directory
 from simplebroker.ext import get_backend_plugin
 
-from taut._constants import META_QUEUE_NAME, load_config
+from taut._config import load_config
+from taut._constants import META_QUEUE_NAME
 from taut._exceptions import TautError
 from taut.client import TautClient
 from taut.state import SqlSidecarTautState, dialect_for_taut_target

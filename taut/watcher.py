@@ -45,8 +45,8 @@ from typing import TYPE_CHECKING, Any, cast, final
 
 from simplebroker import (
     BrokerTarget,
+    Config,
     Queue,
-    ResolvedConfig,
     create_activity_waiter_for_queues,
     resolve_broker_target,
 )
@@ -59,11 +59,10 @@ from simplebroker.ext import (
 )
 
 from taut import addressing
+from taut._config import load_config
 from taut._constants import (
     QUEUE_PRIORITY_NORMAL,
     WATCH_MEMBERSHIP_REFRESH_SECONDS,
-    freeze_broker_config,
-    load_config,
 )
 from taut._exceptions import MembershipError, WatcherRejected
 from taut._watch_runtime import TautWatchRuntime, WatchedThread
@@ -93,7 +92,7 @@ REACTOR_LIFECYCLE_METHODS = (
 def resolve_context_broker_target(
     starting_dir: str | Path | None = None,
     *,
-    config: Mapping[str, Any] | None = None,
+    config: Config | None = None,
 ) -> BrokerTarget:
     target = resolve_broker_target(starting_dir, config=config)
     if target is None:
@@ -181,7 +180,7 @@ class MultiQueueWatcher(BaseWatcher):
         default_error_handler_fn: Callable[
             [Exception, str, int], bool | None
         ] = default_error_handler,
-        config: Mapping[str, Any] | None = None,
+        config: Config | None = None,
     ) -> None:
         """Initialize the watcher with queue-specific configurations.
 
@@ -201,18 +200,16 @@ class MultiQueueWatcher(BaseWatcher):
                 queue discovery probes when no native activity hint is pending.
             default_error_handler_fn: Fallback error handler when queue config
                 does not supply one (defaults to SimpleBroker's default)
-            config: Optional SimpleBroker configuration dictionary. If omitted,
-                :func:`taut._constants.load_config` is used.
+            config: Optional resolved SimpleBroker configuration. If omitted,
+                :func:`taut._config.load_config` is used.
 
         Spec: [CC-2.1], [SB-0.4]
         """
         if not queue_configs:
             raise ValueError("queue_configs cannot be empty")
 
-        config_dict: ResolvedConfig = (
-            freeze_broker_config(config) if config is not None else load_config()
-        )
-        self._config: ResolvedConfig = config_dict
+        config_dict = config if config is not None else load_config()
+        self._config: Config = config_dict
 
         self._persistent = persistent
         self._yield_strategy = yield_strategy

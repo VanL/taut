@@ -16,8 +16,8 @@ from typing import Any, BinaryIO
 
 from simplebroker import (
     BrokerTarget,
+    Config,
     Queue,
-    ResolvedConfig,
     dump_lines,
     format_message_id,
     load_lines,
@@ -25,7 +25,8 @@ from simplebroker import (
     target_for_directory,
 )
 
-from taut._constants import MESSAGE_ID_RE, META_QUEUE_NAME, load_config
+from taut._config import load_config
+from taut._constants import MESSAGE_ID_RE, META_QUEUE_NAME
 from taut._exceptions import TautError
 from taut._maintenance import (
     backend_install_hint_error,
@@ -48,15 +49,15 @@ from ._format import (
 
 def _resolve_source(
     db_path: str | Path | None,
-) -> tuple[BrokerTarget | str, ResolvedConfig]:
+) -> tuple[BrokerTarget | str, Config]:
     return resolve_existing_target(db_path)
 
 
 def _resolve_destination(
     db_path: str | Path | None,
-) -> tuple[BrokerTarget | str, ResolvedConfig]:
+) -> tuple[BrokerTarget | str, Config]:
     config = load_config()
-    explicit = db_path or os.environ.get("TAUT_DB")
+    explicit = db_path or str(config["DB"]) or None
     if explicit is not None:
         path = Path(explicit).expanduser()
         if not path.parent.is_dir():
@@ -66,7 +67,7 @@ def _resolve_destination(
         return target_for_directory(Path.cwd(), config=config), config
     except (tomllib.TOMLDecodeError, ValueError) as exc:
         raise invalid_project_config_error(
-            exc, str(config["BROKER_PROJECT_CONFIG_NAME"])
+            exc, str(config["PROJECT_CONFIG_NAME"])
         ) from exc
     except RuntimeError as exc:
         raise (backend_install_hint_error(exc) or TautError(str(exc))) from exc

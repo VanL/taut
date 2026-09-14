@@ -970,7 +970,7 @@ Full isolated-wheel testing exposed one additional packaging error:
 `simplebroker>=8.0.0` selected 8.2.0, which removed the package-root
 `ResolvedConfig` API used by Taut. The owner rejected an upper-bound workaround
 and directed migration to the new declaration-driven Config API after the
-coordinated 8.2.1/4.2.1 patch release. That work is specified separately in
+coordinated 8.2.2/4.2.1 patch release. That work is specified separately in
 `2026-09-14-simplebroker-8-2-config-migration-plan.md`; no dependency change is
 part of these audit-remediation commits.
 

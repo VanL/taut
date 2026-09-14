@@ -271,7 +271,7 @@ recovery path for all of them.
 ### Backend neutrality, rate control, and trust
 
 The child resolves ordinary Taut configuration, then passes the paired public
-broker target and copied configuration to `TautClient`. SQLite and PostgreSQL
+broker target and the same resolved `Config` to `TautClient`. SQLite and PostgreSQL
 therefore use the same MCP path. The server has no backend-specific branch
 after resolution.
 

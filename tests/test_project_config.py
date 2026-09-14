@@ -8,7 +8,8 @@ from pathlib import Path
 import pytest
 from simplebroker import BrokerTarget, resolve_broker_target
 
-from taut._constants import PROJECT_CONFIG_NAME, load_config
+from taut._config import load_config
+from taut._constants import PROJECT_CONFIG_NAME
 from taut._exceptions import NotInitializedError, TautError
 from taut.client import TautClient
 from tests.conftest import ensure_taut_project_config
@@ -334,7 +335,7 @@ def test_load_config_pins_ambient_broker_backend_to_sqlite(
 
     config = load_config()
 
-    assert config["BROKER_BACKEND"] == "sqlite"
+    assert config["BACKEND"] == "sqlite"
 
 
 def test_env_only_broker_backend_does_not_select_postgres(

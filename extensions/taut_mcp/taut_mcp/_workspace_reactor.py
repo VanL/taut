@@ -17,7 +17,7 @@ from typing import TypeAlias
 from simplebroker import (
     ActivityWaiter,
     BrokerTarget,
-    ResolvedConfig,
+    Config,
     create_activity_waiter_for_queues,
     resolve_broker_target,
 )
@@ -30,7 +30,7 @@ from taut import (
     TautError,
     TokenError,
 )
-from taut._constants import DEFAULT_DB_NAME, load_config
+from taut._config import load_config
 from taut._exceptions import IdentityError, NotInitializedError
 
 from ._commands import (
@@ -207,15 +207,9 @@ def _workspace_owner(target: BrokerTarget) -> Path:
 
 def _resolve_workspace(
     locator: str,
-) -> tuple[BrokerTarget, ResolvedConfig, str, tuple[int, int]]:
-    # Explicit workspace resolution outranks ambient TAUT_DB for both halves of
-    # the lower-layer default path.
-    config = load_config(
-        {
-            "TAUT_DEFAULT_DB_LOCATION": "",
-            "TAUT_DEFAULT_DB_NAME": DEFAULT_DB_NAME,
-        }
-    )
+) -> tuple[BrokerTarget, Config, str, tuple[int, int]]:
+    # Explicit workspace resolution outranks the ambient direct-path selector.
+    config = load_config({"TAUT_DB": ""})
     try:
         target = resolve_broker_target(locator, config=config)
     except tomllib.TOMLDecodeError as exc:
@@ -260,7 +254,7 @@ class _WorkspaceReactor:
         self.client: TautClient | None = None
         self.token = ""
         self.target: BrokerTarget | None = None
-        self.config: ResolvedConfig | None = None
+        self.config: Config | None = None
         self.canonical = ""
         self.directory_identity = (0, 0)
         self.backend = ""

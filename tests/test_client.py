@@ -20,7 +20,8 @@ from simplebroker.ext import IntegrityError
 import taut.client._base as client_base
 import taut.client._messaging as messaging
 from taut import addressing, identity
-from taut._constants import META_QUEUE_NAME, NO_DATABASE_MESSAGE, load_config
+from taut._config import load_config
+from taut._constants import META_QUEUE_NAME, NO_DATABASE_MESSAGE
 from taut._exceptions import (
     AmbiguousMessageError,
     BlankMessageError,
@@ -173,7 +174,7 @@ def test_resolved_target_config_handoff_bypasses_ambient_resolution(
     project.mkdir()
     db = project / ".taut.db"
     TautClient.init(db_path=db)
-    config = dict(load_config({"TAUT_BUSY_TIMEOUT": 1234}))
+    config = load_config({"TAUT_BUSY_TIMEOUT": 1234})
     target = resolve_broker_target(
         project,
         config=load_config({"TAUT_BUSY_TIMEOUT": 1234}),
@@ -199,11 +200,9 @@ def test_resolved_target_config_handoff_bypasses_ambient_resolution(
 
     assert client.target == target
     assert isinstance(client.target, BrokerTarget)
-    assert client.config["BROKER_BUSY_TIMEOUT"] == 1234
+    assert client.config["BUSY_TIMEOUT"] == 1234
     assert client.joined_thread_names() == ("general",)
     assert not ambient_db.exists()
-    config["BROKER_BUSY_TIMEOUT"] = 9999
-    assert client.config["BROKER_BUSY_TIMEOUT"] == 1234
     target.backend_options["late"] = "mutated"
     assert client.target.backend_options == {}
 

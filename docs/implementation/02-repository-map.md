@@ -128,7 +128,8 @@ Quick pointers to the key guidance documents in this repository.
 
 | Path | Purpose |
 |------|---------|
-| `taut/_constants.py` | Taut constants, config translation, name validation, and identity name pools |
+| `taut/_config.py` | Taut's SimpleBroker declaration delta and namespaced config resolution |
+| `taut/_constants.py` | Taut constants, name validation, and identity name pools |
 | `taut/_message_text.py` | Small built-in Unicode classifier for user-authored `say` and `reply` text |
 | `taut/_redact.py` | Private lazy-compiled rule manifest and value-only final-text credential redaction helper for debug payloads |
 | `taut/_maintenance.py`, `taut/_doctor.py` | Shared existing-target resolution and the actor-free seven-check passive diagnostic orchestrator |

@@ -389,7 +389,7 @@ def test_representative_project_policy_location_matches_broker_resolution(
     from simplebroker import resolve_broker_target
 
     from taut import terminal
-    from taut._constants import load_config
+    from taut._config import load_config
 
     nested = tmp_path / "nested" / "deeper"
     nested.mkdir(parents=True)

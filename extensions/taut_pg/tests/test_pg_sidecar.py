@@ -22,7 +22,8 @@ from taut_summon._state import (
 
 import taut.state._sql as sql_state
 from taut import identity
-from taut._constants import META_QUEUE_NAME, load_config
+from taut._config import load_config
+from taut._constants import META_QUEUE_NAME
 from taut._exceptions import TautError
 from taut.client import TautClient
 from taut.state import POSTGRES_SQL_DIALECT, SqlSidecarTautState

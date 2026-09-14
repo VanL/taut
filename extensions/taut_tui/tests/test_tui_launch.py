@@ -39,7 +39,7 @@ def _configure_debug_capture_mode(
         return
     real_write = Queue.write
 
-    def fail_debug_write(queue: Queue, message: str, **kwargs: object) -> object:
+    def fail_debug_write(queue: Queue, message: str, **kwargs: int | None) -> int:
         if queue.name == "taut.debug":
             raise RuntimeError("debug sink failed")
         return real_write(queue, message, **kwargs)

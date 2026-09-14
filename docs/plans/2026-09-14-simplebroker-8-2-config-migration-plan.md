@@ -1,6 +1,8 @@
 # SimpleBroker 8.2 Config Migration Plan
 
-Status: draft. Class: 5. This changes Taut's public embedding config type, its
+Status: completed. SimpleBroker 8.2.2 and simplebroker-pg 4.2.1 are published;
+implementation and independent review passed. Class: 5. This changes Taut's public embedding
+config type, its
 dependency floor, environment resolution, and cross-package handoff contract.
 The code and normative spec must land atomically.
 
@@ -47,10 +49,9 @@ existing `Config` returns that object unchanged unless an override derives a
 new snapshot. SimpleBroker target, queue, watcher, and backend APIs consume the
 nominal `Config` directly.
 
-SimpleBroker 8.2.1 and simplebroker-pg 4.2.1 are being prepared as a
-coordinated patch release. Implementation must wait until both artifacts are
-published and independently installable. Then set the lower bounds to
-`simplebroker>=8.2.1` and `simplebroker-pg>=4.2.1`. Do not add an upper bound or
+SimpleBroker 8.2.2 and simplebroker-pg 4.2.1 are published as a coordinated
+patch release and independently installable. Set the lower bounds to
+`simplebroker>=8.2.2` and `simplebroker-pg>=4.2.1`. Do not add an upper bound or
 an adapter for the removed 8.1 API.
 
 ## Decisions
@@ -102,17 +103,19 @@ override=overrides)`. SimpleBroker selects the `TAUT_` namespace, validates
 declared fields, and preserves well-formed custom fields. Other prefixes and
 bare environment names remain ignored. Let `InvalidConfigError` provide
 validation metadata; its key already uses the public `TAUT_*` spelling, so do
-not parse or rewrite human-readable text.
+not parse or rewrite human-readable text. If a rejected value survives source
+precedence, suppress the duplicate application warning and retain the typed
+exception as Taut's established one-line CLI diagnostic. Re-emit warnings when
+resolution succeeds so overridden invalid values remain visible.
 
 ### `TAUT_DB` precedence
 
-Resolve `DB` with the other fields. When its value is nonempty and the caller did not
-explicitly override `TAUT_DEFAULT_DB_LOCATION` or `TAUT_DEFAULT_DB_NAME`, derive
-one new config with `resolve_config(config=resolved,
-override={"TAUT_DEFAULT_DB_LOCATION": ..., "TAUT_DEFAULT_DB_NAME": ...})` to split an
-absolute DB path or install a relative DB name. Explicit overrides retain
-precedence over ambient `TAUT_DB`. `db_path=` and CLI `--db` remain direct
-path-only selectors and still outrank the resolved config.
+Resolve `DB` with the other fields and read it directly at Taut's database
+selection boundaries. A nonempty value remains the same path-only selector as
+before; an empty value falls through to project and default discovery. Do not
+copy it into SimpleBroker's stricter `DEFAULT_DB_LOCATION` or
+`DEFAULT_DB_NAME` fields. `db_path=` and CLI `--db` remain direct path-only
+selectors and still outrank the resolved config.
 
 ### Direct nominal handoff
 
@@ -163,7 +166,7 @@ dual-stack complexity this migration removes.
 
 Production edits:
 
-- In `taut/_constants.py`, replace `_TAUT_BROKER_DEFAULTS`, prefix helpers,
+- In `taut/_config.py`, replace `_TAUT_BROKER_DEFAULTS`, prefix helpers,
   required-key checks, `freeze_broker_config`, manual environment merging, and
   `resolve_isolated_config` with the small declaration table and one
   `load_config` call to `resolve_config`.
@@ -175,8 +178,8 @@ Production edits:
   `extensions/taut_mcp/taut_mcp/_workspace_reactor.py` and
   `extensions/taut_summon/taut_summon/_control.py`. Update PostgreSQL callers
   only where the nominal config or unprefixed keys require it.
-- After both patch artifacts are published, raise dependency floors in root
-  and extension manifests to 8.2.1 and 4.2.1 and refresh `uv.lock`. Do not
+- Raise dependency floors in root
+  and extension manifests to 8.2.2 and 4.2.1 and refresh `uv.lock`. Do not
   constrain future compatible releases.
 
 Normative and implementation edits:
@@ -201,9 +204,8 @@ shape:
    resolution.
 2. A small `TAUT_MAX_MESSAGE_SIZE` causes a real oversized write rejection;
    the same ambient `BROKER_MAX_MESSAGE_SIZE` does not change a Taut client.
-3. `TAUT_DB`, explicit default-name/location overrides, `db_path=`, and project
-   config retain their documented precedence for relative and absolute paths;
-   empty `TAUT_DB` behaves as unset.
+3. `TAUT_DB`, `db_path=`, and project config retain their documented precedence
+   for relative and absolute paths; empty `TAUT_DB` behaves as unset.
 4. Declared identity values and an undeclared custom value survive in `Config`
    through a real Queue without closed-set validation or backend exposure;
    explicit identity arguments still win, disabled environment inheritance
@@ -215,8 +217,9 @@ shape:
 6. `Config` handoff remains attached to the selected project after cwd and
    environment mutation. Derivation uses upstream `resolve_config` and does not
    mutate the source snapshot.
-7. The percentage-unit and SQLite filename cases exercise the published 8.2.1
-   behavior.
+7. The percentage-unit and SQLite path cases exercise the published 8.2.2
+   behavior. SimpleBroker may validate the database name Taut asks it to create,
+   but must preserve pre-existing parent-directory spelling, including spaces.
 8. Two independently resolved equivalent Taut configs share a persistent
    backend session. Assert the observed shared session, not declaration object
    identity or a field-name inventory.
@@ -250,8 +253,8 @@ TAUT_PG_UV_NO_SYNC=1 .venv/bin/python bin/pytest-pg --fast \
 .venv/bin/python bin/check-plan-status-index
 ```
 
-Before any code edit, verify that ordinary isolated resolution installs
-SimpleBroker 8.2.1 with simplebroker-pg 4.2.1 from the published indexes. Then
+Verification must include ordinary isolated resolution installing
+SimpleBroker 8.2.2 with simplebroker-pg 4.2.1 from the published indexes. Then
 run the normal root and extension suites. Any temporary test environment must
 resolve those patch releases rather than inheriting the checkout's 8.0 lock.
 
@@ -282,7 +285,7 @@ Rollback is one commit because the migration is atomic. It restores the prior
 dependency floor and config implementation together. Do not publish artifacts
 from a partially reverted tree.
 
-Success means fresh wheel installs import and run against SimpleBroker 8.2.1
+Success means fresh wheel installs import and run against SimpleBroker 8.2.2
 and simplebroker-pg 4.2.1;
 SQLite and PostgreSQL target resolution retain documented precedence; ambient
 broker variables cannot alter a client; declared and custom Taut values survive

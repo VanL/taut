@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import os
 import tomllib
 from pathlib import Path
 
-from simplebroker import BrokerTarget, ResolvedConfig, resolve_broker_target
+from simplebroker import BrokerTarget, Config, resolve_broker_target
 
-from taut._constants import NO_DATABASE_MESSAGE, load_config
+from taut._config import load_config
+from taut._constants import NO_DATABASE_MESSAGE
 from taut._exceptions import NotInitializedError, TautError
 
 _MISSING_POSTGRES_PLUGIN_ERROR = "Unknown backend plugin: postgres"
@@ -61,11 +61,11 @@ def invalid_project_config_error(
 
 def resolve_existing_target(
     db_path: str | Path | None,
-) -> tuple[BrokerTarget | str, ResolvedConfig]:
+) -> tuple[BrokerTarget | str, Config]:
     """Resolve an existing workspace without creating a SQLite target."""
 
     config = load_config()
-    explicit = db_path or os.environ.get("TAUT_DB")
+    explicit = db_path or str(config["DB"]) or None
     if explicit is not None:
         path = Path(explicit).expanduser()
         if not path.exists():
@@ -75,7 +75,7 @@ def resolve_existing_target(
         target = resolve_broker_target(Path.cwd(), config=config)
     except (tomllib.TOMLDecodeError, ValueError) as exc:
         raise invalid_project_config_error(
-            exc, str(config["BROKER_PROJECT_CONFIG_NAME"])
+            exc, str(config["PROJECT_CONFIG_NAME"])
         ) from exc
     except RuntimeError as exc:
         raise (backend_install_hint_error(exc) or TautError(str(exc))) from exc

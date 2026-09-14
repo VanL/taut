@@ -41,7 +41,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
-from simplebroker import Queue, ResolvedConfig
+from simplebroker import Config, Queue
 from simplebroker.ext import BrokerError, StopWatching
 
 from taut import TautClient, TautError
@@ -297,7 +297,7 @@ class _ControlReactor(BaseReactor):
         owner: ControlLoop,
         *,
         db: Any,
-        config: ResolvedConfig,
+        config: Config,
     ) -> None:
         self._owner = owner
         self._queue_name = control_in_queue_name(owner._member_id)

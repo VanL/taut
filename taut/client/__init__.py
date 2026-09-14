@@ -23,10 +23,10 @@ from simplebroker import (
 )
 
 from taut import addressing
+from taut._config import load_config
 from taut._constants import (
     META_QUEUE_NAME,
     NO_DATABASE_MESSAGE,
-    load_config,
 )
 from taut._exceptions import MembershipError, NotInitializedError, TautError
 from taut._maintenance import backend_install_hint_error, resolve_existing_target
@@ -214,7 +214,7 @@ class TautClient(
         """Create a taut database and install sidecar tables."""
 
         config = load_config()
-        explicit = db_path or os.environ.get("TAUT_DB")
+        explicit = db_path or str(config["DB"]) or None
         db_file: Path | None
         if explicit is not None:
             path = Path(explicit).expanduser()
@@ -226,7 +226,7 @@ class TautClient(
             except (tomllib.TOMLDecodeError, ValueError) as exc:
                 _raise_invalid_project_config(
                     exc,
-                    str(config["BROKER_PROJECT_CONFIG_NAME"]),
+                    str(config["PROJECT_CONFIG_NAME"]),
                 )
             except RuntimeError as exc:
                 hinted = backend_install_hint_error(exc)

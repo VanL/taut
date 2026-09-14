@@ -190,7 +190,7 @@ python -m pip install taut-chat taut-pg taut-summon taut-mcp taut-tui
 ```
 
 Requirements: Python 3.11+. Base runtime dependencies are
-`simplebroker>=8.0.0` (which itself has none) and `psutil` for cross-platform
+`simplebroker>=8.2.2` (which itself has none) and `psutil` for cross-platform
 process metadata. The optional `tui` extra installs the separate `taut-tui`
 extension, which owns its Textual 8.2.8-or-newer requirement. Ordinary core CLI
 and library use do not import it.
@@ -271,12 +271,13 @@ is [TAUT-3.2] in the
 terminal rendering policy, the other `.taut.toml` table, is covered
 under the Trust Model below.
 
-Taut reads its broker settings only through the mechanically corresponding
-`TAUT_*` names listed in [TAUT-3.2]. Ambient `BROKER_*` settings belong to
-standalone SimpleBroker and do not affect Taut, even when they are invalid.
-Most named Taut defaults merely complete the lower-layer mapping for that
-isolation; they do not express separate Taut cache, vacuum, polling, or logging
-policy.
+Taut resolves its settings through SimpleBroker's `TAUT` namespace. Ambient
+`BROKER_*` settings belong to standalone SimpleBroker and do not affect Taut.
+Taut changes only its database filename, project filename, and project-scope
+defaults, then declares the Taut-only `DB`, `AS`, and sensitive `TOKEN` fields.
+All other defaults and validation come directly from SimpleBroker. Well-formed
+custom `TAUT_*` values, including debug-action context, remain available in the
+resolved config without a Taut-owned translation or field inventory.
 
 ### Summon Extension
 
@@ -925,7 +926,7 @@ with the boundary itself specified by [TAUT-9] in the
 <summary><strong>Why argparse and a small dependency set?</strong></summary>
 
 Taut follows SimpleBroker's discipline: the install should be boring.
-Runtime dependencies are exactly `simplebroker>=8.0.0` and `psutil`. The CLI is
+Runtime dependencies are exactly `simplebroker>=8.2.2` and `psutil`. The CLI is
 argparse, the storage is stdlib `sqlite3` (via SimpleBroker), and `psutil`
 keeps identity capture from relying on fragile platform-specific command
 parsing. The TUI ships as a separate `taut-tui` extension; the optional

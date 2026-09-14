@@ -24,7 +24,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any
 
-from simplebroker import BrokerTarget, Queue, ResolvedConfig
+from simplebroker import BrokerTarget, Config, Queue
 
 from taut._constants import META_QUEUE_NAME, __version__
 from taut._maintenance import display_target, resolve_existing_target
@@ -62,7 +62,7 @@ def capture_exception(
     operation: str,
     db_path: str | Path | None = None,
     broker_target: BrokerTarget | str | None = None,
-    broker_config: ResolvedConfig | None = None,
+    broker_config: Config | None = None,
 ) -> None:
     """Capture ``exc`` if enabled, without ever raising to the caller."""
 
@@ -95,8 +95,8 @@ def _resolve_capture_target(
     *,
     db_path: str | Path | None,
     broker_target: BrokerTarget | str | None,
-    broker_config: ResolvedConfig | None,
-) -> tuple[BrokerTarget | str, ResolvedConfig]:
+    broker_config: Config | None,
+) -> tuple[BrokerTarget | str, Config]:
     if broker_target is None and broker_config is None:
         return resolve_existing_target(db_path)
     if broker_target is None or broker_config is None or db_path is not None:
@@ -108,7 +108,7 @@ def _resolve_capture_target(
 
 def _capture_enabled(
     target: BrokerTarget | str,
-    config: ResolvedConfig,
+    config: Config,
 ) -> bool:
     queue = Queue(META_QUEUE_NAME, db_path=target, config=config)
     try:
@@ -327,7 +327,7 @@ def _write_local(
     payload: str,
     sentinel: str,
     target: BrokerTarget | str,
-    config: ResolvedConfig,
+    config: Config,
 ) -> None:
     with _LOCAL_CAPTURE_LOCK:
         queue = Queue(DEBUG_QUEUE_NAME, db_path=target, config=config)

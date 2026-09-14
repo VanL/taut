@@ -1004,15 +1004,15 @@ rewriting its version marker is not a v2 fixture.
   thread own reap or join.
   The control reactor follows SimpleBroker 5.2.0's reference
   persistent-session and thread-local-core ownership model, with
-  `simplebroker>=8.0.0` required for the supported reactor lane. Version
+  `simplebroker>=8.2.2` required for the supported reactor lane. Version
   5.2.2 first proved persistent process visibility; 5.3.2 makes cancellation
   interrupt watcher bootstrap while PhaseLock or SQLite connection setup is
   blocked; and 5.3.3 removes unsafe path-name-based runner cleanup and
   initializes timestamp-conflict metrics before concurrent first writes.
   Version 5.6.1 supplies core reaction fanout's full-requested-set exact-name
-  broadcast; `simplebroker>=8.0.0` is the repository-wide supported floor,
+  broadcast; `simplebroker>=8.2.2` is the repository-wide supported floor,
   aligned with
-  `simplebroker-pg>=4.0.0`. The current pair preserves resolved configuration
+  `simplebroker-pg>=4.2.1`. The current pair preserves the nominal `Config`
   through watcher and backend creation and includes serialized watcher cleanup
   and terminal error-handler propagation. It also publishes closeable Queue
   iterators with same-thread synchronous operation cleanup. Version 8.0.0
