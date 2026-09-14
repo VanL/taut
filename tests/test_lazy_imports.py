@@ -19,6 +19,7 @@ from typing import Any
 
 import pytest
 
+from taut.commands._registry import CommandRegistry
 from tests.conftest import PROJECT_ROOT, build_cli_env
 
 pytestmark = pytest.mark.sqlite_only
@@ -30,6 +31,21 @@ SUMMON_RUNTIME_MODULES = {
     "taut_summon._pty",
     "taut_summon._state",
     "taut_summon.controller",
+}
+BUILTIN_COMMANDS = tuple(
+    command
+    for command in CommandRegistry(entry_points=()).commands()
+    if command.builtin
+)
+HEAVY_COMMAND_RUNTIME_MODULES = {
+    "simplebroker",
+    "taut._watch_runtime",
+    "taut.client",
+    "taut.state",
+    "taut.watcher",
+    "taut_tui.app",
+    "textual",
+    *SUMMON_RUNTIME_MODULES,
 }
 
 
@@ -82,74 +98,6 @@ def _probe_modules(source: str, *, cwd: Path) -> set[str]:
             {"simplebroker", "taut.client", "taut.state", "taut.watcher"},
             True,
         ),
-        (
-            """
-            import contextlib
-            import io
-            import json
-            import sys
-            from taut.cli import main
-            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                assert main(["--help"]) == 0
-            print(json.dumps(sorted(sys.modules)))
-            """,
-            {"taut.commands._builtins", "taut.commands._registry"},
-            {
-                "simplebroker",
-                "taut.client",
-                "taut.commands._summon_compat",
-                "taut.commands.say",
-                "taut.commands.watch",
-                "taut_tui.command",
-                "taut_tui.app",
-                "taut.state",
-                "textual",
-                "taut.watcher",
-            },
-            False,
-        ),
-        (
-            """
-            import contextlib
-            import io
-            import json
-            import sys
-            from taut.cli import main
-            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                assert main(["say", "--help"]) == 0
-            print(json.dumps(sorted(sys.modules)))
-            """,
-            {"taut.commands._rendering", "taut.commands.say"},
-            {
-                "simplebroker",
-                "taut.client",
-                "taut.commands._summon_compat",
-                "taut.state",
-                "taut.watcher",
-            },
-            True,
-        ),
-        (
-            """
-            import contextlib
-            import io
-            import json
-            import sys
-            from taut.cli import main
-            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                assert main(["watch", "--help"]) == 0
-            print(json.dumps(sorted(sys.modules)))
-            """,
-            {"taut.commands._rendering", "taut.commands.watch"},
-            {
-                "simplebroker",
-                "taut.client",
-                "taut.commands._summon_compat",
-                "taut.state",
-                "taut.watcher",
-            },
-            True,
-        ),
     ],
 )
 def test_fresh_process_import_floors(
@@ -166,6 +114,54 @@ def test_fresh_process_import_floors(
     assert SUMMON_RUNTIME_MODULES.isdisjoint(modules)
     if forbid_all_summon:
         assert not any(name.startswith("taut_summon") for name in modules)
+
+
+def test_root_help_imports_manifests_without_command_implementations(
+    tmp_path: Path,
+) -> None:
+    modules = _probe_modules(
+        """
+        import contextlib
+        import io
+        import json
+        import sys
+        from taut.cli import main
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            assert main(["--help"]) == 0
+        print(json.dumps(sorted(sys.modules)))
+        """,
+        cwd=tmp_path,
+    )
+    implementation_modules = {
+        command.spec.implementation.partition(":")[0]
+        for command in BUILTIN_COMMANDS
+        if command.spec is not None
+    }
+
+    assert HEAVY_COMMAND_RUNTIME_MODULES.isdisjoint(modules)
+    assert implementation_modules.isdisjoint(modules)
+
+
+@pytest.mark.parametrize("command", BUILTIN_COMMANDS, ids=lambda command: command.name)
+def test_builtin_command_help_does_not_import_domain_runtime(
+    tmp_path: Path,
+    command: Any,
+) -> None:
+    modules = _probe_modules(
+        f"""
+        import contextlib
+        import io
+        import json
+        import sys
+        from taut.cli import main
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            assert main([{command.name!r}, "--help"]) == 0
+        print(json.dumps(sorted(sys.modules)))
+        """,
+        cwd=tmp_path,
+    )
+
+    assert HEAVY_COMMAND_RUNTIME_MODULES.isdisjoint(modules)
 
 
 def test_lazy_public_values_load_and_cache_only_their_owning_subsystem(

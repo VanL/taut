@@ -311,6 +311,12 @@ one generic loader:
 - `import taut` and `import taut_summon` expose typed package facades through
   `TYPE_CHECKING` imports and cached `__getattr__` lookup.
 
+The fresh-process help checks enumerate built-ins from the static
+`CommandRegistry` and reject command implementations or heavy domain runtimes
+at the relevant seam. They do not prescribe the exact set of lightweight
+helper imports, so adapters may use the public `taut.commands` facade without
+an unrelated architecture-test update.
+
 Import and discovery must not open storage, start a thread or process, install
 a signal handler, or change terminal state. Lazy loading moves an optional
 subsystem failure to first use; it does not hide the failure. Diagnostics must
@@ -408,8 +414,9 @@ semantics.
 Prefer black-box and installed-artifact proofs over mocks of the registry or
 domain runtime. `tests/test_command_registry.py` owns protocol, parser,
 conflict, cleanup, and real SQLite behavior. `tests/test_lazy_imports.py` and
-`tests/test_architecture_boundaries.py` own import floors and dependency
-direction. `tests/test_core_summon_wheel_matrix.py` builds and installs real
+`tests/test_architecture_boundaries.py` own fresh-process import floors and
+source-level boundaries such as broker-private access and terminal sinks,
+respectively. `tests/test_core_summon_wheel_matrix.py` builds and installs real
 wheels, verifies exact entry-point ownership, and exercises paired Summon
 lifecycle. `tests/fixtures/taut_command_plugin` is the minimal third-party
 packaging example.
