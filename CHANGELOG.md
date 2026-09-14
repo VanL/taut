@@ -71,6 +71,31 @@
   from about 12 ms to 3 ms of client work. The dispatcher's existing
   `finally` still closes the client, so no handle outlives the command.
 
+- Configuration now uses SimpleBroker 8.2's declaration-driven `Config`
+  contract directly, with SimpleBroker 8.2.2 and simplebroker-pg 4.2.1 as the
+  dependency floors. Taut keeps its existing target, environment, and custom
+  value precedence while removing the mirrored default and key-translation
+  layer that could drift from the broker's behavior.
+
+- Persistence and delivery failure boundaries are stricter. Dump contributors
+  are validated before any output is published, database paths are resolved
+  once when a client is constructed, and sender cursor catch-up is best effort
+  after a successful delivery so a bookkeeping failure cannot turn a delivered
+  message into a reported send failure.
+
+- Search projection work now resolves stale queued entries by exact message
+  identity and no longer creates obsolete rename-cycle projections. Channel
+  rename captures the complete registry topology inside the same transaction,
+  preventing concurrent topology changes from producing a partial rename.
+
+- TUI deletion immediately refreshes the visible transcript. Channel rename
+  now preserves the active conversation, draft text, reply target, search
+  state, and related navigation state instead of resetting the user's work.
+
+- Debug output keeps valid JSON structure while redacting credential-bearing
+  values. Structured diagnostics remain machine-readable without exposing
+  tokens or secrets.
+
 ## 0.9.6 - 2026-09-01
 
 - Kept TUI search-result jumps anchored to the exact selected message when a
