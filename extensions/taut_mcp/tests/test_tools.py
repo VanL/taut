@@ -2844,21 +2844,22 @@ def test_explicit_read_limit_pages_without_post_read_slicing(tmp_path: Path) -> 
     workspace.mkdir()
     db = workspace / ".taut.db"
     TautClient.init(db_path=db)
-    selected = TautClient(db_path=db, as_name="selected")
-    selected.join("general")
-    member = selected.last_created_member
-    assert member is not None
-    assert member.token is not None
-    other = TautClient(db_path=db, as_name="other")
-    other.join("general")
-    selected.read("general", limit=1000)
-    expected: list[str] = []
-    for index in range(250):
-        text = f"page-{index:03d}"
-        expected.append(text)
-        other.say("general", text)
-    selected.close()
-    other.close()
+    with ExitStack() as seed_clients:
+        selected = TautClient(db_path=db, as_name="selected", persistent=True)
+        seed_clients.callback(selected.close)
+        selected.join("general")
+        member = selected.last_created_member
+        assert member is not None
+        assert member.token is not None
+        other = TautClient(db_path=db, as_name="other", persistent=True)
+        seed_clients.callback(other.close)
+        other.join("general")
+        selected.read("general", limit=1000)
+        expected: list[str] = []
+        for index in range(250):
+            text = f"page-{index:03d}"
+            expected.append(text)
+            other.say("general", text)
 
     async def scenario() -> None:
         reactor = ProcessReactor(asyncio.get_running_loop())
