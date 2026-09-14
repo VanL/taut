@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Iterable
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -686,18 +687,22 @@ class MessagingMixin(_ClientBase):
         # One high-water cursor cannot hide the sender's post while preserving
         # an older unread row. Advance only when the committed open interval is
         # empty; otherwise the later read deliberately includes both rows.
-        intervening = queue.peek_many(
-            1,
-            after_timestamp=prior_cursor,
-            before_timestamp=own_message_ts,
-        )
-        if intervening:
-            return
-        self._state.advance_cursor(
-            thread=thread,
-            member_id=member_id,
-            seen_ts=own_message_ts,
-        )
+        # The source message is already durable. A failed auxiliary cursor
+        # catch-up may re-show it, but must not report a failed send and invite
+        # a duplicate retry. BaseException still propagates.
+        with suppress(Exception):
+            intervening = queue.peek_many(
+                1,
+                after_timestamp=prior_cursor,
+                before_timestamp=own_message_ts,
+            )
+            if intervening:
+                return
+            self._state.advance_cursor(
+                thread=thread,
+                member_id=member_id,
+                seen_ts=own_message_ts,
+            )
 
     def _write_mention_notifications(
         self,

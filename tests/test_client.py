@@ -78,15 +78,15 @@ def test_client_binds_relative_workspace_when_constructed(
 
     monkeypatch.chdir(first)
     TautClient.init(db_path="workspace.db")
-    kwargs: dict[str, object] = {
-        "as_name": "first-member",
-        "persistent": persistent,
-    }
     if selector == "db_path":
-        kwargs["db_path"] = "workspace.db"
+        bound = TautClient(
+            db_path="workspace.db",
+            as_name="first-member",
+            persistent=persistent,
+        )
     else:
         monkeypatch.setenv("TAUT_DB", "workspace.db")
-    bound = TautClient(**kwargs)
+        bound = TautClient(as_name="first-member", persistent=persistent)
     bound.join("general")
 
     monkeypatch.chdir(second)
@@ -5738,31 +5738,79 @@ def test_dm_first_message_mentioning_partner_notifies_mention_once(
     assert len(started) == 1
 
 
-def test_dm_started_notification_precedes_sender_cursor_probe_failure(
+@pytest.mark.parametrize("failure_point", ["probe", "advance"])
+def test_committed_dm_survives_sender_cursor_catch_up_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    failure_point: str,
 ) -> None:
-    """Task 2 ordering: a failed catch-up cannot suppress a committed DM pointer."""
+    """[TAUT-10] Cursor catch-up is auxiliary after a committed send."""
 
     van = client(tmp_path, "van")
     bob = existing_client(tmp_path, "bob")
     van.join("general")
     bob.join("general")
 
-    def fail_cursor_probe(*_args: object, **_kwargs: object) -> None:
-        raise RuntimeError("cursor probe failed")
+    if failure_point == "probe":
+        original_probe = Queue.peek_many
+        fired = False
 
-    monkeypatch.setattr(
-        TautClient,
-        "_advance_sender_if_no_intervening",
-        fail_cursor_probe,
+        def fail_probe_once(queue: Queue, *args: Any, **kwargs: Any) -> Any:
+            nonlocal fired
+            if not fired:
+                fired = True
+                raise RuntimeError("cursor probe failed")
+            return original_probe(queue, *args, **kwargs)
+
+        monkeypatch.setattr(Queue, "peek_many", fail_probe_once)
+    else:
+        original_advance = SqlSidecarTautState.advance_cursor
+        fired = False
+
+        def fail_advance_once(
+            state: SqlSidecarTautState, *args: Any, **kwargs: Any
+        ) -> Any:
+            nonlocal fired
+            if state is van._state and not fired:
+                fired = True
+                raise RuntimeError("cursor advance failed")
+            return original_advance(state, *args, **kwargs)
+
+        monkeypatch.setattr(SqlSidecarTautState, "advance_cursor", fail_advance_once)
+
+    receipt = van.say("@bob", "committed before catch-up")
+
+    assert receipt.text == "committed before catch-up"
+    assert fired is True
+    membership = van._state.get_membership(
+        thread=receipt.thread,
+        member_id=van.whoami().member_id,
     )
-
-    with pytest.raises(RuntimeError, match="cursor probe failed"):
-        van.say("@bob", "committed before catch-up")
-
+    assert membership is not None
+    assert membership["last_seen_ts"] < receipt.ts
     assert [item.type for item in bob.inbox()] == ["dm_started"]
     assert [message.text for message in bob.read()] == ["committed before catch-up"]
+
+
+def test_sender_cursor_catch_up_does_not_swallow_base_exception(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    van = client(tmp_path, "van")
+    bob = existing_client(tmp_path, "bob")
+    van.join("general")
+    bob.join("general")
+
+    def interrupt(*args: object, **kwargs: object) -> object:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(Queue, "peek_many", interrupt)
+
+    with pytest.raises(KeyboardInterrupt):
+        van.say("@bob", "committed before interrupt")
+
+    monkeypatch.undo()
+    assert [message.text for message in bob.read()] == ["committed before interrupt"]
 
 
 def test_dm_mentions_suppressed_when_registry_row_lacks_members_meta(

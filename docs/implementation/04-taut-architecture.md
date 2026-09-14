@@ -487,6 +487,9 @@ Stable-handle `say` resolves the actor with creation and claim healing both
 disabled, then uses that same validated context. Its dedicated existing-DM
 writer takes the context's actor, canonical thread, and prior cursor directly;
 it publishes through the ordinary message writer and sender-cursor guard. It
+returns the committed message when that guard's ordinary probe or cursor write
+fails; the cursor can re-show the post, but the source write is not retried.
+Cancellation and other `BaseException` signals still propagate. It
 does not re-resolve general membership and never enters `_say_dm`, which
 remains the sole owner of pair/membership creation and `dm_started`. Ordinary
 mention delivery is therefore still constrained by the validated two-person
