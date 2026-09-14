@@ -147,6 +147,90 @@ def test_summon_round_trip_keeps_continuity_and_clears_live_state(
         integer_queue.close()
 
 
+def test_dump_rejects_cross_component_race_before_replacing_backup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[PIO-6.1] A staged dump must pass contributor validation."""
+
+    from taut.state import SqlSidecarTautState
+
+    source = tmp_path / "source.db"
+    TautClient.init(db_path=source)
+    owner = TautClient(db_path=source, as_name="owner")
+    try:
+        owner.join("general")
+        member = owner.last_created_member
+        assert member is not None and member.token is not None
+    finally:
+        owner.close()
+
+    queue = Queue(_state.LEDGER_QUEUE_NAME, db_path=str(source))
+    try:
+        _state.ensure_summon_schema(queue)
+        _state.record_session(
+            queue,
+            member_id=member.member_id,
+            token=member.token,
+            provider="claude",
+            updated_ts=1,
+        )
+    finally:
+        queue.close()
+
+    backup = tmp_path / "backup.taut.jsonl"
+    TautClient.dump(output=backup, db_path=source)
+    original_backup = backup.read_bytes()
+    original_records = SqlSidecarTautState.persistence_records
+    raced = False
+
+    def records_before_late_session(
+        state: SqlSidecarTautState,
+    ) -> list[dict[str, object]]:
+        nonlocal raced
+        records = original_records(state)
+        if raced:
+            return records
+        raced = True
+        late = TautClient(db_path=source, as_name="late-agent")
+        try:
+            late.join("general")
+            late_member = late.last_created_member
+            assert late_member is not None and late_member.token is not None
+        finally:
+            late.close()
+        late_queue = Queue(_state.LEDGER_QUEUE_NAME, db_path=str(source))
+        try:
+            _state.record_session(
+                late_queue,
+                member_id=late_member.member_id,
+                token=late_member.token,
+                provider="claude",
+                updated_ts=2,
+            )
+        finally:
+            late_queue.close()
+        return records
+
+    monkeypatch.setattr(
+        SqlSidecarTautState,
+        "persistence_records",
+        records_before_late_session,
+    )
+
+    with pytest.raises(
+        TautError,
+        match="invalid taut-summon persistence component",
+    ):
+        TautClient.dump(output=backup, db_path=source)
+
+    assert raced is True
+    assert backup.read_bytes() == original_backup
+    assert list(tmp_path.glob(".backup.taut.jsonl.*.tmp")) == []
+    restored = tmp_path / "restored.db"
+    TautClient.load(input_path=backup, db_path=restored)
+
+
 def test_summon_persistence_v2_manifest_and_dump_omit_provider_session_id(
     tmp_path: Path,
 ) -> None:

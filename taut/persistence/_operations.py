@@ -278,6 +278,33 @@ def _clamp_core_cursors(
     return projected
 
 
+def _validate_contributor_records(
+    parsed: ParsedDump,
+    components: Iterable[RegisteredPersistenceComponent],
+    core_records: list[dict[str, Any]],
+) -> None:
+    """Validate extension records against the core records in one parsed dump."""
+
+    parts = {part.name: part for part in parsed.components}
+    core_member_ids = frozenset(
+        record["member_id"] for record in core_records if record["type"] == "member"
+    )
+    for item in components:
+        records = parsed.component_records(item.spec.name)
+        try:
+            item.component.validate_records(
+                parts[item.spec.name].version,
+                records,
+                core_member_ids=core_member_ids,
+            )
+        except Exception as exc:
+            raise TautError(
+                f"invalid {item.spec.name} persistence component: {exc}"
+            ) from exc
+        finally:
+            records.close()
+
+
 def dump_workspace(
     *,
     output: str | Path,
@@ -421,11 +448,16 @@ def dump_workspace(
                 part.name,
             )
         )
-        validate_dump(
+        parsed = validate_dump(
             temp_path,
             supported_components={
                 item.spec.name: item.spec.load_versions for item in active_components
             },
+        )
+        _validate_contributor_records(
+            parsed,
+            active_components,
+            parsed.core_records(),
         )
         os.replace(temp_path, output_path)
         temp_path = None
@@ -486,24 +518,7 @@ def _preflight_load(
             raise TautError(f"persistence component {part.name!r} is not installed")
         file_components.append(item)
     core_records = parsed.core_records()
-    core_member_ids = frozenset(
-        record["member_id"] for record in core_records if record["type"] == "member"
-    )
-    for item in file_components:
-        part = next(part for part in parsed.components if part.name == item.spec.name)
-        records = parsed.component_records(item.spec.name)
-        try:
-            item.component.validate_records(
-                part.version,
-                records,
-                core_member_ids=core_member_ids,
-            )
-        except Exception as exc:
-            raise TautError(
-                f"invalid {item.spec.name} persistence component: {exc}"
-            ) from exc
-        finally:
-            records.close()
+    _validate_contributor_records(parsed, file_components, core_records)
     return parsed, file_components, core_records
 
 

@@ -88,6 +88,12 @@ cross-component validators and is importable. It does not mean every projected
 row existed at one database instant. A race that would produce an illegal
 final composite fails validation and cannot replace an older output.
 
+Dump and load share the contributor-validation path. It derives core member
+references from the parsed staged file and gives each active contributor a
+fresh replay iterator over that same file. Dump runs this path after framing,
+digest, version, and core validation and before atomic replacement. It does not
+validate a second live projection or rediscover contributors after assembly.
+
 This is a coherent, validated, importable logical projection, not a frozen
 cross-store transaction. Claims, deletes, moves, registry changes, and sidecar
 metadata do not share one nanosecond boundary. Generic workspace advancement
