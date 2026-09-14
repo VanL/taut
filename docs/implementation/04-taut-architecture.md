@@ -377,27 +377,25 @@ require the tag recheck to run before the PyPI action, use the same publication
 condition, bind the selected evidence commit, and remain fatal. This proves the
 fail-closed behavior without making step display names part of the contract.
 
-Core and Summon are one paired reactor release boundary. The single owner of
-that proof is `bin/build-and-check-release-wheels.py`: it builds fresh core
-and Summon wheels in isolated temporary directories by default, then passes
-those exact artifacts to `bin/check-core-summon-wheel-matrix.py`. Its explicit
-path mode lets canonical CI reuse the current wheels it just built while the
-checker still builds two immutable historical release-source wheels. Historical
-Summon is a metadata diagnostic for the unrelated `Requires-Dist: taut`
-rename boundary. Historical `taut-mcp` 0.9.5 is an admitted compatibility
-canary: its open `taut-chat` floor is normally resolved against the candidate
-core in an isolated environment, then its installed stdio entry point performs
-real SQLite attach/list/detach and clean shutdown. The current matrix also
+Core, Summon, and MCP share one installed-artifact release boundary. The single
+owner of that proof is `bin/build-and-check-release-wheels.py`: it builds fresh
+core, Summon, and MCP wheels in isolated temporary directories by default,
+then passes those exact artifacts to `bin/check-core-summon-wheel-matrix.py`.
+Its explicit path mode lets canonical CI reuse the current wheels it just
+built. Historical Summon remains a metadata diagnostic for the unrelated
+`Requires-Dist: taut` rename boundary. Current MCP is installed with current
+core through ordinary dependency resolution; its installed stdio entry point
+performs real SQLite attach/list/detach and clean shutdown. The matrix also
 proves the `taut-chat` core by itself, current extension pairing and live
 Summon control, exact current project names and floors, and resolver rejection
 of an older incompatible `taut-chat` core when such a published baseline
 exists. Historical extension wheels that require distribution `taut` are not
 installed as compatible: Python packaging has no alias from `taut` to
 `taut-chat`, and the two distributions must not coexist because both own the
-same `taut/` files. Core and Summon local release paths run the build-owning
+same `taut/` files. Core, Summon, and MCP local release paths run the build-owning
 proof after the local preparation commit, prechecks, and ordinary builds, but
 before any branch push, tag mutation, tag push, or publication, including
-`--skip-checks`; a PG-only release does not run it.
+`--skip-checks`; PG-only and TUI-only releases do not run it.
 Package tooling checks third-party ranges and retained-lock consistency. The
 repository does not retain a PG lockfile; its development dependency selections
 come from the root lock.

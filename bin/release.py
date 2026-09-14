@@ -2096,11 +2096,11 @@ def build_postupdate_steps_for_targets(
                 "Build taut-tui source and wheel",
             )
         )
-    if target_keys & {ROOT_TARGET.key, SUMMON_TARGET.key}:
+    if target_keys & {ROOT_TARGET.key, SUMMON_TARGET.key, MCP_TARGET.key}:
         steps.append(
             CommandStep(
                 (sys.executable, str(RELEASE_WHEEL_SET_CHECKER)),
-                "Build and check fresh paired core/Summon release wheels",
+                "Build and check fresh coordinated core/Summon/MCP release wheels",
             )
         )
     return _unique_steps(tuple(steps))

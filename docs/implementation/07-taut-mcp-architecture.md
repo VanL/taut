@@ -305,12 +305,12 @@ bytes and same-run coverage shard. The dedicated MCP workflow owns the
 supported Python matrix, live PostgreSQL conformance, representative
 macOS/Windows non-PG lanes, and package-local quality gates.
 
-Candidate-core release evidence also builds the immutable `taut_mcp/v0.9.5`
-release source and installs that historical wheel with the candidate core by
-ordinary dependency resolution. Its legacy stdio attach/list/detach lifecycle
-is the retained open-range compatibility canary. This differs from the old
-Summon metadata diagnostic: the historical MCP combination is admitted and
-must run, not merely report a renamed dependency boundary.
+Coordinated release evidence installs the current MCP wheel with the current
+core wheel by ordinary dependency resolution. It verifies their exact core and
+SimpleBroker metadata relationship, then runs the installed stdio
+attach/list/detach and clean-shutdown lifecycle. The old Summon metadata
+diagnostic remains separate because it documents a renamed distribution
+boundary rather than admitting that historical wheel as current behavior.
 
 The tag gate observes exact-SHA evidence and hands the root-produced bundle to
 the shared no-rebuild staging workflow. That workflow creates a complete draft
@@ -364,7 +364,7 @@ Configuring this path is not evidence that a PyPI version has been published.
 | `extensions/taut_mcp/tests/test_stdio_server.py` | legacy and modern discovery, exact instructions/manifest, stable-DM send/miss framing, schema, cache, subscription, rate, cancellation, and installed-wheel stdio behavior |
 | `extensions/taut_mcp/tests/test_tools.py` | exact stable-only miss normalization, shape-only target grammar, real SQLite stable send/effects, search state neutrality, warnings, errors, projection, and cancellation |
 | `extensions/taut_mcp/tests/test_pg_conformance.py` | real PostgreSQL stable-DM and search adapter conformance |
-| `bin/check-core-summon-wheel-matrix.py`, `tests/test_core_summon_wheel_matrix.py` | immutable historical MCP/current-core metadata, checkout isolation, and installed stdio attach/list/detach canary |
+| `bin/check-core-summon-wheel-matrix.py`, `tests/test_core_summon_wheel_matrix.py` | current MCP/current-core metadata, checkout isolation, and installed stdio attach/list/detach lifecycle gate |
 | `taut/_scripts.py`, `tests/test_dev_scripts.py` | canonical PostgreSQL runner routing and MCP/PG dependency overlay |
 | `.github/workflows/test.yml` | sole MCP release-byte owner and same-run non-PG MCP coverage producer/aggregator |
 | `.github/workflows/test-mcp-extension.yml` | Ubuntu SQLite/PostgreSQL matrix, macOS/Windows non-PG lanes, and package-local quality gates |

@@ -450,16 +450,15 @@ This six-cell factor cover preserves every supported Python and OS boundary
 without paying for all ten OS/Python combinations.
 
 `bin/build-and-check-release-wheels.py` remains the build-owning entry point for
-local release checks. Canonical CI may pass one explicit core wheel and one
-explicit Summon wheel that it just built; paired arguments are required. The
-matrix exercises current `taut-chat`/Summon artifacts and records a historical
-Summon wheel's `Requires-Dist: taut` metadata without pretending that Python
-packaging aliases it to `taut-chat`. It separately builds the immutable
-`taut_mcp/v0.9.5` release source, installs that wheel with the candidate core
-through normal dependency resolution, and exercises its installed legacy stdio
-attach/list/detach lifecycle against real SQLite. The first historical case is
-a rename diagnostic; the second is an admitted compatibility canary. This
-avoids rebuilding current artifacts without hiding either boundary.
+local release checks. Canonical CI may pass one explicit core, Summon, and MCP
+wheel that it just built; all three arguments are required. The matrix
+exercises current `taut-chat`/Summon artifacts and records a historical Summon
+wheel's `Requires-Dist: taut` metadata without pretending that Python packaging
+aliases it to `taut-chat`. It installs current MCP with current core through
+normal dependency resolution and exercises the installed stdio
+attach/list/detach and clean-shutdown lifecycle against real SQLite. This
+avoids rebuilding current artifacts without hiding the retained Summon rename
+boundary.
 
 The MCP lifecycle driver is ordinary checker code, not an opaque generated
 probe. The isolated candidate-core bootstrap writes its continuity selector to
@@ -467,7 +466,7 @@ one exclusive temporary file with owner-only mode, the checker removes that
 file in `finally`, and no command line or evidence record contains the value.
 Scripted subprocess tests execute every protocol-stage failure, request and
 shutdown timeout, traceback rejection, selector echo, and stderr redaction
-path; the separately built historical wheel remains the success proof.
+path; the current MCP wheel remains the success proof.
 
 The principal firing tests are:
 

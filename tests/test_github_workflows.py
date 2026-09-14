@@ -1084,11 +1084,15 @@ def test_canonical_packaging_builds_and_smokes_each_release_artifact_once() -> N
         "${core_wheels[0]}",
         "--summon-wheel",
         "${summon_wheels[0]}",
+        "--mcp-wheel",
+        "${mcp_wheels[0]}",
     ]
     assert "core_wheels=(release-dist/core/*.whl)" in paired_run
     assert "summon_wheels=(release-dist/summon/*.whl)" in paired_run
+    assert "mcp_wheels=(release-dist/mcp/*.whl)" in paired_run
     assert 'test "${#core_wheels[@]}" -eq 1' in paired_run
     assert 'test "${#summon_wheels[@]}" -eq 1' in paired_run
+    assert 'test "${#mcp_wheels[@]}" -eq 1' in paired_run
 
 
 def test_setup_uv_steps_have_tight_timeouts() -> None:

@@ -2,11 +2,16 @@
 
 ## Unreleased
 
+## 0.9.7 - 2026-09-14
+
 - `taut-mcp` now declares its direct SimpleBroker dependency, matching the
   runtime APIs it imports and preventing its broker compatibility boundary
   from being hidden behind `taut-chat`'s transitive dependency.
 
-## 0.9.7 - 2026-09-14
+- The coordinated release wheel gate now installs and drives the current
+  `taut-mcp` wheel with the current core wheel. It verifies their dependency
+  metadata and the full stdio attach, list, detach, and clean-shutdown
+  lifecycle instead of testing a retired MCP release.
 
 - A command's own failure is no longer hidden by a broken `.taut.toml`. When
   rendering an execution error trips the terminal policy, stderr now carries

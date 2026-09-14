@@ -669,7 +669,7 @@ def test_installed_broken_official_claim_does_not_run_legacy_fallback(
 
 
 def _run_wheel_matrix_check(
-    tmp_path: Path, core: Path, summon: Path
+    tmp_path: Path, core: Path, summon: Path, mcp: Path
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
@@ -679,10 +679,10 @@ def _run_wheel_matrix_check(
             str(core),
             "--new-summon",
             str(summon),
+            "--new-mcp",
+            str(mcp),
             "--historical-summon-ref",
             "taut_summon/v0.5.4",
-            "--historical-mcp-ref",
-            "taut_mcp/v0.9.5",
         ],
         cwd=tmp_path,
         text=True,
@@ -706,32 +706,33 @@ def test_release_wheel_checker_uses_fresh_separate_wheel_outputs(
             output_dirs.append(output)
             assert output.is_dir()
             assert list(output.iterdir()) == []
-            assert output.name in {"core", "summon"}
-            wheel_name = (
-                "taut_chat-0.6.0-py3-none-any.whl"
-                if output.name == "core"
-                else "taut_summon-0.6.0-py3-none-any.whl"
-            )
+            assert output.name in {"core", "summon", "mcp"}
+            wheel_name = {
+                "core": "taut_chat-0.6.0-py3-none-any.whl",
+                "summon": "taut_summon-0.6.0-py3-none-any.whl",
+                "mcp": "taut_mcp-0.6.0-py3-none-any.whl",
+            }[output.name]
             (output / wheel_name).touch()
             return
         assert command[:2] == (sys.executable, str(WHEEL_MATRIX_CHECKER))
         core = Path(command[command.index("--new-core") + 1])
         summon = Path(command[command.index("--new-summon") + 1])
+        mcp = Path(command[command.index("--new-mcp") + 1])
         assert core.parent == output_dirs[0]
         assert summon.parent == output_dirs[1]
-        assert core.parent != summon.parent
-        assert core.is_file() and summon.is_file()
+        assert mcp.parent == output_dirs[2]
+        assert len({core.parent, summon.parent, mcp.parent}) == 3
+        assert core.is_file() and summon.is_file() and mcp.is_file()
         assert (
             command[command.index("--historical-summon-ref") + 1]
             == "taut_summon/v0.5.4"
         )
-        assert command[command.index("--historical-mcp-ref") + 1] == "taut_mcp/v0.9.5"
 
     monkeypatch.setattr(builder, "_run", fake_run)
 
     builder.build_and_check()
 
-    assert len(commands) == 3
+    assert len(commands) == 4
     assert all("dist" not in part for command in commands for part in command)
 
 
@@ -759,7 +760,7 @@ def test_release_wheel_checker_requires_exactly_one_wheel_per_output(
     assert len(commands) == 1
 
 
-def test_release_wheel_checker_dry_run_prints_build_build_check_order(
+def test_release_wheel_checker_dry_run_prints_builds_then_check_order(
     release_wheel_checker_module: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -776,12 +777,13 @@ def test_release_wheel_checker_dry_run_prints_build_build_check_order(
     output = capsys.readouterr().out
     core_build = output.index("uv build --wheel")
     summon_build = output.index("uv build --wheel", core_build + 1)
+    mcp_build = output.index("uv build --wheel", summon_build + 1)
     matrix_check = output.index("check-core-summon-wheel-matrix.py")
-    assert core_build < summon_build < matrix_check
+    assert core_build < summon_build < mcp_build < matrix_check
     assert "--new-core" in output
     assert "--new-summon" in output
+    assert "--new-mcp" in output
     assert "--historical-summon-ref taut_summon/v0.5.4" in output
-    assert "--historical-mcp-ref taut_mcp/v0.9.5" in output
 
 
 def test_release_wheel_checker_reuses_explicit_current_wheels_without_building(
@@ -792,8 +794,10 @@ def test_release_wheel_checker_reuses_explicit_current_wheels_without_building(
     builder = release_wheel_checker_module
     core = tmp_path / "taut_chat-0.6.1-py3-none-any.whl"
     summon = tmp_path / "taut_summon-0.6.1-py3-none-any.whl"
+    mcp = tmp_path / "taut_mcp-0.6.1-py3-none-any.whl"
     core.touch()
     summon.touch()
+    mcp.touch()
     commands: list[tuple[str, ...]] = []
 
     def fake_run(command: tuple[str, ...]) -> None:
@@ -801,10 +805,11 @@ def test_release_wheel_checker_reuses_explicit_current_wheels_without_building(
         assert command[1:3] != ("build", "--wheel")
         assert command[command.index("--new-core") + 1] == str(core)
         assert command[command.index("--new-summon") + 1] == str(summon)
+        assert command[command.index("--new-mcp") + 1] == str(mcp)
 
     monkeypatch.setattr(builder, "_run", fake_run)
 
-    builder.build_and_check(core_wheel=core, summon_wheel=summon)
+    builder.build_and_check(core_wheel=core, summon_wheel=summon, mcp_wheel=mcp)
 
     roles = Counter(
         "build"
@@ -817,7 +822,7 @@ def test_release_wheel_checker_reuses_explicit_current_wheels_without_building(
     assert roles == Counter({"wheel-matrix": 1})
 
 
-def test_release_wheel_checker_rejects_partial_explicit_pair(
+def test_release_wheel_checker_rejects_partial_explicit_set(
     tmp_path: Path,
     release_wheel_checker_module: ModuleType,
 ) -> None:
@@ -827,7 +832,7 @@ def test_release_wheel_checker_rejects_partial_explicit_pair(
 
     with pytest.raises(
         builder.ReleaseWheelCheckError,
-        match="core and Summon wheel paths must be supplied together",
+        match="core, Summon, and MCP wheel paths must be supplied together",
     ):
         builder.build_and_check(core_wheel=core)
 
@@ -838,8 +843,10 @@ def test_wheel_matrix_checker_accepts_exact_historical_summon_ref(
 ) -> None:
     core = tmp_path / "core.whl"
     summon = tmp_path / "summon.whl"
+    mcp = tmp_path / "mcp.whl"
     core.touch()
     summon.touch()
+    mcp.touch()
 
     inputs = wheel_matrix_module._parse_args(
         [
@@ -847,15 +854,15 @@ def test_wheel_matrix_checker_accepts_exact_historical_summon_ref(
             str(core),
             "--new-summon",
             str(summon),
+            "--new-mcp",
+            str(mcp),
             "--historical-summon-ref",
             "taut_summon/v0.5.4",
-            "--historical-mcp-ref",
-            "taut_mcp/v0.9.5",
         ]
     )
 
     assert inputs.historical_summon_ref == "taut_summon/v0.5.4"
-    assert inputs.historical_mcp_ref == "taut_mcp/v0.9.5"
+    assert inputs.new_mcp == mcp.resolve()
 
 
 def test_wheel_matrix_checker_rejects_mutable_historical_summon_ref(
@@ -864,8 +871,10 @@ def test_wheel_matrix_checker_rejects_mutable_historical_summon_ref(
 ) -> None:
     core = tmp_path / "core.whl"
     summon = tmp_path / "summon.whl"
+    mcp = tmp_path / "mcp.whl"
     core.touch()
     summon.touch()
+    mcp.touch()
 
     with pytest.raises(
         wheel_matrix_module.WheelMatrixError,
@@ -877,69 +886,11 @@ def test_wheel_matrix_checker_rejects_mutable_historical_summon_ref(
                 str(core),
                 "--new-summon",
                 str(summon),
+                "--new-mcp",
+                str(mcp),
                 "--historical-summon-ref",
                 "main",
-                "--historical-mcp-ref",
-                "taut_mcp/v0.9.5",
             ]
-        )
-
-
-def test_wheel_matrix_checker_rejects_mutable_historical_mcp_ref(
-    tmp_path: Path,
-    wheel_matrix_module: ModuleType,
-) -> None:
-    core = tmp_path / "core.whl"
-    summon = tmp_path / "summon.whl"
-    core.touch()
-    summon.touch()
-
-    with pytest.raises(
-        wheel_matrix_module.WheelMatrixError,
-        match="historical MCP ref must be immutable release ref",
-    ):
-        wheel_matrix_module._parse_args(
-            [
-                "--new-core",
-                str(core),
-                "--new-summon",
-                str(summon),
-                "--historical-summon-ref",
-                "taut_summon/v0.5.4",
-                "--historical-mcp-ref",
-                "main",
-            ]
-        )
-
-
-def test_historical_mcp_tag_commit_mismatch_fails_closed(
-    tmp_path: Path,
-    wheel_matrix_module: ModuleType,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    expected = "a" * 40
-    observed = "b" * 40
-    ref = "taut_mcp/v0.9.5"
-    monkeypatch.setattr(wheel_matrix_module, "PROJECT_ROOT", tmp_path)
-    monkeypatch.setattr(wheel_matrix_module, "EXPECTED_REF_COMMITS", {ref: expected})
-    monkeypatch.setattr(
-        wheel_matrix_module,
-        "_run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess(
-            ["git", "ls-remote"],
-            0,
-            f"{observed}\trefs/tags/{ref}^{{}}\n",
-            "",
-        ),
-    )
-
-    with pytest.raises(
-        wheel_matrix_module.WheelMatrixError,
-        match=f"resolves to {observed}, expected {expected}",
-    ):
-        wheel_matrix_module._resolve_remote_tag(
-            ref,
-            env=wheel_matrix_module._clean_environment(),
         )
 
 
@@ -978,7 +929,7 @@ def test_release_wheel_checker_reports_spawn_error_without_traceback(
     assert len(error.splitlines()) == 1
 
 
-def test_release_wheel_checker_builds_both_wheels_before_matrix_check(
+def test_release_wheel_checker_builds_all_wheels_before_matrix_check(
     release_wheel_checker_module: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -988,7 +939,11 @@ def test_release_wheel_checker_builds_both_wheels_before_matrix_check(
     def fake_run(command: tuple[str, ...]) -> None:
         if command[1:3] == ("build", "--wheel"):
             output = Path(command[command.index("--out-dir") + 1])
-            wheel = "taut_chat.whl" if output.name == "core" else "taut_summon.whl"
+            wheel = {
+                "core": "taut_chat.whl",
+                "summon": "taut_summon.whl",
+                "mcp": "taut_mcp.whl",
+            }[output.name]
             (output / wheel).touch()
             events.append(f"build:{output.name}")
             return
@@ -1001,6 +956,7 @@ def test_release_wheel_checker_builds_both_wheels_before_matrix_check(
     assert events == [
         "build:core",
         "build:summon",
+        "build:mcp",
         "check:wheel-matrix",
     ]
 
@@ -1010,8 +966,11 @@ def test_wheel_matrix_checker_reports_missing_wheel_without_traceback(
 ) -> None:
     missing_core = tmp_path / "missing-core.whl"
     missing_summon = tmp_path / "missing-summon.whl"
+    missing_mcp = tmp_path / "missing-mcp.whl"
 
-    completed = _run_wheel_matrix_check(tmp_path, missing_core, missing_summon)
+    completed = _run_wheel_matrix_check(
+        tmp_path, missing_core, missing_summon, missing_mcp
+    )
 
     assert completed.returncode == 1
     assert "new core wheel does not exist" in completed.stderr
@@ -1033,8 +992,14 @@ def test_wheel_matrix_checker_rejects_old_core_distribution_name(
         version="0.6.0",
         requirements=("taut-chat>=0.6.0",),
     )
+    mcp = _write_wheel(
+        tmp_path / "taut_mcp-0.6.0-py3-none-any.whl",
+        name="taut-mcp",
+        version="0.6.0",
+        requirements=("taut-chat>=0.6.0", "simplebroker>=8.2.2"),
+    )
 
-    completed = _run_wheel_matrix_check(tmp_path, core, summon)
+    completed = _run_wheel_matrix_check(tmp_path, core, summon, mcp)
 
     assert completed.returncode == 1
     assert "expected 'taut-chat'" in completed.stderr
@@ -1048,7 +1013,7 @@ def test_wheel_matrix_checker_rejects_summon_without_exact_new_core_floor(
         tmp_path / "taut_chat-0.6.0-py3-none-any.whl",
         name="taut-chat",
         version="0.6.0",
-        requirements=(),
+        requirements=("simplebroker>=8.2.2",),
     )
     summon = _write_wheel(
         tmp_path / "taut_summon-0.6.0-py3-none-any.whl",
@@ -1056,8 +1021,14 @@ def test_wheel_matrix_checker_rejects_summon_without_exact_new_core_floor(
         version="0.6.0",
         requirements=("taut-chat>=0.5.0",),
     )
+    mcp = _write_wheel(
+        tmp_path / "taut_mcp-0.6.0-py3-none-any.whl",
+        name="taut-mcp",
+        version="0.6.0",
+        requirements=("taut-chat>=0.6.0", "simplebroker>=8.2.2"),
+    )
 
-    completed = _run_wheel_matrix_check(tmp_path, core, summon)
+    completed = _run_wheel_matrix_check(tmp_path, core, summon, mcp)
 
     assert completed.returncode == 1
     assert "taut-chat>=0.6.0" in completed.stderr
@@ -1084,7 +1055,7 @@ def test_wheel_matrix_checker_rejects_nonexact_or_duplicate_taut_chat_requiremen
             tmp_path / "taut_chat-0.6.0-py3-none-any.whl",
             name="taut-chat",
             version="0.6.0",
-            requirements=(),
+            requirements=("simplebroker>=8.2.2",),
         )
     )
     summon = wheel_matrix_module._read_wheel_metadata(
@@ -1095,12 +1066,20 @@ def test_wheel_matrix_checker_rejects_nonexact_or_duplicate_taut_chat_requiremen
             requirements=requirements,
         )
     )
+    mcp = wheel_matrix_module._read_wheel_metadata(
+        _write_wheel(
+            tmp_path / "taut_mcp-0.6.0-py3-none-any.whl",
+            name="taut-mcp",
+            version="0.6.0",
+            requirements=("taut-chat>=0.6.0", "simplebroker>=8.2.2"),
+        )
+    )
 
     with pytest.raises(
         wheel_matrix_module.WheelMatrixError,
         match="exactly one unmarked Requires-Dist 'taut-chat>=0.6.0'",
     ):
-        wheel_matrix_module._validate_new_metadata(core, summon)
+        wheel_matrix_module._validate_new_metadata(core, summon, mcp)
 
 
 def test_wheel_matrix_checker_rejects_taut_command_entry_points_in_core_wheel(
@@ -1112,7 +1091,7 @@ def test_wheel_matrix_checker_rejects_taut_command_entry_points_in_core_wheel(
             tmp_path / "taut-0.6.0-py3-none-any.whl",
             name="taut-chat",
             version="0.6.0",
-            requirements=(),
+            requirements=("simplebroker>=8.2.2",),
             command_entry_points=(("summon", "wrong_owner:summon"),),
         )
     )
@@ -1124,12 +1103,20 @@ def test_wheel_matrix_checker_rejects_taut_command_entry_points_in_core_wheel(
             requirements=("taut-chat>=0.6.0",),
         )
     )
+    mcp = wheel_matrix_module._read_wheel_metadata(
+        _write_wheel(
+            tmp_path / "taut_mcp-0.6.0-py3-none-any.whl",
+            name="taut-mcp",
+            version="0.6.0",
+            requirements=("taut-chat>=0.6.0", "simplebroker>=8.2.2"),
+        )
+    )
 
     with pytest.raises(
         wheel_matrix_module.WheelMatrixError,
         match="new core wheel must not publish taut.commands entry points",
     ):
-        wheel_matrix_module._validate_new_metadata(core, summon)
+        wheel_matrix_module._validate_new_metadata(core, summon, mcp)
 
 
 @pytest.mark.parametrize(
@@ -1153,7 +1140,7 @@ def test_wheel_matrix_checker_requires_exact_summon_command_entry_points(
             tmp_path / "taut-0.6.0-py3-none-any.whl",
             name="taut-chat",
             version="0.6.0",
-            requirements=(),
+            requirements=("simplebroker>=8.2.2",),
         )
     )
     summon = wheel_matrix_module._read_wheel_metadata(
@@ -1165,12 +1152,89 @@ def test_wheel_matrix_checker_requires_exact_summon_command_entry_points(
             command_entry_points=entry_points,
         )
     )
+    mcp = wheel_matrix_module._read_wheel_metadata(
+        _write_wheel(
+            tmp_path / "taut_mcp-0.6.0-py3-none-any.whl",
+            name="taut-mcp",
+            version="0.6.0",
+            requirements=("taut-chat>=0.6.0", "simplebroker>=8.2.2"),
+        )
+    )
 
     with pytest.raises(
         wheel_matrix_module.WheelMatrixError,
         match="new Summon wheel must publish exactly",
     ):
-        wheel_matrix_module._validate_new_metadata(core, summon)
+        wheel_matrix_module._validate_new_metadata(core, summon, mcp)
+
+
+@pytest.mark.parametrize(
+    ("mcp_name", "mcp_requirements", "diagnostic"),
+    (
+        (
+            "wrong-mcp",
+            ("taut-chat>=0.6.0", "simplebroker>=8.2.2"),
+            "expected 'taut-mcp'",
+        ),
+        (
+            "taut-mcp",
+            ("taut-chat>=0.5.0", "simplebroker>=8.2.2"),
+            "taut-chat>=0.6.0",
+        ),
+        (
+            "taut-mcp",
+            ("taut-chat>=0.6.0", "simplebroker>=8.2.1"),
+            "same single unmarked SimpleBroker requirement",
+        ),
+        (
+            "taut-mcp",
+            (
+                "taut-chat>=0.6.0",
+                'simplebroker>=8.2.2; python_version >= "3.11"',
+            ),
+            "same single unmarked SimpleBroker requirement",
+        ),
+    ),
+    ids=("project-name", "core-floor", "broker-floor", "marked-broker-floor"),
+)
+def test_wheel_matrix_checker_rejects_invalid_current_mcp_metadata(
+    tmp_path: Path,
+    wheel_matrix_module: ModuleType,
+    mcp_name: str,
+    mcp_requirements: tuple[str, ...],
+    diagnostic: str,
+) -> None:
+    core = wheel_matrix_module._read_wheel_metadata(
+        _write_wheel(
+            tmp_path / "taut_chat-0.6.0-py3-none-any.whl",
+            name="taut-chat",
+            version="0.6.0",
+            requirements=("simplebroker>=8.2.2",),
+        )
+    )
+    summon = wheel_matrix_module._read_wheel_metadata(
+        _write_wheel(
+            tmp_path / "taut_summon-0.6.0-py3-none-any.whl",
+            name="taut-summon",
+            version="0.6.0",
+            requirements=("taut-chat>=0.6.0",),
+            command_entry_points=(
+                ("dismiss", "taut_summon.command_manifest:dismiss"),
+                ("summon", "taut_summon.command_manifest:summon"),
+            ),
+        )
+    )
+    mcp = wheel_matrix_module._read_wheel_metadata(
+        _write_wheel(
+            tmp_path / "taut_mcp-0.6.0-py3-none-any.whl",
+            name=mcp_name,
+            version="0.6.0",
+            requirements=mcp_requirements,
+        )
+    )
+
+    with pytest.raises(wheel_matrix_module.WheelMatrixError, match=diagnostic):
+        wheel_matrix_module._validate_new_metadata(core, summon, mcp)
 
 
 def test_python_probe_rejects_checkout_path_from_site_packages(
@@ -1373,63 +1437,6 @@ def test_historical_summon_metadata_rejects_taut_chat_dependency(
         wheel_matrix_module._case_historical_summon_metadata(historical)
 
 
-def test_historical_mcp_metadata_records_open_candidate_core_requirement(
-    tmp_path: Path,
-    wheel_matrix_module: ModuleType,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    historical = wheel_matrix_module._read_wheel_metadata(
-        _write_wheel(
-            tmp_path / "taut_mcp-0.9.5-py3-none-any.whl",
-            name="taut-mcp",
-            version="0.9.5",
-            requirements=(
-                "jsonschema>=4.26.0,<5",
-                "mcp>=2.0.0,<3",
-                "taut-chat>=0.9.5",
-            ),
-            command_entry_points=(),
-        )
-    )
-
-    wheel_matrix_module._case_historical_mcp_metadata(historical)
-
-    output = capsys.readouterr().out
-    assert '"case": "historical_mcp_metadata"' in output
-    assert '"requires": "taut-chat>=0.9.5"' in output
-    assert '"candidate_core_admitted": true' in output
-
-
-@pytest.mark.parametrize(
-    "requirements",
-    [
-        ("taut-chat>=0.9.5,<2",),
-        ("taut-chat>=0.9.5", "taut-chat>=0.9.5"),
-    ],
-    ids=("upper-bound", "duplicate"),
-)
-def test_historical_mcp_metadata_rejects_nonexact_open_core_requirement(
-    tmp_path: Path,
-    wheel_matrix_module: ModuleType,
-    requirements: tuple[str, ...],
-) -> None:
-    historical = wheel_matrix_module._read_wheel_metadata(
-        _write_wheel(
-            tmp_path / "taut_mcp-0.9.5-py3-none-any.whl",
-            name="taut-mcp",
-            version="0.9.5",
-            requirements=requirements,
-            command_entry_points=(),
-        )
-    )
-
-    with pytest.raises(
-        wheel_matrix_module.WheelMatrixError,
-        match="exactly one open Requires-Dist 'taut-chat>=0.9.5'",
-    ):
-        wheel_matrix_module._case_historical_mcp_metadata(historical)
-
-
 def test_command_core_only_case_compiles_install_hint_probe(
     tmp_path: Path,
     wheel_matrix_module: ModuleType,
@@ -1505,48 +1512,14 @@ def test_historical_summon_builder_requires_version_0_5_4(
     assert wheel.name == "taut_summon-0.5.4-py3-none-any.whl"
 
 
-def test_historical_mcp_builder_requires_version_0_9_5(
-    tmp_path: Path,
-    wheel_matrix_module: ModuleType,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source = tmp_path / "source"
-    (source / "extensions" / "taut_mcp").mkdir(parents=True)
-
-    def fake_run(
-        command: list[str],
-        **_kwargs: object,
-    ) -> subprocess.CompletedProcess[str]:
-        output = Path(command[command.index("--out-dir") + 1])
-        _write_wheel(
-            output / "taut_mcp-0.9.5-py3-none-any.whl",
-            name="taut-mcp",
-            version="0.9.5",
-            requirements=("taut-chat>=0.9.5",),
-            command_entry_points=(),
-        )
-        return subprocess.CompletedProcess(command, 0, "", "")
-
-    monkeypatch.setattr(wheel_matrix_module, "_run", fake_run)
-
-    wheel = wheel_matrix_module._build_historical_mcp(
-        mcp_source=source,
-        work=tmp_path,
-        env=wheel_matrix_module._clean_environment(),
-        uv="uv",
-    )
-
-    assert wheel.name == "taut_mcp-0.9.5-py3-none-any.whl"
-
-
-def test_historical_mcp_case_installs_normally_and_bootstraps_isolated_selector(
+def test_current_mcp_case_installs_normally_and_bootstraps_isolated_selector(
     tmp_path: Path,
     wheel_matrix_module: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     core = tmp_path / "taut_chat.whl"
-    historical_mcp = tmp_path / "taut_mcp.whl"
+    current_mcp = tmp_path / "taut_mcp.whl"
     installed: list[tuple[Path, ...]] = []
     driven: list[dict[str, object]] = []
     python = tmp_path / "bin" / "python"
@@ -1567,17 +1540,17 @@ def test_historical_mcp_case_installs_normally_and_bootstraps_isolated_selector(
 
     def compile_probe(**kwargs: object) -> subprocess.CompletedProcess[str]:
         code = str(kwargs["code"])
-        compile(code, "historical-mcp-probe", "exec")
+        compile(code, "current-mcp-probe", "exec")
         for required in (
             "TautClient.init(db_path=db)",
-            '"historical_mcp_bootstrap"',
+            '"current_mcp_bootstrap"',
             "os.O_EXCL",
             '"member_id": member.member_id',
             '"token": member.token',
         ):
             assert required in code
         assert "--no-deps" not in code
-        (tmp_path / ".historical-mcp-selector.json").write_text(
+        (tmp_path / ".current-mcp-selector.json").write_text(
             json.dumps(
                 {
                     "member_id": "m_matrix",
@@ -1588,37 +1561,37 @@ def test_historical_mcp_case_installs_normally_and_bootstraps_isolated_selector(
             encoding="utf-8",
         )
         return subprocess.CompletedProcess(
-            ["python"], 0, '{"case":"historical_mcp_bootstrap"}\n', ""
+            ["python"], 0, '{"case":"current_mcp_bootstrap"}\n', ""
         )
 
     monkeypatch.setattr(wheel_matrix_module, "_run_python_probe", compile_probe)
     monkeypatch.setattr(
         wheel_matrix_module,
-        "_drive_historical_mcp_stdio",
+        "_drive_mcp_stdio",
         lambda **kwargs: driven.append(kwargs),
     )
 
-    wheel_matrix_module._case_historical_mcp_attach(
+    wheel_matrix_module._case_current_mcp_attach(
         new_core=core,
-        historical_mcp=historical_mcp,
+        new_mcp=current_mcp,
         work=tmp_path,
         env=wheel_matrix_module._clean_environment(),
         uv="uv",
     )
 
-    assert installed == [(core, historical_mcp)]
+    assert installed == [(core, current_mcp)]
     assert len(driven) == 1
     assert driven[0]["command"] == (str(console),)
     assert driven[0]["token"] == "taut-secret-selector"
     assert driven[0]["member_id"] == "m_matrix"
     assert driven[0]["member_name"] == "matrix-member"
-    assert not (tmp_path / ".historical-mcp-selector.json").exists()
+    assert not (tmp_path / ".current-mcp-selector.json").exists()
     output = capsys.readouterr().out
-    assert '"case":"historical_mcp_bootstrap"' in output
+    assert '"case":"current_mcp_bootstrap"' in output
     assert "taut-secret-selector" not in output
 
 
-def _start_scripted_historical_mcp(
+def _start_scripted_mcp(
     *,
     tmp_path: Path,
     wheel_matrix_module: ModuleType,
@@ -1641,7 +1614,7 @@ def _start_scripted_historical_mcp(
             "TAUT_TEST_MCP_WORKSPACE": str(workspace),
         }
     )
-    driver = wheel_matrix_module._HistoricalMcpStdioDriver.start(
+    driver = wheel_matrix_module._McpStdioDriver.start(
         command=(sys.executable, str(server)),
         token=token,
         cwd=tmp_path,
@@ -1652,7 +1625,7 @@ def _start_scripted_historical_mcp(
     return driver, workspace
 
 
-def _drive_scripted_historical_mcp(
+def _drive_scripted_mcp(
     *,
     tmp_path: Path,
     wheel_matrix_module: ModuleType,
@@ -1661,7 +1634,7 @@ def _drive_scripted_historical_mcp(
     stage_timeout: float = 1.0,
     shutdown_timeout: float = 1.0,
 ) -> None:
-    driver, workspace = _start_scripted_historical_mcp(
+    driver, workspace = _start_scripted_mcp(
         tmp_path=tmp_path,
         wheel_matrix_module=wheel_matrix_module,
         mode=mode,
@@ -1683,7 +1656,7 @@ def _drive_scripted_historical_mcp(
         print(
             json.dumps(
                 {
-                    "case": "historical_mcp_attach",
+                    "case": "current_mcp_attach",
                     "clean_shutdown": "ok",
                     "status": "ok",
                 },
@@ -1694,19 +1667,19 @@ def _drive_scripted_historical_mcp(
         driver.close()
 
 
-def test_historical_mcp_stdio_driver_fires_complete_success_lifecycle(
+def test_mcp_stdio_driver_fires_complete_success_lifecycle(
     tmp_path: Path,
     wheel_matrix_module: ModuleType,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    _drive_scripted_historical_mcp(
+    _drive_scripted_mcp(
         tmp_path=tmp_path,
         wheel_matrix_module=wheel_matrix_module,
         mode="success",
     )
 
     output = capsys.readouterr().out
-    assert '"case": "historical_mcp_attach"' in output
+    assert '"case": "current_mcp_attach"' in output
     assert '"clean_shutdown": "ok"' in output
     assert "taut-scripted-secret" not in output
 
@@ -1730,25 +1703,25 @@ def test_historical_mcp_stdio_driver_fires_complete_success_lifecycle(
         "shutdown",
     ),
 )
-def test_historical_mcp_stdio_driver_fails_each_lifecycle_stage(
+def test_mcp_stdio_driver_fails_each_lifecycle_stage(
     tmp_path: Path,
     wheel_matrix_module: ModuleType,
     mode: str,
     diagnostic: str,
 ) -> None:
     with pytest.raises(wheel_matrix_module.WheelMatrixError, match=diagnostic):
-        _drive_scripted_historical_mcp(
+        _drive_scripted_mcp(
             tmp_path=tmp_path,
             wheel_matrix_module=wheel_matrix_module,
             mode=mode,
         )
 
 
-def test_historical_mcp_stdio_driver_fires_bounded_request_timeout(
+def test_mcp_stdio_driver_fires_bounded_request_timeout(
     tmp_path: Path,
     wheel_matrix_module: ModuleType,
 ) -> None:
-    driver, workspace = _start_scripted_historical_mcp(
+    driver, workspace = _start_scripted_mcp(
         tmp_path=tmp_path,
         wheel_matrix_module=wheel_matrix_module,
         mode="timeout-2",
@@ -1770,11 +1743,11 @@ def test_historical_mcp_stdio_driver_fires_bounded_request_timeout(
         driver.close()
 
 
-def test_historical_mcp_stdio_driver_fires_bounded_shutdown_timeout(
+def test_mcp_stdio_driver_fires_bounded_shutdown_timeout(
     tmp_path: Path,
     wheel_matrix_module: ModuleType,
 ) -> None:
-    driver, workspace = _start_scripted_historical_mcp(
+    driver, workspace = _start_scripted_mcp(
         tmp_path=tmp_path,
         wheel_matrix_module=wheel_matrix_module,
         mode="shutdown-timeout",
@@ -1800,7 +1773,7 @@ def test_historical_mcp_stdio_driver_fires_bounded_shutdown_timeout(
         driver.close()
 
 
-def test_historical_mcp_stdio_driver_rejects_traceback_without_reprinting_it(
+def test_mcp_stdio_driver_rejects_traceback_without_reprinting_it(
     tmp_path: Path,
     wheel_matrix_module: ModuleType,
 ) -> None:
@@ -1808,7 +1781,7 @@ def test_historical_mcp_stdio_driver_rejects_traceback_without_reprinting_it(
         wheel_matrix_module.WheelMatrixError,
         match="clean_shutdown emitted a traceback",
     ) as caught:
-        _drive_scripted_historical_mcp(
+        _drive_scripted_mcp(
             tmp_path=tmp_path,
             wheel_matrix_module=wheel_matrix_module,
             mode="shutdown-traceback",
@@ -1817,7 +1790,7 @@ def test_historical_mcp_stdio_driver_rejects_traceback_without_reprinting_it(
     assert "Traceback (most recent call last)" not in str(caught.value)
 
 
-def test_historical_mcp_stdio_driver_rejects_selector_echo_without_exposing_it(
+def test_mcp_stdio_driver_rejects_selector_echo_without_exposing_it(
     tmp_path: Path,
     wheel_matrix_module: ModuleType,
 ) -> None:
@@ -1826,7 +1799,7 @@ def test_historical_mcp_stdio_driver_rejects_selector_echo_without_exposing_it(
         wheel_matrix_module.WheelMatrixError,
         match="server echoed continuity selector during attach_workspace",
     ) as caught:
-        _drive_scripted_historical_mcp(
+        _drive_scripted_mcp(
             tmp_path=tmp_path,
             wheel_matrix_module=wheel_matrix_module,
             mode="token-stdout",
@@ -1836,7 +1809,7 @@ def test_historical_mcp_stdio_driver_rejects_selector_echo_without_exposing_it(
     assert token not in str(caught.value)
 
 
-def test_historical_mcp_stdio_driver_redacts_selector_from_stderr(
+def test_mcp_stdio_driver_redacts_selector_from_stderr(
     tmp_path: Path,
     wheel_matrix_module: ModuleType,
 ) -> None:
@@ -1845,7 +1818,7 @@ def test_historical_mcp_stdio_driver_redacts_selector_from_stderr(
         wheel_matrix_module.WheelMatrixError,
         match="clean_shutdown exited 2",
     ) as caught:
-        _drive_scripted_historical_mcp(
+        _drive_scripted_mcp(
             tmp_path=tmp_path,
             wheel_matrix_module=wheel_matrix_module,
             mode="shutdown-token",
@@ -1864,7 +1837,7 @@ def test_wheel_install_uses_ordinary_dependency_resolution(
 ) -> None:
     python = tmp_path / "venv" / "bin" / "python"
     core = tmp_path / "taut_chat.whl"
-    historical_mcp = tmp_path / "taut_mcp.whl"
+    current_mcp = tmp_path / "taut_mcp.whl"
     commands: list[list[str]] = []
 
     def record_run(
@@ -1878,7 +1851,7 @@ def test_wheel_install_uses_ordinary_dependency_resolution(
 
     wheel_matrix_module._install(
         python=python,
-        artifacts=(core, historical_mcp),
+        artifacts=(core, current_mcp),
         cwd=tmp_path,
         env=wheel_matrix_module._clean_environment(),
         uv="uv",
@@ -1887,7 +1860,7 @@ def test_wheel_install_uses_ordinary_dependency_resolution(
     install = commands[0]
     assert install[:3] == ["uv", "pip", "install"]
     assert "--no-deps" not in install
-    assert install[-2:] == [str(core), str(historical_mcp)]
+    assert install[-2:] == [str(core), str(current_mcp)]
 
 
 def test_paired_case_installs_both_wheels_and_runs_full_control_probe(

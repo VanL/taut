@@ -2546,12 +2546,11 @@ Helper obligations:
   any artifact or cause creation of a root lockfile. Ordinary package builds
   disable workspace source resolution so they use publishable metadata rather
   than local workspace overrides. The Summon and MCP locks have already been
-  reconciled during preparation. Core/Summon retain their separate paired-wheel
-  compatibility proof; core/TUI add a paired installed-command and headless-app
-  proof. Selecting MCP adds its ordinary package build without changing those
-  paired boundaries. Dry-run reports the cleanup without changing any directory.
+  reconciled during preparation. Core, Summon, and MCP share one current-wheel
+  integration proof; core/TUI add a paired installed-command and headless-app
+  proof. Dry-run reports the cleanup without changing any directory.
 - Keep branch pushes, tag creation or replacement, tag pushes, and publication
-  after prechecks, normal artifact builds, and the paired core/Summon wheel
+  after prechecks, normal artifact builds, and the coordinated current-wheel
   check. Immediately before remote action, verify that the branch and `HEAD`
   still name the preparation commit, the index and worktree are clean, and
   fresh GitHub Release plus local/remote tag state remains compatible with the
@@ -2686,18 +2685,19 @@ publish first only as the extensions' immediate dependency; the coordinated
 release is not announced until all five PyPI and GitHub publications pass.
 
 New core wheel metadata has normalized project name `taut-chat`. New Summon
-metadata contains exactly one unmarked
+and MCP metadata each contain exactly one unmarked
 `taut-chat>=<new-core-version>` requirement, so the supplied current core wheel
-is admitted exactly.
+is admitted exactly. Core and MCP publish the same single unmarked SimpleBroker
+requirement.
 
-Every non-dry-run `core`, `summon`, or matching `all` release builds both
-wheels from the same clean preparation commit into a fresh temporary artifact root and runs
-the core/Summon wheel-matrix checker with their explicit paths after both
-builds and before any branch push, tag creation or replacement, tag push, or
+Every non-dry-run `core`, `summon`, `mcp`, or matching `all` release builds all
+three wheels from the same clean preparation commit into a fresh temporary
+artifact root and runs the release wheel-matrix checker with their explicit
+paths after all builds and before any branch push, tag creation or replacement, tag push, or
 publication. The gate still runs under `--skip-checks`; dry-run prints the
-ordered build and verification commands. PG-only releases do not run it. The
-canonical-branch root Test workflow runs the same release-grade paired check
-once on freshly built explicit core and Summon wheel paths, plus the fresh PG
+ordered build and verification commands. PG-only and TUI-only releases do not
+run it. The canonical-branch root Test workflow runs the same release-grade
+check once on freshly built explicit core, Summon, and MCP wheel paths, plus the fresh PG
 installed-wheel proof described above. Pull-request and manual calls retain
 ordinary packaging smoke. Tag gates reuse the successful canonical Test run
 and its verified artifacts; they do not repeat paired or installed-wheel
@@ -2714,21 +2714,14 @@ exact current first-party package names and dependency relations; and a
 diagnostic historical probe recording that old Summon requires the unrelated
 `taut` distribution.
 
-Candidate-core compatibility evidence also installs a wheel built from the
-immutable `taut_mcp/v0.9.5` release source, pinned to commit
-`b4ca0fda9767736bfd81eb08c2dfc1e1d2b03998`, with the candidate core wheel
-through normal dependency resolution in a checkout-free environment. That
-historical release-source wheel is the first retained canary whose open
-`taut-chat` requirement and private selected-member reach-in make future-core
-compatibility observable. The probe creates a real SQLite workspace and
-member through the installed candidate core, launches the installed MCP stdio
-entry point, performs attach/list/detach with the member's continuity token,
-and requires clean shutdown. It never uses `--no-deps`, imports from the
-checkout, patches private core methods, or treats import success as runtime
-proof. If a future candidate cannot preserve this admitted combination, the
-release must stop for an explicit compatibility decision and corresponding
-metadata/spec change; the checker must not silently waive or replace the
-canary.
+Current-release evidence installs the current MCP wheel with the current core
+wheel through normal dependency resolution in a checkout-free environment.
+The probe creates a real SQLite workspace and member through installed core,
+launches the installed MCP stdio entry point, performs attach/list/detach with
+the member's continuity token, and requires clean shutdown. It never uses
+`--no-deps`, imports from the checkout, patches private core methods, or treats
+import success as runtime proof. Historical MCP releases are not compatibility
+canaries and impose no backward-compatibility contract on current releases.
 
 Users migrating from GitHub-installed `taut` must uninstall it before
 installing `taut-chat`.
@@ -2924,7 +2917,7 @@ expression behavior.
   identity and notification-activity seams across SQLite and PostgreSQL.
 - `bin/check-core-summon-wheel-matrix.py` and
   `tests/test_core_summon_wheel_matrix.py` own [TAUT-12.5]'s immutable
-  historical MCP/current-core lifecycle canary.
+  current MCP/current-core metadata and installed lifecycle gate.
 
 ## Related Plans
 

@@ -583,11 +583,14 @@ jobs:
         run: |
           core_wheels=(release-dist/core/*.whl)
           summon_wheels=(release-dist/summon/*.whl)
+          mcp_wheels=(release-dist/mcp/*.whl)
           test "${#core_wheels[@]}" -eq 1
           test "${#summon_wheels[@]}" -eq 1
+          test "${#mcp_wheels[@]}" -eq 1
           python bin/build-and-check-release-wheels.py \
             --core-wheel "${core_wheels[0]}" \
-            --summon-wheel "${summon_wheels[0]}"
+            --summon-wheel "${summon_wheels[0]}" \
+            --mcp-wheel "${mcp_wheels[0]}"
 
       - name: Smoke test core wheel
         shell: bash

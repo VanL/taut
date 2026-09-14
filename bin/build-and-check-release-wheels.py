@@ -1,4 +1,4 @@
-"""Build and check one fresh paired Taut/Taut Summon release-wheel set."""  # noqa: N999 approved [DOM-10.2.1] [RUFF-SUP-075] exception
+"""Build and check one fresh coordinated Taut release-wheel set."""  # noqa: N999 approved [DOM-10.2.1] [RUFF-SUP-075] exception
 
 from __future__ import annotations
 
@@ -12,9 +12,9 @@ from typing import NoReturn
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SUMMON_ROOT = PROJECT_ROOT / "extensions" / "taut_summon"
+MCP_ROOT = PROJECT_ROOT / "extensions" / "taut_mcp"
 WHEEL_MATRIX_CHECKER = PROJECT_ROOT / "bin" / "check-core-summon-wheel-matrix.py"
 HISTORICAL_SUMMON_REF = "taut_summon/v0.5.4"
-HISTORICAL_MCP_REF = "taut_mcp/v0.9.5"
 
 
 class ReleaseWheelCheckError(RuntimeError):
@@ -49,13 +49,16 @@ def _print_dry_run_plan(
     *,
     core_output: Path,
     summon_output: Path,
+    mcp_output: Path,
     core_wheel: Path | None = None,
     summon_wheel: Path | None = None,
+    mcp_wheel: Path | None = None,
 ) -> None:
     commands: list[tuple[str, ...]] = []
-    if core_wheel is None or summon_wheel is None:
+    if core_wheel is None or summon_wheel is None or mcp_wheel is None:
         core_wheel = core_output / "<exactly-one-wheel>"
         summon_wheel = summon_output / "<exactly-one-wheel>"
+        mcp_wheel = mcp_output / "<exactly-one-wheel>"
         commands.extend(
             (
                 (
@@ -74,6 +77,14 @@ def _print_dry_run_plan(
                     str(summon_output),
                     str(SUMMON_ROOT),
                 ),
+                (
+                    "uv",
+                    "build",
+                    "--wheel",
+                    "--out-dir",
+                    str(mcp_output),
+                    str(MCP_ROOT),
+                ),
             )
         )
     commands.extend(
@@ -85,10 +96,10 @@ def _print_dry_run_plan(
                 str(core_wheel),
                 "--new-summon",
                 str(summon_wheel),
+                "--new-mcp",
+                str(mcp_wheel),
                 "--historical-summon-ref",
                 HISTORICAL_SUMMON_REF,
-                "--historical-mcp-ref",
-                HISTORICAL_MCP_REF,
             ),
         )
     )
@@ -101,29 +112,35 @@ def build_and_check(
     dry_run: bool = False,
     core_wheel: Path | None = None,
     summon_wheel: Path | None = None,
+    mcp_wheel: Path | None = None,
 ) -> None:
     """Build wheels in fresh outputs, then check their explicit paths."""
 
-    if (core_wheel is None) != (summon_wheel is None):
-        _fail("core and Summon wheel paths must be supplied together")
+    supplied = (core_wheel is not None, summon_wheel is not None, mcp_wheel is not None)
+    if any(supplied) and not all(supplied):
+        _fail("core, Summon, and MCP wheel paths must be supplied together")
 
     with tempfile.TemporaryDirectory(prefix="taut-release-wheels-") as temporary:
         artifact_root = Path(temporary)
         core_output = artifact_root / "core"
         summon_output = artifact_root / "summon"
+        mcp_output = artifact_root / "mcp"
         core_output.mkdir()
         summon_output.mkdir()
+        mcp_output.mkdir()
 
         if dry_run:
             _print_dry_run_plan(
                 core_output=core_output,
                 summon_output=summon_output,
+                mcp_output=mcp_output,
                 core_wheel=core_wheel,
                 summon_wheel=summon_wheel,
+                mcp_wheel=mcp_wheel,
             )
             return
 
-        if core_wheel is None or summon_wheel is None:
+        if core_wheel is None or summon_wheel is None or mcp_wheel is None:
             _run(
                 (
                     "uv",
@@ -147,8 +164,24 @@ def build_and_check(
                 )
             )
             summon_wheel = _single_wheel(summon_output, label="Summon")
+
+            _run(
+                (
+                    "uv",
+                    "build",
+                    "--wheel",
+                    "--out-dir",
+                    str(mcp_output),
+                    str(MCP_ROOT),
+                )
+            )
+            mcp_wheel = _single_wheel(mcp_output, label="MCP")
         else:
-            for wheel, label in ((core_wheel, "core"), (summon_wheel, "Summon")):
+            for wheel, label in (
+                (core_wheel, "core"),
+                (summon_wheel, "Summon"),
+                (mcp_wheel, "MCP"),
+            ):
                 if not wheel.is_file():
                     _fail(f"explicit {label} wheel does not exist: {wheel}")
                 if wheel.suffix != ".whl":
@@ -162,17 +195,17 @@ def build_and_check(
                 str(core_wheel),
                 "--new-summon",
                 str(summon_wheel),
+                "--new-mcp",
+                str(mcp_wheel),
                 "--historical-summon-ref",
                 HISTORICAL_SUMMON_REF,
-                "--historical-mcp-ref",
-                HISTORICAL_MCP_REF,
             )
         )
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Build and check fresh paired core/Summon release wheels."
+        description="Build and check fresh coordinated core/Summon/MCP release wheels."
     )
     parser.add_argument(
         "--dry-run",
@@ -189,15 +222,25 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         help="Use this already-built current Summon wheel instead of building one.",
     )
+    parser.add_argument(
+        "--mcp-wheel",
+        type=Path,
+        help="Use this already-built current MCP wheel instead of building one.",
+    )
     args = parser.parse_args(argv)
     try:
-        if args.core_wheel is None and args.summon_wheel is None:
+        if (
+            args.core_wheel is None
+            and args.summon_wheel is None
+            and args.mcp_wheel is None
+        ):
             build_and_check(dry_run=args.dry_run)
         else:
             build_and_check(
                 dry_run=args.dry_run,
                 core_wheel=args.core_wheel,
                 summon_wheel=args.summon_wheel,
+                mcp_wheel=args.mcp_wheel,
             )
     except ReleaseWheelCheckError as exc:
         print(f"release-wheel check failed: {exc}", file=sys.stderr)

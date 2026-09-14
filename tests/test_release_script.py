@@ -1416,6 +1416,10 @@ def test_mcp_precheck_lock_build_and_quality_are_package_local() -> None:
         "extensions/taut_mcp/dist",
         "extensions/taut_mcp",
     )
+    assert builds[1].command == (
+        sys.executable,
+        str(release.RELEASE_WHEEL_SET_CHECKER),
+    )
 
 
 def test_tui_precheck_lock_build_and_quality_are_package_local() -> None:

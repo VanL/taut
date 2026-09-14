@@ -1,4 +1,4 @@
-"""Check the installed core/Summon wheel matrix required by [SUM-12]."""  # noqa: N999 approved [DOM-10.2.1] [RUFF-SUP-075] exception
+"""Check the installed core/extension release-wheel matrix."""  # noqa: N999 approved [DOM-10.2.1] [RUFF-SUP-075] exception
 
 from __future__ import annotations
 
@@ -28,18 +28,14 @@ from typing import NoReturn
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_HISTORICAL_SUMMON_COMMIT = "b03709452cf4d5962b0d7204b0dab78b9bafd524"
 EXPECTED_HISTORICAL_SUMMON_VERSION = "0.5.4"
-EXPECTED_HISTORICAL_MCP_COMMIT = "b4ca0fda9767736bfd81eb08c2dfc1e1d2b03998"
-EXPECTED_HISTORICAL_MCP_VERSION = "0.9.5"
 COMMAND_TIMEOUT_SECONDS = 180.0
 CONTROL_SMOKE_TIMEOUT_SECONDS = 180.0
 MCP_STAGE_TIMEOUT_SECONDS = 20.0
 MCP_SHUTDOWN_TIMEOUT_SECONDS = 20.0
 MATRIX_PYTHON_MIN_MINOR = 11
 EXPECTED_HISTORICAL_SUMMON_REF = "taut_summon/v0.5.4"
-EXPECTED_HISTORICAL_MCP_REF = "taut_mcp/v0.9.5"
 EXPECTED_REF_COMMITS = {
     EXPECTED_HISTORICAL_SUMMON_REF: EXPECTED_HISTORICAL_SUMMON_COMMIT,
-    EXPECTED_HISTORICAL_MCP_REF: EXPECTED_HISTORICAL_MCP_COMMIT,
 }
 EXPECTED_SUMMON_COMMAND_ENTRY_POINTS = (
     ("dismiss", "taut_summon.command_manifest:dismiss"),
@@ -70,8 +66,8 @@ class WheelMetadata:
 class Inputs:
     new_core: Path
     new_summon: Path
+    new_mcp: Path
     historical_summon_ref: str
-    historical_mcp_ref: str
 
 
 def _fail(message: str) -> NoReturn:
@@ -90,30 +86,25 @@ def _required_wheel(path: str, label: str) -> Path:
 def _parse_args(argv: list[str] | None) -> Inputs:
     parser = argparse.ArgumentParser(
         description=(
-            "Check the core/Summon compatibility matrix using installed wheels "
+            "Check the core/extension release matrix using installed wheels "
             "in checkout-free virtual environments."
         )
     )
     parser.add_argument("--new-core", required=True, metavar="WHEEL")
     parser.add_argument("--new-summon", required=True, metavar="WHEEL")
+    parser.add_argument("--new-mcp", required=True, metavar="WHEEL")
     parser.add_argument("--historical-summon-ref", required=True, metavar="REF")
-    parser.add_argument("--historical-mcp-ref", required=True, metavar="REF")
     args = parser.parse_args(argv)
     inputs = Inputs(
         new_core=_required_wheel(args.new_core, "new core"),
         new_summon=_required_wheel(args.new_summon, "new Summon"),
+        new_mcp=_required_wheel(args.new_mcp, "new MCP"),
         historical_summon_ref=args.historical_summon_ref,
-        historical_mcp_ref=args.historical_mcp_ref,
     )
     if inputs.historical_summon_ref != EXPECTED_HISTORICAL_SUMMON_REF:
         _fail(
             "historical Summon ref must be immutable release ref "
             f"{EXPECTED_HISTORICAL_SUMMON_REF!r}"
-        )
-    if inputs.historical_mcp_ref != EXPECTED_HISTORICAL_MCP_REF:
-        _fail(
-            "historical MCP ref must be immutable release ref "
-            f"{EXPECTED_HISTORICAL_MCP_REF!r}"
         )
     return inputs
 
@@ -200,18 +191,38 @@ def _require_exact_dependency(
         )
 
 
-def _validate_new_metadata(core: WheelMetadata, summon: WheelMetadata) -> None:
+def _validate_new_metadata(
+    core: WheelMetadata, summon: WheelMetadata, mcp: WheelMetadata
+) -> None:
     if _canonical_project_name(core.name) != "taut-chat":
         _fail(f"new core wheel has project name {core.name!r}, expected 'taut-chat'")
     if _canonical_project_name(summon.name) != "taut-summon":
         _fail(
             f"new Summon wheel has project name {summon.name!r}, expected 'taut-summon'"
         )
+    if _canonical_project_name(mcp.name) != "taut-mcp":
+        _fail(f"new MCP wheel has project name {mcp.name!r}, expected 'taut-mcp'")
     _require_exact_dependency(
         summon,
         project="taut-chat",
         requirement=f"taut-chat>={core.version}",
     )
+    _require_exact_dependency(
+        mcp,
+        project="taut-chat",
+        requirement=f"taut-chat>={core.version}",
+    )
+    core_broker_requirements = _requirements_for_project(core, "simplebroker")
+    mcp_broker_requirements = _requirements_for_project(mcp, "simplebroker")
+    if (
+        len(core_broker_requirements) != 1
+        or mcp_broker_requirements != core_broker_requirements
+        or ";" in core_broker_requirements[0]
+    ):
+        _fail(
+            "new core and MCP wheels must publish the same single unmarked "
+            "SimpleBroker requirement"
+        )
     if core.command_entry_points:
         rendered = ", ".join(
             f"{name}={target}" for name, target in core.command_entry_points
@@ -513,38 +524,6 @@ def _build_historical_summon(
         )
     _print_wheel_evidence("historical_summon", metadata)
     return historical_summon
-
-
-def _build_historical_mcp(
-    *,
-    mcp_source: Path,
-    work: Path,
-    env: dict[str, str],
-    uv: str,
-) -> Path:
-    mcp_out = work / "historical-mcp-wheel"
-    mcp_out.mkdir()
-    _run(
-        [
-            uv,
-            "build",
-            "--wheel",
-            str(mcp_source / "extensions" / "taut_mcp"),
-            "--out-dir",
-            str(mcp_out),
-        ],
-        cwd=mcp_source,
-        env=env,
-    )
-    historical_mcp = _find_built_wheel(mcp_out, "taut-mcp")
-    metadata = _read_wheel_metadata(historical_mcp)
-    if metadata.version != EXPECTED_HISTORICAL_MCP_VERSION:
-        _fail(
-            f"historical MCP wheel version is {metadata.version}, expected "
-            f"{EXPECTED_HISTORICAL_MCP_VERSION}"
-        )
-    _print_wheel_evidence("historical_mcp", metadata)
-    return historical_mcp
 
 
 def _venv_python(venv: Path) -> Path:
@@ -1041,7 +1020,7 @@ def _stop_interactive_process(process: subprocess.Popen[str]) -> None:
         process.wait(timeout=10.0)
 
 
-class _HistoricalMcpStdioDriver:
+class _McpStdioDriver:
     def __init__(
         self,
         *,
@@ -1075,7 +1054,7 @@ class _HistoricalMcpStdioDriver:
         env: dict[str, str],
         stage_timeout: float,
         shutdown_timeout: float,
-    ) -> _HistoricalMcpStdioDriver:
+    ) -> _McpStdioDriver:
         child_env = env.copy()
         child_env.pop("PYTHONPATH", None)
         child_env["PYTHONNOUSERSITE"] = "1"
@@ -1281,7 +1260,7 @@ class _HistoricalMcpStdioDriver:
         self.reader.join(timeout=5.0)
 
 
-def _drive_historical_mcp_stdio(
+def _drive_mcp_stdio(
     *,
     command: tuple[str, ...],
     workspace: Path,
@@ -1293,9 +1272,9 @@ def _drive_historical_mcp_stdio(
     stage_timeout: float = MCP_STAGE_TIMEOUT_SECONDS,
     shutdown_timeout: float = MCP_SHUTDOWN_TIMEOUT_SECONDS,
 ) -> None:
-    """Drive the retained legacy lifecycle without exposing its selector."""
+    """Drive the installed MCP lifecycle without exposing its selector."""
 
-    driver = _HistoricalMcpStdioDriver.start(
+    driver = _McpStdioDriver.start(
         command=command,
         token=token,
         cwd=cwd,
@@ -1317,7 +1296,7 @@ def _drive_historical_mcp_stdio(
         print(
             json.dumps(
                 {
-                    "case": "historical_mcp_attach",
+                    "case": "current_mcp_attach",
                     "clean_shutdown": "ok",
                     "status": "ok",
                 },
@@ -1328,25 +1307,25 @@ def _drive_historical_mcp_stdio(
         driver.close()
 
 
-def _case_historical_mcp_attach(
+def _case_current_mcp_attach(
     *,
     new_core: Path,
-    historical_mcp: Path,
+    new_mcp: Path,
     work: Path,
     env: dict[str, str],
     uv: str,
 ) -> None:
     case_root, python = _create_environment(
-        name="04-historical-mcp", work=work, env=env, uv=uv
+        name="04-current-mcp", work=work, env=env, uv=uv
     )
     _install(
         python=python,
-        artifacts=(new_core, historical_mcp),
+        artifacts=(new_core, new_mcp),
         cwd=case_root,
         env=env,
         uv=uv,
     )
-    selector_path = case_root / ".historical-mcp-selector.json"
+    selector_path = case_root / ".current-mcp-selector.json"
     probe = _run_python_probe(
         python=python,
         cwd=case_root,
@@ -1370,7 +1349,7 @@ try:
     member = owner.last_created_member
     if member is None or member.token is None:
         raise SystemExit("candidate core did not create a continuity selector")
-    selector_path = Path.cwd() / ".historical-mcp-selector.json"
+    selector_path = Path.cwd() / ".current-mcp-selector.json"
     descriptor = os.open(
         selector_path,
         os.O_WRONLY | os.O_CREAT | os.O_EXCL,
@@ -1389,7 +1368,7 @@ try:
 finally:
     owner.close()
 print(json.dumps({
-    "case": "historical_mcp_bootstrap",
+    "case": "current_mcp_bootstrap",
     "mcp_path": mcp_path,
     "status": "ok",
     "taut_path": taut_path,
@@ -1410,7 +1389,7 @@ print(json.dumps({
         console = python.with_name("taut-mcp.exe" if os.name == "nt" else "taut-mcp")
         if not console.is_file():
             _fail("installed taut-mcp console entry point is missing")
-        _drive_historical_mcp_stdio(
+        _drive_mcp_stdio(
             command=(str(console),),
             workspace=case_root / "workspace",
             token=token,
@@ -1459,38 +1438,6 @@ def _case_historical_summon_metadata(metadata: WheelMetadata) -> None:
     )
 
 
-def _case_historical_mcp_metadata(metadata: WheelMetadata) -> None:
-    if _canonical_project_name(metadata.name) != "taut-mcp":
-        _fail(
-            "historical MCP wheel has project name "
-            f"{metadata.name!r}, expected 'taut-mcp'"
-        )
-    if metadata.version != EXPECTED_HISTORICAL_MCP_VERSION:
-        _fail(
-            f"historical MCP wheel version is {metadata.version}, expected "
-            f"{EXPECTED_HISTORICAL_MCP_VERSION}"
-        )
-    requirement = f"taut-chat>={EXPECTED_HISTORICAL_MCP_VERSION}"
-    core_requirements = _requirements_for_project(metadata, "taut-chat")
-    if core_requirements != (requirement,):
-        rendered = ", ".join(metadata.requirements) or "<none>"
-        _fail(
-            "historical MCP METADATA must contain exactly one open Requires-Dist "
-            f"{requirement!r}; found: {rendered}"
-        )
-    print(
-        json.dumps(
-            {
-                "case": "historical_mcp_metadata",
-                "candidate_core_admitted": True,
-                "requires": requirement,
-                "status": "ok",
-            },
-            sort_keys=True,
-        )
-    )
-
-
 def _print_wheel_evidence(label: str, metadata: WheelMetadata) -> None:
     print(
         "[wheel-matrix] "
@@ -1502,9 +1449,11 @@ def _print_wheel_evidence(label: str, metadata: WheelMetadata) -> None:
 def _check(inputs: Inputs) -> None:
     core_metadata = _read_wheel_metadata(inputs.new_core)
     summon_metadata = _read_wheel_metadata(inputs.new_summon)
-    _validate_new_metadata(core_metadata, summon_metadata)
+    mcp_metadata = _read_wheel_metadata(inputs.new_mcp)
+    _validate_new_metadata(core_metadata, summon_metadata, mcp_metadata)
     _print_wheel_evidence("new_core", core_metadata)
     _print_wheel_evidence("new_summon", summon_metadata)
+    _print_wheel_evidence("new_mcp", mcp_metadata)
 
     env = _clean_environment()
     git = shutil.which("git")
@@ -1517,13 +1466,11 @@ def _check(inputs: Inputs) -> None:
     historical_summon_commit = _resolve_remote_tag(
         inputs.historical_summon_ref, env=env
     )
-    historical_mcp_commit = _resolve_remote_tag(inputs.historical_mcp_ref, env=env)
     with tempfile.TemporaryDirectory(prefix="taut-wheel-matrix-") as raw_work:
         work = Path(raw_work)
         historical_summon_source = work / "historical-summon-source"
-        historical_mcp_source = work / "historical-mcp-source"
         archive_repository = _prepare_archive_repository(
-            refs=(inputs.historical_summon_ref, inputs.historical_mcp_ref),
+            refs=(inputs.historical_summon_ref,),
             work=work,
             env=env,
         )
@@ -1533,26 +1480,13 @@ def _check(inputs: Inputs) -> None:
             destination=historical_summon_source,
             env=env,
         )
-        _export_ref(
-            repository=archive_repository,
-            commit=historical_mcp_commit,
-            destination=historical_mcp_source,
-            env=env,
-        )
         historical_summon = _build_historical_summon(
             summon_source=historical_summon_source,
             work=work,
             env=env,
             uv=uv,
         )
-        historical_mcp = _build_historical_mcp(
-            mcp_source=historical_mcp_source,
-            work=work,
-            env=env,
-            uv=uv,
-        )
         _case_historical_summon_metadata(_read_wheel_metadata(historical_summon))
-        _case_historical_mcp_metadata(_read_wheel_metadata(historical_mcp))
         _case_new_core(wheel=inputs.new_core, work=work, env=env, uv=uv)
         _case_paired_control_smoke(
             new_core=inputs.new_core,
@@ -1567,16 +1501,16 @@ def _check(inputs: Inputs) -> None:
             env=env,
             uv=uv,
         )
-        _case_historical_mcp_attach(
+        _case_current_mcp_attach(
             new_core=inputs.new_core,
-            historical_mcp=historical_mcp,
+            new_mcp=inputs.new_mcp,
             work=work,
             env=env,
             uv=uv,
         )
     print(
         "[wheel-matrix] all four installed-wheel cases and historical "
-        "metadata probes passed"
+        "Summon metadata probe passed"
     )
 
 
@@ -1585,15 +1519,15 @@ def main(argv: list[str] | None = None) -> int:
         inputs = _parse_args(argv)
         _check(inputs)
     except WheelMatrixError as exc:
-        print(f"core/Summon wheel-matrix check failed: {exc}", file=sys.stderr)
+        print(f"release wheel-matrix check failed: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
-        print("core/Summon wheel-matrix check interrupted", file=sys.stderr)
+        print("release wheel-matrix check interrupted", file=sys.stderr)
         return 130
     except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-065] exception
         detail = str(exc).replace("\n", " ")
         print(
-            "core/Summon wheel-matrix check failed: internal checker "
+            "release wheel-matrix check failed: internal checker "
             f"error ({type(exc).__name__}): {detail}",
             file=sys.stderr,
         )
