@@ -99,6 +99,10 @@ cross-store transaction. Claims, deletes, moves, registry changes, and sidecar
 metadata do not share one nanosecond boundary. Generic workspace advancement
 does not fail dump. An illegal projection, incomplete rename, incompatible
 nested record, validation failure, or unsafe file publication still does.
+Completed rename rows are the latest retained recovery operation for each old
+name. Reusing an old channel name may replace its completed row; persistence
+keeps the existing version-1 `channel_rename` shape and does not export an
+event journal.
 
 Load admits only a nonexistent or fresh target. It commits authoritative
 sidecar state before broker history and keeps a `taut_meta` load guard across

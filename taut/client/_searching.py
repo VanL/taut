@@ -16,7 +16,7 @@ from simplebroker import Queue
 
 from taut import addressing
 from taut._constants import route_key, validate_member_name
-from taut._exceptions import EmptyResultError, NotFoundError, TautError
+from taut._exceptions import EmptyResultError, NotFoundError
 from taut.search import projection_segments, query_chunks
 from taut.search._discovery import load_search_provider
 from taut.search._provider import IndexedDocument, SearchCandidate, SearchProvider
@@ -157,19 +157,33 @@ class SearchingMixin(_ClientBase):
         )
 
         def load_source(job: MessageJob) -> IndexedDocument | None:
-            thread = self._current_search_thread(job.thread)
-            found = self.queue(thread).peek_one(
-                exact_timestamp=job.message_ts,
-                with_timestamps=True,
+            rows = self._registered_searchable_rows(self._state.list_threads())
+            names = [row["name"] for row in rows]
+            candidates = (
+                [job.thread, *(name for name in names if name != job.thread)]
+                if job.thread in set(names)
+                else names
             )
-            if found is None:
+            message: Message | None = None
+            for thread in candidates:
+                source = self.queue(thread)
+                try:
+                    found = source.peek_one(
+                        exact_timestamp=job.message_ts,
+                        with_timestamps=True,
+                    )
+                finally:
+                    self._release_if_ephemeral(source)
+                if found is not None:
+                    body, timestamp = found
+                    message = message_from_body(thread, body, timestamp)
+                    break
+            if message is None:
                 return None
-            body, timestamp = found
-            message = message_from_body(thread, body, timestamp)
             encoded = message.text.encode("utf-8")
             return IndexedDocument(
-                message_ts=timestamp,
-                thread=thread,
+                message_ts=message.ts,
+                thread=message.thread,
                 text_sha256=hashlib.sha256(encoded).hexdigest(),
                 text_bytes=len(encoded),
                 segments=projection_segments(
@@ -210,24 +224,6 @@ class SearchingMixin(_ClientBase):
         finally:
             for queue in owned:
                 queue.close()
-
-    def _current_search_thread(self, thread: str) -> str:
-        mappings: dict[str, str] = {}
-        for marker in self._state.completed_channel_renames():
-            for item in marker["affected"]:
-                old = item.get("old")
-                new = item.get("new")
-                if not isinstance(old, str) or not isinstance(new, str):
-                    raise TautError("corrupt completed channel rename mapping")
-                mappings[old] = new
-        current = thread
-        seen: set[str] = set()
-        while current in mappings:
-            if current in seen:
-                raise TautError("cycle in completed channel rename mappings")
-            seen.add(current)
-            current = mappings[current]
-        return current
 
     def _query_search_hits(
         self,

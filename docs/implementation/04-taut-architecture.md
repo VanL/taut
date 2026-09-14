@@ -624,8 +624,12 @@ repair this by editing SimpleBroker-owned message tables.
 
 The rename marker is also the recovery contract ([IAN-8.3]). It is written
 before the first broker rename, carries the authoritative affected-queue
-list, and is cleared only by the sidecar apply step, so an interruption
-anywhere in the window leaves a marker naming exactly what was in flight.
+list, and becomes complete only in the sidecar apply step, so an interruption
+anywhere in the window leaves a marker naming exactly what was in flight. A
+later operation may replace a completed row for the same old name; an
+incomplete row remains authoritative and cannot be overwritten. The table
+therefore retains the latest recovery operation per old name rather than a
+permanent rename history.
 Recovery deliberately rides the same `taut channel rename OLD NEW` invocation
 instead of a repair verb: the marker already names the one legal operation,
 every other command refuses with that exact command line, and [TAUT-10]

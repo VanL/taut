@@ -527,6 +527,9 @@ def test_round_trip_fires_every_core_logical_record_type(tmp_path: Path) -> None
     restored = TautClient(db_path=destination, as_name="operator")
     assert restored.whoami().member_id == member.member_id
     assert restored.log("after")[-1].text == "rename fixture"
+    restored.rename_channel("after", "before")
+    restored.rename_channel("before", "final")
+    assert restored.log("final")[-1].text == "rename fixture"
     for record in cast(Any, restored._state).persistence_records():
         kind = record["type"]
         for field in core_timestamp_fields[kind]:

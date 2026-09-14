@@ -774,6 +774,11 @@ queue names, current phase, and completion state so a later command can finish
 or report the interrupted rename. The recovery command is
 `taut channel rename OLD NEW`.
 
+A completed marker keyed by an old channel name may be replaced by a later
+rename from that name. An incomplete marker remains the authority for its
+existing recovery operation and must not be overwritten. Marker retention is
+not a complete channel history or a source-location identity mechanism.
+
 ## 9. Failure Modes and Edge Cases [IAN-9]
 
 - Name collision: explicit `set name` and schema-level alias creation fail.

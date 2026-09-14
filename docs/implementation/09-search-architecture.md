@@ -166,11 +166,15 @@ message may place different query terms in different segment rows, while one
 combined FTS `MATCH` expression is evaluated against one row. The provider
 therefore intersects each chunk's matches by message id across rows. Replacing
 that intersection with one combined expression would make valid cross-segment
-matches disappear even without a race. Other known limits remain:
-completed rename-marker name reuse can transiently misdirect old work until
-reconciliation, and SQLite common-term lookup materializes each term's match
-set before intersection. These limits affect transient recall or memory, not
-source truth, access control, or stale-positive prevention.
+matches disappear even without a race. A message invalidation's stored thread
+is only a fast source hint. On a miss, the worker exact-peeks the other current
+registered searchable queues by immutable message ID and indexes the message
+under the queue where it is found. This makes completed rename markers recovery
+state rather than a permanent redirect graph. The accepted cost is one exact
+probe per current searchable queue for a stale hint. SQLite common-term lookup
+also materializes each term's match set before intersection. These limits
+affect transient recall or memory, not source truth, access control, or
+stale-positive prevention.
 
 ## Related Plans
 

@@ -211,19 +211,39 @@ def test_search_dm_scope_is_current_participant_only(tmp_path: Path) -> None:
         charlie.search("rendezvous")
 
 
-def test_search_follows_completed_channel_rename_chain(tmp_path: Path) -> None:
+def test_search_follows_message_identity_across_reused_channel_names(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     db_path = tmp_path / ".taut.db"
     TautClient.init(db_path=db_path)
     alice = TautClient(db_path=db_path, as_name="alice")
-    alice.join("general")
-    message = alice.say("general", "rename chain needle")
-    alice.rename_channel("general", "ops")
-    alice.rename_channel("ops", "final")
+    alice.join("alpha")
+    original = alice.say("alpha", "original rename needle")
+    alice.rename_channel("alpha", "beta")
+    alice.rename_channel("beta", "alpha")
+    alice.rename_channel("alpha", "gamma")
+    alice.join("aardvark")
 
-    hits = alice.search("chain")
+    closed_sources: list[str] = []
+    real_close = Queue.close
 
-    assert [(hit.thread, hit.channel, hit.ts) for hit in hits] == [
-        ("final", "final", message.ts)
+    def record_close(queue: Queue) -> None:
+        if queue.name in {"aardvark", "gamma"}:
+            closed_sources.append(queue.name)
+        real_close(queue)
+
+    monkeypatch.setattr(Queue, "close", record_close)
+
+    assert [(hit.thread, hit.ts) for hit in alice.search("original needle")] == [
+        ("gamma", original.ts)
+    ]
+    assert {"aardvark", "gamma"}.issubset(closed_sources)
+
+    alice.join("alpha")
+    reused = alice.say("alpha", "reused channel needle")
+    assert [(hit.thread, hit.ts) for hit in alice.search("reused needle")] == [
+        ("alpha", reused.ts)
     ]
 
 

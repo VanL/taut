@@ -344,6 +344,10 @@ then by the listed stable sort key:
 | `membership` | `thread`, `member_id`, `joined_ts`, `last_seen_ts` | `(thread, member_id)` |
 | `channel_rename` | `old_name`, `new_name`, `state`, `affected`, `started_ts`, `updated_ts` | `old_name` |
 
+A `channel_rename` record contains the latest retained operation for its
+`old_name`, not a complete historical event log. This does not change the
+version-1 record fields, ordering, or incomplete-rename refusal.
+
 `meta` and `evidence` are parsed JSON values, not double-encoded SQL strings;
 the current core validators govern their required shapes while preserving
 allowed unknown keys. `name_key` is recomputed from `display_name` and is not a

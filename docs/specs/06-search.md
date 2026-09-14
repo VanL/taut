@@ -563,16 +563,18 @@ not older than the document's latest revision. A deletion retains a small
 revision tombstone so a timed-out older worker cannot resurrect stale index
 state after a newer deletion.
 
-Before source lookup, the worker consults durable completed channel-rename
-markers through a new core state accessor that returns completed affected
-mappings. It follows mappings transitively to the current queue; a cycle or
-malformed chain is corruption and fails search work. This redirect depends on
-completed rename markers remaining durable; pruning them requires a future
-replacement mapping and spec revision. The `thread_rename` job conditionally
-retargets every affected indexed document at its own revision. Thus an older
-old-name message job cannot tombstone a renamed live document, while a message
-job enqueued after one or more renames resolves and indexes the current queue.
-Both relative orderings and a two-rename chain require real tests.
+For a `message` job, the stored thread name is a source-location hint, not
+durable message identity. The worker first exact-peeks that name if it is
+currently a registered searchable queue. On a miss it exact-peeks the other
+current registered searchable queues for the immutable message ID. A found
+message is projected under its current registered thread; absent source is
+marked deleted through the normal revision fence. Completed rename markers are
+recovery bookkeeping, not a permanent redirect graph; name reuse and cycles in
+retained rename history are valid. The `thread_rename` job remains a
+revision-fenced index hint. Source hydration and reconciliation retain
+authority over current location and visibility. Tests cover delayed jobs, both
+rename/job orderings, repeated renames, and a different channel reusing an old
+name.
 
 After the provider transaction commits, the worker rechecks that claim metadata
 still contains its lease ID, exact-deletes the job from claimed, and removes
