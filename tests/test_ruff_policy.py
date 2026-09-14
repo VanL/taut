@@ -7,7 +7,6 @@ import re
 import subprocess
 import sys
 import tomllib
-from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -28,53 +27,6 @@ EXTENSIONLESS_PYTHON = {
 }
 REVIEWED_FAMILIES = ["E", "W", "F", "I", "B", "C901", "C4", "UP"]
 GLOBAL_IGNORES = ["E501", "B008"]
-RAW_RULE_COUNTS = {
-    "BLE001": 132,
-    "C901": 37,
-    "DTZ006": 1,
-    "F401": 1,
-    "FLY002": 16,
-    "FURB122": 1,
-    "LOG001": 1,
-    "N999": 6,
-    "PYI041": 1,
-    "RUF015": 2,
-    "S110": 3,
-    "SIM115": 3,
-    "SIM117": 7,
-    "TRY004": 12,
-}
-RETIRED_GROUP_NUMBERS = {
-    1,
-    6,
-    7,
-    9,
-    10,
-    13,
-    17,
-    20,
-    23,
-    25,
-    27,
-    28,
-    29,
-    33,
-    35,
-    37,
-    38,
-    39,
-    41,
-    42,
-    43,
-    45,
-    49,
-    50,
-    51,
-    57,
-    59,
-    62,
-    91,
-}
 
 
 def _enabled_rules(*, source: str) -> set[str]:
@@ -254,13 +206,8 @@ def test_root_ruff_discovers_every_tracked_python_source() -> None:
     assert _tracked_python_files() <= discovered
 
 
-def test_raw_active_rule_inventory_and_registry_are_exact() -> None:
-    result = _ruff("check", "--ignore-noqa", "--output-format", "json", ".")
-    assert result.returncode == 1, result.stderr
-    counts = Counter(item["code"] for item in json.loads(result.stdout))
-    assert counts == RAW_RULE_COUNTS
-
-    snapshot = run(
+def test_spec_owned_ruff_inventory_and_registry_are_current() -> None:
+    run(
         repo_root=ROOT,
         spec=ROOT
         / "docs"
@@ -268,11 +215,6 @@ def test_raw_active_rule_inventory_and_registry_are_exact() -> None:
         / "01-development-documentation-operating-model.md",
         write=False,
     )
-    assert [group.group_id for group in snapshot.groups] == [
-        f"RUFF-SUP-{number:03d}"
-        for number in range(1, 92)
-        if number not in RETIRED_GROUP_NUMBERS
-    ]
 
 
 def test_normal_repository_ruff_and_documented_registry_commands_are_current() -> None:

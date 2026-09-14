@@ -27,7 +27,11 @@ its prior explicit paths.
 The source directive owns only rule codes and a stable group pointer. The human
 DOM-10.2.1 table owns approval, cardinality, protected invariant, real proof,
 and rejected alternatives. `bin/ruff_suppression_index.py` owns derived
-evidence only.
+evidence only. Its spec-owned global raw-diagnostic inventory is the sole
+approved aggregate by rule code; policy tests invoke the checker rather than
+copying those counts or the live and retired group-ID census into Python.
+Reviewers consult Git history before assigning a group ID that could have been
+retired.
 
 ## Symbol identity and raw identity
 
