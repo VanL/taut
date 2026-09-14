@@ -1013,6 +1013,195 @@ def test_unknown_colon_text_stays_message_and_command_cancel_preserves_draft() -
     asyncio.run(exercise())
 
 
+def test_text_command_rename_preserves_draft(
+    tmp_path: Path,
+) -> None:
+    from taut.commands.syntax import CommandInput, CommandInvocation
+    from taut_tui.app import TautApp
+    from taut_tui.models import DraftState
+    from taut_tui.screens import ConfirmationScreen
+
+    async def exercise() -> None:
+        db_path = tmp_path / "text-rename.db"
+        TautClient.init(db_path=db_path)
+        client = TautClient(db_path=db_path, as_name="alice")
+        try:
+            client.join("general")
+        finally:
+            client.close()
+        app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
+        async with app.run_test(size=(100, 34)) as pilot:
+            await _pause_until(pilot, lambda: app._domain is not None)
+            assert app._domain is not None
+            intent = app._advance_conversation_intent()
+            app._watch_future(
+                app._domain.open_conversation("general", intent_token=intent),
+                lambda done: app._apply_optional_conversation(intent, done),
+            )
+            await _pause_until(
+                pilot,
+                lambda: app.visual_state.active_conversation == "general",
+            )
+            app.visual_state = app.visual_state.with_draft(
+                DraftState("general", "source\ndraft", 4, 2)
+            )
+            composer = app.query_one("#composer", TautComposer)
+            composer.text = "source\ndraft"
+            composer.cursor_position = 4
+
+            successful = CommandInvocation(
+                path=("channel", "rename"),
+                values={"old_name": "general", "new_name": "renamed"},
+                source=CommandInput("channel rename general renamed"),
+            )
+            assert app._dispatch_channel_command(successful, app._domain)
+            await pilot.pause()
+            assert isinstance(app.screen, ConfirmationScreen)
+            app.screen.query_one("#confirmation-confirm", Button).press()
+            await _pause_until(
+                pilot,
+                lambda: app.visual_state.active_conversation == "renamed",
+            )
+            assert app.visual_state.draft_for("renamed") == DraftState(
+                "renamed", "source\ndraft", 4, 2
+            )
+
+    asyncio.run(exercise())
+
+
+def test_rename_completion_does_not_replace_newer_navigation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut.client import Thread
+    from taut_tui.app import TautApp
+    from taut_tui.models import DraftState
+
+    class Session:
+        @staticmethod
+        def open_conversation(*args: object, **kwargs: object) -> Future[Any]:
+            raise AssertionError("stale rename completion reopened its old view")
+
+        @staticmethod
+        def refresh_navigation() -> Future[Any]:
+            return Future()
+
+    async def exercise() -> None:
+        db_path = tmp_path / "rename-intent.db"
+        TautClient.init(db_path=db_path)
+        app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
+        async with app.run_test(size=(100, 34)):
+            app._session = cast(Any, Session())
+            app._conversation_intent = 2
+            app.visual_state = replace(
+                app.visual_state.with_draft(DraftState("general", "draft", 3, 1)),
+                active_conversation="newer-target",
+            )
+            app._render_inspector("newer navigation state")
+            monkeypatch.setattr(
+                app,
+                "_watch_future",
+                lambda future, apply: apply(future) if future.done() else None,
+            )
+            renamed: Future[Thread] = Future()
+            renamed.set_result(Thread("renamed", None, False, None))
+
+            app._apply_channel_rename_result(
+                renamed,
+                old_name="general",
+                intent=1,
+                active_target="general",
+                screen=None,
+            )
+
+            assert app.visual_state.active_conversation == "newer-target"
+            assert app.visual_state.draft_for("renamed") == DraftState(
+                "renamed", "draft", 3, 1
+            )
+            assert "newer navigation state" in str(
+                app.query_one("#inspector-body").render()
+            )
+
+    asyncio.run(exercise())
+
+
+def test_rename_reopen_failure_reports_without_rolling_back_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut.client import Thread
+    from taut_tui.app import TautApp
+    from taut_tui.models import DraftState
+
+    open_calls: list[tuple[str, str | None, int | None]] = []
+    rename_calls: list[tuple[str, str]] = []
+
+    renamed: Future[Thread] = Future()
+    renamed.set_result(Thread("renamed", None, False, None))
+
+    class Domain:
+        @staticmethod
+        def rename_channel(old_name: str, new_name: str) -> Future[Thread]:
+            rename_calls.append((old_name, new_name))
+            return renamed
+
+    class Session:
+        @staticmethod
+        def open_conversation(
+            target: str,
+            *,
+            reply_thread: str | None,
+            intent_token: int | None,
+        ) -> Future[Any]:
+            open_calls.append((target, reply_thread, intent_token))
+            failed: Future[Any] = Future()
+            failed.set_exception(RuntimeError("reopen unavailable"))
+            return failed
+
+        @staticmethod
+        def refresh_navigation() -> Future[Any]:
+            return Future()
+
+    async def exercise() -> None:
+        db_path = tmp_path / "rename-reopen.db"
+        TautClient.init(db_path=db_path)
+        app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
+        async with app.run_test(size=(100, 34)):
+            app._session = cast(Any, Session())
+            app._conversation_intent = 1
+            app.visual_state = replace(
+                app.visual_state.with_draft(DraftState("general", "draft", 3, 1)),
+                active_conversation="general",
+            )
+            composer = app.query_one("#composer", TautComposer)
+            composer.text = "draft"
+            composer.cursor_position = 3
+            monkeypatch.setattr(
+                app,
+                "_watch_future",
+                lambda future, apply: apply(future) if future.done() else None,
+            )
+            app._submit_channel_rename(
+                cast(Any, Domain()),
+                "general",
+                "renamed",
+            )
+
+            assert rename_calls == [("general", "renamed")]
+            assert open_calls == [("renamed", None, 2)]
+            assert app.visual_state.active_conversation == "renamed"
+            assert app.visual_state.draft_for("general") is None
+            assert app.visual_state.draft_for("renamed") == DraftState(
+                "renamed", "draft", 3, 1
+            )
+            assert (
+                "Channel renamed, but reopening its view failed: reopen unavailable"
+                in str(app.query_one("#inspector-body").render())
+            )
+
+    asyncio.run(exercise())
+
+
 def test_successful_promoted_command_clears_unchanged_originating_draft() -> None:
     from taut_tui.app import TautApp
     from taut_tui.screens import CommandLineScreen

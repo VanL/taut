@@ -398,6 +398,13 @@ reply surface when its registered sub-thread still exists. Physical message
 deletion does not itself cascade into sub-thread deletion or close an
 otherwise valid reply surface.
 
+After a successful channel rename initiated in the TUI, an affected open
+conversation and reply surface continue under their new public targets.
+Affected drafts retain their text and editing position. A newer navigation
+intent is not replaced by rename completion. The replacement watcher uses
+the normal stop-and-join conversation-open path. A post-rename view failure
+does not change or retry the successful domain operation.
+
 ### [TUI-6.4] Search, presence, and reply threads
 
 Search is cursor-neutral and uses the public search result contract. Opening a

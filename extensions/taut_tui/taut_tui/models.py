@@ -180,6 +180,56 @@ class VisualState:
         remaining = tuple(item for item in self.drafts if item.target != draft.target)
         return replace(self, drafts=(*remaining, draft))
 
+    def after_channel_rename(
+        self,
+        old_name: str,
+        new_name: str,
+        *,
+        remap_open_view: bool,
+    ) -> VisualState:
+        """Move affected drafts and, when owned, the open channel projection."""
+
+        drafts: dict[str, DraftState] = {
+            draft.target: draft
+            for draft in self.drafts
+            if remap_channel_target(draft.target, old_name, new_name) == draft.target
+        }
+        for draft in self.drafts:
+            mapped = remap_channel_target(draft.target, old_name, new_name)
+            assert mapped is not None
+            if mapped != draft.target:
+                drafts[mapped] = replace(draft, target=mapped)
+        if not remap_open_view:
+            return replace(self, drafts=tuple(drafts.values()))
+        return replace(
+            self,
+            drafts=tuple(drafts.values()),
+            active_conversation=remap_channel_target(
+                self.active_conversation, old_name, new_name
+            ),
+            open_reply_thread=remap_channel_target(
+                self.open_reply_thread, old_name, new_name
+            ),
+            selected_navigation=remap_channel_target(
+                self.selected_navigation, old_name, new_name
+            ),
+        )
+
+
+def remap_channel_target(
+    target: str | None,
+    old_name: str,
+    new_name: str,
+) -> str | None:
+    """Map one exact channel root or descendant to a returned rename target."""
+
+    if target == old_name:
+        return new_name
+    prefix = f"{old_name}."
+    if target is not None and target.startswith(prefix):
+        return f"{new_name}{target[len(old_name) :]}"
+    return target
+
 
 __all__ = [
     "DraftState",
@@ -192,4 +242,5 @@ __all__ = [
     "ScrollAnchor",
     "TerminalSize",
     "VisualState",
+    "remap_channel_target",
 ]

@@ -84,6 +84,7 @@ from taut_tui.models import (
     ScrollAnchor,
     TerminalSize,
     VisualState,
+    remap_channel_target,
 )
 from taut_tui.screens import (
     CommandLineScreen,
@@ -1487,9 +1488,10 @@ class TautApp(App[None]):
             old_name = str(values["old_name"])
             self._confirm_command(
                 f"Rename {old_name}?",
-                lambda: self._run_action(
-                    domain.rename_channel(old_name, str(values["new_name"])),
-                    refresh_navigation=True,
+                lambda: self._submit_channel_rename(
+                    domain,
+                    old_name,
+                    str(values["new_name"]),
                 ),
             )
         elif path == ("who",):
@@ -2148,10 +2150,11 @@ class TautApp(App[None]):
                 self._confirm_context_action(
                     action_id,
                     self.visual_state.active_conversation,
-                    lambda target: self._run_form_action(
+                    lambda target: self._submit_channel_rename(
+                        domain,
+                        target,
+                        values["new_name"],
                         screen,
-                        domain.rename_channel(target, values["new_name"]),
-                        refresh_navigation=True,
                     ),
                     cancelled_action=screen.resume,
                 )
@@ -2390,6 +2393,116 @@ class TautApp(App[None]):
                 refresh_navigation=refresh_navigation,
             ),
         )
+
+    def _submit_channel_rename(
+        self,
+        domain: TuiDomainActions,
+        old_name: str,
+        new_name: str,
+        screen: NativeFormScreen | None = None,
+    ) -> None:
+        self._capture_draft_cursor()
+        intent = self._conversation_intent
+        active_target = self.visual_state.active_conversation
+        self._operation_state = "working"
+        self._update_status()
+        self._watch_future(
+            domain.rename_channel(old_name, new_name),
+            lambda done: self._apply_channel_rename_result(
+                done,
+                old_name=old_name,
+                intent=intent,
+                active_target=active_target,
+                screen=screen,
+            ),
+        )
+
+    def _apply_channel_rename_result(
+        self,
+        future: Future[Thread],
+        *,
+        old_name: str,
+        intent: int,
+        active_target: str | None,
+        screen: NativeFormScreen | None,
+    ) -> None:
+        self._operation_state = "idle"
+        try:
+            result = future.result()
+        except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-085] exception
+            detail = str(exc) or type(exc).__name__
+            if screen is None:
+                self._show_error(detail)
+            else:
+                screen.show_domain_error(detail)
+            self._update_status()
+            return
+        if screen is not None:
+            screen.complete()
+
+        new_name = result.name
+        intent_is_current = intent == self._conversation_intent
+        owns_view = (
+            intent_is_current
+            and remap_channel_target(active_target, old_name, new_name) != active_target
+        )
+        self.visual_state = self.visual_state.after_channel_rename(
+            old_name,
+            new_name,
+            remap_open_view=owns_view,
+        )
+        self._remap_channel_projections(old_name, new_name)
+        if intent_is_current:
+            self._render_domain_result(result)
+        session = self._session
+        if owns_view and session is not None:
+            next_intent = self._advance_conversation_intent()
+            target = self.visual_state.active_conversation
+            assert target is not None
+            self._watch_future(
+                session.open_conversation(
+                    target,
+                    reply_thread=self.visual_state.open_reply_thread,
+                    intent_token=next_intent,
+                ),
+                lambda done: self._apply_optional_conversation(
+                    next_intent,
+                    done,
+                    error_prefix="Channel renamed, but reopening its view failed: ",
+                ),
+            )
+        if session is not None:
+            self._watch_future(
+                session.refresh_navigation(), self._apply_navigation_result
+            )
+        self._update_status()
+
+    def _remap_channel_projections(self, old_name: str, new_name: str) -> None:
+        self._target_labels = {
+            cast(str, remap_channel_target(target, old_name, new_name)): (
+                f"#{new_name}" if target == old_name else label
+            )
+            for target, label in self._target_labels.items()
+        }
+        self._target_kinds = {
+            cast(str, remap_channel_target(target, old_name, new_name)): kind
+            for target, kind in self._target_kinds.items()
+        }
+        self._reply_threads = {
+            (
+                cast(str, remap_channel_target(target, old_name, new_name)),
+                message_id,
+            ): cast(str, remap_channel_target(reply, old_name, new_name))
+            for (target, message_id), reply in self._reply_threads.items()
+        }
+        self._navigation_targets = [
+            (
+                cast(str, remap_channel_target(target, old_name, new_name))
+                if isinstance(target, str)
+                else target
+            )
+            for target in self._navigation_targets
+        ]
 
     def _apply_form_action_result(
         self,
@@ -2836,6 +2949,8 @@ class TautApp(App[None]):
         self,
         intent: int,
         future: Future[ConversationSnapshot | None],
+        *,
+        error_prefix: str = "",
     ) -> None:
         if intent != self._conversation_intent:
             self._clear_pending_search_anchor(intent=intent)
@@ -2844,7 +2959,7 @@ class TautApp(App[None]):
             result = future.result()
         except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-085] exception
             self._clear_pending_search_anchor(intent=intent)
-            self._show_error(str(exc) or type(exc).__name__)
+            self._show_error(error_prefix + (str(exc) or type(exc).__name__))
             return
         if result is None:
             self._clear_pending_search_anchor(intent=intent)

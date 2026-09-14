@@ -19,7 +19,7 @@ from taut import EmptyResultError, NotFoundError
 from taut.client import InitResult, TautClient
 from taut_tui.actions import ActionContext, ActionId, ActionRoute, action_spec
 from taut_tui.app import TautApp
-from taut_tui.models import InspectorKind, InteractionMode, LogicalSurface
+from taut_tui.models import DraftState, InspectorKind, InteractionMode, LogicalSurface
 from taut_tui.screens import (
     CommandLineScreen,
     CommandPaletteScreen,
@@ -415,6 +415,25 @@ async def _channel_clear_topic(context: HandlerContext) -> None:
 
 async def _channel_rename(context: HandlerContext) -> None:
     await _open_general(context)
+    observer = _observe(context)
+    try:
+        observer.reply("general", str(context.message_ts), "reply before rename")
+    finally:
+        observer.close()
+    context.app.visual_state = replace(
+        context.app.visual_state.with_draft(
+            DraftState(
+                target="general",
+                text="first line\nsecond line",
+                cursor_position=6,
+                revision=4,
+            )
+        ),
+        open_reply_thread=f"general.{context.message_ts}",
+    )
+    composer = context.app.query_one("#composer", TautComposer)
+    composer.text = "first line\nsecond line"
+    composer.cursor_position = 6
     await _select_palette(context, ActionId.CHANNEL_RENAME)
     form = await _submit_form(context, {"new_name": "renamed-channel"})
     await _cancel_confirmation(context, "general")
@@ -427,12 +446,48 @@ async def _channel_rename(context: HandlerContext) -> None:
     form.query_one("#form-submit", Button).press()
     await context.pilot.pause()
     await _accept_confirmation(context, "general")
-    await _eventually(context.pilot, lambda: "renamed-channel" in _inspector(context))
+    await _eventually(
+        context.pilot,
+        lambda: context.app.visual_state.active_conversation == "renamed-channel",
+    )
+    draft = context.app.visual_state.draft_for("renamed-channel")
+    assert draft == DraftState(
+        target="renamed-channel",
+        text="first line\nsecond line",
+        cursor_position=6,
+        revision=4,
+    )
+    assert context.app.visual_state.open_reply_thread == (
+        f"renamed-channel.{context.message_ts}"
+    )
+    assert composer.text == draft.text
+    assert composer.cursor_position == draft.cursor_position
     observer = _observe(context)
     try:
         assert observer.get_channel("renamed-channel").name == "renamed-channel"
     finally:
         observer.close()
+    composer.focus()
+    await context.pilot.press("enter")
+    await _eventually(
+        context.pilot,
+        lambda: _thread_has_text(
+            context,
+            "renamed-channel",
+            "first line\nsecond line",
+        ),
+    )
+    observer = _observe(context, as_name="bob")
+    try:
+        observer.say("renamed-channel", "incoming after rename")
+    finally:
+        observer.close()
+    await _eventually(
+        context.pilot,
+        lambda: any(
+            row.text == "incoming after rename" for row in context.app._message_rows
+        ),
+    )
 
 
 async def _compose_enter(context: HandlerContext) -> None:

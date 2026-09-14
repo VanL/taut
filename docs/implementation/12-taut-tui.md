@@ -73,6 +73,15 @@ only required and nonblank fields; public core operations retain domain and
 race validation. Exact-target confirmations cover leave, rename, message
 delete, dump replacement, and Summon dismissal.
 
+Both the native rename form and the text-command confirmation use one
+rename-completion path. It remaps exact channel roots and their dotted reply
+targets from the `Thread.name` returned by core, retains target-keyed draft and
+view state, and reopens an affected conversation through `TuiSession`. The
+session therefore owns the bounded watcher stop and replacement. The captured
+conversation-intent token prevents delayed completion from taking over newer
+navigation. Core remains the owner of destination-name collisions; a reopen
+failure is reported after the completed rename without retrying it.
+
 The ordered context requirements in each non-Summon input contract also own
 semantic applicability. `forms.py` evaluates those requirements against one
 immutable set of closed visual facts and returns enabled or the first human
