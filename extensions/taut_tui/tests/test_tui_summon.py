@@ -7,8 +7,6 @@ Spec references:
 from __future__ import annotations
 
 import json
-import os
-import select
 import sys
 import time
 from collections.abc import Callable, Iterator
@@ -18,6 +16,7 @@ from threading import Event, Lock, Thread
 from typing import Any, cast
 
 import pytest
+from _terminal_probe import HostTerminal
 
 pytestmark = pytest.mark.sqlite_only
 
@@ -1668,19 +1667,6 @@ def _gate_menu_answers(log: Path) -> list[str]:
     ]
 
 
-def _read_pty_until(fd: int, needle: bytes, *, timeout: float = 15.0) -> bytes:
-    deadline = time.monotonic() + timeout
-    output = b""
-    while time.monotonic() < deadline:
-        ready, _, _ = select.select([fd], [], [], 0.05)
-        if not ready:
-            continue
-        output += os.read(fd, 4096)
-        if needle in output:
-            return output
-    return output
-
-
 def _wait_until(
     predicate: Callable[[], bool],
     *,
@@ -1713,8 +1699,9 @@ async def _await_until(
 class _GateHostInteraction:
     """Shell-equivalent host owning the wiring run's real terminal fds."""
 
-    def __init__(self, *, fd: int) -> None:
-        self._fd = fd
+    def __init__(self, *, input_fd: int, output_fd: int) -> None:
+        self._input_fd = input_fd
+        self._output_fd = output_fd
         self.notices: list[Any] = []
 
     def terminal_availability(self, intent: Any) -> Any:
@@ -1732,7 +1719,7 @@ class _GateHostInteraction:
     def terminal_lease(self) -> Iterator[Any]:
         from taut_summon import TerminalLease
 
-        yield TerminalLease(input_fd=self._fd, output_fd=self._fd)
+        yield TerminalLease(input_fd=self._input_fd, output_fd=self._output_fd)
 
     def supports_setup_recovery(self) -> bool:
         return True
@@ -1741,25 +1728,25 @@ class _GateHostInteraction:
 class _GateAnswerer(Thread):
     """Answer the provider's trust gate through the leased terminal fds."""
 
-    def __init__(self, master_fd: int) -> None:
+    def __init__(self, terminal: HostTerminal) -> None:
         super().__init__(daemon=True, name="tui-gate-answerer")
-        self._fd = master_fd
+        self._terminal = terminal
         self.failures: list[str] = []
         self.answered = Event()
 
     def run(self) -> None:
-        if b"Trust this folder?" not in _read_pty_until(
-            self._fd, b"Trust this folder?"
+        if b"Trust this folder?" not in self._terminal.read_until(
+            b"Trust this folder?"
         ):
             self.failures.append("the gate menu never reached the leased terminal")
             return
-        os.write(self._fd, b"\x14")
-        if b"chat>" not in _read_pty_until(self._fd, b"chat>"):
+        self._terminal.write(b"\x14")
+        if b"chat>" not in self._terminal.read_until(b"chat>"):
             self.failures.append("trusting the folder never opened the chat prompt")
             return
         self.answered.set()
-        os.write(self._fd, b"\x1c\x1c")
-        if b"\x1b[?2004l" not in _read_pty_until(self._fd, b"\x1b[?2004l"):
+        self._terminal.write(b"\x1c\x1c")
+        if b"\x1b[?2004l" not in self._terminal.read_until(b"\x1b[?2004l"):
             self.failures.append("the detach reset blast never arrived")
 
 
@@ -1782,8 +1769,7 @@ def _wire_gate_member(
     name: str,
     prompt_path: Path,
     marker: str,
-    user_master: int,
-    user_slave: int,
+    terminal: HostTerminal,
     monkeypatch: pytest.MonkeyPatch,
     log_dir: Path,
 ) -> None:
@@ -1800,7 +1786,10 @@ def _wire_gate_member(
         rate_limit=None,
         provider_flag="pty",
     )
-    interaction = _GateHostInteraction(fd=user_slave)
+    interaction = _GateHostInteraction(
+        input_fd=terminal.lease_input_fd,
+        output_fd=terminal.lease_output_fd,
+    )
     failures: list[BaseException] = []
 
     def run() -> None:
@@ -1812,9 +1801,9 @@ def _wire_gate_member(
     thread = Thread(target=run, daemon=True, name="tui-gate-wiring")
     thread.start()
     try:
-        assert b"chat>" in _read_pty_until(user_master, b"chat>")
-        os.write(user_master, b"\x1c\x1c")
-        assert b"\x1b[?2004l" in _read_pty_until(user_master, b"\x1b[?2004l")
+        assert b"chat>" in terminal.read_until(b"chat>")
+        terminal.write(b"\x1c\x1c")
+        assert b"\x1b[?2004l" in terminal.read_until(b"\x1b[?2004l")
         _wait_until(
             lambda: any(marker in raw for raw in _gate_inputs(log)),
             message="wiring-run orientation injection",
@@ -1886,8 +1875,7 @@ def _prepare_gate_recovery(
     *,
     name: str,
     marker: str,
-    user_master: int,
-    user_slave: int,
+    terminal: HostTerminal,
 ) -> tuple[Path, Path, Path]:
     """Wire the member, then arm the un-trusted re-summon the TUI will own."""
 
@@ -1901,20 +1889,20 @@ def _prepare_gate_recovery(
         name=name,
         prompt_path=prompt_path,
         marker=marker,
-        user_master=user_master,
-        user_slave=user_slave,
+        terminal=terminal,
         monkeypatch=monkeypatch,
         log_dir=tmp_path / "run1",
     )
     log = _configure_gate_pty(monkeypatch, log_dir=tmp_path / "run2", pretrusted=False)
     monkeypatch.setattr(tui_summon, "_standard_terminal_is_suitable", lambda: True)
     monkeypatch.setattr(
-        tui_summon, "_standard_terminal_fds", lambda: (user_slave, user_slave)
+        tui_summon,
+        "_standard_terminal_fds",
+        lambda: (terminal.lease_input_fd, terminal.lease_output_fd),
     )
     return db, prompt_path, log
 
 
-@pytest.mark.posix_only
 def test_setup_recovery_offer_reaches_a_pending_owned_tui_and_completes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1927,20 +1915,18 @@ def test_setup_recovery_offer_reaches_a_pending_owned_tui_and_completes(
     """
 
     import asyncio
-    import pty as pty_module
 
     marker = "tui-gate-orientation-probe"
-    user_master, user_slave = pty_module.openpty()
+    terminal = HostTerminal.open()
     try:
         db, prompt_path, log = _prepare_gate_recovery(
             tmp_path,
             monkeypatch,
             name="gated",
             marker=marker,
-            user_master=user_master,
-            user_slave=user_slave,
+            terminal=terminal,
         )
-        answerer = _GateAnswerer(user_master)
+        answerer = _GateAnswerer(terminal)
 
         async def exercise() -> None:
             app = _gate_app(db)
@@ -1999,11 +1985,9 @@ def test_setup_recovery_offer_reaches_a_pending_owned_tui_and_completes(
         assert answerer.failures == []
         assert answerer.answered.is_set()
     finally:
-        os.close(user_master)
-        os.close(user_slave)
+        terminal.close()
 
 
-@pytest.mark.posix_only
 def test_setup_recovery_decline_continues_detached_with_enriched_give_up(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2015,20 +1999,18 @@ def test_setup_recovery_decline_continues_detached_with_enriched_give_up(
     """
 
     import asyncio
-    import pty as pty_module
 
     from taut_tui.screens import ConfirmationScreen
 
     monkeypatch.setenv("TAUT_SUMMON_RESUME_BACKOFF", "0.1")
-    user_master, user_slave = pty_module.openpty()
+    terminal = HostTerminal.open()
     try:
         db, prompt_path, log = _prepare_gate_recovery(
             tmp_path,
             monkeypatch,
             name="declined",
             marker="tui-decline-orientation-probe",
-            user_master=user_master,
-            user_slave=user_slave,
+            terminal=terminal,
         )
         errors: list[BaseException] = []
 
@@ -2071,11 +2053,9 @@ def test_setup_recovery_decline_continues_detached_with_enriched_give_up(
         assert isinstance(errors[0], SummonOperationError)
         assert "exited before foreground readiness" in str(errors[0])
     finally:
-        os.close(user_master)
-        os.close(user_slave)
+        terminal.close()
 
 
-@pytest.mark.posix_only
 def test_host_shutdown_during_offer_spawns_nothing_further(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2083,17 +2063,15 @@ def test_host_shutdown_during_offer_spawns_nothing_further(
     """[TUI-11.3] closing the TUI over a pending offer takes the shutdown class."""
 
     import asyncio
-    import pty as pty_module
 
-    user_master, user_slave = pty_module.openpty()
+    terminal = HostTerminal.open()
     try:
         db, prompt_path, log = _prepare_gate_recovery(
             tmp_path,
             monkeypatch,
             name="stopped",
             marker="tui-shutdown-orientation-probe",
-            user_master=user_master,
-            user_slave=user_slave,
+            terminal=terminal,
         )
         futures: list[Any] = []
 
@@ -2117,5 +2095,4 @@ def test_host_shutdown_during_offer_spawns_nothing_further(
         assert _gate_menu_answers(log) == []
         assert not any(event["event"] == "chat_ready" for event in _gate_events(log))
     finally:
-        os.close(user_master)
-        os.close(user_slave)
+        terminal.close()

@@ -9,17 +9,12 @@ from __future__ import annotations
 
 import ast
 import asyncio
-import os
-import select
-import struct
-import subprocess
-import sys
 import textwrap
-import time
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from _terminal_probe import run_terminal_child
 from textual import events
 from textual.app import App, ComposeResult
 from textual.geometry import Size
@@ -416,15 +411,10 @@ def test_retained_textual_pilot_click_focus_and_resize() -> None:
     ("control_byte", "label"),
     ((b"\x03", "Ctrl-C"), (b"\x04", "Ctrl-D")),
 )
-@pytest.mark.posix_only
 def test_shipped_tui_translates_real_pty_quit_control_bytes(
     control_byte: bytes,
     label: str,
 ) -> None:
-    import fcntl
-    import pty
-    import termios
-
     child_source = textwrap.dedent(
         r"""
         import os
@@ -448,66 +438,19 @@ def test_shipped_tui_translates_real_pty_quit_control_bytes(
         """
     )
 
-    master_fd, slave_fd = pty.openpty()
-    process: subprocess.Popen[bytes] | None = None
-    output = bytearray()
-    sent = False
     try:
-        fcntl.ioctl(
-            slave_fd,
-            termios.TIOCSWINSZ,
-            struct.pack("HHHH", 24, 80, 0, 0),
+        result = run_terminal_child(
+            child_source, input_after_output=control_byte, timeout=15
         )
-        process = subprocess.Popen(
-            [sys.executable, "-c", child_source],
-            stdin=slave_fd,
-            stdout=slave_fd,
-            stderr=slave_fd,
-            close_fds=True,
-        )
-        os.close(slave_fd)
-        slave_fd = -1
-        deadline = time.monotonic() + 15
-        while time.monotonic() < deadline:
-            readable, _, _ = select.select([master_fd], [], [], 0.1)
-            if readable:
-                try:
-                    chunk = os.read(master_fd, 65_536)
-                except OSError:
-                    break
-                if not chunk:
-                    break
-                output.extend(chunk)
-                if not sent:
-                    os.write(master_fd, control_byte)
-                    sent = True
-                continue
-            if process.poll() is not None:
-                break
-        else:
-            process.kill()
-            pytest.fail(f"{label} shipped-TUI PTY probe timed out")
-        returncode = process.wait(timeout=3)
-    finally:
-        if slave_fd >= 0:
-            os.close(slave_fd)
-        os.close(master_fd)
-        if process is not None and process.poll() is None:
-            process.kill()
-            process.wait(timeout=3)
-
-    captured = bytes(output)
-    assert sent, captured.decode(errors="replace")
-    assert returncode == 0, captured.decode(errors="replace")
+    except TimeoutError:
+        pytest.fail(f"{label} shipped-TUI PTY probe timed out")
+    captured = result.output
+    assert result.input_sent, captured.decode(errors="replace")
+    assert result.returncode == 0, captured.decode(errors="replace")
     assert b"GUARDED-QUIT" in captured
 
 
-@pytest.mark.posix_only
 def test_real_textual_pty_never_emits_untrusted_terminal_control_payload() -> None:
-    import fcntl
-    import pty
-    import termios
-
     child_source = textwrap.dedent(
         r"""
         from textual.app import App
@@ -532,64 +475,19 @@ def test_real_textual_pty_never_emits_untrusted_terminal_control_payload() -> No
         ProbeApp().run()
         """
     )
-    master_fd, slave_fd = pty.openpty()
-    process: subprocess.Popen[bytes] | None = None
-    output = bytearray()
     try:
-        fcntl.ioctl(
-            slave_fd,
-            termios.TIOCSWINSZ,
-            struct.pack("HHHH", 24, 80, 0, 0),
-        )
-        process = subprocess.Popen(
-            [sys.executable, "-c", child_source],
-            stdin=slave_fd,
-            stdout=slave_fd,
-            stderr=slave_fd,
-            close_fds=True,
-        )
-        os.close(slave_fd)
-        slave_fd = -1
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline:
-            readable, _, _ = select.select([master_fd], [], [], 0.1)
-            if readable:
-                try:
-                    chunk = os.read(master_fd, 65_536)
-                except OSError:
-                    break
-                if not chunk:
-                    break
-                output.extend(chunk)
-                continue
-            if process.poll() is not None:
-                break
-        else:
-            process.kill()
-            pytest.fail("Textual terminal-control probe timed out")
-        returncode = process.wait(timeout=3)
-    finally:
-        if slave_fd >= 0:
-            os.close(slave_fd)
-        os.close(master_fd)
-        if process is not None and process.poll() is None:
-            process.kill()
-            process.wait(timeout=3)
-
-    captured = bytes(output)
-    assert returncode == 0, captured.decode(errors="replace")
+        result = run_terminal_child(child_source, timeout=10)
+    except TimeoutError:
+        pytest.fail("Textual terminal-control probe timed out")
+    captured = result.output
+    assert result.returncode == 0, captured.decode(errors="replace")
     assert b"BEGIN" in captured
     assert b"UPDATE" in captured
     assert b"\x1b]8;;https://evil.invalid\x07" not in captured
     assert b"\\x1b]8;;https://evil.invalid\\a" in captured
 
 
-@pytest.mark.posix_only
 def test_retained_textual_suspend_grants_exclusive_real_pty_lease() -> None:
-    import fcntl
-    import pty
-    import termios
-
     child_source = textwrap.dedent(
         r"""
         import json
@@ -658,52 +556,12 @@ def test_retained_textual_suspend_grants_exclusive_real_pty_lease() -> None:
         )
         """
     )
-    master_fd, slave_fd = pty.openpty()
-    process: subprocess.Popen[bytes] | None = None
-    output = bytearray()
     try:
-        fcntl.ioctl(
-            slave_fd,
-            termios.TIOCSWINSZ,
-            struct.pack("HHHH", 24, 80, 0, 0),
-        )
-        process = subprocess.Popen(
-            [sys.executable, "-c", child_source],
-            stdin=slave_fd,
-            stdout=slave_fd,
-            stderr=slave_fd,
-            close_fds=True,
-        )
-        os.close(slave_fd)
-        slave_fd = -1
-        deadline = time.monotonic() + 15
-        while time.monotonic() < deadline:
-            readable, _, _ = select.select([master_fd], [], [], 0.1)
-            if readable:
-                try:
-                    chunk = os.read(master_fd, 65_536)
-                except OSError:
-                    break
-                if not chunk:
-                    break
-                output.extend(chunk)
-                continue
-            if process.poll() is not None:
-                break
-        else:
-            process.kill()
-            pytest.fail("Textual PTY suspension probe timed out")
-        returncode = process.wait(timeout=3)
-    finally:
-        if slave_fd >= 0:
-            os.close(slave_fd)
-        os.close(master_fd)
-        if process is not None and process.poll() is None:
-            process.kill()
-            process.wait(timeout=3)
-
-    captured = bytes(output)
-    assert returncode == 0, captured.decode(errors="replace")
+        result = run_terminal_child(child_source, timeout=15)
+    except TimeoutError:
+        pytest.fail("Textual PTY suspension probe timed out")
+    captured = result.output
+    assert result.returncode == 0, captured.decode(errors="replace")
     assert b"LEASE-BEGIN" in captured
     assert b"LEASE-END" in captured
     between = captured.split(b"LEASE-BEGIN", 1)[1].split(b"LEASE-END", 1)[0]
