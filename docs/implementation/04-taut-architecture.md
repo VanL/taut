@@ -365,6 +365,11 @@ stay immediately fatal. The workflow is resumable after a matching partial
 upload or after PyPI success, but it never rebuilds or reuses a mismatched
 version.
 
+Workflow tests inspect the parsed publication steps for this boundary. They
+require the tag recheck to run before the PyPI action, use the same publication
+condition, bind the selected evidence commit, and remain fatal. This proves the
+fail-closed behavior without making step display names part of the contract.
+
 Core and Summon are one paired reactor release boundary. The single owner of
 that proof is `bin/build-and-check-release-wheels.py`: it builds fresh core
 and Summon wheels in isolated temporary directories by default, then passes

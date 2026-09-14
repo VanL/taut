@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tomllib
 from collections import Counter
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -86,6 +87,60 @@ def _named_steps(job: dict[str, Any]) -> dict[str, dict[str, Any]]:
     result = {str(step["name"]): step for step in named}
     assert len(result) == len(named), "workflow step names must be unique within a job"
     return result
+
+
+def _assert_release_tag_check_is_fail_stop(job: dict[str, Any]) -> None:
+    steps = list(_named_steps(job).values())
+    tag_rechecks = [
+        step
+        for step in steps
+        if ".github/scripts/release_publication.py verify-tag"
+        in str(step.get("run", ""))
+    ]
+    uploads = [
+        step
+        for step in steps
+        if str(step.get("uses", "")).startswith("pypa/gh-action-pypi-publish@")
+    ]
+    assert len(tag_rechecks) == 1
+    assert len(uploads) == 1
+    tag_recheck = tag_rechecks[0]
+    upload = uploads[0]
+    publication_condition = "${{ steps.publication.outputs.publish == 'true' }}"
+
+    assert steps.index(tag_recheck) < steps.index(upload)
+    assert tag_recheck["if"] == publication_condition
+    assert upload["if"] == publication_condition
+    assert tag_recheck.get("continue-on-error", False) is False
+    assert (
+        '--expected-sha "${{ needs.release-evidence.outputs.tag_commit }}"'
+        in tag_recheck["run"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "value"),
+    (
+        ("continue-on-error", True),
+        ("if", "${{ false }}"),
+    ),
+)
+def test_release_tag_recheck_rejects_fail_open_mutations(
+    mutation: str,
+    value: object,
+) -> None:
+    document = deepcopy(_workflow_data("release-gate.yml"))
+    job = document["jobs"]["publish-to-pypi"]
+    tag_recheck = next(
+        step
+        for step in job["steps"]
+        if ".github/scripts/release_publication.py verify-tag"
+        in str(step.get("run", ""))
+    )
+    tag_recheck[mutation] = value
+
+    with pytest.raises(AssertionError):
+        _assert_release_tag_check_is_fail_stop(job)
 
 
 def _command_option(arguments: list[str], name: str) -> str | None:
@@ -1210,9 +1265,14 @@ def test_release_gates_publish_exact_artifact_through_top_level_pypi_job(
         name,
         artifact_prefix=artifact_prefix,
     )
+    document = _workflow_data(name)
+    jobs = document["jobs"]
+    assert isinstance(jobs, dict)
     stage = _job_block(workflow, "stage-release")
     pypi = _job_block(workflow, "publish-to-pypi")
     finalize = _job_block(workflow, "publish-github-release")
+
+    _assert_release_tag_check_is_fail_stop(jobs["publish-to-pypi"])
 
     assert f'      - "{tag_pattern}"' in workflow
     assert "uv build" not in workflow
@@ -1245,13 +1305,12 @@ def test_release_gates_publish_exact_artifact_through_top_level_pypi_job(
     assert pypi.count(".github/scripts/release_publication.py verify-pypi") == 1
     assert "--dist-dir postflight-dist" in postflight_step
     assert "--dist-dir dist" not in postflight_step
-    tag_recheck = pypi.index(".github/scripts/release_publication.py verify-tag")
     upload = pypi.index("pypa/gh-action-pypi-publish@")
     clean_postflight = pypi.index(
         "Recreate clean verified distributions for postflight"
     )
     postflight = pypi.rindex(".github/scripts/release_publication.py verify-pypi")
-    assert tag_recheck < upload < clean_postflight < postflight
+    assert upload < clean_postflight < postflight
     assert (
         "pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33" in pypi
     )
