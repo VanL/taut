@@ -467,7 +467,7 @@ async def _channel_rename(context: HandlerContext) -> None:
         assert observer.get_channel("renamed-channel").name == "renamed-channel"
     finally:
         observer.close()
-    composer.focus()
+    await context.focus_probe.focus(composer)
     await context.pilot.press("enter")
     await _eventually(
         context.pilot,
@@ -589,7 +589,7 @@ async def _search_open_result(context: HandlerContext) -> None:
     search_anchor_restored = asyncio.Event()
     observed_snapshots: list[ConversationSnapshot | None] = []
     apply_optional_conversation = context.app._apply_optional_conversation
-    restore_transcript_anchor = context.app._restore_transcript_anchor
+    apply_owned_search_anchor_restore = context.app._apply_owned_search_anchor_restore
     expected_intent = context.app._conversation_intent + 1
 
     def observe_search_context(
@@ -601,35 +601,45 @@ async def _search_open_result(context: HandlerContext) -> None:
             return
 
         def observe_search_anchor_restore(
+            generation: int,
+            owner: tuple[int, int],
+            authorize: bool,
+            restore: Callable[[tuple[Any, ...], int, int], None],
             messages: tuple[Any, ...],
             anchor_index: int,
             intra_row_offset: int,
         ) -> None:
-            is_search_anchor = messages[anchor_index].ts == context.message_ts
-            if is_search_anchor:
-                # Reproduce a live delivery/navigation refresh landing after
-                # the logical search anchor is committed but before its
-                # deferred physical viewport restore.
-                transcript = context.app._query_base("#transcript", TautOptionList)
-                transcript.scroll_to(y=0, animate=False, force=True)
-                context.app._capture_scroll_anchor()
-            restore_transcript_anchor(messages, anchor_index, intra_row_offset)
-            if is_search_anchor:
-                assert (
-                    context.app.visual_state.scroll_anchor.message_id
-                    == context.message_ts
-                )
-                navigation: Future[NavigationSnapshot] = Future()
-                navigation.set_result(NavigationSnapshot((), (), ()))
-                context.app.call_after_refresh(
-                    context.app._apply_navigation_result,
-                    navigation,
-                )
-                context.app.call_after_refresh(search_anchor_restored.set)
+            assert owner == (expected_intent, context.message_ts)
+            assert messages[anchor_index].ts == context.message_ts
+            # Reproduce a live delivery/navigation refresh landing after
+            # the logical search anchor is committed but before its
+            # deferred physical viewport restore.
+            transcript = context.app._query_base("#transcript", TautOptionList)
+            transcript.scroll_to(y=0, animate=False, force=True)
+            context.app._capture_scroll_anchor()
+            apply_owned_search_anchor_restore(
+                generation,
+                owner,
+                authorize,
+                restore,
+                messages,
+                anchor_index,
+                intra_row_offset,
+            )
+            assert (
+                context.app.visual_state.scroll_anchor.message_id == context.message_ts
+            )
+            navigation: Future[NavigationSnapshot] = Future()
+            navigation.set_result(NavigationSnapshot((), (), ()))
+            context.app.call_after_refresh(
+                context.app._apply_navigation_result,
+                navigation,
+            )
+            context.app.call_after_refresh(search_anchor_restored.set)
 
         context.monkeypatch.setattr(
             context.app,
-            "_restore_transcript_anchor",
+            "_apply_owned_search_anchor_restore",
             observe_search_anchor_restore,
         )
         try:
@@ -637,8 +647,8 @@ async def _search_open_result(context: HandlerContext) -> None:
         finally:
             context.monkeypatch.setattr(
                 context.app,
-                "_restore_transcript_anchor",
-                restore_transcript_anchor,
+                "_apply_owned_search_anchor_restore",
+                apply_owned_search_anchor_restore,
             )
             snapshot = _successful_conversation(future)
             if snapshot is not None:
