@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from simplebroker import Config, Queue, resolve_config
+from simplebroker import Config, Queue, resolve_broker_target, resolve_config
 from simplebroker.ext import InvalidConfigError, MessageError
 
 from taut import TautClient
@@ -41,7 +41,7 @@ def test_taut_setting_changes_real_queue_behavior(
     assert config["MAX_MESSAGE_SIZE"] == 3
 
 
-def test_declared_identity_and_custom_context_reach_queue_unchanged(
+def test_declared_identity_and_custom_context_reach_client_unchanged(
     clean_env: None,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -51,16 +51,23 @@ def test_declared_identity_and_custom_context_reach_queue_unchanged(
     monkeypatch.setenv("TAUT_DEBUG_ACTION", "raise")
     monkeypatch.setenv("TAUT_WORKSPACE_LABEL", "docs")
 
+    database = tmp_path / ".taut.db"
+    TautClient.init(db_path=database)
     config = load_config()
-    queue = Queue("messages", db_path=str(tmp_path / "messages.db"), config=config)
-    queue.write("hello")
+    target = resolve_broker_target(tmp_path, config=config)
+    assert target is not None
+    client = TautClient(broker_target=target, broker_config=config)
+    try:
+        client.join("general")
 
-    assert queue._config is config
-    assert config["AS"] == "van"
-    assert config["TOKEN"] == "secret"
-    assert config["DEBUG_ACTION"] == "raise"
-    assert config["WORKSPACE_LABEL"] == "docs"
-    assert queue.read() == "hello"
+        assert client.config is config
+        assert client.as_name == "van"
+        assert client.token == "secret"
+        assert client.config["DEBUG_ACTION"] == "raise"
+        assert client.config["WORKSPACE_LABEL"] == "docs"
+        assert client.joined_thread_names() == ("general",)
+    finally:
+        client.close()
 
 
 def test_invalid_setting_preserves_upstream_public_metadata(
@@ -86,24 +93,6 @@ def test_config_derivation_keeps_source_snapshot(clean_env: None) -> None:
 
 def test_vacuum_threshold_keeps_percentage_units(clean_env: None) -> None:
     assert load_config({"TAUT_VACUUM_THRESHOLD": 25})["VACUUM_THRESHOLD"] == 25.0
-
-
-def test_equivalent_resolutions_share_persistent_process_session(
-    clean_env: None,
-    tmp_path: Path,
-) -> None:
-    database = tmp_path / "messages.db"
-    first = Queue("first", db_path=str(database), persistent=True, config=load_config())
-    second = Queue(
-        "second", db_path=str(database), persistent=True, config=load_config()
-    )
-    try:
-        assert first.conn is not None
-        assert second.conn is not None
-        assert first.conn._shared_session is second.conn._shared_session
-    finally:
-        first.close()
-        second.close()
 
 
 @pytest.mark.parametrize("configured", ["", "selected.db"])

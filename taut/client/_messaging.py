@@ -697,7 +697,7 @@ class MessagingMixin(_ClientBase):
         # empty; otherwise the later read deliberately includes both rows.
         # The source message is already durable. A failed auxiliary cursor
         # catch-up may re-show it, but must not report a failed send and invite
-        # a duplicate retry. BaseException still propagates.
+        # a duplicate retry. Non-Exception control-flow signals still propagate.
         with suppress(Exception):
             intervening = queue.peek_many(
                 1,

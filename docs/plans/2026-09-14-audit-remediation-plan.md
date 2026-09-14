@@ -1,5 +1,8 @@
 # Audit Remediation Plan
 
+Status: completed. All thirteen slices, the approved Ruff registry delta, and
+the final fresh-eyes and outside-model implementation reviews are complete.
+
 Class: 5+P. The complete unit includes concurrent state changes, auxiliary-failure
 semantics, TUI lifecycle work, and material changes to verification guidance.
 Plan type: implementation with small spec revisions, promoted atomically with
@@ -984,3 +987,26 @@ the suppression-index checker passed. Independent fresh-eyes review found no
 remaining implementation blocker after the PostgreSQL proof and documentation
 corrections. The final external-model review was also required to check for
 hypothetical hardening and needless structure; its result is recorded below.
+
+### Final outside-model implementation review, 2026-09-14
+
+Claude reviewed the thirteen implementation slices in three bounded batches so
+every changed line fit the external tool's input and runtime limits. The review
+found two concrete follow-ups: describe the sender-cursor catch as allowing
+non-`Exception` control-flow signals through, and make the Summon dump-race test
+prove the preserved backup restores the original session rather than merely
+parses. Both were applied and verified.
+
+The reviewer also questioned a Ruff checker test with no explicit assertion,
+the deleted per-file import matrix, and command implementation-string parsing.
+Those do not require changes: `ruff_suppression_index.run(write=False)` raises
+`PolicyMismatch` on drift; the deleted matrix was the process-coupled test S11
+was designed to replace with observable import behavior; and `CommandSpec`
+requires a nonoptional implementation string. The final batch found no defect
+in the fence parser, exact-ID search recovery, TUI rename continuity, topology
+transaction, or the broad-exception result boundary. It agreed that the TUI
+catch has better locality than distributing `Future` state handling.
+
+A separate fresh-eyes pass found no additional issue in the thirteen slices.
+It identified two private SimpleBroker assertions in the later config migration;
+those were removed or replaced with public Taut-client behavior.

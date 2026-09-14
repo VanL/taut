@@ -229,6 +229,14 @@ def test_dump_rejects_cross_component_race_before_replacing_backup(
     assert list(tmp_path.glob(".backup.taut.jsonl.*.tmp")) == []
     restored = tmp_path / "restored.db"
     TautClient.load(input_path=backup, db_path=restored)
+    restored_queue = Queue(_state.LEDGER_QUEUE_NAME, db_path=str(restored))
+    try:
+        restored_sessions = _state.list_sessions(restored_queue)
+    finally:
+        restored_queue.close()
+
+    assert [session["member_id"] for session in restored_sessions] == [member.member_id]
+    assert restored_sessions[0]["updated_ts"] == 1
 
 
 def test_summon_persistence_v2_manifest_and_dump_omit_provider_session_id(

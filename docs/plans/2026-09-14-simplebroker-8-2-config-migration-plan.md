@@ -220,9 +220,9 @@ shape:
 7. The percentage-unit and SQLite path cases exercise the published 8.2.2
    behavior. SimpleBroker may validate the database name Taut asks it to create,
    but must preserve pre-existing parent-directory spelling, including spaces.
-8. Two independently resolved equivalent Taut configs share a persistent
-   backend session. Assert the observed shared session, not declaration object
-   identity or a field-name inventory.
+8. Keep one module-level declaration object so upstream can preserve its
+   process-session identity contract. That internal sharing guarantee belongs
+   to SimpleBroker's tests; Taut must not assert private Queue connection state.
 
 Retain or adapt the real SQLite/PostgreSQL shared contract, MCP workspace
 attachment, persistent watcher, dump/load, debug capture, and installed-wheel
