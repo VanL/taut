@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.7 - 2026-09-14
+
 - A command's own failure is no longer hidden by a broken `.taut.toml`. When
   rendering an execution error trips the terminal policy, stderr now carries
   the original diagnostic first, escaped with the packaged policy, then the
