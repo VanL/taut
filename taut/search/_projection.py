@@ -67,29 +67,6 @@ def _distinct_chunks(text: str) -> tuple[str, ...]:
     return tuple(chunks)
 
 
-def segment_text(text: str, *, max_segment_bytes: int) -> tuple[str, ...]:
-    """Partition text without splitting a UTF-8 code point.
-
-    Separator boundaries are preferred when one occurs before the byte limit.
-    A limit of four bytes is the smallest value that can contain every Unicode
-    code point encoded as UTF-8.
-    """
-
-    if not isinstance(text, str):
-        raise TypeError("search projection text must be a string")
-    _validate_segment_bound(max_segment_bytes)
-    if not text:
-        return ("",)
-
-    segments: list[str] = []
-    start = 0
-    while start < len(text):
-        cut = _next_segment_end(text, start, max_segment_bytes)
-        segments.append(text[start:cut])
-        start = cut
-    return tuple(segments)
-
-
 def _validate_segment_bound(max_segment_bytes: int) -> None:
     if isinstance(max_segment_bytes, bool) or not isinstance(max_segment_bytes, int):
         raise TypeError("max_segment_bytes must be an integer")
@@ -110,25 +87,3 @@ def _append_chunk(
         return
     seen.add(chunk)
     chunks.append(chunk)
-
-
-def _next_segment_end(text: str, start: int, max_segment_bytes: int) -> int:
-    end = start
-    used_bytes = 0
-    last_separator_end: int | None = None
-    while end < len(text):
-        character = text[end]
-        character_bytes = len(character.encode("utf-8"))
-        if used_bytes + character_bytes > max_segment_bytes:
-            break
-        used_bytes += character_bytes
-        end += 1
-        if not character.isalnum():
-            last_separator_end = end
-    if end == len(text):
-        return end
-    if last_separator_end is not None and last_separator_end > start:
-        return last_separator_end
-    # max_segment_bytes >= 4 guarantees that at least one code point fits.
-    assert end > start
-    return end

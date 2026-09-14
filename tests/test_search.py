@@ -13,7 +13,7 @@ from simplebroker import Queue
 from simplebroker.ext import OperationalError, SidecarSession
 
 from taut._constants import META_QUEUE_NAME
-from taut.search import projection_segments, query_chunks, segment_text
+from taut.search import projection_segments, query_chunks
 from taut.search._provider import (
     IndexedDocument,
     SearchCandidate,
@@ -61,7 +61,7 @@ def _candidate(document: IndexedDocument) -> SearchCandidate:
 
 
 def test_projection_chunks_and_segments_are_canonical_and_utf8_safe() -> None:
-    """[SRCH-3.1]/[SRCH-6.1] Core owns safe chunks and UTF-8 segmentation."""
+    """[SRCH-3.1]/[SRCH-6.1] Projection packs canonical chunks in order."""
 
     assert query_chunks("Straße STRASSE src/search_index.py café CAFE\u0301") == (
         "strasse",
@@ -73,12 +73,15 @@ def test_projection_chunks_and_segments_are_canonical_and_utf8_safe() -> None:
         "cafe",
     )
 
-    text = "alpha βeta/gamma delta"
-    segments = segment_text(text, max_segment_bytes=10)
-
-    assert "".join(segments) == text
-    assert all(len(segment.encode("utf-8")) <= 10 for segment in segments)
-    assert all(not segment.encode("utf-8").endswith(b"\xce") for segment in segments)
+    assert projection_segments(
+        "Straße STRASSE src/search_index.py café CAFE\u0301",
+        max_segment_bytes=12,
+    ) == (
+        "strasse src",
+        "search index",
+        "py café",
+        "cafe",
+    )
 
 
 def test_sqlite_provider_round_trips_contentless_fts_through_sidecar(
@@ -1163,15 +1166,18 @@ def test_sqlite_provider_does_not_rewrite_missing_stable_version_field(
         queue.close()
 
 
-def test_projection_segments_large_utf8_text_without_loss() -> None:
-    text = ("éclair/東京/🙂/alpha " * 45_000) + "tail"
+def test_projection_segments_keep_large_distinct_set_and_oversized_chunk() -> None:
+    tokens = [f"token{index:08x}" for index in range(80_000)]
+    text = "/".join(tokens)
 
-    segments = segment_text(text, max_segment_bytes=4096)
+    segments = projection_segments(text, max_segment_bytes=4096)
 
     assert len(text.encode("utf-8")) > 1_000_000
-    assert "".join(segments) == text
-    assert all(segment for segment in segments)
+    assert [chunk for segment in segments for chunk in segment.split()] == tokens
     assert all(len(segment.encode("utf-8")) <= 4096 for segment in segments)
+
+    oversized = "東" * 32
+    assert projection_segments(oversized, max_segment_bytes=16) == (oversized,)
 
 
 def test_sqlite_search_schema_and_rows_store_no_raw_body(tmp_path: Path) -> None:

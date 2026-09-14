@@ -412,17 +412,6 @@ class SearchingMixin(_ClientBase):
             and (row["kind"] != "dm" or self._valid_search_dm_row(row))
         ]
 
-    def _registered_source_documents(
-        self,
-        rows: list[ThreadRow],
-    ) -> Iterator[IndexedDocument]:
-        for row in self._registered_searchable_rows(rows):
-            thread = row["name"]
-            yield from self._thread_source_documents(
-                self.queue(thread),
-                thread=thread,
-            )
-
     def _thread_source_documents(
         self,
         queue: Queue,

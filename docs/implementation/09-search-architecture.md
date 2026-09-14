@@ -69,6 +69,13 @@ documented ASCII floor. Backend-specific Unicode and lexeme-limit behavior is
 versioned and tested. Public fields, filters, visibility, pagination, and
 ordering remain backend-neutral.
 
+Core case-folds, splits, orders, and deduplicates source text through the same
+canonical chunk logic used for queries, then packs whole chunks into preferred
+byte-sized projection segments. An indivisible chunk may exceed that preferred
+size and remains intact. This is the production projection supplied to both
+providers; search does not retain a second raw-text segmenter or promise that
+joining projection segments reconstructs the source body.
+
 ## Deferred Work and Recovery
 
 Every Taut-authored source write, delete, or completed channel rename enqueues
