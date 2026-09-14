@@ -15,6 +15,7 @@ Quick pointers to the key guidance documents in this repository.
 | `bin/check-plan-status-index` | Structured plan status index gate: completeness, closed status/exemplar vocabulary, and table well-formedness |
 | `bin/check-doc-paths` | Pytest-free path-claim gate over the maintained guidance surfaces plus `docs/coalescing.md` and `docs/plans/README.md`; reuses the claim grammar in `tests/test_docs_references.py` |
 | `bin/check-cli-claims` | Pytest-free command-path gate over maintained Markdown; reuses the registry-derived grammar, exact source set, and exemptions in `tests/test_cli_claims.py` |
+| `bin/markdown_fences.py` | Shared prose-line iterator for path/citation, plan-status, and DOM-15 checkers; excludes backtick and tilde fenced examples while preserving original line numbers |
 | `bin/coalesce-check` | Coalescing evidence trail: resolves every SHA claim and retrieval cue in `docs/coalescing.md` locally, in named siblings, and against `origin/main` (reporting local-only pins), and derives the lessons-tier counts |
 | `bin/pytest-pg` | Docker-backed Postgres test runner for shared root tests and `taut-pg` tests |
 | `bin/combine-coverage.py` | Pre-combine raw-shard integrity owner: validates every downloaded file through Coverage's public data API, rejects absent, zero-byte, unreadable, or warning-producing evidence, and preserves all inputs while combining |

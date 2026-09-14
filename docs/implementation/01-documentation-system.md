@@ -47,6 +47,13 @@ The repository treats documentation maintenance as part of completion because
 the main failure mode in agentic development is silent drift between intent,
 execution, and implementation.
 
+`bin/markdown_fences.py` owns the narrow Markdown fence transition used by the
+path/citation gate, plan-status checker, and DOM-15 fixture checker. It returns
+only prose with original line numbers; each consumer still owns its own claim,
+section, and table grammar. The command-claim checker continues to inspect
+fenced commands, and the Ruff index keeps its byte-offset parser because those
+boundaries have different contracts.
+
 ### Planning Cost Follows Novelty
 
 Task classification scales planning and review effort, not verification.

@@ -274,6 +274,14 @@ For risky changes, completion should also say whether the rollout or rollback
 assumptions still hold and whether post-deploy observation is pending or
 complete.
 
+Documentation path/citation checks, plan-status extraction, and DOM-15 fixture
+extraction share `bin/markdown_fences.py` for excluding fenced examples. The
+iterator preserves original line numbers and recognizes backtick or tilde
+fences indented by at most three spaces. A closing fence uses the opening
+character, is at least as long, and has no trailing content except whitespace.
+An unclosed fence extends to the end of the input. This helper owns fence
+exclusion only; each checker retains its existing claim or table grammar.
+
 ### [DOM-10.1] Executable CLI claims
 
 Maintained documentation claims about executable Taut command paths must be

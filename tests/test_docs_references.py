@@ -24,8 +24,8 @@ Scanning rules:
   extension source trees; generated ``.venv`` dependency trees are excluded.
 - ``docs/plans/`` files are never scanned as sources (immutable historical
   records), but a plan path referenced *from* a scanned source must exist.
-- Fenced code blocks (``` ... ```) are skipped entirely in markdown
-  sources — examples and command transcripts are not reference claims.
+- Backtick and tilde fenced code blocks are skipped entirely in markdown
+  sources; examples and command transcripts are not reference claims.
 - A false positive is fixed by tightening the recognized-syntax rules or by
   adding a reasoned ALLOWLIST entry, never by weakening the assertion to a
   warning.
@@ -38,6 +38,8 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+
+from bin.markdown_fences import prose_lines
 
 pytestmark = pytest.mark.sqlite_only
 
@@ -130,15 +132,7 @@ def _python_sources() -> list[Path]:
 def _prose_lines(path: Path) -> Iterator[tuple[int, str]]:
     """Yield (lineno, line) for *path*, skipping fenced code blocks."""
 
-    in_fence = False
-    for lineno, line in enumerate(
-        path.read_text(encoding="utf-8").splitlines(), start=1
-    ):
-        if line.lstrip().startswith("```"):
-            in_fence = not in_fence
-            continue
-        if not in_fence:
-            yield lineno, line
+    yield from prose_lines(path.read_text(encoding="utf-8"))
 
 
 def _citation_codes(line: str) -> list[str]:
@@ -249,13 +243,32 @@ def test_citation_claim_grammar(line: str, expected: list[str]) -> None:
 def test_fenced_citation_samples_are_not_claims(tmp_path: Path) -> None:
     sample = tmp_path / "sample.md"
     sample.write_text(
-        "Before [TAUT-1]\n```text\n[UNKNOWN-1]\n```\nAfter [IAN-1]\n",
+        "Before [TAUT-1]\n"
+        "~~~text\n"
+        "[UNKNOWN-1]\n"
+        "```\n"
+        "[ALSO-UNKNOWN-2]\n"
+        "~~~\n"
+        "After [IAN-1]\n",
         encoding="utf-8",
     )
 
-    assert [
-        code for _lineno, line in _prose_lines(sample) for code in _citation_codes(line)
-    ] == ["[TAUT-1]", "[IAN-1]"]
+    claims = [
+        (lineno, code)
+        for lineno, line in _prose_lines(sample)
+        for code in _citation_codes(line)
+    ]
+    assert claims == [(1, "[TAUT-1]"), (7, "[IAN-1]")]
+
+
+def test_unclosed_fence_hides_the_rest_of_the_document(tmp_path: Path) -> None:
+    sample = tmp_path / "sample.md"
+    sample.write_text(
+        "Before [TAUT-1]\n````markdown\n```\n[UNKNOWN-1]\n",
+        encoding="utf-8",
+    )
+
+    assert list(_prose_lines(sample)) == [(1, "Before [TAUT-1]")]
 
 
 def test_external_and_unknown_citation_classification() -> None:

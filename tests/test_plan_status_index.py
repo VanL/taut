@@ -171,6 +171,58 @@ def test_invocation_error_is_exit_2_without_traceback(tmp_path: Path) -> None:
     assert "Traceback" not in result.stdout + result.stderr
 
 
+def test_fenced_status_example_is_not_the_live_index(tmp_path: Path) -> None:
+    plans = tmp_path / "plans"
+    plans.mkdir()
+    (plans / "one-plan.md").write_text("# One\n", encoding="utf-8")
+    index = plans / "README.md"
+    index.write_text(
+        "# Plans\n\n"
+        "```markdown\n"
+        "## Plan Status Index\n\n"
+        "| Plan | Status | Exemplar | Note |\n"
+        "|------|--------|----------|------|\n"
+        "| `one-plan.md` | active | no | example |\n\n"
+        "## Retired Plans\n"
+        "```\n",
+        encoding="utf-8",
+    )
+
+    result = _run(index, plans)
+
+    assert result.returncode == 1
+    assert "malformed or missing plan status table" in result.stdout
+    assert "Traceback" not in result.stdout + result.stderr
+
+
+def test_real_status_index_after_fenced_example_is_used(tmp_path: Path) -> None:
+    plans = tmp_path / "plans"
+    plans.mkdir()
+    (plans / "one-plan.md").write_text("# One\n", encoding="utf-8")
+    index = plans / "README.md"
+    index.write_text(
+        "# Plans\n\n"
+        "~~~markdown\n"
+        "## Plan Status Index\n\n"
+        "| Plan | Status | Exemplar | Note |\n"
+        "|------|--------|----------|------|\n"
+        "| `ghost-plan.md` | unknown | maybe | example |\n\n"
+        "## Retired Plans\n"
+        "~~~\n\n"
+        "## Plan Status Index\n\n"
+        "| Plan | Status | Exemplar | Note |\n"
+        "|------|--------|----------|------|\n"
+        "| `one-plan.md` | active | no | live |\n\n"
+        "## Retired Plans\n",
+        encoding="utf-8",
+    )
+
+    result = _run(index, plans)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "plan status index OK" in result.stdout
+
+
 def test_current_repository_plan_status_index_passes() -> None:
     result = _run(
         REPO_ROOT / "docs" / "plans" / "README.md",

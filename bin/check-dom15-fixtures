@@ -20,9 +20,15 @@ Usage:
 
 from __future__ import annotations
 
+import importlib
 import re
 import sys
 from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+prose_lines = importlib.import_module("bin.markdown_fences").prose_lines
 
 DEFAULT_SPEC = "docs/specs/01-development-documentation-operating-model.md"
 
@@ -40,43 +46,8 @@ NEGATIVE_FACT_MARKERS = (
 ROUTINE_RELEASE_FIXTURE_MARKER = "routine release through unchanged `bin/release.py`"
 
 
-def strip_fenced_blocks(text: str) -> str:
-    """Remove fenced blocks so grammar mimicry inside them is inert.
-
-    Tracks the fence character and length: a block closes only on a
-    fence of the same character, at least as long, with no info string,
-    indented at most three spaces (adopted from simplebroker's
-    check-plan-context at pin a38e6a9 — a naive open/close toggle
-    mis-parses a longer fence wrapping a shorter one).
-    """
-    output: list[str] = []
-    fence: tuple[str, int] | None = None
-    for line in text.splitlines():
-        marker: tuple[str, int, str] | None = None
-        leading_spaces = len(line) - len(line.lstrip(" "))
-        stripped = line[leading_spaces:]
-        if leading_spaces <= 3 and stripped.startswith(("```", "~~~")):
-            char = stripped[0]
-            length = len(stripped) - len(stripped.lstrip(char))
-            marker = (char, length, stripped[length:])
-        if fence is None and marker is not None:
-            fence = marker[0], marker[1]
-            continue
-        if fence is not None:
-            if (
-                marker is not None
-                and marker[0] == fence[0]
-                and marker[1] >= fence[1]
-                and not marker[2].strip()
-            ):
-                fence = None
-            continue
-        output.append(line)
-    return "\n".join(output)
-
-
 def extract_section(text: str) -> str | None:
-    lines = strip_fenced_blocks(text).splitlines()
+    lines = [line for _line_number, line in prose_lines(text)]
     start = None
     for i, line in enumerate(lines):
         if line.startswith("## ") and "[DOM-15]" in line:
@@ -205,6 +176,10 @@ def _fence_probes(failures: list[str]) -> None:
     info_closer = GOOD_SAMPLE + "\n```\n``` markdown\n" + bogus_table + "```\n"
     if full_check(info_closer):
         failures.append("info-string line closed a fence early")
+    # probe: an unclosed fence owns the rest of the input
+    unclosed = GOOD_SAMPLE + "\n````markdown\n```\n" + bogus_table
+    if full_check(unclosed):
+        failures.append("unclosed fence leaked its interior")
     # probe: a 4-space-indented fence line is not a fence — the text
     # after it must stay VISIBLE (this probe asserts non-stripping)
     indented = GOOD_SAMPLE + "\n    ```\n" + bogus_table + "    ```\n"

@@ -8,11 +8,17 @@ The checker never prints a traceback.
 from __future__ import annotations
 
 import argparse
+import importlib
 import re
 import sys
 import tempfile
 from collections import Counter
 from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+prose_lines = importlib.import_module("bin.markdown_fences").prose_lines
 
 DEFAULT_INDEX = Path("docs/plans/README.md")
 DEFAULT_PLANS_DIR = Path("docs/plans")
@@ -38,7 +44,7 @@ def _cells(line: str) -> list[str]:
 
 def parse_rows(text: str) -> tuple[list[tuple[str, str, str]], bool]:  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-004] exception
     """Return plan/status/exemplar rows and whether the table is well formed."""
-    lines = text.splitlines()
+    lines = [line for _line_number, line in prose_lines(text)]
     try:
         section_start = lines.index("## Plan Status Index")
     except ValueError:
