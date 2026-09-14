@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `taut-mcp` now declares its direct SimpleBroker dependency, matching the
+  runtime APIs it imports and preventing its broker compatibility boundary
+  from being hidden behind `taut-chat`'s transitive dependency.
+
 ## 0.9.7 - 2026-09-14
 
 - A command's own failure is no longer hidden by a broken `.taut.toml`. When

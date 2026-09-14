@@ -58,6 +58,9 @@ def test_package_versions_and_derived_metadata_match_their_owners() -> None:
     assert _dependency_floor(pg, "taut-chat") == root_version
     assert _dependency_floor(summon, "taut-chat") == root_version
     assert _dependency_floor(mcp, "taut-chat") == root_version
+    assert _dependency_floor(mcp, "simplebroker") == _dependency_floor(
+        root, "simplebroker"
+    )
     assert _dependency_floor(tui, "taut-chat") == root_version
     for manifest in (pg_manifest, summon_manifest, mcp_manifest, tui_manifest):
         tool = manifest["tool"]
@@ -149,6 +152,10 @@ def test_package_versions_and_derived_metadata_match_their_owners() -> None:
     assert {
         "name": "taut-chat",
         "editable": "../../",
+    } in requirements
+    assert {
+        "name": "simplebroker",
+        "specifier": f">={_dependency_floor(root, 'simplebroker')}",
     } in requirements
 
     tui_lock = _manifest("extensions/taut_tui/uv.lock")

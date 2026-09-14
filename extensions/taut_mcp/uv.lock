@@ -1301,6 +1301,7 @@ source = { editable = "." }
 dependencies = [
     { name = "jsonschema" },
     { name = "mcp" },
+    { name = "simplebroker" },
     { name = "taut-chat" },
 ]
 
@@ -1330,6 +1331,7 @@ requires-dist = [
     { name = "pytest-timeout", marker = "extra == 'dev'", specifier = ">=2.4.0" },
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.8.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.16.3" },
+    { name = "simplebroker", specifier = ">=8.2.2" },
     { name = "taut-chat", editable = "../../" },
     { name = "taut-pg", marker = "extra == 'dev'", editable = "../taut_pg" },
     { name = "taut-summon", marker = "extra == 'dev'", editable = "../taut_summon" },

@@ -1361,7 +1361,7 @@ command/generation are coalesced or ignored.
 
 When [TAUT-13] capture is enabled, every workspace-reactor path that converts an
 unexpected `Exception` into `WorkspaceCrashed` first calls the core capture
-handler with that resident owner's frozen `BrokerTarget` and `ResolvedConfig`.
+handler with that resident owner's frozen `BrokerTarget` and `Config`.
 Stable phase labels distinguish command execution, command refresh, periodic
 snapshot, and outer reactor-loop failure. Resolution failures before both
 values exist are not captured. Capture never adds exception content to the
