@@ -41,6 +41,9 @@ same target draft revision it submitted. This matters when a user sends twice
 or edits again before the first worker returns. A deletion refresh carries the
 already-open reply thread back through the public conversation-open path
 because core deletion does not cascade into registered sub-thread deletion.
+Native and textual message deletion share this completion owner, so both remove
+the deleted row from the active transcript and session snapshot after storage
+confirms the operation.
 
 A current-generation delivery rejected by the UI is handed back to the
 serialized session owner. That owner stops and clears the rejected watcher,

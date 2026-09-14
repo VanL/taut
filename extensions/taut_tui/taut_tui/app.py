@@ -1408,9 +1408,15 @@ class TautApp(App[None]):
             self._run_action(domain.show_message(str(values["msg_id"])))
         elif invocation.path == ("message", "delete"):
             message_id = str(values["msg_id"])
+            target = self.visual_state.active_conversation
+            intent = self._conversation_intent
             self._confirm_command(
                 f"Delete message {message_id}?",
-                lambda: self._run_action(domain.delete_message(message_id)),
+                lambda: self._run_deletion(
+                    domain.delete_message(message_id),
+                    target=target,
+                    intent=intent,
+                ),
             )
         else:
             self._run_action(

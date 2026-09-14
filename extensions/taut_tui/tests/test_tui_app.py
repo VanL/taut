@@ -10,6 +10,7 @@ import asyncio
 import threading
 from collections.abc import Callable
 from concurrent.futures import Future
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -2349,6 +2350,40 @@ def test_deletion_refresh_preserves_open_reply_surface(
             assert app.visual_state.open_reply_thread == "general.123"
 
     asyncio.run(exercise())
+
+
+def test_textual_message_delete_uses_conversation_refresh_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut.commands.syntax import core_command_syntax, parse_command_line
+    from taut_tui.app import TautApp
+
+    deletion: Future[Any] = Future()
+    observed: list[tuple[Future[Any], str | None, int]] = []
+
+    class Domain:
+        @staticmethod
+        def delete_message(message_id: str) -> Future[Any]:
+            assert message_id == "1234567890123456789"
+            return deletion
+
+    app = TautApp(db_path=None, as_name=None, continuity_token=None)
+    app.visual_state = replace(app.visual_state, active_conversation="general")
+    app._conversation_intent = 7
+    monkeypatch.setattr(app, "_confirm_command", lambda _prompt, action: action())
+    monkeypatch.setattr(
+        app,
+        "_run_deletion",
+        lambda future, *, target, intent: observed.append((future, target, intent)),
+    )
+    invocation = parse_command_line(
+        "message delete 1234567890123456789",
+        syntax=core_command_syntax(),
+    )
+
+    app._dispatch_message_operation(invocation, Domain())  # type: ignore[arg-type]
+
+    assert observed == [(deletion, "general", 7)]
 
 
 def test_superseding_navigation_clears_and_rejects_stale_search(
