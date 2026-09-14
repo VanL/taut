@@ -390,9 +390,9 @@ wrappers. Before submission capture old target and `_conversation_intent`.
 After successful public rename, use returned `Thread.name` to remap exact old
 root and `old + '.'` descendants in target-keyed drafts and affected UI state.
 Preserve text, scalar editing cursor, revision, selected message ID and scroll
-anchor; leave unrelated drafts unchanged. A nonempty destination draft must
-not be overwritten: reject that local draft collision before submitting rename
-and let the user keep/edit the drafts. No alias chain or draft ledger.
+anchor; leave unrelated drafts unchanged. Core rename validation remains the
+authority for destination collisions. The TUI does not add a second policy
+based on local draft state. No alias chain or draft ledger.
 
 If the captured navigation intent is still current and the active conversation
 is affected, advance conversation intent and reopen the mapped conversation and
@@ -406,9 +406,9 @@ Red proof through both real native/textual routes: rename with a multiline
 draft, retain editing position, send afterward, and observe the new-name history
 and incoming watcher delivery. Include an open reply surface, inactive-channel
 rename, cancellation/core collision, and delayed real completion after newer
-navigation. The draft-collision case verifies no rename occurs and both texts
-remain. Gate: `G6`. Promote D1 atomically. Stop if watcher internals, a generic
-mutation framework, or persistent alias tracking enter the fix.
+navigation. The core-collision case verifies no rename occurs. Gate: `G6`.
+Promote D1 atomically. Stop if watcher internals, a generic mutation framework,
+or persistent alias tracking enter the fix.
 
 ### S8 — Preserve JSON structure during credential redaction
 
@@ -942,4 +942,45 @@ explicitly new `bin/markdown_fences.py` absent.
 matched tool-availability/approval guidance was sufficient; refreshed probes
 are recorded there. No new review framework or runbook change was needed.
 
-Record subsequent implementation evidence here by slice.
+### Implementation and final review, 2026-09-14
+
+Implemented and committed every planned slice independently after its focused
+red/green proof:
+
+- S1 `9e6805b`; S2 `20377e8`; S3 `70718e1`; S4 `855d1ca`;
+  S5 `16d3305`; S6 `5a987a6`; S7 `09a7c3f`; S8 `91e5298`.
+- S9 `075a1b1`; S10 `552cb83`; S11 `b2bed73`; S12 `b48654c`;
+  S13 `a6f25ba`.
+
+S7's independent implementation review rejected a local destination-draft
+collision rule because it duplicated core rename authority. It also tried a
+suppression-free primary result handler. That form duplicated `Future`
+cancellation, exception, and `BaseException` state knowledge and reduced
+locality, so one narrow TUI boundary catch remains. A second broad catch was
+removed by reusing the existing optional-conversation result path.
+
+S5's final review found that SQLite coverage could not prove the PostgreSQL
+advisory-lock path. Commit `16d3305` therefore includes a real two-session
+PostgreSQL race: marker capture holds `taut:chat-topology`, membership insertion
+waits, then refuses the committed incomplete marker without leaving an orphan.
+The reviewer judged the short shared transaction lock proportionate to the
+reproduced race and confirmed that R1 remains explicitly deferred.
+
+Full isolated-wheel testing exposed one additional packaging error:
+`simplebroker>=8.0.0` selected 8.2.0, which removed the package-root
+`ResolvedConfig` API used by Taut. The owner rejected an upper-bound workaround
+and directed migration to the new declaration-driven Config API after the
+coordinated 8.2.1/4.2.1 patch release. That work is specified separately in
+`2026-09-14-simplebroker-8-2-config-migration-plan.md`; no dependency change is
+part of these audit-remediation commits.
+
+Verification after integration: root non-installed tests passed with two
+platform skips; 28 root installed-wheel tests passed under the current lock;
+the TUI source suite passed while its fresh installed-wheel probe reproduced
+the separately planned SimpleBroker 8.2 migration failure. The
+PostgreSQL shared and extension gates passed 56 and 41 tests respectively; the
+new focused PostgreSQL race passed. Ruff check/format, root and TUI mypy, and
+the suppression-index checker passed. Independent fresh-eyes review found no
+remaining implementation blocker after the PostgreSQL proof and documentation
+corrections. The final external-model review was also required to check for
+hypothetical hardening and needless structure; its result is recorded below.

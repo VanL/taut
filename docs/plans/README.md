@@ -51,7 +51,8 @@ directory. Run `bin/check-plan-status-index` after changing it.
 
 | Plan | Status | Exemplar | Note |
 |------|--------|----------|------|
-| `2026-09-14-audit-remediation-plan.md` | draft | no | Thirteen independent audit-remediation commits planned; fresh-eyes and Claude plan reviews passed with feedback incorporated; implementation not started. |
+| `2026-09-14-audit-remediation-plan.md` | active | no | Thirteen planned audit-remediation slices are committed and verified; final external review and one owner-approved Ruff registry update remain. |
+| `2026-09-14-simplebroker-8-2-config-migration-plan.md` | draft | no | Replace Taut's mirrored config machinery with SimpleBroker 8.2.1 declarations and direct nominal Config handoff after coordinated patch publication; fresh-eyes and external reviews passed. |
 | `2026-09-03-summon-unified-pty-cross-platform-plan.md` | completed | no | Removed the Claude structured adapter and terminal-mode/session protocol; one PTY/ConPTY path now serves all providers, full-directory Summon CI passed on Windows, macOS, and Linux, and fresh-eyes plus cross-model completed-work reviews passed. |
 | `2026-09-01-release-ci-test-determinism-plan.md` | completed | no | Class 4 exact-SHA release-blocker correction across root, Summon, and TUI test harnesses plus existing TUI diagnostic-precedence restoration; preserves assertions, timeout budgets, parallelism, and all release gates. |
 | `2026-08-28-simplebroker-8-reconciliation-plan.md` | completed | no | Independently reviewed Class 5 hardened SimpleBroker 8.0.0 / SimpleBroker-PG 4.0.0 reconciliation; implementation, verification, and owner-authorized targeted closeout passed. |
