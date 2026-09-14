@@ -5,6 +5,8 @@ import subprocess
 import sys
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from taut import _redact
 from taut._redact import redact_sensitive_text
@@ -116,6 +118,60 @@ def test_redact_sensitive_text_handles_escaped_json_value() -> None:
 
     assert json.loads(redacted) == {"message": '{"password":"<redacted>"}'}
     assert secret not in redacted
+
+
+@pytest.mark.parametrize("trailing_backslashes", [1, 2, 4])
+def test_incomplete_escaped_assignment_does_not_consume_outer_json(
+    trailing_backslashes: int,
+) -> None:
+    message = 'prefix password="debug-secret' + ("\\" * trailing_backslashes)
+    event = {
+        "exception": {"message": message},
+        "neighbor": {"ok": True},
+        "unicode": "λ 雪",
+    }
+    payload = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+
+    redacted = redact_sensitive_text(payload)
+
+    assert json.loads(redacted) == event
+
+
+@settings(max_examples=100)
+@given(
+    form=st.sampled_from(["assignment", "mapping"]),
+    secret=st.text(
+        alphabet=st.sampled_from(["a", "Z", '"', "\\", "\n", "λ", "雪"]),
+        min_size=1,
+        max_size=40,
+    ),
+)
+def test_closed_escaped_value_redaction_preserves_json_structure(
+    form: str,
+    secret: str,
+) -> None:
+    if form == "assignment":
+        message = "password=" + json.dumps(secret, ensure_ascii=False)
+        expected_message = 'password="<redacted>"'
+    else:
+        message = json.dumps(
+            {"password": secret}, ensure_ascii=False, separators=(",", ":")
+        )
+        expected_message = '{"password":"<redacted>"}'
+    event = {
+        "message": message,
+        "neighbor": {"items": [1, True, None]},
+        "unicode": "λ 雪",
+    }
+    payload = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+
+    parsed = json.loads(redact_sensitive_text(payload))
+
+    assert parsed == {
+        "message": expected_message,
+        "neighbor": {"items": [1, True, None]},
+        "unicode": "λ 雪",
+    }
 
 
 def test_redact_sensitive_text_handles_single_quoted_repr_value() -> None:

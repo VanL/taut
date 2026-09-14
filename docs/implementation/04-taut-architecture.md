@@ -149,6 +149,13 @@ duplicating sink policy. A redaction failure reaches the capture operation's
 existing containment and drops the optional event; unredacted text is never a
 fallback.
 
+Rules that operate inside an already serialized JSON string consume complete
+JSON escape atoms. An escaped backslash, control escape, Unicode escape, or
+embedded escaped quote is one unit, and a bare quote that closes the outer JSON
+string is not value content. An incomplete quoted assignment in diagnostic text
+therefore cannot borrow part of an escape and the event-envelope delimiter and
+turn a valid payload into invalid JSON.
+
 The helper preserves credential labels, authorization schemes, URI structure,
 provider/type prefixes, and PEM boundaries when those contexts exist. It does
 not claim completeness. Unknown credential formats and non-credential process

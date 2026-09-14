@@ -29,6 +29,12 @@ _CREDENTIAL_LABEL = (
 )
 _JSON_ESCAPED_QUOTE = re.escape('\\"')
 _JSON_EMBEDDED_QUOTE = re.escape('\\\\\\"')
+_JSON_ESCAPED_BACKSLASH = re.escape("\\\\")
+_JSON_ESCAPED_CHARACTER_WITHOUT_QUOTE = r"\\(?:[/bfnrt]|u[0-9A-Fa-f]{4})"
+_JSON_ESCAPED_VALUE_ATOM = (
+    rf"(?:{_JSON_EMBEDDED_QUOTE}|{_JSON_ESCAPED_BACKSLASH}|"
+    rf"{_JSON_ESCAPED_CHARACTER_WITHOUT_QUOTE}|[^\\\"]+)"
+)
 _JSON_NEWLINE = re.escape("\\n")
 _JSON_CARRIAGE_RETURN = re.escape("\\r")
 _REPR_EMBEDDED_SINGLE_QUOTE = re.escape("\\\\'")
@@ -91,8 +97,7 @@ _RULES = (
         pattern=(
             rf"{_JSON_ESCAPED_QUOTE}{_CREDENTIAL_LABEL}{_JSON_ESCAPED_QUOTE}"
             rf"\s*:\s*{_JSON_ESCAPED_QUOTE}"
-            rf"((?:{_JSON_EMBEDDED_QUOTE}|"
-            rf"(?!(?:{_JSON_ESCAPED_QUOTE})).)*)"
+            rf"({_JSON_ESCAPED_VALUE_ATOM}*)"
             rf"{_JSON_ESCAPED_QUOTE}"
         ),
         secret_group=1,
@@ -103,8 +108,7 @@ _RULES = (
         pattern=(
             rf"(?<![A-Za-z0-9_-]){_CREDENTIAL_LABEL}\s*[:=]\s*"
             rf"{_JSON_ESCAPED_QUOTE}"
-            rf"((?:{_JSON_EMBEDDED_QUOTE}|"
-            rf"(?!(?:{_JSON_ESCAPED_QUOTE})).)*)"
+            rf"({_JSON_ESCAPED_VALUE_ATOM}*)"
             rf"{_JSON_ESCAPED_QUOTE}"
         ),
         secret_group=1,

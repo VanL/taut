@@ -115,6 +115,19 @@ def _capture_secret_failure(db_path: Path) -> None:
         )
 
 
+def _capture_incomplete_quoted_secret_failure(db_path: Path) -> None:
+    message = 'capture failed password="debug exception password\\'
+    try:
+        raise RuntimeError(message)
+    except RuntimeError as exc:
+        capture_exception(
+            exc,
+            db_path=db_path,
+            surface="test",
+            operation="debug.incomplete-redaction",
+        )
+
+
 def _capture_deep_failure(db_path: Path) -> None:
     def descend(depth: int) -> None:
         origin_marker = "innermost evidence" if depth == 0 else ""
@@ -770,6 +783,44 @@ def test_local_and_action_sinks_receive_same_redacted_json(
         assert "debug exception password" not in payload
         assert "debug-db-password" not in payload
         assert "sk-ant-api03-" + "A" * 93 + "AA" not in payload
+
+    local_event = json.loads(local_payload)
+    action_event = json.loads(action_payload)
+    local_event.pop("captured_at")
+    action_event.pop("captured_at")
+    assert action_event == local_event
+
+
+def test_incomplete_quoted_secret_keeps_local_and_action_json_valid(
+    tmp_path: Path,
+    clean_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """[TAUT-13.3.1] Redaction cannot split an encoded backslash."""
+
+    db_path = tmp_path / "workspace.db"
+    output = tmp_path / "action.json"
+    fixture = Path(__file__).parent / "fixtures" / "debug_action.py"
+    TautClient.init(db_path=db_path)
+    TautClient.set_debug_capture(True, db_path=db_path)
+
+    _capture_incomplete_quoted_secret_failure(db_path)
+    local_payload = _debug_messages(db_path)[0]
+
+    monkeypatch.setenv(
+        "TAUT_DEBUG_ACTION",
+        " ".join(
+            shlex.quote(value) for value in (sys.executable, str(fixture), str(output))
+        ),
+    )
+    _capture_incomplete_quoted_secret_failure(db_path)
+    action_payload = output.read_text(encoding="utf-8").rstrip("\n")
+
+    for payload in (local_payload, action_payload):
+        event = json.loads(payload)
+        assert event["exception"]["message"].endswith(
+            'password="debug exception password\\'
+        )
 
     local_event = json.loads(local_payload)
     action_event = json.loads(action_payload)
