@@ -131,6 +131,7 @@ class TautState(Protocol):
         created_by: str,
         meta: dict[str, Any] | None,
         created_ts: int,
+        expected_parent_created_ts: int | None = None,
     ) -> ThreadRow: ...
 
     def get_thread(self, name: str) -> ThreadRow | None: ...
@@ -153,6 +154,7 @@ class TautState(Protocol):
         member_id: str,
         joined_ts: int,
         last_seen_ts: int,
+        expected_thread_created_ts: int | None = None,
     ) -> MembershipRow: ...
 
     def remove_membership(self, *, thread: str, member_id: str) -> bool: ...
@@ -170,7 +172,7 @@ class TautState(Protocol):
         *,
         old_name: str,
         new_name: str,
-        affected: list[dict[str, str]],
+        expected_affected: list[dict[str, str]],
         started_ts: int,
     ) -> ChannelRenameRow: ...
 

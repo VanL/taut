@@ -730,6 +730,18 @@ against the old row before marker creation and follows that row, or observes
 the marker and refuses the old-name write; rename never drops a committed
 topic.
 
+Rename validates and records one affected topology atomically against
+cooperating registry and membership changes. If topology changes between
+broker preflight and marker creation, the operation fails before marker or
+broker mutation and may be retried. Incomplete markers block cooperating
+topology mutation. Registration verifies the originally selected parent or
+target still exists as that same thread, including when names are reused.
+Registry application changes names, parents and memberships consistently. This
+protection does not serialize a message publication already in flight across
+broker rename. A writer paused after authoritative sidecar work may still
+publish under an old queue name. That existing publication race is tracked
+separately.
+
 The public CLI route is `taut channel rename OLD NEW`. Its parser, dispatch,
 output, exit classes, and recovery semantics are the existing rename behavior
 rehomed under the reserved `channel` noun. Incomplete-rename diagnostics name
@@ -778,6 +790,10 @@ A completed marker keyed by an old channel name may be replaced by a later
 rename from that name. An incomplete marker remains the authority for its
 existing recovery operation and must not be overwritten. Marker retention is
 not a complete channel history or a source-location identity mechanism.
+
+The marker's captured affected list owns subsequent broker moves and registry
+application. Broker target-collision checks precede marker creation; a changed
+topology invalidates that preflight rather than partially starting a rename.
 
 ## 9. Failure Modes and Edge Cases [IAN-9]
 

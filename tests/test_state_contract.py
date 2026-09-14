@@ -464,7 +464,7 @@ def test_channel_rename_marker_rejects_corrupt_topic_without_marker(
         client._state.start_channel_rename(
             old_name="general",
             new_name="ops",
-            affected=[{"old": "general", "new": "ops"}],
+            expected_affected=[{"old": "general", "new": "ops"}],
             started_ts=client._meta_queue.generate_timestamp(),
         )
 
@@ -484,7 +484,7 @@ def test_completed_channel_rename_marker_is_replaced_on_name_reuse(
     client._state.start_channel_rename(
         old_name="alpha",
         new_name="beta",
-        affected=affected,
+        expected_affected=affected,
         started_ts=100,
     )
 
@@ -494,10 +494,23 @@ def test_completed_channel_rename_marker_is_replaced_on_name_reuse(
         affected=affected,
         updated_ts=110,
     )
+    reverse = [{"old": "beta", "new": "alpha"}]
+    client._state.start_channel_rename(
+        old_name="beta",
+        new_name="alpha",
+        expected_affected=reverse,
+        started_ts=120,
+    )
+    client._state.apply_channel_rename_state(
+        old_name="beta",
+        new_name="alpha",
+        affected=reverse,
+        updated_ts=130,
+    )
     replacement = client._state.start_channel_rename(
         old_name="alpha",
         new_name="gamma",
-        affected=[{"old": "alpha", "new": "gamma"}],
+        expected_affected=[{"old": "alpha", "new": "gamma"}],
         started_ts=200,
     )
 
@@ -510,6 +523,73 @@ def test_completed_channel_rename_marker_is_replaced_on_name_reuse(
         "updated_ts": 200,
     }
     assert client._state.incomplete_channel_renames() == [replacement]
+
+
+def test_topology_writes_reject_marker_and_reused_parent_incarnation(
+    taut_project: Path,
+) -> None:
+    TautClient.init()
+    client = TautClient(as_name="owner")
+    client.join("general")
+    member = client.whoami()
+    original = client._state.get_thread("general")
+    assert original is not None
+    affected = [{"old": "general", "new": "ops"}]
+    client._state.start_channel_rename(
+        old_name="general",
+        new_name="ops",
+        expected_affected=affected,
+        started_ts=100,
+    )
+
+    with pytest.raises(TautError, match="incomplete channel rename"):
+        client._state.upsert_thread(
+            name="general.7",
+            kind="subthread",
+            parent="general",
+            origin_ts=7,
+            created_by=member.member_id,
+            meta={},
+            created_ts=101,
+            expected_parent_created_ts=original["created_ts"],
+        )
+    with pytest.raises(TautError, match="incomplete channel rename"):
+        client._state.add_membership(
+            thread="general",
+            member_id=member.member_id,
+            joined_ts=101,
+            last_seen_ts=0,
+            expected_thread_created_ts=original["created_ts"],
+        )
+
+    client._state.apply_channel_rename_state(
+        old_name="general",
+        new_name="ops",
+        affected=affected,
+        updated_ts=110,
+    )
+    replacement = client._state.upsert_thread(
+        name="general",
+        kind="channel",
+        parent=None,
+        origin_ts=None,
+        created_by=member.member_id,
+        meta={},
+        created_ts=120,
+    )
+    with pytest.raises(TautError, match="channel changed during thread creation"):
+        client._state.upsert_thread(
+            name="general.7",
+            kind="subthread",
+            parent="general",
+            origin_ts=7,
+            created_by=member.member_id,
+            meta={},
+            created_ts=121,
+            expected_parent_created_ts=original["created_ts"],
+        )
+    assert replacement["created_ts"] == 120
+    assert client._state.get_thread("general.7") is None
 
 
 def test_nullable_owned_metadata_decodes_sql_null_as_empty_object(
@@ -643,10 +723,19 @@ def test_channel_rename_corruption_fails_without_completing_marker(
     state = SqlSidecarTautState(queue, dialect_for_taut_target(client.target))
     try:
         state.ensure_schema()
+        state.upsert_thread(
+            name="general",
+            kind="channel",
+            parent=None,
+            origin_ts=None,
+            created_by="fixture",
+            meta={},
+            created_ts=1,
+        )
         state.start_channel_rename(
             old_name="general",
             new_name="ops",
-            affected=[{"old": "general", "new": "ops"}],
+            expected_affected=[{"old": "general", "new": "ops"}],
             started_ts=10,
         )
         with queue.sidecar(transaction=True) as session:
@@ -863,7 +952,7 @@ def test_state_contract_preserves_identity_membership_cursor_and_rename(
         state.start_channel_rename(
             old_name="general",
             new_name="ops",
-            affected=affected,
+            expected_affected=affected,
             started_ts=120,
         )
         assert state.incomplete_channel_renames()[0]["old_name"] == "general"
@@ -908,6 +997,15 @@ def test_concurrent_membership_removal_reports_exactly_one_winner(
         token="membership-remove-race-token",
         meta={},
         created_ts=10,
+    )
+    setup_state.upsert_thread(
+        name="general",
+        kind="channel",
+        parent=None,
+        origin_ts=None,
+        created_by=member_id,
+        meta={},
+        created_ts=15,
     )
     setup_state.add_membership(
         thread="general",

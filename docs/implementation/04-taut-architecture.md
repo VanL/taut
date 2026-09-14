@@ -630,6 +630,20 @@ later operation may replace a completed row for the same old name; an
 incomplete row remains authoritative and cannot be overwritten. The table
 therefore retains the latest recovery operation per old name rather than a
 permanent rename history.
+Fresh rename preflight checks broker target collisions, then marker creation
+acquires the shared `taut:chat-topology` transaction key and re-reads the
+source, destination, and affected registry rows. A mismatch refuses before the
+marker or any broker rename. Cooperating channel/subthread registration and
+membership insertion use the same short key, reject incomplete markers, and
+compare the selected thread's `created_ts` when the caller already observed
+that thread. Notification registry upsert remains outside this chat-topology
+protocol.
+
+This coordination ends at sidecar commit. It does not enclose `Queue.write()`:
+a writer already paused between registration and broker publication can still
+resume under an old queue name after rename. S5 deliberately leaves that
+broader write/rename race as R1; there is no lease, retry loop, compensating
+move, or repair state machine.
 Recovery deliberately rides the same `taut channel rename OLD NEW` invocation
 instead of a repair verb: the marker already names the one legal operation,
 every other command refuses with that exact command line, and [TAUT-10]

@@ -1353,12 +1353,17 @@ def test_show_message_skips_notification_and_dangling_memberships(
     )
     dangling_thread = "dangling"
     dangling_ts = viewer.queue(dangling_thread).write(body)
-    viewer._state.add_membership(
-        thread=dangling_thread,
-        member_id=member.member_id,
-        joined_ts=dangling_ts,
-        last_seen_ts=0,
-    )
+    # Corruption fixture: the public state API correctly rejects a membership
+    # without its registry row, so seed the impossible row at the SQL boundary.
+    with viewer._meta_queue.sidecar(transaction=True) as session:
+        session.run(
+            """
+            INSERT INTO taut_membership (
+                thread, member_id, joined_ts, last_seen_ts
+            ) VALUES (?, ?, ?, 0)
+            """,
+            (dangling_thread, member.member_id, dangling_ts),
+        )
 
     for timestamp in (notification_ts, dangling_ts):
         with pytest.raises(
@@ -4029,6 +4034,45 @@ def test_rename_channel_moves_messages_and_subthreads(tmp_path: Path) -> None:
         van.log("general")
 
 
+def test_rename_refuses_thread_registered_after_broker_preflight(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut.state import SqlSidecarTautState
+
+    van = client(tmp_path, "van")
+    van.join("general")
+    root = van.say("general", "root")
+    late = client(tmp_path, "late")
+    late.join("general")
+    original_start = SqlSidecarTautState.start_channel_rename
+    inserted = False
+
+    def start_after_child(self: SqlSidecarTautState, **kwargs: object):  # type: ignore[no-untyped-def]
+        nonlocal inserted
+        if not inserted:
+            inserted = True
+            late.reply("general", str(root.ts), "committed before marker")
+        return original_start(self, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        SqlSidecarTautState,
+        "start_channel_rename",
+        start_after_child,
+    )
+
+    with pytest.raises(TautError, match="topology changed during rename; retry"):
+        van.rename_channel("general", "ops")
+
+    assert van._state.incomplete_channel_renames() == []
+    child = f"general.{root.ts}"
+    assert van._state.get_thread(child) is not None
+    assert van.rename_channel("general", "ops").name == "ops"
+    assert [message.text for message in van.log(f"ops.{root.ts}")] == [
+        "committed before marker"
+    ]
+
+
 def test_channel_topic_round_trip_populates_public_channel_and_thread_values(
     tmp_path: Path,
 ) -> None:
@@ -4315,7 +4359,7 @@ def test_incomplete_channel_rename_blocks_chat_history_operations(
         state.start_channel_rename(
             old_name="general",
             new_name="ops",
-            affected=[{"old": "general", "new": "ops"}],
+            expected_affected=[{"old": "general", "new": "ops"}],
             started_ts=started_ts,
         )
     finally:
@@ -4345,7 +4389,7 @@ def _start_rename_marker(
         state.start_channel_rename(
             old_name=old_name,
             new_name=new_name,
-            affected=affected,
+            expected_affected=affected,
             started_ts=queue.generate_timestamp(),
         )
     finally:

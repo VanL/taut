@@ -455,7 +455,7 @@ def test_probe_corrupt_channel_rename_json_fails_without_completing_marker(
         state.start_channel_rename(
             old_name="general",
             new_name="ops",
-            affected=[{"old": "general", "new": "ops"}],
+            expected_affected=[{"old": "general", "new": "ops"}],
             started_ts=queue.generate_timestamp(),
         )
         with queue.sidecar(transaction=True) as session:

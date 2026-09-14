@@ -200,7 +200,8 @@ class MessagingMixin(_ClientBase):
             raise BlankMessageError("blank message")
         thread = addressing.validate_chat_thread_name(thread, allow_subthread=False)
         self._ensure_no_incomplete_channel_rename()
-        if self._state.get_thread(thread) is None:
+        parent_thread = self._state.get_thread(thread)
+        if parent_thread is None:
             raise NotFoundError(f"thread not found: {thread}")
         resolved = self._resolve_member(create=False)
         member = self._require_member(resolved)
@@ -216,8 +217,9 @@ class MessagingMixin(_ClientBase):
         child_thread = f"{thread}.{origin}"
         child_queue = self.queue(child_thread)
         ts = child_queue.generate_timestamp()
-        if self._state.get_thread(child_thread) is None:
-            self._state.upsert_thread(
+        child = self._state.get_thread(child_thread)
+        if child is None:
+            child = self._state.upsert_thread(
                 name=child_thread,
                 kind="subthread",
                 parent=thread,
@@ -225,6 +227,7 @@ class MessagingMixin(_ClientBase):
                 created_by=member["member_id"],
                 meta={},
                 created_ts=ts,
+                expected_parent_created_ts=parent_thread["created_ts"],
             )
         membership = self._state.get_membership(
             thread=child_thread, member_id=member["member_id"]
@@ -235,6 +238,7 @@ class MessagingMixin(_ClientBase):
                 member_id=member["member_id"],
                 joined_ts=ts,
                 last_seen_ts=ts,
+                expected_thread_created_ts=child["created_ts"],
             )
             prior_cursor = ts
         else:
@@ -562,7 +566,7 @@ class MessagingMixin(_ClientBase):
         created_thread = existing is None
         participants = tuple(sorted((member["member_id"], target["member_id"])))
         if created_thread:
-            self._state.upsert_thread(
+            existing = self._state.upsert_thread(
                 name=thread,
                 kind="dm",
                 parent=None,
@@ -571,6 +575,7 @@ class MessagingMixin(_ClientBase):
                 meta={"members": list(participants)},
                 created_ts=ts,
             )
+        assert existing is not None
         actor_membership = self._state.get_membership(
             thread=thread, member_id=member["member_id"]
         )
@@ -580,6 +585,7 @@ class MessagingMixin(_ClientBase):
                 member_id=member["member_id"],
                 joined_ts=ts,
                 last_seen_ts=ts,
+                expected_thread_created_ts=existing["created_ts"],
             )
             prior_cursor = ts
         else:
@@ -593,6 +599,7 @@ class MessagingMixin(_ClientBase):
                 member_id=target["member_id"],
                 joined_ts=ts,
                 last_seen_ts=0,
+                expected_thread_created_ts=existing["created_ts"],
             )
         message = self._write_message(
             queue=queue,
@@ -648,6 +655,7 @@ class MessagingMixin(_ClientBase):
             member_id=member["member_id"],
             joined_ts=joined_ts,
             last_seen_ts=0,
+            expected_thread_created_ts=row["created_ts"],
         )
 
     def _write_message(

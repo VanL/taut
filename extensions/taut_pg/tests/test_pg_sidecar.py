@@ -23,6 +23,7 @@ from taut_summon._state import (
 import taut.state._sql as sql_state
 from taut import identity
 from taut._constants import META_QUEUE_NAME, load_config
+from taut._exceptions import TautError
 from taut.client import TautClient
 from taut.state import POSTGRES_SQL_DIALECT, SqlSidecarTautState
 
@@ -368,6 +369,122 @@ def test_postgres_member_rename_and_alias_create_share_one_route_namespace(
         setup_queue.close()
         for queue in queues:
             queue.close()
+
+
+def test_postgres_channel_rename_marker_serializes_membership_creation(
+    taut_pg_project: Path,
+    raw_pg_conn: psycopg.Connection[Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(taut_pg_project)
+    TautClient.init()
+    owner = TautClient(as_name="owner")
+    owner.join("general")
+    setup_queue = owner.queue(META_QUEUE_NAME)
+    setup_state = SqlSidecarTautState(setup_queue, POSTGRES_SQL_DIALECT)
+    candidate = setup_state.insert_member(
+        member_id=identity.random_member_id(),
+        display_name="candidate",
+        kind="agent",
+        uid=1001,
+        host_id="host",
+        host_label="host",
+        anchor_pid=None,
+        anchor_start_time=None,
+        fingerprint=None,
+        token="rename-membership-race-candidate",
+        meta={},
+        created_ts=20,
+    )
+    queues = [owner.queue(META_QUEUE_NAME) for _ in range(2)]
+    states = [SqlSidecarTautState(queue, POSTGRES_SQL_DIALECT) for queue in queues]
+    rename_holds_lock = threading.Event()
+    membership_attempted_lock = threading.Event()
+    release_rename = threading.Event()
+    original_lock = sql_state._acquire_advisory_lock
+
+    def pause_rename_with_topology_lock(*args: Any, **kwargs: Any) -> None:
+        session = args[0]
+        key = str(args[2])
+        session.run("SET LOCAL lock_timeout = '5s'")
+        session.run("SET LOCAL statement_timeout = '10s'")
+        if key != "taut:chat-topology":
+            original_lock(*args, **kwargs)
+            return
+        if threading.current_thread().name.startswith("rename-marker"):
+            original_lock(*args, **kwargs)
+            rename_holds_lock.set()
+            assert release_rename.wait(timeout=10)
+            return
+        membership_attempted_lock.set()
+        original_lock(*args, **kwargs)
+
+    monkeypatch.setattr(
+        sql_state, "_acquire_advisory_lock", pause_rename_with_topology_lock
+    )
+
+    def capture_marker() -> None:
+        states[0].start_channel_rename(
+            old_name="general",
+            new_name="ops",
+            expected_affected=[{"old": "general", "new": "ops"}],
+            started_ts=30,
+        )
+
+    def add_contending_membership() -> None:
+        states[1].add_membership(
+            thread="general",
+            member_id=candidate["member_id"],
+            joined_ts=40,
+            last_seen_ts=40,
+        )
+
+    try:
+        with (
+            ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="rename-marker",
+            ) as rename_pool,
+            ThreadPoolExecutor(max_workers=1) as membership_pool,
+        ):
+            rename_future = rename_pool.submit(capture_marker)
+            assert rename_holds_lock.wait(timeout=10)
+            membership_future = membership_pool.submit(add_contending_membership)
+            assert membership_attempted_lock.wait(timeout=10)
+            _assert_advisory_lock_held(raw_pg_conn, key="taut:chat-topology")
+            release_rename.set()
+            rename_future.result(timeout=20)
+            with pytest.raises(TautError, match="incomplete channel rename exists"):
+                membership_future.result(timeout=20)
+
+        marker = setup_state.incomplete_channel_renames()
+        assert len(marker) == 1
+        assert marker[0]["affected"] == [{"old": "general", "new": "ops"}]
+        assert (
+            setup_state.get_membership(
+                thread="general", member_id=candidate["member_id"]
+            )
+            is None
+        )
+
+        setup_state.apply_channel_rename_state(
+            old_name="general",
+            new_name="ops",
+            affected=marker[0]["affected"],
+            updated_ts=50,
+        )
+        assert setup_state.get_thread("general") is None
+        assert setup_state.get_thread("ops") is not None
+        assert (
+            setup_state.get_membership(thread="ops", member_id=candidate["member_id"])
+            is None
+        )
+    finally:
+        release_rename.set()
+        setup_queue.close()
+        for queue in queues:
+            queue.close()
+        owner.close()
 
 
 def test_postgres_concurrent_empty_schema_initializers_converge(

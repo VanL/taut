@@ -4101,7 +4101,7 @@ def test_registry_rename_resumes_matching_interrupted_operation(
         SqlSidecarTautState(queue, SQLITE_SQL_DIALECT).start_channel_rename(
             old_name="general",
             new_name="ops",
-            affected=[{"old": "general", "new": "ops"}],
+            expected_affected=[{"old": "general", "new": "ops"}],
             started_ts=queue.generate_timestamp(),
         )
     finally:

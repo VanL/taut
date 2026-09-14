@@ -102,7 +102,7 @@ class ThreadsMixin(_ClientBase):
         existing_thread = self._state.get_thread(thread)
         created_thread = existing_thread is None
         if created_thread:
-            self._state.upsert_thread(
+            current_thread = self._state.upsert_thread(
                 name=thread,
                 kind="channel",
                 parent=None,
@@ -114,6 +114,7 @@ class ThreadsMixin(_ClientBase):
             notice_text = f"{member['display_name']} created #{thread}"
         else:
             assert existing_thread is not None
+            current_thread = existing_thread
             if existing_thread["kind"] != "channel":
                 raise ThreadNameError(f"not a channel: {thread}")
             notice_text = f"{member['display_name']} joined"
@@ -122,6 +123,7 @@ class ThreadsMixin(_ClientBase):
             member_id=member["member_id"],
             joined_ts=ts,
             last_seen_ts=ts,
+            expected_thread_created_ts=current_thread["created_ts"],
         )
         if persona is not None:
             updated = self._state.update_member_persona(member["member_id"], persona)
@@ -256,12 +258,13 @@ class ThreadsMixin(_ClientBase):
             for item in affected:
                 if broker.queue_exists(item["new"]):
                     raise ValueError(f"target queue already exists: {item['new']}")
-            self._state.start_channel_rename(
+            marker = self._state.start_channel_rename(
                 old_name=old_name,
                 new_name=new_name,
-                affected=affected,
+                expected_affected=affected,
                 started_ts=started_ts,
             )
+            affected = marker["affected"]
             for item in affected:
                 if broker.queue_exists(item["old"]):
                     broker.rename_queue(

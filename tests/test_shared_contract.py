@@ -1802,7 +1802,7 @@ def test_project_channel_rename_resume_contract(taut_project: Path) -> None:
         van._state.start_channel_rename(
             old_name="general",
             new_name="ops",
-            affected=affected,
+            expected_affected=affected,
             started_ts=meta_queue.generate_timestamp(),
         )
     finally:

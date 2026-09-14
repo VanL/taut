@@ -41,6 +41,7 @@ from taut.state._types import (
 SCHEMA_VERSION_KEY = "schema_version"
 LOAD_GUARD_KEY = "load_guard"
 DEBUG_CAPTURE_KEY = "debug_capture"
+_CHAT_TOPOLOGY_LOCK_KEY = "taut:chat-topology"
 LOAD_GUARD_MESSAGE = (
     "load incomplete; recreate the target before running ordinary Taut operations"
 )
@@ -337,9 +338,11 @@ class SqlSidecarTautState:
         created_by: str,
         meta: dict[str, Any] | None,
         created_ts: int,
+        expected_parent_created_ts: int | None = None,
     ) -> ThreadRow:
         return upsert_thread(
             self.queue,
+            dialect=self.dialect,
             name=name,
             kind=kind,
             parent=parent,
@@ -347,6 +350,7 @@ class SqlSidecarTautState:
             created_by=created_by,
             meta=meta,
             created_ts=created_ts,
+            expected_parent_created_ts=expected_parent_created_ts,
         )
 
     def get_thread(self, name: str) -> ThreadRow | None:
@@ -379,13 +383,16 @@ class SqlSidecarTautState:
         member_id: str,
         joined_ts: int,
         last_seen_ts: int,
+        expected_thread_created_ts: int | None = None,
     ) -> MembershipRow:
         return add_membership(
             self.queue,
+            dialect=self.dialect,
             thread=thread,
             member_id=member_id,
             joined_ts=joined_ts,
             last_seen_ts=last_seen_ts,
+            expected_thread_created_ts=expected_thread_created_ts,
         )
 
     def remove_membership(self, *, thread: str, member_id: str) -> bool:
@@ -410,7 +417,7 @@ class SqlSidecarTautState:
         *,
         old_name: str,
         new_name: str,
-        affected: list[dict[str, str]],
+        expected_affected: list[dict[str, str]],
         started_ts: int,
     ) -> ChannelRenameRow:
         return start_channel_rename(
@@ -418,7 +425,7 @@ class SqlSidecarTautState:
             dialect=self.dialect,
             old_name=old_name,
             new_name=new_name,
-            affected=affected,
+            expected_affected=expected_affected,
             started_ts=started_ts,
         )
 
@@ -1036,6 +1043,7 @@ def get_member_by_claim_hash(queue: Queue, claim_hash: str) -> MemberRow | None:
 def upsert_thread(
     queue: Queue,
     *,
+    dialect: SqlDialect,
     name: str,
     kind: ThreadKind,
     parent: str | None,
@@ -1043,8 +1051,27 @@ def upsert_thread(
     created_by: str,
     meta: dict[str, Any] | None,
     created_ts: int,
+    expected_parent_created_ts: int | None = None,
 ) -> ThreadRow:
     with queue.sidecar(transaction=True) as session:
+        if kind in {"channel", "subthread"}:
+            _acquire_advisory_lock(session, dialect, _CHAT_TOPOLOGY_LOCK_KEY)
+            _raise_if_incomplete_channel_rename(session)
+        if kind == "subthread":
+            parent_row = _one(
+                session,
+                "SELECT kind, created_ts FROM taut_threads WHERE name = ?",
+                (parent,),
+            )
+            if (
+                parent_row is None
+                or parent_row[0] != "channel"
+                or (
+                    expected_parent_created_ts is not None
+                    and parent_row[1] != expected_parent_created_ts
+                )
+            ):
+                raise TautError("channel changed during thread creation; retry")
         session.run(
             """
             INSERT INTO taut_threads (
@@ -1185,12 +1212,26 @@ def set_channel_topic(
 def add_membership(
     queue: Queue,
     *,
+    dialect: SqlDialect,
     thread: str,
     member_id: str,
     joined_ts: int,
     last_seen_ts: int,
+    expected_thread_created_ts: int | None = None,
 ) -> MembershipRow:
     with queue.sidecar(transaction=True) as session:
+        _acquire_advisory_lock(session, dialect, _CHAT_TOPOLOGY_LOCK_KEY)
+        _raise_if_incomplete_channel_rename(session)
+        target = _one(
+            session,
+            "SELECT created_ts FROM taut_threads WHERE name = ?",
+            (thread,),
+        )
+        if target is None or (
+            expected_thread_created_ts is not None
+            and target[0] != expected_thread_created_ts
+        ):
+            raise TautError("thread changed during membership creation; retry")
         session.run(
             """
             INSERT INTO taut_membership (
@@ -1279,11 +1320,13 @@ def start_channel_rename(
     dialect: SqlDialect,
     old_name: str,
     new_name: str,
-    affected: list[dict[str, str]],
+    expected_affected: list[dict[str, str]],
     started_ts: int,
 ) -> ChannelRenameRow:
     with queue.sidecar(transaction=True) as session:
+        _acquire_advisory_lock(session, dialect, _CHAT_TOPOLOGY_LOCK_KEY)
         _acquire_advisory_lock(session, dialect, f"taut:channel:{old_name}")
+        _raise_if_incomplete_channel_rename(session)
         source_row = _one(
             session,
             """
@@ -1294,8 +1337,30 @@ def start_channel_rename(
             (old_name,),
         )
         source = _thread_row(source_row)
-        if source is not None and source["kind"] == "channel":
-            decode_channel_topic(source["meta"])
+        if source is None or source["kind"] != "channel":
+            raise TautError("channel topology changed during rename; retry")
+        decode_channel_topic(source["meta"])
+        if _one(session, "SELECT 1 FROM taut_threads WHERE name = ?", (new_name,)):
+            raise TautError("channel topology changed during rename; retry")
+        rows = _all(
+            session,
+            """
+            SELECT name, parent, origin_ts
+            FROM taut_threads
+            WHERE name = ? OR parent = ?
+            ORDER BY CASE WHEN parent IS NULL THEN 0 ELSE 1 END, name
+            """,
+            (old_name, old_name),
+        )
+        affected = [
+            {
+                "old": str(name),
+                "new": new_name if parent is None else f"{new_name}.{origin_ts}",
+            }
+            for name, parent, origin_ts in rows
+        ]
+        if affected != expected_affected:
+            raise TautError("channel topology changed during rename; retry")
         session.run(
             """
             DELETE FROM taut_channel_renames
@@ -1316,6 +1381,28 @@ def start_channel_rename(
     if row is None:
         raise RuntimeError("channel rename marker could not be read back")
     return row
+
+
+def _raise_if_incomplete_channel_rename(session: SidecarSession) -> None:
+    rename_row = _one(
+        session,
+        """
+        SELECT old_name, new_name, state, affected_json, started_ts, updated_ts
+        FROM taut_channel_renames
+        WHERE state != 'complete'
+        ORDER BY started_ts
+        LIMIT 1
+        """,
+    )
+    if rename_row is None:
+        return
+    marker = _require_channel_rename_row(rename_row)
+    raise TautError(
+        "incomplete channel rename exists: "
+        f"{marker['old_name']} -> {marker['new_name']}; "
+        "run 'taut channel rename "
+        f"{marker['old_name']} {marker['new_name']}' to finish it"
+    )
 
 
 def get_channel_rename(queue: Queue, old_name: str) -> ChannelRenameRow | None:
