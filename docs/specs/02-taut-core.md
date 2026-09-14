@@ -2991,6 +2991,8 @@ expression behavior.
 
 ## Related Plans
 
+- `docs/plans/2026-09-14-audit-remediation-plan.md`: plans fixes for committed-send receipts, workspace paths and debug JSON.
+
 - `docs/plans/2026-08-25-semantic-compatibility-hardening-plan.md` — defines
   strict semantic configuration compatibility, predecessor-produced schema
   proof, and named subset conformance without freezing dependency inventory or

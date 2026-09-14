@@ -887,6 +887,8 @@ edit; escalate loudly the moment a trigger fires.
 
 ## Related Plans
 
+- `docs/plans/2026-09-14-audit-remediation-plan.md`: narrows duplicate Ruff snapshots and shares fenced-example exclusion.
+
 - `docs/plans/2026-07-06-evaluation-findings-remediation-plan.md` — S8
   reconciled this spec's stale snapshot and backlinks and added the
   `tests/test_docs_references.py` reference gate.

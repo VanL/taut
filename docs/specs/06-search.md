@@ -834,6 +834,8 @@ Operational acceptance records, without turning host timing into CI truth:
 
 ## Related Plans
 
+- `docs/plans/2026-09-14-audit-remediation-plan.md`: plans exact-message source lookup and removal of obsolete segmentation proof.
+
 - `docs/plans/2026-08-25-semantic-compatibility-hardening-plan.md` — makes
   search schema checks version-first and semantic, and filters eligible
   first-party provider ownership before ambiguity.

@@ -841,6 +841,8 @@ run through a guard blocks release.
 
 ## Related Plans
 
+- `docs/plans/2026-09-14-audit-remediation-plan.md`: plans contributor validation before dump publication and retained-marker semantics.
+
 - `docs/plans/2026-08-24-concurrency-and-schema-contract-alignment-plan.md` —
   clarifies multi-statement live projections and the destructive load's stable
   input precondition without adding snapshot machinery.

@@ -1011,6 +1011,8 @@ Version 1 does not include:
 
 ## Related Plans
 
+- `docs/plans/2026-09-14-audit-remediation-plan.md`: plans deletion refresh and conversation continuity after rename.
+
 - `docs/plans/2026-08-19-tui-setup-recovery-offer-plan.md` — the native
   setup-recovery offer: [TUI-11.1] support declaration and offer shape,
   [TUI-11.3] decision-class scoping, [TUI-13.2] offer-handling matrix.

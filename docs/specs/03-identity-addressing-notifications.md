@@ -953,6 +953,8 @@ Required proofs:
 
 ## Related Plans
 
+- `docs/plans/2026-09-14-audit-remediation-plan.md`: plans reusable rename markers and a bounded topology-race fix.
+
 - `docs/plans/2026-08-25-semantic-compatibility-hardening-plan.md` — separates
   process-family classification from raw identity evidence and adds a firing
   Windows PowerShell ancestry proof.
