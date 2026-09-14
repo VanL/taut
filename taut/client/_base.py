@@ -302,7 +302,7 @@ class _ClientBase(ABC):
             )
         explicit = db_path or os.environ.get("TAUT_DB")
         if explicit is not None:
-            path = Path(explicit).expanduser()
+            path = Path(explicit).expanduser().resolve()
             if not path.is_file():
                 raise NotInitializedError(NO_DATABASE_MESSAGE)
             return str(path)

@@ -63,6 +63,53 @@ def existing_client(tmp_path: Path, name: str) -> TautClient:
     return TautClient(db_path=tmp_path / ".taut.db", as_name=name)
 
 
+@pytest.mark.parametrize("selector", ["db_path", "TAUT_DB"])
+@pytest.mark.parametrize("persistent", [False, True])
+def test_client_binds_relative_workspace_when_constructed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    selector: str,
+    persistent: bool,
+) -> None:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+
+    monkeypatch.chdir(first)
+    TautClient.init(db_path="workspace.db")
+    kwargs: dict[str, object] = {
+        "as_name": "first-member",
+        "persistent": persistent,
+    }
+    if selector == "db_path":
+        kwargs["db_path"] = "workspace.db"
+    else:
+        monkeypatch.setenv("TAUT_DB", "workspace.db")
+    bound = TautClient(**kwargs)
+    bound.join("general")
+
+    monkeypatch.chdir(second)
+    TautClient.init(db_path="workspace.db")
+    TautClient(db_path="workspace.db", as_name="second-member").join("general")
+
+    posted = bound.say("general", "stays in the first workspace")
+
+    assert posted.from_name == "first-member"
+    first_reader = TautClient(db_path=first / "workspace.db", as_name="first-member")
+    second_reader = TautClient(db_path=second / "workspace.db", as_name="second-member")
+    assert [item.text for item in first_reader.log("general")] == [
+        "first-member created #general",
+        "stays in the first workspace",
+    ]
+    assert [item.text for item in second_reader.log("general")] == [
+        "second-member created #general"
+    ]
+    first_reader.close()
+    second_reader.close()
+    bound.close()
+
+
 def next_meta_timestamp(tmp_path: Path) -> int:
     queue = Queue(META_QUEUE_NAME, db_path=str(tmp_path / ".taut.db"))
     try:

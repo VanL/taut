@@ -916,7 +916,10 @@ queue high-water mark.
   durable chat state lives in the configured Postgres schema.
 - Project resolution: `TautClient` resolves a target before any queue is opened,
   or receives one paired with the exact resolved broker config through its
-  explicit embedding handoff. Only `TautClient.init()` creates a database.
+  explicit embedding handoff. Explicit `db_path` and `TAUT_DB` filesystem
+  targets are expanded and made absolute once during construction, so later
+  working-directory changes cannot move an existing client to another
+  workspace. Only `TautClient.init()` creates a database.
 - Backend selection: `--db`, `db_path=`, and `TAUT_DB` remain filesystem path
   selectors. Postgres is normally selected through `.taut.toml`; explicit
   `TAUT_BACKEND*` values are the no-project-file backend-selection door.
