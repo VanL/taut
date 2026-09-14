@@ -1068,8 +1068,8 @@ def test_ensure_schema_on_current_schema_does_not_wait_for_the_writer_lock(
     import sqlite3
     from concurrent.futures import ThreadPoolExecutor, wait
 
-    TautClient.init()
     db_path = taut_project / ".taut.db"
+    TautClient.init(db_path=db_path)
     # ``init`` creates the taut tables after SimpleBroker publishes its schema
     # proof, so SimpleBroker's next connection re-runs its own exclusive setup
     # once to republish that proof. One ordinary open settles it; the steady
