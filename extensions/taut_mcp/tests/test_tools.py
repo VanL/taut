@@ -36,7 +36,7 @@ from taut_mcp._process_reactor import (
     _notification_record,
 )
 from taut_mcp._results import RECORD_TYPE_BY_TOOL, tool_result
-from taut_mcp._tools import DOMAIN_TOOL_NAMES, TOOLS
+from taut_mcp._tools import TOOLS
 
 
 @contextmanager
@@ -3036,14 +3036,7 @@ def test_exact_message_tool_manifest_contract(tool_name: str) -> None:
 
     assert tool.input_schema["required"] == ["workspace", "token", "msg_id"]
     assert tool.input_schema["properties"]["msg_id"] == {
-        "description": (
-            "Exact native Taut message id as a 19-digit decimal string. "
-            "Preserve it as text; suffixes, whitespace, signs, and numeric JSON "
-            "values are invalid. Used by message_show, message_delete, and "
-            "message_react; all three schemas set pattern: ^[0-9]{19}$, and core "
-            "additionally rejects values outside the public signed-64-bit native "
-            "timestamp range before identity or lookup."
-        ),
+        "description": ("Exact 19-digit Taut message id, as a string."),
         "pattern": r"^[0-9]{19}$",
         "type": "string",
     }
@@ -3101,12 +3094,7 @@ def test_react_to_message_manifest_contract_has_no_static_enum() -> None:
         "reaction",
     ]
     assert tool.input_schema["properties"]["reaction"] == {
-        "description": (
-            "Configured lowercase ASCII reaction slug matching "
-            "^[a-z0-9][a-z0-9_-]{0,31}$. Used only by message_react; the "
-            "schema is not an enum because the attached workspace config "
-            "remains authoritative."
-        ),
+        "description": ("Configured reaction slug."),
         "pattern": r"^[a-z0-9][a-z0-9_-]{0,31}$",
         "type": "string",
     }
@@ -3165,10 +3153,7 @@ def test_search_manifest_and_result_family_are_exact() -> None:
     ]
     assert tool.input_schema["properties"]["limit"] == {
         "default": 50,
-        "description": (
-            "Maximum records requested from one queue, from 1 through 1,000 "
-            "inclusive. Defaults to 50."
-        ),
+        "description": ("Maximum hits, 1 through 1000; default 50."),
         "maximum": 1000,
         "minimum": 1,
         "type": "integer",
@@ -3393,7 +3378,7 @@ def test_exact_tool_manifest_snapshot() -> None:
         separators=(",", ":"),
     ).encode()
     assert hashlib.sha256(encoded).hexdigest() == (
-        "c5b3ecd247f3e9e00e1649bd8119b025f9c0c08d8a072fcece03031f28d57f6e"
+        "dc143fae2cb91ebd2e386cbb302673f830da7f2bca276ec35959fa8736ab0a87"
     )
 
     def assert_property_descriptions(schema: dict[str, object]) -> None:
@@ -3413,185 +3398,13 @@ def test_exact_tool_manifest_snapshot() -> None:
         assert tool.output_schema is None
 
 
-def test_manifest_property_teaching_matches_exact_mcp5_table() -> None:
-    """[MCP-5]/[MCP-12] Every teaching row is literal, not self-snapshotted."""
-
-    schemas = {tool.name: tool.input_schema["properties"] for tool in TOOLS}
-    workspace = (
-        "Absolute local directory containing an existing Taut project. The server "
-        "resolves it to a canonical workspace identifier; reuse the returned "
-        "canonical value to avoid repeated resolution. No relative path or file "
-        "URI; used by attach_workspace and the 18 CLI-shaped tools."
-    )
-    token = (
-        "Existing Taut continuity token for this workspace. It selects one member "
-        "and is never returned. Required on attach_workspace and every CLI-shaped "
-        "tool; do not invent it or repeat it in chat."
-    )
-    for name in {"attach_workspace", *DOMAIN_TOOL_NAMES}:
-        assert schemas[name]["workspace"]["description"] == workspace
-        assert schemas[name]["token"]["description"] == token
-
-    expected = {
-        ("detach_workspace", "workspace"): (
-            "Exact canonical workspace identifier returned by a successful ensure "
-            "or list_workspaces. Detach removes only this process's resident state. "
-            "No filesystem re-resolution and no identity token; an exact active "
-            "hidden-candidate string reports busy but is never removed."
-        ),
-        ("join", "thread"): (
-            "Taut channel matching ^[a-z0-9][a-z0-9_-]{0,63}$; dm, notify, sys, "
-            "and taut are reserved. join, reply, channel_rename.old_name, and "
-            "channel_rename.new_name require a top-level channel."
-        ),
-        ("join", "persona"): (
-            "Optional persona text stored for the attached member while joining. "
-            "Null leaves the current persona unchanged."
-        ),
-        ("leave", "thread"): (
-            "Taut channel or one-level subthread. A subthread is "
-            "<channel>.<19-digit-parent-message-id>. leave and who accept only this "
-            "narrow form."
-        ),
-        ("set_name", "name"): (
-            "Case-preserving Taut member name matching "
-            "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$; routing uniqueness is "
-            "case-insensitive. Used only by set_name."
-        ),
-        ("say", "target"): (
-            "Message destination: a channel such as general, a sub-thread such as "
-            "general.<19-digit-parent-message-id>, a person-addressed direct message "
-            "such as @claude, or an exact stable handle "
-            "dm.d_<26-lowercase-base32-chars>. @name-or-alias may create a DM; an "
-            "exact stable handle requires an existing actor-accessible conversation "
-            "and never creates or heals one. Used only by say; no stdin sentinel."
-        ),
-        ("say", "text"): (
-            "Nonblank message text written as participant content under Taut's core "
-            "size and validation rules. Used by say and reply."
-        ),
-        ("reply", "msg_id"): (
-            "Parent message id: the full 19-digit id, or a unique suffix of at least "
-            "4 digits among the most recent 1,000 ids in the channel. Used only by "
-            "reply; ambiguity is an error."
-        ),
-        ("message_show", "msg_id"): (
-            "Exact native Taut message id as a 19-digit decimal string. Preserve it "
-            "as text; suffixes, whitespace, signs, and numeric JSON values are "
-            "invalid. Used by message_show, message_delete, and message_react; all "
-            "three schemas set pattern: ^[0-9]{19}$, and core additionally rejects "
-            "values outside the public signed-64-bit native timestamp range before "
-            "identity or lookup."
-        ),
-        ("message_react", "reaction"): (
-            "Configured lowercase ASCII reaction slug matching "
-            "^[a-z0-9][a-z0-9_-]{0,31}$. Used only by message_react; the schema is "
-            "not an enum because the attached workspace config remains authoritative."
-        ),
-        ("read", "thread"): (
-            "Optional chat-or-DM selector. Null or omitted reads every joined chat "
-            "thread. Explicit DM selection requires an existing accessible "
-            "conversation and advances only its returned page."
-        ),
-        ("read", "limit"): (
-            "Maximum records requested from one queue, from 1 through 1,000 "
-            "inclusive. Defaults to 100 per selected thread."
-        ),
-        ("inbox", "limit"): (
-            "Maximum records requested from one queue, from 1 through 1,000 "
-            "inclusive. Defaults to 1,000."
-        ),
-        ("log", "thread"): (
-            "Taut channel, one-level subthread, @name-or-alias, or stable "
-            "dm.d_<26-lowercase-base32-chars> selector. log accepts all forms and "
-            "applies actor access checks to DMs."
-        ),
-        ("log", "since"): (
-            "Exclusive history lower bound: ISO 8601, Unix "
-            "seconds/milliseconds/nanoseconds, or a native 19-digit message id. Null "
-            "means no lower bound; used only by log. String forms preserve the "
-            "existing core grammar. Bare JSON integers are accepted only in "
-            "JavaScript's safe range [-(2**53-1), 2**53-1]; larger numeric values "
-            "must be strings."
-        ),
-        ("log", "limit"): (
-            "Maximum records requested from one queue, from 1 through 1,000 "
-            "inclusive. Defaults to 100 most-recent matches."
-        ),
-        ("search", "query"): (
-            "Required nonblank Unicode search query; core [SRCH-3] remains "
-            "authoritative for normalization, length, and token rules. Used only by "
-            "search; schema rejects an empty string and core rejects queries with no "
-            "alphanumeric chunk."
-        ),
-        ("search", "channels"): (
-            "Optional array of channel names; default []; each element uses the "
-            "canonical channel pattern. Used only by search; duplicates are accepted "
-            "and collapse in core."
-        ),
-        ("search", "direct_messages"): (
-            "Optional array of @name-or-alias routes or stable dm.d_* handles; "
-            "default []; each element uses [SRCH-4.1]'s exact chat-DM selector "
-            "grammar. Used only by search; duplicates are accepted and collapse in "
-            "core."
-        ),
-        ("search", "all_direct_messages"): (
-            "Optional boolean selecting every actor-accessible DM. Used only by "
-            "search; defaults to false and may coexist with explicit DM selectors."
-        ),
-        ("search", "from_member"): (
-            "Optional current member name or alias used as an author filter. Used "
-            "only by search; null means no author filter."
-        ),
-        ("search", "kinds"): (
-            "Optional array of message kinds drawn from message, notice, and foreign. "
-            "Used only by search; defaults to []; duplicates are accepted and "
-            "collapse in core."
-        ),
-        ("search", "before"): (
-            "Optional exclusive upper message-id bound as a canonical 19-digit "
-            "decimal string. Used only by search; null means no upper bound and "
-            "numeric JSON values are invalid."
-        ),
-        ("search", "limit"): (
-            "Maximum records requested from one queue, from 1 through 1,000 "
-            "inclusive. Defaults to 50."
-        ),
-        ("search", "reindex"): (
-            "Whether to rebuild disposable search index state before querying. Used "
-            "only by search; defaults to false."
-        ),
-        ("list", "all"): (
-            "When true, list every registered Taut thread. Defaults to false; "
-            "mutually exclusive with dms."
-        ),
-        ("list", "dms"): (
-            "When true, list every valid actor-accessible DM, including read and "
-            "empty conversations. Defaults to false; mutually exclusive with all."
-        ),
-        ("channel_show", "channel"): (
-            "Taut channel matching ^[a-z0-9][a-z0-9_-]{0,63}$; dm, notify, sys, "
-            "and taut are reserved. Used by channel_show and channel_topic; no "
-            "subthread or DM form."
-        ),
-        ("channel_topic", "topic"): (
-            "Current channel topic as a string of at most 500 Unicode code points "
-            "with no CR or LF, or null to clear it. Core rejects blank/Cf-only "
-            "strings. Required by channel_topic; the string branch uses maxLength: "
-            '500 and not: { "pattern": "[\\r\\n]" }.'
-        ),
+def test_parameter_descriptions_match_the_mcp5_table() -> None:
+    actual = {
+        (tool.name, name): schema["description"]
+        for tool in TOOLS
+        for name, schema in tool.input_schema["properties"].items()
     }
-    expected[("reply", "thread")] = expected[("join", "thread")]
-    expected[("reply", "text")] = expected[("say", "text")]
-    expected[("message_delete", "msg_id")] = expected[("message_show", "msg_id")]
-    expected[("message_react", "msg_id")] = expected[("message_show", "msg_id")]
-    expected[("channel_topic", "channel")] = expected[("channel_show", "channel")]
-    expected[("channel_rename", "old_name")] = expected[("join", "thread")]
-    expected[("channel_rename", "new_name")] = expected[("join", "thread")]
-    expected[("who", "thread")] = expected[("leave", "thread")]
-
-    for (tool_name, property_name), description in expected.items():
-        assert schemas[tool_name][property_name]["description"] == description
+    assert actual == EXPECTED_PARAMETER_DESCRIPTIONS
 
 
 def test_unknown_tool_is_not_an_ordinary_tool_result() -> None:
@@ -3638,3 +3451,263 @@ EXPECTED_DESCRIPTIONS: dict[str, str] = {
 
 def test_tool_descriptions_match_the_mcp5_table() -> None:
     assert {tool.name: tool.description for tool in TOOLS} == EXPECTED_DESCRIPTIONS
+
+
+EXPECTED_PARAMETER_DESCRIPTIONS: dict[tuple[str, str], str] = {
+    (
+        "attach_workspace",
+        "workspace",
+    ): "Absolute local directory of an existing Taut project; the result carries its canonical identifier.",
+    (
+        "detach_workspace",
+        "workspace",
+    ): "Canonical workspace identifier from attach_workspace or list_workspaces.",
+    ("join", "thread"): "Top-level Taut channel name.",
+    ("reply", "thread"): "Top-level Taut channel name.",
+    ("channel_rename", "old_name"): "Top-level Taut channel name.",
+    ("channel_rename", "new_name"): "Top-level Taut channel name.",
+    ("channel_show", "channel"): "Top-level Taut channel name.",
+    ("channel_topic", "channel"): "Top-level Taut channel name.",
+    (
+        "leave",
+        "thread",
+    ): "Taut channel, or a `<channel>.<19-digit-message-id>` subthread.",
+    (
+        "who",
+        "thread",
+    ): "Taut channel, or a `<channel>.<19-digit-message-id>` subthread.",
+    (
+        "log",
+        "thread",
+    ): "Channel, subthread, `@name-or-alias` DM, or stable `dm.d_*` handle.",
+    (
+        "read",
+        "thread",
+    ): "Optional channel, subthread, `@name-or-alias` DM, or stable `dm.d_*` handle; omit for every joined thread.",
+    (
+        "join",
+        "persona",
+    ): "Optional persona text for this member; null leaves it unchanged.",
+    ("set_name", "name"): "New display name for this member.",
+    (
+        "say",
+        "target",
+    ): "Channel, subthread, `@name-or-alias` DM (may create one), or stable `dm.d_*` handle (existing conversation only).",
+    (
+        "channel_topic",
+        "topic",
+    ): "Channel topic of at most 500 characters with no line breaks, or null to clear it.",
+    ("message_show", "msg_id"): "Exact 19-digit Taut message id, as a string.",
+    ("message_delete", "msg_id"): "Exact 19-digit Taut message id, as a string.",
+    ("message_react", "msg_id"): "Exact 19-digit Taut message id, as a string.",
+    (
+        "reply",
+        "msg_id",
+    ): "Parent message id, or a unique suffix of at least 4 digits among the channel's most recent 1000 ids.",
+    ("message_react", "reaction"): "Configured reaction slug.",
+    (
+        "read",
+        "limit",
+    ): "Maximum records per selected thread, 1 through 1000; default 100.",
+    ("inbox", "limit"): "Maximum notifications, 1 through 1000; default 1000.",
+    ("log", "limit"): "Maximum most-recent messages, 1 through 1000; default 100.",
+    ("search", "limit"): "Maximum hits, 1 through 1000; default 50.",
+    (
+        "log",
+        "since",
+    ): "Exclusive lower bound: ISO 8601, Unix time, or 19-digit message id; null for none.",
+    ("search", "query"): "Nonblank search text.",
+    (
+        "search",
+        "channels",
+    ): "Channel names to search; empty means every registered channel.",
+    (
+        "search",
+        "direct_messages",
+    ): "`@name-or-alias` or stable `dm.d_*` DM selectors to search.",
+    ("search", "all_direct_messages"): "Search every accessible DM.",
+    ("search", "from_member"): "Author name or alias filter; null for none.",
+    ("search", "kinds"): "Message kinds to include; empty means all.",
+    ("search", "before"): "Exclusive upper 19-digit message-id bound; null for none.",
+    ("search", "reindex"): "Rebuild the search index before querying.",
+    ("list", "all"): "List every registered thread; exclusive with dms.",
+    ("list", "dms"): "List every accessible DM; exclusive with all.",
+    (
+        "attach_workspace",
+        "token",
+    ): "Existing Taut continuity token for this workspace; never returned and never invented.",
+    (
+        "join",
+        "workspace",
+    ): "Canonical workspace identifier, or the absolute local directory of an existing Taut project.",
+    (
+        "join",
+        "token",
+    ): "Existing Taut continuity token for this workspace; never returned and never invented.",
+    (
+        "leave",
+        "workspace",
+    ): "Canonical workspace identifier, or the absolute local directory of an existing Taut project.",
+    (
+        "leave",
+        "token",
+    ): "Existing Taut continuity token for this workspace; never returned and never invented.",
+    (
+        "set_name",
+        "workspace",
+    ): "Canonical workspace identifier, or the absolute local directory of an existing Taut project.",
+    (
+        "set_name",
+        "token",
+    ): "Existing Taut continuity token for this workspace; never returned and never invented.",
+    (
+        "say",
+        "workspace",
+    ): "Canonical workspace identifier, or the absolute local directory of an existing Taut project.",
+    ("say", "text"): "Nonblank message text.",
+    (
+        "say",
+        "token",
+    ): "Existing Taut continuity token for this workspace; never returned and never invented.",
+    (
+        "reply",
+        "workspace",
+    ): "Canonical workspace identifier, or the absolute local directory of an existing Taut project.",
+    ("reply", "text"): "Nonblank message text.",
+    (
+        "reply",
+        "token",
+    ): "Existing Taut continuity token for this workspace; never returned and never invented.",
+    (
+        "message_show",
+        "workspace",
+    ): "Canonical workspace identifier, or the absolute local directory of an existing Taut project.",
+    (
+        "message_show",
+        "token",
+    ): "Existing Taut continuity token for this workspace; never returned and never invented.",
+    (
+        "message_delete",
+        "workspace",
+    ): "Canonical workspace identifier, or the absolute local directory of an existing Taut project.",
+    (
+        "message_delete",
+        "token",
+    ): "Existing Taut continuity token for this workspace; never returned and never invented.",
+    (
+        "message_react",
+        "workspace",
+    ): "Canonical workspace identifier, or the absolute local directory of an existing Taut project.",
+    (
+        "message_react",
+        "token",
+    ): "Existing Taut continuity token for this workspace; never returned and never invented.",
+    (
+        "read",
+        "workspace",
+    ): "Canonical workspace identifier, or the absolute local directory of an existing Taut project.",
+    (
+        "read",
+        "token",
+    ): "Existing Taut continuity token for this workspace; never returned and never invented.",
+    (
+        "inbox",
+        "workspace",
+    ): "Canonical workspace identifier, or the absolute local directory of an existing Taut project.",
+    (
+        "inbox",
+        "token",
+    ): "Existing Taut continuity token for this workspace; never returned and never invented.",
+    (
+        "log",
+        "workspace",
+    ): "Canonical workspace identifier, or the absolute local directory of an existing Taut project.",
+    (
+        "log",
+        "token",
+    ): "Existing Taut continuity token for this workspace; never returned and never invented.",
+    (
+        "search",
+        "workspace",
+    ): "Canonical workspace identifier, or the absolute local directory of an existing Taut project.",
+    (
+        "search",
+        "token",
+    ): "Existing Taut continuity token for this workspace; never returned and never invented.",
+    (
+        "list",
+        "workspace",
+    ): "Canonical workspace identifier, or the absolute local directory of an existing Taut project.",
+    (
+        "list",
+        "token",
+    ): "Existing Taut continuity token for this workspace; never returned and never invented.",
+    (
+        "channel_show",
+        "workspace",
+    ): "Canonical workspace identifier, or the absolute local directory of an existing Taut project.",
+    (
+        "channel_show",
+        "token",
+    ): "Existing Taut continuity token for this workspace; never returned and never invented.",
+    (
+        "channel_topic",
+        "workspace",
+    ): "Canonical workspace identifier, or the absolute local directory of an existing Taut project.",
+    (
+        "channel_topic",
+        "token",
+    ): "Existing Taut continuity token for this workspace; never returned and never invented.",
+    (
+        "channel_rename",
+        "workspace",
+    ): "Canonical workspace identifier, or the absolute local directory of an existing Taut project.",
+    (
+        "channel_rename",
+        "token",
+    ): "Existing Taut continuity token for this workspace; never returned and never invented.",
+    (
+        "who",
+        "workspace",
+    ): "Canonical workspace identifier, or the absolute local directory of an existing Taut project.",
+    (
+        "who",
+        "token",
+    ): "Existing Taut continuity token for this workspace; never returned and never invented.",
+    (
+        "whoami",
+        "workspace",
+    ): "Canonical workspace identifier, or the absolute local directory of an existing Taut project.",
+    (
+        "whoami",
+        "token",
+    ): "Existing Taut continuity token for this workspace; never returned and never invented.",
+}
+
+
+CEILING_BYTES = 21_000
+
+
+def test_manifest_size_stays_under_ceiling() -> None:
+    dumped = [tool.model_dump(by_alias=True, exclude_none=True) for tool in TOOLS]
+    total = len(
+        json.dumps(dumped, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    )
+    breakdown = {
+        field: sum(
+            len(
+                json.dumps(
+                    tool[field], separators=(",", ":"), ensure_ascii=False
+                ).encode("utf-8")
+            )
+            for tool in dumped
+            if field in tool
+        )
+        for field in ("description", "inputSchema", "outputSchema", "annotations")
+    }
+    assert total <= CEILING_BYTES, (total, breakdown)
+
+
+def test_input_schemas_carry_no_schema_url() -> None:
+    for tool in TOOLS:
+        assert "$schema" not in tool.input_schema, tool.name

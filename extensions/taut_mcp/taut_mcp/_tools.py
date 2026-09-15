@@ -22,64 +22,22 @@ MEMBER_NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
 REACTION_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,31}$"
 MAX_SAFE_JSON_INTEGER = (1 << 53) - 1
 
-ATTACH_WORKSPACE_DESCRIPTION = (
-    "Absolute local directory containing an existing Taut project. The server "
-    "resolves it to a canonical workspace identifier; reuse the returned "
-    "canonical value to avoid repeated resolution. No relative path or file URI; "
-    "used by attach_workspace and the 18 CLI-shaped tools."
-)
-WORKSPACE_DESCRIPTION = ATTACH_WORKSPACE_DESCRIPTION
+ATTACH_WORKSPACE_DESCRIPTION = "Absolute local directory of an existing Taut project; the result carries its canonical identifier."
+WORKSPACE_DESCRIPTION = "Canonical workspace identifier, or the absolute local directory of an existing Taut project."
 DETACH_WORKSPACE_DESCRIPTION = (
-    "Exact canonical workspace identifier returned by a successful ensure or "
-    "list_workspaces. Detach removes only this process's resident state. No "
-    "filesystem re-resolution and no identity token; an exact active "
-    "hidden-candidate string reports busy but is never removed."
+    "Canonical workspace identifier from attach_workspace or list_workspaces."
 )
-TOKEN_DESCRIPTION = (
-    "Existing Taut continuity token for this workspace. It selects one member "
-    "and is never returned. Required on attach_workspace and every CLI-shaped "
-    "tool; do not invent it or repeat it in chat."
-)
-CHANNEL_DESCRIPTION = (
-    "Taut channel matching ^[a-z0-9][a-z0-9_-]{0,63}$; dm, notify, sys, and "
-    "taut are reserved. join, reply, channel_rename.old_name, and "
-    "channel_rename.new_name require a top-level channel."
-)
-CHANNEL_PROPERTY_DESCRIPTION = (
-    "Taut channel matching ^[a-z0-9][a-z0-9_-]{0,63}$; dm, notify, sys, and "
-    "taut are reserved. Used by channel_show and channel_topic; no subthread or "
-    "DM form."
-)
-CHAT_DESCRIPTION = (
-    "Taut channel or one-level subthread. A subthread is "
-    "<channel>.<19-digit-parent-message-id>. leave and who accept only this narrow "
-    "form."
-)
+TOKEN_DESCRIPTION = "Existing Taut continuity token for this workspace; never returned and never invented."
+CHANNEL_DESCRIPTION = "Top-level Taut channel name."
+CHANNEL_PROPERTY_DESCRIPTION = "Top-level Taut channel name."
+CHAT_DESCRIPTION = "Taut channel, or a `<channel>.<19-digit-message-id>` subthread."
 CHAT_OR_DM_DESCRIPTION = (
-    "Taut channel, one-level subthread, @name-or-alias, or stable "
-    "dm.d_<26-lowercase-base32-chars> selector. log accepts all forms and applies "
-    "actor access checks to DMs."
+    "Channel, subthread, `@name-or-alias` DM, or stable `dm.d_*` handle."
 )
-READ_THREAD_DESCRIPTION = (
-    "Optional chat-or-DM selector. Null or omitted reads every joined chat "
-    "thread. Explicit DM selection requires an existing accessible conversation "
-    "and advances only its returned page."
-)
-LIMIT_DESCRIPTION = (
-    "Maximum records requested from one queue, from 1 through 1,000 inclusive."
-)
-EXACT_MESSAGE_ID_DESCRIPTION = (
-    "Exact native Taut message id as a 19-digit decimal string. Preserve it as "
-    "text; suffixes, whitespace, signs, and numeric JSON values are invalid. Used "
-    "by message_show, message_delete, and message_react; all three schemas set "
-    "pattern: ^[0-9]{19}$, and core additionally rejects values outside the public "
-    "signed-64-bit native timestamp range before identity or lookup."
-)
-REACTION_DESCRIPTION = (
-    "Configured lowercase ASCII reaction slug matching "
-    "^[a-z0-9][a-z0-9_-]{0,31}$. Used only by message_react; the schema is not an "
-    "enum because the attached workspace config remains authoritative."
-)
+READ_THREAD_DESCRIPTION = "Optional channel, subthread, `@name-or-alias` DM, or stable `dm.d_*` handle; omit for every joined thread."
+
+EXACT_MESSAGE_ID_DESCRIPTION = "Exact 19-digit Taut message id, as a string."
+REACTION_DESCRIPTION = "Configured reaction slug."
 
 
 def _nullable_message_id(description: str) -> dict[str, Any]:
@@ -111,7 +69,6 @@ class ToolDefinition:
         if self.name in DOMAIN_TOOL_NAMES:
             required.insert(required.index("workspace") + 1, "token")
         schema: dict[str, Any] = {
-            "$schema": "https://json-schema.org/draft/2020-12/schema",
             "additionalProperties": False,
             "properties": properties,
             "type": "object",
@@ -179,21 +136,21 @@ _EXACT_MESSAGE_ID = _string(
 )
 _LIMIT_100 = {
     "default": 100,
-    "description": LIMIT_DESCRIPTION + " Defaults to 100 per selected thread.",
+    "description": "Maximum records per selected thread, 1 through 1000; default 100.",
     "maximum": 1000,
     "minimum": 1,
     "type": "integer",
 }
 _LIMIT_1000 = {
     "default": 1000,
-    "description": LIMIT_DESCRIPTION + " Defaults to 1,000.",
+    "description": "Maximum notifications, 1 through 1000; default 1000.",
     "maximum": 1000,
     "minimum": 1,
     "type": "integer",
 }
 _LIMIT_50 = {
     "default": 50,
-    "description": LIMIT_DESCRIPTION + " Defaults to 50.",
+    "description": "Maximum hits, 1 through 1000; default 50.",
     "maximum": 1000,
     "minimum": 1,
     "type": "integer",
@@ -246,7 +203,7 @@ TOOL_DEFINITIONS = (
             "workspace": _WORKSPACE,
             "thread": _CHANNEL,
             "persona": _nullable_string(
-                "Optional persona text stored for the attached member while joining. Null leaves the current persona unchanged."
+                "Optional persona text for this member; null leaves it unchanged."
             ),
         },
         ("workspace", "thread"),
@@ -275,7 +232,7 @@ TOOL_DEFINITIONS = (
         {
             "workspace": _WORKSPACE,
             "name": _string(
-                "Case-preserving Taut member name matching ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$; routing uniqueness is case-insensitive. Used only by set_name.",
+                "New display name for this member.",
                 pattern=MEMBER_NAME_PATTERN,
             ),
         },
@@ -293,11 +250,9 @@ TOOL_DEFINITIONS = (
         {
             "workspace": _WORKSPACE,
             "target": _string(
-                "Message destination: a channel such as general, a sub-thread such as general.<19-digit-parent-message-id>, a person-addressed direct message such as @claude, or an exact stable handle dm.d_<26-lowercase-base32-chars>. @name-or-alias may create a DM; an exact stable handle requires an existing actor-accessible conversation and never creates or heals one. Used only by say; no stdin sentinel."
+                "Channel, subthread, `@name-or-alias` DM (may create one), or stable `dm.d_*` handle (existing conversation only)."
             ),
-            "text": _string(
-                "Nonblank message text written as participant content under Taut's core size and validation rules. Used by say and reply."
-            ),
+            "text": _string("Nonblank message text."),
         },
         ("workspace", "target", "text"),
         _annotations(
@@ -314,12 +269,10 @@ TOOL_DEFINITIONS = (
             "workspace": _WORKSPACE,
             "thread": _CHANNEL,
             "msg_id": _string(
-                "Parent message id: the full 19-digit id, or a unique suffix of at least 4 digits among the most recent 1,000 ids in the channel. Used only by reply; ambiguity is an error.",
+                "Parent message id, or a unique suffix of at least 4 digits among the channel's most recent 1000 ids.",
                 pattern=r"^[0-9]{4,19}$",
             ),
-            "text": _string(
-                "Nonblank message text written as participant content under Taut's core size and validation rules. Used by say and reply."
-            ),
+            "text": _string("Nonblank message text."),
         },
         ("workspace", "thread", "msg_id", "text"),
         _annotations(
@@ -427,18 +380,12 @@ TOOL_DEFINITIONS = (
                 ],
                 "default": None,
                 "description": (
-                    "Exclusive history lower bound: ISO 8601, Unix "
-                    "seconds/milliseconds/nanoseconds, or a native 19-digit message "
-                    "id. Null means no lower bound; used only by log. String forms "
-                    "preserve the existing core grammar. Bare JSON integers are "
-                    "accepted only in JavaScript's safe range [-(2**53-1), "
-                    "2**53-1]; larger numeric values must be strings."
+                    "Exclusive lower bound: ISO 8601, Unix time, or 19-digit message id; null for none."
                 ),
             },
             "limit": {
                 **_LIMIT_100,
-                "description": LIMIT_DESCRIPTION
-                + " Defaults to 100 most-recent matches.",
+                "description": "Maximum most-recent messages, 1 through 1000; default 100.",
             },
         },
         ("workspace", "thread"),
@@ -455,21 +402,14 @@ TOOL_DEFINITIONS = (
         {
             "workspace": _WORKSPACE,
             "query": {
-                "description": (
-                    "Required nonblank Unicode search query; core [SRCH-3] remains "
-                    "authoritative for normalization, length, and token rules. Used "
-                    "only by search; schema rejects an empty string and core rejects "
-                    "queries with no alphanumeric chunk."
-                ),
+                "description": ("Nonblank search text."),
                 "minLength": 1,
                 "type": "string",
             },
             "channels": {
                 "default": [],
                 "description": (
-                    "Optional array of channel names; default []; each element uses "
-                    "the canonical channel pattern. Used only by search; duplicates "
-                    "are accepted and collapse in core."
+                    "Channel names to search; empty means every registered channel."
                 ),
                 "items": {"pattern": CHANNEL_PATTERN, "type": "string"},
                 "type": "array",
@@ -477,35 +417,23 @@ TOOL_DEFINITIONS = (
             "direct_messages": {
                 "default": [],
                 "description": (
-                    "Optional array of @name-or-alias routes or stable dm.d_* "
-                    "handles; default []; each element uses [SRCH-4.1]'s exact "
-                    "chat-DM selector grammar. Used only by search; duplicates are "
-                    "accepted and collapse in core."
+                    "`@name-or-alias` or stable `dm.d_*` DM selectors to search."
                 ),
                 "items": {"pattern": DM_SELECTOR_PATTERN, "type": "string"},
                 "type": "array",
             },
             "all_direct_messages": {
                 "default": False,
-                "description": (
-                    "Optional boolean selecting every actor-accessible DM. Used only "
-                    "by search; defaults to false and may coexist with explicit DM "
-                    "selectors."
-                ),
+                "description": ("Search every accessible DM."),
                 "type": "boolean",
             },
             "from_member": _nullable_string(
-                "Optional current member name or alias used as an author filter. Used "
-                "only by search; null means no author filter.",
+                "Author name or alias filter; null for none.",
                 pattern=MEMBER_NAME_PATTERN,
             ),
             "kinds": {
                 "default": [],
-                "description": (
-                    "Optional array of message kinds drawn from message, notice, and "
-                    "foreign. Used only by search; defaults to []; duplicates are "
-                    "accepted and collapse in core."
-                ),
+                "description": ("Message kinds to include; empty means all."),
                 "items": {
                     "enum": ["message", "notice", "foreign"],
                     "type": "string",
@@ -513,17 +441,12 @@ TOOL_DEFINITIONS = (
                 "type": "array",
             },
             "before": _nullable_message_id(
-                "Optional exclusive upper message-id bound as a canonical 19-digit "
-                "decimal string. Used only by search; null means no upper bound and "
-                "numeric JSON values are invalid."
+                "Exclusive upper 19-digit message-id bound; null for none."
             ),
             "limit": _LIMIT_50,
             "reindex": {
                 "default": False,
-                "description": (
-                    "Whether to rebuild disposable search index state before "
-                    "querying. Used only by search; defaults to false."
-                ),
+                "description": ("Rebuild the search index before querying."),
                 "type": "boolean",
             },
         },
@@ -542,12 +465,12 @@ TOOL_DEFINITIONS = (
             "workspace": _WORKSPACE,
             "all": {
                 "default": False,
-                "description": "When true, list every registered Taut thread. Defaults to false; mutually exclusive with dms.",
+                "description": "List every registered thread; exclusive with dms.",
                 "type": "boolean",
             },
             "dms": {
                 "default": False,
-                "description": "When true, list every valid actor-accessible DM, including read and empty conversations. Defaults to false; mutually exclusive with all.",
+                "description": "List every accessible DM; exclusive with all.",
                 "type": "boolean",
             },
         },
@@ -599,10 +522,7 @@ TOOL_DEFINITIONS = (
                     {"type": "null"},
                 ],
                 "description": (
-                    "Current channel topic as a string of at most 500 Unicode code "
-                    "points with no CR or LF, or null to clear it. Core rejects "
-                    "blank/Cf-only strings. Required by channel_topic; the string "
-                    'branch uses maxLength: 500 and not: { "pattern": "[\\r\\n]" }.'
+                    "Channel topic of at most 500 characters with no line breaks, or null to clear it."
                 ),
             },
         },

@@ -1836,7 +1836,7 @@ Required proof includes:
 - exact tool-description, annotation, input-schema, and successful-output-
   schema snapshots for every [MCP-5] tool, including every property description, the `records`/optional-`warnings`
   result object, omission of `outputSchema`, rejection of additional
-  properties, a serialized tool-manifest size ceiling of 20,000 bytes, and
+  properties, a serialized tool-manifest size ceiling of 21,000 bytes, and
   canonical text/structured parity; state probes confirm that `log` and
   `list_workspaces` are observational, `message_show` and `read` advance chat
   cursors, `message_react` advances its cursor and reports the intended

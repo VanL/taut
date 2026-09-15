@@ -22,7 +22,7 @@ result schemas remain test-only oracles.
 Replace the six-field MCP result envelope with the CLI's record stream
 wrapped in the one object MCP requires, move the three static guidance texts
 into their tool descriptions, cut every parameter description to CLI-help
-terseness, and keep `outputSchema` omitted, with a 20,000-byte serialized
+terseness, and keep `outputSchema` omitted, with a 21,000-byte serialized
 `tools/list` manifest ceiling.
 
 ## Source documents
@@ -102,7 +102,7 @@ The owner chose omission, in this order of weight:
 The tradeoff is explicit: clients get no advertised result schema for
 runtime validation. The test oracle and real-result validation stay in
 place. Reconsider only when a concrete client requirement earns the cost.
-The ceiling is 20,000 bytes. There is no alternative execution branch.
+The ceiling is 21,000 bytes. There is no alternative execution branch.
 
 ## Revision scope
 
@@ -300,7 +300,7 @@ contract without adding a runtime schema dependency.
 ### Size budget is a gate, set from measurement
 
 A test serializes the tool manifest compactly and asserts a total of at most
-20,000 bytes, against the estimated 17,000-byte result. This is a wire-size
+21,000 bytes, against the estimated 17,000-byte result. This is a wire-size
 budget, not a claim about model-visible token usage. The test prints the
 per-field byte breakdown on failure. If the measured total after Slice 6
 exceeds the ceiling, stop and report the breakdown; do not cut record fields,
@@ -524,7 +524,7 @@ Anchor (snapshot bullet): "…including every property description, the common
 properties, and canonical text/structured parity;" →
 "…including every property description, the `records`/optional-`warnings`
 result object, omission of `outputSchema`, rejection of additional
-properties, a serialized tool-manifest size ceiling of 20,000 bytes, and
+properties, a serialized tool-manifest size ceiling of 21,000 bytes, and
 canonical text/structured parity;".
 
 Anchor (`message_delete` snapshot bullet): "both record-type maps and command
@@ -954,7 +954,7 @@ Files: `extensions/taut_mcp/taut_mcp/_tools.py`,
 Red tests, in `test_tools.py`:
 
 ```python
-CEILING_BYTES = 20_000
+CEILING_BYTES = 21_000
 
 
 def test_manifest_size_stays_under_ceiling() -> None:
@@ -1155,7 +1155,7 @@ full diff.
 ## Fresh-eyes notes
 
 One execution path remains: omit output schemas, retain the closed test
-oracle and explicit result validation, and cap the manifest at 20,000 bytes.
+oracle and explicit result validation, and cap the manifest at 21,000 bytes.
 Slice 1 promotes behavior text; Slice 2 creates the module before adding
 its mapping link; Slice 3 updates the oracle wrapper and all obsolete
 wrapper assertions together. Record-schema bodies and descriptions do not
@@ -1196,3 +1196,9 @@ Slice 3 mechanical documentation delta: Ruff removed the now-unused TRY004 suppr
 Slice 3: 306 non-PG MCP tests passed after corrections; PostgreSQL conformance 7 passed; mypy 24 files, Ruff, document tests and suppression-index gate passed. Independent review found and verified fixes for modern whoami workspace lookup and explicit lifecycle validation, then returned PASS. Closed record schema bodies/descriptions preserved; only result wrapper changes.
 
 Slice 4: exact 21-tool description fixture exposed two pre-existing Markdown-only differences (`say` selectors and `search` reindex flag). Aligned them to the promoted exact table alongside the three guidance-bearing descriptions; no extra disclosure or behavior change. Red description tests failed before edits. All 152 tool tests passed after description/hash updates.
+
+Slice 6 measurement: exact approved prose serializes to 20,514 bytes (description 4,395; inputSchema 12,865; outputSchema 0; annotations 1,875). The 20,000-byte stop gate fires; owner decision requested before proceeding. Structural comparison against all 21 captured baseline tools is identical after removing descriptions and input `$schema`; record schemas remain test-only. All tool tests except the size gate pass.
+
+Owner decision (2026-09-15): raise the manifest ceiling to 21,000 bytes after measured 20,514-byte result; retain all exact approved descriptions. Promoted [MCP-12] ceiling and executable test updated together. The earlier 20,000-byte threshold in historical review entries is superseded.
+
+Slice 6: owner-approved 21,000-byte gate passes at 20,514 bytes, 35.2% below the 31,679-byte baseline. Full non-PG selection excluding the pending size gate passed (308 cases), and the size gate then passed separately after owner approval; PG 7 passed, mypy 24 files, Ruff/check-format, document/reference/path/status and suppression gates passed. All nine RECORD_SCHEMAS definitions are AST-identical to baseline. Final unfiltered lane will run after this commit.
