@@ -24,6 +24,14 @@ def _dependency_floor(project: dict[str, object], name: str) -> str:
     return str(matches[0]).removeprefix(f"{name}>=")
 
 
+def _dependency_pin(project: dict[str, object], name: str) -> str:
+    dependencies = project["dependencies"]
+    assert isinstance(dependencies, list)
+    matches = [item for item in dependencies if str(item).startswith(f"{name}==")]
+    assert len(matches) == 1
+    return str(matches[0]).removeprefix(f"{name}==")
+
+
 def test_package_versions_and_derived_metadata_match_their_owners() -> None:
     root_manifest = _manifest("pyproject.toml")
     pg_manifest = _manifest("extensions/taut_pg/pyproject.toml")
@@ -55,13 +63,13 @@ def test_package_versions_and_derived_metadata_match_their_owners() -> None:
     assert summon["name"] == "taut-summon"
     assert mcp["name"] == "taut-mcp"
     assert tui["name"] == "taut-tui"
-    assert _dependency_floor(pg, "taut-chat") == root_version
-    assert _dependency_floor(summon, "taut-chat") == root_version
-    assert _dependency_floor(mcp, "taut-chat") == root_version
+    assert _dependency_pin(pg, "taut-chat") == root_version
+    assert _dependency_pin(summon, "taut-chat") == root_version
+    assert _dependency_pin(mcp, "taut-chat") == root_version
     assert _dependency_floor(mcp, "simplebroker") == _dependency_floor(
         root, "simplebroker"
     )
-    assert _dependency_floor(tui, "taut-chat") == root_version
+    assert _dependency_pin(tui, "taut-chat") == root_version
     for manifest in (pg_manifest, summon_manifest, mcp_manifest, tui_manifest):
         tool = manifest["tool"]
         assert isinstance(tool, dict)

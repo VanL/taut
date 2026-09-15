@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from typing import Any, ClassVar, Self
 
-from rich.console import RenderableType
+from rich.console import Console, ConsoleOptions, RenderableType
+from rich.containers import Lines
+from rich.segment import Segment
 from rich.text import Text
 from textual.binding import Binding, BindingType
 from textual.content import Content, ContentText
 from textual.message import Message
-from textual.visual import VisualType
+from textual.visual import RichVisual, Visual, VisualType
 from textual.widgets import (
     Button,
     Checkbox,
@@ -116,10 +118,61 @@ def escape_inline_text(value: str) -> EscapedDisplayText:
 class DisplayText(Text):
     """Marker for Rich text assembled from already escaped display segments."""
 
-    def __init__(self, *, _token: object | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        _token: object | None = None,
+        hanging_body_offset: int | None = None,
+        hanging_indent: int = 0,
+    ) -> None:
         if _token is not _DISPLAY_TOKEN:
             raise TypeError("styled display text must come from the factory")
         super().__init__()
+        self._hanging_body_offset = hanging_body_offset
+        self._hanging_indent = hanging_indent
+
+    @property
+    def has_hanging_indent(self) -> bool:
+        return self._hanging_body_offset is not None
+
+    def wrap(
+        self,
+        console: Console,
+        width: int,
+        **kwargs: Any,
+    ) -> Lines:
+        """Wrap an aligned body beneath its first display column."""
+
+        body_offset = self._hanging_body_offset
+        indent = self._hanging_indent
+        if body_offset is None or indent <= 0 or indent >= width:
+            return super().wrap(console, width, **kwargs)
+
+        prefix = self[:body_offset]
+        body_lines = self[body_offset:].wrap(console, width - indent, **kwargs)
+        if not body_lines:
+            return Lines([prefix])
+
+        wrapped = Lines([Text.assemble(prefix, body_lines[0])])
+        wrapped.extend(
+            Text.assemble(" " * indent, line) if line.plain else line
+            for line in body_lines[1:]
+        )
+        return wrapped
+
+
+class _HangingDisplayRenderable:
+    """Keep trusted hanging text in Rich's renderer across Textual adaptation."""
+
+    def __init__(self, content: DisplayText) -> None:
+        self._content = content
+
+    def __rich_console__(
+        self,
+        console: Console,
+        options: ConsoleOptions,
+    ) -> Iterator[Segment]:
+        yield from self._content.__rich_console__(console, options)
 
 
 def display_text(*parts: str | tuple[str, Any]) -> DisplayText:
@@ -127,6 +180,27 @@ def display_text(*parts: str | tuple[str, Any]) -> DisplayText:
 
     rendered = DisplayText(_token=_DISPLAY_TOKEN)
     for part in parts:
+        if isinstance(part, tuple):
+            value, style = part
+        else:
+            value, style = part, None
+        rendered.append(str(escape_display_text(value)), style=style)
+    return rendered
+
+
+def hanging_display_text(
+    metadata: DisplayText,
+    *body_parts: str | tuple[str, Any],
+) -> DisplayText:
+    """Build trusted text whose wrapped body hangs beneath its first column."""
+
+    rendered = DisplayText(
+        _token=_DISPLAY_TOKEN,
+        hanging_body_offset=len(metadata),
+        hanging_indent=metadata.cell_len,
+    )
+    rendered.append_text(metadata)
+    for part in body_parts:
         if isinstance(part, tuple):
             value, style = part
         else:
@@ -318,6 +392,14 @@ class TautOptionList(OptionList):
             self._display_option(option) for option in new_options
         )
 
+    def _get_visual(self, option: Option) -> Visual:
+        prompt = option.prompt
+        if isinstance(prompt, DisplayText) and prompt.has_hanging_indent:
+            if option._visual is None:
+                option._visual = RichVisual(self, _HangingDisplayRenderable(prompt))
+            return option._visual
+        return super()._get_visual(option)
+
     @staticmethod
     def _display_option(option: Any) -> Any:
         if isinstance(option, Option):
@@ -402,4 +484,5 @@ __all__ = [
     "escape_display_text",
     "escape_inline_text",
     "escape_message_body",
+    "hanging_display_text",
 ]

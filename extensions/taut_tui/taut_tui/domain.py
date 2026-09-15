@@ -239,9 +239,6 @@ class TuiDomainActions:
         )
         return self._session.submit_client_operation(operation)
 
-    def members_for_thread(self, thread: str | None = None) -> Future[list[Member]]:
-        return self._session.submit_client_operation(lambda client: client.who(thread))
-
     def search(self, query: str, *, limit: int = 50) -> Future[list[SearchHit]]:
         def search_visible(client: TautClient) -> list[SearchHit]:
             joined = set(client.joined_thread_names())

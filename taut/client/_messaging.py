@@ -18,6 +18,7 @@ from taut._exceptions import (
     BlankMessageError,
     EmptyResultError,
     MembershipError,
+    MessageIdNotFoundError,
     NotFoundError,
     ThreadNameError,
 )
@@ -789,18 +790,18 @@ class MessagingMixin(_ClientBase):
             exact = int(msg_id)
             found = queue.peek_one(exact_timestamp=exact, with_timestamps=True)
             if found is None:
-                raise NotFoundError(f"message not found: {msg_id}")
+                raise MessageIdNotFoundError(f"message not found: {msg_id}")
             body, timestamp = found
             return message_from_body(thread, body, timestamp)
         if len(msg_id) < 4 or not msg_id.isdigit():
-            raise NotFoundError("message id suffix must be at least 4 digits")
+            raise MessageIdNotFoundError("message id suffix must be at least 4 digits")
         recent: deque[Message] = deque(maxlen=1000)
         for result in queue.peek_generator(with_timestamps=True):
             body, ts = result
             recent.append(message_from_body(thread, body, ts))
         matches = [message for message in recent if str(message.ts).endswith(msg_id)]
         if not matches:
-            raise NotFoundError(
+            raise MessageIdNotFoundError(
                 f"message not found in the most recent 1,000 messages of {thread}; "
                 "use the full 19-digit id"
             )

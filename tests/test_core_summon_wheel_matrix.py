@@ -241,6 +241,7 @@ def _write_command_provider_wheel(
     entry_points: tuple[tuple[str, str], ...],
     modules: dict[str, str],
     version: str = "0.0.0",
+    requirements: tuple[str, ...] = (),
 ) -> Path:
     """Write one minimal wheel for installed command-ownership probes."""
 
@@ -253,7 +254,15 @@ def _write_command_provider_wheel(
             wheel.writestr(relative_path, source)
         wheel.writestr(
             f"{dist_info}/METADATA",
-            f"Metadata-Version: 2.3\nName: {name}\nVersion: {version}\n",
+            "\n".join(
+                (
+                    "Metadata-Version: 2.3",
+                    f"Name: {name}",
+                    f"Version: {version}",
+                    *(f"Requires-Dist: {requirement}" for requirement in requirements),
+                    "",
+                )
+            ),
         )
         wheel.writestr(
             f"{dist_info}/WHEEL",
@@ -681,8 +690,6 @@ def _run_wheel_matrix_check(
             str(summon),
             "--new-mcp",
             str(mcp),
-            "--historical-summon-ref",
-            "taut_summon/v0.5.4",
         ],
         cwd=tmp_path,
         text=True,
@@ -723,10 +730,6 @@ def test_release_wheel_checker_uses_fresh_separate_wheel_outputs(
         assert mcp.parent == output_dirs[2]
         assert len({core.parent, summon.parent, mcp.parent}) == 3
         assert core.is_file() and summon.is_file() and mcp.is_file()
-        assert (
-            command[command.index("--historical-summon-ref") + 1]
-            == "taut_summon/v0.5.4"
-        )
 
     monkeypatch.setattr(builder, "_run", fake_run)
 
@@ -783,7 +786,6 @@ def test_release_wheel_checker_dry_run_prints_builds_then_check_order(
     assert "--new-core" in output
     assert "--new-summon" in output
     assert "--new-mcp" in output
-    assert "--historical-summon-ref taut_summon/v0.5.4" in output
 
 
 def test_release_wheel_checker_reuses_explicit_current_wheels_without_building(
@@ -835,63 +837,6 @@ def test_release_wheel_checker_rejects_partial_explicit_set(
         match="core, Summon, and MCP wheel paths must be supplied together",
     ):
         builder.build_and_check(core_wheel=core)
-
-
-def test_wheel_matrix_checker_accepts_exact_historical_summon_ref(
-    tmp_path: Path,
-    wheel_matrix_module: ModuleType,
-) -> None:
-    core = tmp_path / "core.whl"
-    summon = tmp_path / "summon.whl"
-    mcp = tmp_path / "mcp.whl"
-    core.touch()
-    summon.touch()
-    mcp.touch()
-
-    inputs = wheel_matrix_module._parse_args(
-        [
-            "--new-core",
-            str(core),
-            "--new-summon",
-            str(summon),
-            "--new-mcp",
-            str(mcp),
-            "--historical-summon-ref",
-            "taut_summon/v0.5.4",
-        ]
-    )
-
-    assert inputs.historical_summon_ref == "taut_summon/v0.5.4"
-    assert inputs.new_mcp == mcp.resolve()
-
-
-def test_wheel_matrix_checker_rejects_mutable_historical_summon_ref(
-    tmp_path: Path,
-    wheel_matrix_module: ModuleType,
-) -> None:
-    core = tmp_path / "core.whl"
-    summon = tmp_path / "summon.whl"
-    mcp = tmp_path / "mcp.whl"
-    core.touch()
-    summon.touch()
-    mcp.touch()
-
-    with pytest.raises(
-        wheel_matrix_module.WheelMatrixError,
-        match="historical Summon ref must be immutable release ref",
-    ):
-        wheel_matrix_module._parse_args(
-            [
-                "--new-core",
-                str(core),
-                "--new-summon",
-                str(summon),
-                "--new-mcp",
-                str(mcp),
-                "--historical-summon-ref",
-                "main",
-            ]
-        )
 
 
 def test_release_wheel_checker_cli_accepts_dry_run(
@@ -990,13 +935,13 @@ def test_wheel_matrix_checker_rejects_old_core_distribution_name(
         tmp_path / "taut_summon-0.6.0-py3-none-any.whl",
         name="taut-summon",
         version="0.6.0",
-        requirements=("taut-chat>=0.6.0",),
+        requirements=("taut-chat==0.6.0",),
     )
     mcp = _write_wheel(
         tmp_path / "taut_mcp-0.6.0-py3-none-any.whl",
         name="taut-mcp",
         version="0.6.0",
-        requirements=("taut-chat>=0.6.0", "simplebroker>=8.2.2"),
+        requirements=("taut-chat==0.6.0", "simplebroker>=8.2.2"),
     )
 
     completed = _run_wheel_matrix_check(tmp_path, core, summon, mcp)
@@ -1006,7 +951,7 @@ def test_wheel_matrix_checker_rejects_old_core_distribution_name(
     assert "Traceback" not in completed.stderr
 
 
-def test_wheel_matrix_checker_rejects_summon_without_exact_new_core_floor(
+def test_wheel_matrix_checker_rejects_summon_without_exact_new_core_pin(
     tmp_path: Path,
 ) -> None:
     core = _write_wheel(
@@ -1019,27 +964,27 @@ def test_wheel_matrix_checker_rejects_summon_without_exact_new_core_floor(
         tmp_path / "taut_summon-0.6.0-py3-none-any.whl",
         name="taut-summon",
         version="0.6.0",
-        requirements=("taut-chat>=0.5.0",),
+        requirements=("taut-chat==0.5.0",),
     )
     mcp = _write_wheel(
         tmp_path / "taut_mcp-0.6.0-py3-none-any.whl",
         name="taut-mcp",
         version="0.6.0",
-        requirements=("taut-chat>=0.6.0", "simplebroker>=8.2.2"),
+        requirements=("taut-chat==0.6.0", "simplebroker>=8.2.2"),
     )
 
     completed = _run_wheel_matrix_check(tmp_path, core, summon, mcp)
 
     assert completed.returncode == 1
-    assert "taut-chat>=0.6.0" in completed.stderr
+    assert "taut-chat==0.6.0" in completed.stderr
     assert "Traceback" not in completed.stderr
 
 
 @pytest.mark.parametrize(
     "requirements",
     [
-        ("taut-chat>=0.6.1",),
-        ("taut-chat==0.6.0",),
+        ("taut-chat==0.6.1",),
+        ("taut-chat>=0.6.0",),
         ("taut-chat>=0.6.0,<1",),
         ('taut-chat>=0.6.0; python_version >= "3.11"',),
         ("taut-chat>=0.6.0", "taut-chat>=0.6.0"),
@@ -1071,13 +1016,49 @@ def test_wheel_matrix_checker_rejects_nonexact_or_duplicate_taut_chat_requiremen
             tmp_path / "taut_mcp-0.6.0-py3-none-any.whl",
             name="taut-mcp",
             version="0.6.0",
-            requirements=("taut-chat>=0.6.0", "simplebroker>=8.2.2"),
+            requirements=("taut-chat==0.6.0", "simplebroker>=8.2.2"),
         )
     )
 
     with pytest.raises(
         wheel_matrix_module.WheelMatrixError,
-        match="exactly one unmarked Requires-Dist 'taut-chat>=0.6.0'",
+        match="exactly one unmarked Requires-Dist 'taut-chat==0.6.0'",
+    ):
+        wheel_matrix_module._validate_new_metadata(core, summon, mcp)
+
+
+def test_wheel_matrix_checker_rejects_mismatched_first_party_versions(
+    tmp_path: Path,
+    wheel_matrix_module: ModuleType,
+) -> None:
+    core = wheel_matrix_module._read_wheel_metadata(
+        _write_wheel(
+            tmp_path / "taut_chat-0.6.0-py3-none-any.whl",
+            name="taut-chat",
+            version="0.6.0",
+            requirements=("simplebroker>=8.2.2",),
+        )
+    )
+    summon = wheel_matrix_module._read_wheel_metadata(
+        _write_wheel(
+            tmp_path / "taut_summon-0.6.1-py3-none-any.whl",
+            name="taut-summon",
+            version="0.6.1",
+            requirements=("taut-chat==0.6.0",),
+        )
+    )
+    mcp = wheel_matrix_module._read_wheel_metadata(
+        _write_wheel(
+            tmp_path / "taut_mcp-0.6.0-py3-none-any.whl",
+            name="taut-mcp",
+            version="0.6.0",
+            requirements=("taut-chat==0.6.0", "simplebroker>=8.2.2"),
+        )
+    )
+
+    with pytest.raises(
+        wheel_matrix_module.WheelMatrixError,
+        match="must have one synchronized version",
     ):
         wheel_matrix_module._validate_new_metadata(core, summon, mcp)
 
@@ -1100,7 +1081,7 @@ def test_wheel_matrix_checker_rejects_taut_command_entry_points_in_core_wheel(
             tmp_path / "taut_summon-0.6.0-py3-none-any.whl",
             name="taut-summon",
             version="0.6.0",
-            requirements=("taut-chat>=0.6.0",),
+            requirements=("taut-chat==0.6.0",),
         )
     )
     mcp = wheel_matrix_module._read_wheel_metadata(
@@ -1108,7 +1089,7 @@ def test_wheel_matrix_checker_rejects_taut_command_entry_points_in_core_wheel(
             tmp_path / "taut_mcp-0.6.0-py3-none-any.whl",
             name="taut-mcp",
             version="0.6.0",
-            requirements=("taut-chat>=0.6.0", "simplebroker>=8.2.2"),
+            requirements=("taut-chat==0.6.0", "simplebroker>=8.2.2"),
         )
     )
 
@@ -1148,7 +1129,7 @@ def test_wheel_matrix_checker_requires_exact_summon_command_entry_points(
             tmp_path / "taut_summon-0.6.0-py3-none-any.whl",
             name="taut-summon",
             version="0.6.0",
-            requirements=("taut-chat>=0.6.0",),
+            requirements=("taut-chat==0.6.0",),
             command_entry_points=entry_points,
         )
     )
@@ -1157,7 +1138,7 @@ def test_wheel_matrix_checker_requires_exact_summon_command_entry_points(
             tmp_path / "taut_mcp-0.6.0-py3-none-any.whl",
             name="taut-mcp",
             version="0.6.0",
-            requirements=("taut-chat>=0.6.0", "simplebroker>=8.2.2"),
+            requirements=("taut-chat==0.6.0", "simplebroker>=8.2.2"),
         )
     )
 
@@ -1173,29 +1154,29 @@ def test_wheel_matrix_checker_requires_exact_summon_command_entry_points(
     (
         (
             "wrong-mcp",
-            ("taut-chat>=0.6.0", "simplebroker>=8.2.2"),
+            ("taut-chat==0.6.0", "simplebroker>=8.2.2"),
             "expected 'taut-mcp'",
         ),
         (
             "taut-mcp",
-            ("taut-chat>=0.5.0", "simplebroker>=8.2.2"),
-            "taut-chat>=0.6.0",
+            ("taut-chat==0.5.0", "simplebroker>=8.2.2"),
+            "taut-chat==0.6.0",
         ),
         (
             "taut-mcp",
-            ("taut-chat>=0.6.0", "simplebroker>=8.2.1"),
+            ("taut-chat==0.6.0", "simplebroker>=8.2.1"),
             "same single unmarked SimpleBroker requirement",
         ),
         (
             "taut-mcp",
             (
-                "taut-chat>=0.6.0",
+                "taut-chat==0.6.0",
                 'simplebroker>=8.2.2; python_version >= "3.11"',
             ),
             "same single unmarked SimpleBroker requirement",
         ),
     ),
-    ids=("project-name", "core-floor", "broker-floor", "marked-broker-floor"),
+    ids=("project-name", "core-pin", "broker-floor", "marked-broker-floor"),
 )
 def test_wheel_matrix_checker_rejects_invalid_current_mcp_metadata(
     tmp_path: Path,
@@ -1217,7 +1198,7 @@ def test_wheel_matrix_checker_rejects_invalid_current_mcp_metadata(
             tmp_path / "taut_summon-0.6.0-py3-none-any.whl",
             name="taut-summon",
             version="0.6.0",
-            requirements=("taut-chat>=0.6.0",),
+            requirements=("taut-chat==0.6.0",),
             command_entry_points=(
                 ("dismiss", "taut_summon.command_manifest:dismiss"),
                 ("summon", "taut_summon.command_manifest:summon"),
@@ -1254,80 +1235,6 @@ def test_python_probe_rejects_checkout_path_from_site_packages(
             cwd=tmp_path,
             env=wheel_matrix_module._clean_environment(),
         )
-
-
-def test_prior_tags_are_fetched_into_temporary_archive_repository(
-    tmp_path: Path,
-    wheel_matrix_module: ModuleType,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    origin = tmp_path / "origin"
-    origin.mkdir()
-    subprocess.run(["git", "init"], cwd=origin, capture_output=True, check=True)
-    (origin / "artifact.txt").write_text("immutable\n", encoding="utf-8")
-    git_env = os.environ.copy()
-    git_env.update(
-        {
-            "GIT_AUTHOR_NAME": "artifact test",
-            "GIT_AUTHOR_EMAIL": "artifact@example.invalid",
-            "GIT_COMMITTER_NAME": "artifact test",
-            "GIT_COMMITTER_EMAIL": "artifact@example.invalid",
-        }
-    )
-    subprocess.run(["git", "add", "artifact.txt"], cwd=origin, check=True)
-    subprocess.run(
-        ["git", "commit", "-m", "artifact fixture"],
-        cwd=origin,
-        env=git_env,
-        capture_output=True,
-        check=True,
-    )
-    (origin / "artifact.txt").write_text("command rollout\n", encoding="utf-8")
-    subprocess.run(["git", "add", "artifact.txt"], cwd=origin, check=True)
-    subprocess.run(
-        ["git", "commit", "-m", "command rollout fixture"],
-        cwd=origin,
-        env=git_env,
-        capture_output=True,
-        check=True,
-    )
-    subprocess.run(["git", "tag", "taut_summon/v0.5.4"], cwd=origin, check=True)
-    subprocess.run(
-        ["git", "remote", "add", "origin", str(origin)], cwd=origin, check=True
-    )
-    command_commit = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=origin,
-        text=True,
-        capture_output=True,
-        check=True,
-    ).stdout.strip()
-    monkeypatch.setattr(wheel_matrix_module, "PROJECT_ROOT", origin)
-    monkeypatch.setattr(
-        wheel_matrix_module,
-        "EXPECTED_REF_COMMITS",
-        {"taut_summon/v0.5.4": command_commit},
-    )
-
-    archive_repository = wheel_matrix_module._prepare_archive_repository(
-        refs=("taut_summon/v0.5.4",),
-        work=tmp_path,
-        env=wheel_matrix_module._clean_environment(),
-    )
-
-    assert archive_repository.is_dir()
-    command_resolved = subprocess.run(
-        [
-            "git",
-            f"--git-dir={archive_repository}",
-            "rev-parse",
-            "refs/tags/taut_summon/v0.5.4^{commit}",
-        ],
-        text=True,
-        capture_output=True,
-        check=True,
-    ).stdout.strip()
-    assert command_resolved == command_commit
 
 
 def test_command_interrupt_terminates_owned_process_group(
@@ -1392,51 +1299,6 @@ def test_new_core_case_accepts_obsolete_reactor_guard(
     assert '"guard": "rejected_before_broker_io"' in output
 
 
-def test_historical_summon_metadata_records_unrelated_taut_dependency(
-    tmp_path: Path,
-    wheel_matrix_module: ModuleType,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    historical = wheel_matrix_module._read_wheel_metadata(
-        _write_wheel(
-            tmp_path / "taut_summon-0.5.4-py3-none-any.whl",
-            name="taut-summon",
-            version="0.5.4",
-            requirements=("taut>=0.5.4",),
-            command_entry_points=(),
-        )
-    )
-
-    wheel_matrix_module._case_historical_summon_metadata(historical)
-
-    output = capsys.readouterr().out
-    assert '"case": "historical_summon_metadata"' in output
-    assert '"requires": "taut>=0.5.4"' in output
-    assert '"relation_to_current_core": "unrelated_distribution"' in output
-
-
-def test_historical_summon_metadata_rejects_taut_chat_dependency(
-    tmp_path: Path,
-    wheel_matrix_module: ModuleType,
-) -> None:
-    historical = wheel_matrix_module._read_wheel_metadata(
-        _write_wheel(
-            tmp_path / "taut_summon-0.5.4-py3-none-any.whl",
-            name="taut-summon",
-            version="0.5.4",
-            requirements=("taut-chat>=0.5.4",),
-            command_entry_points=(),
-        )
-    )
-
-    with pytest.raises(
-        wheel_matrix_module.WheelMatrixError,
-        match="historical Summon METADATA must contain exactly one "
-        "Requires-Dist 'taut>=0.5.4'",
-    ):
-        wheel_matrix_module._case_historical_summon_metadata(historical)
-
-
 def test_command_core_only_case_compiles_install_hint_probe(
     tmp_path: Path,
     wheel_matrix_module: ModuleType,
@@ -1476,40 +1338,6 @@ def test_command_core_only_case_compiles_install_hint_probe(
 
     assert installed == [(core,)]
     assert '"case":"command_core_only"' in capsys.readouterr().out
-
-
-def test_historical_summon_builder_requires_version_0_5_4(
-    tmp_path: Path,
-    wheel_matrix_module: ModuleType,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source = tmp_path / "source"
-    (source / "extensions" / "taut_summon").mkdir(parents=True)
-
-    def fake_run(
-        command: list[str],
-        **_kwargs: object,
-    ) -> subprocess.CompletedProcess[str]:
-        output = Path(command[command.index("--out-dir") + 1])
-        _write_command_provider_wheel(
-            output / "taut_summon-0.5.4-py3-none-any.whl",
-            name="taut-summon",
-            version="0.5.4",
-            entry_points=(),
-            modules={},
-        )
-        return subprocess.CompletedProcess(command, 0, "", "")
-
-    monkeypatch.setattr(wheel_matrix_module, "_run", fake_run)
-
-    wheel = wheel_matrix_module._build_historical_summon(
-        summon_source=source,
-        work=tmp_path,
-        env=wheel_matrix_module._clean_environment(),
-        uv="uv",
-    )
-
-    assert wheel.name == "taut_summon-0.5.4-py3-none-any.whl"
 
 
 def test_current_mcp_case_installs_normally_and_bootstraps_isolated_selector(
@@ -1861,6 +1689,44 @@ def test_wheel_install_uses_ordinary_dependency_resolution(
     assert install[:3] == ["uv", "pip", "install"]
     assert "--no-deps" not in install
     assert install[-2:] == [str(core), str(current_mcp)]
+
+
+def test_resolver_rejects_extension_with_mismatched_core_pin(tmp_path: Path) -> None:
+    _root, python, _site_packages = _make_venv(tmp_path)
+    core = _write_command_provider_wheel(
+        tmp_path / "taut_chat-0.5.0-py3-none-any.whl",
+        name="taut-chat",
+        version="0.5.0",
+        entry_points=(),
+        modules={"taut/__init__.py": ""},
+    )
+    summon = _write_command_provider_wheel(
+        tmp_path / "taut_summon-0.6.0-py3-none-any.whl",
+        name="taut-summon",
+        version="0.6.0",
+        requirements=("taut-chat==0.6.0",),
+        entry_points=(),
+        modules={"taut_summon/__init__.py": ""},
+    )
+
+    completed = subprocess.run(
+        [
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            str(python),
+            str(core),
+            str(summon),
+        ],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "taut-chat==0.6.0" in completed.stderr
 
 
 def test_paired_case_installs_both_wheels_and_runs_full_control_probe(

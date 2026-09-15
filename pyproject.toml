@@ -86,6 +86,7 @@ include = [
     "/LICENSE",
 ]
 exclude = [
+    "/taut/_scripts.py",
     "/.agents",
     "/.github",
     "/tests",

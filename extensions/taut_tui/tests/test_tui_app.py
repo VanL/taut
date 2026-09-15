@@ -3393,6 +3393,100 @@ def test_transcript_preserves_whitespace_and_adds_message_gap() -> None:
     asyncio.run(exercise())
 
 
+@pytest.mark.parametrize("mode", [LayoutMode.WIDE, LayoutMode.MEDIUM])
+def test_transcript_wraps_wide_and_medium_bodies_with_hanging_indent(
+    mode: LayoutMode,
+) -> None:
+    """[TUI-5.3]: wrapped bodies stay aligned under their first body cell."""
+    from taut.client import Message
+    from taut_tui.app import TautApp
+
+    message = Message(
+        "general",
+        1,
+        "m_alice",
+        "alice",
+        "message",
+        "one two three four five",
+    )
+    app = TautApp(db_path=None, as_name=None, continuity_token=None)
+    app.layout_mode = mode
+
+    lines = app._message_prompt(message).wrap(app.console, 24)
+
+    assert [str(line).rstrip() for line in lines] == [
+        "1  alice  one two three",
+        "          four five",
+        "",
+    ]
+    assert app._message_row_height(message, 24) == len(lines)
+
+
+def test_transcript_compact_metadata_stacks_without_body_indent() -> None:
+    """[TUI-5.3]: compact metadata owns its line and body uses full width."""
+    from taut.client import Message
+    from taut_tui.app import TautApp
+
+    message = Message(
+        "general",
+        1,
+        "m_alice",
+        "alice",
+        "message",
+        "one two three four five",
+    )
+    app = TautApp(db_path=None, as_name=None, continuity_token=None)
+    app.layout_mode = LayoutMode.COMPACT
+
+    lines = app._message_prompt(message).wrap(app.console, 14)
+
+    assert [str(line).rstrip() for line in lines] == [
+        "alice  1",
+        "one two three",
+        "four five",
+        "",
+    ]
+
+
+def test_transcript_option_render_keeps_hanging_indent_and_height_in_sync() -> None:
+    """[TUI-5.3]: Textual renders and measures the owned hanging prompt."""
+    from taut.client import Message
+    from taut_tui.app import TautApp
+    from taut_tui.widgets import TautOptionList
+
+    message = Message(
+        "general",
+        1,
+        "m_alice",
+        "alice",
+        "message",
+        "word " * 30,
+    )
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(80, 34)) as pilot:
+            app._render_messages((message,))
+            await pilot.pause()
+            transcript = app.query_one("#transcript", TautOptionList)
+            option = transcript.get_option_at_index(0)
+            strips = transcript._get_option_render(
+                option,
+                transcript.get_visual_style("option-list--option"),
+            )
+
+            rendered_lines = [strip.text.rstrip() for strip in strips]
+            assert rendered_lines[0].startswith("1  alice  word")
+            assert all(line.startswith(" " * 10) for line in rendered_lines[1:-1])
+            assert rendered_lines[-1] == ""
+            assert app._message_row_height(
+                message,
+                transcript.scrollable_content_region.width,
+            ) == len(strips)
+
+    asyncio.run(exercise())
+
+
 def test_message_body_structure_does_not_widen_metadata_controls() -> None:
     from taut.client import Message
     from taut_tui.app import TautApp

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 
-from taut._exceptions import AmbiguousMessageError, NotFoundError
+from taut._exceptions import MessageIdResolutionError
 from taut.commands._protocol import CommandArgumentParser, CommandContext
 from taut.commands._rendering import emit_sent_message, read_text_argument
 
@@ -44,13 +44,8 @@ class ReplyCommand:
                 args.msg_id,
                 read_text_argument(args.text, context.stdin),
             )
-        except (AmbiguousMessageError, NotFoundError) as exc:
-            message_text = str(exc)
-            if "message id" not in message_text and not message_text.startswith(
-                "message not found"
-            ):
-                raise
-            raise type(exc)(message_text + _USAGE_HINT) from exc
+        except MessageIdResolutionError as exc:
+            raise type(exc)(str(exc) + _USAGE_HINT) from exc
         emit_sent_message(
             client,
             message,

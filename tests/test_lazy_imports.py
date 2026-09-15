@@ -313,6 +313,7 @@ def test_sdist_rebuild_installs_terminal_policy_outside_checkout(
     assert len(wheels) == 1
     with zipfile.ZipFile(wheels[0]) as archive:
         assert "taut/defaults.toml" in archive.namelist()
+        assert "taut/_scripts.py" not in archive.namelist()
 
     environment = tmp_path / "environment"
     create_environment = subprocess.run(

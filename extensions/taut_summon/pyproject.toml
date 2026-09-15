@@ -16,7 +16,7 @@ authors = [
 dependencies = [
     # Floor is the paired core version shipping the public terminal-text policy
     # and BlankMessageError imported by Summon's command/logging/driver paths.
-    "taut-chat>=0.9.7",
+    "taut-chat==0.9.7",
 ]
 
 [project.scripts]

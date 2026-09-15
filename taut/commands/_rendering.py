@@ -480,7 +480,7 @@ def emit_notifications(
             write_json(stdout, notification_object(notification))
         elif notification.type == "mention":
             assert notification.message_ts is not None
-            inspect_action = _mention_inspect_action(client, notification)
+            inspect_action = _mention_inspect_action(notification)
             reply_id = _mention_reply_id(client, notification)
             reply_action = (
                 f"; reply: taut reply {notification.thread} {reply_id}"
@@ -642,7 +642,8 @@ def _search_excerpt(text: str, *, query: str, max_chars: int = 240) -> str:
 
     folded = text.casefold()
     positions = [folded.find(chunk) for chunk in query_chunks(query)]
-    matched = min((position for position in positions if position >= 0), default=0)
+    folded_match = min((position for position in positions if position >= 0), default=0)
+    matched = _original_offset_for_folded_offset(text, folded_match)
     start = max(0, matched - max_chars // 3)
     end = min(len(text), start + max_chars)
     if end - start < max_chars:
@@ -650,6 +651,18 @@ def _search_excerpt(text: str, *, query: str, max_chars: int = 240) -> str:
     prefix = "..." if start else ""
     suffix = "..." if end < len(text) else ""
     return f"{prefix}{text[start:end]}{suffix}"
+
+
+def _original_offset_for_folded_offset(text: str, folded_offset: int) -> int:
+    """Map a casefolded offset to the original code point containing it."""
+
+    consumed = 0
+    for offset, character in enumerate(text):
+        next_consumed = consumed + len(character.casefold())
+        if folded_offset < next_consumed:
+            return offset
+        consumed = next_consumed
+    return len(text)
 
 
 def channel_object(channel: Channel) -> dict[str, Any]:
@@ -754,19 +767,6 @@ def write_human_line(stream: TextIO, body: str) -> None:
     stream.write("\n")
 
 
-def write_human_line_packaged_policy(stream: TextIO, body: str) -> None:
-    """Escape one record with the packaged policy only.
-
-    Used for diagnostics that must still be delivered when the project's own
-    terminal policy is the thing that failed.
-    """
-
-    from taut.terminal import escape_terminal_text_packaged
-
-    stream.write(escape_terminal_text_packaged(body))
-    stream.write("\n")
-
-
 def terminal_policy_failure_message(exc: BaseException) -> str:
     """Return the fixed diagnostic for an unavailable project policy."""
 
@@ -857,10 +857,7 @@ def format_unread_count(count: int) -> str:
     return "999+" if count >= 1000 else str(count)
 
 
-def _mention_inspect_action(
-    client: TautClient | None,
-    notification: Notification,
-) -> str:
+def _mention_inspect_action(notification: Notification) -> str:
     thread = notification.thread
     if thread is None:
         return "taut read"

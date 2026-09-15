@@ -3176,12 +3176,21 @@ def test_reply_rejects_missing_short_and_ambiguous_message_ids(
         ]
     )
 
-    with pytest.raises(NotFoundError, match="suffix must be at least 4 digits"):
+    from taut import MessageIdNotFoundError, MessageIdResolutionError
+
+    with pytest.raises(
+        MessageIdNotFoundError, match="suffix must be at least 4 digits"
+    ) as short:
         van.reply("general", "123", "bad")
-    with pytest.raises(NotFoundError, match="message not found"):
+    assert isinstance(short.value, NotFoundError)
+    assert isinstance(short.value, MessageIdResolutionError)
+    with pytest.raises(MessageIdNotFoundError, match="message not found"):
         van.reply("general", "1234567890123456789", "missing")
-    with pytest.raises(AmbiguousMessageError, match="ambiguous message id suffix"):
+    with pytest.raises(
+        AmbiguousMessageError, match="ambiguous message id suffix"
+    ) as ambiguous:
         van.reply("general", "4321", "ambiguous")
+    assert isinstance(ambiguous.value, MessageIdResolutionError)
 
 
 def test_guest_read_only_resolution_does_not_generate_timestamp(tmp_path: Path) -> None:

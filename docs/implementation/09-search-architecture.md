@@ -76,6 +76,14 @@ size and remains intact. This is the production projection supplied to both
 providers; search does not retain a second raw-text segmenter or promise that
 joining projection segments reconstructs the source body.
 
+Human excerpts search the case-folded body but slice the exact hydrated source
+text. Because one source code point can fold to several code points (for
+example, `ß` to `ss`), the renderer translates the folded match offset with a
+constant-space scan of the original text. A match inside an expanded fold maps
+to the original code point containing that folded span; a span boundary maps
+to the following source code point. JSON results continue to emit the complete
+hydrated source text.
+
 ## Deferred Work and Recovery
 
 Every Taut-authored source write, delete, or completed channel rename enqueues
@@ -178,6 +186,7 @@ stale-positive prevention.
 
 ## Related Plans
 
+- `docs/plans/2026-08-24-command-runtime-findings-remediation-plan.md`
 - `docs/plans/2026-08-25-semantic-compatibility-hardening-plan.md`
 - `docs/plans/2026-08-24-concurrency-and-schema-contract-alignment-plan.md`
 - `docs/plans/2026-08-14-review-findings-remediation-plan.md`

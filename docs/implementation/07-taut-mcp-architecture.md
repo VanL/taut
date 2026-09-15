@@ -332,9 +332,8 @@ macOS/Windows non-PG lanes, and package-local quality gates.
 Coordinated release evidence installs the current MCP wheel with the current
 core wheel by ordinary dependency resolution. It verifies their exact core and
 SimpleBroker metadata relationship, then runs the installed stdio
-attach/list/detach and clean-shutdown lifecycle. The old Summon metadata
-diagnostic remains separate because it documents a renamed distribution
-boundary rather than admitting that historical wheel as current behavior.
+attach/list/detach and clean-shutdown lifecycle. First-party packages release
+as one synchronized set.
 
 The tag gate observes exact-SHA evidence and hands the root-produced bundle to
 the shared no-rebuild staging workflow. That workflow creates a complete draft
@@ -409,8 +408,6 @@ Attachment tests patch private core identity helpers to fail only when called
 directly from `taut_mcp`, then require both public seams to execute on the
 workspace owner thread. State snapshots cover member activity, anchor and
 fingerprint evidence, claims, memberships, cursors, and pending notifications.
-The installed historical-wheel canary remains separate proof that current
-core still serves the already-released private-reach-in client.
 
 MCP integration tests may keep seed-only `TautClient` instances persistent
 when the asserted contract is MCP behavior rather than default client

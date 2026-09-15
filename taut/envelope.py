@@ -26,10 +26,6 @@ class DecodedEnvelope:
     raw: str
     warning: str | None = None
 
-    @property
-    def is_foreign(self) -> bool:
-        return self.kind == "foreign"
-
 
 def encode_envelope(
     *,
@@ -81,12 +77,12 @@ def decode_envelope(body: str) -> DecodedEnvelope:
     )
 
 
-def _foreign(body: str, *, warning: str | None = None) -> DecodedEnvelope:
+def _foreign(body: str) -> DecodedEnvelope:
     return DecodedEnvelope(
         from_id=None,
         from_name="?",
         kind="foreign",
         text=body,
         raw=body,
-        warning=warning,
+        warning=None,
     )

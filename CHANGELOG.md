@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- Transcript rows now follow the TUI layout contract: wide and medium views
+  hang wrapped message text under an aligned body column, while compact views
+  stack metadata above the body.
+
+- Human search excerpts now map case-folded matches back to original Unicode
+  text before slicing, so expansions such as `ß` and `İ` cannot shift excerpt
+  boundaries. Reply usage hints now rely on typed message-id errors instead of
+  matching exception text.
+
+- Release validation now enforces one version across the current first-party
+  manifest set and the current core, Summon, and MCP wheel set. Only the `all`
+  target may prepare a new version. The retired historical-Summon build path
+  and its private core compatibility shim were removed. Source-only developer
+  runners are no longer included in the `taut-chat` wheel. The unused
+  credential-bearing `database_path_from_target` helper was removed from the
+  public client API before external release. Direct `TautWatcher(client, ...)`
+  construction was also removed; callers use `client.watch(...)`.
+
+- Multi-queue watchers now reject unsupported yield strategies instead of
+  silently accepting a setting that cannot affect round-robin scheduling.
+  Redundant private rendering, watcher, TUI-domain, and Summon-driver paths
+  were removed without changing their public behavior.
+
 - Channel renames entered in the TUI now canonicalize `#`-prefixed names,
   preserve the active conversation and reply targets, and retain colliding
   session drafts in an explicit recovery flow instead of overwriting text.

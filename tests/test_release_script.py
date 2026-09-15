@@ -153,7 +153,7 @@ def test_write_version_files_updates_pyproject_and_constants(
     )
 
 
-def test_write_version_files_updates_pg_dependency_floor(
+def test_write_version_files_updates_pg_dependency_pin(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -167,7 +167,7 @@ def test_write_version_files_updates_pg_dependency_floor(
                 'name = "taut-pg"',
                 'version = "0.1.1"',
                 "dependencies = [",
-                '    "taut-chat>=0.1.1",',
+                '    "taut-chat==0.1.1",',
                 '    "simplebroker-pg>=3.0.0",',
                 "]",
                 "",
@@ -194,10 +194,10 @@ def test_write_version_files_updates_pg_dependency_floor(
 
     text = pyproject_path.read_text(encoding="utf-8")
     assert 'version = "0.2.1"' in text
-    assert '"taut-chat>=0.2.0",' in text
+    assert '"taut-chat==0.2.0",' in text
 
 
-def test_write_version_files_updates_summon_dependency_floor(
+def test_write_version_files_updates_summon_dependency_pin(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -211,7 +211,7 @@ def test_write_version_files_updates_summon_dependency_floor(
                 'name = "taut-summon"',
                 'version = "0.1.1"',
                 "dependencies = [",
-                '    "taut-chat>=0.1.1",',
+                '    "taut-chat==0.1.1",',
                 "]",
                 "",
             ]
@@ -237,7 +237,7 @@ def test_write_version_files_updates_summon_dependency_floor(
 
     text = pyproject_path.read_text(encoding="utf-8")
     assert 'version = "0.5.1"' in text
-    assert '"taut-chat>=0.5.1",' in text
+    assert '"taut-chat==0.5.1",' in text
 
 
 def test_sync_readme_version_examples_updates_only_selected_artifact(
@@ -454,19 +454,19 @@ def test_prepare_release_metadata_repairs_all_derived_copies_idempotently(
     )
     (tmp_path / "extensions" / "taut_pg" / "pyproject.toml").write_text(
         '[project]\nname = "taut-pg"\nversion = "0.5.0"\n'
-        'dependencies = [\n    "taut-chat>=0.5.0",\n'
+        'dependencies = [\n    "taut-chat==0.5.0",\n'
         '    "simplebroker-pg>=3.2.1",\n]\n'
         '[project.optional-dependencies]\ndev = [\n    "taut-tui>=0.5.0",\n]\n',
         encoding="utf-8",
     )
     (tmp_path / "extensions" / "taut_summon" / "pyproject.toml").write_text(
         '[project]\nname = "taut-summon"\nversion = "0.5.0"\n'
-        'dependencies = [\n    "taut-chat>=0.5.0",\n]\n',
+        'dependencies = [\n    "taut-chat==0.5.0",\n]\n',
         encoding="utf-8",
     )
     (tmp_path / "extensions" / "taut_mcp" / "pyproject.toml").write_text(
         '[project]\nname = "taut-mcp"\nversion = "0.5.0"\n'
-        'dependencies = [\n    "taut-chat>=0.5.0",\n    "mcp>=1.28.1,<2",\n]\n'
+        'dependencies = [\n    "taut-chat==0.5.0",\n    "mcp>=1.28.1,<2",\n]\n'
         "[project.optional-dependencies]\ndev = [\n"
         '    "taut-pg>=0.5.0",\n'
         '    "taut-summon>=0.5.0",\n]\n',
@@ -474,7 +474,7 @@ def test_prepare_release_metadata_repairs_all_derived_copies_idempotently(
     )
     (tmp_path / "extensions" / "taut_tui" / "pyproject.toml").write_text(
         '[project]\nname = "taut-tui"\nversion = "0.5.0"\n'
-        'dependencies = [\n    "taut-chat>=0.5.0",\n    "textual>=3.0.0",\n]\n'
+        'dependencies = [\n    "taut-chat==0.5.0",\n    "textual>=3.0.0",\n]\n'
         '[project.optional-dependencies]\ndev = [\n    "taut-summon>=0.5.0",\n]\n',
         encoding="utf-8",
     )
@@ -546,11 +546,11 @@ def test_prepare_release_metadata_repairs_all_derived_copies_idempotently(
         in first[tmp_path / "extensions" / "taut_pg" / "pyproject.toml"]
     )
     assert (
-        '"taut-chat>=0.6.1",'
+        '"taut-chat==0.6.1",'
         in first[tmp_path / "extensions" / "taut_summon" / "pyproject.toml"]
     )
     assert (
-        '"taut-chat>=0.6.1",'
+        '"taut-chat==0.6.1",'
         in first[tmp_path / "extensions" / "taut_mcp" / "pyproject.toml"]
     )
     assert (
@@ -562,7 +562,7 @@ def test_prepare_release_metadata_repairs_all_derived_copies_idempotently(
         in first[tmp_path / "extensions" / "taut_mcp" / "pyproject.toml"]
     )
     assert (
-        '"taut-chat>=0.6.1",'
+        '"taut-chat==0.6.1",'
         in first[tmp_path / "extensions" / "taut_tui" / "pyproject.toml"]
     )
     assert (
@@ -640,24 +640,24 @@ def _build_public_release_repository(tmp_path: Path) -> Path:
         tmp_path / "taut" / "_constants.py": ('__version__: Final[str] = "0.5.0"\n'),
         tmp_path / "extensions" / "taut_pg" / "pyproject.toml": (
             '[project]\nname = "taut-pg"\nversion = "0.6.1"\n'
-            'dependencies = [\n    "taut-chat>=0.5.0",\n'
+            'dependencies = [\n    "taut-chat==0.5.0",\n'
             '    "simplebroker-pg>=3.2.1",\n]\n'
             '[project.optional-dependencies]\ndev = [\n    "taut-tui>=0.5.0",\n]\n'
         ),
         tmp_path / "extensions" / "taut_summon" / "pyproject.toml": (
             '[project]\nname = "taut-summon"\nversion = "0.6.1"\n'
-            'dependencies = [\n    "taut-chat>=0.5.0",\n]\n'
+            'dependencies = [\n    "taut-chat==0.5.0",\n]\n'
         ),
         tmp_path / "extensions" / "taut_mcp" / "pyproject.toml": (
             '[project]\nname = "taut-mcp"\nversion = "0.6.1"\n'
-            'dependencies = [\n    "taut-chat>=0.5.0",\n    "mcp>=1.28.1,<2",\n]\n'
+            'dependencies = [\n    "taut-chat==0.5.0",\n    "mcp>=1.28.1,<2",\n]\n'
             "[project.optional-dependencies]\ndev = [\n"
             '    "taut-pg>=0.5.0",\n'
             '    "taut-summon>=0.5.0",\n]\n'
         ),
         tmp_path / "extensions" / "taut_tui" / "pyproject.toml": (
             '[project]\nname = "taut-tui"\nversion = "0.6.1"\n'
-            'dependencies = [\n    "taut-chat>=0.5.0",\n    "textual>=3.0.0",\n]\n'
+            'dependencies = [\n    "taut-chat==0.5.0",\n    "textual>=3.0.0",\n]\n'
             '[project.optional-dependencies]\ndev = [\n    "taut-summon>=0.5.0",\n]\n'
         ),
         tmp_path / "README.md": (
@@ -1033,7 +1033,7 @@ def test_sync_root_pg_dev_dependency_uses_pg_manifest_floor(tmp_path: Path) -> N
     )
 
 
-def test_sync_summon_core_dependency_updates_exact_root_floor(
+def test_sync_summon_core_dependency_updates_exact_root_pin(
     tmp_path: Path,
 ) -> None:
     release = _load_release_module()
@@ -1046,7 +1046,7 @@ def test_sync_summon_core_dependency_updates_exact_root_floor(
     )
     summon_pyproject_path.write_text(
         '[project]\nname = "taut-summon"\nversion = "0.5.1"\n'
-        'dependencies = [\n    "taut-chat>=0.5.1",\n]\n',
+        'dependencies = [\n    "taut-chat==0.5.1",\n]\n',
         encoding="utf-8",
     )
 
@@ -1056,10 +1056,10 @@ def test_sync_summon_core_dependency_updates_exact_root_floor(
     )
 
     assert updated_version == "0.6.0"
-    assert '"taut-chat>=0.6.0",' in summon_pyproject_path.read_text(encoding="utf-8")
+    assert '"taut-chat==0.6.0",' in summon_pyproject_path.read_text(encoding="utf-8")
 
 
-def test_sync_tui_core_dependency_updates_exact_root_floor(tmp_path: Path) -> None:
+def test_sync_tui_core_dependency_updates_exact_root_pin(tmp_path: Path) -> None:
     release = _load_release_module()
     root_pyproject_path = tmp_path / "pyproject.toml"
     tui_pyproject_path = tmp_path / "extensions" / "taut_tui" / "pyproject.toml"
@@ -1070,7 +1070,7 @@ def test_sync_tui_core_dependency_updates_exact_root_floor(tmp_path: Path) -> No
     )
     tui_pyproject_path.write_text(
         '[project]\nname = "taut-tui"\nversion = "0.8.8"\n'
-        'dependencies = [\n    "taut-chat>=0.8.7",\n]\n',
+        'dependencies = [\n    "taut-chat==0.8.7",\n]\n',
         encoding="utf-8",
     )
 
@@ -1080,7 +1080,7 @@ def test_sync_tui_core_dependency_updates_exact_root_floor(tmp_path: Path) -> No
     )
 
     assert updated_version == "0.8.8"
-    assert '"taut-chat>=0.8.8",' in tui_pyproject_path.read_text(encoding="utf-8")
+    assert '"taut-chat==0.8.8",' in tui_pyproject_path.read_text(encoding="utf-8")
 
 
 def test_sync_mcp_pg_dev_dependency_uses_pg_manifest_version(tmp_path: Path) -> None:
@@ -3166,7 +3166,7 @@ def test_metadata_writer_failure_runs_no_commit_or_remote_action(
         release.main(["core"])
 
 
-def test_version_changed_core_prepares_and_commits_before_prechecks_and_builds(
+def test_private_single_release_cannot_prepare_split_versions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     release = _load_release_module()
@@ -3296,35 +3296,11 @@ def test_version_changed_core_prepares_and_commits_before_prechecks_and_builds(
 
     monkeypatch.setattr(release, "run_command", fake_run_command)
 
-    assert release.main(["core", "--version", "0.6.0"]) == 0
+    args = release.parse_args(["core", "--version", "0.6.0"])
+    with pytest.raises(SystemExit, match="one synchronized version"):
+        release._run_single_release(args, release.ROOT_TARGET)
 
-    assert events == [
-        "settings",
-        "write:core:0.6.0",
-        "write:pg:0.5.9",
-        "write:summon:0.5.8",
-        "write:mcp:0.5.7",
-        "write:tui:0.5.6",
-        "sync-paired-floors",
-        "sync-simplebroker-readme",
-        "uv:lock",
-        "uv:lock:--upgrade-package:simplebroker",
-        "uv:lock",
-        "uv:lock",
-        "git-add",
-        "git-commit",
-        "prechecks",
-        "uv:build:--no-sources:--out-dir:dist:.",
-        "check-release-wheels",
-        "fence",
-        "auth",
-        "push-branch",
-        "wait:prepared:secret",
-        "settings",
-        "fence",
-        "tag",
-        "push-tag",
-    ]
+    assert events == []
 
 
 def test_explicit_batch_version_prepares_all_manifests_but_skips_published_actions(
@@ -3840,6 +3816,37 @@ def test_parse_args_accepts_positional_all_and_target_compat() -> None:
         release.parse_args(["pg", "--target", "summon"])
 
 
+def test_release_requires_synchronized_manifests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _load_release_module()
+    versions = {
+        "core": "0.6.0",
+        "pg": "0.6.0",
+        "summon": "0.6.1",
+        "mcp": "0.6.0",
+        "tui": "0.6.0",
+    }
+    monkeypatch.setattr(
+        release,
+        "read_manifest_version",
+        lambda target: versions[target.key],
+    )
+
+    with pytest.raises(SystemExit, match="one synchronized version"):
+        release.main(["all", "--dry-run"])
+
+
+def test_individual_target_cannot_prepare_a_new_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = _load_release_module()
+    monkeypatch.setattr(release, "read_manifest_version", lambda _target: "0.6.0")
+
+    with pytest.raises(SystemExit, match="use target 'all'"):
+        release.main(["core", "--version", "0.6.1", "--dry-run"])
+
+
 @pytest.mark.parametrize("target", ("all", "core", "pg", "summon", "mcp", "tui"))
 def test_skip_checks_remains_an_explicit_human_override(target: str) -> None:
     release = _load_release_module()
@@ -3966,7 +3973,7 @@ def test_dry_run_publish_explains_tag_workflow_publication(
     release = _load_release_module()
 
     def fake_read_manifest_version(target: Any = release.ROOT_TARGET) -> str:
-        assert target in {release.ROOT_TARGET, release.SUMMON_TARGET}
+        assert target in set(release.CANONICAL_TARGETS.values())
         return "0.1.1"
 
     def fake_inspect_release_state(target: Any, version: str) -> Any:
@@ -3995,7 +4002,8 @@ def test_dry_run_publish_explains_tag_workflow_publication(
         lambda **_kwargs: pytest.fail("dry-run must not poll workflows"),
     )
 
-    release.main(["--dry-run", "--skip-checks", "--publish"])
+    args = release.parse_args(["--dry-run", "--skip-checks", "--publish"])
+    release._run_single_release(args, release.ROOT_TARGET)
 
     output = capsys.readouterr().out
     assert "--publish is ignored" in output

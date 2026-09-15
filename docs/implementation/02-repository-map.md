@@ -21,8 +21,8 @@ Quick pointers to the key guidance documents in this repository.
 | `bin/combine-coverage.py` | Pre-combine raw-shard integrity owner: validates every downloaded file through Coverage's public data API, rejects absent, zero-byte, unreadable, or warning-producing evidence, and preserves all inputs while combining |
 | `bin/check-required-coverage-paths.py` | Post-combine coverage-data checker for required child-process, critical Summon, and MCP rate-admission execution paths |
 | `bin/render-tui-screens` | Deterministic wide, medium, compact, and too-small TUI SVG regeneration for manual visual review |
-| `bin/check-core-summon-wheel-matrix.py` | Isolated installed-artifact checker for current core, Summon, and MCP wheels, exact distribution metadata, live control behavior, incompatible current-core floors, the historical `Requires-Dist: taut` rename diagnostic, and the current MCP/current-core stdio lifecycle |
-| `bin/build-and-check-release-wheels.py` | Fresh-build owner, or coordinated explicit-current-wheel consumer in canonical CI, that supplies current core, Summon, and MCP artifacts and invokes the checker that retains the immutable historical Summon metadata probe |
+| `bin/check-core-summon-wheel-matrix.py` | Isolated installed-artifact checker for synchronized current core, Summon, and MCP wheels, exact distribution metadata, live control behavior, incompatible current-core floors, and the current MCP/current-core stdio lifecycle |
+| `bin/build-and-check-release-wheels.py` | Fresh-build owner, or coordinated explicit-current-wheel consumer in canonical CI, that supplies synchronized current core, Summon, and MCP artifacts to the installed-artifact checker |
 | `bin/release-artifact.py` | Creates and verifies commit-bound release bundles containing one wheel, one sdist, and an inner SHA-256 manifest |
 | `bin/ruff_suppression_index.py` | Validates source-local approved Ruff directives against the human DOM-10.2.1 registry, raw `--ignore-noqa` diagnostics, the global active-rule inventory, and a generated symbol-keyed location index; check mode is read-only and write mode atomically replaces only the generated block |
 | `bin/require-green-workflows.py` | Observes canonical exact-SHA workflow evidence; its workflow-only mode lets the local release producer wait without artifact or output-file access, while tag gates select attempt-bound release artifacts by immutable id and archive digest |
@@ -135,7 +135,6 @@ Quick pointers to the key guidance documents in this repository.
 | `taut/_maintenance.py`, `taut/_doctor.py` | Shared existing-target resolution and the actor-free seven-check passive diagnostic orchestrator |
 | `taut/debug.py` | Deep best-effort failure capture owner: setting read, bounded and redacted event construction, local retention-scoped deduplication, and no-shell action transport |
 | `taut/terminal.py`, `taut/defaults.toml` | Lightweight public terminal-text display transform, CWD `.taut.toml` presentation discovery, and packaged baseline regex policy |
-| `taut/_broker_retry.py` | Import-only, fail-closed compatibility shim for the immutable prior Summon artifact; no retry policy |
 | `taut/addressing.py` | Channel, sub-thread, DM, mention, and notification addressing helpers |
 | `taut/_scripts.py` | Importable developer-script helper logic, currently for `bin/pytest-pg` |
 | `taut/envelope.py` | Message envelope encode/decode and foreign-message fallback |

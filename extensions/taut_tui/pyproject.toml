@@ -14,7 +14,7 @@ authors = [
     {name = "Van Lindberg", email = "van.lindberg@gmail.com"},
 ]
 dependencies = [
-    "taut-chat>=0.9.7",
+    "taut-chat==0.9.7",
     "textual>=8.2.8",
 ]
 

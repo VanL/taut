@@ -282,9 +282,8 @@ the first-party path. Broken or duplicate official claims fail loudly and do
 not fall back to older code.
 
 Core retains `taut/commands/_summon_compat.py` only as the absent-extension
-install-hint path. It does not import or delegate to an older Summon CLI:
-historical Summon wheels require distribution `taut`, which `taut-chat`
-cannot satisfy. When current Summon is installed, its entry points win.
+install-hint path. It does not import or delegate to another Summon version.
+When synchronized current Summon is installed, its entry points win.
 
 There are two cached registry paths in CLI dispatch. `taut --version` uses
 neither. Direct execution of a known core built-in uses the static snapshot and
@@ -452,13 +451,11 @@ without paying for all ten OS/Python combinations.
 `bin/build-and-check-release-wheels.py` remains the build-owning entry point for
 local release checks. Canonical CI may pass one explicit core, Summon, and MCP
 wheel that it just built; all three arguments are required. The matrix
-exercises current `taut-chat`/Summon artifacts and records a historical Summon
-wheel's `Requires-Dist: taut` metadata without pretending that Python packaging
-aliases it to `taut-chat`. It installs current MCP with current core through
-normal dependency resolution and exercises the installed stdio
+exercises synchronized current `taut-chat`/Summon artifacts. It installs
+current MCP with current core through normal dependency resolution and
+exercises the installed stdio
 attach/list/detach and clean-shutdown lifecycle against real SQLite. This
-avoids rebuilding current artifacts without hiding the retained Summon rename
-boundary.
+avoids rebuilding current artifacts while preserving exact release-byte proof.
 
 The MCP lifecycle driver is ordinary checker code, not an opaque generated
 probe. The isolated candidate-core bootstrap writes its continuity selector to
@@ -479,7 +476,6 @@ The principal firing tests are:
 | Current maintained CLI claims and stale exemptions | `tests/test_cli_claims.py` and `uv run bin/check-cli-claims` |
 | Real wheel install and next-process uninstall visibility | `tests/test_command_registry.py::test_installed_console_discovers_then_loses_uninstalled_command` |
 | Exact fresh Summon/core wheel entries and paired lifecycle | `tests/test_core_summon_wheel_matrix.py` metadata and installed-artifact cases |
-| Historical MCP/current-core open-range compatibility | `tests/test_core_summon_wheel_matrix.py` immutable-ref, metadata, checkout-isolation, and attach/list/detach canary cases |
 | Import and initialization floors | `tests/test_lazy_imports.py` and `tests/test_architecture_boundaries.py` |
 
 For a new core built-in:
@@ -536,7 +532,7 @@ product need with its own compatibility plan.
   docs/plans/README.md.
 - `docs/plans/2026-07-13-ci-speed-determinism-release-evidence-plan.md`
   — derived installed-wheel ownership, serial CI execution, and explicit
-  current-wheel reuse without dropping historical compatibility builds.
+  current-wheel reuse.
 - `docs/plans/2026-07-12-lazy-command-extensions-and-rich-tui-composition-plan.md`
   — reviewed specification, implementation sequence, rollout matrix, and
   execution evidence for this design.

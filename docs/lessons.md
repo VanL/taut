@@ -408,9 +408,8 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
   retry layer; the surviving rule is the inverse and is owned with firing
   no-retry tests (SimpleBroker owns retry; Taut classifies nothing as
   transient by substring; the harness must not hide malformed rows or churn
-  fresh clients — docs/specs/02-taut-core.md, docs/specs/04-summon.md,
-  docs/implementation/05-taut-summon-architecture.md;
-  `taut/_broker_retry.py` is a fail-closed shim).
+  fresh clients — docs/specs/02-taut-core.md, docs/specs/04-summon.md, and
+  docs/implementation/05-taut-summon-architecture.md).
   (superseded; folded from 5 entries, 2026-07-08..2026-07-08, source
   9410b6b)
 

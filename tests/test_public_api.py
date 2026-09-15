@@ -30,6 +30,8 @@ EXPECTED_PUBLIC_EXPORTS = [
     "MembershipError",
     "Message",
     "MessageDeletion",
+    "MessageIdNotFoundError",
+    "MessageIdResolutionError",
     "MessageReaction",
     "NotInitializedError",
     "NotFoundError",
@@ -290,6 +292,7 @@ def test_client_environment_identity_inheritance_is_keyword_only_and_defaulted()
 
 
 def test_lazy_exports_are_the_owning_module_objects() -> None:
+    import taut.client as client_api
     from taut.client import (
         Channel,
         DoctorCheck,
@@ -325,6 +328,8 @@ def test_lazy_exports_are_the_owning_module_objects() -> None:
     assert taut.TautWatcher is TautWatcher
     assert taut.Thread is Thread
     assert taut.escape_terminal_text is escape_terminal_text
+    assert "database_path_from_target" not in client_api.__all__
+    assert not hasattr(client_api, "database_path_from_target")
 
 
 def test_static_typing_rejects_unknown_public_export(tmp_path: Path) -> None:

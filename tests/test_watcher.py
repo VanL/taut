@@ -1855,6 +1855,34 @@ def test_multi_queue_watcher_explicit_db_skips_broken_cwd_config(
         watcher.stop(join=False)
 
 
+def test_multi_queue_watcher_rejects_unsupported_yield_strategy(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="yield_strategy must be 'round_robin'"):
+        MultiQueueWatcher(
+            {"input": {"handler": lambda *_args: None}},
+            db=tmp_path / ".taut.db",
+            yield_strategy="priority",
+        )
+
+
+def test_multi_queue_watcher_accepts_legacy_check_interval_without_fake_state(
+    tmp_path: Path,
+) -> None:
+    watcher = MultiQueueWatcher(
+        {"input": {"handler": lambda *_args: None}},
+        db=tmp_path / ".taut.db",
+        check_interval=1,
+    )
+    try:
+        assert watcher.list_queues() == ["input"]
+        assert not hasattr(watcher, "_check_interval")
+        assert not hasattr(watcher, "_check_counter")
+        assert not hasattr(watcher, "_yield_strategy")
+    finally:
+        watcher.stop(join=False)
+
+
 def test_taut_watcher_start_drives_the_same_persistent_instance(tmp_path: Path) -> None:
     TautClient.init(db_path=tmp_path / ".taut.db")
     van = TautClient(db_path=tmp_path / ".taut.db", as_name="van")
@@ -2920,23 +2948,19 @@ def test_watcher_claims_reaction_notification_without_source_preflight(
         assert not thread.is_alive()
 
 
-def test_taut_watcher_client_constructor_warns_and_still_works(
+def test_taut_watcher_rejects_removed_client_constructor(
     tmp_path: Path,
 ) -> None:
     TautClient.init(db_path=tmp_path / ".taut.db")
     client = TautClient(db_path=tmp_path / ".taut.db", as_name="van")
     client.join("foo")
 
-    with pytest.warns(DeprecationWarning, match=r"TautWatcher\(client,"):
-        watcher = TautWatcher(
+    with pytest.raises(TypeError, match="use client.watch"):
+        TautWatcher(
             client,
             client.whoami().member_id,
             lambda _message: None,
         )
-    try:
-        assert watcher.list_queues() == ["foo"]
-    finally:
-        watcher.stop()
 
 
 def _make_recording_handler(

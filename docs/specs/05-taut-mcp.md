@@ -2250,7 +2250,7 @@ wheel to register its `mcp` manifest.
   and caps manifest size.
 - `docs/plans/2026-08-24-extension-seams-process-containment-coverage-plan.md`
   — moves attachment validation to the public core identity and notification-
-  activity seams and adds the historical open-range compatibility canary.
+  activity seams.
 - `docs/plans/2026-08-14-debug-failure-capture-plan.md` — captures eligible
   resident workspace reactor failures through the core seam while preserving
   content-free MCP crash events and process-level isolation.

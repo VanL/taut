@@ -1368,16 +1368,11 @@ exits and preserve release-before-ACK ordering.
   wake, STOP-during-blocked-inject, fatal-exit, and cleanup cases run through a
   real SQLite broker and real driver/scripted-provider process; mocks may cover
   only adapter or clock boundaries, never broker/control dispatch.
-- Installed-artifact compatibility after the `taut-chat` distribution
-  boundary proves current core alone, current core plus current Summon, live
-  current-pair control operations, exact metadata, and resolver rejection of a
-  current Summon wheel with an older incompatible `taut-chat` core when such a
-  published baseline exists. Immutable historical `taut-summon` wheels are
-  inspected to record their `Requires-Dist: taut` metadata, but are not
-  installed as compatible with `taut-chat`. Python packaging provides no alias
-  between those distribution names. Tests must not bypass this boundary with
-  `--no-deps` or by co-installing both distributions that own the same `taut/`
-  files.
+- Installed-artifact release proof covers current core alone, current core plus
+  current Summon, live current-pair control operations, exact metadata, and
+  resolver rejection of a current Summon wheel with an older incompatible
+  `taut-chat` core when such a published baseline exists. First-party package
+  versions release as one synchronized set.
 - Firing tests cover invalid partial record evidence, indeterminate takeover,
   both partial-null takeover orientations, claim write postconditions,
   mid-bootstrap fallback-claim collision, double SIGINT, PTY reply/inject and
@@ -1451,10 +1446,8 @@ dispatch, driver process, and PTY remain real for contract proof.
 
 The installed-wheel checker uses the new core alone and requires the exact
 `taut-summon` install hint without importing `taut_summon`. It installs the
-new core and current Summon to prove the native command path and live control
-behavior. It separately inspects the immutable Summon 0.5.4 wheel to record
-its `Requires-Dist: taut` metadata; it does not install that unrelated legacy
-distribution beside `taut-chat`.
+synchronized core and current Summon wheels to prove the native command path,
+exact-version dependency metadata, and live control behavior.
 
 ## 13. Embedding and Rich Hosts [SUM-13]
 

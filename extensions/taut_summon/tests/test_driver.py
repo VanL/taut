@@ -1720,7 +1720,7 @@ def test_pump_constructs_mouth_client_on_pump_thread(
     assert FakeMouth.closed_on == [thread.ident]
     assert driver._harness_dead.is_set()
     assert driver._wake.is_set()
-    assert driver._exit_code == 0
+    assert generation.exit.returncode == 0
 
 
 def test_stale_generation_events_cannot_mutate_active_or_external_state(
@@ -1756,7 +1756,6 @@ def test_stale_generation_events_cannot_mutate_active_or_external_state(
     assert active.exit.returncode is None
     assert not driver._harness_dead.is_set()
     assert not driver._wake.is_set()
-    assert driver._exit_code is None
 
 
 def test_checked_pump_join_timeout_retires_generation_and_is_fatal() -> None:

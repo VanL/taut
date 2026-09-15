@@ -35,13 +35,12 @@ import logging
 import signal
 import threading
 import time
-import warnings
 import weakref
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast, final
+from typing import Any, cast, final
 
 from simplebroker import (
     BrokerTarget,
@@ -67,9 +66,6 @@ from taut._constants import (
 from taut._exceptions import MembershipError, WatcherRejected
 from taut._watch_runtime import TautWatchRuntime, WatchedThread
 from taut.client import Message, Notification
-
-if TYPE_CHECKING:
-    from taut.client import TautClient
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +159,11 @@ def _taut_default_error_handler(
     return default_error_handler(exc, message, timestamp)
 
 
+def _validate_yield_strategy(value: str) -> None:
+    if value != "round_robin":
+        raise ValueError("yield_strategy must be 'round_robin'")
+
+
 class MultiQueueWatcher(BaseWatcher):
     """Monitor multiple queues with per-queue processing semantics (Spec: [CC-2.1], [SB-0.4])."""
 
@@ -193,9 +194,10 @@ class MultiQueueWatcher(BaseWatcher):
             stop_event: Event used to signal watcher shutdown
             persistent: Whether queues should be persistent
             polling_strategy: Optional SimpleBroker polling strategy override
-            yield_strategy: Queue iteration strategy (currently round_robin)
-            check_interval: Legacy turn-count discovery setting retained for
-                existing callers; inactive discovery is now time-bounded.
+            yield_strategy: Queue iteration strategy. Only ``round_robin`` is
+                supported.
+            check_interval: Ignored legacy turn-count discovery setting retained
+                for existing callers; inactive discovery is now time-bounded.
             inactive_probe_interval: Minimum seconds between broad inactive
                 queue discovery probes when no native activity hint is pending.
             default_error_handler_fn: Fallback error handler when queue config
@@ -207,13 +209,12 @@ class MultiQueueWatcher(BaseWatcher):
         """
         if not queue_configs:
             raise ValueError("queue_configs cannot be empty")
+        _validate_yield_strategy(yield_strategy)
 
         config_dict = config if config is not None else load_config()
         self._config: Config = config_dict
 
         self._persistent = persistent
-        self._yield_strategy = yield_strategy
-        self._check_interval = check_interval
         self._inactive_probe_interval = max(0.0, float(inactive_probe_interval))
         self._default_error_handler = default_error_handler_fn
         self._handler: Callable[[str, int], None] | None = None
@@ -329,7 +330,6 @@ class MultiQueueWatcher(BaseWatcher):
         # Processing state
         self._active_queues: list[str] = []
         self._queue_iterator: itertools.cycle[str] = itertools.cycle([])
-        self._check_counter = 0
         self._queue_generation = 0
         self._multi_activity_waiter: Any | None = None
         self._multi_activity_waiter_generation: int | None = None
@@ -430,20 +430,10 @@ class MultiQueueWatcher(BaseWatcher):
     # ------------------------------------------------------------------ #
     # Internal helpers                                                   #
     # ------------------------------------------------------------------ #
-    def _queue_counts_as_wait_activity(self, config: QueueRuntimeConfig) -> bool:
-        """Return whether *config* should wake ``wait_for_activity``."""
-
-        del config
-        return True
-
     def _activity_wait_configs(self) -> list[QueueRuntimeConfig]:
         """Return queue configs that should wake ``wait_for_activity``."""
 
-        return [
-            config
-            for config in self._queues.values()
-            if self._queue_counts_as_wait_activity(config)
-        ]
+        return list(self._queues.values())
 
     def _activity_wait_queues(self) -> list[Queue]:
         """Return queues watched by the multi-queue activity waiter."""
@@ -512,9 +502,7 @@ class MultiQueueWatcher(BaseWatcher):
         Spec: [CC-2.1]
         """
         return any(
-            self._queue_counts_as_wait_activity(config)
-            and self._queue_has_pending(config.queue)
-            for config in self._queues.values()
+            self._queue_has_pending(config.queue) for config in self._queues.values()
         )
 
     def _queue_has_pending(self, queue: Queue) -> bool:
@@ -550,11 +538,7 @@ class MultiQueueWatcher(BaseWatcher):
         should_probe_all = precheck_confirmed or discovery_due
         if should_probe_all:
             for name, config in self._queues.items():
-                if (
-                    name not in still_active
-                    and self._queue_counts_as_wait_activity(config)
-                    and self._queue_has_pending(config.queue)
-                ):
+                if name not in still_active and self._queue_has_pending(config.queue):
                     still_active.append(name)
             self._pending_messages_precheck_confirmed = False
             self._next_inactive_probe_at = now + self._inactive_probe_interval
@@ -566,8 +550,6 @@ class MultiQueueWatcher(BaseWatcher):
                 if self._active_queues
                 else itertools.cycle([])
             )
-
-        self._check_counter += 1
 
     def _fetch_next_message(self, config: QueueRuntimeConfig) -> tuple[str, int] | None:
         """Fetch the next message for a queue based on its configured processing mode.
@@ -1270,7 +1252,7 @@ class TautWatcher(BaseReactor):
 
     def __init__(
         self,
-        runtime: TautWatchRuntime | TautClient,
+        runtime: TautWatchRuntime,
         member_id: str,
         handler: Callable[[Message | Notification], None],
         *,
@@ -1283,18 +1265,8 @@ class TautWatcher(BaseReactor):
         from taut.client._base import _ClientBase
 
         if isinstance(runtime, _ClientBase):
-            from taut.client._watching import _watch_runtime_for_client
-
-            warnings.warn(
-                "TautWatcher(client, ...) is deprecated; use client.watch(...) "
-                "or pass a TautWatchRuntime",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            runtime = _watch_runtime_for_client(
-                runtime,
-                persistent=persistent,
-                member_id=member_id,
+            raise TypeError(
+                "TautWatcher requires a TautWatchRuntime; use client.watch(...)"
             )
         self._runtime = runtime
         self.member_id = member_id

@@ -275,6 +275,12 @@ small; hiding a widget alone is insufficient because Textual can still route
 keys to the active modal. Popping that shield restores the exact underlying
 modal stack and focus when space returns. Target drafts and message anchors
 live outside the widget arrangement, so reflow does not recreate domain state.
+Wide and medium transcript prompts use the pure
+`transcript_metadata_layout()` decision and a trusted hanging-text renderer.
+That renderer wraps the message body at the width remaining after timestamp
+and author metadata, then prefixes continuation lines with the same display
+width. The row-height and anchor-restoration paths measure that exact prompt,
+so the visual indent cannot drift from scroll calculations.
 An intra-message row offset is bounded to the rewrapped message height when a
 wider layout shortens the row; the anchor message therefore cannot drift to
 its successor.

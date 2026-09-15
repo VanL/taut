@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 from taut_summon._control import _ControlReactor
 
-from taut._broker_retry import is_transient_broker_error
 from taut.watcher import (
     REACTOR_LIFECYCLE_METHODS,
     BaseReactor,
@@ -313,11 +312,6 @@ def test_first_party_reactors_inherit_guarded_lifecycle_templates(
         assert getattr(reactor_type, method_name) is getattr(BaseReactor, method_name)
 
 
-def test_legacy_retry_import_shim_fails_closed() -> None:
-    with pytest.raises(RuntimeError, match="upgrade taut-summon"):
-        is_transient_broker_error(RuntimeError("database is locked"))
-
-
 class _TerminalSinkVisitor(ast.NodeVisitor):
     def __init__(self, relative_path: Path) -> None:
         self.relative_path = relative_path
@@ -437,8 +431,6 @@ def test_first_party_terminal_sink_inventory_is_explicit() -> None:
         ("taut/commands/_rendering.py", "write_diagnostic_lines", ".write"),
         ("taut/commands/_rendering.py", "write_diagnostic_lines", ".write"),
         ("taut/commands/_rendering.py", "write_diagnostic_lines", ".write"),
-        ("taut/commands/_rendering.py", "write_human_line_packaged_policy", ".write"),
-        ("taut/commands/_rendering.py", "write_human_line_packaged_policy", ".write"),
         (
             "taut/commands/_summon_compat.py",
             "MissingSummonCommand.run",

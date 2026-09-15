@@ -3629,11 +3629,39 @@ def test_registry_identity_not_found_paths_keep_exit_two(tmp_path: Path) -> None
     db_path = tmp_path / "chat.db"
     TautClient.init(db_path=str(db_path))
     root = ["--db", str(db_path)]
+    reply_called = False
 
     result, out, err = _dispatch_static([*root, "who", "missing"])
     assert result == 2
     assert out == ""
     assert err == "thread not found: missing\n"
+
+    class UnrelatedNotFoundClient(TautClient):
+        def reply(self, thread: str, msg_id: str, text: str) -> Any:
+            nonlocal reply_called
+            reply_called = True
+            del thread, msg_id, text
+            from taut import NotFoundError
+
+            raise NotFoundError("message id appears in an unrelated failure")
+
+    from taut.commands._dispatch import dispatch
+    from taut.commands._registry import CommandRegistry
+
+    stdout = StringIO()
+    stderr = StringIO()
+    result = dispatch(
+        [*root, "reply", "general", "1234", "child"],
+        registry=CommandRegistry(entry_points=()),
+        stdin=StringIO(),
+        stdout=stdout,
+        stderr=stderr,
+        client_factory=UnrelatedNotFoundClient,
+    )
+    assert result == 2
+    assert reply_called is True
+    assert stdout.getvalue() == ""
+    assert stderr.getvalue() == "message id appears in an unrelated failure\n"
 
     result, out, err = _dispatch_static([*root, "rejoin", "missing"])
     assert result == 2

@@ -14,7 +14,6 @@ import shutil
 import signal
 import subprocess
 import sys
-import tarfile
 import tempfile
 import textwrap
 import threading
@@ -26,17 +25,11 @@ from pathlib import Path
 from typing import NoReturn
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_HISTORICAL_SUMMON_COMMIT = "b03709452cf4d5962b0d7204b0dab78b9bafd524"
-EXPECTED_HISTORICAL_SUMMON_VERSION = "0.5.4"
 COMMAND_TIMEOUT_SECONDS = 180.0
 CONTROL_SMOKE_TIMEOUT_SECONDS = 180.0
 MCP_STAGE_TIMEOUT_SECONDS = 20.0
 MCP_SHUTDOWN_TIMEOUT_SECONDS = 20.0
 MATRIX_PYTHON_MIN_MINOR = 11
-EXPECTED_HISTORICAL_SUMMON_REF = "taut_summon/v0.5.4"
-EXPECTED_REF_COMMITS = {
-    EXPECTED_HISTORICAL_SUMMON_REF: EXPECTED_HISTORICAL_SUMMON_COMMIT,
-}
 EXPECTED_SUMMON_COMMAND_ENTRY_POINTS = (
     ("dismiss", "taut_summon.command_manifest:dismiss"),
     ("summon", "taut_summon.command_manifest:summon"),
@@ -67,7 +60,6 @@ class Inputs:
     new_core: Path
     new_summon: Path
     new_mcp: Path
-    historical_summon_ref: str
 
 
 def _fail(message: str) -> NoReturn:
@@ -93,19 +85,12 @@ def _parse_args(argv: list[str] | None) -> Inputs:
     parser.add_argument("--new-core", required=True, metavar="WHEEL")
     parser.add_argument("--new-summon", required=True, metavar="WHEEL")
     parser.add_argument("--new-mcp", required=True, metavar="WHEEL")
-    parser.add_argument("--historical-summon-ref", required=True, metavar="REF")
     args = parser.parse_args(argv)
     inputs = Inputs(
         new_core=_required_wheel(args.new_core, "new core"),
         new_summon=_required_wheel(args.new_summon, "new Summon"),
         new_mcp=_required_wheel(args.new_mcp, "new MCP"),
-        historical_summon_ref=args.historical_summon_ref,
     )
-    if inputs.historical_summon_ref != EXPECTED_HISTORICAL_SUMMON_REF:
-        _fail(
-            "historical Summon ref must be immutable release ref "
-            f"{EXPECTED_HISTORICAL_SUMMON_REF!r}"
-        )
     return inputs
 
 
@@ -202,15 +187,21 @@ def _validate_new_metadata(
         )
     if _canonical_project_name(mcp.name) != "taut-mcp":
         _fail(f"new MCP wheel has project name {mcp.name!r}, expected 'taut-mcp'")
+    versions = {core.version, summon.version, mcp.version}
+    if len(versions) != 1:
+        _fail(
+            "new core, Summon, and MCP wheels must have one synchronized version; "
+            f"found core={core.version}, Summon={summon.version}, MCP={mcp.version}"
+        )
     _require_exact_dependency(
         summon,
         project="taut-chat",
-        requirement=f"taut-chat>={core.version}",
+        requirement=f"taut-chat=={core.version}",
     )
     _require_exact_dependency(
         mcp,
         project="taut-chat",
-        requirement=f"taut-chat>={core.version}",
+        requirement=f"taut-chat=={core.version}",
     )
     core_broker_requirements = _requirements_for_project(core, "simplebroker")
     mcp_broker_requirements = _requirements_for_project(mcp, "simplebroker")
@@ -356,174 +347,6 @@ def _run(
     if detail == "subprocess emitted a Python traceback":
         _fail(f"command emitted a traceback: {_format_command(command)}")
     return completed
-
-
-def _resolve_remote_tag(ref: str, *, env: dict[str, str]) -> str:
-    expected_commit = EXPECTED_REF_COMMITS.get(ref)
-    if expected_commit is None:
-        _fail(f"no immutable commit is configured for historical ref {ref!r}")
-    remote_ref = f"refs/tags/{ref}"
-    completed = _run(
-        [
-            "git",
-            "ls-remote",
-            "--tags",
-            "origin",
-            remote_ref,
-            f"{remote_ref}^{{}}",
-        ],
-        cwd=PROJECT_ROOT,
-        env=env,
-    )
-    resolved: dict[str, str] = {}
-    for line in completed.stdout.splitlines():
-        fields = line.split()
-        if len(fields) == 2:
-            resolved[fields[1]] = fields[0]
-    commit = resolved.get(f"{remote_ref}^{{}}") or resolved.get(remote_ref)
-    if commit is None:
-        _fail(f"tag {ref!r} does not exist on origin")
-    if commit != expected_commit:
-        _fail(f"origin tag {ref!r} resolves to {commit}, expected {expected_commit}")
-    print(f"[wheel-matrix] ref={ref} origin_commit={commit}")
-    return commit
-
-
-def _prepare_archive_repository(
-    *, refs: tuple[str, ...], work: Path, env: dict[str, str]
-) -> Path:
-    """Fetch immutable prior tags into a temporary bare object database."""
-
-    repository = work / "prior-artifact.git"
-    _run(["git", "init", "--bare", str(repository)], cwd=work, env=env)
-    remote = _run(
-        ["git", "remote", "get-url", "origin"],
-        cwd=PROJECT_ROOT,
-        env=env,
-    ).stdout.strip()
-    if not remote:
-        _fail("origin has no fetch URL")
-    for ref in refs:
-        expected_commit = EXPECTED_REF_COMMITS.get(ref)
-        if expected_commit is None:
-            _fail(f"no immutable commit is configured for historical ref {ref!r}")
-        tag_ref = f"refs/tags/{ref}"
-        _run(
-            [
-                "git",
-                f"--git-dir={repository}",
-                "fetch",
-                "--no-tags",
-                remote,
-                f"{tag_ref}:{tag_ref}",
-            ],
-            cwd=work,
-            env=env,
-        )
-        fetched = _run(
-            [
-                "git",
-                f"--git-dir={repository}",
-                "rev-parse",
-                f"{tag_ref}^{{commit}}",
-            ],
-            cwd=work,
-            env=env,
-        ).stdout.strip()
-        if fetched != expected_commit:
-            _fail(
-                f"fetched tag {ref!r} resolves to {fetched}, expected {expected_commit}"
-            )
-    return repository
-
-
-def _safe_extract_tar(archive: Path, destination: Path) -> None:
-    try:
-        with tarfile.open(archive) as source:
-            for member in source.getmembers():
-                member_path = Path(member.name)
-                if member_path.is_absolute() or ".." in member_path.parts:
-                    _fail(f"git archive contains unsafe path {member.name!r}")
-                if member.issym() or member.islnk():
-                    target = Path(member.linkname)
-                    if target.is_absolute() or ".." in target.parts:
-                        _fail(
-                            "git archive contains unsafe link target "
-                            f"{member.linkname!r}"
-                        )
-            source.extractall(destination)
-    except (OSError, tarfile.TarError) as exc:
-        _fail(f"cannot extract git archive {archive}: {exc}")
-
-
-def _export_ref(
-    *,
-    repository: Path,
-    commit: str,
-    destination: Path,
-    env: dict[str, str],
-) -> None:
-    destination.mkdir(parents=True)
-    archive = destination.parent / f"{destination.name}.tar"
-    _run(
-        [
-            "git",
-            f"--git-dir={repository}",
-            "archive",
-            "--format=tar",
-            f"--output={archive}",
-            commit,
-        ],
-        cwd=destination.parent,
-        env=env,
-    )
-    _safe_extract_tar(archive, destination)
-
-
-def _find_built_wheel(directory: Path, expected_project: str) -> Path:
-    matches: list[Path] = []
-    for candidate in sorted(directory.glob("*.whl")):
-        metadata = _read_wheel_metadata(candidate)
-        if _canonical_project_name(metadata.name) == expected_project:
-            matches.append(candidate)
-    if len(matches) != 1:
-        _fail(
-            f"expected exactly one {expected_project} wheel in {directory}, "
-            f"found {len(matches)}"
-        )
-    return matches[0]
-
-
-def _build_historical_summon(
-    *,
-    summon_source: Path,
-    work: Path,
-    env: dict[str, str],
-    uv: str,
-) -> Path:
-    summon_out = work / "historical-summon-wheel"
-    summon_out.mkdir()
-    _run(
-        [
-            uv,
-            "build",
-            "--wheel",
-            str(summon_source / "extensions" / "taut_summon"),
-            "--out-dir",
-            str(summon_out),
-        ],
-        cwd=summon_source,
-        env=env,
-    )
-    historical_summon = _find_built_wheel(summon_out, "taut-summon")
-    metadata = _read_wheel_metadata(historical_summon)
-    if metadata.version != EXPECTED_HISTORICAL_SUMMON_VERSION:
-        _fail(
-            f"historical Summon wheel version is {metadata.version}, expected "
-            f"{EXPECTED_HISTORICAL_SUMMON_VERSION}"
-        )
-    _print_wheel_evidence("historical_summon", metadata)
-    return historical_summon
 
 
 def _venv_python(venv: Path) -> Path:
@@ -1404,40 +1227,6 @@ print(json.dumps({
         selector_path.unlink(missing_ok=True)
 
 
-def _case_historical_summon_metadata(metadata: WheelMetadata) -> None:
-    if _canonical_project_name(metadata.name) != "taut-summon":
-        _fail(
-            "historical Summon wheel has project name "
-            f"{metadata.name!r}, expected 'taut-summon'"
-        )
-    if metadata.version != EXPECTED_HISTORICAL_SUMMON_VERSION:
-        _fail(
-            f"historical Summon wheel version is {metadata.version}, expected "
-            f"{EXPECTED_HISTORICAL_SUMMON_VERSION}"
-        )
-    legacy_requirement = f"taut>={EXPECTED_HISTORICAL_SUMMON_VERSION}"
-    project_requirements = _requirements_for_project(metadata, "taut")
-    if project_requirements != (legacy_requirement,):
-        rendered = ", ".join(metadata.requirements) or "<none>"
-        _fail(
-            "historical Summon METADATA must contain exactly one Requires-Dist "
-            f"{legacy_requirement!r}; found: {rendered}"
-        )
-    if _requirements_for_project(metadata, "taut-chat"):
-        _fail("historical Summon METADATA must not require taut-chat")
-    print(
-        json.dumps(
-            {
-                "case": "historical_summon_metadata",
-                "relation_to_current_core": "unrelated_distribution",
-                "requires": legacy_requirement,
-                "version": metadata.version,
-            },
-            sort_keys=True,
-        )
-    )
-
-
 def _print_wheel_evidence(label: str, metadata: WheelMetadata) -> None:
     print(
         "[wheel-matrix] "
@@ -1456,37 +1245,12 @@ def _check(inputs: Inputs) -> None:
     _print_wheel_evidence("new_mcp", mcp_metadata)
 
     env = _clean_environment()
-    git = shutil.which("git")
     uv = shutil.which("uv")
-    if git is None:
-        _fail("required command not found on PATH: git")
     if uv is None:
         _fail("required command not found on PATH: uv")
 
-    historical_summon_commit = _resolve_remote_tag(
-        inputs.historical_summon_ref, env=env
-    )
     with tempfile.TemporaryDirectory(prefix="taut-wheel-matrix-") as raw_work:
         work = Path(raw_work)
-        historical_summon_source = work / "historical-summon-source"
-        archive_repository = _prepare_archive_repository(
-            refs=(inputs.historical_summon_ref,),
-            work=work,
-            env=env,
-        )
-        _export_ref(
-            repository=archive_repository,
-            commit=historical_summon_commit,
-            destination=historical_summon_source,
-            env=env,
-        )
-        historical_summon = _build_historical_summon(
-            summon_source=historical_summon_source,
-            work=work,
-            env=env,
-            uv=uv,
-        )
-        _case_historical_summon_metadata(_read_wheel_metadata(historical_summon))
         _case_new_core(wheel=inputs.new_core, work=work, env=env, uv=uv)
         _case_paired_control_smoke(
             new_core=inputs.new_core,
@@ -1508,10 +1272,7 @@ def _check(inputs: Inputs) -> None:
             env=env,
             uv=uv,
         )
-    print(
-        "[wheel-matrix] all four installed-wheel cases and historical "
-        "Summon metadata probe passed"
-    )
+    print("[wheel-matrix] all four synchronized installed-wheel cases passed")
 
 
 def main(argv: list[str] | None = None) -> int:

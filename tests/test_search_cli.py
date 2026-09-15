@@ -16,7 +16,11 @@ import pytest
 from taut import EmptyResultError, SearchHit, TautClient
 from taut.commands._dispatch import dispatch
 from taut.commands._registry import CommandRegistry
-from taut.commands._rendering import emit_search_warnings
+from taut.commands._rendering import (
+    _search_excerpt,
+    emit_search_warnings,
+    search_hit_object,
+)
 from tests.conftest import run_cli
 
 pytestmark = [pytest.mark.sqlite_only, pytest.mark.usefixtures("clean_env")]
@@ -65,12 +69,48 @@ def _probe_hit(*, text: str = "alpha beta") -> SearchHit:
 
 
 def test_search_json_formats_id_while_python_hit_remains_integer() -> None:
-    from taut.commands._rendering import search_hit_object
-
     hit = _probe_hit()
 
     assert search_hit_object(hit)["ts"] == "1800000000000000001"
     assert hit.ts == 1_800_000_000_000_000_001
+
+
+@pytest.mark.parametrize(
+    ("text", "query", "token"),
+    [
+        ("ß" * 300 + " needle", "needle", "needle"),
+        ("İ" * 300 + " needle", "needle", "needle"),
+        ("x" * 300 + " ßa tail", "sa", "ßa"),
+    ],
+)
+def test_search_excerpt_maps_casefolded_match_to_original_offset(
+    text: str,
+    query: str,
+    token: str,
+) -> None:
+    excerpt = _search_excerpt(text, query=query)
+
+    assert len(excerpt) <= 246
+    assert token in excerpt
+
+
+def test_search_excerpt_keeps_ascii_windowing_behavior() -> None:
+    text = "x" * 300 + " needle " + "y" * 300
+
+    excerpt = _search_excerpt(text, query="needle")
+
+    assert excerpt.startswith("...")
+    assert excerpt.endswith("...")
+    assert "needle" in excerpt
+
+
+def test_search_json_keeps_complete_unicode_text_while_human_excerpt_is_bounded() -> (
+    None
+):
+    text = "ß" * 300 + " needle " + "İ" * 300
+
+    assert search_hit_object(_probe_hit(text=text))["text"] == text
+    assert len(_search_excerpt(text, query="needle")) <= 246
 
 
 def _dispatch_search_probe(

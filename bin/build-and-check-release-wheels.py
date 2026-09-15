@@ -14,7 +14,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SUMMON_ROOT = PROJECT_ROOT / "extensions" / "taut_summon"
 MCP_ROOT = PROJECT_ROOT / "extensions" / "taut_mcp"
 WHEEL_MATRIX_CHECKER = PROJECT_ROOT / "bin" / "check-core-summon-wheel-matrix.py"
-HISTORICAL_SUMMON_REF = "taut_summon/v0.5.4"
 
 
 class ReleaseWheelCheckError(RuntimeError):
@@ -98,8 +97,6 @@ def _print_dry_run_plan(
                 str(summon_wheel),
                 "--new-mcp",
                 str(mcp_wheel),
-                "--historical-summon-ref",
-                HISTORICAL_SUMMON_REF,
             ),
         )
     )
@@ -197,8 +194,6 @@ def build_and_check(
                 str(summon_wheel),
                 "--new-mcp",
                 str(mcp_wheel),
-                "--historical-summon-ref",
-                HISTORICAL_SUMMON_REF,
             )
         )
 

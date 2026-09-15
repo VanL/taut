@@ -64,7 +64,15 @@ class NotFoundError(EmptyResultError):
     """Raised when a requested thread, member, or message does not exist."""
 
 
-class AmbiguousMessageError(TautError):
+class MessageIdResolutionError(TautError):
+    """Raised when a reply parent message id cannot be resolved uniquely."""
+
+
+class MessageIdNotFoundError(NotFoundError, MessageIdResolutionError):
+    """Raised when a reply parent message id is invalid or not found."""
+
+
+class AmbiguousMessageError(MessageIdResolutionError):
     """Raised when a message-id suffix matches more than one message."""
 
 

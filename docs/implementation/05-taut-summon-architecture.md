@@ -28,10 +28,9 @@ does not own ledger, control, or driver orchestration.
 
 The extension distribution remains `taut-summon`. Its core dependency is the
 distribution `taut-chat`, while runtime imports and the agent's mouth remain
-`taut`. This distinction is load-bearing at the package boundary: historical
-Summon wheels requiring distribution `taut` are diagnostic evidence, not
-resolver-compatible releases for `taut-chat`, and the two core distributions
-must not be co-installed because they own the same import files.
+`taut`. This distinction is load-bearing at the package boundary. First-party
+extension wheels pin the exact synchronized `taut-chat` version, preventing pip
+from forming mixed core/extension installations.
 
 Historical blocker note: the 2026-07-09 process-lane PING failure was traced to
 the dependency release rather than worked around with transient long-lived
@@ -885,10 +884,9 @@ require a separately drained subprocess pipe.
 - **Core contains command policy, not Summon domain logic.** Core owns the
   generic command registry, parser/context protocol, two reserved first-party
   slots, and the absent-extension compatibility/install-hint adapter. That
-  adapter does not make historical wheels requiring distribution `taut`
-  compatible with `taut-chat`. The installed `taut-summon` distribution owns
-  the native adapters and all controller calls. Core has no Summon runtime
-  dependency.
+  adapter only reports that the synchronized `taut-summon` extension is
+  missing. The installed `taut-summon` distribution owns the native adapters
+  and all controller calls. Core has no Summon runtime dependency.
 - **No daemon** ([TAUT-2]): the driver is foreground; `stop`/`status` are
   clients, not services.
 - **Mouth is CLI-only** ([SUM-6]): no extension code path posts chat under
@@ -946,7 +944,7 @@ require a separately drained subprocess pipe.
 
 | Spec area | Primary code owners | Contract tests |
 |---|---|---|
-| [SUM-3], distribution identity, `taut-chat` floor, command registration, name/provider resolution, CLI help, database discovery, and exit classes | `extensions/taut_summon/pyproject.toml`, `extensions/taut_summon/taut_summon/command_manifest.py`, `extensions/taut_summon/taut_summon/commands/`, `extensions/taut_summon/taut_summon/controller.py`, `extensions/taut_summon/taut_summon/cli.py` | `extensions/taut_summon/tests/test_controller.py`, `extensions/taut_summon/tests/test_summon_cli.py` parser-inventory, help-phrase, grammar, discovery, and exit-class tests; current installed-wheel ownership/parity/floor cases plus the historical `Requires-Dist: taut` diagnostic in `tests/test_core_summon_wheel_matrix.py`; real root adapter lifecycle in `extensions/taut_summon/tests/test_driver.py` |
+| [SUM-3], distribution identity, `taut-chat` floor, command registration, name/provider resolution, CLI help, database discovery, and exit classes | `extensions/taut_summon/pyproject.toml`, `extensions/taut_summon/taut_summon/command_manifest.py`, `extensions/taut_summon/taut_summon/commands/`, `extensions/taut_summon/taut_summon/controller.py`, `extensions/taut_summon/taut_summon/cli.py` | `extensions/taut_summon/tests/test_controller.py`, `extensions/taut_summon/tests/test_summon_cli.py` parser-inventory, help-phrase, grammar, discovery, and exit-class tests; synchronized current installed-wheel ownership/parity/floor cases in `tests/test_core_summon_wheel_matrix.py`; real root adapter lifecycle in `extensions/taut_summon/tests/test_driver.py` |
 | [SUM-4], bootstrap, identity, presence | `extensions/taut_summon/taut_summon/_driver.py`, `extensions/taut_summon/taut_summon/_state.py` | `extensions/taut_summon/tests/test_driver.py` |
 | [SUM-5], ears injection contract | `extensions/taut_summon/taut_summon/_driver.py` | `extensions/taut_summon/tests/test_driver.py`, `extensions/taut_summon/tests/test_conformance.py` |
 | [SUM-6], mouth CLI contract | `extensions/taut_summon/taut_summon/_driver.py`, `extensions/taut_summon/taut_summon/_persona.py`, `extensions/taut_summon/taut_summon/_pty.py`, `extensions/taut_summon/taut_summon/scripted_provider.py` | `extensions/taut_summon/tests/test_driver.py` real child identity and mouth cases; `extensions/taut_summon/tests/test_persona.py`; installed paired exception proof in `tests/test_core_summon_wheel_matrix.py` |

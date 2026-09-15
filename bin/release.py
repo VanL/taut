@@ -103,7 +103,7 @@ CONSTANTS_VERSION_PATTERN: Final[re.Pattern[str]] = re.compile(
     r'(?m)^__version__(?::[^=]+)? = "([^"]+)"$'
 )
 TAUT_DEPENDENCY_PATTERN: Final[re.Pattern[str]] = re.compile(
-    r'(?m)^(\s*"taut-chat>=)[^"]+(",\s*)$'
+    r'(?m)^(\s*"taut-chat==)[^"]+(",\s*)$'
 )
 TAUT_PG_DEPENDENCY_PATTERN: Final[re.Pattern[str]] = re.compile(
     r'(?m)^(\s*"taut-pg>=)([^"]+)(",\s*)$'
@@ -2701,25 +2701,25 @@ def _sync_root_release_dependencies() -> None:
     _report_dependency_sync(
         pg_dependency_version,
         current="taut-pg dependency already matches taut-chat",
-        updated="Updated taut-pg dependency: taut-chat>=",
+        updated="Updated taut-pg dependency: taut-chat==",
     )
     core_dependency_version = sync_summon_core_dependency()
     _report_dependency_sync(
         core_dependency_version,
         current="taut-summon dependency already matches taut-chat",
-        updated="Updated taut-summon dependency: taut-chat>=",
+        updated="Updated taut-summon dependency: taut-chat==",
     )
     mcp_core_version = sync_mcp_core_dependency()
     _report_dependency_sync(
         mcp_core_version,
         current="taut-mcp dependency already matches taut-chat",
-        updated="Updated taut-mcp dependency: taut-chat>=",
+        updated="Updated taut-mcp dependency: taut-chat==",
     )
     tui_core_version = sync_tui_core_dependency()
     _report_dependency_sync(
         tui_core_version,
         current="taut-tui dependency already matches taut-chat",
-        updated="Updated taut-tui dependency: taut-chat>=",
+        updated="Updated taut-tui dependency: taut-chat==",
     )
     mcp_pg_version = sync_mcp_pg_dev_dependency()
     _report_dependency_sync(
@@ -2776,9 +2776,9 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         "-v",
         "--version",
         help=(
-            "Target version in X.Y.Z form. Defaults to the current package "
-            "version when it has not been published yet. With all, coordinates "
-            "all five package manifests."
+            "Target version in X.Y.Z form. Only all may prepare a different "
+            "version, coordinating all five package manifests. Without a new "
+            "version, all manifests must already match."
         ),
     )
     execution_mode = parser.add_mutually_exclusive_group()
@@ -2833,6 +2833,23 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     if args.checks_only and args.skip_checks:
         parser.error("--checks-only cannot be combined with --skip-checks")
     return args
+
+
+def require_synchronized_manifest_versions() -> str:
+    """Require every first-party package manifest to carry one version."""
+
+    versions = {
+        target.key: read_manifest_version(target)
+        for target in CANONICAL_TARGETS.values()
+    }
+    distinct = set(versions.values())
+    if len(distinct) != 1:
+        rendered = ", ".join(f"{key}={value}" for key, value in versions.items())
+        fail(
+            "First-party release manifests must have one synchronized version; "
+            f"found {rendered}. Run an all-target version preparation."
+        )
+    return next(iter(distinct))
 
 
 def _dry_run_postupdate_steps(targets: tuple[ReleaseTarget, ...]) -> None:
@@ -3073,6 +3090,16 @@ def _run_single_release(
         print("Checks passed; no release files, artifacts, tags, or remotes changed.")
         return 0
 
+    synchronized_version = require_synchronized_manifest_versions()
+    requested_version = validate_version(
+        args.version if args.version is not None else synchronized_version
+    )
+    if requested_version != synchronized_version:
+        fail(
+            "Individual release targets cannot change package versions; "
+            "use target 'all' to prepare a synchronized version."
+        )
+
     dirty = is_dirty_worktree()
     if dirty and not args.dry_run:
         fail("Worktree is dirty; commit or stash changes before releasing")
@@ -3225,6 +3252,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.check_repository_settings:
         require_repository_settings()
         return 0
+    if (
+        not args.checks_only
+        and args.target == ALL_RELEASE_TARGET_KEY
+        and args.version is None
+    ):
+        require_synchronized_manifest_versions()
     if not args.dry_run and not args.checks_only:
         require_publish_branch()
         require_repository_settings()

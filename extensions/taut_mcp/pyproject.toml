@@ -17,7 +17,7 @@ dependencies = [
     "jsonschema>=4.26.0,<5",
     "mcp>=2.0.0,<3",
     "simplebroker>=8.2.2",
-    "taut-chat>=0.9.7",
+    "taut-chat==0.9.7",
 ]
 
 [project.scripts]

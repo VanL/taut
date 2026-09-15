@@ -72,7 +72,12 @@ from taut_tui.forms import (
     evaluate_action_applicability,
     input_spec,
 )
-from taut_tui.layout import layout_placement, transition_layout
+from taut_tui.layout import (
+    TranscriptMetadataLayout,
+    layout_placement,
+    transcript_metadata_layout,
+    transition_layout,
+)
 from taut_tui.models import (
     DraftState,
     FocusTarget,
@@ -130,6 +135,7 @@ from taut_tui.widgets import (
     escape_display_text,
     escape_inline_text,
     escape_message_body,
+    hanging_display_text,
 )
 
 _ResultT = TypeVar("_ResultT")
@@ -1502,9 +1508,7 @@ class TautApp(App[None]):
                 ),
             )
         elif path == ("who",):
-            self._run_action(
-                domain.members_for_thread(cast(str | None, values.get("thread")))
-            )
+            self._run_action(domain.members(cast(str | None, values.get("thread"))))
         elif path == ("list",):
             self._run_action(
                 domain.list_threads(
@@ -3438,7 +3442,8 @@ class TautApp(App[None]):
             if target is not None and (target, message.ts) in self._reply_threads
             else ""
         )
-        if self.layout_mode is LayoutMode.COMPACT:
+        metadata_layout = transcript_metadata_layout(self.layout_mode)
+        if metadata_layout is TranscriptMetadataLayout.STACKED:
             return display_text(
                 (escape_inline_text(message.from_name), "bold"),
                 f"  {message.ts}",
@@ -3447,11 +3452,20 @@ class TautApp(App[None]):
                 escape_message_body(message.text),
                 "\n",
             )
+        if metadata_layout is TranscriptMetadataLayout.ALIGNED:
+            metadata = display_text(
+                (str(message.ts), "dim"),
+                "  ",
+                (escape_inline_text(message.from_name), "bold"),
+                "  ",
+            )
+            return hanging_display_text(
+                metadata,
+                escape_message_body(message.text),
+                (reply_marker, "italic"),
+                "\n",
+            )
         return display_text(
-            (str(message.ts), "dim"),
-            "  ",
-            (escape_inline_text(message.from_name), "bold"),
-            "  ",
             escape_message_body(message.text),
             (reply_marker, "italic"),
             "\n",

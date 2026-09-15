@@ -369,7 +369,6 @@ class SummonDriver:
         self._injection_cancelled = threading.Event()
         self._watcher_error: BaseException | None = None
         self._member_id: str | None = None
-        self._exit_code: int | None = None
         self._generation_lock = threading.RLock()
         self._generation_counter = 0
         self._active_generation: _GenerationContext | None = None
@@ -1251,7 +1250,6 @@ class SummonDriver:
             # aliases after the next generation is published.
             self._harness_dead = generation.harness_dead
             self._wake = generation.wake
-            self._exit_code = None
             return generation
 
     def _retire_generation(self, generation: _GenerationContext) -> None:
@@ -1460,7 +1458,6 @@ class SummonDriver:
         self, event: ExitEvent, generation: _GenerationContext
     ) -> None:
         generation.exit.returncode = event.returncode
-        self._exit_code = event.returncode
         logger.info("harness exited with code %s", event.returncode)
 
     # --- helpers ------------------------------------------------------------
@@ -2168,19 +2165,6 @@ class SummonDriver:
         if error is None:  # pragma: no cover - Event publication follows assignment
             error = RuntimeError("control loop failed without a diagnostic")
         raise DriverError(f"control loop failed: {error}") from error
-
-    def _stop_control_thread_for_handoff(self) -> None:
-        thread = self._control_thread
-        if thread is None:
-            return
-        self._control_stop.set()
-        thread.join(timeout=_HALT_ACK_TIMEOUT_SECONDS)
-        if thread.is_alive():
-            logger.warning("control thread did not stop during handoff")
-            return
-        self._control_thread = None
-        self._control_loop = None
-        self._control_stop.clear()
 
     def _start_watcher_thread(
         self,

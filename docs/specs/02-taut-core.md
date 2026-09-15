@@ -1357,6 +1357,8 @@ model). Public exports from `taut`: `TautClient`, `TautWatcher`, `Message`,
 `PersistenceComponentReport`, `DumpReport`, `LoadReport`, `DoctorCheck`,
 `DoctorReport`, `WatcherRejected`, the
 exception hierarchy rooted at `TautError` including `BlankMessageError`,
+`MessageIdResolutionError`, and its not-found subtype
+`MessageIdNotFoundError`,
 `escape_terminal_text`, and `__version__`. The package ships typed
 (`py.typed`).
 
@@ -1556,9 +1558,9 @@ stops the watcher but retains [IAN-7]'s already-consumed pointer semantics.
 `TautWatcher` subclasses a taut-vendored copy of Weft's
 `MultiQueueWatcher` (copied, attributed; taut must not depend on weft).
 The preferred Python construction path is `TautClient.watch(...)`.
-`TautWatcher` remains exported for embedding and advanced construction; direct
-`TautWatcher(client, ...)` construction is a deprecated compatibility path that
-is converted to the same internal watch runtime used by `TautClient.watch()`.
+`TautWatcher` remains exported for embedding and advanced construction with a
+`TautWatchRuntime`. Direct `TautWatcher(client, ...)` construction is rejected;
+callers must use `TautClient.watch()`.
 The vendored multi-queue watcher uses SimpleBroker's watcher lifecycle hook to
 install its fan-in activity waiter and must not clone SimpleBroker's retry loop.
 Contract:
@@ -2394,11 +2396,13 @@ Release targets:
   `taut_tui/vX.Y.Z` tag and `.github/workflows/release-gate-tui.yml`.
 - `all` releases every requested package version absent from both PyPI and
   published GitHub Releases. With `--version X.Y.Z`, the helper prepares all
-  five package manifests at that coordinated version. Without `--version`,
-  each manifest remains the source for its current version. Package versions
-  are otherwise independent, but the first `taut-chat` publication is one
-  coordinated new version across core and all four extensions; existing
-  GitHub-only versions are not republished under changed metadata.
+  five package manifests at that coordinated version. Without `--version`, all
+  five manifests must already carry one version. The `all` target prepares and
+  publishes every package in the requested unpublished set. An individual
+  target may publish one package from an already synchronized manifest set,
+  but only `all --version X.Y.Z` may prepare a new
+  version across the set; existing GitHub-only versions are not republished
+  under changed metadata.
 
 Helper obligations:
 
@@ -2416,16 +2420,17 @@ Helper obligations:
   and forbids reuse or retag. While both are absent, retain the existing exact
   leased `--retag` recovery for a failed unpublished gate. Validate the
   human-authored changelog heading before generated metadata changes.
-- Prepare deterministic metadata before running release prechecks. Change only
-  the selected package versions, but reconcile every manifest-owned derived
+- Prepare deterministic metadata before running release prechecks. Change the
+  synchronized package version only with `all --version`, and reconcile every
+  manifest-owned derived
   copy on every normal release invocation: root `taut/_constants.py`, README
-  tag and wheel examples, all four extension `taut-chat>=...` floors and local
+  tag and wheel examples, all four extension `taut-chat==...` pins and local
   source keys, the root dev `taut-summon>=...` and
   `simplebroker-pg>=...` floors, every exact root README SimpleBroker
-  occurrence, and the retained Summon, MCP, and TUI locks. Each package manifest
-  owns its version; the root manifest owns the core constant and SimpleBroker
+  occurrence, and the retained Summon, MCP, and TUI locks. The synchronized
+  manifest set owns its version; the root manifest owns the core constant and SimpleBroker
   requirement; the root version owns every first-party extension
-  `taut-chat>=...` floor; the Summon manifest owns the root dev
+  `taut-chat==...` pin; the Summon manifest owns the root dev
   `taut-summon>=...` floor; the PG manifest owns the root dev
   `simplebroker-pg>=...` floor; the MCP manifest owns its MCP SDK range and
   dev-only `taut-pg` and `taut-summon` floors; and the TUI manifest owns the
@@ -2686,7 +2691,7 @@ Workflow obligations:
   variables. No workflow rebuilds package distributions.
 
 Core and `taut-summon` reactor changes ship as a paired release. The release
-helper synchronizes every extension's `taut-chat>=` floor to the exact new core
+helper synchronizes every extension's exact `taut-chat==` pin to the new core
 version and refreshes every retained lock. Package tooling owns third-party
 constraint satisfaction and lock consistency; release tests do not repeat
 third-party floors or selected versions. Release evidence includes an
@@ -2696,8 +2701,8 @@ release is not announced until all five PyPI and GitHub publications pass.
 
 New core wheel metadata has normalized project name `taut-chat`. New Summon
 and MCP metadata each contain exactly one unmarked
-`taut-chat>=<new-core-version>` requirement, so the supplied current core wheel
-is admitted exactly. Core and MCP publish the same single unmarked SimpleBroker
+`taut-chat==<new-core-version>` requirement, so only the synchronized core wheel
+is admitted. Core and MCP publish the same single unmarked SimpleBroker
 requirement.
 
 Every non-dry-run `core`, `summon`, `mcp`, or matching `all` release builds all
@@ -2713,16 +2718,11 @@ ordinary packaging smoke. Tag gates reuse the successful canonical Test run
 and its verified artifacts; they do not repeat paired or installed-wheel
 verification.
 
-The rename from distribution `taut` to `taut-chat` is an explicit
-compatibility boundary. Historical extension wheels whose metadata requires
-`taut` are not resolver-compatible with `taut-chat`; tests must not conceal
-that fact with `--no-deps` or by installing both distributions. The current
-matrix proves: current core alone; current core plus each current extension;
-current core and current Summon live control behavior; rejection of current
-Summon with an older `taut-chat` core when such a published baseline exists;
-exact current first-party package names and dependency relations; and a
-diagnostic historical probe recording that old Summon requires the unrelated
-`taut` distribution.
+The current matrix proves: current core alone; current core plus each current
+extension; current core and current Summon live control behavior; rejection of
+current Summon with an older `taut-chat` core when such a published baseline
+exists; and exact current first-party package names and dependency relations.
+First-party packages are released as one synchronized set.
 
 Current-release evidence installs the current MCP wheel with the current core
 wheel through normal dependency resolution in a checkout-free environment.
@@ -2945,7 +2945,7 @@ expression behavior.
   message-id ordering, and defines the coordinated schema-6 cutover.
 - `docs/plans/2026-08-24-extension-seams-process-containment-coverage-plan.md`
   — adds the public activity-neutral identity and notification-queue seams,
-  migrates MCP to them, and retains historical open-range compatibility proof.
+  and migrates MCP to them.
 - `docs/plans/2026-08-24-concurrency-and-schema-contract-alignment-plan.md` —
   defines the future ordered core migration ladder and the explicit unsupported
   schema-1 cutoff without adding a speculative rung.

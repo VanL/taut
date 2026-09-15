@@ -119,7 +119,6 @@ __all__ = [
     "SearchHit",
     "TautClient",
     "Thread",
-    "database_path_from_target",
 ]
 
 
@@ -358,11 +357,3 @@ class TautClient(
                     exc_info=True,
                 )
             raise
-
-
-def database_path_from_target(target: BrokerTarget | str) -> str:
-    """Return a display path for a resolved target."""
-
-    if isinstance(target, str):
-        return target
-    return target.target

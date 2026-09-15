@@ -189,10 +189,6 @@ remains the separate SimpleBroker debug setting.
 
 `taut-pg` is a separate project under `extensions/taut_pg`; it installs
 `simplebroker-pg` beside Taut but does not add a root runtime dependency.
-The private `taut._broker_retry` module remains only as an import-compatible,
-fail-closed shim for the immutable prior Summon wheel. It raises an upgrade
-diagnostic if called and contains no retry classifier or loop.
-
 Postgres support intentionally reuses the same core path. `.taut.toml` selects
 SimpleBroker's public `postgres` backend plugin, `TautClient` resolves that
 `BrokerTarget`, and `taut/state/_sql.py` uses `Queue.sidecar()` to create the
@@ -204,10 +200,11 @@ and load reuse one install-hint owner instead of importing client-private
 diagnostics into actor-free operations.
 
 Release tooling lives in `bin/release.py`. Its boundary is repository hygiene,
-not runtime behavior. Each package manifest owns its version. A target-specific
-release changes only that selected version, while every normal invocation
-reconciles all derived copies: the core constant, any README tags and wheel
-names that remain present, all four extension core floors, the root Summon and
+not runtime behavior. All five first-party manifests own one synchronized
+version. Only an `all --version` release changes it; target-specific publication
+uses the already synchronized version. Every normal invocation reconciles all
+derived copies: the core constant, any README tags and wheel names that remain
+present, all four exact extension core pins, the root Summon and
 SimpleBroker PG dev floors, MCP's development-only `taut-pg` and
 `taut-summon` floors, every root
 README SimpleBroker requirement, and the retained Summon, MCP, and TUI locks. The
@@ -393,17 +390,13 @@ owner of that proof is `bin/build-and-check-release-wheels.py`: it builds fresh
 core, Summon, and MCP wheels in isolated temporary directories by default,
 then passes those exact artifacts to `bin/check-core-summon-wheel-matrix.py`.
 Its explicit path mode lets canonical CI reuse the current wheels it just
-built. Historical Summon remains a metadata diagnostic for the unrelated
-`Requires-Dist: taut` rename boundary. Current MCP is installed with current
-core through ordinary dependency resolution; its installed stdio entry point
-performs real SQLite attach/list/detach and clean shutdown. The matrix also
-proves the `taut-chat` core by itself, current extension pairing and live
-Summon control, exact current project names and floors, and resolver rejection
-of an older incompatible `taut-chat` core when such a published baseline
-exists. Historical extension wheels that require distribution `taut` are not
-installed as compatible: Python packaging has no alias from `taut` to
-`taut-chat`, and the two distributions must not coexist because both own the
-same `taut/` files. Core, Summon, and MCP local release paths run the build-owning
+built. Current MCP is installed with current core through ordinary dependency
+resolution; its installed stdio entry point performs real SQLite
+attach/list/detach and clean shutdown. The matrix also proves the `taut-chat`
+core by itself, current extension pairing and live Summon control, exact
+current project names and floors, and resolver rejection of an older
+incompatible `taut-chat` core when such a published baseline exists. Core,
+Summon, and MCP local release paths run the build-owning
 proof after the local preparation commit, prechecks, and ordinary builds, but
 before any branch push, tag mutation, tag push, or publication, including
 `--skip-checks`; PG-only and TUI-only releases do not run it.
@@ -819,16 +812,19 @@ stable queue names, and deduplicate before runtime construction. The runtime
 and watcher never re-resolve a mutable member route. Dynamic membership
 refresh still validates selected DM metadata before decoding and updates the
 shared human label mapping in place.
-Direct `TautWatcher(client, ...)` construction is preserved only as a deprecated
-constructor compatibility path and is converted immediately to the same runtime.
+Direct `TautWatcher(client, ...)` construction is rejected. `TautClient.watch()`
+owns conversion from a client to the internal runtime.
 
 The core CLI is a thin call into the command dispatcher. Root parsing consumes
 only root options and the selected verb; the selected adapter configures its
 own core-created parser. Root help still owns the cross-command exit classes,
 token trust boundary, and JSON diagnostic rule. Explicit `main([])` is distinct
-from `main(None)`: only `None` reads process argv. Runtime reply-id failures
-retain their normal exit class and add the owning command form plus the
-full-id/4-digit-suffix rule to stderr.
+from `main(None)`: only `None` reads process argv. The client classifies runtime
+reply-id failures with `MessageIdResolutionError`; not-found cases use its
+`MessageIdNotFoundError` subtype, which also remains a `NotFoundError` so exit 2
+is stable. The reply adapter catches that typed family and adds the owning
+command form plus the full-id/4-digit-suffix rule to stderr. Unrelated
+`NotFoundError` messages are never classified by their prose.
 
 Top-level verb dispatch now lives under `taut/commands/`. Lightweight
 `CommandSpec` manifests are static for built-ins and discovered through the
@@ -1020,7 +1016,6 @@ config context; debug action execution still reads its live environment.
 | `taut/_config.py` | SimpleBroker declaration delta and namespaced config resolution |
 | `taut/_constants.py` | Version, name rules, and identity constants |
 | `taut/_message_text.py` | Built-in Unicode blank classifier for user-authored message entry points |
-| `taut/_broker_retry.py` | Fail-closed prior-Summon import compatibility; no active retry behavior |
 | `taut/addressing.py` | Target parsing, channel/sub-thread validation, and internal queue naming |
 | `taut/_scripts.py` | Developer helper logic for `bin/pytest-pg` |
 | `taut/_exceptions.py` | Public exception hierarchy |
