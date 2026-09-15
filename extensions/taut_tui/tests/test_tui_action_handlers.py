@@ -34,23 +34,6 @@ from taut_tui.widgets import TautComposer, TautOptionList
 pytestmark = pytest.mark.sqlite_only
 
 
-class FocusRequestBarrier:
-    async def focus(self, widget: Any) -> None:
-        focus_delivery_applied = asyncio.Event()
-
-        def observe_focus_delivery() -> None:
-            # set_focus() posts Focus to the widget's independent message
-            # pump. Queue this second-stage barrier behind that delivery.
-            widget.call_later(focus_delivery_applied.set)
-
-        # Widget.focus() is itself deferred. Queue the barrier behind this
-        # request so earlier modal-restoration requests cannot satisfy it.
-        widget.focus()
-        widget.app.call_later(observe_focus_delivery)
-        await asyncio.wait_for(focus_delivery_applied.wait(), timeout=5)
-        assert widget.has_focus
-
-
 @dataclass(slots=True)
 class HandlerContext:
     app: TautApp
@@ -59,7 +42,6 @@ class HandlerContext:
     message_ts: int
     alice_token: str
     monkeypatch: pytest.MonkeyPatch
-    focus_probe: FocusRequestBarrier
 
 
 HandlerCase = Callable[[HandlerContext], Awaitable[None]]
@@ -147,8 +129,7 @@ async def _select_palette(context: HandlerContext, action_id: ActionId) -> None:
     )
     assert options.get_option_at_index(option_index).disabled is False
     options.highlighted = option_index
-    await context.focus_probe.focus(options)
-    await context.pilot.press("enter")
+    options.action_select()
     await context.pilot.pause()
 
 
@@ -459,8 +440,7 @@ async def _channel_rename(context: HandlerContext) -> None:
         assert observer.get_channel("renamed-channel").name == "renamed-channel"
     finally:
         observer.close()
-    await context.focus_probe.focus(composer)
-    await context.pilot.press("enter")
+    composer.action_submit()
     await _eventually(
         context.pilot,
         lambda: _thread_has_text(
@@ -982,7 +962,6 @@ def test_every_action_reaches_a_concrete_handler(
             as_name=None if action_id is ActionId.WORKSPACE_INITIALIZE else "alice",
             continuity_token=None,
         )
-        focus_probe = FocusRequestBarrier()
         async with app.run_test(size=(120, 36)) as pilot:
             context = HandlerContext(
                 app,
@@ -991,7 +970,6 @@ def test_every_action_reaches_a_concrete_handler(
                 message_ts,
                 alice_token,
                 monkeypatch,
-                focus_probe,
             )
             await _eventually(
                 pilot,

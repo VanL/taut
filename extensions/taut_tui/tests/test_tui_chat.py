@@ -17,7 +17,7 @@ import pytest
 
 from taut.client import Message, Notification, TautClient
 from taut_tui.app import TautApp
-from taut_tui.session import NavigationSnapshot
+from taut_tui.session import ConversationSnapshot, NavigationSnapshot
 
 pytestmark = pytest.mark.sqlite_only
 
@@ -32,19 +32,45 @@ class _NotificationRefreshProbe:
         self.observed_notification_ts: int | None = None
         self.notification_refresh_succeeded: bool | None = None
         self._handling_notification = False
+        self._awaiting_notification_restore = False
         self._target_refresh: Future[NavigationSnapshot] | None = None
         self._original_apply_delivery = app._apply_delivery
         self._original_apply_navigation = app._apply_navigation_result
+        self._original_apply_optional = app._apply_optional_conversation
+        self._original_restore_anchor = app._restore_transcript_anchor
         self.original_refresh_navigation: (
             Callable[[], Future[NavigationSnapshot]] | None
         ) = None
+
+    def observe_open_conversation(
+        self,
+        intent: int,
+        future: Future[ConversationSnapshot | None],
+        *,
+        error_prefix: str = "",
+    ) -> None:
+        self._original_apply_optional(intent, future, error_prefix=error_prefix)
+        if future.cancelled() or future.exception() is not None:
+            return
+        snapshot = future.result()
+        if snapshot is None or snapshot.target != "general":
+            return
+        if not any(
+            message.ts == self._last_history_ts for message in snapshot.messages
+        ):
+            return
+        transcript = self._app.query_one("#transcript")
+        # Queue behind the final future-driven render's initial tail scroll.
+        transcript.scroll_end(
+            animate=False,
+            on_complete=self.history_caught_up.set,
+        )
 
     def observe_delivery(
         self,
         generation: int,
         item: Message | Notification,
     ) -> bool:
-        is_last_history = isinstance(item, Message) and item.ts == self._last_history_ts
         is_target_notification = (
             self.notification_armed
             and isinstance(item, Notification)
@@ -61,17 +87,31 @@ class _NotificationRefreshProbe:
             accepted = self._original_apply_delivery(generation, item)
         finally:
             self._handling_notification = False
-        if accepted and is_last_history:
-            self._app.call_after_refresh(self.history_caught_up.set)
         return accepted
 
     def observe_navigation(self, future: Future[NavigationSnapshot]) -> None:
+        is_target = future is self._target_refresh
+        if is_target:
+            self._awaiting_notification_restore = True
         self._original_apply_navigation(future)
-        if future is self._target_refresh:
+        if is_target:
             self.notification_refresh_succeeded = (
                 not future.cancelled() and future.exception() is None
             )
-            self._app.call_after_refresh(self.notification_refresh_applied.set)
+
+    def observe_restore_anchor(
+        self,
+        messages: tuple[Message, ...],
+        anchor_index: int,
+        intra_row_offset: int,
+    ) -> None:
+        self._original_restore_anchor(messages, anchor_index, intra_row_offset)
+        if self._awaiting_notification_restore:
+            self._awaiting_notification_restore = False
+            transcript = self._app.query_one("#transcript")
+            # The restore method queues its geometry-dependent scroll after
+            # refresh. Queue this observation behind that exact scroll.
+            transcript.call_after_refresh(self.notification_refresh_applied.set)
 
     def observe_refresh_navigation(self) -> Future[NavigationSnapshot]:
         refresh = self.original_refresh_navigation
@@ -128,7 +168,7 @@ def test_navigation_uses_public_joined_channels_and_actor_scoped_dms(
 def test_only_active_conversation_advances_while_inactive_stays_unread(
     tmp_path: Path,
 ) -> None:
-    from taut_tui.session import ConversationSnapshot, TuiSession
+    from taut_tui.session import TuiSession
 
     db_path = tmp_path / "chat.db"
     alice, bob = _seed(db_path)
@@ -181,7 +221,7 @@ def test_only_active_conversation_advances_while_inactive_stays_unread(
 def test_latest_switch_wins_and_stops_old_watcher_before_replacement(
     tmp_path: Path,
 ) -> None:
-    from taut_tui.session import ConversationSnapshot, TuiSession
+    from taut_tui.session import TuiSession
 
     db_path = tmp_path / "chat.db"
     alice, bob = _seed(db_path)
@@ -329,7 +369,7 @@ def test_close_attempts_client_cleanup_when_watcher_stop_times_out() -> None:
 def test_explicit_reply_open_commits_claimed_history_and_watches_both_surfaces(
     tmp_path: Path,
 ) -> None:
-    from taut_tui.session import ConversationSnapshot, TuiSession
+    from taut_tui.session import TuiSession
 
     db_path = tmp_path / "chat.db"
     alice, bob = _seed(db_path)
@@ -454,6 +494,8 @@ def test_notification_refresh_keeps_scrolled_transcript_position(
     for ts in range(40):
         last_history = bob.say("general", f"history row {ts}")
     assert last_history is not None
+    seeded_history = alice.read("general", limit=1000)
+    assert seeded_history[-1].ts == last_history.ts
 
     async def exercise() -> None:
         app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
@@ -462,6 +504,16 @@ def test_notification_refresh_keeps_scrolled_transcript_position(
             last_history_ts=last_history.ts,
         )
         monkeypatch.setattr(app, "_apply_delivery", probe.observe_delivery)
+        monkeypatch.setattr(
+            app,
+            "_apply_optional_conversation",
+            probe.observe_open_conversation,
+        )
+        monkeypatch.setattr(
+            app,
+            "_restore_transcript_anchor",
+            probe.observe_restore_anchor,
+        )
         monkeypatch.setattr(
             app,
             "_apply_navigation_result",
@@ -484,7 +536,6 @@ def test_notification_refresh_keeps_scrolled_transcript_position(
                 if app.visual_state.active_conversation == "general":
                     break
             transcript = app.query_one("#transcript", TautOptionList)
-            transcript.focus()
             await asyncio.wait_for(probe.history_caught_up.wait(), timeout=5)
             # Simulate the user scrolling up (wheel/keys do not run any
             # anchor capture).
@@ -494,10 +545,17 @@ def test_notification_refresh_keeps_scrolled_transcript_position(
                 animate=False,
                 force=True,
                 on_complete=scroll_applied.set,
+                immediate=True,
             )
             await asyncio.wait_for(scroll_applied.wait(), timeout=5)
             top_offset = int(transcript.scroll_offset.y)
-            assert not transcript.is_vertical_scroll_end
+            assert not transcript.is_vertical_scroll_end, {
+                "max_scroll_y": transcript.max_scroll_y,
+                "offset": transcript.scroll_offset,
+                "options": transcript.option_count,
+                "region": transcript.scrollable_content_region,
+                "virtual_size": transcript.virtual_size,
+            }
             # A mention in another thread claims a notification pointer and
             # triggers a navigation refresh without a #general delivery.
             session = app._session
