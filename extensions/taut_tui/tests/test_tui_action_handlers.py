@@ -36,12 +36,18 @@ pytestmark = pytest.mark.sqlite_only
 
 class FocusRequestBarrier:
     async def focus(self, widget: Any) -> None:
-        focus_request_applied = asyncio.Event()
+        focus_delivery_applied = asyncio.Event()
+
+        def observe_focus_delivery() -> None:
+            # set_focus() posts Focus to the widget's independent message
+            # pump. Queue this second-stage barrier behind that delivery.
+            widget.call_later(focus_delivery_applied.set)
+
         # Widget.focus() is itself deferred. Queue the barrier behind this
         # request so earlier modal-restoration requests cannot satisfy it.
         widget.focus()
-        widget.app.call_later(focus_request_applied.set)
-        await asyncio.wait_for(focus_request_applied.wait(), timeout=5)
+        widget.app.call_later(observe_focus_delivery)
+        await asyncio.wait_for(focus_delivery_applied.wait(), timeout=5)
         assert widget.has_focus
 
 

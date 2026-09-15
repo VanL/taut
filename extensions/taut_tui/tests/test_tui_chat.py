@@ -7,17 +7,79 @@ Spec references:
 from __future__ import annotations
 
 import time
+from asyncio import Event as AsyncEvent
+from collections.abc import Callable
+from concurrent.futures import Future
 from pathlib import Path
 from threading import Event, Lock
 
 import pytest
-from textual.pilot import Pilot
 
 from taut.client import Message, Notification, TautClient
 from taut_tui.app import TautApp
-from taut_tui.widgets import TautOptionList
+from taut_tui.session import NavigationSnapshot
 
 pytestmark = pytest.mark.sqlite_only
+
+
+class _NotificationRefreshProbe:
+    def __init__(self, app: TautApp, *, last_history_ts: int) -> None:
+        self._app = app
+        self._last_history_ts = last_history_ts
+        self.history_caught_up = AsyncEvent()
+        self.notification_refresh_applied = AsyncEvent()
+        self.notification_armed = False
+        self.observed_notification_ts: int | None = None
+        self.notification_refresh_succeeded: bool | None = None
+        self._handling_notification = False
+        self._target_refresh: Future[NavigationSnapshot] | None = None
+        self._original_apply_delivery = app._apply_delivery
+        self._original_apply_navigation = app._apply_navigation_result
+        self.original_refresh_navigation: (
+            Callable[[], Future[NavigationSnapshot]] | None
+        ) = None
+
+    def observe_delivery(
+        self,
+        generation: int,
+        item: Message | Notification,
+    ) -> bool:
+        is_last_history = isinstance(item, Message) and item.ts == self._last_history_ts
+        is_target_notification = (
+            self.notification_armed
+            and isinstance(item, Notification)
+            and item.thread == "quiet"
+            and item.actor_name == "bob"
+            and item.matched == "@alice"
+        )
+        if is_target_notification:
+            assert isinstance(item, Notification)
+            assert item.message_ts is not None
+            self.observed_notification_ts = item.message_ts
+        self._handling_notification = is_target_notification
+        try:
+            accepted = self._original_apply_delivery(generation, item)
+        finally:
+            self._handling_notification = False
+        if accepted and is_last_history:
+            self._app.call_after_refresh(self.history_caught_up.set)
+        return accepted
+
+    def observe_navigation(self, future: Future[NavigationSnapshot]) -> None:
+        self._original_apply_navigation(future)
+        if future is self._target_refresh:
+            self.notification_refresh_succeeded = (
+                not future.cancelled() and future.exception() is None
+            )
+            self._app.call_after_refresh(self.notification_refresh_applied.set)
+
+    def observe_refresh_navigation(self) -> Future[NavigationSnapshot]:
+        refresh = self.original_refresh_navigation
+        assert refresh is not None
+        future = refresh()
+        if self._handling_notification:
+            self._target_refresh = future
+        return future
 
 
 def _wait_until(predicate: object, *, timeout: float = 5.0) -> None:
@@ -376,39 +438,6 @@ def test_transcript_decodes_literal_escapes_toward_sender_intent(
         bob.close()
 
 
-async def _settle_deliveries(
-    app: TautApp,
-    pilot: Pilot[None],
-    transcript: TautOptionList,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Wait for watcher catch-up quiescence.
-
-    Deduped catch-up redeliveries re-render without changing the row count,
-    so quiescence is measured in deliveries, not rows.
-    """
-
-    deliveries = {"count": 0}
-    original_apply = app._apply_delivery
-
-    def counting_apply(generation: int, item: Message | Notification) -> bool:
-        deliveries["count"] += 1
-        return original_apply(generation, item)
-
-    monkeypatch.setattr(app, "_apply_delivery", counting_apply)
-    quiet = 0
-    stable = deliveries["count"]
-    for _ in range(400):
-        await pilot.pause(0.05)
-        if deliveries["count"] == stable:
-            quiet += 1
-            if quiet >= 20 and transcript.option_count >= 40:
-                return
-        else:
-            quiet = 0
-            stable = deliveries["count"]
-
-
 def test_notification_refresh_keeps_scrolled_transcript_position(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -417,16 +446,27 @@ def test_notification_refresh_keeps_scrolled_transcript_position(
 
     import asyncio
 
-    from taut_tui.app import TautApp
     from taut_tui.widgets import TautOptionList
 
     db_path = tmp_path / "scroll.db"
     alice, bob = _seed(db_path)
+    last_history = None
     for ts in range(40):
-        bob.say("general", f"history row {ts}")
+        last_history = bob.say("general", f"history row {ts}")
+    assert last_history is not None
 
     async def exercise() -> None:
         app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
+        probe = _NotificationRefreshProbe(
+            app,
+            last_history_ts=last_history.ts,
+        )
+        monkeypatch.setattr(app, "_apply_delivery", probe.observe_delivery)
+        monkeypatch.setattr(
+            app,
+            "_apply_navigation_result",
+            probe.observe_navigation,
+        )
         async with app.run_test(size=(130, 34)) as pilot:
             for _ in range(200):
                 await pilot.pause(0.01)
@@ -445,21 +485,42 @@ def test_notification_refresh_keeps_scrolled_transcript_position(
                     break
             transcript = app.query_one("#transcript", TautOptionList)
             transcript.focus()
-            await _settle_deliveries(app, pilot, transcript, monkeypatch)
+            await asyncio.wait_for(probe.history_caught_up.wait(), timeout=5)
             # Simulate the user scrolling up (wheel/keys do not run any
             # anchor capture).
-            transcript.scroll_to(y=0, animate=False, force=True)
-            await pilot.pause(0.1)
+            scroll_applied = asyncio.Event()
+            transcript.scroll_to(
+                y=0,
+                animate=False,
+                force=True,
+                on_complete=scroll_applied.set,
+            )
+            await asyncio.wait_for(scroll_applied.wait(), timeout=5)
             top_offset = int(transcript.scroll_offset.y)
             assert not transcript.is_vertical_scroll_end
             # A mention in another thread claims a notification pointer and
             # triggers a navigation refresh without a #general delivery.
-            bob.say("quiet", "@alice ping")
-            for _ in range(400):
-                await pilot.pause(0.01)
+            session = app._session
+            assert session is not None
+            probe.original_refresh_navigation = session.refresh_navigation
+            monkeypatch.setattr(
+                session,
+                "refresh_navigation",
+                probe.observe_refresh_navigation,
+            )
+            probe.notification_armed = True
+            ping = bob.say("quiet", "@alice ping")
+            await asyncio.wait_for(
+                probe.notification_refresh_applied.wait(),
+                timeout=5,
+            )
+            assert probe.observed_notification_ts == ping.ts
+            assert probe.notification_refresh_succeeded is True
             assert int(transcript.scroll_offset.y) == top_offset
             assert not transcript.is_vertical_scroll_end
 
-    asyncio.run(exercise())
-    alice.close()
-    bob.close()
+    try:
+        asyncio.run(exercise())
+    finally:
+        alice.close()
+        bob.close()
