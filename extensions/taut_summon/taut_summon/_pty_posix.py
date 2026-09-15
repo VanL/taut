@@ -23,6 +23,7 @@ from taut_summon._adapter import (
     AdapterError,
     AdapterEvent,
     AdapterExitedError,
+    AdapterWriteCancelled,
     ExitEvent,
 )
 from taut_summon._process_domain_posix import ProcessDomain, ProcessIO, spawn_process
@@ -35,6 +36,10 @@ from taut_summon._pty import (
 )
 
 logger = logging.getLogger("taut_summon.pty")
+
+
+class _WriteEpochCancelled(Exception):
+    """Internal signal translated after the active write lease is released."""
 
 
 def spawn_posix_pty(
@@ -102,6 +107,7 @@ class PosixPtyHandle:
         self._normal_writer_lock = threading.Lock()
         self._events_claimed = False
         self._write_epoch = 0
+        self._interrupting = False
         self._retired = False
         self._close_condition = threading.Condition(self._lifecycle_lock)
         self._active_operations: set[object] = set()
@@ -287,6 +293,8 @@ class PosixPtyHandle:
                 return
             operation = self._register_operation_unlocked()
             self._write_epoch += 1
+            interrupt_epoch = self._write_epoch
+            self._interrupting = True
             try:
                 interrupt_fd = os.dup(self._master_fd)
             except OSError:
@@ -300,6 +308,10 @@ class PosixPtyHandle:
                 self._close_operation_fd(interrupt_fd)
             assert operation is not None
             self._release_operation(operation)
+            with self._close_condition:
+                if self._write_epoch == interrupt_epoch and not self._retired:
+                    self._interrupting = False
+                self._close_condition.notify_all()
 
     def request_close(self) -> None:
         operation: object | None = None
@@ -465,14 +477,23 @@ class PosixPtyHandle:
             raise AdapterError("PTY stream ended before provider leader exit")
         yield ExitEvent(returncode=returncode)
 
-    def _write_all(self, data: bytes) -> None:  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-032] exception
+    def _write_all(self, data: bytes) -> None:
         offset = 0
-        with self._lifecycle_lock:
+        with self._close_condition:
+            self._close_condition.wait_for(
+                lambda: not self._interrupting or self._retired or self._master_closed
+            )
             if self._master_closed:
                 raise AdapterExitedError("PTY master is closed")
             if self._retired:
                 raise AdapterError("PTY master is closed")
             write_epoch = self._write_epoch
+        try:
+            self._write_all_at_epoch(data, offset, write_epoch)
+        except _WriteEpochCancelled:
+            self._raise_write_cancellation(write_epoch)
+
+    def _write_all_at_epoch(self, data: bytes, offset: int, write_epoch: int) -> None:
         with self._normal_writer_lock:
             operation: object | None = None
             fd: int | None = None
@@ -520,7 +541,7 @@ class PosixPtyHandle:
 
     def _validate_write_unlocked(self, write_epoch: int) -> None:
         if write_epoch != self._write_epoch:
-            raise AdapterError("PTY write interrupted")
+            raise _WriteEpochCancelled
         if self._master_closed:
             raise AdapterExitedError("PTY master is closed")
         if self._retired:
@@ -570,9 +591,22 @@ class PosixPtyHandle:
         with self._close_condition:
             try:
                 if write_epoch != self._write_epoch:
-                    raise AdapterError("PTY write interrupted")
+                    raise _WriteEpochCancelled
             finally:
                 self._discard_operation_unlocked(operation)
+
+    def _raise_write_cancellation(self, write_epoch: int) -> None:
+        with self._close_condition:
+            self._close_condition.wait_for(
+                lambda: not self._interrupting or self._retired
+            )
+            if self._retired:
+                raise AdapterError("PTY master is closed")
+            if self._domain.observe_leader_exit() is not None:
+                raise AdapterExitedError("PTY child exited during write")
+            if write_epoch != self._write_epoch:
+                raise AdapterWriteCancelled("PTY write interrupted")
+        raise AdapterError("PTY write interrupted")
 
     def _wait_for_active_operations(self) -> None:
         with self._close_condition:

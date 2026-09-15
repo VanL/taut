@@ -1038,8 +1038,8 @@ def test_text_command_rename_preserves_draft(
 
             successful = CommandInvocation(
                 path=("channel", "rename"),
-                values={"old_name": "general", "new_name": "renamed"},
-                source=CommandInput("channel rename general renamed"),
+                values={"old_name": "#general", "new_name": "#renamed"},
+                source=CommandInput("channel rename #general #renamed"),
             )
             assert app._dispatch_channel_command(successful, app._domain)
             await pilot.pause()
@@ -1051,6 +1051,11 @@ def test_text_command_rename_preserves_draft(
             )
             assert app.visual_state.draft_for("renamed") == DraftState(
                 "renamed", "source\ndraft", 4, 2
+            )
+            composer.action_submit()
+            await _pause_until(
+                pilot,
+                lambda: any(row.text == "source\ndraft" for row in app._message_rows),
             )
 
     asyncio.run(exercise())

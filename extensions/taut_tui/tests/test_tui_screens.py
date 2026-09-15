@@ -15,6 +15,37 @@ from taut_tui.forms import form_spec
 pytestmark = pytest.mark.sqlite_only
 
 
+def test_draft_recovery_screen_previews_multiline_and_escape_retains() -> None:
+    from taut_tui.models import DraftState, RecoveredDraft
+    from taut_tui.screens import DraftRecoveryScreen
+
+    selected: list[str | None] = []
+    recovery = RecoveredDraft(
+        "draft-1",
+        DraftState("old", "first line\n[bold]literal[/bold]\n[", 5, 2),
+        "ops",
+        "rename collision",
+    )
+
+    class RecoveryHost(App[None]):
+        def on_mount(self) -> None:
+            self.push_screen(DraftRecoveryScreen((recovery,)), selected.append)
+
+    async def exercise() -> None:
+        app = RecoveryHost()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            preview = str(app.screen.query_one("#recovery-preview", Static).render())
+            assert "Original: old" in preview
+            assert "Intended: ops" in preview
+            assert "first line\n[bold]literal[/bold]\n[" in preview
+            await pilot.press("escape")
+            await pilot.pause()
+
+    asyncio.run(exercise())
+    assert selected == [None]
+
+
 def test_native_form_is_labelled_masked_clickable_and_validates_visually() -> None:
     from taut_tui.screens import FormSubmission, NativeFormScreen
 

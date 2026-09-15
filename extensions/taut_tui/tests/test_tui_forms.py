@@ -91,6 +91,7 @@ EXPECTED_CONTEXT = {
     ActionId.CHANNEL_SET_TOPIC: (ContextRequirement.ACTIVE_CHANNEL,),
     ActionId.CHANNEL_CLEAR_TOPIC: (ContextRequirement.ACTIVE_CHANNEL,),
     ActionId.CHANNEL_RENAME: (ContextRequirement.ACTIVE_CHANNEL,),
+    ActionId.DRAFT_RECOVER: (ContextRequirement.RECOVERED_DRAFT,),
     ActionId.COMPOSE_ENTER: (ContextRequirement.ACTIVE_TARGET,),
     ActionId.MESSAGE_SEND: (
         ContextRequirement.ACTIVE_TARGET,
@@ -150,6 +151,13 @@ APPLICABILITY_CASES = (
             has_nonblank_draft=True,
         ),
         "Enter a message first",
+    ),
+    (
+        ContextRequirement.RECOVERED_DRAFT,
+        ActionId.DRAFT_RECOVER,
+        ActionApplicabilityFacts(),
+        ActionApplicabilityFacts(has_recovered_draft=True),
+        "No recovered drafts",
     ),
 )
 

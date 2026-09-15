@@ -83,3 +83,20 @@ and no session persistence were used. A requested write was unavailable;
 no repository review artifact was produced. Verdict: no correctness blocker;
 the separately pending manifest ceiling was subsequently approved at 21,000
 bytes by the owner. The active plan records the scope and disposition.
+
+### Reported-issues follow-up plan review probe (2026-09-15)
+
+Claude 2.1.207 passed a combined file-reading liveness and write-attempt
+probe using `--safe-mode`, matched Read/Grep/Glob tool restrictions, plan
+mode, strict MCP config, no session persistence, JSON output and closed
+stdin (120-second bound). Result: PROBE-OK and WRITE-UNAVAILABLE;
+`probe-write-test.txt` was absent and no repository write resulted. Exit 0,
+success/end_turn, terminal reason completed; reviewer model
+`claude-opus-4-8[1m]`. The follow-up review is recorded in
+`docs/plans/2026-09-15-reported-issues-followup-plan.md`.
+
+The reported-issues plan review completed in two rounds, both PASS with
+exit 0, success/end_turn and terminal_reason=completed. Round 1 took
+367 seconds under a 540-second bound; round 2 used a 360-second bound
+and verified four accepted refinements. Both returned read-only verdicts;
+no unexpected repository write occurred.

@@ -32,6 +32,7 @@ from taut_summon._adapter import (
     AdapterEvent,
     AdapterExitedError,
     AdapterHandle,
+    AdapterWriteCancelled,
     ExitEvent,
     UnknownAdapterError,
     adapter_names,
@@ -1320,7 +1321,7 @@ def test_request_close_cancels_active_and_queued_pty_writes(
     assert not queued.is_alive()
     assert len(failures) == 2
     assert all(isinstance(exc, AdapterError) for exc in failures)
-    assert {str(exc) for exc in failures} == {"PTY write interrupted"}
+    assert {str(exc) for exc in failures} == {"PTY master is closed"}
     assert not queued_write_started.is_set()
 
 
@@ -1742,7 +1743,7 @@ def test_interrupt_wins_over_inflight_pty_io_error(
 
     assert not injector.is_alive()
     assert len(failures) == 1
-    assert isinstance(failures[0], AdapterError)
+    assert isinstance(failures[0], AdapterWriteCancelled)
     assert str(failures[0]) == "PTY write interrupted"
 
 
@@ -1993,8 +1994,8 @@ def test_interrupt_unblocks_full_pty_input_queue(
     injector.join(timeout=3.0)
     assert not injector.is_alive()
     assert len(injected) == 1
-    assert isinstance(injected[0], AdapterError)
-    assert str(injected[0]) == "PTY write interrupted"
+    assert isinstance(injected[0], (AdapterWriteCancelled, AdapterExitedError))
+    assert str(injected[0]) == "PTY child exited during write"
     handle.close()
     pump.drain_until_exit(timeout=5.0)
 
@@ -2078,7 +2079,7 @@ def test_interrupt_cancels_active_and_queued_writes_then_rearms(
     assert not interruptor.is_alive()
     assert interrupt_completed_before_active_write
     assert len(failures) == 2
-    assert all(isinstance(exc, AdapterError) for exc in failures)
+    assert all(isinstance(exc, AdapterWriteCancelled) for exc in failures)
     assert {str(exc) for exc in failures} == {"PTY write interrupted"}
     assert not old_queued_write.is_set()
 

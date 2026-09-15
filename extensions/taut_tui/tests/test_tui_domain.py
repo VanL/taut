@@ -33,6 +33,7 @@ def test_every_nonvisual_nonsummon_action_has_native_domain_ownership() -> None:
         ActionId.COMMAND_OPEN,
         ActionId.HELP_OPEN,
         ActionId.APPLICATION_QUIT,
+        ActionId.DRAFT_RECOVER,
     }
     summon = {
         ActionId.SUMMON_START,

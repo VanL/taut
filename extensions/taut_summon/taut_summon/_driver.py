@@ -11,10 +11,12 @@ manager ([SUM-2]). The driver owns exactly three runtime lanes:
 - **Ears**: a ``TautClient.watch`` handler that is exactly self-filter →
   format ([SUM-5.2]) → ``inject()`` → return. The watcher's
   handler-return contract IS the injection ledger — this module contains
-  **zero cursor code** ([SUM-5.4]). Adapter death is fatal-and-resume:
-  the handler halts injection on the first failed inject (blocking until
-  the driver has stopped the watcher) so [TAUT-8.4]'s 3-strikes poison
-  advance can never skip live chat.
+  **zero cursor code** ([SUM-5.4]). Reusable interrupt cancellation stops
+  and rebuilds the watcher over the same live handle without spending a
+  failure budget. Genuine adapter death remains fatal-and-resume: the handler
+  halts injection on the first failed inject (blocking until the driver has
+  stopped the watcher) so [TAUT-8.4]'s 3-strikes poison advance can never skip
+  live chat.
 - **Event pump**: a dedicated thread draining ``events()`` for the life
   of the child ([SUM-7.1]). Activity updates member liveness through
   rate-limited token-selected ``whoami()``; ``exit`` enters [SUM-11]'s
@@ -62,6 +64,7 @@ from taut import (
     NotInitializedError,
     TautClient,
     TautError,
+    WatcherRejected,
 )
 from taut.addressing import classify_registered_queue
 from taut.client import Member, Message, Notification
@@ -77,6 +80,7 @@ from taut_summon._adapter import (
     AdapterEvent,
     AdapterExitedError,
     AdapterHandle,
+    AdapterWriteCancelled,
     ExitEvent,
     ProviderAdapter,
     UnknownAdapterError,
@@ -362,6 +366,7 @@ class SummonDriver:
         # ([TAUT-8.4]: a per-message raise loop would poison-advance).
         self._watcher: Any | None = None
         self._watcher_failed = threading.Event()
+        self._injection_cancelled = threading.Event()
         self._watcher_error: BaseException | None = None
         self._member_id: str | None = None
         self._exit_code: int | None = None
@@ -1180,9 +1185,28 @@ class SummonDriver:
         line = format_injection(item)
         try:
             handle.inject(line)
+        except AdapterWriteCancelled as exc:
+            logger.info("inject cancelled; rebuilding watcher: %s", exc)
+            self._cancel_injection(exc)
         except AdapterError as exc:
             logger.warning("inject failed; halting injection: %s", exc)
             self._halt_and_raise(exc)
+
+    def _cancel_injection(self, cause: AdapterWriteCancelled) -> None:
+        """Stop this watcher attempt while preserving the live generation."""
+
+        watcher = self._watcher
+        if watcher is not None:
+            try:
+                watcher.request_stop()
+            except Exception:  # pragma: no cover - checked join remains authoritative
+                logger.debug(
+                    "watcher stop request during cancellation failed", exc_info=True
+                )
+        self._injection_cancelled.set()
+        self._wake.set()
+        self._halt_ack.wait(timeout=_HALT_ACK_TIMEOUT_SECONDS)
+        raise WatcherRejected("injection cancelled by reusable interrupt") from cause
 
     def _halt_and_raise(self, cause: Exception | None) -> None:
         """Adapter death is fatal-and-resume, never a per-message error.
@@ -1807,7 +1831,7 @@ class SummonDriver:
         assert self._evidence is not None
         return self._evidence
 
-    def _watch_until_wake(
+    def _watch_until_wake(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-091] exception
         self,
         boot: _BootstrapResult,
     ) -> None:
@@ -1821,6 +1845,7 @@ class SummonDriver:
         self._raise_if_control_failed()
         watcher_failures = 0
         harness_dead = self._harness_dead
+        readiness_deadline: float | None = None
         while not (
             self._shutdown.is_set()
             or harness_dead.is_set()
@@ -1828,6 +1853,7 @@ class SummonDriver:
         ):
             self._watcher_failed.clear()
             self._watcher_error = None
+            self._injection_cancelled.clear()
             self._halt_ack.clear()
             attempt_stop = threading.Event()
             watcher_ready = threading.Event()
@@ -1838,19 +1864,22 @@ class SummonDriver:
                 attempt_stop=attempt_stop,
                 harness_dead=harness_dead,
             )
-            deadline = time.monotonic() + 30.0
+            if readiness_deadline is None:
+                readiness_deadline = time.monotonic() + 30.0
             while (
                 not watcher_ready.is_set()
                 and not self._watcher_failed.is_set()
+                and not self._injection_cancelled.is_set()
                 and not harness_dead.is_set()
                 and not self._shutdown.is_set()
                 and not self._control_failed.is_set()
-                and time.monotonic() < deadline
+                and time.monotonic() < readiness_deadline
             ):
                 watcher_ready.wait(timeout=0.05)
             if (
                 not watcher_ready.is_set()
                 and not self._watcher_failed.is_set()
+                and not self._injection_cancelled.is_set()
                 and not harness_dead.is_set()
                 and not self._shutdown.is_set()
                 and not self._control_failed.is_set()
@@ -1859,7 +1888,8 @@ class SummonDriver:
                 self._request_watcher_attempt_stop(attempt_stop)
                 self._join_watcher_attempt(watcher_thread)
                 raise DriverError("cannot watch chat: watcher did not become ready")
-            if watcher_ready.is_set():
+            if watcher_ready.is_set() and not self._injection_cancelled.is_set():
+                readiness_deadline = None
                 if getattr(self, "_on_ready", None) is not None and not getattr(
                     self, "_ready_callback_invoked", False
                 ):
@@ -1888,6 +1918,18 @@ class SummonDriver:
             self._join_watcher_attempt(watcher_thread)
 
             self._raise_if_control_failed()
+
+            if (
+                self._injection_cancelled.is_set()
+                and not self._shutdown.is_set()
+                and not harness_dead.is_set()
+            ):
+                if (
+                    readiness_deadline is not None
+                    and time.monotonic() >= readiness_deadline
+                ):
+                    raise DriverError("cannot watch chat: watcher did not become ready")
+                continue
 
             if (
                 self._watcher_failed.is_set()
@@ -2213,6 +2255,7 @@ class SummonDriver:
             if (
                 not self._watcher_stop_requested(attempt_stop, harness_dead)
                 and not self._halt_ack.is_set()
+                and not self._injection_cancelled.is_set()
             ):
                 failed = True
                 self._watcher_error = exc
@@ -2234,6 +2277,7 @@ class SummonDriver:
             if not (
                 self._watcher_stop_requested(attempt_stop, harness_dead)
                 or self._halt_ack.is_set()
+                or self._injection_cancelled.is_set()
             ):
                 if not failed:
                     self._watcher_error = None
@@ -2271,6 +2315,7 @@ class SummonDriver:
             self._shutdown.is_set()
             or self._harness_dead.is_set()
             or self._watcher_failed.is_set()
+            or self._injection_cancelled.is_set()
             or self._control_failed.is_set()
         ):
             self._wake.wait(timeout=0.2)

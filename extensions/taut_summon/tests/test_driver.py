@@ -58,6 +58,7 @@ from taut_summon._adapter import (
     ActivityEvent,
     AdapterError,
     AdapterExitedError,
+    AdapterWriteCancelled,
     ExitEvent,
 )
 from taut_summon._control import control_in_queue_name, control_out_queue_name
@@ -85,6 +86,7 @@ from taut_summon.interaction import (
 from taut_summon.models import SummonOperationError, SummonRequest
 
 import taut.client._identity as core_identity_module
+from taut import WatcherRejected
 from taut.client import Member, Message, TautClient
 from taut.identity import capture_process
 
@@ -1084,6 +1086,33 @@ def test_halt_and_raise_requests_signal_only_watcher_stop() -> None:
     assert driver._wake.is_set()
 
 
+def test_cancelled_injection_stops_watcher_without_marking_harness_dead() -> None:
+    class RecordingWatcher:
+        request_stop_calls = 0
+
+        def request_stop(self) -> None:
+            self.request_stop_calls += 1
+
+    driver = object.__new__(SummonDriver)
+    watcher = RecordingWatcher()
+    driver._watcher = watcher
+    driver._harness_dead = threading.Event()
+    driver._injection_cancelled = threading.Event()
+    driver._wake = threading.Event()
+    driver._halt_ack = threading.Event()
+    driver._halt_ack.set()
+
+    with pytest.raises(
+        WatcherRejected, match="injection cancelled by reusable interrupt"
+    ):
+        driver._cancel_injection(AdapterWriteCancelled("PTY write interrupted"))
+
+    assert watcher.request_stop_calls == 1
+    assert driver._injection_cancelled.is_set()
+    assert driver._wake.is_set()
+    assert not driver._harness_dead.is_set()
+
+
 def test_driver_ledger_client_is_persistent_and_foreground_owned(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1323,6 +1352,7 @@ def test_watcher_failure_wakes_driver_for_rebuild(
     driver._halt_ack = threading.Event()
     driver._wake = threading.Event()
     driver._watcher_failed = threading.Event()
+    driver._injection_cancelled = threading.Event()
     driver._watcher_error = None
     driver._watcher = None
     driver._control_failed = threading.Event()
@@ -1402,6 +1432,7 @@ def test_harness_death_before_watcher_publication_stops_owner_before_run(
     driver._halt_ack = threading.Event()
     driver._wake = threading.Event()
     driver._watcher_failed = threading.Event()
+    driver._injection_cancelled = threading.Event()
     driver._watcher_error = None
     driver._watcher = None
     driver._control_failed = threading.Event()
@@ -1490,6 +1521,7 @@ def test_live_watcher_after_bounded_join_is_fatal(
     driver._halt_ack = threading.Event()
     driver._wake = threading.Event()
     driver._watcher_failed = threading.Event()
+    driver._injection_cancelled = threading.Event()
     driver._watcher_error = None
     driver._watcher = None
     driver._control_failed = threading.Event()
@@ -1543,6 +1575,7 @@ def test_watcher_failure_rebuilds_without_closing_provider(
     driver._halt_ack = threading.Event()
     driver._wake = threading.Event()
     driver._watcher_failed = threading.Event()
+    driver._injection_cancelled = threading.Event()
     driver._watcher_error = None
     driver._watcher = None
     driver._control_failed = threading.Event()
@@ -1581,6 +1614,68 @@ def test_watcher_failure_rebuilds_without_closing_provider(
     assert handle.close_calls == 0
     assert handle.interrupt_calls == 0
     assert handle.request_close_calls == 0
+
+
+def test_pre_ready_cancellation_cannot_restart_past_original_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver = object.__new__(SummonDriver)
+    driver._request = _run_request()
+    driver._db_path = None
+    driver._shutdown = threading.Event()
+    driver._harness_dead = threading.Event()
+    driver._halt_ack = threading.Event()
+    driver._wake = threading.Event()
+    driver._watcher_failed = threading.Event()
+    driver._injection_cancelled = threading.Event()
+    driver._watcher_error = None
+    driver._watcher = None
+    driver._control_failed = threading.Event()
+    driver._control_error = None
+    constructions = 0
+
+    class CancellingWatcher:
+        def notify_ready_after_initial_drain(self, _event: threading.Event) -> None:
+            pass
+
+        def run(self) -> None:
+            driver._injection_cancelled.set()
+            driver._wake.set()
+
+        def request_stop(self) -> None:
+            pass
+
+        def stop(self, *, join: bool = True) -> None:
+            del join
+
+    class FakeClient:
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        def watch(self, _handler: Callable[[Any], None], **kwargs: Any) -> Any:
+            nonlocal constructions
+            assert kwargs == {"persistent": True}
+            constructions += 1
+            return CancellingWatcher()
+
+        def close(self) -> None:
+            pass
+
+    clock = iter((0.0, 31.0))
+    monkeypatch.setattr(driver_module, "TautClient", FakeClient)
+    monkeypatch.setattr(driver_module.time, "monotonic", lambda: next(clock))
+
+    with pytest.raises(DriverError, match="watcher did not become ready"):
+        driver._watch_until_wake(
+            _BootstrapResult(
+                member_id="m_reviewer",
+                member_name="reviewer",
+                token="tok",
+                provider="scripted",
+            )
+        )
+
+    assert constructions == 1
 
 
 def test_pump_constructs_mouth_client_on_pump_thread(

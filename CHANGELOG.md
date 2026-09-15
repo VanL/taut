@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Channel renames entered in the TUI now canonicalize `#`-prefixed names,
+  preserve the active conversation and reply targets, and retain colliding
+  session drafts in an explicit recovery flow instead of overwriting text.
+
+- Core CLI usage, parser, manifest, command-load, and execution diagnostics now
+  fall back together to packaged terminal policy when project display policy
+  is unavailable, preserving the original known error before the fixed policy
+  diagnostic.
+
+- Summon now distinguishes reusable PTY write cancellation from provider
+  failure. A rate-limit interrupt rebuilds chat watching over the same
+  surviving harness, preserves chat cursor replay, and consumes no crash or
+  watcher-failure budget; provider exit and permanent retirement keep their
+  existing recovery paths.
+
 - For `taut-mcp` 0.10.0, successful tool results now use `{"records": [...]}`
   with `warnings` present only when nonempty. This replaces the six-field
   `empty`/`guidance`/`record_type`/`records`/`warnings`/`workspace` object and

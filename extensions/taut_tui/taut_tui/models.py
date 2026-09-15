@@ -95,6 +95,24 @@ class DraftState:
 
 
 @dataclass(frozen=True, slots=True)
+class RecoveredDraft:
+    """A displaced draft retained for explicit, session-local recovery."""
+
+    recovery_id: str
+    draft: DraftState
+    intended_target: str
+    reason: str
+
+    def __post_init__(self) -> None:
+        if not self.recovery_id:
+            raise ValueError("recovery_id must not be empty")
+        if not self.intended_target:
+            raise ValueError("recovery intended_target must not be empty")
+        if not self.reason:
+            raise ValueError("recovery reason must not be empty")
+
+
+@dataclass(frozen=True, slots=True)
 class ScrollAnchor:
     """Tail pin or stable message-and-row-offset history anchor."""
 
@@ -147,6 +165,8 @@ class VisualState:
     selected_navigation: str | None = None
     selected_message_id: int | None = None
     drafts: tuple[DraftState, ...] = ()
+    recovered_drafts: tuple[RecoveredDraft, ...] = ()
+    next_recovery_id: int = 1
     command_input: str = ""
     search_input: str = ""
     mode: InteractionMode = InteractionMode.NORMAL
@@ -162,6 +182,11 @@ class VisualState:
         targets = [draft.target for draft in self.drafts]
         if len(targets) != len(set(targets)):
             raise ValueError("draft targets must be unique")
+        recovery_ids = [item.recovery_id for item in self.recovered_drafts]
+        if len(recovery_ids) != len(set(recovery_ids)):
+            raise ValueError("recovery ids must be unique")
+        if self.next_recovery_id < 1:
+            raise ValueError("next_recovery_id must be positive")
         if self.pane_choice is LogicalSurface.RESIZE_HINT:
             raise ValueError("resize hint is not a selectable content pane")
         if self.selected_message_id is not None and self.selected_message_id <= 0:
@@ -186,24 +211,57 @@ class VisualState:
         new_name: str,
         *,
         remap_open_view: bool,
+        minimum_revision: int | None = None,
     ) -> VisualState:
         """Move affected drafts and, when owned, the open channel projection."""
 
-        drafts: dict[str, DraftState] = {
-            draft.target: draft
-            for draft in self.drafts
-            if remap_channel_target(draft.target, old_name, new_name) == draft.target
-        }
+        drafts: dict[str, DraftState] = {}
+        recoveries = self.recovered_drafts
+        next_recovery_id = self.next_recovery_id
+        moved: list[DraftState] = []
         for draft in self.drafts:
             mapped = remap_channel_target(draft.target, old_name, new_name)
             assert mapped is not None
             if mapped != draft.target:
-                drafts[mapped] = replace(draft, target=mapped)
+                moved.append(replace(draft, target=mapped))
+            else:
+                drafts[draft.target] = draft
+        # Mapped source drafts own the destination. Preserve any nonempty draft
+        # they displace for explicit recovery, including whitespace-only text.
+        for draft in moved:
+            displaced = drafts.get(draft.target)
+            if displaced is not None and displaced.text:
+                recoveries, next_recovery_id = _append_recovery(
+                    recoveries,
+                    displaced,
+                    next_recovery_id=next_recovery_id,
+                    intended_target=draft.target,
+                    reason="channel rename replaced an existing draft",
+                )
+            destination_revision = displaced.revision if displaced is not None else 0
+            if displaced is not None or minimum_revision is not None:
+                draft = replace(
+                    draft,
+                    revision=max(
+                        draft.revision,
+                        destination_revision,
+                        minimum_revision or 0,
+                    )
+                    + 1,
+                )
+            drafts[draft.target] = draft
         if not remap_open_view:
-            return replace(self, drafts=tuple(drafts.values()))
+            return replace(
+                self,
+                drafts=tuple(drafts.values()),
+                recovered_drafts=recoveries,
+                next_recovery_id=next_recovery_id,
+            )
         return replace(
             self,
             drafts=tuple(drafts.values()),
+            recovered_drafts=recoveries,
+            next_recovery_id=next_recovery_id,
             active_conversation=remap_channel_target(
                 self.active_conversation, old_name, new_name
             ),
@@ -214,6 +272,83 @@ class VisualState:
                 self.selected_navigation, old_name, new_name
             ),
         )
+
+    def load_recovered_draft(
+        self, recovery_id: str, *, minimum_revision: int | None = None
+    ) -> VisualState:
+        """Install one recovery and retain any occupied destination draft."""
+
+        selected = next(
+            (item for item in self.recovered_drafts if item.recovery_id == recovery_id),
+            None,
+        )
+        if selected is None:
+            raise KeyError(f"unknown recovered draft {recovery_id!r}")
+        recoveries = tuple(
+            item for item in self.recovered_drafts if item.recovery_id != recovery_id
+        )
+        occupied = self.draft_for(selected.intended_target)
+        next_recovery_id = self.next_recovery_id
+        if occupied is not None and occupied.text:
+            recoveries, next_recovery_id = _append_recovery(
+                recoveries,
+                occupied,
+                next_recovery_id=next_recovery_id,
+                intended_target=selected.intended_target,
+                reason="draft recovery replaced an existing draft",
+            )
+        max_revision = max(
+            (
+                draft.revision
+                for draft in (
+                    *self.drafts,
+                    *(item.draft for item in self.recovered_drafts),
+                )
+            ),
+            default=0,
+        )
+        loaded = replace(
+            selected.draft,
+            target=selected.intended_target,
+            revision=max(
+                max_revision,
+                selected.draft.revision,
+                minimum_revision or 0,
+            )
+            + 1,
+        )
+        remaining = tuple(
+            draft for draft in self.drafts if draft.target != selected.intended_target
+        )
+        return replace(
+            self,
+            drafts=(*remaining, loaded),
+            recovered_drafts=recoveries,
+            next_recovery_id=next_recovery_id,
+        )
+
+
+def _append_recovery(
+    recoveries: tuple[RecoveredDraft, ...],
+    draft: DraftState,
+    *,
+    next_recovery_id: int,
+    intended_target: str,
+    reason: str,
+) -> tuple[tuple[RecoveredDraft, ...], int]:
+    recovery_id = f"draft-{next_recovery_id}"
+    return (
+        (
+            *recoveries,
+            RecoveredDraft(
+                recovery_id=recovery_id,
+                draft=draft,
+                intended_target=intended_target,
+                reason=reason,
+            ),
+        ),
+        next_recovery_id + 1,
+    )
 
 
 def remap_channel_target(
@@ -239,6 +374,7 @@ __all__ = [
     "InteractionMode",
     "LayoutMode",
     "LogicalSurface",
+    "RecoveredDraft",
     "ScrollAnchor",
     "TerminalSize",
     "VisualState",

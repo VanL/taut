@@ -18,6 +18,8 @@ from taut_summon._adapter import (
     ActivityEvent,
     AdapterError,
     AdapterEvent,
+    AdapterExitedError,
+    AdapterWriteCancelled,
     ExitEvent,
 )
 from taut_summon._win32_io import (
@@ -119,6 +121,10 @@ class _ActiveWrite:
     thread_handle: int
 
 
+class _WriteEpochCancelled(Exception):
+    """Internal signal translated after the active write is unpublished."""
+
+
 class _EpochWriter:
     """Serialized ConPTY input with exact-thread epoch cancellation."""
 
@@ -135,10 +141,14 @@ class _EpochWriter:
         self._close_failure: BaseException | None = None
 
     def write(self, payload: bytes) -> None:
-        with self._state:
-            epoch = self._epoch
-            self._validate(epoch)
-        self._write_with_epoch(payload, epoch)
+        try:
+            with self._state:
+                self._state.wait_for(lambda: not self._interrupting or self._retired)
+                epoch = self._epoch
+                self._validate(epoch)
+            self._write_with_epoch(payload, epoch)
+        except _WriteEpochCancelled:
+            self._raise_write_cancellation(epoch)
 
     def _write_with_epoch(
         self, payload: bytes, epoch: int, *, interrupt_owner: bool = False
@@ -155,7 +165,7 @@ class _EpochWriter:
                 except Win32IoError as exc:
                     with self._state:
                         if epoch != self._epoch:
-                            raise AdapterError("PTY write interrupted") from exc
+                            raise _WriteEpochCancelled from exc
                     raise AdapterError(f"PTY write failed: {exc}") from exc
                 with self._state:
                     self._validate(epoch, interrupt_owner=interrupt_owner)
@@ -186,7 +196,7 @@ class _EpochWriter:
             with self._state:
                 if self._epoch == epoch and not self._retired:
                     self._interrupting = False
-                    self._state.notify_all()
+                self._state.notify_all()
 
     def request_close(self) -> None:
         with self._state:
@@ -195,6 +205,7 @@ class _EpochWriter:
             self._retired = True
             self._interrupting = True
             self._epoch += 1
+            self._state.notify_all()
             active = self._active
             worker = threading.Thread(
                 target=self._graceful_close_write,
@@ -260,11 +271,20 @@ class _EpochWriter:
 
     def _validate(self, epoch: int, *, interrupt_owner: bool = False) -> None:
         if epoch != self._epoch:
-            raise AdapterError("PTY write interrupted")
+            if interrupt_owner:
+                raise AdapterError("PTY write interrupted")
+            raise _WriteEpochCancelled
         if self._retired:
             raise AdapterError("PTY master is closed")
         if self._interrupting and not interrupt_owner:
-            raise AdapterError("PTY write interrupted")
+            raise _WriteEpochCancelled
+
+    def _raise_write_cancellation(self, epoch: int) -> None:
+        with self._state:
+            self._state.wait_for(lambda: not self._interrupting or self._retired)
+            if self._retired:
+                raise AdapterError("PTY master is closed")
+            raise AdapterWriteCancelled("PTY write interrupted")
 
 
 class _TerminalReplyWriter:
@@ -774,7 +794,21 @@ class WindowsPtyHandle:
                 return
 
     def inject(self, text: str) -> None:
-        self._writer.write(self._terminal.encode_injection(text))
+        try:
+            self._writer.write(self._terminal.encode_injection(text))
+        except AdapterWriteCancelled as exc:
+            with self._lock:
+                returncode = self._returncode
+                monitor_failure = self._exit_monitor_failure
+            if monitor_failure is not None:
+                raise AdapterError(
+                    "ConPTY child exit monitor failed"
+                ) from monitor_failure
+            if returncode is not None:
+                raise AdapterExitedError(
+                    f"ConPTY child exited during write with status {returncode}"
+                ) from exc
+            raise
         self._events.put(ActivityEvent(description="inject"))
 
     def interrupt(self) -> None:

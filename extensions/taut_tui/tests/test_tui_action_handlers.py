@@ -22,6 +22,7 @@ from taut_tui.screens import (
     CommandLineScreen,
     CommandPaletteScreen,
     ConfirmationScreen,
+    DraftRecoveryScreen,
     NamedActionScreen,
     NativeFormScreen,
     SearchScreen,
@@ -462,6 +463,17 @@ async def _channel_rename(context: HandlerContext) -> None:
     )
 
 
+async def _draft_recover(context: HandlerContext) -> None:
+    context.app.visual_state = (
+        context.app.visual_state.with_draft(DraftState("general", "source"))
+        .with_draft(DraftState("ops", "displaced"))
+        .after_channel_rename("general", "ops", remap_open_view=False)
+    )
+    await _select_palette(context, ActionId.DRAFT_RECOVER)
+    assert isinstance(context.app.screen, DraftRecoveryScreen)
+    await context.pilot.press("escape")
+
+
 async def _compose_enter(context: HandlerContext) -> None:
     await _open_general(context)
     await _select_palette(context, ActionId.COMPOSE_ENTER)
@@ -848,6 +860,7 @@ HANDLER_CASES: dict[ActionId, HandlerCase] = {
     ActionId.CHANNEL_SET_TOPIC: _channel_set_topic,
     ActionId.CHANNEL_CLEAR_TOPIC: _channel_clear_topic,
     ActionId.CHANNEL_RENAME: _channel_rename,
+    ActionId.DRAFT_RECOVER: _draft_recover,
     ActionId.COMPOSE_ENTER: _compose_enter,
     ActionId.MESSAGE_SEND: _message_send,
     ActionId.MESSAGE_REPLY: _message_reply,

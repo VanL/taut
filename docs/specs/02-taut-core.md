@@ -828,6 +828,16 @@ fixed config filename, never attacker-controlled path or parser text, and does
 not call the failed helper again. The public helper still raises the fixed
 `RuntimeError` above.
 
+When a core CLI diagnostic for an already-detected usage, command-load,
+parser, or execution failure cannot be rendered with the project terminal
+policy, Taut renders that diagnostic with the packaged policy, then the fixed
+policy-failure diagnostic, and exits 1. This does not bypass ordinary human
+output preflight or successful-output policy checks. If preflight fails before
+an underlying command error is detected, only the policy diagnostic is
+required. A packaged-policy failure retains the fixed printable-ASCII
+bootstrap diagnostic; dynamic text is never emitted unescaped. Existing quiet
+and raw-stdio ownership remains unchanged.
+
 This is a defense-in-depth output-safety control for accidentally relayed
 untrusted content. It does not authenticate participants, validate message
 meaning, prevent prompt injection, or change the [TAUT-9] trust boundary.
@@ -2920,6 +2930,9 @@ expression behavior.
   current MCP/current-core metadata and installed lifecycle gate.
 
 ## Related Plans
+
+- `docs/plans/2026-09-15-reported-issues-followup-plan.md` — extends packaged
+  terminal-policy fallback across known CLI diagnostic paths.
 
 - `docs/plans/2026-09-14-audit-remediation-plan.md`: plans fixes for committed-send receipts, workspace paths and debug JSON.
 

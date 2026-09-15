@@ -324,6 +324,21 @@ own-send history, so [SUM-10] audits separately.) Consequences, all required:
   [IAN-7.4]); their injection is therefore at-most-once, which matches
   their pointer semantics.
 
+Reusable write cancellation is not harness death or watcher failure. The
+driver stops and joins the current watcher attempt without advancing a
+cancelled chat-message delivery's cursor, then rebuilds it over the same
+surviving handle. Notification pointers retain their existing consumable,
+best-effort semantics: a pointer already claimed when injection is cancelled
+may be lost, and this path adds no notification replay or re-enqueue
+mechanism. It consumes neither harness-crash nor watcher-failure budget.
+Initial-drain cancellation preserves the pending readiness barrier until a
+replacement attempt completes its initial drain, subject to the original
+readiness deadline. Cancellation restarts neither that deadline nor its
+timeout budget; expiry follows the existing startup failure/shutdown path.
+Shutdown, control failure, provider exit, and genuine adapter failure retain
+their existing terminal or fatal recovery paths. A cancellation never retries
+through the ordinary poison-message budget.
+
 ## 6. Mouth — the CLI Contract [SUM-6]
 
 - The adapter constructs the provider child environment from a copy of the
@@ -407,6 +422,14 @@ independent of output.
 Ctrl-C behavior, aborts adapter writes in flight, and leaves a surviving
 handle and terminal domain open. It does not perform terminal-domain
 escalation.
+
+A write aborted by reusable interrupt is distinguishable from terminal
+retirement, provider exit, and transport failure. The cancellation outcome is
+not published to an injection caller until that interrupt has completed, so a
+same-generation retry cannot overtake its Ctrl-C delivery. Terminal retirement
+or provider exit observed concurrently takes precedence over reusable
+cancellation. An interrupted write may have delivered a partial event;
+successful retry remains at-least-once at the terminal boundary.
 
 `request_close()` is the nonblocking terminal-retirement operation. Under the
 handle's reentrant lifecycle lock it atomically changes `open` to
@@ -1199,6 +1222,10 @@ exits and preserve release-before-ACK ordering.
   interrupt delivery fails, the PTY adapter may terminate the child under
   [SUM-7.4]; that fallback is an interrupt-I/O failure, not an independent
   policy decision to restart a healthy generation.
+  A hard-breach interrupt that cancels an in-flight injection does not itself
+  retire a surviving generation. Delivery resumes through the cancellation
+  path in [SUM-5.4]. An actual provider exit, including exit caused by failed
+  interrupt delivery, remains eligible for normal generation recovery.
 
 ## 11. Failure Modes [SUM-11]
 
@@ -1621,6 +1648,10 @@ tail plus the `--attach` instruction.
   terminal-text policy.
 
 ## Related Plans
+
+- `docs/plans/2026-09-15-reported-issues-followup-plan.md` — distinguishes
+  reusable write cancellation from generation failure and preserves watcher
+  replay over a surviving handle.
 
 - `docs/plans/2026-09-15-windows-pty-lifecycle-fixes-plan.md` — gives the
   Windows exit monitor a private process handle, closes cancellation races,

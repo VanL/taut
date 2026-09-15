@@ -25,7 +25,7 @@ from taut import (
     NotInitializedError,
     TautError,
 )
-from taut.addressing import parse_target
+from taut.addressing import parse_target, validate_chat_thread_name
 from taut.client import (
     Channel,
     DoctorReport,
@@ -91,6 +91,7 @@ from taut_tui.screens import (
     CommandLineSubmission,
     CommandPaletteScreen,
     ConfirmationScreen,
+    DraftRecoveryScreen,
     FormSubmission,
     NamedActionScreen,
     NamedActionSubmission,
@@ -1146,6 +1147,7 @@ class TautApp(App[None]):
             ),
             selected_search_result=self._selected_search_hit is not None,
             has_nonblank_draft=draft is not None and bool(draft.text.strip()),
+            has_recovered_draft=bool(self.visual_state.recovered_drafts),
         )
 
     def _open_native_form(self, action_id: ActionId) -> bool:
@@ -1172,6 +1174,11 @@ class TautApp(App[None]):
             self.action_open_command()
         elif action_id is ActionId.SEARCH_OPEN:
             self.action_open_search()
+        elif action_id is ActionId.DRAFT_RECOVER:
+            self.push_screen(
+                DraftRecoveryScreen(self.visual_state.recovered_drafts),
+                self._complete_draft_recovery,
+            )
         elif action_id is ActionId.HELP_OPEN:
             self.action_open_help()
         elif action_id is ActionId.APPLICATION_QUIT:
@@ -2066,6 +2073,76 @@ class TautApp(App[None]):
             source=ActionRoute.CONTEXT,
         )
 
+    def _complete_draft_recovery(self, recovery_id: str | None) -> None:
+        if recovery_id is None:
+            return
+        recovery = next(
+            (
+                item
+                for item in self.visual_state.recovered_drafts
+                if item.recovery_id == recovery_id
+            ),
+            None,
+        )
+        if recovery is None:
+            self._show_error("That recovered draft is no longer available.")
+            return
+        session = self._session
+        if session is None:
+            self._show_error("The Taut session is still starting.")
+            return
+        self._capture_draft_cursor()
+        intent = self._advance_conversation_intent()
+        self._watch_future(
+            session.open_conversation(recovery.intended_target, intent_token=intent),
+            lambda done: self._apply_draft_recovery(recovery_id, intent, done),
+        )
+
+    def _apply_draft_recovery(
+        self,
+        recovery_id: str,
+        intent: int,
+        future: Future[ConversationSnapshot | None],
+    ) -> None:
+        if intent != self._conversation_intent:
+            return
+        try:
+            snapshot = future.result()
+        except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-085] exception
+            self._show_error(str(exc) or type(exc).__name__)
+            return
+        if snapshot is None:
+            self._show_error("The recovery target is no longer available.")
+            return
+        self._capture_draft_cursor()
+        try:
+            recovery = next(
+                (
+                    item
+                    for item in self.visual_state.recovered_drafts
+                    if item.recovery_id == recovery_id
+                ),
+                None,
+            )
+            if recovery is None:
+                raise KeyError(recovery_id)
+            minimum_revision = max(
+                (
+                    revision
+                    for target, revision in self._pending_sends.values()
+                    if target == recovery.intended_target
+                ),
+                default=None,
+            )
+            self.visual_state = self.visual_state.load_recovered_draft(
+                recovery_id,
+                minimum_revision=minimum_revision,
+            )
+        except KeyError:
+            self._show_error("That recovered draft is no longer available.")
+            return
+        self._apply_conversation(snapshot)
+
     def _complete_form(
         self,
         submission: FormSubmission,
@@ -2401,16 +2478,30 @@ class TautApp(App[None]):
         new_name: str,
         screen: NativeFormScreen | None = None,
     ) -> None:
+        try:
+            canonical_old_name = validate_chat_thread_name(
+                old_name, allow_subthread=False
+            )
+            canonical_new_name = validate_chat_thread_name(
+                new_name, allow_subthread=False
+            )
+        except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-085] exception
+            detail = str(exc) or type(exc).__name__
+            if screen is None:
+                self._show_error(detail)
+            else:
+                screen.show_domain_error(detail)
+            return
         self._capture_draft_cursor()
         intent = self._conversation_intent
         active_target = self.visual_state.active_conversation
         self._operation_state = "working"
         self._update_status()
         self._watch_future(
-            domain.rename_channel(old_name, new_name),
+            domain.rename_channel(canonical_old_name, canonical_new_name),
             lambda done: self._apply_channel_rename_result(
                 done,
-                old_name=old_name,
+                old_name=canonical_old_name,
                 intent=intent,
                 active_target=active_target,
                 screen=screen,
@@ -2440,6 +2531,9 @@ class TautApp(App[None]):
         if screen is not None:
             screen.complete()
 
+        # Transform the latest composer state. The user may have edited or
+        # navigated while the storage operation was in flight.
+        self._capture_draft_cursor()
         new_name = result.name
         intent_is_current = intent == self._conversation_intent
         owns_view = (
@@ -2450,6 +2544,14 @@ class TautApp(App[None]):
             old_name,
             new_name,
             remap_open_view=owns_view,
+            minimum_revision=max(
+                (
+                    revision
+                    for target, revision in self._pending_sends.values()
+                    if target == new_name
+                ),
+                default=None,
+            ),
         )
         self._remap_channel_projections(old_name, new_name)
         if intent_is_current:

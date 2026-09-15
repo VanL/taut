@@ -22,6 +22,7 @@ from taut_tui.actions import (
     ActionInvocation,
     ActionRoute,
 )
+from taut_tui.models import DraftState
 from taut_tui.widgets import TautComposer
 
 pytestmark = pytest.mark.sqlite_only
@@ -242,6 +243,12 @@ def test_every_declared_route_reaches_the_central_dispatcher_through_its_real_pr
                 selected_navigation="general",
                 selected_message_id=message.ts,
             )
+            if action_id is ActionId.DRAFT_RECOVER:
+                app.visual_state = (
+                    app.visual_state.with_draft(DraftState("old", "source"))
+                    .with_draft(DraftState("general", "displaced"))
+                    .after_channel_rename("old", "general", remap_open_view=False)
+                )
             app.query_one("#composer", TautComposer).text = "route-matrix-send"
             app._update_context_affordances()
             await pilot.pause()

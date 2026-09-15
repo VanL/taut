@@ -36,6 +36,7 @@ class ActionId(StrEnum):
     CHANNEL_SET_TOPIC = "channel.set-topic"
     CHANNEL_CLEAR_TOPIC = "channel.clear-topic"
     CHANNEL_RENAME = "channel.rename"
+    DRAFT_RECOVER = "draft.recover"
     COMPOSE_ENTER = "compose.enter"
     MESSAGE_SEND = "message.send"
     MESSAGE_REPLY = "message.reply"
@@ -239,6 +240,7 @@ _ACTION_SPECS = (
         confirmation=ConfirmationPolicy.ALWAYS,
         prompt="Rename {target}?",
     ),
+    _spec(ActionId.DRAFT_RECOVER, ActionFamily.MESSAGES, "Recover draft"),
     _spec(
         ActionId.COMPOSE_ENTER,
         ActionFamily.MESSAGES,

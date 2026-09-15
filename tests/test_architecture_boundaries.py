@@ -433,6 +433,10 @@ def test_first_party_terminal_sink_inventory_is_explicit() -> None:
         ("taut/commands/_rendering.py", "emit_members", ".write"),
         ("taut/commands/_rendering.py", "write_human_line", ".write"),
         ("taut/commands/_rendering.py", "write_human_line", ".write"),
+        ("taut/commands/_rendering.py", "write_diagnostic_lines", ".write"),
+        ("taut/commands/_rendering.py", "write_diagnostic_lines", ".write"),
+        ("taut/commands/_rendering.py", "write_diagnostic_lines", ".write"),
+        ("taut/commands/_rendering.py", "write_diagnostic_lines", ".write"),
         ("taut/commands/_rendering.py", "write_human_line_packaged_policy", ".write"),
         ("taut/commands/_rendering.py", "write_human_line_packaged_policy", ".write"),
         (
@@ -513,7 +517,7 @@ def test_first_party_terminal_sink_inventory_is_explicit() -> None:
         ),
         (
             "extensions/taut_summon/taut_summon/_pty_posix.py",
-            "PosixPtyHandle._write_all",
+            "PosixPtyHandle._write_all_at_epoch",
             "os.write",
         ),
         (

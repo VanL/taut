@@ -124,6 +124,14 @@ already primary. Target resolution, metadata reads, object rendering, queue
 search/write/close, subprocess work, and cleanup are all contained so they
 cannot replace the original diagnostic or exit behavior.
 
+Core CLI diagnostics share one atomic rendering helper. It first renders the
+complete error/hint group with project policy before writing any record. If
+that policy fails, it renders the known diagnostic group plus the fixed policy
+failure with packaged policy and makes the configuration failure own exit 1.
+Parser usage text remains structural argparse output and is not repeated by
+fallback. Human successful-output preflight, JSON success records, quiet mode,
+and raw-stdio transports retain their separate ownership.
+
 The workspace setting is core operational metadata in `taut_meta`, not logical
 workspace content. Absent means disabled; exact `1` means enabled; disable
 deletes the key. `TautClient.set_debug_capture()` requires an initialized

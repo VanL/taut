@@ -11,13 +11,35 @@ from typing import Any, Protocol, cast
 
 import psutil
 import pytest
-from taut_summon._adapter import AdapterError
+from taut_summon._adapter import (
+    AdapterError,
+    AdapterExitedError,
+    AdapterWriteCancelled,
+)
 from taut_summon._pty import _DetachChordMatcher
 
 pytestmark = [
     pytest.mark.xdist_group("process"),
     pytest.mark.sqlite_only,
 ]
+
+
+def test_handle_observed_exit_outranks_write_cancellation() -> None:
+    from taut_summon._pty_windows import WindowsPtyHandle
+
+    class CancelledWriter:
+        def write(self, _payload: bytes) -> None:
+            raise AdapterWriteCancelled("cancelled")
+
+    handle = object.__new__(WindowsPtyHandle)
+    handle._writer = cast(Any, CancelledWriter())
+    handle._terminal = cast(Any, _Terminal())
+    handle._lock = cast(Any, threading.RLock())
+    handle._returncode = 17
+    handle._exit_monitor_failure = None
+
+    with pytest.raises(AdapterExitedError, match="status 17"):
+        handle.inject("hello")
 
 
 def test_win32_process_structures_match_x64_abi() -> None:
@@ -214,6 +236,7 @@ def test_epoch_writer_keeps_active_thread_handle_live_during_cancel() -> None:
     interrupting.join(1.0)
     assert not writing.is_alive()
     assert not interrupting.is_alive()
+    assert isinstance(write_errors[0], AdapterWriteCancelled)
     assert [str(error) for error in write_errors] == ["PTY write interrupted"]
     assert interrupt_errors == []
     assert api.closed.count(91) == 1
@@ -242,6 +265,7 @@ def test_epoch_writer_skips_cancel_after_snapshotted_write_completes() -> None:
     writer.interrupt()
     writing.join(1.0)
     assert not writing.is_alive()
+    assert isinstance(write_errors[0], AdapterWriteCancelled)
     assert [str(error) for error in write_errors] == ["PTY write interrupted"]
     assert not api.cancel_started.is_set()
     assert api.writes == [b"x" * 1_000_000, b"\x03"]

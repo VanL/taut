@@ -405,6 +405,16 @@ intent is not replaced by rename completion. The replacement watcher uses
 the normal stop-and-join conversation-open path. A post-rename view failure
 does not change or retry the successful domain operation.
 
+Rename continuity uses canonical channel names on both sides, including when
+command input includes a leading `#`. Completion preserves current drafts and
+respects a newer conversation intent. If remapping would replace another
+nonempty draft, the displaced draft is retained in session-local recovery
+state with its original target and cursor. The TUI exposes a Recover draft
+action while recovery records exist. Loading a recovery never sends text; it
+preserves an occupied destination draft in recovery and assigns a fresh
+destination revision. Dismissing recovery retains its records. Recovery does
+not add persistence beyond the TUI session.
+
 ### [TUI-6.4] Search, presence, and reply threads
 
 Search is cursor-neutral and uses the public search result contract. Opening a
@@ -1018,6 +1028,9 @@ Version 1 does not include:
 - a direct port of the historical PR implementation.
 
 ## Related Plans
+
+- `docs/plans/2026-09-15-reported-issues-followup-plan.md` — canonical channel
+  rename continuity and session-local recovery for displaced drafts.
 
 - `docs/plans/2026-09-14-audit-remediation-plan.md`: plans deletion refresh and conversation continuity after rename.
 

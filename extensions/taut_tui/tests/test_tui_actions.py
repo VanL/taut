@@ -47,6 +47,7 @@ EXPECTED_ACTION_IDS = {
     "channel.set-topic",
     "channel.clear-topic",
     "channel.rename",
+    "draft.recover",
     "compose.enter",
     "message.send",
     "message.reply",

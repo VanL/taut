@@ -34,6 +34,7 @@ from taut.commands.syntax import (
 )
 from taut_tui.actions import ActionId, ActionSpec
 from taut_tui.forms import FieldKind, FormSpec, validate_visual_input
+from taut_tui.models import RecoveredDraft
 from taut_tui.widgets import TautButton as Button
 from taut_tui.widgets import TautCheckbox as Checkbox
 from taut_tui.widgets import TautInput as Input
@@ -284,6 +285,89 @@ class ConfirmationScreen(_TautModalScreen[bool]):
 
     def action_reject(self) -> None:
         self.dismiss(False)
+
+
+class DraftRecoveryScreen(_TautModalScreen[str | None]):
+    """Select and preview one displaced draft before explicitly loading it."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("escape", "cancel", "Close", show=False),
+    ]
+
+    def __init__(self, recoveries: tuple[RecoveredDraft, ...]) -> None:
+        super().__init__()
+        self._recoveries = recoveries
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="taut-modal"):
+            yield Static("Recover draft", classes="modal-title")
+            yield OptionList(
+                *(
+                    Option(
+                        f"{item.draft.target} → {item.intended_target}",
+                        id=item.recovery_id,
+                    )
+                    for item in self._recoveries
+                ),
+                id="recovery-list",
+            )
+            yield Static(id="recovery-preview")
+            yield Static(id="recovery-errors")
+            with Horizontal(id="form-controls"):
+                yield Button("Load draft", variant="primary", id="recovery-load")
+                yield Button("Close", id="recovery-close")
+
+    def on_mount(self) -> None:
+        options = self.query_one("#recovery-list", OptionList)
+        options.focus()
+        if self._recoveries:
+            options.highlighted = 0
+            self._render_preview(0)
+
+    def on_option_list_option_highlighted(
+        self, event: OptionList.OptionHighlighted
+    ) -> None:
+        if event.option_list.id == "recovery-list":
+            self._render_preview(event.option_index)
+
+    def on_taut_option_list_activated(self, event: OptionList.Activated) -> None:
+        if event.option_list.id == "recovery-list" and event.chain != 1:
+            self._load(event.option_index)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "recovery-close":
+            self.action_cancel()
+        elif event.button.id == "recovery-load":
+            highlighted = self.query_one("#recovery-list", OptionList).highlighted
+            if highlighted is not None:
+                self._load(highlighted)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def show_domain_error(self, message: str) -> None:
+        self.query_one("#recovery-errors", Static).update(message)
+        self.query_one("#recovery-load", Button).disabled = False
+        self.query_one("#recovery-close", Button).disabled = False
+
+    def complete(self) -> None:
+        self.dismiss(None)
+
+    def _load(self, index: int) -> None:
+        if not 0 <= index < len(self._recoveries):
+            return
+        self.query_one("#recovery-load", Button).disabled = True
+        self.query_one("#recovery-close", Button).disabled = True
+        self.dismiss(self._recoveries[index].recovery_id)
+
+    def _render_preview(self, index: int) -> None:
+        if not 0 <= index < len(self._recoveries):
+            return
+        item = self._recoveries[index]
+        self.query_one("#recovery-preview", Static).update(
+            f"Original: {item.draft.target}\n"
+            f"Intended: {item.intended_target}\n\n{item.draft.text}"
+        )
 
 
 class CommandPaletteScreen(_TautModalScreen["ActionId | PaletteCommandHandoff | None"]):

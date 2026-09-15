@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, TextIO
 
 from taut import addressing, escape_terminal_text
+from taut._constants import PROJECT_CONFIG_NAME
 from taut._exceptions import EmptyResultError, NotFoundError
 
 _POLICY_ERROR_MESSAGE = "terminal output policy is unavailable"
@@ -764,6 +765,46 @@ def write_human_line_packaged_policy(stream: TextIO, body: str) -> None:
 
     stream.write(escape_terminal_text_packaged(body))
     stream.write("\n")
+
+
+def terminal_policy_failure_message(exc: BaseException) -> str:
+    """Return the fixed diagnostic for an unavailable project policy."""
+
+    if getattr(exc, "project_config_syntax", False):
+        return f"invalid {PROJECT_CONFIG_NAME}: terminal output policy is unavailable"
+    return _POLICY_ERROR_MESSAGE
+
+
+def write_diagnostic_lines(stream: TextIO, lines: list[str]) -> bool:
+    """Write known-error records, falling back atomically to packaged policy.
+
+    The project-policy render is completed for every record before anything is
+    written.  This prevents a failure on a later hint from leaving a partial
+    diagnostic that the packaged-policy retry would duplicate.
+
+    Returns true when project policy failed and packaged policy was used.
+    """
+
+    try:
+        escaped = [_escape_human_text(line) for line in lines]
+    except _TerminalOutputPolicyError as policy_error:
+        fallback_lines = [*lines, terminal_policy_failure_message(policy_error)]
+        try:
+            from taut.terminal import escape_terminal_text_packaged
+
+            escaped = [escape_terminal_text_packaged(line) for line in fallback_lines]
+        except RuntimeError as exc:
+            raise _TerminalOutputPolicyError(
+                project_config_syntax=policy_error.project_config_syntax
+            ) from exc
+        for line in escaped:
+            stream.write(line)
+            stream.write("\n")
+        return True
+    for line in escaped:
+        stream.write(line)
+        stream.write("\n")
+    return False
 
 
 def preflight_human_output_policy() -> None:

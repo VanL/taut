@@ -44,6 +44,10 @@ class AdapterExitedError(AdapterError):
     """An adapter operation failed because its provider has already exited."""
 
 
+class AdapterWriteCancelled(AdapterError):
+    """A reusable interrupt cancelled an in-flight adapter write."""
+
+
 class UnknownAdapterError(AdapterError):
     """No adapter is registered under the requested provider name."""
 

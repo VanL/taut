@@ -82,6 +82,16 @@ conversation-intent token prevents delayed completion from taking over newer
 navigation. Core remains the owner of destination-name collisions; a reopen
 failure is reported after the completed rename without retrying it.
 
+The rename boundary canonicalizes both channel names before starting the
+domain future, so command spellings such as `#general` use the same keys as
+visual state. Completion always captures the current composer before remapping
+the current immutable state. When a remap collides with a nonempty destination
+draft, the source remains at the renamed target and the displaced draft moves
+to session-local recovery state. The Recover draft action previews retained
+multiline content and loads it explicitly through the ordinary conversation
+and composer path. Loading into an occupied target retains that target draft
+in turn and assigns a new revision, preserving the send-ack fence.
+
 The ordered context requirements in each non-Summon input contract also own
 semantic applicability. `forms.py` evaluates those requirements against one
 immutable set of closed visual facts and returns enabled or the first human

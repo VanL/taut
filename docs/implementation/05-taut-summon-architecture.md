@@ -256,9 +256,12 @@ running three concurrent lanes that a cold reader must keep distinct:
    locked database sections: reads and cursor writes are short SimpleBroker
    operations, removed membership handles are closed with `Queue.close()`, and
    shutdown closes the owned client. If the watcher exits, the supervisor
-   rebuilds the watcher over the same live provider generation; only pump exit or
-   injection failure spends the harness crash budget. Transient CLI clients
-   remain non-persistent.
+   rebuilds the watcher over the same live provider generation. Reusable write
+   cancellation stops and joins that watcher attempt, then rebuilds it over the
+   same handle without spending watcher or harness failure budgets. Before
+   readiness, replacement attempts share the original bounded deadline. A real
+   pump exit or genuine injection failure still spends the harness crash budget.
+   Transient CLI clients remain non-persistent.
    Multiline chat remains one user-role event. `format_injection()` indents
    every continuation line without stripping content, so `[system]`,
    `[notify]`, or a speaker-like prefix stays visibly inside the originating
@@ -354,6 +357,12 @@ Cancellation checks the exact active-write object and calls
 cannot close its thread handle until cancellation returns. A reusable interrupt
 keeps its epoch and transient gate through the Ctrl-C write, so a superseding
 interrupt or terminal close cannot emit a stale signal or poison later writes.
+Both adapters translate the superseded epoch into `AdapterWriteCancelled` only
+after releasing the active write lease and after interrupt delivery completes.
+Retirement and observed provider exit take precedence. The driver treats this
+outcome as attempt cancellation: chat remains eligible for durable cursor
+replay, while an already-claimed notification keeps its existing best-effort
+semantics.
 The drain starts on the first operation that needs output consumption: attach
 routing, detached event or settle consumption, or teardown. Publishing an
 attach sink before that start preserves one-shot startup prompts for the human

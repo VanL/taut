@@ -14,7 +14,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, TextIO
 
-from taut._constants import PROJECT_CONFIG_NAME, __version__
+from taut._constants import __version__
 from taut.commands._imports import resolve_import_target
 from taut.commands._protocol import (
     CommandArgumentParser,
@@ -101,14 +101,10 @@ def dispatch(
         if not isinstance(exc, _TerminalOutputPolicyError):
             raise
         error_stream = stderr if stderr is not None else sys.stderr
-        error_stream.write(f"{_terminal_policy_failure_message(exc)}\n")
+        from taut.commands._rendering import terminal_policy_failure_message
+
+        error_stream.write(f"{terminal_policy_failure_message(exc)}\n")
         return 1
-
-
-def _terminal_policy_failure_message(exc: RuntimeError) -> str:
-    if getattr(exc, "project_config_syntax", False):
-        return f"invalid {PROJECT_CONFIG_NAME}: terminal output policy is unavailable"
-    return str(exc)
 
 
 def _dispatch(
@@ -160,9 +156,9 @@ def _dispatch(
         _write_usage_error(f"unknown command: {verb}", error_stream)
         return 1
     if selected.error is not None or selected.spec is None:
-        _write_human_line(
+        _write_diagnostic_lines(
             error_stream,
-            selected.error or f"command {verb!r} is unavailable",
+            [selected.error or f"command {verb!r} is unavailable"],
         )
         return 1
 
@@ -236,9 +232,9 @@ def _prepare_invocation(
     except SystemExit as exc:
         if type(exc.code) is int and exc.code in (0, 1):
             return exc.code
-        _write_human_line(
+        _write_diagnostic_lines(
             environment.stderr,
-            f"taut {verb}: unexpected SystemExit({exc.code!r})",
+            [f"taut {verb}: unexpected SystemExit({exc.code!r})"],
         )
         return 1
     context = CommandContext(
@@ -666,8 +662,10 @@ def _write_root_help(
 
 
 def _write_usage_error(message: str, stream: TextIO, *, prog: str = "taut") -> None:
-    _write_human_line(stream, f"usage: {prog} ...")
-    _write_human_line(stream, f"{prog}: error: {message}")
+    _write_diagnostic_lines(
+        stream,
+        [f"usage: {prog} ...", f"{prog}: error: {message}"],
+    )
 
 
 def _write_selected_error(
@@ -681,12 +679,16 @@ def _write_selected_error(
         if selected.entry_point is not None
         else "static built-in manifest"
     )
-    _write_human_line(
+    _write_diagnostic_lines(
         stream,
-        f"command {selected.name!r} from {selected.distribution_name} "
-        f"{selected.distribution_version} failed to load "
-        f"(entry point {entry_point}; implementation "
-        f"{selected.spec.implementation}): {_exception_message(exc)}",
+        [
+            (
+                f"command {selected.name!r} from {selected.distribution_name} "
+                f"{selected.distribution_version} failed to load "
+                f"(entry point {entry_point}; implementation "
+                f"{selected.spec.implementation}): {_exception_message(exc)}"
+            )
+        ],
     )
 
 
@@ -709,10 +711,7 @@ def _render_execution_error(
     if context.quiet:
         return code
     from taut._exceptions import UnrecognizedCallerError
-    from taut.commands._rendering import (
-        _TerminalOutputPolicyError,
-        write_human_line_packaged_policy,
-    )
+    from taut.commands._rendering import write_diagnostic_lines
 
     # Recovery hints are separate records; everything else is one record, so
     # a newline inside dynamic error text stays visible as `\n`.
@@ -721,20 +720,17 @@ def _render_execution_error(
         if isinstance(exc, UnrecognizedCallerError)
         else [_exception_message(exc)]
     )
-    try:
-        for line in lines:
-            _write_human_line(context.stderr, line)
-    except _TerminalOutputPolicyError as policy_error:
-        # The command failed on its own terms and the project's terminal
-        # policy failed while reporting it. Deliver both, in that order, with
-        # the packaged policy, and let the config failure own the exit class.
-        for line in lines:
-            write_human_line_packaged_policy(context.stderr, line)
-        write_human_line_packaged_policy(
-            context.stderr, _terminal_policy_failure_message(policy_error)
-        )
+    if write_diagnostic_lines(context.stderr, lines):
         return 1
     return code
+
+
+def _write_diagnostic_lines(stream: TextIO, lines: list[str]) -> bool:
+    """Load the shared diagnostic renderer only when an error is emitted."""
+
+    from taut.commands._rendering import write_diagnostic_lines
+
+    return write_diagnostic_lines(stream, lines)
 
 
 def _write_human_line(stream: TextIO, body: str) -> None:

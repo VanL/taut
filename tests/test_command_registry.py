@@ -4511,6 +4511,170 @@ def test_registry_reports_the_real_error_when_terminal_policy_is_invalid(
     ]
 
 
+def test_known_dispatch_errors_fall_back_to_packaged_terminal_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from taut.commands import CommandSpec, GlobalOption
+    from taut.commands._dispatch import dispatch
+    from taut.commands._registry import CommandRegistry
+
+    (tmp_path / ".taut.toml").write_text(
+        """version = 1
+backend = "sqlite"
+target = ".taut.db"
+
+[terminal_text]
+escape_patterns = ["("]
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    broken_manifest = CommandRegistry(
+        entry_points=(
+            _EntryPoint(
+                "broken",
+                "broken.manifest:command",
+                RuntimeError("manifest exploded"),
+                _Distribution("broken-owner"),
+            ),
+        )
+    )
+    missing_implementation = CommandRegistry(
+        entry_points=(
+            _EntryPoint(
+                "fixture",
+                "fixture.manifest:fixture",
+                CommandSpec(
+                    1,
+                    "fixture",
+                    "Fixture.",
+                    frozenset(),
+                    "missing_fixture_module:create",
+                ),
+                _Distribution("fixture-owner"),
+            ),
+        )
+    )
+    unexpected_parse_exit = CommandRegistry(
+        entry_points=(
+            _EntryPoint(
+                "fixture",
+                "fixture.manifest:fixture",
+                CommandSpec(
+                    1,
+                    "fixture",
+                    "Fixture.",
+                    frozenset({GlobalOption.JSON}),
+                    "tests.test_command_registry:_create_parse_system_exit_command",
+                ),
+                _Distribution("fixture-owner"),
+            ),
+        )
+    )
+    cases = (
+        (
+            ["bad\ncommand"],
+            CommandRegistry(entry_points=()),
+            [
+                "usage: taut ...",
+                r"taut: error: unknown command: bad\ncommand",
+            ],
+        ),
+        (["broken"], broken_manifest, ["manifest exploded"]),
+        (["fixture"], missing_implementation, ["No module named"]),
+        (
+            ["--json", "fixture", "parse exploded"],
+            unexpected_parse_exit,
+            ["unexpected SystemExit('parse exploded')"],
+        ),
+        (
+            ["--json", "say"],
+            CommandRegistry(entry_points=()),
+            ["usage: taut say", "the following arguments are required: TARGET"],
+        ),
+    )
+
+    for argv, registry, expected_fragments in cases:
+        stdout = StringIO()
+        stderr = StringIO()
+        result = dispatch(
+            argv,
+            registry=registry,
+            stdin=StringIO(),
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+        assert result == 1
+        assert stdout.getvalue() == ""
+        rendered = stderr.getvalue()
+        for fragment in expected_fragments:
+            assert fragment in rendered
+        assert rendered.splitlines()[-1] == ("terminal output policy is unavailable")
+        assert rendered.count("terminal output policy is unavailable") == 1
+
+
+def test_human_parser_failure_still_stops_at_policy_preflight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from taut.commands._dispatch import dispatch
+    from taut.commands._registry import CommandRegistry
+
+    (tmp_path / ".taut.toml").write_text(
+        """version = 1
+backend = "sqlite"
+target = ".taut.db"
+
+[terminal_text]
+escape_patterns = ["("]
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    stderr = StringIO()
+
+    result = dispatch(
+        ["say"],
+        registry=CommandRegistry(entry_points=()),
+        stdin=StringIO(),
+        stdout=StringIO(),
+        stderr=stderr,
+    )
+
+    assert result == 1
+    assert stderr.getvalue() == "terminal output policy is unavailable\n"
+
+
+def test_parser_diagnostic_policy_failure_overrides_exit_two(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from taut.commands import CommandArgumentParser
+
+    (tmp_path / ".taut.toml").write_text(
+        """version = 1
+backend = "sqlite"
+target = ".taut.db"
+
+[terminal_text]
+escape_patterns = ["("]
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    stderr = StringIO()
+    parser = CommandArgumentParser(prog="taut fixture", stderr=stderr)
+
+    with pytest.raises(SystemExit) as raised:
+        parser.exit(2, "hostile\nerror\n")
+
+    assert raised.value.code == 1
+    assert stderr.getvalue().splitlines() == [
+        r"hostile\nerror",
+        "terminal output policy is unavailable",
+    ]
+
+
 def test_registry_names_taut_toml_for_a_presentation_only_project_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

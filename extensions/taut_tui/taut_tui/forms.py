@@ -51,6 +51,7 @@ class ContextRequirement(StrEnum):
     SELECTED_MESSAGE = "selected-message"
     SELECTED_SEARCH_RESULT = "selected-search-result"
     DRAFT = "draft"
+    RECOVERED_DRAFT = "recovered-draft"
 
 
 class ConfirmationTarget(StrEnum):
@@ -242,6 +243,7 @@ class ActionApplicabilityFacts:
     selected_message: bool = False
     selected_search_result: bool = False
     has_nonblank_draft: bool = False
+    has_recovered_draft: bool = False
 
     def __post_init__(self) -> None:
         if self.active_channel and not self.active_target:
@@ -507,6 +509,10 @@ _ACTION_INPUT_SPECS = (
         context=(ContextRequirement.ACTIVE_CHANNEL,),
     ),
     _input(
+        ActionId.DRAFT_RECOVER,
+        context=(ContextRequirement.RECOVERED_DRAFT,),
+    ),
+    _input(
         ActionId.COMPOSE_ENTER,
         context=(ContextRequirement.ACTIVE_TARGET,),
     ),
@@ -570,6 +576,8 @@ def _requirement_status(
         return facts.selected_search_result, "Select a search result first"
     if requirement is ContextRequirement.DRAFT:
         return facts.has_nonblank_draft, "Enter a message first"
+    if requirement is ContextRequirement.RECOVERED_DRAFT:
+        return facts.has_recovered_draft, "No recovered drafts"
     raise AssertionError(f"unhandled context requirement: {requirement.value}")
 
 
