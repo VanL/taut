@@ -682,7 +682,10 @@ tool sets `destructiveHint=false` explicitly because MCP treats an omitted
 `destructiveHint` as true; cursor advances, notification claims, and
 replacement writes such as `set_name`, `channel_topic`, and `channel_rename`
 are disclosed by description and structured guidance, not by the destructive
-flag. Read-only tools set `idempotentHint=true`.
+flag. An `inbox` claim observes an ephemeral, best-effort notification
+pointer that thereby becomes eligible for cleanup; nothing is deleted and the
+message it points to stays reachable through `log`, so observing it is not
+destructive. Read-only tools set `idempotentHint=true`.
 CLI-shaped tools whose domain includes externally mutable participant-shared
 Taut state set `openWorldHint=true`. The three process-lifecycle tools set
 it false because their tool-level effects are process-local; attachment
