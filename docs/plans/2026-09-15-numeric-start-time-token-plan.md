@@ -1,8 +1,8 @@
 # Numeric Start-Time Token Plan
 
-Status: active — Slices 1–5 implemented, committed, locally verified, and
-independently reviewed PASS on 2026-09-15. Linux and Windows native CI
-qualification remains before completion.
+Status: completed — Slices 1–5 implemented, committed, locally verified, and
+independently reviewed PASS on 2026-09-15. The owner closed the plan and
+deferred Linux and Windows native qualification to CI on the next push.
 Class: 5 (spec-changing). [DOM-5] risky
 trigger fires: identity anchoring is a public contract and the token is
 persisted, so the hardening-plans checklist applies. Plan type:
@@ -617,7 +617,7 @@ process amendment or new skill is required.
 | 2026-09-15 | 2 — numeric capture and `ps` removal | Failing-first targeted identity run; `uv run pytest tests/test_identity.py -n 0 -q`; `uv run mypy taut tests --config-file pyproject.toml`; Ruff check/format; commit `cca84d1` | Red failures reproduced the absent helper, bare Linux ticks, and macOS `ps` fallback. Green: identity suite passed with 3 native-platform skips; mypy passed 138 files; Ruff passed. |
 | 2026-09-15 | 3 — consumers | Both planned Summon lanes and the installed-wheel lane | Summon unit 308 passed; process lane 291 passed with 8 expected native-platform skips; installed-wheel lane 28 passed. No consumer edit required. |
 | 2026-09-15 | 4 — reconciliation | Documentation-reference, path, plan-index, and diff checks; commit `a3cb49a` | Documentation tests, 63-source/1392-claim path gate, plan index, and diff check passed. Repository-wide Ruff found only a formatting issue in the unrelated MCP plan; the owned `taut`/`tests` scope passed. |
-| 2026-09-15 | 5 — completed-work review | Fresh repository subagent `final_numeric_token_review`; focused and broad non-slow suites; mypy; scoped Ruff | PASS with no code or test findings. macOS native proof passed. Linux and Windows native CI qualification remains outstanding. |
+| 2026-09-15 | 5 — completed-work review | Fresh repository subagent `final_numeric_token_review`; focused and broad non-slow suites; mypy; scoped Ruff | PASS with no code or test findings. macOS native proof passed. The owner closed the plan and deferred Linux and Windows native qualification to CI on the next push. |
 
 ## Review Log
 
@@ -629,3 +629,4 @@ process amendment or new skill is required.
 | 2026-09-15 initial review F4 | Codex task and independent slice/consumer subagent | BLOCKED | Incorrect fixture edits and missing failure/stability proof | Accepted: explicit test inventory, corrected routing/plumbing/parser expectations, controlled patches with separate native proof. |
 | 2026-09-15 revision verification | fresh repository subagent (`verify_plan_revision`) | PASS | F1/F3/F4 fixes; new malformed-stat separator case | Explicit separator rejection and a long malformed fixture added and re-reviewed. Documentation-reference tests: 12 passed; path and status-index gates passed. No implementation has begun; native three-platform qualification remains an execution gate. |
 | 2026-09-15 completed work | fresh repository subagent (`final_numeric_token_review`) | PASS | No implementation or test blockers; stale plan header | Header corrected. Reviewer verified macOS clock and observer proofs, token ownership, `ps` removal, typing, scoped Ruff, and documentation gates. Linux and Windows native CI runs remain qualification evidence before completion. |
+| 2026-09-15 owner closure | repository owner in this task | accepted | Linux and Windows native CI had not run for the local commits | Plan closed; those native tests run with the next pushed CI matrix. A CI failure reopens the implementation as a defect. |
