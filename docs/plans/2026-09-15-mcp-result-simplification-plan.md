@@ -1,11 +1,8 @@
 # MCP Result Simplification Plan
 
-Status: active — plan drafted 2026-09-15; fresh-eyes plan review returned
-BLOCKED on the size estimate and five slice-instruction defects, all
-incorporated below (see Review Log); two bounded Codex attempts produced no
-verdict. Owner chose to omit `outputSchema` on 2026-09-15; this revision
-resolves that branch and the three subsequent Codex review findings.
-Implementation started 2026-09-15; slice evidence is recorded below.
+Status: completed — implemented 2026-09-15. All slices and independent
+reviews passed. Manifest: 20,514 bytes under the owner-approved 21,000-byte
+ceiling; `outputSchema` omitted. No release published.
 Class: 5 (spec-changing). [DOM-5] risky trigger fires: this changes the
 public MCP result contract, so the hardening-plans checklist applies. Plan
 type: implementation with spec revision. Promotion strategy: A (in-file
@@ -104,7 +101,7 @@ runtime validation. The test oracle and real-result validation stay in
 place. Reconsider only when a concrete client requirement earns the cost.
 The ceiling is 21,000 bytes. There is no alternative execution branch.
 
-## Revision scope
+## Planning revision scope (historical)
 
 This is an owner-directed Class 5 plan revision within the existing dated
 plan, not implementation or spec promotion. The pre-revision review found
@@ -321,7 +318,8 @@ The core package is untouched.
   annotations paragraph, after this plan's anchor, and every delta anchor
   was re-verified to match exactly once at this SHA) —
   `docs/specs/05-taut-mcp.md`, `docs/specs/02-taut-core.md` [TAUT-8.2].
-- Promotion baseline identifier: `801554c`.
+- Promotion baseline identifier: `b037069` (initial text promotion `801554c`;
+  owner-approved ceiling revision promoted with Slice 6).
 
 ## Proposed spec delta
 
@@ -1229,3 +1227,12 @@ rule or lesson is needed. Coalescing check is deferred as a separate
 maintenance unit: 41 lessons past the 2026-07-14 watermark, 26 cold by the
 30-day floor, and 96 completed/superseded non-exemplar indexed plans at the
 check. This task does not fold or retire unrelated history.
+
+Final acceptance: unfiltered non-PG MCP lane passed (309 cases); real PostgreSQL
+conformance passed (7 cases); document references passed (12 cases); mypy
+passed (24 files); Ruff lint/format, document paths, plan index, suppression
+index, and diff checks passed. Independent final documentation/metadata review
+also PASS: exact 21 tool descriptions and 75 parameter descriptions, reply
+suffix contract, 20,514-byte measurement, and forthcoming-release wording
+verified. Implementation commits: `801554c`, `e68e79b`, `660cdd0`, `fa85188`,
+`b037069`, `3a3cd39`; this closeout records the final review and status.

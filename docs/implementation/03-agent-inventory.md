@@ -65,3 +65,14 @@ Update this file when:
 Presence/version probes do not prove authenticated review capability. Before
 selecting a merely present family, run the small read-only prompt described
 above and promote it to `verified usable` or record the exact blocking error.
+
+### MCP result simplification review refresh (2026-09-15)
+
+Claude's fresh read-only file probe returned `PROBE-OK`; the full MCP result
+review completed in 159 seconds with exit 0, success/end_turn, and
+`terminal_reason=completed`, using `claude-opus-4-8[1m]`. Matched
+Read/Grep/Glob tool sets, safe/plan mode, strict MCP config, closed stdin,
+and no session persistence were used. A requested write was unavailable;
+no repository review artifact was produced. Verdict: no correctness blocker;
+the separately pending manifest ceiling was subsequently approved at 21,000
+bytes by the owner. The active plan records the scope and disposition.
