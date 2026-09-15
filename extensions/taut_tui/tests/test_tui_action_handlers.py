@@ -11,8 +11,6 @@ from threading import Event
 from typing import Any, cast
 
 import pytest
-from textual import events
-from textual.message import Message as TextualMessage
 from textual.widgets import Button, Input, OptionList, Select
 
 from taut import EmptyResultError, NotFoundError
@@ -36,26 +34,14 @@ from taut_tui.widgets import TautComposer, TautOptionList
 pytestmark = pytest.mark.sqlite_only
 
 
-class FocusProbe:
-    def __init__(self) -> None:
-        self._targets: dict[Any, asyncio.Event] = {}
-
-    def observe(self, message: TextualMessage) -> None:
-        if isinstance(message, events.DescendantFocus):
-            event = self._targets.pop(message.widget, None)
-            if event is not None:
-                event.set()
-
+class FocusRequestBarrier:
     async def focus(self, widget: Any) -> None:
-        if widget.has_focus:
-            return
-        focused = asyncio.Event()
-        self._targets[widget] = focused
+        focus_request_applied = asyncio.Event()
+        # Widget.focus() is itself deferred. Queue the barrier behind this
+        # request so earlier modal-restoration requests cannot satisfy it.
         widget.focus()
-        try:
-            await asyncio.wait_for(focused.wait(), timeout=5)
-        finally:
-            self._targets.pop(widget, None)
+        widget.app.call_later(focus_request_applied.set)
+        await asyncio.wait_for(focus_request_applied.wait(), timeout=5)
         assert widget.has_focus
 
 
@@ -67,7 +53,7 @@ class HandlerContext:
     message_ts: int
     alice_token: str
     monkeypatch: pytest.MonkeyPatch
-    focus_probe: FocusProbe
+    focus_probe: FocusRequestBarrier
 
 
 HandlerCase = Callable[[HandlerContext], Awaitable[None]]
@@ -637,32 +623,26 @@ async def _search_open_result(context: HandlerContext) -> None:
             )
             context.app.call_after_refresh(search_anchor_restored.set)
 
-        context.monkeypatch.setattr(
+        patch.setattr(
             context.app,
             "_apply_owned_search_anchor_restore",
             observe_search_anchor_restore,
         )
-        try:
-            apply_optional_conversation(intent, future)
-        finally:
-            context.monkeypatch.setattr(
-                context.app,
-                "_apply_owned_search_anchor_restore",
-                apply_owned_search_anchor_restore,
-            )
-            snapshot = _successful_conversation(future)
-            if snapshot is not None:
-                observed_snapshots.append(snapshot)
-            search_context_applied.set()
+        apply_optional_conversation(intent, future)
+        snapshot = _successful_conversation(future)
+        if snapshot is not None:
+            observed_snapshots.append(snapshot)
+        search_context_applied.set()
 
-    context.monkeypatch.setattr(
-        context.app,
-        "_apply_optional_conversation",
-        observe_search_context,
-    )
-    await _select_palette(context, ActionId.SEARCH_OPEN_RESULT)
-    await asyncio.wait_for(search_context_applied.wait(), timeout=5)
-    await asyncio.wait_for(search_anchor_restored.wait(), timeout=5)
+    with context.monkeypatch.context() as patch:
+        patch.setattr(
+            context.app,
+            "_apply_optional_conversation",
+            observe_search_context,
+        )
+        await _select_palette(context, ActionId.SEARCH_OPEN_RESULT)
+        await asyncio.wait_for(search_context_applied.wait(), timeout=5)
+        await asyncio.wait_for(search_anchor_restored.wait(), timeout=5)
     assert len(observed_snapshots) == 1
     snapshot = observed_snapshots[0]
     assert snapshot is not None
@@ -996,11 +976,8 @@ def test_every_action_reaches_a_concrete_handler(
             as_name=None if action_id is ActionId.WORKSPACE_INITIALIZE else "alice",
             continuity_token=None,
         )
-        focus_probe = FocusProbe()
-        async with app.run_test(
-            size=(120, 36),
-            message_hook=focus_probe.observe,
-        ) as pilot:
+        focus_probe = FocusRequestBarrier()
+        async with app.run_test(size=(120, 36)) as pilot:
             context = HandlerContext(
                 app,
                 pilot,
