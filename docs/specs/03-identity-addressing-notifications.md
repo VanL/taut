@@ -135,6 +135,17 @@ Supported claim kinds:
 | `human_session` | host id, uid, login name, tty when available, session id when available |
 | `continuity_token` | token id or token hash, not the token display string |
 
+The anchor start token is a platform start-time value that the kernel
+stores once at process creation and never recomputes, rendered by Taut
+as digits with a scheme prefix: `proc:<ticks>` from `/proc/<pid>/stat`
+field 22 on Linux, and `psutil:<microseconds>` from the process creation
+time on macOS and Windows, without read-time boot-clock adjustments. It
+matches `^(proc|psutil):[0-9]+$`. Taut never derives it from wall-clock
+arithmetic and never spawns a subprocess to obtain it, so two captures
+of one live process agree regardless of locale, clock adjustments, or
+capturing process lifetime. A process whose start time cannot be read
+has no token and cannot be an `agent_process` anchor.
+
 The exact evidence may be null field-by-field when the platform cannot provide
 it. Missing optional fields must not fail identity capture.
 
@@ -178,12 +189,13 @@ Resolution order:
 4. Agent anchor match: when no claim hash matches and the capture is an
    agent capture, resolution may match a stored member anchor by the stable
    triple (`host_id`, `anchor_pid`, `anchor_start_time`) against the
-   captured ancestor chain. This recovers continuity when a live anchor
-   process changed mutable claim inputs (working directory, tty, process
-   group) without restarting. On a match, the resolver records the current
-   claim hash for that member so subsequent commands resolve at step 3.
-   Anchor match never applies under `join --new`, never overrides steps
-   1–3, and never matches across hosts.
+   captured ancestor chain, comparing the [IAN-3.2] start token by exact
+   equality. This recovers continuity when a live anchor process changed
+   mutable claim inputs (working directory, tty, process group) without
+   restarting. On a match, the resolver records the current claim hash for
+   that member so subsequent commands resolve at step 3. Anchor match never
+   applies under `join --new`, never overrides steps 1–3, and never matches
+   across hosts.
 5. Human fallback resolves by local host id plus uid when an existing human
    member has that claim history.
 6. Otherwise the caller is unrecognized. Read-only commands may operate as
@@ -974,6 +986,8 @@ Required proofs:
 
 ## Related Plans
 
+- `docs/plans/2026-09-15-numeric-start-time-token-plan.md` — one numeric
+  per-platform start-time token and removal of `ps` capture.
 - `docs/plans/2026-09-14-audit-remediation-plan.md`: plans reusable rename markers and a bounded topology-race fix.
 
 - `docs/plans/2026-08-25-semantic-compatibility-hardening-plan.md` — separates
