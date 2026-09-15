@@ -425,8 +425,9 @@ project regex cannot rescan generated escape notation at the widget boundary.
 
 A package-wide structural inventory rejects raw or qualified Textual display
 widget imports outside the adapter owner, raw Rich `Text`, and local terminal
-escape wrappers. A real PTY probe covers initial and updated CSI/OSC-bearing
-content because Rich and Textual do not neutralize those bytes by themselves.
+escape wrappers. A real PTY/ConPTY probe, selected for the host platform,
+covers initial and updated CSI/OSC-bearing content because Rich and Textual do
+not neutralize those bytes by themselves.
 
 ## Where to Change and How to Verify
 

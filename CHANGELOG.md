@@ -13,6 +13,12 @@
   metadata and the full stdio attach, list, detach, and clean-shutdown
   lifecycle instead of testing a retired MCP release.
 
+- CI tests now use causal synchronization instead of scheduler deadlines for
+  reply/join and TUI focus/anchor interleavings. TUI terminal probes exercise
+  the real PTY backend on POSIX and ConPTY backend on Windows, and MCP
+  pagination fixtures reuse bounded persistent seed clients instead of
+  rebuilding broker queues for each of 250 messages.
+
 - A command's own failure is no longer hidden by a broken `.taut.toml`. When
   rendering an execution error trips the terminal policy, stderr now carries
   the original diagnostic first, escaped with the packaged policy, then the

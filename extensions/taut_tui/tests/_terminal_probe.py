@@ -7,6 +7,7 @@ import select
 import sys
 import threading
 import time
+from contextlib import ExitStack
 from dataclasses import dataclass
 from typing import Any
 
@@ -190,6 +191,31 @@ def _collect_output(
     return bytes(output), input_sent
 
 
+def _cleanup_attach(
+    handle: Any,
+    thread: threading.Thread,
+    wake: threading.Event,
+    shutdown: threading.Event,
+) -> None:
+    shutdown.set()
+    wake.set()
+    thread.join(timeout=3.0)
+    close_error: BaseException | None = None
+    try:
+        handle.close()
+    except BaseException as exc:  # noqa: BLE001 - preserve cleanup failure exactly
+        close_error = exc
+    thread.join(timeout=3.0)
+    if thread.is_alive():
+        error = RuntimeError("real-terminal attach thread survived adapter cleanup")
+        if close_error is not None:
+            error.add_note(f"adapter cleanup also failed: {close_error}")
+            raise error from close_error
+        raise error
+    if close_error is not None:
+        raise close_error
+
+
 def run_terminal_child(
     source: str,
     *,
@@ -201,32 +227,35 @@ def run_terminal_child(
     from taut_summon._adapter import ExitEvent
     from taut_summon._pty import PtyAdapter, PtySpec
 
-    handle = PtyAdapter(
-        PtySpec(
-            name="tui-terminal-probe",
-            argv=(sys.executable, "-c", source),
-            rows=24,
-            cols=80,
-        )
-    ).spawn(system_prompt="unused", env={})
-    terminal = HostTerminal.open()
-    wake = threading.Event()
-    shutdown = threading.Event()
-    attach_errors: list[BaseException] = []
-    thread = _start_attach(handle, terminal, wake, shutdown, attach_errors)
-    try:
-        try:
-            output, input_sent = _collect_output(
-                thread,
-                terminal,
-                input_after_output=input_after_output,
-                timeout=timeout,
+    with ExitStack() as cleanup:
+        terminal = HostTerminal.open()
+        cleanup.callback(terminal.close)
+        handle = PtyAdapter(
+            PtySpec(
+                name="tui-terminal-probe",
+                argv=(sys.executable, "-c", source),
+                rows=24,
+                cols=80,
             )
-        except TimeoutError:
-            shutdown.set()
-            wake.set()
-            thread.join(timeout=3.0)
+        ).spawn(system_prompt="unused", env={})
+        wake = threading.Event()
+        shutdown = threading.Event()
+        attach_errors: list[BaseException] = []
+        try:
+            thread = _start_attach(handle, terminal, wake, shutdown, attach_errors)
+        except BaseException as exc:
+            try:
+                handle.close()
+            except BaseException as cleanup_error:  # noqa: BLE001 - attach note
+                exc.add_note(f"adapter cleanup also failed: {cleanup_error}")
             raise
+        cleanup.callback(_cleanup_attach, handle, thread, wake, shutdown)
+        output, input_sent = _collect_output(
+            thread,
+            terminal,
+            input_after_output=input_after_output,
+            timeout=timeout,
+        )
         if attach_errors:
             raise RuntimeError("real-terminal attach failed") from attach_errors[0]
         events = tuple(handle.events())
@@ -240,10 +269,3 @@ def run_terminal_child(
             returncode=returncodes[0],
             input_sent=input_sent,
         )
-    finally:
-        shutdown.set()
-        wake.set()
-        if thread.is_alive():
-            thread.join(timeout=3.0)
-        handle.close()
-        terminal.close()

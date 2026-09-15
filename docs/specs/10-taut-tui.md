@@ -942,8 +942,9 @@ The following enumerable matrices have firing tests:
   while PageDown still pages; Ctrl-C/Ctrl-D guarded quit in `NORMAL`, `COMPOSE`,
   `COMMAND`, `SEARCH`, every current native modal class, and the
   terminal-too-small surface; blocked-modal preservation; repeated owned-run
-  quit requests producing at most one confirmation; and real-PTY `0x03`/`0x04`
-  translation into guarded `application.quit` while the TUI owns the terminal;
+  quit requests producing at most one confirmation; and real PTY/ConPTY
+  `0x03`/`0x04` translation into guarded `application.quit` while the TUI owns
+  the terminal;
 - multiline compose typing and paste; Enter send; Ctrl-Enter, Shift-Enter,
   Ctrl-J, and Ctrl-Tab insertion; Tab/Shift-Tab focus movement; exact send/failure/resize/
   target-switch draft preservation; actual LF versus literal `\n` and actual
