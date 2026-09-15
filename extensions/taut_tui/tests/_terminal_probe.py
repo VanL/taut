@@ -157,10 +157,14 @@ def _start_attach(
                 input_fd=terminal.lease_input_fd,
                 output_fd=terminal.lease_output_fd,
             )
-        except BaseException as exc:  # noqa: BLE001 - test thread reports exact failure
+        except BaseException as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
             errors.append(exc)
 
-    thread = threading.Thread(target=attach, name="tui-terminal-probe")
+    thread = threading.Thread(
+        target=attach,
+        name="tui-terminal-probe",
+        daemon=True,
+    )
     thread.start()
     return thread
 
@@ -200,20 +204,18 @@ def _cleanup_attach(
     shutdown.set()
     wake.set()
     thread.join(timeout=3.0)
-    close_error: BaseException | None = None
+    close_completed = False
     try:
         handle.close()
-    except BaseException as exc:  # noqa: BLE001 - preserve cleanup failure exactly
-        close_error = exc
-    thread.join(timeout=3.0)
-    if thread.is_alive():
-        error = RuntimeError("real-terminal attach thread survived adapter cleanup")
-        if close_error is not None:
-            error.add_note(f"adapter cleanup also failed: {close_error}")
-            raise error from close_error
-        raise error
-    if close_error is not None:
-        raise close_error
+        close_completed = True
+    finally:
+        thread.join(timeout=3.0)
+        if thread.is_alive():
+            error = RuntimeError("real-terminal attach thread survived adapter cleanup")
+            if not close_completed and (close_error := sys.exception()) is not None:
+                error.add_note("adapter cleanup also failed")
+                raise error from close_error
+            raise error
 
 
 def run_terminal_child(
@@ -241,14 +243,10 @@ def run_terminal_child(
         wake = threading.Event()
         shutdown = threading.Event()
         attach_errors: list[BaseException] = []
-        try:
+        with ExitStack() as failed_start_cleanup:
+            failed_start_cleanup.callback(handle.close)
             thread = _start_attach(handle, terminal, wake, shutdown, attach_errors)
-        except BaseException as exc:
-            try:
-                handle.close()
-            except BaseException as cleanup_error:  # noqa: BLE001 - attach note
-                exc.add_note(f"adapter cleanup also failed: {cleanup_error}")
-            raise
+            failed_start_cleanup.pop_all()
         cleanup.callback(_cleanup_attach, handle, thread, wake, shutdown)
         output, input_sent = _collect_output(
             thread,
