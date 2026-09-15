@@ -3726,8 +3726,6 @@ def test_reply_join_race_may_emit_one_stale_pointer(
     root = van.say("general", "root")
     child_thread = f"general.{root.ts}"
     van_id = van.whoami().member_id
-    observed_absence = threading.Event()
-    joined = threading.Event()
     real_get_membership = SqlSidecarTautState.get_membership
     gated = False
 
@@ -3751,9 +3749,9 @@ def test_reply_join_race_may_emit_one_stale_pointer(
             and member_id == van_id
         ):
             gated = True
-            observed_absence.set()
-            if not joined.wait(timeout=3.0):
-                raise AssertionError("parent did not join before notification dispatch")
+            assert [message.text for message in van.read(child_thread)] == [
+                "raced reply"
+            ]
         return membership
 
     monkeypatch.setattr(
@@ -3761,27 +3759,10 @@ def test_reply_join_race_may_emit_one_stale_pointer(
         "get_membership",
         get_membership_with_join_barrier,
     )
-    replies: list[Message] = []
-    errors: list[BaseException] = []
+    reply = bob.reply("general", str(root.ts), "raced reply")
 
-    def post_reply() -> None:
-        try:
-            replies.append(bob.reply("general", str(root.ts), "raced reply"))
-        except BaseException as exc:  # pragma: no cover  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-070] exception
-            errors.append(exc)
-
-    worker = threading.Thread(target=post_reply)
-    worker.start()
-    try:
-        assert observed_absence.wait(timeout=3.0)
-        assert [message.text for message in van.read(child_thread)] == ["raced reply"]
-    finally:
-        joined.set()
-        worker.join(timeout=3.0)
-
-    assert not worker.is_alive()
-    assert errors == []
-    assert len(replies) == 1
+    assert gated
+    assert reply.thread == child_thread
     stale = van.inbox()
     assert [(item.type, item.thread) for item in stale] == [("reply", child_thread)]
 
