@@ -425,6 +425,10 @@ def test_shipped_tui_translates_real_pty_quit_control_bytes(
 
 
         class ProbeApp(app_module.TautApp):
+            def on_mount(self) -> None:
+                super().on_mount()
+                os.write(1, b"TAUT-TUI-QUIT-CONTROL-PROBE-MOUNTED")
+
             def _dispatch_action_invocation(self, invocation) -> None:
                 if invocation.action_id is ActionId.APPLICATION_QUIT:
                     os.write(1, b"GUARDED-QUIT")
@@ -440,7 +444,12 @@ def test_shipped_tui_translates_real_pty_quit_control_bytes(
 
     try:
         result = run_terminal_child(
-            child_source, input_after_output=control_byte, timeout=15
+            child_source,
+            input_when_output_contains=(
+                b"TAUT-TUI-QUIT-CONTROL-PROBE-MOUNTED",
+                control_byte,
+            ),
+            timeout=15,
         )
     except TimeoutError:
         pytest.fail(f"{label} shipped-TUI PTY probe timed out")

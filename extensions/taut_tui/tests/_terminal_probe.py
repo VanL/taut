@@ -173,7 +173,7 @@ def _collect_output(
     thread: threading.Thread,
     terminal: HostTerminal,
     *,
-    input_after_output: bytes | None,
+    input_when_output_contains: tuple[bytes, bytes] | None,
     timeout: float,
 ) -> tuple[bytes, bool]:
     output = bytearray()
@@ -183,8 +183,12 @@ def _collect_output(
         chunk = terminal.read_available()
         if chunk:
             output.extend(chunk)
-            if input_after_output is not None and not input_sent:
-                terminal.write(input_after_output)
+            if (
+                input_when_output_contains is not None
+                and not input_sent
+                and input_when_output_contains[0] in output
+            ):
+                terminal.write(input_when_output_contains[1])
                 input_sent = True
         else:
             thread.join(timeout=0.02)
@@ -221,10 +225,15 @@ def _cleanup_attach(
 def run_terminal_child(
     source: str,
     *,
-    input_after_output: bytes | None = None,
+    input_when_output_contains: tuple[bytes, bytes] | None = None,
     timeout: float,
 ) -> TerminalRun:
-    """Run Python in the real platform PTY and capture its raw terminal bytes."""
+    """Run Python in the real platform PTY and capture its raw terminal bytes.
+
+    ``input_when_output_contains`` is a ``(readiness_marker, input_bytes)``
+    pair. The child owns the marker and must emit it only after the terminal
+    behavior under test is ready to receive input.
+    """
 
     from taut_summon._adapter import ExitEvent
     from taut_summon._pty import PtyAdapter, PtySpec
@@ -251,7 +260,7 @@ def run_terminal_child(
         output, input_sent = _collect_output(
             thread,
             terminal,
-            input_after_output=input_after_output,
+            input_when_output_contains=input_when_output_contains,
             timeout=timeout,
         )
         if attach_errors:
