@@ -1202,3 +1202,30 @@ Slice 6 measurement: exact approved prose serializes to 20,514 bytes (descriptio
 Owner decision (2026-09-15): raise the manifest ceiling to 21,000 bytes after measured 20,514-byte result; retain all exact approved descriptions. Promoted [MCP-12] ceiling and executable test updated together. The earlier 20,000-byte threshold in historical review entries is superseded.
 
 Slice 6: owner-approved 21,000-byte gate passes at 20,514 bytes, 35.2% below the 31,679-byte baseline. Full non-PG selection excluding the pending size gate passed (308 cases), and the size gate then passed separately after owner approval; PG 7 passed, mypy 24 files, Ruff/check-format, document/reference/path/status and suppression gates passed. All nine RECORD_SCHEMAS definitions are AST-identical to baseline. Final unfiltered lane will run after this commit.
+
+Slice 7: architecture ownership and rationale reconciled; CHANGELOG documents
+breaking records/optional-warnings shape for the forthcoming MCP 0.10.0 release
+and measured 20,514-byte manifest. Extension README describes the notification
+resource, not the changed tool wrapper; no edit needed. The repository map
+already routes the whole MCP package to the architecture note; its new-module
+ownership table is updated there. Package version bump/publication remain the
+normal release driver's responsibility, outside this implementation request.
+
+Slice 8 outside review: call-agent skill, Claude Opus (`claude-opus-4-8[1m]`),
+read-only matched Read/Grep/Glob tool set, safe/plan mode, strict MCP config,
+closed stdin, no persistence, 600-second bound. Fresh file-reading probe passed
+in 6 seconds; review completed in 159 seconds, exit 0, success/end_turn and
+terminal_reason=completed. Capture: `/tmp/taut-mcp-final-review.json`.
+Verbatim verdict: “No blocker” for correctness, excluding the then-known size
+gate. Reviewer confirmed all producers, dispatch partition, closed oracle,
+lifecycle validation, records, errors/cancellation, warning order/omission,
+and notification resource. Owner approval of 21,000 bytes resolves that gate.
+The reviewer reported a refused write attempt because Write was unavailable;
+no review file or repository mutation occurred.
+
+Runbook/skill evaluation: existing consumer-inventory, real-boundary proof,
+and declared-deviation rules cover this work's corrections; no new durable
+rule or lesson is needed. Coalescing check is deferred as a separate
+maintenance unit: 41 lessons past the 2026-07-14 watermark, 26 cold by the
+30-day floor, and 96 completed/superseded non-exemplar indexed plans at the
+check. This task does not fold or retire unrelated history.

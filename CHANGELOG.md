@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- For `taut-mcp` 0.10.0, successful tool results now use `{"records": [...]}`
+  with `warnings` present only when nonempty. This replaces the six-field
+  `empty`/`guidance`/`record_type`/`records`/`warnings`/`workspace` object and
+  is a breaking wire-format change. Records, errors, and the notification
+  resource retain their existing shapes. Cursor and retry guidance moves to
+  `read`, `message_delete`, and `message_react` descriptions; parameter prose
+  is shorter. `outputSchema` remains omitted and closed result validation
+  stays in tests. The compact tool manifest measures 20,514 bytes, down from
+  31,679 bytes in 0.9.7.
+
 - Process identity now uses numeric, scheme-prefixed start-time tokens:
   `/proc/<pid>/stat` ticks on Linux and integer microseconds from unadjusted
   kernel creation times on macOS and Windows. The macOS path bypasses

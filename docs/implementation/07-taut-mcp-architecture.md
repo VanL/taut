@@ -176,7 +176,7 @@ Core accepts bare and quoted-`#` channel/sub-thread forms as well as route and
 stable-DM targets, and the selector pattern used by `read`/`log` would narrow
 that grammar. Core therefore owns semantic parsing. The command adapter has
 one result-only exception: `NotFoundError` from an exact stable `dm.d_*` send
-becomes the ordinary empty `message` envelope. Route, channel, sub-thread, and
+becomes the ordinary empty `message` result. Route, channel, sub-thread, and
 malformed-target failures retain their existing tool-error behavior.
 
 The `search` branch is intentionally an adapter, not a second search layer.
@@ -191,7 +191,7 @@ Core domain and argument exceptions keep their existing MCP handling. A
 backend-native unexpected exception from the single search call is translated
 to one fixed content-free `TautError`, so provider failure is a tool error and
 does not retire the workspace. `EmptyResultError` still reaches the existing
-empty-result handler and returns an empty `search_hit` success envelope.
+empty-result handler and returns an empty `search_hit` success result.
 
 Unexpected exceptions that do retire a resident workspace pass through one
 `_workspace_reactor.py` helper before conversion to content-free
@@ -211,8 +211,8 @@ prevents warnings from leaking into the next command.
 
 That serializer applies `simplebroker.format_message_id` only to its explicit
 timestamp fields; `_process_reactor.py` does the same for the independently
-constructed notification resource. Closed output schemas require 19-digit
-strings, while the domain objects and parent/child IPC remain integer-valued.
+constructed notification resource. The record schemas in the test oracle require 19-digit strings, while the
+domain objects and parent/child IPC remain integer-valued.
 `log.since` preserves the core ISO-8601/Unix/native-id string grammar and null,
 but schema and dispatch reject bare integers outside JavaScript's safe range.
 Accepted strings pass to the existing core resolver without a second parser.
@@ -238,6 +238,30 @@ status and snapshot still reach the process and its slot still clears. The SDK
 sends no JSON-RPC response for a canceled stdio request in either era, so
 clients must inspect Taut state before deciding whether a consuming or
 mutating operation is safe to retry.
+
+### Results mirror the CLI record stream
+
+Successful tools use one object containing `records`, plus `warnings` only
+when nonempty. A single record remains a one-element array, and ordinary
+empty outcomes return `{"records": []}`. The parent serializes domain
+records through the same explicit converter, then `_results.py::tool_result`
+builds the wrapper. Workspace identity belongs to lifecycle records; domain
+routing reads the canonical identifier from the shared ensure result.
+
+Derived envelope fields and repeated guidance added no record information.
+The cursor and retry disclosures now live in tool descriptions, and parameter
+prose uses the register of CLI help. Input validation constraints and
+annotations remain unchanged. All successful results still have canonical
+text/structured parity; errors and the notification resource keep their
+separate contracts.
+
+The manifest omits `outputSchema`: no demonstrated client requirement earns
+its repeated wire cost. Closed schemas stay in the test oracle, with explicit
+validation of real domain and lifecycle results; the SDK cannot supply that
+application validation without advertised schemas. This preserves 0.9.7's
+choice and permits a later additive schema feature when a concrete client
+needs it. The result simplification and measurement record lives in
+`docs/plans/2026-09-15-mcp-result-simplification-plan.md`.
 
 ### The notification resource is a cached level; delivery paths are edges
 
@@ -356,7 +380,9 @@ Configuring this path is not evidence that a PyPI version has been published.
 | `extensions/taut_mcp/taut_mcp/server.py` | SDK v2 dual-era handlers, lifespan, instructions, cache hints, protocol adapters, and result serialization |
 | `extensions/taut_mcp/taut_mcp/_process_reactor.py` | resident registry, shared ensure, alias arbitration, admission, rate state, aggregate text, edge fanout, and teardown |
 | `extensions/taut_mcp/taut_mcp/_workspace_reactor.py` | child resolution, client ownership, command loop, token-copy cleanup, and observational notification service |
-| `extensions/taut_mcp/taut_mcp/_tools.py` | exact manifest, input validators, descriptions, annotations, and output schemas |
+| `extensions/taut_mcp/taut_mcp/_tools.py` | exact manifest, input validators, descriptions, and annotations |
+| `extensions/taut_mcp/taut_mcp/_results.py` | shared record-type map, domain-tool set, message-id pattern, and [MCP-6] result builder |
+| `extensions/taut_mcp/tests/_result_schemas.py` | test-only closed record schemas and result-wrapper validation |
 | `extensions/taut_mcp/taut_mcp/_commands.py` | explicit public-client command dispatch and record conversion |
 | `extensions/taut_mcp/taut_mcp/_claude_channel.py` | isolated legacy-host fixed-payload experimental notification |
 | `extensions/taut_mcp/tests/test_dual_era_contract.py` | focused manifest, application-validator, and per-tool lazy-first-use contract |
