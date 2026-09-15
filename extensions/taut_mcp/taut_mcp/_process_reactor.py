@@ -23,7 +23,7 @@ from ._commands import (
     CommandScalar,
     record_object,
 )
-from ._results import DOMAIN_TOOL_NAMES
+from ._results import DOMAIN_TOOL_NAMES, tool_result
 from ._workspace_reactor import (
     ATTACHMENT_FAILED,
     Bootstrap,
@@ -219,87 +219,6 @@ def _workspace_record(entry: _Entry, *, status: str | None = None) -> dict[str, 
     }
 
 
-def workspace_result(
-    records: list[dict[str, Any]],
-    *,
-    workspace: str | None,
-    warnings: list[str] | None = None,
-) -> dict[str, Any]:
-    return {
-        "empty": not records,
-        "guidance": [],
-        "record_type": "workspace",
-        "records": records,
-        "warnings": [] if warnings is None else warnings,
-        "workspace": workspace,
-    }
-
-
-READ_GUIDANCE = [
-    {
-        "action": (
-            "Use log for non-consuming channel, sub-thread, or accessible "
-            "direct-message rereads. After an uncertain read, inspect list "
-            "before retrying."
-        ),
-        "code": "read_cursor_advanced",
-        "message": (
-            "Read cursors advanced through the returned records; no message "
-            "history was deleted."
-        ),
-    }
-]
-
-MESSAGE_NOT_DELETED_GUIDANCE = [
-    {
-        "action": (
-            "Verify the full 19-digit message id and current author identity "
-            "before retrying."
-        ),
-        "code": "message_not_deleted",
-        "message": "No matching deletable own message was found.",
-    }
-]
-
-MESSAGE_REACTION_NOT_SENT_GUIDANCE = [
-    {
-        "action": (
-            "Verify the full 19-digit message id, current membership, and that "
-            "another current thread member exists before retrying."
-        ),
-        "code": "message_reaction_not_sent",
-        "message": "No reactable message with a current recipient was found.",
-    }
-]
-
-
-def command_result(
-    *,
-    name: str,
-    record_type: str,
-    records: list[dict[str, object]],
-    warnings: list[str],
-    workspace: str,
-) -> dict[str, Any]:
-    guidance: list[dict[str, str]]
-    if name == "read" and records:
-        guidance = READ_GUIDANCE
-    elif name == "message_delete" and not records:
-        guidance = MESSAGE_NOT_DELETED_GUIDANCE
-    elif name == "message_react" and not records:
-        guidance = MESSAGE_REACTION_NOT_SENT_GUIDANCE
-    else:
-        guidance = []
-    return {
-        "empty": not records,
-        "guidance": guidance,
-        "record_type": record_type,
-        "records": records,
-        "warnings": warnings,
-        "workspace": workspace,
-    }
-
-
 def _notification_record(notification: Notification) -> dict[str, Any]:
     record: dict[str, Any] = {
         "actor_id": notification.actor_id,
@@ -448,10 +367,7 @@ class ProcessReactor:
             if entry.fingerprint is None:
                 raise AssertionError("ready workspace requires a token fingerprint")
             if hmac.compare_digest(entry.fingerprint, fingerprint):
-                return workspace_result(
-                    [_workspace_record(entry)],
-                    workspace=entry.canonical_workspace,
-                )
+                return tool_result([_workspace_record(entry)])
             raise WorkspaceToolError(WORKSPACE_CONFLICT)
         if self._find_candidate_by_path(workspace) is not None:
             raise WorkspaceToolError(WORKSPACE_BUSY)
@@ -556,7 +472,7 @@ class ProcessReactor:
         if entry is None:
             if self._find_candidate_by_path(workspace) is not None:
                 raise WorkspaceToolError(WORKSPACE_BUSY)
-            return workspace_result([], workspace=None)
+            return tool_result([])
         if entry.status == "detaching":
             raise WorkspaceToolError(WORKSPACE_BUSY)
         if entry.detach_future is not None:
@@ -568,10 +484,7 @@ class ProcessReactor:
         if not entry.owner.thread.is_alive():
             self._entries.pop(workspace, None)
             self._recompute_resource()
-            return workspace_result(
-                [{**prior_record, "status": "detached"}],
-                workspace=workspace,
-            )
+            return tool_result([{**prior_record, "status": "detached"}])
         entry.status = "detaching"
         entry.notifications = ()
         entry.truncated = False
@@ -601,9 +514,10 @@ class ProcessReactor:
         ensure = self.ensure_workspace(workspace, token)
         token = ""
         ensured = await ensure
-        canonical_workspace = ensured.get("workspace")
-        if not isinstance(canonical_workspace, str):
-            raise AssertionError("successful ensure requires canonical workspace")  # noqa: TRY004 approved [DOM-10.2.1] [RUFF-SUP-073] exception
+        records = ensured["records"]
+        if not records or not isinstance(records[0].get("workspace"), str):
+            raise AssertionError("successful ensure requires an attach record")
+        canonical_workspace: str = records[0]["workspace"]
         return await self._execute_ready_tool(
             canonical_workspace,
             name,
@@ -679,7 +593,7 @@ class ProcessReactor:
             if stalled
             else []
         )
-        return workspace_result(records, workspace=None, warnings=warnings)
+        return tool_result(records, warnings=warnings)
 
     def subscribe(self, sender: Callable[[], Awaitable[None]]) -> None:
         self._subscribed = True
@@ -875,12 +789,7 @@ class ProcessReactor:
         self._entries.pop(workspace, None)
         self._recompute_resource()
         if future is not None and not future.done():
-            future.set_result(
-                workspace_result(
-                    [{**record, "status": "detached"}],
-                    workspace=workspace,
-                )
-            )
+            future.set_result(tool_result([{**record, "status": "detached"}]))
 
     @staticmethod
     def _fail_future(future: asyncio.Future[dict[str, Any]], message: str) -> None:
@@ -929,10 +838,7 @@ class ProcessReactor:
             elif hmac.compare_digest(entry.fingerprint, candidate.fingerprint):
                 self._retire_candidate(
                     candidate,
-                    result=workspace_result(
-                        [_workspace_record(entry)],
-                        workspace=entry.canonical_workspace,
-                    ),
+                    result=tool_result([_workspace_record(entry)]),
                 )
             else:
                 self._retire_candidate(candidate, error=WORKSPACE_CONFLICT)
@@ -999,12 +905,7 @@ class ProcessReactor:
         self._entries[event.canonical_workspace] = entry
         self._recompute_resource()
         if not candidate.future.done():
-            candidate.future.set_result(
-                workspace_result(
-                    [_workspace_record(entry)],
-                    workspace=entry.canonical_workspace,
-                )
-            )
+            candidate.future.set_result(tool_result([_workspace_record(entry)]))
 
     def _on_failure(self, event: WorkspaceFailed) -> None:
         candidate = self._candidates.get(event.generation)
@@ -1057,12 +958,9 @@ class ProcessReactor:
         if event.canceled:
             future.cancel()
             return
-        payload = command_result(
-            name=event.name,
-            record_type=event.record_type,
-            records=[record_object(record) for record in event.records],
+        payload = tool_result(
+            [record_object(record) for record in event.records],
             warnings=list(event.warnings),
-            workspace=entry.canonical_workspace,
         )
         future.set_result(_CommandCompletion(payload=payload, error=event.error))
 

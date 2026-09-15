@@ -7,11 +7,18 @@ import uuid
 import warnings
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 import taut_pg  # noqa: F401  # Register the Postgres backend plugin.
 from mcp.shared.exceptions import MCPDeprecationWarning
 from simplebroker.ext import get_backend_plugin
+
+
+def canonical_of(payload: dict[str, Any]) -> str:
+    """Canonical workspace from an attach/ensure result's first record."""
+
+    return cast(str, payload["records"][0]["workspace"])
 
 
 @pytest.fixture(autouse=True)

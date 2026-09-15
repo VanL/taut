@@ -3,6 +3,10 @@ from __future__ import annotations
 import subprocess
 import sys
 
+import pytest
+from _result_schemas import RECORD_SCHEMAS, result_schema
+from jsonschema import Draft202012Validator, ValidationError, validate
+
 from taut_mcp._results import (
     DOMAIN_TOOL_NAMES,
     RECORD_TYPE_BY_TOOL,
@@ -35,3 +39,28 @@ def test_results_and_tools_import_without_the_client() -> None:
         [sys.executable, "-c", probe], capture_output=True, text=True, check=True
     )
     assert completed.stdout.strip() == "[]"
+
+
+def test_record_type_map_covers_closed_test_schemas() -> None:
+    assert set(RECORD_TYPE_BY_TOOL.values()) == set(RECORD_SCHEMAS)
+
+
+@pytest.mark.parametrize("record_type", sorted(RECORD_SCHEMAS))
+def test_closed_result_schema_accepts_only_records_and_nonempty_warnings(
+    record_type: str,
+) -> None:
+    schema = result_schema(record_type)
+    Draft202012Validator.check_schema(schema)
+    validate(tool_result([]), schema)
+    validate(tool_result([], warnings=("stalled",)), schema)
+    with pytest.raises(ValidationError):
+        validate({"records": [], "warnings": []}, schema)
+    for field, value in (
+        ("workspace", "/workspace"),
+        ("empty", True),
+        ("record_type", record_type),
+        ("guidance", []),
+        ("unexpected", True),
+    ):
+        with pytest.raises(ValidationError):
+            validate({"records": [], field: value}, schema)

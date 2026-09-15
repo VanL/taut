@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from conftest import canonical_of
 
 import taut_mcp._workspace_reactor as workspace_reactor
 from taut import EmptyResultError, TautClient, identity
@@ -108,7 +109,7 @@ def test_postgres_activity_tools_preserve_identity_and_presence(
                 == claim_before_attach
             )
             assert tuple(token_observer.peek_inbox()) == notifications_before_attach
-            canonical = str(attached["workspace"])
+            canonical = canonical_of(attached)
             calls: list[tuple[str, dict[str, object]]] = [
                 ("list", {"all": True}),
                 ("who", {"thread": None}),
@@ -171,7 +172,7 @@ def test_postgres_read_limit_pages_without_cursor_gaps(
                 str(taut_pg_project),
                 member.token or "",
             )
-            canonical = str(attached["workspace"])
+            canonical = canonical_of(attached)
             pages = [
                 await reactor._execute_ready_tool(
                     canonical,
@@ -228,7 +229,7 @@ def test_postgres_explicit_dm_navigation_and_directory(
                 str(taut_pg_project),
                 member.token or "",
             )
-            canonical = str(attached["workspace"])
+            canonical = canonical_of(attached)
             history = await reactor._execute_ready_tool(
                 canonical,
                 "log",
@@ -272,14 +273,7 @@ def test_postgres_explicit_dm_navigation_and_directory(
                 other_observer.close()
                 third_observer.close()
 
-            expected_empty = {
-                "empty": True,
-                "guidance": [],
-                "record_type": "message",
-                "records": [],
-                "warnings": [],
-                "workspace": canonical,
-            }
+            expected_empty: dict[str, object] = {"records": []}
             absent = "dm.d_" + "a" * 26
             for target in (absent, inaccessible):
                 result = await reactor._execute_ready_tool(
@@ -375,7 +369,7 @@ def test_postgres_search_matches_direct_client_and_preserves_state(
                 member.token or "",
             )
             assert attached["records"][0]["backend"] == "postgres"
-            canonical = str(attached["workspace"])
+            canonical = canonical_of(attached)
             before = snapshot()
 
             result = await reactor._execute_ready_tool(
@@ -383,7 +377,7 @@ def test_postgres_search_matches_direct_client_and_preserves_state(
                 "search",
                 arguments,
             )
-            assert result["record_type"] == "search_hit"
+
             expected = [
                 record_object(hit)
                 for hit in observer.search(
@@ -460,9 +454,7 @@ def test_postgres_search_matches_direct_client_and_preserves_state(
                 "search",
                 {**arguments, "query": "absentpgsearchneedle"},
             )
-            assert empty["record_type"] == "search_hit"
-            assert empty["records"] == []
-            assert empty["guidance"] == []
+            assert empty == {"records": []}
             assert snapshot() == before
         finally:
             await reactor.aclose()
@@ -526,7 +518,7 @@ def test_postgres_exact_message_tools_use_public_core_contract(
                 str(taut_pg_project),
                 member.token or "",
             )
-            canonical = str(attached["workspace"])
+            canonical = canonical_of(attached)
             before_history = tuple(observer.log("general", limit=1000))
             before_notifications = tuple(observer.peek_inbox())
             before_membership = observer._state.get_membership(
@@ -540,7 +532,6 @@ def test_postgres_exact_message_tools_use_public_core_contract(
                 "channel_show",
                 {"channel": "general"},
             )
-            assert shown_channel["record_type"] == "channel"
             assert shown_channel["records"][0]["topic"] is None
             assert observer._state.get_member(selected_id) == before_member
             topic = await reactor._execute_ready_tool(
@@ -548,7 +539,6 @@ def test_postgres_exact_message_tools_use_public_core_contract(
                 "channel_topic",
                 {"channel": "general", "topic": "pg topic"},
             )
-            assert topic["record_type"] == "channel"
             assert topic["records"][0]["topic"] == "pg topic"
             changed_member = observer._state.get_member(selected_id)
             assert changed_member is not None
@@ -591,14 +581,12 @@ def test_postgres_exact_message_tools_use_public_core_contract(
                 "message_show",
                 {"msg_id": str(shown_target.ts)},
             )
-            assert shown["record_type"] == "message"
             assert shown["records"][0]["text"] == "pg exact show"
             reacted = await reactor._execute_ready_tool(
                 canonical,
                 "message_react",
                 {"msg_id": str(shown_target.ts), "reaction": "ack"},
             )
-            assert reacted["record_type"] == "reaction"
             assert reacted["records"] == [
                 {
                     "audience_count": 1,
@@ -612,7 +600,6 @@ def test_postgres_exact_message_tools_use_public_core_contract(
                 "message_delete",
                 {"msg_id": str(deletion_target.ts)},
             )
-            assert deleted["record_type"] == "deletion"
             assert deleted["records"] == [
                 {
                     "deleted": True,
@@ -696,7 +683,7 @@ def test_postgres_native_notification_wake_precedes_long_backstop(
                 str(taut_pg_project),
                 member.token or "",
             )
-            canonical = str(attached["workspace"])
+            canonical = canonical_of(attached)
             reactor.subscribe(updated)
             await asyncio.wait_for(updates.get(), timeout=1)
             started = asyncio.get_running_loop().time()
@@ -762,7 +749,7 @@ def test_one_reactor_owns_unconfigured_sqlite_configured_sqlite_and_postgres(
             ]
             identities = await asyncio.gather(
                 *[
-                    reactor._execute_ready_tool(str(item["workspace"]), "whoami", {})
+                    reactor._execute_ready_tool(canonical_of(item), "whoami", {})
                     for item in attached
                 ]
             )

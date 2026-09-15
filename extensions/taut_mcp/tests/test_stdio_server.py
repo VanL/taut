@@ -17,6 +17,7 @@ from typing import IO, Any, cast
 
 import pytest
 from _result_schemas import result_schema, result_schema_for_tool
+from conftest import canonical_of
 from jsonschema import validate
 from mcp import ClientSession, types
 from mcp.client import Client
@@ -474,7 +475,11 @@ def test_modern_discovery_lazy_identity_and_subscription_share_one_server(
                 assert_complete(result)
                 assert result.is_error is False
                 assert result.structured_content is not None
-                canonical = str(result.structured_content["workspace"])
+                canonical = os.path.realpath(workspace)
+                validate(
+                    instance=result.structured_content,
+                    schema=result_schema_for_tool("whoami"),
+                )
                 first_event, second_event = await asyncio.gather(
                     anext(first),
                     anext(second),
@@ -516,7 +521,9 @@ def test_modern_discovery_lazy_identity_and_subscription_share_one_server(
             assert_complete(searched)
             assert searched.is_error is False
             assert searched.structured_content is not None
-            assert searched.structured_content["record_type"] == "search_hit"
+            validate(
+                instance=searched.structured_content, schema=result_schema("search_hit")
+            )
             assert searched.structured_content["records"] == [
                 {
                     "channel": None,
@@ -586,14 +593,7 @@ def test_modern_discovery_lazy_identity_and_subscription_share_one_server(
                 },
             )
             assert empty_search.is_error is False
-            assert empty_search.structured_content == {
-                "empty": True,
-                "guidance": [],
-                "record_type": "search_hit",
-                "records": [],
-                "warnings": [],
-                "workspace": canonical,
-            }
+            assert empty_search.structured_content == {"records": []}
             validate(
                 instance=empty_search.structured_content,
                 schema=search_schema,
@@ -607,6 +607,10 @@ def test_modern_discovery_lazy_identity_and_subscription_share_one_server(
             )
             assert_complete(detached)
             assert detached.is_error is False
+            validate(
+                instance=detached.structured_content,
+                schema=result_schema_for_tool("detach_workspace"),
+            )
             async with client.listen(
                 resource_subscriptions=[NOTIFICATIONS_URL]
             ) as resumed:
@@ -1022,14 +1026,7 @@ async def _exercise_workspace_lifecycle(
             "status": "ready",
             "workspace": canonical,
         }
-        expected_attached = {
-            "empty": False,
-            "guidance": [],
-            "record_type": "workspace",
-            "records": [record],
-            "warnings": [],
-            "workspace": canonical,
-        }
+        expected_attached = {"records": [record]}
         assert attached.is_error is False
         assert attached.structured_content == expected_attached
         assert isinstance(attached.content[0], types.TextContent)
@@ -1041,10 +1038,7 @@ async def _exercise_workspace_lifecycle(
         )
 
         listed = await session.call_tool("list_workspaces", {})
-        assert listed.structured_content == {
-            **expected_attached,
-            "workspace": None,
-        }
+        assert listed.structured_content == expected_attached
         current = await session.read_resource(NOTIFICATIONS_URL)
         assert isinstance(current.contents[0], types.TextResourceContents)
         assert current.contents[0].text == json.dumps(
@@ -1070,25 +1064,29 @@ async def _exercise_workspace_lifecycle(
             "records": [{**record, "status": "detached"}],
         }
         listed_after = await session.call_tool("list_workspaces", {})
-        assert listed_after.structured_content == {
-            "empty": True,
-            "guidance": [],
-            "record_type": "workspace",
-            "records": [],
-            "warnings": [],
-            "workspace": None,
-        }
+        assert listed_after.structured_content == {"records": []}
         missing_detach = await session.call_tool(
             "detach_workspace", {"workspace": canonical}
         )
-        assert missing_detach.structured_content == {
-            "empty": True,
-            "guidance": [],
-            "record_type": "workspace",
-            "records": [],
-            "warnings": [],
-            "workspace": None,
-        }
+        assert missing_detach.structured_content == {"records": []}
+        for name, result in (
+            ("attach_workspace", attached),
+            ("list_workspaces", listed),
+            ("detach_workspace", detached),
+            ("list_workspaces", listed_after),
+            ("detach_workspace", missing_detach),
+        ):
+            assert result.is_error is False
+            validate(
+                instance=result.structured_content, schema=result_schema_for_tool(name)
+            )
+            assert isinstance(result.content[0], types.TextContent)
+            assert result.content[0].text == json.dumps(
+                result.structured_content,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
 
 
 @pytest.mark.sqlite_only
@@ -1651,7 +1649,7 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                     "reaction": "ack",
                 },
             )
-            assert reacted["record_type"] == "reaction"
+            validate(instance=reacted, schema=result_schema("reaction"))
             assert reacted["records"] == [
                 {
                     "audience_count": 1,
@@ -1678,14 +1676,7 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                     "text": "must stay empty",
                 },
             )
-            assert stable_missing == {
-                "empty": True,
-                "guidance": [],
-                "record_type": "message",
-                "records": [],
-                "warnings": [],
-                "workspace": canonical,
-            }
+            assert stable_missing == {"records": []}
             malformed_stable = await session.call_tool(
                 "say",
                 {
@@ -1732,7 +1723,7 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                 "message_delete",
                 {"msg_id": str(deletion_ts)},
             )
-            assert deleted["record_type"] == "deletion"
+            validate(instance=deleted, schema=result_schema("deletion"))
             assert deleted["records"] == [
                 {
                     "deleted": True,
@@ -1745,19 +1736,10 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                 {"msg_id": str(deletion_ts)},
             )
             assert repeated_delete["records"] == []
-            assert repeated_delete["guidance"] == [
-                {
-                    "action": (
-                        "Verify the full 19-digit message id and current author "
-                        "identity before retrying."
-                    ),
-                    "code": "message_not_deleted",
-                    "message": "No matching deletable own message was found.",
-                }
-            ]
+            assert set(repeated_delete) == {"records"}
             other.say("general", "unread after reaction")
             unread = await call("read", {"thread": "general", "limit": 1})
-            assert unread["guidance"][0]["code"] == "read_cursor_advanced"  # type: ignore[index]
+            assert set(unread) == {"records"}
             other.say("@renamed", "stdio dm unread")
             dm_unread = await call(
                 "read",
@@ -1792,7 +1774,7 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                 "channel_topic",
                 {"channel": "missing", "topic": "not written"},
             )
-            assert missing_topic["empty"] is True
+            assert missing_topic == {"records": []}
             assert missing_topic["records"] == []
             blank_topic = await session.call_tool(
                 "channel_topic",
@@ -1847,7 +1829,7 @@ def test_stdio_all_cli_shaped_tools_return_schema_valid_canonical_results(
                 "log",
                 {"thread": "missing", "since": None, "limit": 100},
             )
-            assert missing["empty"] is True
+            assert missing == {"records": []}
             assert missing["records"] == []
             invalid = await session.call_tool(
                 "join",
@@ -2040,7 +2022,7 @@ main([])
                 {"workspace": str(workspace), "token": member.token},
             )
             assert attached.structured_content is not None
-            canonical = str(attached.structured_content["workspace"])
+            canonical = str(canonical_of(attached.structured_content))
 
             async def cancel_started(
                 name: str,
@@ -2203,7 +2185,7 @@ main([])
                 {"workspace": str(workspace), "token": member.token},
             )
             assert attached.structured_content is not None
-            canonical = str(attached.structured_content["workspace"])
+            canonical = str(canonical_of(attached.structured_content))
 
             async def call_when_ready(
                 name: str,

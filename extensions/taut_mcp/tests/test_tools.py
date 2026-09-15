@@ -11,6 +11,7 @@ from typing import Any, cast
 
 import pytest
 from _result_schemas import result_schema, result_schema_for_tool
+from conftest import canonical_of
 from jsonschema import ValidationError, validate
 from simplebroker import BrokerTarget, Queue
 from tests.helpers.eventually import async_eventually
@@ -28,51 +29,14 @@ from taut import (
     identity,
 )
 from taut.search._jobs import PENDING_QUEUE_NAME
-from taut_mcp._commands import RECORD_TYPE_BY_TOOL, execute_command, record_object
+from taut_mcp._commands import execute_command, record_object
 from taut_mcp._process_reactor import (
     ProcessReactor,
     WorkspaceToolError,
     _notification_record,
-    command_result,
 )
+from taut_mcp._results import RECORD_TYPE_BY_TOOL, tool_result
 from taut_mcp._tools import DOMAIN_TOOL_NAMES, TOOLS
-
-READ_GUIDANCE = [
-    {
-        "action": (
-            "Use log for non-consuming channel, sub-thread, or accessible "
-            "direct-message rereads. After an uncertain read, inspect list "
-            "before retrying."
-        ),
-        "code": "read_cursor_advanced",
-        "message": (
-            "Read cursors advanced through the returned records; no message "
-            "history was deleted."
-        ),
-    }
-]
-
-MESSAGE_NOT_DELETED_GUIDANCE = [
-    {
-        "action": (
-            "Verify the full 19-digit message id and current author identity "
-            "before retrying."
-        ),
-        "code": "message_not_deleted",
-        "message": "No matching deletable own message was found.",
-    }
-]
-
-MESSAGE_REACTION_NOT_SENT_GUIDANCE = [
-    {
-        "action": (
-            "Verify the full 19-digit message id, current membership, and that "
-            "another current thread member exists before retrying."
-        ),
-        "code": "message_reaction_not_sent",
-        "message": "No reactable message with a current recipient was found.",
-    }
-]
 
 
 @contextmanager
@@ -193,14 +157,12 @@ def _assert_result(
     payload: dict[str, Any],
     *,
     record_type: str,
-    workspace: str,
-    guidance: list[dict[str, str]] | None = None,
+    warnings: list[str] | None = None,
 ) -> None:
-    assert payload["record_type"] == record_type
-    assert payload["workspace"] == workspace
-    assert payload["empty"] is (not payload["records"])
-    assert payload["guidance"] == ([] if guidance is None else guidance)
-    assert payload["warnings"] == []
+    if warnings:
+        assert payload["warnings"] == warnings
+    else:
+        assert "warnings" not in payload
     validate(instance=payload, schema=result_schema(record_type))
 
 
@@ -350,8 +312,8 @@ def test_each_ordinary_tool_is_a_thin_public_client_proxy(
         tool,
         tuple(cast(dict[str, Any], arguments).items()),
     )
-    assert result.record_type == RECORD_TYPE_BY_TOOL[tool]
-    assert result.records == (record,)
+
+    assert result == (record,)
     assert calls == [(method, positional, keywords)]
 
 
@@ -371,8 +333,7 @@ def test_say_normalizes_only_exact_stable_dm_not_found() -> None:
         (("target", stable), ("text", "hello")),
     )
 
-    assert result.record_type == "message"
-    assert result.records == ()
+    assert result == ()
     assert calls == [(stable, "hello")]
     for target in ("@missing", "general", "general.1234567890123456789"):
         with pytest.raises(NotFoundError) as raised:
@@ -398,8 +359,7 @@ def test_search_command_layer_supplies_every_omitted_default_once() -> None:
         (("query", "parser"),),
     )
 
-    assert result.record_type == "search_hit"
-    assert result.records == ()
+    assert result == ()
     assert calls == [
         (
             "parser",
@@ -498,8 +458,7 @@ def test_list_dms_is_a_thin_public_client_proxy() -> None:
         (("all", False), ("dms", True)),
     )
 
-    assert result.record_type == "thread"
-    assert result.records == (record,)
+    assert result == (record,)
     assert calls == ["list_direct_messages"]
 
 
@@ -756,23 +715,10 @@ def test_message_reaction_and_notification_encodings_are_closed() -> None:
     assert _notification_record(notification) == record_object(notification)
 
 
-def test_empty_reaction_result_has_content_free_guidance() -> None:
-    payload = command_result(
-        name="message_react",
-        record_type="reaction",
-        records=[],
-        warnings=[],
-        workspace="/workspace",
-    )
+def test_empty_reaction_result_is_records_only() -> None:
+    payload = tool_result([])
 
-    assert payload == {
-        "empty": True,
-        "guidance": MESSAGE_REACTION_NOT_SENT_GUIDANCE,
-        "record_type": "reaction",
-        "records": [],
-        "warnings": [],
-        "workspace": "/workspace",
-    }
+    assert payload == {"records": []}
 
 
 @pytest.mark.sqlite_only
@@ -790,14 +736,14 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
         reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             attached = await reactor.attach_workspace(str(workspace), token)
-            canonical = str(attached["workspace"])
+            canonical = str(canonical_of(attached))
 
             joined = await reactor._execute_ready_tool(
                 canonical,
                 "join",
                 {"thread": "work", "persona": "reviewer"},
             )
-            _assert_result(joined, record_type="message", workspace=canonical)
+            _assert_result(joined, record_type="message")
             assert joined["records"][0]["thread"] == "work"
             assert joined["records"][0]["kind"] == "notice"
 
@@ -806,7 +752,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
                 "leave",
                 {"thread": "work"},
             )
-            _assert_result(left, record_type="message", workspace=canonical)
+            _assert_result(left, record_type="message")
             assert left["records"][0]["text"] == "selected left"
 
             named = await reactor._execute_ready_tool(
@@ -814,7 +760,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
                 "set_name",
                 {"name": "renamed"},
             )
-            _assert_result(named, record_type="member", workspace=canonical)
+            _assert_result(named, record_type="member")
             assert named["records"][0]["name"] == "renamed"
             assert "token" not in named["records"][0]
 
@@ -823,7 +769,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
                 "say",
                 {"target": "general", "text": "top level"},
             )
-            _assert_result(said, record_type="message", workspace=canonical)
+            _assert_result(said, record_type="message")
             parent_ts = said["records"][0]["ts"]
 
             reacted = await reactor._execute_ready_tool(
@@ -831,7 +777,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
                 "message_react",
                 {"msg_id": str(parent_ts), "reaction": "ack"},
             )
-            _assert_result(reacted, record_type="reaction", workspace=canonical)
+            _assert_result(reacted, record_type="reaction")
             assert reacted["records"] == [
                 {
                     "audience_count": 1,
@@ -862,12 +808,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
                     "reaction": "ack",
                 },
             )
-            _assert_result(
-                missing_reaction,
-                record_type="reaction",
-                workspace=canonical,
-                guidance=MESSAGE_REACTION_NOT_SENT_GUIDANCE,
-            )
+            _assert_result(missing_reaction, record_type="reaction")
             assert missing_reaction["records"] == []
 
             replied = await reactor._execute_ready_tool(
@@ -879,7 +820,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
                     "text": "child reply",
                 },
             )
-            _assert_result(replied, record_type="message", workspace=canonical)
+            _assert_result(replied, record_type="message")
             assert replied["records"][0]["thread"] == f"general.{parent_ts}"
 
             deletion_target = await reactor._execute_ready_tool(
@@ -893,7 +834,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
                 "message_delete",
                 {"msg_id": str(deletion_ts)},
             )
-            _assert_result(deleted, record_type="deletion", workspace=canonical)
+            _assert_result(deleted, record_type="deletion")
             assert deleted["records"] == [
                 {
                     "deleted": True,
@@ -907,11 +848,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
                 "message_show",
                 {"msg_id": "1234567890123456789"},
             )
-            _assert_result(
-                missing_show,
-                record_type="message",
-                workspace=canonical,
-            )
+            _assert_result(missing_show, record_type="message")
             assert missing_show["records"] == []
 
             repeated_delete = await reactor._execute_ready_tool(
@@ -919,12 +856,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
                 "message_delete",
                 {"msg_id": str(deletion_ts)},
             )
-            _assert_result(
-                repeated_delete,
-                record_type="deletion",
-                workspace=canonical,
-                guidance=MESSAGE_NOT_DELETED_GUIDANCE,
-            )
+            _assert_result(repeated_delete, record_type="deletion")
             assert repeated_delete["records"] == []
             not_author = await reactor._execute_ready_tool(
                 canonical,
@@ -939,12 +871,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
                 "read",
                 {"thread": "general", "limit": 1},
             )
-            _assert_result(
-                unread,
-                record_type="message",
-                workspace=canonical,
-                guidance=READ_GUIDANCE,
-            )
+            _assert_result(unread, record_type="message")
             assert len(unread["records"]) == 1
             assert unread["records"][0]["ts"] == str(unread_after_reaction.ts)
             assert unread["records"][0]["text"] == "after reaction unread"
@@ -954,7 +881,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
                 "message_show",
                 {"msg_id": str(parent_ts)},
             )
-            _assert_result(shown, record_type="message", workspace=canonical)
+            _assert_result(shown, record_type="message")
             assert shown["records"] == [said["records"][0]]
 
             inbox = await reactor._execute_ready_tool(
@@ -962,7 +889,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
                 "inbox",
                 {"limit": 1000},
             )
-            _assert_result(inbox, record_type="notification", workspace=canonical)
+            _assert_result(inbox, record_type="notification")
             assert inbox["records"][0]["type"] == "mention"
             assert inbox["records"][0]["matched"] == "@selected"
 
@@ -971,7 +898,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
                 "log",
                 {"thread": "general", "since": None, "limit": 1},
             )
-            _assert_result(history, record_type="message", workspace=canonical)
+            _assert_result(history, record_type="message")
             assert len(history["records"]) == 1
 
             with _tool_error("topic must not be blank"):
@@ -986,11 +913,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
                 "channel_show",
                 {"channel": "general"},
             )
-            _assert_result(
-                initial_channel,
-                record_type="channel",
-                workspace=canonical,
-            )
+            _assert_result(initial_channel, record_type="channel")
             assert initial_channel["records"] == [
                 {
                     "channel": "general",
@@ -1008,7 +931,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
                 "channel_topic",
                 {"channel": "general", "topic": "Current work"},
             )
-            _assert_result(topic, record_type="channel", workspace=canonical)
+            _assert_result(topic, record_type="channel")
             assert topic["records"][0]["channel"] == "general"
             assert topic["records"][0]["topic"] == "Current work"
             assert topic["records"][0]["topic_updated_by_name"] == "renamed"
@@ -1035,11 +958,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
                 "channel_show",
                 {"channel": "missing"},
             )
-            _assert_result(
-                missing_channel,
-                record_type="channel",
-                workspace=canonical,
-            )
+            _assert_result(missing_channel, record_type="channel")
             assert missing_channel["records"] == []
 
             listed = await reactor._execute_ready_tool(
@@ -1047,7 +966,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
                 "list",
                 {"all": True},
             )
-            _assert_result(listed, record_type="thread", workspace=canonical)
+            _assert_result(listed, record_type="thread")
             assert {record["thread"] for record in listed["records"]} >= {
                 "general",
                 f"general.{parent_ts}",
@@ -1068,7 +987,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
                 "channel_rename",
                 {"old_name": "general", "new_name": "main"},
             )
-            _assert_result(renamed, record_type="thread", workspace=canonical)
+            _assert_result(renamed, record_type="thread")
             assert renamed["records"][0]["thread"] == "main"
             assert renamed["records"][0]["topic"] == "Current work"
 
@@ -1077,7 +996,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
                 "channel_topic",
                 {"channel": "main", "topic": None},
             )
-            _assert_result(cleared, record_type="channel", workspace=canonical)
+            _assert_result(cleared, record_type="channel")
             assert cleared["records"] == [
                 {
                     "channel": "main",
@@ -1093,7 +1012,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
                 "who",
                 {"thread": "main"},
             )
-            _assert_result(members, record_type="member", workspace=canonical)
+            _assert_result(members, record_type="member")
             assert {record["name"] for record in members["records"]} == {
                 "other",
                 "renamed",
@@ -1104,7 +1023,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
                 "whoami",
                 {},
             )
-            _assert_result(identity, record_type="member", workspace=canonical)
+            _assert_result(identity, record_type="member")
             assert identity["records"][0]["name"] == "renamed"
             assert "token" not in identity["records"][0]
 
@@ -1113,7 +1032,7 @@ def test_all_cli_shaped_tools_dispatch_on_the_workspace_owner_thread(
                 "log",
                 {"thread": "missing", "since": None, "limit": 100},
             )
-            _assert_result(empty, record_type="message", workspace=canonical)
+            _assert_result(empty, record_type="message")
             assert empty["records"] == []
 
             with _tool_error("dm is reserved"):
@@ -1149,7 +1068,7 @@ def test_wrong_kind_channel_is_an_empty_channel_result(tmp_path: Path) -> None:
         reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             attached = await reactor.attach_workspace(str(workspace), token)
-            canonical = str(attached["workspace"])
+            canonical = str(canonical_of(attached))
             cases: tuple[tuple[str, dict[str, object]], ...] = (
                 ("channel_show", {"channel": "general"}),
                 (
@@ -1159,11 +1078,7 @@ def test_wrong_kind_channel_is_an_empty_channel_result(tmp_path: Path) -> None:
             )
             for name, arguments in cases:
                 result = await reactor._execute_ready_tool(canonical, name, arguments)
-                _assert_result(
-                    result,
-                    record_type="channel",
-                    workspace=canonical,
-                )
+                _assert_result(result, record_type="channel")
                 assert result["records"] == []
         finally:
             await reactor.aclose()
@@ -1189,7 +1104,7 @@ def test_channel_show_does_not_refresh_notification_snapshot(
         reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             attached = await reactor.attach_workspace(str(workspace), token)
-            canonical = str(attached["workspace"])
+            canonical = str(canonical_of(attached))
             monkeypatch.setattr(
                 workspace_reactor.TautClient,
                 "peek_inbox",
@@ -1200,7 +1115,7 @@ def test_channel_show_does_not_refresh_notification_snapshot(
                 "channel_show",
                 {"channel": "general"},
             )
-            _assert_result(result, record_type="channel", workspace=canonical)
+            _assert_result(result, record_type="channel")
             assert result["records"][0]["channel"] == "general"
             assert reactor.list_workspaces()["records"][0]["status"] == "ready"
         finally:
@@ -1227,7 +1142,7 @@ def test_post_command_snapshot_identity_loss_marks_workspace_lost(
         reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             attached = await reactor.attach_workspace(str(workspace), token)
-            canonical = str(attached["workspace"])
+            canonical = str(canonical_of(attached))
             monkeypatch.setattr(
                 workspace_reactor.TautClient,
                 "peek_inbox",
@@ -1264,7 +1179,7 @@ def test_post_command_snapshot_crash_marks_workspace_failed(
         reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             attached = await reactor.attach_workspace(str(workspace), token)
-            canonical = str(attached["workspace"])
+            canonical = str(canonical_of(attached))
             monkeypatch.setattr(
                 workspace_reactor.TautClient,
                 "peek_inbox",
@@ -1315,7 +1230,7 @@ def test_unexpected_channel_tool_fault_is_terminal(
         reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             attached = await reactor.attach_workspace(str(workspace), token)
-            canonical = str(attached["workspace"])
+            canonical = str(canonical_of(attached))
             monkeypatch.setattr(
                 workspace_reactor.TautClient,
                 method_name,
@@ -1343,7 +1258,7 @@ def test_channel_topic_identity_loss_uses_fixed_terminal_status(
         reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             attached = await reactor.attach_workspace(str(workspace), token)
-            canonical = str(attached["workspace"])
+            canonical = str(canonical_of(attached))
             admin = TautClient(
                 db_path=workspace / ".taut.db",
                 as_name="selected",
@@ -1389,7 +1304,7 @@ def test_channel_topic_recoverable_storage_error_keeps_workspace_ready(
         reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             attached = await reactor.attach_workspace(str(workspace), token)
-            canonical = str(attached["workspace"])
+            canonical = str(canonical_of(attached))
             monkeypatch.setattr(
                 workspace_reactor.TautClient,
                 "set_channel_topic",
@@ -1440,7 +1355,7 @@ def test_corrupt_topic_is_recoverable_tool_error_not_reactor_failure(
         reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             attached = await reactor.attach_workspace(str(workspace), token)
-            canonical = str(attached["workspace"])
+            canonical = str(canonical_of(attached))
             cases: tuple[tuple[str, dict[str, object]], ...] = (
                 ("channel_show", {"channel": "general"}),
                 (
@@ -1464,7 +1379,7 @@ def test_corrupt_topic_is_recoverable_tool_error_not_reactor_failure(
 
 @pytest.mark.sqlite_only
 @pytest.mark.timeout(15)
-def test_show_message_advances_exact_thread_high_water_without_show_guidance(
+def test_show_message_advances_exact_thread_high_water_with_records_only(
     tmp_path: Path,
 ) -> None:
     workspace, token = _workspace_with_two_members(tmp_path)
@@ -1488,14 +1403,14 @@ def test_show_message_advances_exact_thread_high_water_without_show_guidance(
         observer = TautClient(db_path=db, token=token)
         try:
             canonical = str(
-                (await reactor.attach_workspace(str(workspace), token))["workspace"]
+                canonical_of(await reactor.attach_workspace(str(workspace), token))
             )
             shown = await reactor._execute_ready_tool(
                 canonical,
                 "message_show",
                 {"msg_id": str(target.ts)},
             )
-            _assert_result(shown, record_type="message", workspace=canonical)
+            _assert_result(shown, record_type="message")
             assert shown["records"][0]["text"] == "exact target"
 
             membership = observer._state.get_membership(
@@ -1539,7 +1454,7 @@ def test_delete_message_unrelated_dm_is_content_free_and_indistinguishable(
         reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             canonical = str(
-                (await reactor.attach_workspace(str(workspace), token))["workspace"]
+                canonical_of(await reactor.attach_workspace(str(workspace), token))
             )
             ineligible = await reactor._execute_ready_tool(
                 canonical,
@@ -1558,12 +1473,7 @@ def test_delete_message_unrelated_dm_is_content_free_and_indistinguishable(
             )
 
             assert ineligible == missing
-            _assert_result(
-                ineligible,
-                record_type="deletion",
-                workspace=canonical,
-                guidance=MESSAGE_NOT_DELETED_GUIDANCE,
-            )
+            _assert_result(ineligible, record_type="deletion")
             encoded = json.dumps(ineligible, sort_keys=True)
             for sensitive in (secret, direct.thread, "other", "third"):
                 assert sensitive not in encoded
@@ -1584,7 +1494,7 @@ def test_message_tools_reject_in_pattern_signed_int64_overflow(
         reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             canonical = str(
-                (await reactor.attach_workspace(str(workspace), token))["workspace"]
+                canonical_of(await reactor.attach_workspace(str(workspace), token))
             )
             for tool_name in (
                 "message_show",
@@ -1660,14 +1570,14 @@ def test_attached_workspaces_freeze_independent_reaction_vocabularies(
         reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             ack_canonical = str(
-                (await reactor.attach_workspace(str(ack_workspace), ack_token))[
-                    "workspace"
-                ]
+                canonical_of(
+                    await reactor.attach_workspace(str(ack_workspace), ack_token)
+                )
             )
             done_canonical = str(
-                (await reactor.attach_workspace(str(done_workspace), done_token))[
-                    "workspace"
-                ]
+                canonical_of(
+                    await reactor.attach_workspace(str(done_workspace), done_token)
+                )
             )
             ack_result = await reactor._execute_ready_tool(
                 ack_canonical,
@@ -1709,7 +1619,7 @@ def test_attached_workspaces_freeze_independent_reaction_vocabularies(
                 ack_token,
             )
             refreshed = await reactor._execute_ready_tool(
-                str(reattached["workspace"]),
+                str(canonical_of(reattached)),
                 "message_react",
                 {"msg_id": str(ack_source.ts), "reaction": "done"},
             )
@@ -1748,7 +1658,7 @@ def test_command_warnings_are_ordered_and_operation_local(
         reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             canonical = str(
-                (await reactor.attach_workspace(str(workspace), token))["workspace"]
+                canonical_of(await reactor.attach_workspace(str(workspace), token))
             )
             warned = await reactor._execute_ready_tool(
                 canonical,
@@ -1759,7 +1669,7 @@ def test_command_warnings_are_ordered_and_operation_local(
             assert warned["warnings"] == ["notification warning", "search warning"]
 
             later = await reactor._execute_ready_tool(canonical, "whoami", {})
-            assert later["warnings"] == []
+            assert "warnings" not in later
         finally:
             await reactor.aclose()
 
@@ -1788,7 +1698,7 @@ def test_search_enqueue_warning_preserves_real_source_and_does_not_leak(
         reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             canonical = str(
-                (await reactor.attach_workspace(str(workspace), token))["workspace"]
+                canonical_of(await reactor.attach_workspace(str(workspace), token))
             )
             sent = await reactor._execute_ready_tool(
                 canonical,
@@ -1814,7 +1724,7 @@ def test_search_enqueue_warning_preserves_real_source_and_does_not_leak(
                 observer.close()
 
             later = await reactor._execute_ready_tool(canonical, "whoami", {})
-            assert later["warnings"] == []
+            assert "warnings" not in later
         finally:
             await reactor.aclose()
 
@@ -1856,14 +1766,14 @@ def test_same_workspace_rejects_overlap_while_another_workspace_progresses(
         reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             slow = str(
-                (await reactor.attach_workspace(str(slow_workspace), slow_token))[
-                    "workspace"
-                ]
+                canonical_of(
+                    await reactor.attach_workspace(str(slow_workspace), slow_token)
+                )
             )
             fast = str(
-                (await reactor.attach_workspace(str(fast_workspace), fast_token))[
-                    "workspace"
-                ]
+                canonical_of(
+                    await reactor.attach_workspace(str(fast_workspace), fast_token)
+                )
             )
             blocked = asyncio.create_task(
                 reactor._execute_ready_tool(slow, "whoami", {})
@@ -1940,7 +1850,7 @@ def test_cancel_before_child_start_is_a_no_op_and_releases_the_slot(
         reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             canonical = str(
-                (await reactor.attach_workspace(str(workspace), token))["workspace"]
+                canonical_of(await reactor.attach_workspace(str(workspace), token))
             )
             assert await asyncio.to_thread(blocked_peek.wait, 5)
             canceled = asyncio.create_task(
@@ -2024,7 +1934,7 @@ def test_cancel_after_child_start_discards_result_but_keeps_committed_state(
         reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             canonical = str(
-                (await reactor.attach_workspace(str(workspace), token))["workspace"]
+                canonical_of(await reactor.attach_workspace(str(workspace), token))
             )
             canceled = asyncio.create_task(
                 reactor._execute_ready_tool(
@@ -2122,12 +2032,12 @@ def test_canceled_started_dm_read_recovers_directory_and_history(
         observer = TautClient(db_path=db)
         try:
             canonical = str(
-                (
+                canonical_of(
                     await reactor.attach_workspace(
                         str(workspace),
                         member.token or "",
                     )
-                )["workspace"]
+                )
             )
             canceled = asyncio.create_task(
                 reactor._execute_ready_tool(
@@ -2176,7 +2086,7 @@ def test_canceled_started_dm_read_recovers_directory_and_history(
                 {"thread": sent.thread, "since": None, "limit": 100},
             )
             assert history["records"][0]["text"] == "uncertain DM page"
-            assert history["guidance"] == []
+            assert set(history) == {"records"}
             assert (
                 observer._state.get_membership(
                     thread=sent.thread,
@@ -2238,7 +2148,7 @@ def test_terminal_event_settles_an_occupied_command_slot(
         reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             canonical = str(
-                (await reactor.attach_workspace(str(workspace), token))["workspace"]
+                canonical_of(await reactor.attach_workspace(str(workspace), token))
             )
             command = asyncio.create_task(
                 reactor._execute_ready_tool(canonical, "whoami", {})
@@ -2326,24 +2236,19 @@ def test_bare_read_forwards_per_thread_limit_and_includes_direct_messages(
         reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             canonical = str(
-                (
+                canonical_of(
                     await reactor.attach_workspace(
                         str(workspace),
                         member.token or "",
                     )
-                )["workspace"]
+                )
             )
             first = await reactor._execute_ready_tool(
                 canonical,
                 "read",
                 {"limit": 1},
             )
-            _assert_result(
-                first,
-                record_type="message",
-                workspace=canonical,
-                guidance=READ_GUIDANCE,
-            )
+            _assert_result(first, record_type="message")
             assert first["records"] == expected_first
 
             second = await reactor._execute_ready_tool(
@@ -2351,12 +2256,7 @@ def test_bare_read_forwards_per_thread_limit_and_includes_direct_messages(
                 "read",
                 {"thread": None, "limit": 1},
             )
-            _assert_result(
-                second,
-                record_type="message",
-                workspace=canonical,
-                guidance=READ_GUIDANCE,
-            )
+            _assert_result(second, record_type="message")
             assert second["records"] == expected_second
 
             terminal = await reactor._execute_ready_tool(
@@ -2364,7 +2264,7 @@ def test_bare_read_forwards_per_thread_limit_and_includes_direct_messages(
                 "read",
                 {"thread": None, "limit": 1},
             )
-            _assert_result(terminal, record_type="message", workspace=canonical)
+            _assert_result(terminal, record_type="message")
             assert terminal["records"] == []
 
             history = await reactor._execute_ready_tool(
@@ -2411,12 +2311,12 @@ def test_explicit_dm_read_log_and_directory_use_public_core_contract(
         observer = TautClient(db_path=db)
         try:
             canonical = str(
-                (
+                canonical_of(
                     await reactor.attach_workspace(
                         str(workspace),
                         member.token or "",
                     )
-                )["workspace"]
+                )
             )
             before_log = observer._state.get_member(selected_id)
             assert before_log is not None
@@ -2426,7 +2326,7 @@ def test_explicit_dm_read_log_and_directory_use_public_core_contract(
                 "log",
                 {"thread": "@other", "since": None, "limit": 100},
             )
-            _assert_result(history, record_type="message", workspace=canonical)
+            _assert_result(history, record_type="message")
             assert history["records"][0]["thread"] == sent.thread
             assert history["records"][0]["text"] == "private history"
             assert observer._state.get_member(selected_id) == before_log
@@ -2436,12 +2336,7 @@ def test_explicit_dm_read_log_and_directory_use_public_core_contract(
                 "read",
                 {"thread": sent.thread, "limit": 100},
             )
-            _assert_result(
-                unread,
-                record_type="message",
-                workspace=canonical,
-                guidance=READ_GUIDANCE,
-            )
+            _assert_result(unread, record_type="message")
             assert unread["records"][0]["thread"] == sent.thread
 
             stable_write = await reactor._execute_ready_tool(
@@ -2452,11 +2347,7 @@ def test_explicit_dm_read_log_and_directory_use_public_core_contract(
                     "text": "stable reply @other and private @third",
                 },
             )
-            _assert_result(
-                stable_write,
-                record_type="message",
-                workspace=canonical,
-            )
+            _assert_result(stable_write, record_type="message")
             assert stable_write["records"][0]["thread"] == sent.thread
             assert len(stable_write["records"][0]["ts"]) == 19
             other_observer = TautClient(db_path=db, as_name="other")
@@ -2479,7 +2370,7 @@ def test_explicit_dm_read_log_and_directory_use_public_core_contract(
                 "list",
                 {"dms": True},
             )
-            _assert_result(directory, record_type="thread", workspace=canonical)
+            _assert_result(directory, record_type="thread")
             observed_members = list(
                 next(
                     item
@@ -2536,12 +2427,12 @@ def test_well_formed_absent_and_inaccessible_dms_are_content_free_empty_results(
         reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             canonical = str(
-                (
+                canonical_of(
                     await reactor.attach_workspace(
                         str(workspace),
                         member.token or "",
                     )
-                )["workspace"]
+                )
             )
             for tool in ("read", "log"):
                 encoded_results: list[str] = []
@@ -2555,11 +2446,7 @@ def test_well_formed_absent_and_inaccessible_dms_are_content_free_empty_results(
                             **({"since": None} if tool == "log" else {}),
                         },
                     )
-                    _assert_result(
-                        result,
-                        record_type="message",
-                        workspace=canonical,
-                    )
+                    _assert_result(result, record_type="message")
                     assert result["records"] == []
                     encoded_results.append(
                         json.dumps(
@@ -2579,11 +2466,7 @@ def test_well_formed_absent_and_inaccessible_dms_are_content_free_empty_results(
                     "say",
                     {"target": selector, "text": "must not repair"},
                 )
-                _assert_result(
-                    result,
-                    record_type="message",
-                    workspace=canonical,
-                )
+                _assert_result(result, record_type="message")
                 assert result["records"] == []
                 encoded_say_results.append(
                     json.dumps(
@@ -2648,7 +2531,7 @@ def test_search_returns_all_facets_and_preserves_authoritative_state(
         reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             canonical = str(
-                (await reactor.attach_workspace(str(workspace), token))["workspace"]
+                canonical_of(await reactor.attach_workspace(str(workspace), token))
             )
             before = snapshot()
             arguments = {
@@ -2667,7 +2550,7 @@ def test_search_returns_all_facets_and_preserves_authoritative_state(
                 "search",
                 arguments,
             )
-            _assert_result(result, record_type="search_hit", workspace=canonical)
+            _assert_result(result, record_type="search_hit")
             assert {record["text"] for record in result["records"]} == {
                 "verticalneedle channel",
                 "verticalneedle subthread",
@@ -2710,7 +2593,7 @@ def test_search_returns_all_facets_and_preserves_authoritative_state(
                 "search",
                 {**arguments, "query": "absentverticalneedle"},
             )
-            _assert_result(empty, record_type="search_hit", workspace=canonical)
+            _assert_result(empty, record_type="search_hit")
             assert empty["records"] == []
             assert snapshot() == before
         finally:
@@ -2739,7 +2622,7 @@ def test_search_provider_failure_is_sanitized_without_retiring_workspace(
         reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             canonical = str(
-                (await reactor.attach_workspace(str(workspace), token))["workspace"]
+                canonical_of(await reactor.attach_workspace(str(workspace), token))
             )
             with _tool_error(
                 "search provider or index unavailable; fix the workspace "
@@ -2795,7 +2678,7 @@ def test_late_search_cancellation_does_not_retry_or_retire_workspace(
         reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             canonical = str(
-                (await reactor.attach_workspace(str(workspace), token))["workspace"]
+                canonical_of(await reactor.attach_workspace(str(workspace), token))
             )
             pending = asyncio.create_task(
                 reactor._execute_ready_tool(
@@ -2865,12 +2748,12 @@ def test_explicit_read_limit_pages_without_post_read_slicing(tmp_path: Path) -> 
         reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             canonical = str(
-                (
+                canonical_of(
                     await reactor.attach_workspace(
                         str(workspace),
                         member.token or "",
                     )
-                )["workspace"]
+                )
             )
             first = await reactor._execute_ready_tool(
                 canonical,
@@ -2903,8 +2786,7 @@ def test_explicit_read_limit_pages_without_post_read_slicing(tmp_path: Path) -> 
                 "read",
                 {"thread": "general", "limit": 100},
             )
-            assert empty["empty"] is True
-            assert empty["guidance"] == []
+            assert empty == {"records": []}
             history = await reactor._execute_ready_tool(
                 canonical,
                 "log",
@@ -2958,11 +2840,11 @@ def test_activity_writing_tools_do_not_change_bound_identity_or_presence(
 
         try:
             canonical = str(
-                (await reactor.attach_workspace(str(workspace), token))["workspace"]
+                canonical_of(await reactor.attach_workspace(str(workspace), token))
             )
             before_activity, before_identity = snapshot()
             result = await reactor._execute_ready_tool(canonical, tool, arguments)
-            assert result["record_type"] in {"thread", "member"}
+            validate(instance=result, schema=result_schema(RECORD_TYPE_BY_TOOL[tool]))
             after_activity, after_identity = snapshot()
             assert after_activity > before_activity
             assert after_identity == before_identity
@@ -3005,11 +2887,8 @@ def test_manifest_omits_output_schema_and_results_stay_closed() -> None:
         assert "outputSchema" not in tool.model_dump(by_alias=True, exclude_none=True)
         schema = result_schema(expected_record_types[tool.name])
         assert schema["additionalProperties"] is False
-        assert (
-            schema["properties"]["record_type"]["const"]
-            == expected_record_types[tool.name]
-        )
-        assert schema["properties"]["record_type"]["type"] == "string"
+        assert set(schema["properties"]) == {"records", "warnings"}
+        assert schema["required"] == ["records"]
         record_schema = schema["properties"]["records"]["items"]
         if "oneOf" in record_schema:
             assert all(
@@ -3320,7 +3199,7 @@ def test_search_manifest_and_result_family_are_exact() -> None:
 
     assert tool.output_schema is None
     schema = result_schema("search_hit")
-    assert schema["properties"]["record_type"]["const"] == "search_hit"
+    assert set(schema["properties"]) == {"records", "warnings"}
     branches = schema["properties"]["records"]["items"]["oneOf"]
     assert [branch["properties"]["thread_kind"]["const"] for branch in branches] == [
         "channel",

@@ -34,7 +34,6 @@ from taut._config import load_config
 from taut._exceptions import IdentityError, NotInitializedError
 
 from ._commands import (
-    RECORD_TYPE_BY_TOOL,
     CommandArguments,
     CommandRecord,
     execute_command,
@@ -170,7 +169,6 @@ class WorkspaceCommandOutcome:
     generation: int
     command_id: int
     name: str
-    record_type: str
     records: tuple[CommandRecord, ...]
     warnings: tuple[str, ...]
     notifications: tuple[Notification, ...]
@@ -442,20 +440,18 @@ class _WorkspaceReactor:
         command_records: tuple[CommandRecord, ...] = ()
         command_error: str | None = None
         try:
-            result = execute_command(self.client, command.name, command.arguments)
-            command_record_type = result.record_type
-            command_records = result.records
+            command_records = execute_command(
+                self.client, command.name, command.arguments
+            )
         except TokenError:
             self.degraded = True
             self._emit(WorkspaceIdentityLost(self.generation))
             return True
         except BlankMessageError as exc:
-            command_record_type = RECORD_TYPE_BY_TOOL[command.name]
             command_error = str(exc)
         except EmptyResultError:
-            command_record_type = RECORD_TYPE_BY_TOOL[command.name]
+            pass
         except (TautError, TypeError, ValueError) as exc:
-            command_record_type = RECORD_TYPE_BY_TOOL[command.name]
             command_error = str(exc)
         except Exception as exc:  # noqa: BLE001 approved [DOM-10.2.1] [RUFF-SUP-066] exception
             self._capture_crash(exc, operation=f"workspace.command:{command.name}")
@@ -472,7 +468,6 @@ class _WorkspaceReactor:
                 self.generation,
                 command.command_id,
                 command.name,
-                command_record_type,
                 command_records,
                 (
                     *self.client.last_notification_warnings,
@@ -534,7 +529,6 @@ class _WorkspaceReactor:
                 self.generation,
                 command.command_id,
                 command.name,
-                "canceled",
                 (),
                 (),
                 self.previous_snapshot,

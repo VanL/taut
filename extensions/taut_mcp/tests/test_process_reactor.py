@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from conftest import canonical_of
 from simplebroker import Queue
 from tests.helpers.eventually import async_eventually
 
@@ -195,7 +196,7 @@ def test_teardown_rejects_detach_admission(
             assert await asyncio.to_thread(close_started.wait, 5)
             with _tool_error(process_reactor.ATTACHMENT_FAILED):
                 await asyncio.wait_for(
-                    reactor.detach_workspace(str(attached["workspace"])),
+                    reactor.detach_workspace(canonical_of(attached)),
                     timeout=0.25,
                 )
         finally:
@@ -454,7 +455,7 @@ def test_fixed_attachment_rejections_pin_literal_recovery_text(
                 await reactor.attach_workspace(
                     str(workspace), "participant-controlled-invalid-token"
                 )
-            assert token not in " ".join(reactor.list_workspaces()["warnings"])
+            assert token not in " ".join(reactor.list_workspaces().get("warnings", []))
         finally:
             await reactor.aclose()
 
@@ -587,7 +588,7 @@ def test_attach_is_idempotent_by_token_and_collapses_path_aliases(
 
             assert repeated == first
             assert aliased == first
-            assert first["workspace"] == os.path.realpath(workspace)
+            assert canonical_of(first) == os.path.realpath(workspace)
             assert first["records"][0]["member_id"] == member_id
             assert len(reactor.list_workspaces()["records"]) == 1
             with _tool_error("workspace already attached; detach to replace token"):
@@ -710,7 +711,7 @@ def test_attach_respects_workspace_local_sqlite_config(tmp_path: Path) -> None:
             attached = await reactor.attach_workspace(
                 str(workspace), member.token or ""
             )
-            assert attached["workspace"] == os.path.realpath(workspace)
+            assert canonical_of(attached) == os.path.realpath(workspace)
             assert attached["records"][0] == {
                 "backend": "sqlite",
                 "member_id": member.member_id,
@@ -851,7 +852,7 @@ def test_detach_uses_distinct_five_second_deadline_and_final_liveness_check(
         loop = asyncio.get_running_loop()
         reactor = ProcessReactor(loop)
         attached = await reactor.attach_workspace(str(workspace), token)
-        canonical = str(attached["workspace"])
+        canonical = canonical_of(attached)
         entry = reactor._entries[canonical]
         reactor._maintenance.cancel()
         real_wake = loop.call_soon_threadsafe
@@ -994,7 +995,7 @@ def test_detach_timeout_becomes_retryable_reactor_failed(
     async def scenario() -> None:
         reactor = ProcessReactor(asyncio.get_running_loop())
         attached = await reactor.attach_workspace(str(workspace), token)
-        canonical = str(attached["workspace"])
+        canonical = canonical_of(attached)
         assert await asyncio.to_thread(periodic_peek_started.wait, 5)
 
         detach = asyncio.create_task(reactor.detach_workspace(canonical))
@@ -1046,7 +1047,7 @@ def test_periodic_peek_marks_lost_identity_without_healing_it(tmp_path: Path) ->
         reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             attached = await reactor.attach_workspace(str(workspace), token)
-            canonical = str(attached["workspace"])
+            canonical = canonical_of(attached)
             admin = TautClient(db_path=workspace / ".taut.db", as_name="selected")
             with admin._meta_queue.sidecar(transaction=True) as session:
                 session.run(
@@ -1330,7 +1331,7 @@ def test_child_fault_is_isolated_and_reported_once(
             )
             with _tool_error("workspace reactor failed; detach and reattach"):
                 await reactor._execute_ready_tool(
-                    str(failed["workspace"]),
+                    canonical_of(failed),
                     "say",
                     {"target": "general", "text": "trigger-child-fault"},
                 )
@@ -1339,10 +1340,10 @@ def test_child_fault_is_isolated_and_reported_once(
                 record["workspace"]: record
                 for record in reactor.list_workspaces()["records"]
             }
-            assert records[str(failed["workspace"])]["status"] == "reactor_failed"
-            assert records[str(healthy["workspace"])]["status"] == "ready"
+            assert records[canonical_of(failed)]["status"] == "reactor_failed"
+            assert records[canonical_of(healthy)]["status"] == "ready"
             result = await reactor._execute_ready_tool(
-                str(healthy["workspace"]), "whoami", {}
+                canonical_of(healthy), "whoami", {}
             )
             assert result["records"][0]["name"] == "healthy"
             assert diagnostics == [
@@ -1387,7 +1388,7 @@ def test_refresh_crash_captures_after_runtime_enable(
             fail_refresh.set()
             with _tool_error("workspace reactor failed; detach and reattach"):
                 await reactor._execute_ready_tool(
-                    str(attached["workspace"]),
+                    canonical_of(attached),
                     "whoami",
                     {},
                 )
@@ -1521,7 +1522,7 @@ def test_workspace_crash_observes_runtime_disable(
             TautClient.set_debug_capture(False, db_path=workspace / ".taut.db")
             with _tool_error("workspace reactor failed; detach and reattach"):
                 await reactor._execute_ready_tool(
-                    str(attached["workspace"]),
+                    canonical_of(attached),
                     "whoami",
                     {},
                 )

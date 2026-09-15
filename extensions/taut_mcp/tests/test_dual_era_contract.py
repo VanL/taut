@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from conftest import canonical_of
 
 import taut_mcp._process_reactor as process_reactor
 from taut import TautClient
@@ -227,14 +228,18 @@ def test_domain_call_lazily_ensures_and_retains_workspace(tmp_path: Path) -> Non
             )
             assert result["records"][0]["name"] == "selected"
             listed = reactor.list_workspaces()
-            assert listed["records"][0]["workspace"] == result["workspace"]
+            canonical = canonical_of(listed)
+            assert canonical == str(workspace.resolve())
             repeated = await reactor.execute_tool(
-                result["workspace"],
+                canonical,
                 token,
                 "whoami",
                 {},
             )
-            assert repeated["workspace"] == result["workspace"]
+            assert set(repeated) == {"records"}
+            assert (
+                repeated["records"][0]["member_id"] == result["records"][0]["member_id"]
+            )
             assert len(reactor.list_workspaces()["records"]) == 1
         finally:
             await reactor.aclose()
@@ -334,7 +339,7 @@ def test_domain_command_envelope_excludes_mcp_identity_fields(
         reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             attached = await reactor.attach_workspace(str(workspace), token)
-            canonical = str(attached["workspace"])
+            canonical = canonical_of(attached)
             commands: list[RunWorkspaceCommand] = []
             real_send = process_reactor._Owner.send
 
@@ -384,7 +389,7 @@ def test_search_selector_arrays_are_frozen_before_child_dispatch(
         commands: list[RunWorkspaceCommand] = []
         try:
             attached = await reactor.attach_workspace(str(workspace), token)
-            canonical = str(attached["workspace"])
+            canonical = canonical_of(attached)
             real_send = process_reactor._Owner.send
 
             def audited_send(
@@ -478,11 +483,11 @@ def test_every_domain_tool_can_be_the_first_lazy_request(
                 tool_name,
                 arguments,
             )
-            assert result["record_type"]
-            assert result["workspace"] == str(workspace.resolve())
+            assert set(result) == {"records"}
             listed = reactor.list_workspaces()
             assert len(listed["records"]) == 1
             assert listed["records"][0]["status"] == "ready"
+            assert canonical_of(listed) == str(workspace.resolve())
         finally:
             await reactor.aclose()
 

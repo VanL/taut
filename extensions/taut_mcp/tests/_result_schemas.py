@@ -1,4 +1,4 @@
-"""Test-side oracle for the fixed Taut MCP result envelope and record shapes.
+"""Test-side oracle for the Taut MCP records/warnings result object and closed record shapes.
 
 The manifest carries input schemas only; these schemas pin the shape of
 ``structuredContent`` returned by every tool and are used to validate real
@@ -390,61 +390,10 @@ def result_schema(record_type: str) -> dict[str, Any]:
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "additionalProperties": False,
         "properties": {
-            "empty": {
-                "description": "True when records is empty.",
-                "type": "boolean",
-            },
-            "guidance": {
-                "description": "Action-bearing guidance associated with this result.",
-                "items": {
-                    "additionalProperties": False,
-                    "properties": {
-                        "action": {
-                            "description": "Recommended follow-up action.",
-                            "type": "string",
-                        },
-                        "code": {
-                            "description": "Stable guidance classification.",
-                            "type": "string",
-                        },
-                        "message": {
-                            "description": "Human-readable effect explanation.",
-                            "type": "string",
-                        },
-                    },
-                    "required": ["action", "code", "message"],
-                    "type": "object",
-                },
-                "type": "array",
-            },
-            "record_type": {
-                "const": record_type,
-                "description": "Domain record type contained in records.",
-                "type": "string",
-            },
-            "records": {
-                "description": "Canonical domain records returned by the operation.",
-                "items": RECORD_SCHEMAS[record_type],
-                "type": "array",
-            },
-            "warnings": {
-                "description": "Content-free operational warnings.",
-                "items": {"type": "string"},
-                "type": "array",
-            },
-            "workspace": {
-                "description": "Canonical selected workspace, or null for process-wide results.",
-                **_nullable("string"),
-            },
+            "records": {"items": RECORD_SCHEMAS[record_type], "type": "array"},
+            "warnings": {"items": {"type": "string"}, "minItems": 1, "type": "array"},
         },
-        "required": [
-            "empty",
-            "guidance",
-            "record_type",
-            "records",
-            "warnings",
-            "workspace",
-        ],
+        "required": ["records"],
         "type": "object",
     }
 

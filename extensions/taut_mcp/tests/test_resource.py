@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from conftest import canonical_of
 from tests.helpers.eventually import async_eventually
 
 import taut_mcp._workspace_reactor as workspace_reactor
@@ -151,7 +152,7 @@ def test_attachment_calls_public_identity_activity_seams_on_owner_thread(
         reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             attached = await reactor.attach_workspace(str(workspace), token)
-            assert attached["workspace"] == str(workspace.resolve())
+            assert canonical_of(attached) == str(workspace.resolve())
         finally:
             await reactor.aclose()
 
@@ -351,7 +352,7 @@ def test_reaction_appears_in_recipient_resource_and_inbox_consumes_it(
                 actor_member.token or "",
             )
             result = await actor_reactor._execute_ready_tool(
-                str(actor_attached["workspace"]),
+                canonical_of(actor_attached),
                 "message_react",
                 {"msg_id": str(source.ts), "reaction": "ack"},
             )
@@ -397,11 +398,10 @@ def test_reaction_appears_in_recipient_resource_and_inbox_consumes_it(
                 },
             )
             claimed = await recipient_reactor._execute_ready_tool(
-                str(recipient_attached["workspace"]),
+                canonical_of(recipient_attached),
                 "inbox",
                 {"limit": 1},
             )
-            assert claimed["record_type"] == "notification"
             assert claimed["records"] == [
                 {
                     "actor_id": actor_member.member_id,
@@ -576,18 +576,18 @@ def test_resource_sorts_workspaces_and_bounds_each_notification_snapshot(
             parsed = json.loads(reactor.current_text)
             entries = parsed["workspaces"]
             assert [entry["workspace"] for entry in entries] == sorted(
-                [later_result["workspace"], earlier_result["workspace"]]
+                [canonical_of(later_result), canonical_of(earlier_result)]
             )
             by_workspace = {entry["workspace"]: entry for entry in entries}
-            later_entry = by_workspace[later_result["workspace"]]
+            later_entry = by_workspace[canonical_of(later_result)]
             assert later_entry["notifications"] == expected_later[:100]
             assert later_entry["truncated"] is True
-            earlier_entry = by_workspace[earlier_result["workspace"]]
+            earlier_entry = by_workspace[canonical_of(earlier_result)]
             assert earlier_entry["notifications"] == expected_earlier
             assert earlier_entry["truncated"] is False
 
             claimed = await reactor._execute_ready_tool(
-                str(later_result["workspace"]),
+                canonical_of(later_result),
                 "inbox",
                 {"limit": 1},
             )
@@ -597,11 +597,11 @@ def test_resource_sorts_workspaces_and_bounds_each_notification_snapshot(
                 for entry in json.loads(reactor.current_text)["workspaces"]
             }
             assert (
-                refreshed[later_result["workspace"]]["notifications"]
+                refreshed[canonical_of(later_result)]["notifications"]
                 == expected_later[1:]
             )
-            assert refreshed[later_result["workspace"]]["truncated"] is False
-            assert refreshed[earlier_result["workspace"]] == earlier_entry
+            assert refreshed[canonical_of(later_result)]["truncated"] is False
+            assert refreshed[canonical_of(earlier_result)] == earlier_entry
         finally:
             await reactor.aclose()
 
@@ -641,7 +641,7 @@ def test_backstop_detects_external_consumption_without_touching_identity(
         reactor = ProcessReactor(asyncio.get_running_loop())
         try:
             attached = await reactor.attach_workspace(str(workspace), token)
-            canonical = str(attached["workspace"])
+            canonical = canonical_of(attached)
             assert (
                 len(json.loads(reactor.current_text)["workspaces"][0]["notifications"])
                 == 1
@@ -855,7 +855,7 @@ def test_native_activity_wake_is_immediate_but_bursts_are_paced(
             # A completed command starts a fresh observational-backstop interval.
             # Keep that independent poll from racing this native-wake pacing proof.
             await reactor._execute_ready_tool(
-                str(attached["workspace"]),
+                canonical_of(attached),
                 "whoami",
                 {},
             )
@@ -888,7 +888,7 @@ def test_native_activity_wake_is_immediate_but_bursts_are_paced(
                 "@selected",
                 "@selected",
             ]
-            assert attached["workspace"] == str(workspace.resolve())
+            assert canonical_of(attached) == str(workspace.resolve())
         finally:
             await reactor.aclose()
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import TypeAlias
 
 from simplebroker import format_message_id
@@ -22,8 +21,6 @@ from taut import (
     addressing,
 )
 
-from ._results import RECORD_TYPE_BY_TOOL
-
 _MAX_SAFE_JSON_INTEGER = (1 << 53) - 1
 
 CommandScalar: TypeAlias = str | int | bool | None | tuple[str, ...]
@@ -38,12 +35,6 @@ CommandRecord: TypeAlias = (
     | Member
     | Thread
 )
-
-
-@dataclass(frozen=True, slots=True)
-class CommandRecords:
-    record_type: str
-    records: tuple[CommandRecord, ...]
 
 
 def _required_string(arguments: dict[str, CommandScalar], name: str) -> str:
@@ -88,7 +79,7 @@ def execute_command(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-011] exceptio
     client: TautClient,
     name: str,
     frozen_arguments: CommandArguments,
-) -> CommandRecords:
+) -> tuple[CommandRecord, ...]:
     """Run exactly one allowlisted public client operation."""
 
     arguments = dict(frozen_arguments)
@@ -243,7 +234,7 @@ def execute_command(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-011] exceptio
         records = (client.whoami(explain=False),)
     else:
         raise AssertionError(f"unregistered child command: {name}")
-    return CommandRecords(RECORD_TYPE_BY_TOOL[name], records)
+    return records
 
 
 def record_object(record: CommandRecord) -> dict[str, object]:  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-012] exception

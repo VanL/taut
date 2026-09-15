@@ -127,24 +127,15 @@ def test_missing_channel_is_an_empty_channel_result(tool_name: str) -> None:
     if tool_name == "channel_topic":
         arguments += (("topic", "new"),)
     result = execute_command(cast(TautClient, MissingClient()), tool_name, arguments)
-    assert result.record_type == "channel"
-    assert result.records == ()
+    assert result == ()
 
 
 def test_thread_result_schema_is_closed_and_kind_discriminated() -> None:
     assert _tool("list").output_schema is None
     schema = result_schema("thread")
 
-    base = {
-        "empty": False,
-        "guidance": [],
-        "record_type": "thread",
-        "warnings": [],
-        "workspace": "/workspace",
-    }
     valid = [
         {
-            **base,
             "records": [
                 {
                     "kind": "channel",
@@ -157,7 +148,6 @@ def test_thread_result_schema_is_closed_and_kind_discriminated() -> None:
             ],
         },
         {
-            **base,
             "records": [
                 {
                     "kind": "dm",
@@ -170,7 +160,6 @@ def test_thread_result_schema_is_closed_and_kind_discriminated() -> None:
             ],
         },
         {
-            **base,
             "records": [
                 {
                     "kind": "subthread",
@@ -185,8 +174,7 @@ def test_thread_result_schema_is_closed_and_kind_discriminated() -> None:
     for payload in valid:
         validate(instance=payload, schema=schema)
 
-    invalid = {
-        **base,
+    invalid: dict[str, object] = {
         "records": [
             {
                 "kind": "channel",
