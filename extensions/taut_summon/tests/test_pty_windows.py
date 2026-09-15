@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 import threading
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, Protocol, cast
 
 import psutil
@@ -13,7 +15,6 @@ from taut_summon._adapter import AdapterError
 from taut_summon._pty import _DetachChordMatcher
 
 pytestmark = [
-    pytest.mark.windows_only,
     pytest.mark.xdist_group("process"),
     pytest.mark.sqlite_only,
 ]
@@ -96,6 +97,20 @@ def _wait_until_true(predicate: Callable[[], bool], timeout: float = 10.0) -> bo
     return False
 
 
+def _jsonl_entries(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def _same_process(identity: tuple[int, float]) -> bool:
+    try:
+        process = psutil.Process(identity[0])
+        return process.create_time() == identity[1] and process.is_running()
+    except psutil.Error:
+        return False
+
+
 class _TrackingSerializer:
     def __init__(self, queued_waiting: threading.Event) -> None:
         self.lock = threading.Lock()
@@ -129,6 +144,220 @@ def _drain_windows_pipe(api: Any, read_handle: int, marker: bytes) -> None:
 def _epoch_writer_active(writer: Any) -> bool:
     with writer._state:
         return writer._active is not None
+
+
+class _EpochRaceApi:
+    def __init__(self) -> None:
+        self.first_write_started = threading.Event()
+        self.release_first_write = threading.Event()
+        self.cancel_started = threading.Event()
+        self.release_cancel = threading.Event()
+        self.closed: list[int] = []
+        self.writes: list[bytes] = []
+        self.fail_cancel = False
+        self._next_thread_handle = 90
+
+    def open_current_thread(self) -> int:
+        self._next_thread_handle += 1
+        return self._next_thread_handle
+
+    def close_handle(self, handle: int) -> None:
+        self.closed.append(handle)
+
+    def write(self, _handle: int, data: bytes) -> None:
+        self.writes.append(data)
+        if len(self.writes) == 1:
+            self.first_write_started.set()
+            assert self.release_first_write.wait(2.0)
+
+    def cancel_thread(self, handle: int, *, retiring: bool) -> bool:
+        from taut_summon._win32_io import ERROR_INVALID_HANDLE, Win32IoError
+
+        del retiring
+        assert handle not in self.closed
+        if self.fail_cancel:
+            raise Win32IoError("CancelSynchronousIo", ERROR_INVALID_HANDLE)
+        self.cancel_started.set()
+        assert self.release_cancel.wait(2.0)
+        assert handle not in self.closed
+        return True
+
+
+def test_epoch_writer_keeps_active_thread_handle_live_during_cancel() -> None:
+    from taut_summon._pty_windows import _EpochWriter
+
+    api = _EpochRaceApi()
+    writer = _EpochWriter(cast(Any, api), 41)
+    write_errors: list[BaseException] = []
+    interrupt_errors: list[BaseException] = []
+
+    writing = threading.Thread(
+        target=lambda: _blocked_epoch_write(writer, write_errors)
+    )
+    writing.start()
+    assert api.first_write_started.wait(1.0)
+
+    def run_interrupt() -> None:
+        try:
+            writer.interrupt()
+        except AdapterError as exc:
+            interrupt_errors.append(exc)
+
+    interrupting = threading.Thread(target=run_interrupt)
+    interrupting.start()
+    assert api.cancel_started.wait(1.0)
+    api.release_first_write.set()
+    assert not _wait_until_true(lambda: 91 in api.closed, timeout=0.05)
+    api.release_cancel.set()
+
+    writing.join(1.0)
+    interrupting.join(1.0)
+    assert not writing.is_alive()
+    assert not interrupting.is_alive()
+    assert [str(error) for error in write_errors] == ["PTY write interrupted"]
+    assert interrupt_errors == []
+    assert api.closed.count(91) == 1
+    assert api.writes[-1] == b"\x03"
+
+
+def test_epoch_writer_skips_cancel_after_snapshotted_write_completes() -> None:
+    from taut_summon._pty_windows import _EpochWriter
+
+    api = _EpochRaceApi()
+    writer = _EpochWriter(cast(Any, api), 41)
+    write_errors: list[BaseException] = []
+    original_cancel = writer._cancel_active
+
+    def complete_then_cancel(active: object) -> None:
+        api.release_first_write.set()
+        assert _wait_until_true(lambda: 91 in api.closed)
+        original_cancel(cast(Any, active))
+
+    writer._cancel_active = complete_then_cancel  # type: ignore[method-assign]
+    writing = threading.Thread(
+        target=lambda: _blocked_epoch_write(writer, write_errors)
+    )
+    writing.start()
+    assert api.first_write_started.wait(1.0)
+    writer.interrupt()
+    writing.join(1.0)
+    assert not writing.is_alive()
+    assert [str(error) for error in write_errors] == ["PTY write interrupted"]
+    assert not api.cancel_started.is_set()
+    assert api.writes == [b"x" * 1_000_000, b"\x03"]
+
+
+def test_epoch_writer_cancel_failure_does_not_poison_later_write() -> None:
+    from taut_summon._pty_windows import _ActiveWrite, _EpochWriter
+
+    api = _EpochRaceApi()
+    api.fail_cancel = True
+    writer = _EpochWriter(cast(Any, api), 41)
+    with writer._state:
+        writer._active = _ActiveWrite(epoch=0, thread_handle=91)
+
+    with pytest.raises(AdapterError, match="write cancellation failed"):
+        writer.interrupt()
+
+    with writer._state:
+        writer._active = None
+    api.release_first_write.set()
+    writer.write(b"after")
+    assert api.writes == [b"after"]
+
+
+def test_epoch_writer_close_reports_cancellation_failure() -> None:
+    from taut_summon._pty_windows import _ActiveWrite, _EpochWriter
+
+    api = _EpochRaceApi()
+    api.fail_cancel = True
+    writer = _EpochWriter(cast(Any, api), 41)
+    with writer._state:
+        writer._active = _ActiveWrite(epoch=0, thread_handle=91)
+
+    writer.request_close()
+    with pytest.raises(AdapterError, match="write cancellation failed"):
+        writer.finish_close_request()
+
+
+def test_epoch_writer_inactivity_timeout_does_not_poison_later_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut_summon import _pty_windows
+    from taut_summon._pty_windows import _ActiveWrite, _EpochWriter
+
+    monkeypatch.setattr(_pty_windows, "_CLOSE_TIMEOUT_S", 0.01)
+    api = _EpochRaceApi()
+    api.release_cancel.set()
+    writer = _EpochWriter(cast(Any, api), 41)
+    with writer._state:
+        writer._active = _ActiveWrite(epoch=0, thread_handle=91)
+
+    with pytest.raises(AdapterError, match="did not stop after interrupt"):
+        writer.interrupt()
+
+    with writer._state:
+        writer._active = None
+    api.release_first_write.set()
+    writer.write(b"after")
+    assert api.writes == [b"after"]
+
+
+def test_overlapping_interrupts_emit_only_the_current_epoch_signal() -> None:
+    from taut_summon._pty_windows import _EpochWriter
+
+    api = _EpochRaceApi()
+    api.release_first_write.set()
+    writer = _EpochWriter(cast(Any, api), 41)
+    errors: list[AdapterError] = []
+    writer._serializer.acquire()
+
+    def interrupt() -> None:
+        try:
+            writer.interrupt()
+        except AdapterError as exc:
+            errors.append(exc)
+
+    first = threading.Thread(target=interrupt)
+    second = threading.Thread(target=interrupt)
+    first.start()
+    assert _wait_until_true(lambda: writer._epoch == 1)
+    second.start()
+    assert _wait_until_true(lambda: writer._epoch == 2)
+    writer._serializer.release()
+    first.join(1.0)
+    second.join(1.0)
+    assert not first.is_alive() and not second.is_alive()
+    assert api.writes == [b"\x03"]
+    assert [str(error) for error in errors] == ["PTY write interrupted"]
+
+
+def test_close_supersedes_pending_reusable_interrupt() -> None:
+    from taut_summon._pty_windows import _EpochWriter
+
+    api = _EpochRaceApi()
+    api.release_first_write.set()
+    writer = _EpochWriter(cast(Any, api), 41)
+    interrupt_errors: list[AdapterError] = []
+    writer._serializer.acquire()
+
+    def interrupt() -> None:
+        try:
+            writer.interrupt()
+        except AdapterError as exc:
+            interrupt_errors.append(exc)
+
+    interrupted = threading.Thread(target=interrupt)
+    interrupted.start()
+    assert _wait_until_true(lambda: writer._epoch == 1)
+    writer.request_close()
+    assert _wait_until_true(lambda: writer._epoch == 2)
+    writer._serializer.release()
+    interrupted.join(1.0)
+    writer.finish_close_request()
+    assert not interrupted.is_alive()
+    assert api.writes == [b"\x03"]
+    assert [str(error) for error in interrupt_errors] == ["PTY write interrupted"]
 
 
 class _DrainApi:
@@ -220,6 +449,7 @@ while True:
 
 
 @pytest.mark.skipif(os.name != "nt", reason="requires Windows ConPTY")
+@pytest.mark.windows_only
 def test_public_pty_adapter_reports_natural_exit_without_close_error() -> None:
     from taut_summon._adapter import ExitEvent
     from taut_summon._pty import PtyAdapter, PtySpec
@@ -244,6 +474,75 @@ def test_public_pty_adapter_reports_natural_exit_without_close_error() -> None:
 
 
 @pytest.mark.skipif(os.name != "nt", reason="requires Windows ConPTY")
+@pytest.mark.windows_only
+def test_public_pty_adapter_allows_graceful_cleanup(
+    tmp_path: Path,
+) -> None:
+    from taut_summon._adapter import ExitEvent
+    from taut_summon._pty import PtyAdapter, PtySpec
+
+    scenario = tmp_path / "scenario.json"
+    received = tmp_path / "received.jsonl"
+    scenario.write_text(json.dumps({"sigint_cleanup_seconds": 0.5}), encoding="utf-8")
+    handle = PtyAdapter(
+        PtySpec(
+            name="windows-graceful-close",
+            argv=(sys.executable, "-m", "taut_summon.scripted_provider"),
+        )
+    ).spawn(
+        system_prompt="unused",
+        env={
+            "TAUT_SUMMON_SCENARIO": str(scenario),
+            "TAUT_SUMMON_RECEIVED_LOG": str(received),
+        },
+    )
+    events: list[object] = []
+    pump = threading.Thread(target=lambda: events.extend(handle.events()))
+    pump.start()
+    provider_identity: tuple[int, float] | None = None
+    try:
+        assert _wait_until_true(
+            lambda: any(
+                entry.get("event") == "provider-ready"
+                for entry in _jsonl_entries(received)
+            )
+        )
+        start = next(
+            entry for entry in _jsonl_entries(received) if entry.get("event") == "start"
+        )
+        provider = psutil.Process(int(start["pid"]))
+        provider_identity = (provider.pid, provider.create_time())
+        handle.request_close()
+        handle.close()
+        pump.join(10.0)
+        assert not pump.is_alive()
+        entries = _jsonl_entries(received)
+        assert [
+            entry["count"] for entry in entries if entry.get("event") == "signal"
+        ] == [1]
+        assert any(entry.get("event") == "first-signal-entered" for entry in entries)
+        assert any(
+            entry.get("event") == "cleanup-release"
+            and entry.get("source") == "watchdog"
+            for entry in entries
+        )
+        assert [
+            event.returncode for event in events if isinstance(event, ExitEvent)
+        ] == [0]
+        assert _wait_until_true(
+            lambda: not _same_process(provider_identity), timeout=5.0
+        )
+    finally:
+        try:
+            handle.close()
+        finally:
+            pump.join(10.0)
+            if provider_identity is not None and _same_process(provider_identity):
+                psutil.Process(provider_identity[0]).kill()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows ConPTY")
+@pytest.mark.windows_only
 def test_public_pty_adapter_closes_before_output_consumption() -> None:
     from taut_summon._pty import PtyAdapter, PtySpec
 
@@ -261,6 +560,7 @@ def test_public_pty_adapter_closes_before_output_consumption() -> None:
 
 
 @pytest.mark.skipif(os.name != "nt", reason="requires Windows ConPTY")
+@pytest.mark.windows_only
 def test_public_pty_adapter_runs_conpty_and_retires_domain(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -314,6 +614,7 @@ def test_public_pty_adapter_runs_conpty_and_retires_domain(
 
 
 @pytest.mark.skipif(os.name != "nt", reason="requires Windows pipe cancellation")
+@pytest.mark.windows_only
 def test_epoch_writer_cancels_a_real_blocked_windows_write() -> None:
     from taut_summon._adapter import AdapterError
     from taut_summon._pty_windows import NativeApi, _EpochWriter
@@ -498,6 +799,7 @@ def test_console_lease_supports_console_input_with_redirected_output() -> None:
 
 
 @pytest.mark.skipif(os.name != "nt", reason="requires public Windows dispatch")
+@pytest.mark.windows_only
 def test_public_adapter_reports_missing_conpty_export(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -783,23 +1085,51 @@ def test_attach_cleanup_closes_handles_after_console_restore_failure() -> None:
 class _HandleApi:
     """Fake native API for a ConPTY child that never exits after console close."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        fail_wait: bool = False,
+        fail_exit_query: bool = False,
+        fail_duplicate_close: bool = False,
+    ) -> None:
         self.child_exits = threading.Event()
         self.pipe_closed = threading.Event()
+        self.monitor_waiting = threading.Event()
+        self.monitor_done = threading.Event()
         self.closed: list[int | None] = []
+        self.close_attempts: list[int | None] = []
         self.writes: list[tuple[int, bytes]] = []
+        self._active_waits: set[int] = set()
+        self.fail_exit_query = fail_exit_query
+        self.fail_duplicate_close = fail_duplicate_close
+        self.fail_wait = fail_wait
+        self.read_started = threading.Event()
+
+    def duplicate_handle(self, handle: int) -> int:
+        assert handle == 74
+        return 75
 
     def require_bool(self, name: str, ok: object) -> None:
         if not ok:
             raise AssertionError(name)
 
-    def WaitForSingleObject(self, _handle: object, _timeout: int) -> int:
+    def WaitForSingleObject(self, handle: object, _timeout: int) -> int:
         from taut_summon._win32_io import WAIT_OBJECT_0
 
-        self.child_exits.wait()
+        value = cast(Any, handle).value
+        assert value not in self.closed
+        self._active_waits.add(value)
+        self.monitor_waiting.set()
+        self.child_exits.wait(10.0)
+        self._active_waits.remove(value)
+        if self.fail_wait:
+            return 0xFFFFFFFF
         return WAIT_OBJECT_0
 
-    def GetExitCodeProcess(self, _handle: object, status: Any) -> bool:
+    def GetExitCodeProcess(self, handle: object, status: Any) -> bool:
+        assert cast(Any, handle).value not in self.closed
+        if self.fail_exit_query:
+            raise AdapterError("exit query failed")
         status._obj.value = 0
         return True
 
@@ -810,7 +1140,15 @@ class _HandleApi:
         return 99
 
     def close_handle(self, handle: int | None) -> None:
+        self.close_attempts.append(handle)
+        assert handle not in self._active_waits
+        if handle == 75 and self.fail_duplicate_close:
+            self.fail_duplicate_close = False
+            self.monitor_done.set()
+            raise AdapterError("duplicate close failed")
         self.closed.append(handle)
+        if handle == 75:
+            self.monitor_done.set()
 
     def write(self, handle: int, data: bytes) -> None:
         self.writes.append((handle, data))
@@ -822,8 +1160,165 @@ class _HandleApi:
     def read(self, _handle: int) -> bytes:
         from taut_summon._win32_io import ERROR_BROKEN_PIPE, Win32IoError
 
+        self.read_started.set()
         self.pipe_closed.wait(10.0)
         raise Win32IoError("ReadFile", ERROR_BROKEN_PIPE)
+
+
+def test_handle_constructor_retires_reply_writer_when_duplicate_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut_summon import _pty_windows
+    from taut_summon._pty_windows import WindowsPtyHandle
+
+    calls: list[str] = []
+
+    class ReplyWriter:
+        def __init__(self, _writer: object) -> None:
+            calls.append("created")
+
+        def start(self) -> None:
+            calls.append("started")
+
+        def request_close(self) -> None:
+            calls.append("requested")
+
+        def finish(self) -> None:
+            calls.append("finished")
+
+    class Api:
+        def duplicate_handle(self, _handle: int) -> int:
+            raise AdapterError("duplicate failed")
+
+        def close_handle(self, handle: int | None) -> None:
+            assert handle is None
+
+    monkeypatch.setattr(_pty_windows, "_TerminalReplyWriter", ReplyWriter)
+    with pytest.raises(AdapterError, match="duplicate failed"):
+        WindowsPtyHandle(
+            api=cast(Any, Api()),
+            hpcon=71,
+            input_write=72,
+            output_read=73,
+            process_handle=74,
+            pid=4242,
+            quiet_ms=10,
+            max_settle_s=0.1,
+            terminal=cast(Any, _Terminal()),
+        )
+    assert calls == ["created", "started", "requested", "finished"]
+
+
+def test_handle_constructor_closes_monitor_duplicate_when_start_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut_summon import _pty_windows
+    from taut_summon._pty_windows import WindowsPtyHandle
+
+    reply_calls: list[str] = []
+    closed: list[int | None] = []
+
+    class ReplyWriter:
+        def __init__(self, _writer: object) -> None:
+            reply_calls.append("created")
+
+        def start(self) -> None:
+            reply_calls.append("started")
+
+        def request_close(self) -> None:
+            reply_calls.append("requested")
+
+        def finish(self) -> None:
+            reply_calls.append("finished")
+
+    class MonitorThread:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def start(self) -> None:
+            raise RuntimeError("monitor start failed")
+
+    class Api:
+        def duplicate_handle(self, _handle: int) -> int:
+            return 75
+
+        def close_handle(self, handle: int | None) -> None:
+            closed.append(handle)
+
+    monkeypatch.setattr(_pty_windows, "_TerminalReplyWriter", ReplyWriter)
+    monkeypatch.setattr(_pty_windows.threading, "Thread", MonitorThread)
+    with pytest.raises(RuntimeError, match="monitor start failed"):
+        WindowsPtyHandle(
+            api=cast(Any, Api()),
+            hpcon=71,
+            input_write=72,
+            output_read=73,
+            process_handle=74,
+            pid=4242,
+            quiet_ms=10,
+            max_settle_s=0.1,
+            terminal=cast(Any, _Terminal()),
+        )
+    assert reply_calls == ["created", "started", "requested", "finished"]
+    assert closed == [75]
+
+
+def test_handle_constructor_keeps_start_failure_primary_when_retirement_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut_summon import _pty_windows
+    from taut_summon._pty_windows import WindowsPtyHandle
+
+    calls: list[str] = []
+    closed: list[int | None] = []
+
+    class ReplyWriter:
+        def __init__(self, _writer: object) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def request_close(self) -> None:
+            calls.append("requested")
+            raise AdapterError("retirement failed")
+
+        def finish(self) -> None:
+            calls.append("finished")
+
+    class MonitorThread:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def start(self) -> None:
+            raise RuntimeError("monitor start failed")
+
+    class Api:
+        def duplicate_handle(self, _handle: int) -> int:
+            return 75
+
+        def close_handle(self, handle: int | None) -> None:
+            closed.append(handle)
+
+    monkeypatch.setattr(_pty_windows, "_TerminalReplyWriter", ReplyWriter)
+    monkeypatch.setattr(_pty_windows.threading, "Thread", MonitorThread)
+    with pytest.raises(RuntimeError, match="monitor start failed") as caught:
+        WindowsPtyHandle(
+            api=cast(Any, Api()),
+            hpcon=71,
+            input_write=72,
+            output_read=73,
+            process_handle=74,
+            pid=4242,
+            quiet_ms=10,
+            max_settle_s=0.1,
+            terminal=cast(Any, _Terminal()),
+        )
+    assert calls == ["requested", "finished"]
+    assert closed == [75]
+    assert caught.value.__notes__ == [
+        "partial ConPTY constructor cleanup failed: retirement failed"
+    ]
 
 
 def test_close_records_unexited_child_and_releases_handles(
@@ -833,6 +1328,7 @@ def test_close_records_unexited_child_and_releases_handles(
     from taut_summon._pty_windows import WindowsPtyHandle
 
     monkeypatch.setattr(_pty_windows, "_CLOSE_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(_pty_windows, "_GRACEFUL_TIMEOUT_S", 0.01)
     api = _HandleApi()
     handle = WindowsPtyHandle(
         api=cast(Any, api),
@@ -846,11 +1342,13 @@ def test_close_records_unexited_child_and_releases_handles(
         terminal=cast(Any, _Terminal()),
     )
     try:
+        assert api.monitor_waiting.wait(1.0)
         with pytest.raises(AdapterError, match="did not exit after terminal close"):
             handle.close()
 
         assert handle._close_state == "closed"
         assert {74, 72, 73} <= set(api.closed)
+        assert 75 not in api.closed
         assert (72, b"\x03") in api.writes
 
         second: list[BaseException] = []
@@ -868,3 +1366,246 @@ def test_close_records_unexited_child_and_releases_handles(
         assert second and "did not exit after terminal close" in str(second[0])
     finally:
         api.child_exits.set()
+        assert api.monitor_done.wait(1.0)
+        handle._exit_monitor.join(1.0)
+        assert not handle._exit_monitor.is_alive()
+        assert api.closed.count(75) == 1
+        from taut_summon._adapter import ExitEvent
+
+        assert [
+            event.returncode
+            for event in handle.events()
+            if isinstance(event, ExitEvent)
+        ] == [0]
+
+
+@pytest.mark.parametrize(
+    ("api", "message"),
+    [
+        (_HandleApi(fail_wait=True), "wait failed"),
+        (_HandleApi(fail_exit_query=True), "exit query failed"),
+        (_HandleApi(fail_duplicate_close=True), "duplicate close failed"),
+    ],
+)
+def test_monitor_failure_releases_foreground_handles(
+    monkeypatch: pytest.MonkeyPatch, api: _HandleApi, message: str
+) -> None:
+    from taut_summon import _pty_windows
+    from taut_summon._pty_windows import WindowsPtyHandle
+
+    monkeypatch.setattr(_pty_windows, "_GRACEFUL_TIMEOUT_S", 0.01)
+    api.child_exits.set()
+    handle = WindowsPtyHandle(
+        api=cast(Any, api),
+        hpcon=71,
+        input_write=72,
+        output_read=73,
+        process_handle=74,
+        pid=4242,
+        quiet_ms=10,
+        max_settle_s=0.1,
+        terminal=cast(Any, _Terminal()),
+    )
+    with pytest.raises(AdapterError, match=message):
+        handle.close()
+    assert handle._close_state == "closed"
+    assert {74, 72, 73} <= set(api.closed)
+    assert api.monitor_done.is_set()
+    assert api.close_attempts.count(75) == 1
+
+
+def test_close_continues_cleanup_when_output_drain_start_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut_summon import _pty_windows
+    from taut_summon._pty_windows import WindowsPtyHandle
+
+    class FailingStartDrain:
+        def __init__(self) -> None:
+            self.starts = 0
+
+        def start(self) -> None:
+            self.starts += 1
+            if self.starts == 1:
+                raise RuntimeError("drain start failed")
+
+        def join_after_close(self) -> None:
+            pass
+
+    monkeypatch.setattr(_pty_windows, "_GRACEFUL_TIMEOUT_S", 0.01)
+    api = _HandleApi()
+    api.child_exits.set()
+    handle = WindowsPtyHandle(
+        api=cast(Any, api),
+        hpcon=71,
+        input_write=72,
+        output_read=73,
+        process_handle=74,
+        pid=4242,
+        quiet_ms=10,
+        max_settle_s=0.1,
+        terminal=cast(Any, _Terminal()),
+    )
+    drain = FailingStartDrain()
+    handle._drain = cast(Any, drain)
+    with pytest.raises(AdapterError, match="drain start failed"):
+        handle.close()
+    assert drain.starts == 2
+    assert {74, 72, 73, 75} <= set(api.closed)
+    with pytest.raises(AdapterError, match="drain start failed"):
+        handle.close()
+
+
+def test_close_continues_finalization_after_graceful_write_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut_summon import _pty_windows
+    from taut_summon._pty_windows import WindowsPtyHandle
+
+    class FailingWriter:
+        def request_close(self) -> None:
+            pass
+
+        def finish_close_request(self) -> None:
+            raise AdapterError("write cancellation failed")
+
+    monkeypatch.setattr(_pty_windows, "_GRACEFUL_TIMEOUT_S", 0.2)
+    api = _HandleApi()
+    api.child_exits.set()
+    handle = WindowsPtyHandle(
+        api=cast(Any, api),
+        hpcon=71,
+        input_write=72,
+        output_read=73,
+        process_handle=74,
+        pid=4242,
+        quiet_ms=10,
+        max_settle_s=0.1,
+        terminal=cast(Any, _Terminal()),
+    )
+    handle._writer = cast(Any, FailingWriter())
+    with pytest.raises(AdapterError, match="write cancellation failed"):
+        handle.close()
+    assert {74, 72, 73, 75} <= set(api.closed)
+
+
+def test_close_starts_drain_and_observes_graceful_exit_before_console_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut_summon import _pty_windows
+    from taut_summon._pty_windows import WindowsPtyHandle
+
+    class GracefulExitApi(_HandleApi):
+        def write(self, handle: int, data: bytes) -> None:
+            assert self.read_started.wait(1.0)
+            super().write(handle, data)
+            if data == b"\x03":
+                self.child_exits.set()
+
+        def ClosePseudoConsole(self, hpcon: object) -> None:
+            assert self.monitor_done.wait(1.0)
+            super().ClosePseudoConsole(hpcon)
+
+    monkeypatch.setattr(_pty_windows, "_GRACEFUL_TIMEOUT_S", 0.2)
+    api = GracefulExitApi()
+    handle = WindowsPtyHandle(
+        api=cast(Any, api),
+        hpcon=71,
+        input_write=72,
+        output_read=73,
+        process_handle=74,
+        pid=4242,
+        quiet_ms=10,
+        max_settle_s=0.1,
+        terminal=cast(Any, _Terminal()),
+    )
+    handle.close()
+    assert handle._close_state == "closed"
+    assert api.closed.count(75) == 1
+
+
+@pytest.mark.parametrize("graceful_timeout", [0.0, 0.2])
+def test_close_uses_configured_grace_before_forced_console_retirement(
+    monkeypatch: pytest.MonkeyPatch, graceful_timeout: float
+) -> None:
+    from taut_summon import _pty_windows
+    from taut_summon._pty_windows import WindowsPtyHandle
+
+    class RecordingEvent(threading.Event):
+        def __init__(self) -> None:
+            super().__init__()
+            self.waits: list[float | None] = []
+
+        def wait(self, timeout: float | None = None) -> bool:
+            self.waits.append(timeout)
+            return False
+
+    monkeypatch.setattr(_pty_windows, "_GRACEFUL_TIMEOUT_S", graceful_timeout)
+    monkeypatch.setattr(_pty_windows, "_CLOSE_TIMEOUT_S", 0.01)
+    api = _HandleApi()
+    handle = WindowsPtyHandle(
+        api=cast(Any, api),
+        hpcon=71,
+        input_write=72,
+        output_read=73,
+        process_handle=74,
+        pid=4242,
+        quiet_ms=10,
+        max_settle_s=0.1,
+        terminal=cast(Any, _Terminal()),
+    )
+    recorded = RecordingEvent()
+    handle._exit_monitor_done = recorded
+    try:
+        with pytest.raises(AdapterError, match="did not exit after terminal close"):
+            handle.close()
+        assert recorded.waits[:2] == [graceful_timeout, 0.01]
+        assert api.pipe_closed.is_set()
+    finally:
+        api.child_exits.set()
+        handle._exit_monitor.join(1.0)
+
+
+def test_concurrent_closers_observe_same_recorded_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut_summon import _pty_windows
+    from taut_summon._pty_windows import WindowsPtyHandle
+
+    monkeypatch.setattr(_pty_windows, "_CLOSE_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(_pty_windows, "_GRACEFUL_TIMEOUT_S", 0.01)
+    api = _HandleApi()
+    handle = WindowsPtyHandle(
+        api=cast(Any, api),
+        hpcon=71,
+        input_write=72,
+        output_read=73,
+        process_handle=74,
+        pid=4242,
+        quiet_ms=10,
+        max_settle_s=0.1,
+        terminal=cast(Any, _Terminal()),
+    )
+    failures: list[str] = []
+
+    def close() -> None:
+        try:
+            handle.close()
+        except AdapterError as exc:
+            failures.append(str(exc))
+
+    first = threading.Thread(target=close)
+    second = threading.Thread(target=close)
+    first.start()
+    assert api.pipe_closed.wait(1.0)
+    second.start()
+    first.join(1.0)
+    second.join(1.0)
+    try:
+        assert not first.is_alive() and not second.is_alive()
+        assert len(failures) == 2
+        assert all("did not exit after terminal close" in item for item in failures)
+        assert failures[0] == failures[1]
+    finally:
+        api.child_exits.set()
+        handle._exit_monitor.join(1.0)

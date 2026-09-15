@@ -4442,7 +4442,6 @@ def test_driver_sigint_sends_one_graceful_signal_to_provider(
     assert any(entry.get("event") == "cleanup-release" for entry in entries)
 
 
-@pytest.mark.posix_only
 def test_control_stop_sends_one_graceful_signal_to_provider(
     summon_db: Path,
     tmp_path: Path,
@@ -4468,7 +4467,10 @@ def test_control_stop_sends_one_graceful_signal_to_provider(
     assert [entry["count"] for entry in entries if entry.get("event") == "signal"] == [
         1
     ]
-    assert any(entry.get("event") == "cleanup-release" for entry in entries)
+    assert any(
+        entry.get("event") == "cleanup-release" and entry.get("source") == "watchdog"
+        for entry in entries
+    )
     row = _session_row(summon_db, member.member_id)
     assert row is not None
     assert row["driver_pid"] is None

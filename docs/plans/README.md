@@ -51,6 +51,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 
 | Plan | Status | Exemplar | Note |
 |------|--------|----------|------|
+| `2026-09-15-windows-pty-lifecycle-fixes-plan.md` | completed | no | Windows PTY lifecycle repair implemented, locally verified, and independently reviewed PASS; owner deferred hosted Windows qualification to the next push. |
 | `2026-09-15-numeric-start-time-token-plan.md` | completed | no | Numeric process start tokens and `ps` removal committed and independently reviewed PASS; owner closed the plan with Linux and Windows native qualification deferred to CI on the next push. |
 | `2026-09-15-mcp-result-simplification-plan.md` | completed | no | CLI-shaped records and optional warnings, omitted outputSchema, and terse descriptions implemented and independently reviewed; manifest 20,514 bytes under approved 21,000-byte ceiling; 309 non-PG and 7 PostgreSQL tests pass; not published. |
 | `2026-09-14-audit-remediation-plan.md` | completed | yes | Thirteen audit-remediation slices, the approved Ruff registry delta, and final fresh-eyes and outside-model implementation reviews are complete. |

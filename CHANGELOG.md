@@ -27,6 +27,12 @@
   `close()` always records its outcome and releases the handle state, and
   fake-API tests cover the three paths on every platform.
 
+- Windows ConPTY shutdown now keeps the exit monitor on a private duplicated
+  process handle, protects active thread handles through synchronous-I/O
+  cancellation, and allows five seconds for graceful provider cleanup before
+  closing the console. Deterministic Windows lifecycle regressions now run in
+  every platform CI lane; Windows CI also exercises real graceful cleanup.
+
 - Debug credential redaction no longer hangs on an unterminated quoted
   value. The 0.9.7 escaped-JSON rules matched plain characters as a run
   nested under the outer repeat, so a labeled value opened with `\"` and

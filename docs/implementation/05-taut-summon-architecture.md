@@ -335,7 +335,12 @@ On Windows, `_pty_windows.py` creates the ConPTY and starts the provider with
 `CREATE_SUSPENDED`, attaching the pseudoconsole before the primary thread can
 run. ConPTY owns the attached process tree: closing it retires the leader and
 descendants, after which one monitor records the leader exit and publishes one
-`ExitEvent`. Setup failure terminates the unpublished suspended child and
+`ExitEvent`. The monitor owns a duplicated process handle from construction
+through its wait, exit-code query, and `finally` cleanup. Foreground close owns
+the original process handle, so a monitor timeout can release foreground
+resources without closing the handle under a pending native wait. Setup failure
+retires any reply worker started by the partial constructor, terminates the
+unpublished suspended child, and
 releases every acquired pseudoconsole, process, thread, and pipe handle.
 Every cleanup net in `_pty_windows.py` catches one module tuple that includes
 `AdapterError`, because the owned callees raise that type rather than a
@@ -344,12 +349,24 @@ so a child that outlives console close leaves a recorded error, not a handle
 stuck in `closing` that blocks every later close. The
 sole output drain never waits for process exit or blocks on a terminal reply;
 reply writes use the serialized, cancellable input writer on a separate owner.
+Cancellation checks the exact active-write object and calls
+`CancelSynchronousIo` while holding the writer's short state lock; the writer
+cannot close its thread handle until cancellation returns. A reusable interrupt
+keeps its epoch and transient gate through the Ctrl-C write, so a superseding
+interrupt or terminal close cannot emit a stale signal or poison later writes.
 The drain starts on the first operation that needs output consumption: attach
 routing, detached event or settle consumption, or teardown. Publishing an
 attach sink before that start preserves one-shot startup prompts for the human
 path without replaying already-observed terminal queries. While a sink is
 routed, observation is passive and the host terminal owns replies; after
 detach, the same drain resumes Summon's bounded query responder.
+
+Foreground Windows close starts the output drain, finishes the one graceful
+Ctrl-C write, and gives the leader up to five seconds to exit before closing
+ConPTY. A failed graceful write skips that wait but does not skip owned-domain
+cleanup. A child that remains alive after ConPTY close produces a recorded
+cleanup error and no fabricated exit event; its daemon monitor retains only its
+private process handle until a real exit or observation failure.
 
 The PTY pump checks leader status after every readable output turn, so a
 continuously readable terminal cannot defer terminal observation. It drains
@@ -1000,6 +1017,9 @@ from manufacturing invalid evidence.
 
 ## Related Plans
 
+- `docs/plans/2026-09-15-windows-pty-lifecycle-fixes-plan.md` — private monitor
+  handle ownership, exact-thread cancellation, graceful Windows close, and
+  cross-platform deterministic regression selection.
 - `docs/plans/2026-09-03-summon-unified-pty-cross-platform-plan.md` — promotes
   the one-adapter target, Windows ConPTY owner boundary, structured-runtime
   deletion, persistence version 2, and cross-platform test topology tracked by

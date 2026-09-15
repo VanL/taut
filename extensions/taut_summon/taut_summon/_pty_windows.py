@@ -52,6 +52,7 @@ _CLEAN_PIPE_END = frozenset(
 )
 _ACTIVITY_SECONDS = 10.0
 _CLOSE_TIMEOUT_S = 10.0
+_GRACEFUL_TIMEOUT_S = 5.0
 _DETACH_RESET = b"\x1b[?1049l\x1b[?25h\x1b[0m\x1b[?2004l"
 logger = logging.getLogger("taut_summon.pty_windows")
 
@@ -137,11 +138,16 @@ class _EpochWriter:
         with self._state:
             epoch = self._epoch
             self._validate(epoch)
+        self._write_with_epoch(payload, epoch)
+
+    def _write_with_epoch(
+        self, payload: bytes, epoch: int, *, interrupt_owner: bool = False
+    ) -> None:
         with self._serializer:
             thread_handle: int | None = None
             try:
                 with self._state:
-                    self._validate(epoch)
+                    self._validate(epoch, interrupt_owner=interrupt_owner)
                     thread_handle = self._api.open_current_thread()
                     self._active = _ActiveWrite(epoch, thread_handle)
                 try:
@@ -152,7 +158,7 @@ class _EpochWriter:
                             raise AdapterError("PTY write interrupted") from exc
                     raise AdapterError(f"PTY write failed: {exc}") from exc
                 with self._state:
-                    self._validate(epoch)
+                    self._validate(epoch, interrupt_owner=interrupt_owner)
             finally:
                 with self._state:
                     if (
@@ -169,14 +175,18 @@ class _EpochWriter:
             if self._retired:
                 return
             self._epoch += 1
+            epoch = self._epoch
             self._interrupting = True
             active = self._active
-        self._cancel_active(active)
-        self._wait_inactive("interrupt")
-        with self._state:
-            self._interrupting = False
-            self._state.notify_all()
-        self.write(b"\x03")
+        try:
+            self._cancel_active(active)
+            self._wait_inactive("interrupt")
+            self._write_with_epoch(b"\x03", epoch, interrupt_owner=True)
+        finally:
+            with self._state:
+                if self._epoch == epoch and not self._retired:
+                    self._interrupting = False
+                    self._state.notify_all()
 
     def request_close(self) -> None:
         with self._state:
@@ -231,10 +241,13 @@ class _EpochWriter:
     def _cancel_active(self, active: _ActiveWrite | None) -> None:
         if active is None:
             return
-        try:
-            self._api.cancel_thread(active.thread_handle, retiring=True)
-        except Win32IoError as exc:
-            raise AdapterError(f"ConPTY write cancellation failed: {exc}") from exc
+        with self._state:
+            if self._active is not active:
+                return
+            try:
+                self._api.cancel_thread(active.thread_handle, retiring=True)
+            except Win32IoError as exc:
+                raise AdapterError(f"ConPTY write cancellation failed: {exc}") from exc
 
     def _wait_inactive(self, operation: str) -> None:
         deadline = time.monotonic() + _CLOSE_TIMEOUT_S
@@ -245,12 +258,12 @@ class _EpochWriter:
                     raise AdapterError(f"ConPTY writer did not stop after {operation}")
                 self._state.wait(remaining)
 
-    def _validate(self, epoch: int) -> None:
+    def _validate(self, epoch: int, *, interrupt_owner: bool = False) -> None:
         if epoch != self._epoch:
             raise AdapterError("PTY write interrupted")
         if self._retired:
             raise AdapterError("PTY master is closed")
-        if self._interrupting:
+        if self._interrupting and not interrupt_owner:
             raise AdapterError("PTY write interrupted")
 
 
@@ -266,6 +279,8 @@ class _TerminalReplyWriter:
             name="taut-conpty-terminal-replies",
             daemon=True,
         )
+
+    def start(self) -> None:
         self._thread.start()
 
     def enqueue(self, payload: bytes) -> None:
@@ -704,13 +719,26 @@ class WindowsPtyHandle:
         self._attach_generation = 0
         self._drain = _OutputDrain(api, output_read, self)
         self._exit_monitor_done = threading.Event()
-        self._exit_monitor = threading.Thread(
-            target=self._monitor_process_exit,
-            args=(process_handle,),
-            name="taut-conpty-process-exit",
-            daemon=True,
-        )
-        self._exit_monitor.start()
+        monitor_process: int | None = None
+        try:
+            self._reply_writer.start()
+            monitor_process = api.duplicate_handle(process_handle)
+            self._exit_monitor = threading.Thread(
+                target=self._monitor_process_exit,
+                args=(monitor_process,),
+                name="taut-conpty-process-exit",
+                daemon=True,
+            )
+            self._exit_monitor.start()
+            monitor_process = None
+        except Exception as exc:
+            failures: list[Exception] = []
+            _record_cleanup(failures, self._reply_writer.request_close)
+            _record_cleanup(failures, self._reply_writer.finish)
+            _record_cleanup(failures, partial(api.close_handle, monitor_process))
+            for failure in failures:
+                exc.add_note(f"partial ConPTY constructor cleanup failed: {failure}")
+            raise
         self._events.put(ActivityEvent(description="spawn"))
 
     @property
@@ -778,12 +806,14 @@ class WindowsPtyHandle:
         if owner:
             close_failures: list[Exception] = []
             try:
-                for action in (
-                    self._writer.finish_close_request,
-                    self._reply_writer.finish,
-                    self._close_owned_domain,
-                ):
-                    _record_cleanup(close_failures, action)
+                _record_cleanup(close_failures, self._drain.start)
+                graceful_failures: list[Exception] = []
+                _record_cleanup(graceful_failures, self._writer.finish_close_request)
+                close_failures.extend(graceful_failures)
+                if not graceful_failures:
+                    self._exit_monitor_done.wait(_GRACEFUL_TIMEOUT_S)
+                _record_cleanup(close_failures, self._reply_writer.finish)
+                _record_cleanup(close_failures, self._close_owned_domain)
             finally:
                 # The state transition must run even if a step raised something
                 # outside _CLEANUP_ERRORS; a handle stuck in "closing" blocks
@@ -852,7 +882,7 @@ class WindowsPtyHandle:
         self._publish_recorded_exit()
 
     def _monitor_process_exit(self, process: int) -> None:
-        publish = False
+        failures: list[Exception] = []
         try:
             wait = int(self._api.WaitForSingleObject(HANDLE(process), 0xFFFFFFFF))
             if wait != WAIT_OBJECT_0:
@@ -866,14 +896,15 @@ class WindowsPtyHandle:
                 raise AdapterError("ConPTY child remained active after exit wait")
             with self._lock:
                 self._returncode = int(status.value)
-                publish = self._close_state == "open"
         except _CLEANUP_ERRORS as exc:
-            self._exit_monitor_failure = exc
+            failures.append(exc)
         finally:
+            _record_cleanup(failures, partial(self._api.close_handle, process))
+            if failures:
+                self._exit_monitor_failure = _aggregate_failures(failures)
             self._exit_monitor_done.set()
             self._exit_ready.set()
-        if publish:
-            self._publish_recorded_exit()
+        self._publish_recorded_exit()
 
     def _publish_recorded_exit(self) -> None:
         with self._lock:

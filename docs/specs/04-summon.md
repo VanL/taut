@@ -423,19 +423,36 @@ result. The closer allows the existing bounded graceful interval. On POSIX it
 observes leader exit without reaping, sends the bounded SIGTERM/SIGKILL ladder
 to the process group while the unreaped leader still pins the group identity,
 and only then reaps the leader. It never signals the numeric process-group ID
-after leader reap and does not claim an atomic group-empty proof. On Windows
-it closes the owned ConPTY session while output remains drained, proves the
-attached descendant is absent, and reaps the leader. Direct provider exit does
-not bypass either platform's descendant-retirement step. Finalization then
-releases streams, fds, and native terminal handles in adapter-specific order.
+after leader reap and does not claim an atomic group-empty proof. On Windows,
+after the graceful Ctrl-C write completes successfully, the closer allows up
+to five seconds for leader exit, returning from that wait early when exit is
+observed. It then closes the owned ConPTY session while output remains drained,
+including when the leader exited first. Runtime retirement uses the retained
+ConPTY capability and observes the leader's real exit status; the
+attached-descendant absence proof is the real-process acceptance test in
+[SUM-12], not a runtime ancestry scan. Finalization then releases streams, fds,
+and native terminal handles in adapter-specific order. Direct provider exit
+does not bypass either platform's descendant-retirement step. A background
+wait retains its own valid process handle until the wait and exit-code query
+have finished, even if foreground finalization times out.
 A POSIX no-signalable-target
 result is successful completion of that ladder stage: `ESRCH`, or Darwin
 `EPERM` only after non-reaping observation has already established that the
 leader is terminal. Any other failed group signal, leader reap, ConPTY
-operation, or Windows attached-descendant check is terminal `AdapterError`;
+operation, or Windows leader-exit observation is terminal `AdapterError`;
 under an existing primary failure it is attached as a cleanup note rather than
 replacing the primary. No cleanup path scans unrelated process ancestry or
 signals a process outside the still-retained platform capability.
+
+If Windows finalization times out without a leader return code, it records a
+terminal cleanup failure and unblocks concurrent and later closers. It does not
+fabricate an `ExitEvent`. The monitor retains its private process handle until
+the child exits or the native observation fails, then releases that handle. A
+later observed return code may publish the one real exit event; it does not
+erase the recorded cleanup failure. The driver's checked pump join remains the
+failure bound if no exit event arrives. Application wait deadlines do not bound
+`ClosePseudoConsole` itself on older Windows implementations where that native
+call waits for pseudoconsole shutdown.
 `interrupt()` and `request_close()` may re-enter from a Python signal handler
 at any point in close and must not wait on a non-reentrant lock owned by the
 interrupted frame.
@@ -1605,6 +1622,10 @@ tail plus the `--attach` instruction.
 
 ## Related Plans
 
+- `docs/plans/2026-09-15-windows-pty-lifecycle-fixes-plan.md` — gives the
+  Windows exit monitor a private process handle, closes cancellation races,
+  restores the graceful interval, and makes deterministic Windows PTY
+  regressions run in every platform lane.
 - `docs/plans/2026-09-03-summon-unified-pty-cross-platform-plan.md` — removes
   the vendor-specific structured adapter and terminal-output speech path,
   promotes one PTY adapter for every provider, and adds the Windows ConPTY

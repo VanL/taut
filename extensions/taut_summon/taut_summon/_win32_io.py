@@ -271,6 +271,9 @@ class NativeApi:
         import msvcrt
 
         borrowed = int(msvcrt.get_osfhandle(fd))  # type: ignore[attr-defined]
+        return self.duplicate_handle(borrowed)
+
+    def duplicate_handle(self, borrowed: int) -> int:
         process = self.GetCurrentProcess()
         duplicate = HANDLE()
         self.require_bool(

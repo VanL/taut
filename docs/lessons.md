@@ -95,6 +95,18 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
 
 ## Project Lessons
 
+- 2026-09-15: A timeout does not transfer ownership away from a background
+  native wait. Closing its handle while `WaitForSingleObject` is pending is
+  undefined on Windows, even if foreground cleanup must continue. Give the
+  waiter its own duplicated handle and let only that waiter close it after the
+  wait and result query finish; test the ownership rule with a fake that rejects
+  closing any actively waited handle.
+
+- 2026-09-15: A platform marker at module scope can silently remove portable
+  fake-API proofs from every other CI platform. Mark only tests that invoke the
+  native surface, then collection-test both platform selectors so local direct
+  runs cannot masquerade as cross-platform CI evidence.
+
 - 2026-09-15: A cleanup net that lists builtin exception types is dead
   code when the callees raise the project's own error type. The Windows
   ConPTY backend caught `(OSError, RuntimeError, TypeError, ValueError)` at
