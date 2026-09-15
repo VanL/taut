@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Process identity now uses numeric, scheme-prefixed start-time tokens:
+  `/proc/<pid>/stat` ticks on Linux and integer microseconds from unadjusted
+  kernel creation times on macOS and Windows. The macOS path bypasses
+  psutil's boot-clock adjustment, and process capture no longer invokes `ps`
+  or depends on locale-sensitive start-time text.
+
 - Summon's Windows ConPTY backend no longer abandons cleanup on its own
   errors. Its cleanup handlers caught only builtin exception types while the
   owned callees raise `AdapterError`, so a child that survived console close

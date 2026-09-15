@@ -958,12 +958,16 @@ queue high-water mark.
   cross-queue transaction. Taut does not enumerate broker storage, use a
   wildcard, or write once per recipient.
 - Process capture: `psutil` is the primary source for argv, executable, cwd,
-  uid, parent, process group/session, and terminal when available. Native
-  `/proc` or `ps` evidence remains the start-time token where needed for
-  process identity claims. The `ps` invocation runs with `LC_ALL=C` because
-  its `lstart` text is compared for equality across processes, and a locale
-  that spells the month differently would make two processes disagree about
-  one start time. Anchor selection classifies a derived basename by
+  uid, parent, process group/session, and terminal when available. The
+  start-time token comes from `start_time_token`: `/proc/<pid>/stat` ticks on
+  Linux, because psutil's public `create_time()` there adds a boot time that
+  drifts under clock adjustment; private
+  `proc._proc.create_time(monotonic=True)` on macOS, which exposes the
+  unadjusted kernel creation time; and public `proc.create_time()` on Windows.
+  The latter two are rendered as integer microseconds. The private macOS
+  dependency is confined to this helper and covered by native
+  clock-adjustment tests. Process capture never invokes `ps`, and locale-sensitive
+  text does not participate in its token. Anchor selection classifies a derived basename by
   case-folding it and removing exactly one terminal `.exe`; that admits Windows
   spellings to the existing shell, wrapper, and infrastructure families. Raw
   basenames, argv, fingerprints, claim evidence, and automatic-name inputs are
