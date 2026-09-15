@@ -434,3 +434,27 @@ def test_redaction_hostile_maximum_text_is_bounded() -> None:
     )
 
     subprocess.run([sys.executable, "-c", code], check=True, timeout=5)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        json.dumps({"message": 'connect failed: password="' + "a" * 64}),
+        json.dumps({"password": "b" * 64 + "\n"})[:-3],
+        json.dumps({"message": 'token="' + "c1-d2 e3.f4/g5:h6!i7 " * 8}),
+    ],
+    ids=["assignment", "mapping-truncated", "assignment-punctuated"],
+)
+def test_unterminated_escaped_credential_value_is_linear(text: str) -> None:
+    code = (
+        "import sys; from taut._redact import redact_sensitive_text; "
+        "redact_sensitive_text(sys.stdin.read())"
+    )
+
+    subprocess.run(
+        [sys.executable, "-c", code],
+        check=True,
+        input=text,
+        text=True,
+        timeout=5,
+    )

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Debug credential redaction no longer hangs on an unterminated quoted
+  value. The 0.9.7 escaped-JSON rules matched plain characters as a run
+  nested under the outer repeat, so a labeled value opened with `\"` and
+  never closed backtracked exponentially (about 0.6 s at 24 characters,
+  doubling per character) and a failing command with debug capture enabled
+  never exited. The atom now matches one character at a time, as 0.9.6 did,
+  and a regression test bounds the unterminated case.
+
 ## 0.9.7 - 2026-09-14
 
 - `taut-mcp` now declares its direct SimpleBroker dependency, matching the

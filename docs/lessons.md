@@ -95,6 +95,13 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
 
 ## Project Lessons
 
+- 2026-09-15: A hostile-input bound test must include the non-matching
+  case. The redaction suite bounded a 32 KiB run of escaped quotes, which
+  the pattern matched at the first atom, and never fed an unterminated
+  value; the exponential path only exists when the match fails. When a
+  regex gains a `+` inside a `*` over overlapping characters, add the
+  open-never-closed input to the bound test in the same change.
+
 - 2026-08-18: "Wired once" is not "wired forever." A provider's self-update
   can re-gate an already-onboarded member (Kimi Code 0.37.2 introduced a
   trust dialog whose default answer exits 0), and a harness parked on such a

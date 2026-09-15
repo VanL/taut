@@ -154,7 +154,10 @@ JSON escape atoms. An escaped backslash, control escape, Unicode escape, or
 embedded escaped quote is one unit, and a bare quote that closes the outer JSON
 string is not value content. An incomplete quoted assignment in diagnostic text
 therefore cannot borrow part of an escape and the event-envelope delimiter and
-turn a valid payload into invalid JSON.
+turn a valid payload into invalid JSON. The plain-character alternative in that
+atom matches one character, never a run: a run nested under the outer repeat
+backtracks exponentially when a labeled value is opened but never closed, and
+debug capture runs redaction on every failure before the command can exit.
 
 The helper preserves credential labels, authorization schemes, URI structure,
 provider/type prefixes, and PEM boundaries when those contexts exist. It does
