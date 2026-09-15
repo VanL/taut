@@ -95,6 +95,15 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
 
 ## Project Lessons
 
+- 2026-09-15: A cleanup net that lists builtin exception types is dead
+  code when the callees raise the project's own error type. The Windows
+  ConPTY backend caught `(OSError, RuntimeError, TypeError, ValueError)` at
+  seventeen sites while every owned callee raised `AdapterError`, so the
+  nets absorbed nothing they were written for; a dead branch inside one of
+  them showed the intent. Define the cleanup-error tuple once per module,
+  include the domain error type, and put terminal state transitions under
+  `finally`, not after the guarded calls.
+
 - 2026-09-15: A hostile-input bound test must include the non-matching
   case. The redaction suite bounded a 32 KiB run of escaped quotes, which
   the pattern matched at the first atom, and never fed an unterminated

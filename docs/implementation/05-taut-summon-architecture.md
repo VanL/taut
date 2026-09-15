@@ -336,7 +336,12 @@ On Windows, `_pty_windows.py` creates the ConPTY and starts the provider with
 run. ConPTY owns the attached process tree: closing it retires the leader and
 descendants, after which one monitor records the leader exit and publishes one
 `ExitEvent`. Setup failure terminates the unpublished suspended child and
-releases every acquired pseudoconsole, process, thread, and pipe handle. The
+releases every acquired pseudoconsole, process, thread, and pipe handle.
+Every cleanup net in `_pty_windows.py` catches one module tuple that includes
+`AdapterError`, because the owned callees raise that type rather than a
+builtin one, and `close()` moves the handle to `closed` under a `finally`
+so a child that outlives console close leaves a recorded error, not a handle
+stuck in `closing` that blocks every later close. The
 sole output drain never waits for process exit or blocks on a terminal reply;
 reply writes use the serialized, cancellable input writer on a separate owner.
 The drain starts on the first operation that needs output consumption: attach

@@ -637,3 +637,234 @@ def test_attach_route_failure_retires_started_sink_before_handles_close() -> Non
     assert drain.unroute_called is False
     assert api.closed.count(42) == 1
     assert api.closed[-2:] == [41, 42]
+
+
+class _AttachApi:
+    """Fake native API for attach-cleanup proofs: one input read, then blocked."""
+
+    def __init__(self, *, console: bool) -> None:
+        self.console = console
+        self.next_handle = iter((41, 42))
+        self.closed: list[int | None] = []
+        self.writes: list[tuple[int, bytes]] = []
+        self.cancelled = threading.Event()
+        self.read_calls = 0
+        self.restore_failures = 0
+        self.mode_calls: list[tuple[int, int]] = []
+
+    def duplicate_fd_handle(self, _fd: int) -> int:
+        return next(self.next_handle)
+
+    def close_handle(self, handle: int | None) -> None:
+        self.closed.append(handle)
+
+    def open_current_thread(self) -> int:
+        return 99
+
+    def cancel_thread(self, _handle: int, *, retiring: bool) -> bool:
+        del retiring
+        self.cancelled.set()
+        return True
+
+    def read(self, _handle: int) -> bytes:
+        from taut_summon._win32_io import ERROR_OPERATION_ABORTED, Win32IoError
+
+        self.read_calls += 1
+        if self.read_calls == 1:
+            return b""
+        self.cancelled.wait(10.0)
+        raise Win32IoError("ReadFile", ERROR_OPERATION_ABORTED)
+
+    def write(self, handle: int, data: bytes) -> None:
+        self.writes.append((handle, data))
+
+    def get_console_mode(self, handle: int) -> int:
+        from taut_summon._win32_io import ERROR_INVALID_HANDLE, Win32IoError
+
+        if not self.console:
+            raise Win32IoError("GetConsoleMode", ERROR_INVALID_HANDLE)
+        return 0x1F7 if handle == 41 else 0x003
+
+    def set_console_mode(self, handle: int, value: int) -> None:
+        self.mode_calls.append((handle, value))
+        if value in (0x1F7, 0x003):
+            self.restore_failures += 1
+            raise AdapterError("injected console restore failure")
+
+    def get_console_cp(self) -> int:
+        return 437
+
+    def set_console_cp(self, _value: int) -> None:
+        return
+
+    def get_console_output_cp(self) -> int:
+        return 1252
+
+    def set_console_output_cp(self, _value: int) -> None:
+        return
+
+
+class _AttachDrain:
+    def __init__(self, *, unroute_error: str | None) -> None:
+        self.sink: Any = None
+        self.unroute_error = unroute_error
+
+    def route(self, _generation: int, sink: object) -> None:
+        self.sink = sink
+
+    def unroute(self, _generation: int) -> object:
+        if self.unroute_error is not None:
+            raise AdapterError(self.unroute_error)
+        return self.sink
+
+
+def _attach_owner(api: _AttachApi, drain: _AttachDrain) -> Any:
+    return type(
+        "Owner",
+        (),
+        {
+            "_api": api,
+            "_attach_generation": 0,
+            "_drain": drain,
+            "_terminal": _Terminal(),
+            "_exit_ready": threading.Event(),
+        },
+    )()
+
+
+def _run_attach(api: _AttachApi, drain: _AttachDrain) -> None:
+    from taut_summon._pty_windows import _AttachSession
+
+    session = _AttachSession(
+        _attach_owner(api, drain),
+        wake=threading.Event(),
+        shutdown=threading.Event(),
+        input_fd=0,
+        output_fd=1,
+        detach_chord=b"xx",
+    )
+    try:
+        session.run()
+    finally:
+        if drain.sink is not None and not drain.sink._done.is_set():
+            drain.sink.retire(close_handle=False)
+
+
+def test_attach_cleanup_survives_adapter_error_from_unroute() -> None:
+    from taut_summon._pty_windows import _DETACH_RESET
+
+    api = _AttachApi(console=False)
+    drain = _AttachDrain(unroute_error="attach output generation changed")
+
+    with pytest.raises(AdapterError, match="attach output generation changed"):
+        _run_attach(api, drain)
+
+    assert api.cancelled.is_set()
+    assert (42, _DETACH_RESET) in api.writes
+    assert api.closed.count(41) == 1
+    assert api.closed.count(42) == 1
+
+
+def test_attach_cleanup_closes_handles_after_console_restore_failure() -> None:
+    from taut_summon._pty_windows import _DETACH_RESET
+
+    api = _AttachApi(console=True)
+    drain = _AttachDrain(unroute_error=None)
+
+    with pytest.raises(AdapterError, match="console restoration failed"):
+        _run_attach(api, drain)
+
+    assert api.restore_failures == 2
+    assert (42, _DETACH_RESET) in api.writes
+    assert api.closed.count(41) == 1
+    assert api.closed.count(42) == 1
+
+
+class _HandleApi:
+    """Fake native API for a ConPTY child that never exits after console close."""
+
+    def __init__(self) -> None:
+        self.child_exits = threading.Event()
+        self.pipe_closed = threading.Event()
+        self.closed: list[int | None] = []
+        self.writes: list[tuple[int, bytes]] = []
+
+    def require_bool(self, name: str, ok: object) -> None:
+        if not ok:
+            raise AssertionError(name)
+
+    def WaitForSingleObject(self, _handle: object, _timeout: int) -> int:
+        from taut_summon._win32_io import WAIT_OBJECT_0
+
+        self.child_exits.wait()
+        return WAIT_OBJECT_0
+
+    def GetExitCodeProcess(self, _handle: object, status: Any) -> bool:
+        status._obj.value = 0
+        return True
+
+    def ClosePseudoConsole(self, _hpcon: object) -> None:
+        self.pipe_closed.set()
+
+    def open_current_thread(self) -> int:
+        return 99
+
+    def close_handle(self, handle: int | None) -> None:
+        self.closed.append(handle)
+
+    def write(self, handle: int, data: bytes) -> None:
+        self.writes.append((handle, data))
+
+    def cancel_thread(self, _handle: int, *, retiring: bool) -> bool:
+        del retiring
+        return True
+
+    def read(self, _handle: int) -> bytes:
+        from taut_summon._win32_io import ERROR_BROKEN_PIPE, Win32IoError
+
+        self.pipe_closed.wait(10.0)
+        raise Win32IoError("ReadFile", ERROR_BROKEN_PIPE)
+
+
+def test_close_records_unexited_child_and_releases_handles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from taut_summon import _pty_windows
+    from taut_summon._pty_windows import WindowsPtyHandle
+
+    monkeypatch.setattr(_pty_windows, "_CLOSE_TIMEOUT_S", 0.2)
+    api = _HandleApi()
+    handle = WindowsPtyHandle(
+        api=cast(Any, api),
+        hpcon=71,
+        input_write=72,
+        output_read=73,
+        process_handle=74,
+        pid=4242,
+        quiet_ms=10,
+        max_settle_s=0.1,
+        terminal=cast(Any, _Terminal()),
+    )
+    try:
+        with pytest.raises(AdapterError, match="did not exit after terminal close"):
+            handle.close()
+
+        assert handle._close_state == "closed"
+        assert {74, 72, 73} <= set(api.closed)
+        assert (72, b"\x03") in api.writes
+
+        second: list[BaseException] = []
+
+        def close_again() -> None:
+            try:
+                handle.close()
+            except AdapterError as exc:
+                second.append(exc)
+
+        waiter = threading.Thread(target=close_again, daemon=True)
+        waiter.start()
+        waiter.join(2.0)
+        assert not waiter.is_alive(), "second close() must not wait forever"
+        assert second and "did not exit after terminal close" in str(second[0])
+    finally:
+        api.child_exits.set()

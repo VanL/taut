@@ -6,6 +6,7 @@ import ctypes
 import logging
 import queue
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping
@@ -85,11 +86,30 @@ class DetachMatcher(Protocol):
     def feed(self, data: bytes) -> tuple[bytes, bool]: ...
 
 
+# Every cleanup net in this module catches this tuple. ``AdapterError`` is a
+# plain ``Exception`` and is what the owned callees raise, so a net that lists
+# only the builtin types is dead for the failures it exists to absorb.
+_CLEANUP_ERRORS: tuple[type[Exception], ...] = (
+    AdapterError,
+    OSError,
+    RuntimeError,
+    TypeError,
+    ValueError,
+)
+
+
 def _record_cleanup(failures: list[Exception], action: Callable[[], object]) -> None:
     try:
         action()
-    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+    except _CLEANUP_ERRORS as exc:
         failures.append(exc)
+
+
+def _aggregate_failures(failures: list[Exception]) -> AdapterError:
+    error = AdapterError(str(failures[0]))
+    for failure in failures[1:]:
+        error.add_note(str(failure))
+    return error
 
 
 @dataclass(slots=True)
@@ -198,13 +218,13 @@ class _EpochWriter:
         except Win32IoError as exc:
             if exc.error_code not in _CLEAN_PIPE_END:
                 self._close_failure = exc
-        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        except _CLEANUP_ERRORS as exc:
             self._close_failure = exc
         finally:
             if thread_handle is not None:
                 try:
                     self._api.close_handle(thread_handle)
-                except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                except _CLEANUP_ERRORS as exc:
                     if self._close_failure is None:
                         self._close_failure = exc
 
@@ -348,7 +368,7 @@ class _AttachSink:
         self._thread.join()
         try:
             self._api.close_handle(self._handle)
-        except (OSError, RuntimeError, TypeError, ValueError):
+        except _CLEANUP_ERRORS:
             logger.exception("quarantined attach output handle cleanup failed")
 
     def _run(self) -> None:
@@ -373,14 +393,14 @@ class _AttachSink:
                         raise
                 finally:
                     self._active_thread = None
-        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        except _CLEANUP_ERRORS as exc:
             self._failure = exc
             self._ready.set()
         finally:
             if thread_handle is not None:
                 try:
                     self._api.close_handle(thread_handle)
-                except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                except _CLEANUP_ERRORS as exc:
                     if self._failure is None:
                         self._failure = exc
             self._done.set()
@@ -462,13 +482,13 @@ class _OutputDrain:
                         sink.enqueue(generation, data)
                     else:
                         self._owner._observe_output(data)
-        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        except _CLEANUP_ERRORS as exc:
             self.failure = exc
         finally:
             if self._thread_handle is not None:
                 try:
                     self._api.close_handle(self._thread_handle)
-                except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                except _CLEANUP_ERRORS as exc:
                     if self.failure is None:
                         self.failure = exc
             self._done.set()
@@ -566,7 +586,7 @@ class _AttachSession:
             if self.input_thread_handle is not None:
                 try:
                     self.api.close_handle(self.input_thread_handle)
-                except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                except _CLEANUP_ERRORS as exc:
                     self.chunks.put(exc)
                 finally:
                     self.input_thread_handle = None
@@ -619,10 +639,7 @@ class _AttachSession:
             _record_cleanup(failures, partial(self.api.close_handle, handle))
         self.output_handle = None
         if failures:
-            error = AdapterError(str(failures[0]))
-            for failure in failures[1:]:
-                error.add_note(str(failure))
-            raise error
+            raise _aggregate_failures(failures)
 
     def _retire_sink(self, failures: list[Exception]) -> None:
         if self.sink is None or self.generation is None:
@@ -637,7 +654,7 @@ class _AttachSession:
             action = partial(self.sink.retire, close_handle=False)
         try:
             action()
-        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        except _CLEANUP_ERRORS as exc:
             failures.append(exc)
             if self.sink._quarantined:
                 self.output_handle = None
@@ -744,7 +761,7 @@ class WindowsPtyHandle:
         self._writer.request_close()
 
     def close(self) -> None:
-        primary = __import__("sys").exception()
+        primary = sys.exception()
         self.request_close()
         with self._lock:
             if self._close_state == "closed":
@@ -761,28 +778,27 @@ class WindowsPtyHandle:
         if owner:
             close_failures: list[Exception] = []
             try:
-                self._writer.finish_close_request()
-            except (OSError, RuntimeError, TypeError, ValueError) as exc:
-                close_failures.append(exc)
-            try:
-                self._reply_writer.finish()
-            except (OSError, RuntimeError, TypeError, ValueError) as exc:
-                close_failures.append(exc)
-            try:
-                self._close_owned_domain()
-            except (OSError, RuntimeError, TypeError, ValueError) as exc:
-                close_failures.append(exc)
-            if close_failures:
-                failure = f"{type(close_failures[0]).__name__}: {close_failures[0]}"
-                failure += "".join(
-                    f"; cleanup also failed: {type(item).__name__}: {item}"
-                    for item in close_failures[1:]
-                )
-            with self._lock:
-                self._close_error = failure
-                self._close_state = "closed"
-                self._lock.notify_all()
-            self._publish_recorded_exit()
+                for action in (
+                    self._writer.finish_close_request,
+                    self._reply_writer.finish,
+                    self._close_owned_domain,
+                ):
+                    _record_cleanup(close_failures, action)
+            finally:
+                # The state transition must run even if a step raised something
+                # outside _CLEANUP_ERRORS; a handle stuck in "closing" blocks
+                # every later close() forever and never publishes its exit.
+                if close_failures:
+                    failure = f"{type(close_failures[0]).__name__}: {close_failures[0]}"
+                    failure += "".join(
+                        f"; cleanup also failed: {type(item).__name__}: {item}"
+                        for item in close_failures[1:]
+                    )
+                with self._lock:
+                    self._close_error = failure
+                    self._close_state = "closed"
+                    self._lock.notify_all()
+                self._publish_recorded_exit()
         if failure:
             if primary is not None:
                 primary.add_note(f"adapter cleanup also failed: {failure}")
@@ -851,7 +867,7 @@ class WindowsPtyHandle:
             with self._lock:
                 self._returncode = int(status.value)
                 publish = self._close_state == "open"
-        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        except _CLEANUP_ERRORS as exc:
             self._exit_monitor_failure = exc
         finally:
             self._exit_monitor_done.set()
@@ -887,10 +903,7 @@ class WindowsPtyHandle:
         self._input_write = None
         self._output_read = None
         if failures:
-            error = AdapterError(str(failures[0]))
-            for failure in failures[1:]:
-                error.add_note(str(failure))
-            raise error
+            raise _aggregate_failures(failures)
 
     def _finish_exit_monitor(self) -> None:
         if not self._exit_monitor_done.wait(_CLOSE_TIMEOUT_S):
@@ -906,29 +919,33 @@ class WindowsPtyHandle:
 
         with self._lock:
             self._close_state = "closing"
-        self._reply_writer.request_close()
-        self._reply_writer.finish()
-        process = self._process_handle
-        if process is not None:
-            self._api.require_bool(
-                "TerminateProcess",
-                self._api.TerminateProcess(HANDLE(process), 96),
-            )
-            wait = int(self._api.WaitForSingleObject(HANDLE(process), 5_000))
-            if wait != WAIT_OBJECT_0:
-                raise AdapterError(f"partial ConPTY child wait returned {wait}")
-        if self._hpcon is not None:
-            self._drain.start()
-            self._api.ClosePseudoConsole(HPCON(self._hpcon))
-            self._hpcon = None
-        self._drain.join_after_close()
-        self._finish_exit_monitor()
-        self._api.close_handle(self._process_handle)
-        self._process_handle = None
-        self._api.close_handle(self._input_write)
-        self._input_write = None
-        self._api.close_handle(self._output_read)
-        self._output_read = None
+        failures: list[Exception] = []
+        try:
+            self._reply_writer.request_close()
+            _record_cleanup(failures, self._reply_writer.finish)
+            process = self._process_handle
+            if process is not None:
+                _record_cleanup(
+                    failures, partial(self._terminate_unpublished_child, process)
+                )
+            # TerminateProcess above is pre-publication cleanup only; the owned
+            # domain then closes exactly as it would on a normal close.
+            _record_cleanup(failures, self._close_owned_domain)
+        finally:
+            with self._lock:
+                self._close_state = "closed"
+                self._lock.notify_all()
+        if failures:
+            raise _aggregate_failures(failures)
+
+    def _terminate_unpublished_child(self, process: int) -> None:
+        self._api.require_bool(
+            "TerminateProcess",
+            self._api.TerminateProcess(HANDLE(process), 96),
+        )
+        wait = int(self._api.WaitForSingleObject(HANDLE(process), 5_000))
+        if wait != WAIT_OBJECT_0:
+            raise AdapterError(f"partial ConPTY child wait returned {wait}")
 
 
 def _environment_block(env: Mapping[str, str]) -> ctypes.Array[Any]:
@@ -960,7 +977,7 @@ def _cleanup_failed_spawn(
                 native.TerminateProcess(HANDLE(process_handle), 96),
             )
             native.WaitForSingleObject(HANDLE(process_handle), 5_000)
-        except (OSError, RuntimeError, TypeError, ValueError) as cleanup:
+        except _CLEANUP_ERRORS as cleanup:
             exc.add_note(f"partial child cleanup also failed: {cleanup}")
     if attribute_initialized and attribute_buffer is not None:
         native.DeleteProcThreadAttributeList(ctypes.cast(attribute_buffer, LPVOID))
@@ -969,7 +986,7 @@ def _cleanup_failed_spawn(
     for handle in handles:
         try:
             native.close_handle(handle)
-        except (OSError, RuntimeError, TypeError, ValueError) as cleanup:
+        except _CLEANUP_ERRORS as cleanup:
             exc.add_note(f"native handle cleanup also failed: {cleanup}")
 
 
@@ -1098,7 +1115,7 @@ def spawn_windows_pty(
         if backend is not None:
             try:
                 backend._abort_pre_resume()
-            except (OSError, RuntimeError, TypeError, ValueError) as cleanup:
+            except _CLEANUP_ERRORS as cleanup:
                 exc.add_note(f"partial ConPTY owner cleanup also failed: {cleanup}")
         _cleanup_failed_spawn(
             native,

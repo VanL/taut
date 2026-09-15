@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Summon's Windows ConPTY backend no longer abandons cleanup on its own
+  errors. Its cleanup handlers caught only builtin exception types while the
+  owned callees raise `AdapterError`, so a child that survived console close
+  left the handle stuck in `closing` with its process and pipe handles open,
+  a stuck attach writer skipped the console restore and handle release, and a
+  failed spawn leaked handles. One shared tuple now covers every handler,
+  `close()` always records its outcome and releases the handle state, and
+  fake-API tests cover the three paths on every platform.
+
 - Debug credential redaction no longer hangs on an unterminated quoted
   value. The 0.9.7 escaped-JSON rules matched plain characters as a run
   nested under the outer repeat, so a labeled value opened with `\"` and
