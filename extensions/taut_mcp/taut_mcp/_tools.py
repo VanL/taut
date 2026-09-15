@@ -289,7 +289,7 @@ TOOL_DEFINITIONS = (
     ),
     ToolDefinition(
         "say",
-        "Post a new Taut message to a channel, sub-thread, person-addressed direct message, or an existing direct-message conversation. @name-or-alias may create a DM; exact dm.d_* requires an existing actor-accessible conversation and never creates or heals one.",
+        "Post a new Taut message to a channel, sub-thread, person-addressed direct message, or an existing direct-message conversation. `@name-or-alias` may create a DM; exact `dm.d_*` requires an existing actor-accessible conversation and never creates or heals one.",
         {
             "workspace": _WORKSPACE,
             "target": _string(
@@ -346,7 +346,7 @@ TOOL_DEFINITIONS = (
     ),
     ToolDefinition(
         "message_delete",
-        "Physically and irreversibly delete one exact ordinary message authored by this member, including after leaving its thread. It does not cascade to notifications, sub-threads, memberships, cursors, or thread registry state and is not recall.",
+        "Physically and irreversibly delete one exact ordinary message authored by this member, including after leaving its thread. It does not cascade to notifications, sub-threads, memberships, cursors, or thread registry state and is not recall. An empty result means no matching deletable own message was found; verify the full 19-digit message id and current author identity before retrying.",
         {
             "workspace": _WORKSPACE,
             "msg_id": _EXACT_MESSAGE_ID,
@@ -361,7 +361,7 @@ TOOL_DEFINITIONS = (
     ),
     ToolDefinition(
         "message_react",
-        "Send one configured reaction to the current audience of an exact ordinary message, excluding this member. Validates against the workspace's attachment-time reaction vocabulary, advances this member's high-water cursor through the target, then attempts one atomic best-effort notification broadcast to every requested inbox. Repeating may deliver duplicates.",
+        "Send one configured reaction to the current audience of an exact ordinary message, excluding this member. Validates against the workspace's attachment-time reaction vocabulary, advances this member's high-water cursor through the target, then attempts one atomic best-effort notification broadcast to every requested inbox. Repeating may deliver duplicates. An empty result means no reactable message with a current recipient was found; verify the full 19-digit message id, current membership, and that another current thread member exists before retrying.",
         {
             "workspace": _WORKSPACE,
             "msg_id": _EXACT_MESSAGE_ID,
@@ -380,7 +380,7 @@ TOOL_DEFINITIONS = (
     ),
     ToolDefinition(
         "read",
-        "Return oldest unread messages and advance each selected cursor through its returned page. `thread` may select a channel, subthread, `@name-or-alias` DM, or stable `dm.d_*` conversation. Omit it for all joined chat threads.",
+        "Return oldest unread messages and advance each selected cursor through its returned page. `thread` may select a channel, subthread, `@name-or-alias` DM, or stable `dm.d_*` conversation. Omit it for all joined chat threads. Cursors advance only through the returned records and no message history is deleted; use log for cursor-neutral rereads, and after an uncertain read inspect list before retrying.",
         {
             "workspace": _WORKSPACE,
             "thread": _nullable_string(
@@ -451,7 +451,7 @@ TOOL_DEFINITIONS = (
     ),
     ToolDefinition(
         "search",
-        "Search actor-visible Taut history without moving chat cursors, claiming notifications, or touching member activity. The call may reconcile disposable derived index state; reindex=true rebuilds it. Backend tokenization and ranking may differ.",
+        "Search actor-visible Taut history without moving chat cursors, claiming notifications, or touching member activity. The call may reconcile disposable derived index state; `reindex=true` rebuilds it. Backend tokenization and ranking may differ.",
         {
             "workspace": _WORKSPACE,
             "query": {

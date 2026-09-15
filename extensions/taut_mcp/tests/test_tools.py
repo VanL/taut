@@ -3093,14 +3093,7 @@ def test_react_to_message_schema_rejects_malformed_reaction_slugs(
 def test_react_to_message_manifest_contract_has_no_static_enum() -> None:
     tool = next(tool for tool in TOOLS if tool.name == "message_react")
 
-    assert tool.description == (
-        "Send one configured reaction to the current audience of an exact "
-        "ordinary message, excluding this member. Validates against the "
-        "workspace's attachment-time reaction vocabulary, advances this "
-        "member's high-water cursor through the target, then attempts one "
-        "atomic best-effort notification broadcast to every requested inbox. "
-        "Repeating may deliver duplicates."
-    )
+    assert tool.description == (EXPECTED_DESCRIPTIONS[tool.name])
     assert tool.input_schema["required"] == [
         "workspace",
         "token",
@@ -3136,12 +3129,7 @@ def test_search_manifest_and_result_family_are_exact() -> None:
 
     tool = next(tool for tool in TOOLS if tool.name == "search")
 
-    assert tool.description == (
-        "Search actor-visible Taut history without moving chat cursors, "
-        "claiming notifications, or touching member activity. The call may "
-        "reconcile disposable derived index state; reindex=true rebuilds it. "
-        "Backend tokenization and ranking may differ."
-    )
+    assert tool.description == (EXPECTED_DESCRIPTIONS[tool.name])
     assert tool.input_schema["required"] == ["workspace", "token", "query"]
     assert set(tool.input_schema["properties"]) == {
         "workspace",
@@ -3405,7 +3393,7 @@ def test_exact_tool_manifest_snapshot() -> None:
         separators=(",", ":"),
     ).encode()
     assert hashlib.sha256(encoded).hexdigest() == (
-        "56acef11c9afc46946f07f5d38a1b8db7e82cd37db7ae9f1fe882841d49706cf"
+        "c5b3ecd247f3e9e00e1649bd8119b025f9c0c08d8a072fcece03031f28d57f6e"
     )
 
     def assert_property_descriptions(schema: dict[str, object]) -> None:
@@ -3621,3 +3609,32 @@ def test_unknown_tool_is_not_an_ordinary_tool_result() -> None:
                 await client.call_tool("not_a_tool", {})
 
     asyncio.run(scenario())
+
+
+EXPECTED_DESCRIPTIONS: dict[str, str] = {
+    "attach_workspace": "Eagerly validate and retain one local Taut workspace with an existing continuity token. Reads project and member identity without touching member activity; starts notification observation and creates no Taut project or member.",
+    "detach_workspace": "Stop and remove this process's resident workspace owner. Deletes no Taut project, member, message, or identity data.",
+    "list_workspaces": "List canonical workspaces and statuses currently resident in this server process. Reads only process-local cached state.",
+    "join": "Join or create a Taut channel. Writes membership state and a channel notice.",
+    "leave": "Leave a Taut channel or sub-thread. Removes membership and writes a notice.",
+    "channel_show": "Return current metadata for one registered top-level Taut channel. Reads only shared registry state and does not resolve identity, touch activity, inspect a broker queue, or move a cursor.",
+    "channel_topic": "Set or clear one registered top-level Taut channel's topic. Requires the attached member's current channel membership; a changed value replaces shared topic state and updates member activity, while an identical value is a no-op.",
+    "set_name": "Change the attached member's Taut display name. Replaces identity-routing state for that member.",
+    "say": "Post a new Taut message to a channel, sub-thread, person-addressed direct message, or an existing direct-message conversation. `@name-or-alias` may create a DM; exact `dm.d_*` requires an existing actor-accessible conversation and never creates or heals one.",
+    "reply": "Post a new reply under a top-level channel message. May create the reply sub-thread and membership.",
+    "message_show": "Return one exact full-id message from this member's current chat memberships, then advance that thread's high-water cursor through the returned id. This may mark unseen intervening history seen. It never joins a thread; use `log` for cursor-neutral known-channel or sub-thread inspection.",
+    "message_delete": "Physically and irreversibly delete one exact ordinary message authored by this member, including after leaving its thread. It does not cascade to notifications, sub-threads, memberships, cursors, or thread registry state and is not recall. An empty result means no matching deletable own message was found; verify the full 19-digit message id and current author identity before retrying.",
+    "message_react": "Send one configured reaction to the current audience of an exact ordinary message, excluding this member. Validates against the workspace's attachment-time reaction vocabulary, advances this member's high-water cursor through the target, then attempts one atomic best-effort notification broadcast to every requested inbox. Repeating may deliver duplicates. An empty result means no reactable message with a current recipient was found; verify the full 19-digit message id, current membership, and that another current thread member exists before retrying.",
+    "read": "Return oldest unread messages and advance each selected cursor through its returned page. `thread` may select a channel, subthread, `@name-or-alias` DM, or stable `dm.d_*` conversation. Omit it for all joined chat threads. Cursors advance only through the returned records and no message history is deleted; use log for cursor-neutral rereads, and after an uncertain read inspect list before retrying.",
+    "inbox": "Claim and return notification pointers from this member's inbox. This consumes the pointers; source chat history is not changed by inbox but may already be author-deleted.",
+    "log": "Inspect cursor-neutral history for a channel, subthread, or existing actor-accessible DM selected by `@name-or-alias` or stable `dm.d_*` handle.",
+    "search": "Search actor-visible Taut history without moving chat cursors, claiming notifications, or touching member activity. The call may reconcile disposable derived index state; `reindex=true` rebuilds it. Backend tokenization and ranking may differ.",
+    "list": "List ordinary joined/unread threads, every registered thread, or every valid actor-accessible DM. `all` and `dms` are mutually exclusive. Resolving the existing member for actor-scoped list modes may update activity.",
+    "channel_rename": "Rename a Taut channel and its sub-threads. Replaces existing thread addresses.",
+    "who": "List Taut members or members of one thread. Resolving the existing member updates the caller's activity timestamp; it does not change the member anchor, token fingerprint, or computed presence.",
+    "whoami": "Return the member bound to this workspace attachment. Resolving the existing member updates its activity timestamp; it does not change the member anchor, token fingerprint, or computed presence.",
+}
+
+
+def test_tool_descriptions_match_the_mcp5_table() -> None:
+    assert {tool.name: tool.description for tool in TOOLS} == EXPECTED_DESCRIPTIONS
