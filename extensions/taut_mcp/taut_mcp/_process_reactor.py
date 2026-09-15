@@ -19,11 +19,11 @@ from simplebroker import format_message_id
 from taut import Notification
 
 from ._commands import (
-    RECORD_TYPE_BY_TOOL,
     CommandArguments,
     CommandScalar,
     record_object,
 )
+from ._results import DOMAIN_TOOL_NAMES
 from ._workspace_reactor import (
     ATTACHMENT_FAILED,
     Bootstrap,
@@ -596,7 +596,7 @@ class ProcessReactor:
     ) -> dict[str, Any]:
         """Route one CLI-shaped operation through its owning child reactor."""
 
-        if name not in RECORD_TYPE_BY_TOOL:
+        if name not in DOMAIN_TOOL_NAMES:
             raise AssertionError(f"unregistered ordinary tool: {name}")
         ensure = self.ensure_workspace(workspace, token)
         token = ""

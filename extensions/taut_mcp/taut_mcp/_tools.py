@@ -8,6 +8,8 @@ from typing import Any
 from jsonschema import Draft202012Validator
 from mcp import types
 
+from ._results import DOMAIN_TOOL_NAMES, MESSAGE_ID_PATTERN
+
 CHANNEL_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,63}$"
 CHAT_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,63}(?:\.[0-9]{19})?$"
 CHAT_OR_DM_PATTERN = (
@@ -18,7 +20,6 @@ CHAT_OR_DM_PATTERN = (
 DM_SELECTOR_PATTERN = r"^(?:@[A-Za-z0-9][A-Za-z0-9_-]{0,63}|dm\.d_[a-z2-7]{26})$"
 MEMBER_NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
 REACTION_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,31}$"
-MESSAGE_ID_PATTERN = r"^[0-9]{19}$"
 MAX_SAFE_JSON_INTEGER = (1 << 53) - 1
 
 ATTACH_WORKSPACE_DESCRIPTION = (
@@ -79,35 +80,6 @@ REACTION_DESCRIPTION = (
     "^[a-z0-9][a-z0-9_-]{0,31}$. Used only by message_react; the schema is not an "
     "enum because the attached workspace config remains authoritative."
 )
-
-RECORD_TYPE_BY_TOOL = {
-    "attach_workspace": "workspace",
-    "detach_workspace": "workspace",
-    "list_workspaces": "workspace",
-    "join": "message",
-    "leave": "message",
-    "set_name": "member",
-    "say": "message",
-    "reply": "message",
-    "message_show": "message",
-    "message_delete": "deletion",
-    "message_react": "reaction",
-    "read": "message",
-    "inbox": "notification",
-    "log": "message",
-    "search": "search_hit",
-    "list": "thread",
-    "channel_show": "channel",
-    "channel_topic": "channel",
-    "channel_rename": "thread",
-    "who": "member",
-    "whoami": "member",
-}
-DOMAIN_TOOL_NAMES = frozenset(RECORD_TYPE_BY_TOOL) - {
-    "attach_workspace",
-    "detach_workspace",
-    "list_workspaces",
-}
 
 
 def _nullable_message_id(description: str) -> dict[str, Any]:

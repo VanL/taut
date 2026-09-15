@@ -22,6 +22,8 @@ from taut import (
     addressing,
 )
 
+from ._results import RECORD_TYPE_BY_TOOL
+
 _MAX_SAFE_JSON_INTEGER = (1 << 53) - 1
 
 CommandScalar: TypeAlias = str | int | bool | None | tuple[str, ...]
@@ -36,27 +38,6 @@ CommandRecord: TypeAlias = (
     | Member
     | Thread
 )
-
-RECORD_TYPE_BY_TOOL = {
-    "join": "message",
-    "leave": "message",
-    "set_name": "member",
-    "say": "message",
-    "reply": "message",
-    "message_show": "message",
-    "message_delete": "deletion",
-    "message_react": "reaction",
-    "read": "message",
-    "inbox": "notification",
-    "log": "message",
-    "search": "search_hit",
-    "list": "thread",
-    "channel_show": "channel",
-    "channel_topic": "channel",
-    "channel_rename": "thread",
-    "who": "member",
-    "whoami": "member",
-}
 
 
 @dataclass(frozen=True, slots=True)

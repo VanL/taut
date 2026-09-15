@@ -1583,3 +1583,18 @@ asyncio.run(main())
     assert "taut-mcp: shutdown deadline exceeded; forcing exit" in completed.stderr
     assert str(workspace) not in completed.stderr
     assert token not in completed.stderr
+
+
+@pytest.mark.parametrize(
+    "name", ["attach_workspace", "detach_workspace", "list_workspaces"]
+)
+def test_domain_dispatch_rejects_lifecycle_tools(tmp_path: Path, name: str) -> None:
+    async def scenario() -> None:
+        reactor = ProcessReactor(asyncio.get_running_loop())
+        try:
+            with pytest.raises(AssertionError, match="unregistered ordinary tool"):
+                await reactor.execute_tool(str(tmp_path), "unused", name, {})
+        finally:
+            await reactor.aclose()
+
+    asyncio.run(scenario())

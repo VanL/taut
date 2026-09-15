@@ -321,8 +321,7 @@ The core package is untouched.
   annotations paragraph, after this plan's anchor, and every delta anchor
   was re-verified to match exactly once at this SHA) —
   `docs/specs/05-taut-mcp.md`, `docs/specs/02-taut-core.md` [TAUT-8.2].
-- Promotion baseline identifier: _to be recorded when the spec-promotion
-  slice lands_.
+- Promotion baseline identifier: `801554c`.
 
 ## Proposed spec delta
 
@@ -1183,3 +1182,9 @@ Revision verification (2026-09-15): `uv run pytest tests/test_docs_references.py
 Class 5 implementation authorized by the owner. Starting code baseline: `cca84d1538b7b2a8af6881658815fde4c6f3b9cc`. Shared context, program theory, planning/hardening/testing/adversarial runbooks, lessons, owning spec, architecture note, and agent inventory consulted. Baseline `test_tools.py`: 151 passed. Captured all 21 original tools for final structural comparison.
 
 Slice 1 independent pass found the generic `msg_id` prose would misdescribe `reply` suffix support. Added a dedicated `reply.msg_id` row before promotion; input constraints remain unchanged. Verified against `_tools.py` reply property. This is a correction to the proposed description, not an input-contract change.
+
+Slice 1: promoted spec at `801554c`; 12 doc-reference tests and path gate passed. Comprehension: `list_workspaces` owns the stalled-reservation warning; `_results.py` must stay free of `taut`/`_commands` imports to preserve lazy manifest loading; canonical workspace comes from `ensured["records"][0]["workspace"]`.
+
+Slice 2 deviation: the first full-lane collection exposed an additional map consumer in `server.py`: its import-time assertion compared the old 18-entry command map to `DOMAIN_TOOL_NAMES`. Update it to import the shared 21-entry map and compare to `TOOL_NAMES`; domain dispatch retains its separate 18-name guard and firing tests. No spec behavior changes. The test oracle imports the map/pattern directly from `_results.py` in Slice 2 (wrapper unchanged), avoiding an otherwise unused re-export from `_tools.py`; its test consumers remain unchanged.
+
+Slice 2: red probe failed with missing `_results`; full non-PG MCP lane passed (296 cases), mypy passed (24 files), Ruff and doc gates passed. Independent scoped review PASS; tightened import probe to also reject bare `taut`. Six focused result/lifecycle cases passed after review. No schema or result-shape change in this slice.

@@ -25,15 +25,14 @@ from mcp.shared.exceptions import MCPError
 from mcp.types.version import HANDSHAKE_PROTOCOL_VERSIONS, MODERN_PROTOCOL_VERSIONS
 
 from ._claude_channel import send_claude_channel
-from ._commands import RECORD_TYPE_BY_TOOL
 from ._process_reactor import (
     RATE_LIMIT_EXCEEDED,
     ProcessReactor,
     WorkspaceToolError,
     canonical_json,
 )
+from ._results import RECORD_TYPE_BY_TOOL
 from ._tools import (
-    DOMAIN_TOOL_NAMES,
     TOOLS,
     TOOLS_BY_NAME,
     ToolValidationError,
@@ -46,8 +45,8 @@ TOOL_NAMES = frozenset(TOOLS_BY_NAME)
 INVALID_TOOL_ARGUMENTS = "invalid tool arguments; inspect the tool schema and retry"
 RATE_LIMIT_CODE = -31999
 
-if frozenset(RECORD_TYPE_BY_TOOL) != DOMAIN_TOOL_NAMES:
-    raise AssertionError("domain dispatch allowlist must match the manifest partition")
+if frozenset(RECORD_TYPE_BY_TOOL) != TOOL_NAMES:
+    raise AssertionError("result type map must match the manifest")
 
 INSTRUCTIONS = """1. Use list_workspaces to inspect process-local resident state. Use attach_workspace when setup cost should be paid before the first domain operation or notification observation should begin immediately. Attach is an eager optimization, not authority or a correctness prerequisite.
 2. Treat the continuity token as an opaque identity-continuity selector, not authentication, authorization, or an added security boundary. Pass an intentionally supplied absolute workspace locator and its existing token on attach_workspace and every CLI-shaped tool call; never invent the token or place it in chat.

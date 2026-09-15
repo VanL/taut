@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from taut_mcp._tools import MESSAGE_ID_PATTERN, RECORD_TYPE_BY_TOOL
+from taut_mcp._results import MESSAGE_ID_PATTERN, RECORD_TYPE_BY_TOOL
 
 
 def _nullable(kind: str) -> dict[str, Any]:
