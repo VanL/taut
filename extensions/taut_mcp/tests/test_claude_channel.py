@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import sys
+from contextlib import closing
 from pathlib import Path
 from typing import Any, cast
 
@@ -31,14 +32,15 @@ def _workspace(tmp_path: Path) -> tuple[Path, str, TautClient]:
     workspace.mkdir()
     db = workspace / ".taut.db"
     TautClient.init(db_path=db)
-    selected = TautClient(db_path=db, as_name="selected")
-    selected.join("general")
-    member = selected.last_created_member
-    assert member is not None
-    assert member.token is not None
-    token = member.token
-    selected.close()
-    other = TautClient(db_path=db, as_name="other")
+    with closing(
+        TautClient(db_path=db, as_name="selected", persistent=True)
+    ) as selected:
+        selected.join("general")
+        member = selected.last_created_member
+        assert member is not None
+        assert member.token is not None
+        token = member.token
+    other = TautClient(db_path=db, as_name="other", persistent=True)
     other.join("general")
     return workspace, token, other
 

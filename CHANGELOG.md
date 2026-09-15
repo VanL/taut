@@ -16,8 +16,8 @@
 - CI tests now use causal synchronization instead of scheduler deadlines for
   reply/join and TUI focus/anchor interleavings. TUI terminal probes exercise
   the real PTY backend on POSIX and ConPTY backend on Windows, and MCP
-  pagination fixtures reuse bounded persistent seed clients instead of
-  rebuilding broker queues for each of 250 messages.
+  pagination and Claude-channel fixtures reuse bounded persistent seed clients
+  instead of rebuilding broker queues for each operation.
 
 - A command's own failure is no longer hidden by a broken `.taut.toml`. When
   rendering an execution error trips the terminal policy, stderr now carries
