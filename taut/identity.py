@@ -20,7 +20,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import psutil
 
@@ -184,14 +184,14 @@ def capture_process_chain(start_pid: int, *, limit: int = 12) -> list[ProcessInf
 
 
 def capture_process(pid: int) -> ProcessInfo | None:
-    """Capture one process using the native platform source."""
+    """Capture one process using psutil, with the /proc fallback on Linux."""
 
     psutil_process = _capture_psutil_process(pid)
     if psutil_process is not None:
         return psutil_process
     if sys.platform.startswith("linux"):
         return _capture_linux_process(pid)
-    return _capture_ps_process(pid)
+    return None
 
 
 def select_anchor(
@@ -451,6 +451,32 @@ def _base32_lower(raw: bytes) -> str:
     return base64.b32encode(raw).decode("ascii").lower().rstrip("=")
 
 
+def start_time_token(pid: int, proc: psutil.Process | None) -> str | None:
+    """Return the unadjusted process-start token defined by [IAN-3.2]."""
+
+    if sys.platform.startswith("linux"):
+        try:
+            stat = (Path("/proc") / str(pid) / "stat").read_text(encoding="utf-8")
+            _prefix, separator, tail = stat.rpartition(") ")
+            if not separator:
+                return None
+            ticks = tail.split()[19]
+        except (OSError, IndexError):
+            return None
+        return f"proc:{ticks}" if ticks.isascii() and ticks.isdigit() else None
+    if proc is None:
+        return None
+    try:
+        if sys.platform == "darwin":
+            # Public create_time() adjusts against a boot-clock observation.
+            seconds = cast(Any, proc)._proc.create_time(monotonic=True)
+        else:
+            seconds = proc.create_time()
+    except psutil.Error:
+        return None
+    return f"psutil:{round(seconds * 1_000_000)}"
+
+
 def _capture_linux_process(pid: int) -> ProcessInfo | None:
     proc_dir = Path("/proc") / str(pid)
     try:
@@ -465,7 +491,6 @@ def _capture_linux_process(pid: int) -> ProcessInfo | None:
         pgid = int(fields[2])
         session_id = int(fields[3])
         tty_nr = fields[4]
-        start_time = fields[19]
         pid_value = int(raw_pid)
     except (IndexError, ValueError):
         return None
@@ -476,7 +501,7 @@ def _capture_linux_process(pid: int) -> ProcessInfo | None:
     return ProcessInfo(
         pid=pid_value,
         ppid=ppid,
-        start_time=start_time,
+        start_time=start_time_token(pid, None),
         exe=exe or comm,
         argv=argv,
         uid=uid,
@@ -495,7 +520,7 @@ def _capture_psutil_process(pid: int) -> ProcessInfo | None:
     try:
         with proc.oneshot():
             ppid = _psutil_ppid(proc)
-            start_time = _native_start_time(pid) or _psutil_start_time(proc)
+            start_time = start_time_token(pid, proc)
             exe = _psutil_exe(proc)
             argv = _psutil_argv(proc)
             cwd = _psutil_cwd(proc)
@@ -517,117 +542,9 @@ def _capture_psutil_process(pid: int) -> ProcessInfo | None:
     )
 
 
-def _capture_ps_process(pid: int) -> ProcessInfo | None:
-    metadata = _ps_output(
-        pid,
-        "pid=",
-        "ppid=",
-        "pgid=",
-        "sess=",
-        "uid=",
-        "lstart=",
-    )
-    if not metadata:
-        return None
-    parts = metadata.split()
-    if len(parts) < 10:
-        return None
-    try:
-        pid_value = int(parts[0])
-        ppid = int(parts[1])
-        pgid = int(parts[2])
-        session_id = int(parts[3])
-        uid = int(parts[4])
-    except ValueError:
-        return None
-    start_time = " ".join(parts[5:10])
-    args_output = _ps_output(pid, "args=") or ""
-    argv = _reconstruct_ps_argv(args_output.split())
-    exe = (argv[0] if argv else None) or _ps_output(pid, "comm=")
-    return ProcessInfo(
-        pid=pid_value,
-        ppid=ppid,
-        start_time=start_time,
-        exe=exe,
-        argv=argv,
-        uid=uid,
-        pgid=pgid,
-        session_id=session_id,
-        tty=None,
-        cwd=_capture_cwd_with_lsof(pid_value),
-    )
-
-
-def _ps_output(pid: int, *fields: str) -> str | None:
-    try:
-        completed = subprocess.run(
-            [
-                "ps",
-                "-ww",
-                "-p",
-                str(pid),
-                *(item for field in fields for item in ("-o", field)),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=2,
-            # lstart= is compared as a string across processes; the caller's
-            # locale must not change its spelling.
-            env={**os.environ, "LC_ALL": "C"},
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    value = completed.stdout.strip()
-    return value or None
-
-
-def _reconstruct_ps_argv(tokens: list[str]) -> tuple[str, ...]:
-    """Rebuild argv[0] after whitespace-splitting fallback ``ps args=`` output."""
-
-    if not tokens:
-        return ()
-    for index in range(1, len(tokens) + 1):
-        candidate = " ".join(tokens[:index])
-        path = Path(candidate)
-        if path.exists() and not path.is_dir():
-            return (candidate, *tokens[index:])
-    return tuple(tokens)
-
-
-def _native_start_time(pid: int) -> str | None:
-    if sys.platform.startswith("linux"):
-        return _read_linux_start_time(pid)
-    return _read_ps_lstart(pid)
-
-
-def _read_linux_start_time(pid: int) -> str | None:
-    try:
-        stat = (Path("/proc") / str(pid) / "stat").read_text(encoding="utf-8")
-    except OSError:
-        return None
-    try:
-        _prefix, _, tail = stat.rpartition(") ")
-        fields = tail.split()
-        return fields[19]
-    except IndexError:
-        return None
-
-
-def _read_ps_lstart(pid: int) -> str | None:
-    return _ps_output(pid, "lstart=")
-
-
 def _psutil_ppid(proc: psutil.Process) -> int | None:
     try:
         return proc.ppid()
-    except psutil.Error:
-        return None
-
-
-def _psutil_start_time(proc: psutil.Process) -> str | None:
-    try:
-        return f"psutil:{proc.create_time():.6f}"
     except psutil.Error:
         return None
 
@@ -687,25 +604,6 @@ def _safe_getsid(pid: int) -> int | None:
         return os.getsid(pid)
     except OSError:
         return None
-
-
-def _capture_cwd_with_lsof(pid: int) -> str | None:
-    try:
-        completed = subprocess.run(
-            ["lsof", "-a", "-d", "cwd", "-p", str(pid), "-Fn"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if completed.returncode != 0:
-        return None
-    for line in completed.stdout.splitlines():
-        if line.startswith("n"):
-            return line[1:] or None
-    return None
 
 
 def _read_linux_argv(proc_dir: Path) -> tuple[str, ...]:

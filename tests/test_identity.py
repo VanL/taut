@@ -49,6 +49,7 @@ from taut.state import MemberRow
 from tests.conftest import build_cli_env
 
 pytestmark = pytest.mark.sqlite_only
+TOKEN_RE = re.compile(r"^(proc|psutil):[0-9]+$")
 
 _POSIX_SHELL_PROCESS_TEST = pytest.mark.skipif(
     os.name == "nt",
@@ -340,7 +341,6 @@ def test_capture_process_prefers_psutil_then_platform_fallbacks(
 ) -> None:
     psutil_proc = identity.ProcessInfo(pid=1)
     linux_proc = identity.ProcessInfo(pid=2)
-    ps_proc = identity.ProcessInfo(pid=3)
 
     monkeypatch.setattr(identity, "_capture_psutil_process", lambda _pid: psutil_proc)
     assert identity.capture_process(1) == psutil_proc
@@ -351,8 +351,7 @@ def test_capture_process_prefers_psutil_then_platform_fallbacks(
     assert identity.capture_process(2) == linux_proc
 
     monkeypatch.setattr(identity.sys, "platform", "darwin")
-    monkeypatch.setattr(identity, "_capture_ps_process", lambda _pid: ps_proc)
-    assert identity.capture_process(3) == ps_proc
+    assert identity.capture_process(3) is None
 
 
 def test_select_anchor_skips_wrappers_and_explains_human_fallbacks() -> None:
@@ -805,13 +804,14 @@ def test_capture_linux_process_reads_procfs_fields(
     monkeypatch.setattr(identity.Path, "read_text", fake_read_text)
     monkeypatch.setattr(identity.Path, "read_bytes", fake_read_bytes)
     monkeypatch.setattr(identity.Path, "readlink", fake_readlink)
+    monkeypatch.setattr(identity.sys, "platform", "linux")
 
     proc = identity._capture_linux_process(123)
 
     assert proc == identity.ProcessInfo(
         pid=123,
         ppid=1,
-        start_time="98765",
+        start_time="proc:98765",
         exe="/usr/bin/codex",
         argv=("codex", "--work"),
         uid=501,
@@ -881,7 +881,9 @@ def test_capture_psutil_process_reads_best_effort_fields(  # noqa: C901 approved
             return "ttys001"
 
     monkeypatch.setattr(identity.psutil, "Process", lambda _pid: FakeProcess())
-    monkeypatch.setattr(identity, "_native_start_time", lambda _pid: None)
+    monkeypatch.setattr(
+        identity, "start_time_token", lambda _pid, _proc: "psutil:123456000"
+    )
     monkeypatch.setattr(identity, "_safe_getpgid", lambda _pid: 123)
     monkeypatch.setattr(identity, "_safe_getsid", lambda _pid: 456)
 
@@ -890,7 +892,7 @@ def test_capture_psutil_process_reads_best_effort_fields(  # noqa: C901 approved
     assert proc == identity.ProcessInfo(
         pid=123,
         ppid=1,
-        start_time="psutil:123.456000",
+        start_time="psutil:123456000",
         exe="/usr/bin/codex",
         argv=("codex", "--work"),
         uid=501,
@@ -930,120 +932,194 @@ def test_capture_psutil_process_returns_none_when_psutil_fails(
     assert identity._capture_psutil_process(123) is None
 
 
-def test_ps_fallback_rejects_missing_short_or_malformed_metadata(
+def test_start_time_token_is_digits_with_scheme_on_this_platform() -> None:
+    proc = psutil.Process(os.getpid())
+    token = identity.start_time_token(os.getpid(), proc)
+
+    assert token is not None
+    assert TOKEN_RE.fullmatch(token), token
+    expected = "proc" if sys.platform.startswith("linux") else "psutil"
+    assert token.split(":", 1)[0] == expected
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="/proc only")
+def test_linux_start_time_token_is_proc_stat_field_22() -> None:
+    stat = Path(f"/proc/{os.getpid()}/stat").read_text(encoding="utf-8")
+    ticks = stat.rpartition(") ")[2].split()[19]
+
+    assert identity.start_time_token(os.getpid(), None) == f"proc:{ticks}"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS source only")
+def test_macos_start_time_token_is_integer_microseconds() -> None:
+    proc = psutil.Process(os.getpid())
+    raw = cast(Any, proc)._proc.create_time(monotonic=True)
+
+    assert identity.start_time_token(os.getpid(), proc) == (
+        f"psutil:{round(raw * 1_000_000)}"
+    )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows source only")
+def test_windows_start_time_token_is_integer_microseconds() -> None:
+    proc = psutil.Process(os.getpid())
+
+    assert identity.start_time_token(os.getpid(), proc) == (
+        f"psutil:{round(proc.create_time() * 1_000_000)}"
+    )
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS source only")
+def test_macos_start_time_token_ignores_boot_time_adjustments(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def check_metadata(metadata: str | None) -> None:
-        def fake_ps_output(_pid: int, *fields: str) -> str | None:
-            if fields == ("pid=", "ppid=", "pgid=", "sess=", "uid=", "lstart="):
-                return metadata
-            return None
+    from psutil import _psosx
 
-        monkeypatch.setattr(identity, "_ps_output", fake_ps_output)
+    pid = os.getpid()
+    boot = 1_000_000.0
+    raw_values: list[float] = []
+    tokens: list[str | None] = []
+    adjusted: list[float] = []
+    monkeypatch.setattr(_psosx, "INIT_BOOT_TIME", boot)
+    for observed_boot in (boot, boot + 2, boot - 2):
+        monkeypatch.setattr(_psosx, "boot_time", lambda value=observed_boot: value)
+        proc = psutil.Process(pid)
+        raw_values.append(cast(Any, proc)._proc.create_time(monotonic=True))
+        tokens.append(identity.start_time_token(pid, proc))
+        adjusted.append(psutil.Process(pid).create_time())
 
-        assert identity._capture_ps_process(123) is None
-
-    for metadata in (
-        None,
-        "123 1",
-        "not-int 1 123 456 501 Fri Jun 12 18:00:00 2026",
-    ):
-        check_metadata(metadata)
+    assert raw_values[0] == raw_values[1] == raw_values[2]
+    assert tokens[0] is not None and tokens[0] == tokens[1] == tokens[2]
+    assert any(value != adjusted[0] for value in adjusted[1:])
 
 
-def test_ps_output_returns_stripped_stdout_or_none(
+def test_start_time_token_matches_across_observer_processes() -> None:
+    code = (
+        "import os, psutil; from taut.identity import start_time_token; "
+        "pid=int(os.environ['TAUT_TEST_PID']); "
+        "print(start_time_token(pid, psutil.Process(pid)))"
+    )
+    base_env = {**os.environ, "TAUT_TEST_PID": str(os.getpid())}
+    environments = (
+        {**base_env, "LC_ALL": "C", "LANG": "C"},
+        {**base_env, "LC_ALL": "de_DE.UTF-8", "LANG": "ja_JP.UTF-8"},
+    )
+    observed = [
+        subprocess.run(
+            [sys.executable, "-c", code],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=env,
+        )
+        for env in environments
+    ]
+
+    assert [item.returncode for item in observed] == [0, 0]
+    tokens = [item.stdout.strip() for item in observed]
+    assert all(TOKEN_RE.fullmatch(token) for token in tokens), observed
+    assert tokens[0] == tokens[1]
+
+
+def test_start_time_token_returns_none_when_unreadable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def successful_run(
-        cmd: list[str],
-        **kwargs: Any,
-    ) -> subprocess.CompletedProcess[str]:
-        assert cmd[:4] == ["ps", "-ww", "-p", "123"]
-        _assert_finite_positive_timeout(kwargs["timeout"])
-        return subprocess.CompletedProcess(cmd, 0, " value \n", "")
+    if sys.platform.startswith("linux"):
 
-    monkeypatch.setattr(identity.subprocess, "run", successful_run)
-    assert identity._ps_output(123, "args=") == "value"
+        def raise_oserror(_self: Path, **_kwargs: Any) -> str:
+            raise OSError("missing")
 
-    def empty_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(cmd, 0, "\n", "")
+        monkeypatch.setattr(identity.Path, "read_text", raise_oserror)
+        assert identity.start_time_token(123, None) is None
+        return
 
-    monkeypatch.setattr(identity.subprocess, "run", empty_run)
-    assert identity._ps_output(123, "args=") is None
+    class BrokenNative:
+        def create_time(self, **_kwargs: Any) -> float:
+            raise psutil.AccessDenied(123)
 
-    def failing_run(
-        _cmd: list[str], **_kwargs: Any
-    ) -> subprocess.CompletedProcess[str]:
-        raise subprocess.SubprocessError("ps failed")
+    class BrokenProcess:
+        _proc = BrokenNative()
 
-    monkeypatch.setattr(identity.subprocess, "run", failing_run)
-    assert identity._ps_output(123, "args=") is None
+        def create_time(self) -> float:
+            raise psutil.AccessDenied(123)
+
+    assert identity.start_time_token(123, cast(psutil.Process, BrokenProcess())) is None
 
 
-def test_native_start_time_uses_platform_specific_reader(
+@pytest.mark.skipif(sys.platform.startswith("linux"), reason="psutil source only")
+def test_start_time_token_without_psutil_object_off_linux() -> None:
+    assert identity.start_time_token(os.getpid(), None) is None
+
+
+def test_linux_start_time_token_rejects_malformed_stat(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(identity.sys, "platform", "linux")
-    monkeypatch.setattr(identity, "_read_linux_start_time", lambda _pid: "linux-start")
-    assert identity._native_start_time(123) == "linux-start"
+    cases = (
+        " ".join(["0"] * 19 + ["98765"]),
+        "123 (codex) S",
+        "123 (codex) " + " ".join(["0"] * 19 + [""]),
+        "123 (codex) " + " ".join(["0"] * 19 + ["not-digits"]),
+        "123 (codex) " + " ".join(["0"] * 19 + ["²"]),
+    )
+    for stat in cases:
+        monkeypatch.setattr(
+            identity.Path, "read_text", lambda _self, value=stat, **_kwargs: value
+        )
+        assert identity.start_time_token(123, None) is None
 
-    monkeypatch.setattr(identity.sys, "platform", "darwin")
-    monkeypatch.setattr(identity, "_read_ps_lstart", lambda _pid: "ps-start")
-    assert identity._native_start_time(123) == "ps-start"
 
-
-@pytest.mark.skipif(
-    sys.platform != "darwin",
-    reason="ps lstart is the macOS start-time source; Linux reads /proc",
-)
-def test_ps_lstart_token_is_locale_independent(
+def test_capture_process_never_spawns_a_subprocess(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """[IAN-3.1]: the start-time token is compared as a string across
-    processes, so a caller's LC_ALL must not change its spelling."""
-    monkeypatch.delenv("LC_ALL", raising=False)
-    baseline = identity._read_ps_lstart(os.getpid())
-    monkeypatch.setenv("LC_ALL", "de_DE.UTF-8")
+    def forbid(*args: object, **kwargs: object) -> None:
+        raise AssertionError(f"subprocess spawned: {args[0] if args else 'unknown'}")
 
-    token = identity._read_ps_lstart(os.getpid())
+    with monkeypatch.context() as context:
+        context.setattr(identity.subprocess, "run", forbid)
+        proc = identity.capture_process(os.getpid())
 
-    assert token is not None
-    assert re.match(r"^[A-Z][a-z]{2} [A-Z][a-z]{2} ", token), token
-    assert token == baseline
+    assert proc is not None
+    assert proc.start_time is not None
 
 
-def test_read_linux_start_time_parses_proc_stat(
+def test_capture_process_psutil_failure_never_spawns_a_subprocess(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    stat_fields = ["S", "1", "123", "456", "0", *("0" for _ in range(14)), "98765"]
+    def forbid(*args: object, **kwargs: object) -> None:
+        raise AssertionError(f"subprocess spawned: {args[0] if args else 'unknown'}")
 
-    def valid_read_text(self: Path, **_kwargs: Any) -> str:
-        assert self.as_posix() == "/proc/123/stat"
-        return "123 (codex) " + " ".join(stat_fields)
+    with monkeypatch.context() as context:
+        context.setattr(identity, "_capture_psutil_process", lambda _pid: None)
+        context.setattr(identity.subprocess, "run", forbid)
+        proc = identity.capture_process(os.getpid())
 
-    monkeypatch.setattr(identity.Path, "read_text", valid_read_text)
-    assert identity._read_linux_start_time(123) == "98765"
+    if sys.platform.startswith("linux"):
+        assert proc is not None
+        assert proc.start_time == identity.start_time_token(os.getpid(), None)
+    else:
+        assert proc is None
 
-    def missing_read_text(_self: Path, **_kwargs: Any) -> str:
-        raise OSError("missing")
 
-    monkeypatch.setattr(identity.Path, "read_text", missing_read_text)
-    assert identity._read_linux_start_time(123) is None
+def test_capture_without_start_time_uses_human_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(identity, "start_time_token", lambda _pid, _proc: None)
 
-    def short_read_text(_self: Path, **_kwargs: Any) -> str:
-        return "123 (codex) S"
+    proc = identity._capture_psutil_process(os.getpid())
 
-    monkeypatch.setattr(identity.Path, "read_text", short_read_text)
-    assert identity._read_linux_start_time(123) is None
+    assert proc is not None
+    assert proc.start_time is None
+    anchor, reason = identity.select_anchor([proc])
+    assert anchor is None
+    assert "has no start-time token" in reason
 
 
 def test_psutil_field_helpers_return_empty_values_on_psutil_errors() -> None:
     class FailingProcess:
         def ppid(self) -> int:
             raise psutil.Error("ppid")
-
-        def create_time(self) -> float:
-            raise psutil.Error("start")
 
         def exe(self) -> str:
             raise OSError("exe")
@@ -1063,7 +1139,6 @@ def test_psutil_field_helpers_return_empty_values_on_psutil_errors() -> None:
     proc = cast(psutil.Process, FailingProcess())
 
     assert identity._psutil_ppid(proc) is None
-    assert identity._psutil_start_time(proc) is None
     assert identity._psutil_exe(proc) is None
     assert identity._psutil_argv(proc) == ()
     assert identity._psutil_cwd(proc) is None
@@ -1082,48 +1157,6 @@ def test_safe_process_group_helpers_return_none_on_os_errors(
 
     assert identity._safe_getpgid(123) is None
     assert identity._safe_getsid(123) is None
-
-
-def test_capture_cwd_with_lsof_reads_name_record(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def successful_run(
-        cmd: list[str],
-        **kwargs: Any,
-    ) -> subprocess.CompletedProcess[str]:
-        assert cmd == ["lsof", "-a", "-d", "cwd", "-p", "123", "-Fn"]
-        _assert_finite_positive_timeout(kwargs["timeout"])
-        return subprocess.CompletedProcess(cmd, 0, "p123\nn/workspace\n", "")
-
-    monkeypatch.setattr(identity.subprocess, "run", successful_run)
-    assert identity._capture_cwd_with_lsof(123) == "/workspace"
-
-    def failing_return(
-        cmd: list[str],
-        **_kwargs: Any,
-    ) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(cmd, 1, "", "denied")
-
-    monkeypatch.setattr(identity.subprocess, "run", failing_return)
-    assert identity._capture_cwd_with_lsof(123) is None
-
-    def no_name_record(
-        cmd: list[str],
-        **_kwargs: Any,
-    ) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(cmd, 0, "p123\n", "")
-
-    monkeypatch.setattr(identity.subprocess, "run", no_name_record)
-    assert identity._capture_cwd_with_lsof(123) is None
-
-    def raise_subprocess(
-        _cmd: list[str],
-        **_kwargs: Any,
-    ) -> subprocess.CompletedProcess[str]:
-        raise subprocess.SubprocessError("lsof failed")
-
-    monkeypatch.setattr(identity.subprocess, "run", raise_subprocess)
-    assert identity._capture_cwd_with_lsof(123) is None
 
 
 def test_linux_proc_helpers_tolerate_missing_or_bad_data(
@@ -1237,55 +1270,6 @@ def test_random_member_id_has_opaque_random_token_shape(
     assert token_byte_sizes == [20]
     assert member_id == "m_" + "a" * 32
     assert re.fullmatch(r"m_[a-z0-9]{26,52}", member_id)
-
-
-def test_ps_argv_reconstruction_preserves_argv0_paths_with_spaces(
-    tmp_path: Path,
-) -> None:
-    """[IAN-3.2]: fallback ``ps args=`` parsing may be whitespace-split, but
-    argv[0] must be reconstructed before name generation sees it."""
-    executable = tmp_path / "Application Support" / "Claude Code"
-    executable.parent.mkdir()
-    executable.write_text("#!/bin/sh\n", encoding="utf-8")
-    executable.chmod(0o755)
-
-    argv = identity._reconstruct_ps_argv([*str(executable).split(), "--print"])
-
-    assert argv == (str(executable), "--print")
-
-
-def test_ps_fallback_uses_reconstructed_argv0_before_truncated_comm(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """[IAN-3.2]: fallback capture must not store truncatable ``comm=`` as
-    executable evidence when reconstructed argv evidence exists."""
-    executable = tmp_path / "Application Support" / "Claude Code"
-    executable.parent.mkdir()
-    executable.write_text("#!/bin/sh\n", encoding="utf-8")
-    executable.chmod(0o755)
-
-    def fake_ps_output(pid: int, *fields: str) -> str | None:
-        assert pid == 123
-        if fields == ("pid=", "ppid=", "pgid=", "sess=", "uid=", "lstart="):
-            return "123 1 123 123 501 Fri Jun 12 18:00:00 2026"
-        if fields == ("args=",):
-            return f"{executable} --print"
-        if fields == ("comm=",):
-            return "/opt/homebrew/bi"
-        raise AssertionError(f"unexpected ps fields: {fields}")
-
-    def fake_cwd(_pid: int) -> str | None:
-        return None
-
-    monkeypatch.setattr(identity, "_ps_output", fake_ps_output)
-    monkeypatch.setattr(identity, "_capture_cwd_with_lsof", fake_cwd)
-
-    proc = identity._capture_ps_process(123)
-
-    assert proc is not None
-    assert proc.exe == str(executable)
-    assert proc.argv == (str(executable), "--print")
 
 
 def test_login_name_falls_back_without_pwd(monkeypatch: pytest.MonkeyPatch) -> None:
