@@ -51,7 +51,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 
 | Plan | Status | Exemplar | Note |
 |------|--------|----------|------|
-| `2026-09-15-numeric-start-time-token-plan.md` | active | no | Spec promoted at `dd6eac4`; numeric token implementation and `ps` removal committed at `cca84d1`; consumer lanes passed; final review and repository gates remain. |
+| `2026-09-15-numeric-start-time-token-plan.md` | active | no | Slices 1–5 committed and independently reviewed PASS; macOS proof and local gates pass; Linux and Windows native CI qualification remains before completion. |
 | `2026-09-14-audit-remediation-plan.md` | completed | yes | Thirteen audit-remediation slices, the approved Ruff registry delta, and final fresh-eyes and outside-model implementation reviews are complete. |
 | `2026-09-14-simplebroker-8-2-config-migration-plan.md` | completed | yes | Replaced Taut's mirrored config machinery with SimpleBroker 8.2.2 declarations and direct nominal Config handoff; full verification and independent implementation review passed. |
 | `2026-09-03-summon-unified-pty-cross-platform-plan.md` | completed | no | Removed the Claude structured adapter and terminal-mode/session protocol; one PTY/ConPTY path now serves all providers, full-directory Summon CI passed on Windows, macOS, and Linux, and fresh-eyes plus cross-model completed-work reviews passed. |
