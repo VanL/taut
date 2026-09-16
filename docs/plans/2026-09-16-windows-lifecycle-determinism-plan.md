@@ -158,7 +158,7 @@ as a separate routine release action after this work qualifies.
   acknowledge native write retirement separately before draining, then assert
   caller outcomes after interrupt completion. Always release/reap test threads
   and handles on assertion failure. Active publication alone is not readiness.
-- [ ] Done: all forced schedules, transport-error propagation, handle lifetime,
+- [x] Done: all forced schedules, transport-error propagation, handle lifetime,
   queued writes, repeated interrupt and close precedence pass; native Windows
   proof passes. Replan if synchronous reconciliation cannot meet the existing
   contract; overlapped-I/O conversion is not implicitly authorized by this plan.
@@ -213,17 +213,18 @@ as a separate routine release action after this work qualifies.
   APPLICATION_QUIT and child exit. No fixed sleeps. Distinguish a raw control
   byte from a physical key/negotiated terminal encoding using the actual pinned
   terminal protocol. Record OS build and Textual version with failures.
-- [ ] If harness encoding is invalid, correct the existing terminal helper and
-  prove native key delivery. If valid input bypasses guarded quit, correct app
-  input integration. Keep the shipped launcher, real ConPTY and exit status.
-  Capture/redact bounded child output and clean up process/handles on failure.
-- [ ] Done: Ctrl-C and Ctrl-D both reach guarded quit and exit 0 on native Windows;
+- [x] No corrective branch was required: the existing raw `0x04` ConPTY input
+  decoded as `ctrl+d` and reached guarded quit. The terminal helper now retains
+  bounded readiness, input, decode, guarded-action and child-exit evidence on
+  failure, while cleanup still reaps the process and handles. The shipped
+  launcher, real ConPTY and exit status remain under test.
+- [x] Done: Ctrl-C and Ctrl-D both reach guarded quit and exit 0 on native Windows;
   POSIX proof also passes. Unproven EOF explanations, dependency replacement or
   inability to inject valid native input block this slice and require revision.
 
 ### S6 — Qualification and documentation
 
-- [ ] Update the two implementation notes and 0.9.8 CHANGELOG with actual causes
+- [x] Update the two implementation notes and 0.9.8 CHANGELOG with actual causes
   and proof. Add this plan's backlinks to the relevant specs' Related Plans
   without changing normative requirements. Record a factual lesson on mistaken
   completion evidence; evaluate existing runbooks/skill for improvement, but no
@@ -407,6 +408,20 @@ deadline now supplies remaining budgets throughout. No new blocker found.
   6 native skips in 21.98 seconds under `-n auto`; retained TUI passed 462 in
   123.32 seconds under `-n 2 --dist loadfile`; Ruff and format were clean;
   Summon and TUI mypy gates passed. These do not substitute for hosted Windows.
+- Hosted qualification at `63269053dc2e482bddddb2d137e0e2d8981344f4`:
+  root Test run 35162150704 passed all 23 jobs. Its native Windows 3.11 Summon
+  process lane passed 246 tests in 205.22 seconds, and Windows 3.11/3.12/3.13/
+  3.14 unit lanes each passed all 310 Summon tests. TUI run 35162150661 passed
+  all five retained-lock jobs with two workers: Windows 3.13 passed 462 tests
+  in 232.45 seconds; Ubuntu 3.11/3.13/3.14 passed 462 in 114.48/112.36/126.39
+  seconds; macOS 3.13 passed 462 in 107.06 seconds. MCP run 35162150683 and
+  PostgreSQL run 35162150649 also passed. This qualifies S2 and S5 without
+  timeout growth, reduced parallelism, skipped assertions or ignored failures.
+- S4 remains deliberately open. Its exact navigation future/snapshot/application
+  instrumentation passed locally and in the concurrent Windows TUI lane, so the
+  earlier missing-DM failure did not recur with phase evidence and no production
+  owner can honestly be selected. Per the S4 gate, this is an unresolved causal
+  diagnosis, not permission to call a longer/event-based wait the fix.
 - Comprehension answers, red/green commands, slice reviews and final SHA evidence
   are required here during implementation; no implementation completion claimed.
 
