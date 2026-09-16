@@ -30,7 +30,7 @@ from taut_tui.screens import (
 )
 from taut_tui.session import ConversationSnapshot, NavigationSnapshot
 from taut_tui.summon import TuiSummonOperations
-from taut_tui.widgets import TautComposer
+from taut_tui.widgets import TautComposer, TautOptionList
 
 pytestmark = pytest.mark.sqlite_only
 
@@ -572,6 +572,7 @@ async def _search_open_result(context: HandlerContext) -> None:
     search_context_applied = asyncio.Event()
     navigation_refresh_applied = asyncio.Event()
     search_anchor_restore_finished = asyncio.Event()
+    completed_search_anchors: list[int | None] = []
     observed_snapshots: list[ConversationSnapshot | None] = []
     apply_optional_conversation = context.app._apply_optional_conversation
     finish_owned_search_anchor_restore = context.app._finish_owned_search_anchor_restore
@@ -615,6 +616,9 @@ async def _search_open_result(context: HandlerContext) -> None:
             and context.app._pending_search_anchor is None
             and context.app.visual_state.scroll_anchor.message_id == context.message_ts
         ):
+            completed_search_anchors.append(
+                context.app.visual_state.scroll_anchor.message_id
+            )
             search_anchor_restore_finished.set()
 
     with context.monkeypatch.context() as patch:
@@ -633,7 +637,7 @@ async def _search_open_result(context: HandlerContext) -> None:
         await asyncio.wait_for(navigation_refresh_applied.wait(), timeout=5)
         await asyncio.wait_for(search_anchor_restore_finished.wait(), timeout=5)
     assert context.app._pending_search_anchor is None
-    assert context.app.visual_state.scroll_anchor.message_id == context.message_ts
+    assert completed_search_anchors == [context.message_ts]
     assert len(observed_snapshots) == 1
     snapshot = observed_snapshots[0]
     assert snapshot is not None
@@ -643,12 +647,33 @@ async def _search_open_result(context: HandlerContext) -> None:
     assert any(message.ts > context.message_ts for message in snapshot.messages)
     assert any(row.ts == context.message_ts for row in context.app._message_rows)
     assert context.app.visual_state.active_conversation == "general"
-    assert context.app.visual_state.scroll_anchor.message_id == context.message_ts
+    assert context.app.visual_state.selected_message_id == context.message_ts
     await context.pilot.pause()
     assert ActionId.NOTIFICATIONS_OPEN in context.app._navigation_targets
     assert context.app._pending_search_anchor is None
+    transcript = context.app.query_one("#transcript", TautOptionList)
+    viewport_top = int(transcript.scroll_offset.y)
+    viewport_bottom = viewport_top + transcript.scrollable_content_region.height
+    rendered_lines = transcript._lines
+    target_index = next(
+        index
+        for index, message in enumerate(context.app._message_rows)
+        if message.ts == context.message_ts
+    )
+    visible_option_indexes = {
+        option_index
+        for option_index, _line_offset in rendered_lines[viewport_top:viewport_bottom]
+    }
+    assert target_index in visible_option_indexes
+    tail_pinned = transcript.is_vertical_scroll_end
+    expected_anchor = (
+        None
+        if tail_pinned
+        else context.app._message_rows[rendered_lines[viewport_top][0]].ts
+    )
     context.app._capture_scroll_anchor()
-    assert context.app.visual_state.scroll_anchor.message_id == context.message_ts
+    assert context.app.visual_state.scroll_anchor.tail_pinned is tail_pinned
+    assert context.app.visual_state.scroll_anchor.message_id == expected_anchor
 
 
 async def _system_doctor(context: HandlerContext) -> None:

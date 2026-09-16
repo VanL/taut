@@ -335,6 +335,15 @@ signals only after the owned state transition has actually cleared the pending
 anchor with the requested logical anchor intact. This is a test synchronization
 fix, not a timeout or a production serialization change.
 
+The next Windows run at `3e59c87` proved that transition occurred, then exposed
+an invalid postcondition in the same test. After ownership release, normal
+capture ran before the waiting coroutine resumed. Windows viewport geometry had
+clamped the searched row near the bottom, so the real top-visible row was an
+earlier message. Requiring the logical search target to remain the anchor after
+release would recreate permanent pinning. The integration test now records the
+exact successful owner transition, separately proves that the searched row is
+visible, and derives the post-release anchor from the rendered viewport.
+
 Summon completed-work review attempt 1: Claude 2.1.273 with read-only
 Read/Grep/Glob/Bash access reached its 900-second bound without output or
 verdict. The timeout is recorded as reviewer failure, not approval or a product
