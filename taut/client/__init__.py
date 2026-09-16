@@ -341,6 +341,7 @@ class TautClient(
             persistent=persistent,
             member_id=member["member_id"],
         )
+        watcher: TautWatcher | None = None
         try:
             watcher = TautWatcher(
                 runtime,
@@ -354,7 +355,7 @@ class TautClient(
         except BaseException as exc:
             cleanup = (
                 (lambda: watcher.stop(join=False))
-                if "watcher" in locals()
+                if watcher is not None
                 else runtime.close
             )
             cleanup_failure = capture_cleanup_failure(None, cleanup)
