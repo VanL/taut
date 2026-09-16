@@ -570,7 +570,7 @@ async def _search_open_result(context: HandlerContext) -> None:
     finally:
         observer.close()
     search_context_applied = asyncio.Event()
-    search_anchor_restored = asyncio.Event()
+    search_anchor_restore_invoked = asyncio.Event()
     observed_snapshots: list[ConversationSnapshot | None] = []
     apply_optional_conversation = context.app._apply_optional_conversation
     apply_owned_search_anchor_restore = context.app._apply_owned_search_anchor_restore
@@ -619,7 +619,7 @@ async def _search_open_result(context: HandlerContext) -> None:
                 context.app._apply_navigation_result,
                 navigation,
             )
-            context.app.call_after_refresh(search_anchor_restored.set)
+            search_anchor_restore_invoked.set()
 
         patch.setattr(
             context.app,
@@ -640,7 +640,15 @@ async def _search_open_result(context: HandlerContext) -> None:
         )
         await _select_palette(context, ActionId.SEARCH_OPEN_RESULT)
         await asyncio.wait_for(search_context_applied.wait(), timeout=5)
-        await asyncio.wait_for(search_anchor_restored.wait(), timeout=5)
+        await asyncio.wait_for(search_anchor_restore_invoked.wait(), timeout=5)
+        await _eventually(
+            context.pilot,
+            lambda: (
+                context.app._pending_search_anchor is None
+                and context.app.visual_state.scroll_anchor.message_id
+                == context.message_ts
+            ),
+        )
     assert len(observed_snapshots) == 1
     snapshot = observed_snapshots[0]
     assert snapshot is not None
