@@ -325,6 +325,16 @@ message and assert offset/anchor after refresh, navigation application signals
 in `finally` while preserving the exception, and the native probe retains its
 bounded output evidence. Focused and full TUI gates passed after correction.
 
+The first hosted run at `d7fc067` exposed one remaining proof race in the
+action-handler integration test. A navigation refresh could invalidate the
+first deferred search-anchor finalizer and schedule its replacement, as the
+production generation contract requires. The observer signaled completion when
+that stale finalizer was merely invoked, so slower Windows, macOS, and Ubuntu
+lanes asserted before the replacement restore completed. The observer now
+signals only after the owned state transition has actually cleared the pending
+anchor with the requested logical anchor intact. This is a test synchronization
+fix, not a timeout or a production serialization change.
+
 Summon completed-work review attempt 1: Claude 2.1.273 with read-only
 Read/Grep/Glob/Bash access reached its 900-second bound without output or
 verdict. The timeout is recorded as reviewer failure, not approval or a product

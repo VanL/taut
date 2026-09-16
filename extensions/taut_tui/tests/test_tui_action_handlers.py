@@ -600,8 +600,21 @@ async def _search_open_result(context: HandlerContext) -> None:
         generation: int,
         owner: tuple[int, int],
     ) -> None:
+        owned_transition_ready = (
+            generation == context.app._transcript_restore_generation
+            and owner == context.app._pending_search_anchor
+            and owner[0] == context.app._conversation_intent
+            and context.app.visual_state.scroll_anchor.message_id == owner[1]
+            and context.app._search_anchor_restore_applied
+            and not context.app._shutting_down
+        )
         finish_owned_search_anchor_restore(generation, owner)
-        if owner == (expected_intent, context.message_ts):
+        if (
+            owned_transition_ready
+            and owner == (expected_intent, context.message_ts)
+            and context.app._pending_search_anchor is None
+            and context.app.visual_state.scroll_anchor.message_id == context.message_ts
+        ):
             search_anchor_restore_finished.set()
 
     with context.monkeypatch.context() as patch:
