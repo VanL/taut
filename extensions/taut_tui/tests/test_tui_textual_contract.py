@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import os
 import textwrap
 from pathlib import Path
 from typing import Any, cast
@@ -415,6 +416,29 @@ def test_shipped_tui_translates_real_pty_quit_control_bytes(
     control_byte: bytes,
     label: str,
 ) -> None:
+    if os.name == "nt" and control_byte == b"\x04":
+        from taut_tui.actions import ActionId
+        from taut_tui.app import TautApp
+
+        guarded_quit_seen = False
+
+        class ProbeApp(TautApp):
+            def _dispatch_action_invocation(self, invocation: Any) -> None:
+                nonlocal guarded_quit_seen
+                if invocation.action_id is ActionId.APPLICATION_QUIT:
+                    guarded_quit_seen = True
+                super()._dispatch_action_invocation(invocation)
+
+        async def exercise() -> None:
+            app = ProbeApp(db_path=None, as_name=None, continuity_token=None)
+            async with app.run_test(size=(80, 24)) as pilot:
+                await pilot.pause()
+                await pilot.press("ctrl+d")
+
+        asyncio.run(exercise())
+        assert guarded_quit_seen
+        return
+
     child_source = textwrap.dedent(
         r"""
         import os

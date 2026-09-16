@@ -395,6 +395,7 @@ class TautApp(App[None]):
         self._conversation_intent = 0
         self._pending_search_anchor: tuple[int, int] | None = None
         self._search_anchor_restore_applied = False
+        self._protected_search_anchor: int | None = None
         self._transcript_restore_generation = 0
         self._next_send_token = 0
         self._pending_sends: dict[int, tuple[str, int]] = {}
@@ -2845,6 +2846,7 @@ class TautApp(App[None]):
 
     def _advance_conversation_intent(self, *, reset_search: bool = True) -> int:
         self._clear_pending_search_anchor()
+        self._protected_search_anchor = None
         self._conversation_intent += 1
         if reset_search and self._operation_state == "searching":
             self._operation_state = "idle"
@@ -3321,6 +3323,15 @@ class TautApp(App[None]):
     def _capture_scroll_anchor(self) -> None:
         if self._pending_search_anchor is not None:
             return
+        if (
+            self._protected_search_anchor is not None
+            and self.visual_state.selected_message_id == self._protected_search_anchor
+            and any(
+                message.ts == self._protected_search_anchor
+                for message in self._message_rows
+            )
+        ):
+            return
         if not self._message_rows:
             return
         try:
@@ -3433,6 +3444,7 @@ class TautApp(App[None]):
             or self._shutting_down
         ):
             return
+        self._protected_search_anchor = owner[1]
         self._clear_pending_search_anchor(intent=owner[0])
 
     def _message_prompt(self, message: Message) -> DisplayText:

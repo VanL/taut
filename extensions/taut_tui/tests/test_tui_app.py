@@ -2171,13 +2171,20 @@ def test_direct_message_header_and_composer_use_actor_scoped_label(
                 for index, target in enumerate(app._navigation_targets)
                 if isinstance(target, str) and target != "general"
             )
+            dm_target = app._navigation_targets[dm_index]
+            assert isinstance(dm_target, str)
             navigation.highlighted = dm_index
             navigation.focus()
             await pilot.press("enter")
-            for _ in range(100):
-                await pilot.pause(0.01)
-                if app.visual_state.active_conversation is not None:
-                    break
+            await _pause_until(
+                pilot,
+                lambda: (
+                    app.visual_state.active_conversation == dm_target
+                    and "DM with bob" in str(app.query_one("#target-header").render())
+                    and app.query_one("#composer", TautComposer).placeholder
+                    == "Message DM with bob"
+                ),
+            )
             assert "DM with bob" in str(app.query_one("#target-header").render())
             assert (
                 app.query_one("#composer", TautComposer).placeholder
