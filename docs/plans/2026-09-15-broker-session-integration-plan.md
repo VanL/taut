@@ -6,10 +6,9 @@ failure, and replacement-lifecycle boundaries. Hardening is required.
 
 Plan type: implementation with spec revision.
 
-Status: active. Both plan-review rounds passed; all findings are dispositioned
-below. The compatibility prerequisite is committed as `b9eaada`; the reviewed
-spec delta and dependency floors are promoted from implementation baseline
-`b9eaada`. BrokerSession runtime implementation is in progress.
+Status: completed. Both plan-review rounds and the implementation review passed;
+all findings are dispositioned below. The compatibility prerequisite is
+`b9eaada`; the BrokerSession integration is `7c78307`.
 
 ## Goal
 
@@ -856,9 +855,7 @@ close precondition, same-thread shared cache, default-transient persistent
 notification override, watcher construction handoff, existing host ownership,
 and Summon overlapping replacement. Round-1 independent review passed; scoped
 round-2 verification passed and its final wording finding was incorporated.
-The implementation and host verification are complete; the status remains
-active only until the reviewed change is committed and its identifier is
-recorded.
+The implementation and host verification are complete in `7c78307`.
 
 
 ## Owner review follow-up (2026-09-15)
