@@ -86,6 +86,12 @@ resolves the selected project, constructs and uses one persistent configured
 Taut operations, observes notifications, and closes its handles. A blocked
 backend operation can therefore stall only its workspace.
 
+The persistent client scope is created and closed on that same child owner.
+Rejected candidates, explicit detach, terminal workspace failure, and process
+shutdown all pass through the existing waiter-before-client teardown. Another
+resident workspace on the same target may keep the keyed process session live;
+the retiring child still releases its own thread cache.
+
 Attachment validation calls `TautClient.peek_identity()` and obtains the
 waiter's source from `TautClient.notification_activity_queue()` on that same
 child owner thread. Core therefore owns selected-member precedence, no-touch

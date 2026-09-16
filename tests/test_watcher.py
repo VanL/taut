@@ -800,6 +800,8 @@ def test_base_reactor_retirement_recycles_worker_cache_with_live_peer(
         assert peer.conn is not None
         session = peer.conn._shared_session
         assert session is not None
+        assert watcher._session is not None
+        assert watcher._queue_obj.session is None
         assert len(session._cores) == 1
         for generation in range(3):
             if generation:
@@ -828,7 +830,6 @@ def test_base_reactor_retirement_recycles_worker_cache_with_live_peer(
 def test_base_reactor_cache_cleanup_error_does_not_skip_queue_close(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     watcher = BaseReactor(
         queue_configs={"cleanup.input": {"handler": lambda *_args: None}},
@@ -841,17 +842,104 @@ def test_base_reactor_cache_cleanup_error_does_not_skip_queue_close(
     assert session is not None
     queue.write("warm cache")
 
+    assert watcher._session is not None
+
     def fail_cleanup() -> None:
         raise RuntimeError("cache cleanup failed")
 
-    monkeypatch.setattr(queue, "cleanup_connections", fail_cleanup)
-    with caplog.at_level(logging.DEBUG, logger="taut.watcher"):
+    monkeypatch.setattr(watcher._session, "recycle_thread", fail_cleanup)
+    with pytest.raises(RuntimeError, match="cache cleanup failed"):
         watcher.run_until_stopped(max_iterations=1)
 
-    assert "failed to recycle reactor owner cache" in caplog.text
     # The real final lease close must still release the session's resources.
     assert not session._cores
-    assert watcher._queue_cache == {}
+    assert watcher._resources_closed is False
+    watcher.stop(join=False)
+    assert watcher._resources_closed is True
+
+
+def test_base_reactor_recycles_before_refused_scope_close_and_can_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    watcher = BaseReactor(
+        queue_configs={"cleanup.input": {"handler": lambda *_args: None}},
+        db=tmp_path / ".taut.db",
+        persistent=True,
+    )
+    assert watcher._session is not None
+    session = watcher._session
+    peer = Queue(
+        "cleanup.peer",
+        db_path=watcher._db_path,
+        persistent=True,
+        config=watcher._config,
+    )
+    peer.write("first")
+    peer.write("second")
+    iterator = cast(Any, peer.read(all_messages=True))
+    assert next(iterator) == "first"
+    calls: list[str] = []
+    real_recycle = session.recycle_thread
+    real_close = session.close
+
+    def observed_recycle() -> None:
+        calls.append("recycle")
+        real_recycle()
+
+    def observed_close() -> None:
+        calls.append("close")
+        real_close()
+
+    monkeypatch.setattr(session, "recycle_thread", observed_recycle)
+    monkeypatch.setattr(session, "close", observed_close)
+
+    with pytest.raises(RuntimeError, match="open Queue or connection operation"):
+        watcher.run_until_stopped(max_iterations=1)
+
+    assert calls == ["recycle", "close"]
+    assert watcher._session is session
+    assert watcher._resources_closed is False
+    iterator.close()
+    watcher.stop(join=False)
+    assert calls == ["recycle", "close", "recycle", "close"]
+    assert watcher._session is None
+    assert watcher._resources_closed is True
+    peer.write("survives")
+    assert peer.read() == "second"
+    assert peer.read() == "survives"
+    peer.close()
+
+
+def test_base_reactor_cleanup_failure_does_not_mask_handler_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailingReactor(BaseReactor):
+        def _process_reactor_turn(self) -> None:
+            raise ValueError("handler sentinel")
+
+    watcher = FailingReactor(
+        queue_configs={"failure.input": {"handler": lambda *_args: None}},
+        db=tmp_path / ".taut.db",
+        persistent=True,
+    )
+    assert watcher._session is not None
+    session = watcher._session
+    real_close = session.close
+    monkeypatch.setattr(
+        session,
+        "close",
+        lambda: (_ for _ in ()).throw(RuntimeError("cleanup sentinel")),
+    )
+
+    with pytest.raises(ValueError, match="handler sentinel") as caught:
+        watcher.run_until_stopped()
+
+    assert any("cleanup sentinel" in note for note in (caught.value.__notes__))
+    assert watcher._resources_closed is False
+    monkeypatch.setattr(session, "close", real_close)
+    watcher.stop(join=False)
 
 
 def test_base_reactor_background_owner_closes_current_waiter(
@@ -890,7 +978,8 @@ def test_base_reactor_waiter_close_error_does_not_skip_remaining_cleanup(
     class FailingCloseWaiter(FakeWaiter):
         def close(self) -> None:
             self.close_calls += 1
-            raise RuntimeError("close boom")
+            if self.close_calls == 1:
+                raise RuntimeError("close boom")
 
     fake_waiter = FailingCloseWaiter()
     monkeypatch.setattr(
@@ -913,11 +1002,47 @@ def test_base_reactor_waiter_close_error_does_not_skip_remaining_cleanup(
     )
     watcher.wait_for_activity(timeout=0.001)
 
-    watcher.stop(join=False)
+    with pytest.raises(RuntimeError, match="close boom"):
+        watcher.stop(join=False)
+
+    assert watcher._resources_closed is False
     watcher.stop(join=False)
 
     assert fake_waiter.close_calls == 1
-    assert watcher.policy_close_calls == 1
+    assert watcher.policy_close_calls == 2
+    assert watcher._queue_cache == {}
+
+
+def test_base_reactor_queue_close_failure_preserves_cleanup_for_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    watcher = BaseReactor(
+        queue_configs={"cleanup.input": {"handler": lambda *_args: None}},
+        db=tmp_path / ".taut.db",
+        persistent=True,
+    )
+    queue = watcher.get_queue("cleanup.input")
+    real_close = queue.close
+    close_calls = 0
+
+    def fail_once() -> None:
+        nonlocal close_calls
+        close_calls += 1
+        if close_calls == 1:
+            raise ValueError("queue close sentinel")
+        real_close()
+
+    monkeypatch.setattr(queue, "close", fail_once)
+
+    with pytest.raises(ValueError, match="queue close sentinel"):
+        watcher.stop(join=False)
+
+    assert watcher._resources_closed is False
+    assert watcher._queue_cache["cleanup.input"] is queue
+    watcher.stop(join=False)
+    assert close_calls == 2
+    assert watcher._resources_closed is True
     assert watcher._queue_cache == {}
 
 
@@ -1859,6 +1984,178 @@ def test_client_watch_can_use_nonpersistent_queue_handles(tmp_path: Path) -> Non
         bob.close()
 
 
+def test_owned_watch_runtime_uses_independent_persistent_session(
+    tmp_path: Path,
+) -> None:
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    client = TautClient(db_path=tmp_path / ".taut.db", persistent=True)
+    runtime = cast(Any, _watch_runtime_for_client(client, persistent=True))
+
+    assert runtime._session is not None
+    assert runtime._session is not client._session
+    assert runtime._queue.session is runtime._session
+
+    runtime.close()
+    client._meta_queue.has_pending()
+    client.close()
+
+
+def test_client_watch_recycles_construction_thread_before_handoff(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    client = TautClient(db_path=db, as_name="van", persistent=True)
+    client.join("home")
+    assert client._meta_queue.conn is not None
+    process_session = client._meta_queue.conn._shared_session
+    assert process_session is not None
+    assert len(process_session._cores) == 1
+
+    watcher = client.watch(lambda _item: None, threads=["home"])
+
+    assert len(process_session._cores) == 0
+    client._meta_queue.has_pending()
+    assert len(process_session._cores) == 1
+    watcher.stop(join=False)
+    client.close()
+
+
+def test_client_watch_construction_failure_reports_cleanup_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import taut.watcher as watcher_module
+    from taut.client import _watching
+
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    client = TautClient(db_path=db, as_name="van", persistent=True)
+    client.join("home")
+    runtimes: list[Any] = []
+    real_factory = _watching._watch_runtime_for_client
+
+    def capture_runtime(*args: Any, **kwargs: Any) -> Any:
+        runtime = real_factory(*args, **kwargs)
+        runtimes.append(runtime)
+        runtime.close = lambda: (_ for _ in ()).throw(
+            RuntimeError("runtime cleanup sentinel")
+        )
+        return runtime
+
+    def fail_watcher(*_args: Any, **_kwargs: Any) -> None:
+        raise ValueError("watch construction sentinel")
+
+    monkeypatch.setattr(_watching, "_watch_runtime_for_client", capture_runtime)
+    monkeypatch.setattr(watcher_module, "TautWatcher", fail_watcher)
+
+    with pytest.raises(ValueError, match="watch construction sentinel") as caught:
+        client.watch(lambda _item: None, threads=["home"])
+
+    assert len(runtimes) == 1
+    assert any("runtime cleanup sentinel" in note for note in caught.value.__notes__)
+    client.close()
+
+
+def test_client_watch_handoff_failure_reports_cleanup_and_remains_retryable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import taut.watcher as watcher_module
+    from taut.client import _watching
+
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    client = TautClient(db_path=db, as_name="van", persistent=True)
+    client.join("home")
+    runtimes: list[Any] = []
+    watchers: list[TautWatcher] = []
+    real_factory = _watching._watch_runtime_for_client
+    real_watcher = watcher_module.TautWatcher
+    real_session_closes: list[Callable[[], None]] = []
+
+    def capture_runtime(*args: Any, **kwargs: Any) -> Any:
+        runtime = real_factory(*args, **kwargs)
+        runtimes.append(runtime)
+        runtime.recycle_thread = lambda: (_ for _ in ()).throw(
+            ValueError("handoff recycle sentinel")
+        )
+        return runtime
+
+    def capture_watcher(*args: Any, **kwargs: Any) -> TautWatcher:
+        watcher = real_watcher(*args, **kwargs)
+        watchers.append(watcher)
+        assert watcher._session is not None
+        real_session_closes.append(watcher._session.close)
+        monkeypatch.setattr(
+            watcher._session,
+            "close",
+            lambda: (_ for _ in ()).throw(RuntimeError("handoff cleanup sentinel")),
+        )
+        return watcher
+
+    monkeypatch.setattr(_watching, "_watch_runtime_for_client", capture_runtime)
+    monkeypatch.setattr(watcher_module, "TautWatcher", capture_watcher)
+
+    with pytest.raises(ValueError, match="handoff recycle sentinel") as caught:
+        client.watch(lambda _item: None, threads=["home"])
+
+    assert len(runtimes) == 1
+    assert len(watchers) == 1
+    assert any("handoff cleanup sentinel" in note for note in caught.value.__notes__)
+    watcher = watchers[0]
+    assert watcher._resources_closed is False
+    assert watcher._session is not None
+    monkeypatch.setattr(watcher._session, "close", real_session_closes[0])
+    watcher.stop(join=False)
+    assert watcher._resources_closed is True
+    client.close()
+
+
+def test_taut_watcher_preserves_first_cleanup_failure_and_retries_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    client = TautClient(db_path=db, as_name="van", persistent=True)
+    client.join("home")
+    watcher = client.watch(lambda _item: None, threads=["home"])
+    assert watcher._session is not None
+    session = watcher._session
+    runtime = cast(Any, watcher._runtime)
+    real_session_close = session.close
+    real_runtime_close = runtime.close
+    runtime_close_calls = 0
+
+    def fail_runtime_close() -> None:
+        nonlocal runtime_close_calls
+        runtime_close_calls += 1
+        if runtime_close_calls == 1:
+            raise ValueError("runtime cleanup sentinel")
+        real_runtime_close()
+
+    monkeypatch.setattr(
+        session,
+        "close",
+        lambda: (_ for _ in ()).throw(RuntimeError("reactor cleanup sentinel")),
+    )
+    monkeypatch.setattr(runtime, "close", fail_runtime_close)
+
+    with pytest.raises(RuntimeError, match="reactor cleanup sentinel"):
+        watcher.stop(join=False)
+
+    assert runtime_close_calls == 1
+    assert watcher._resources_closed is False
+    assert watcher._runtime_cleanup_done is False
+    monkeypatch.setattr(session, "close", real_session_close)
+    watcher.stop(join=False)
+    assert runtime_close_calls == 2
+    assert watcher._resources_closed is True
+    assert watcher._runtime_cleanup_done is True
+    client.close()
+
+
 def test_client_watch_rejects_missing_filters_before_runtime_construction(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1902,6 +2199,37 @@ def test_client_watch_rejects_missing_filters_before_runtime_construction(
 
     assert created == []
     assert close_calls == []
+
+
+def test_base_reactor_constructor_failure_closes_initial_queue(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created: list[Queue] = []
+    closed: list[Queue] = []
+    real_init = Queue.__init__
+    real_close = Queue.close
+
+    def observed_init(queue: Queue, *args: Any, **kwargs: Any) -> None:
+        real_init(queue, *args, **kwargs)
+        created.append(queue)
+
+    def observed_close(queue: Queue) -> None:
+        closed.append(queue)
+        real_close(queue)
+
+    monkeypatch.setattr(Queue, "__init__", observed_init)
+    monkeypatch.setattr(Queue, "close", observed_close)
+
+    with pytest.raises(TypeError, match="handler for queue 'invalid'"):
+        BaseReactor(
+            queue_configs={"invalid": {"handler": "not callable"}},
+            db=tmp_path / ".taut.db",
+            persistent=True,
+        )
+
+    assert len(created) == 1
+    assert closed == created
 
 
 def test_multi_queue_watcher_explicit_db_skips_broken_cwd_config(

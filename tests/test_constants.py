@@ -59,8 +59,15 @@ def test_declared_identity_and_custom_context_reach_client_unchanged(
     client = TautClient(broker_target=target, broker_config=config)
     try:
         client.join("general")
+        monkeypatch.setenv("TAUT_AS", "changed")
+        monkeypatch.setenv("TAUT_WORKSPACE_LABEL", "changed")
+        persistent_queue = client.queue("session-owned", persistent=True)
 
         assert client.config is config
+        assert client._session is not None
+        assert client._session.config is config
+        assert client._session.target == target
+        assert persistent_queue.session is client._session
         assert client.as_name == "van"
         assert client.token == "secret"
         assert client.config["DEBUG_ACTION"] == "raise"

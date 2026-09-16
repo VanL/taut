@@ -143,7 +143,8 @@ Quick pointers to the key guidance documents in this repository.
 | `taut/client/` | Public Python API package: facade plus effect-bearing and read-only identity selection, actor-scoped DM selection/directory, messaging (including exact show/delete/react), semantic notification reads, notification activity handles, thread mixins, and plain SimpleBroker queue ownership |
 | `taut/search/` | Core search projection, SQLite FTS5 provider, strict PostgreSQL provider discovery, durable invalidation jobs, and worker state machine |
 | `taut/persistence/` | Composite dump validation, official component discovery, shared live/dump record validation, actor-free file lifecycle, and guarded workspace restore |
-| `taut/watcher.py` | Shared `BaseReactor`, vendored multi-queue scheduling, and cursor-aware `TautWatcher` with persistent owned queue handles |
+| `taut/watcher.py` | Shared `BaseReactor`, BrokerSession cache lifetime, direct queue ownership, vendored multi-queue scheduling, and cursor-aware `TautWatcher` |
+| `taut/_cleanup.py` | First-failure retention across independent cleanup owners |
 | `taut/cli.py` | Thin console entry point into the registry-backed dispatcher |
 | `taut/commands/` | Versioned command manifests/protocol, deterministic installed-command registry, root dispatcher, shared renderers, lazy per-verb adapters, and the temporary reserved Summon compatibility bridge |
 | `tests/` | Contract tests using real SQLite files, shared backend markers, and subprocess CLI |

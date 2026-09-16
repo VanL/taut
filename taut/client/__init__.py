@@ -23,6 +23,7 @@ from simplebroker import (
 )
 
 from taut import addressing
+from taut._cleanup import capture_cleanup_failure
 from taut._config import load_config
 from taut._constants import (
     META_QUEUE_NAME,
@@ -341,19 +342,22 @@ class TautClient(
             member_id=member["member_id"],
         )
         try:
-            return TautWatcher(
+            watcher = TautWatcher(
                 runtime,
                 member["member_id"],
                 handler,
                 threads=canonical_threads,
                 persistent=persistent,
             )
-        except BaseException:
-            try:
-                runtime.close()
-            except Exception:  # pragma: no cover - defensive third-party cleanup
-                logger.debug(
-                    "failed to close watch runtime after construction failure",
-                    exc_info=True,
-                )
+            runtime.recycle_thread()
+            return watcher
+        except BaseException as exc:
+            cleanup = (
+                (lambda: watcher.stop(join=False))
+                if "watcher" in locals()
+                else runtime.close
+            )
+            cleanup_failure = capture_cleanup_failure(None, cleanup)
+            if cleanup_failure is not None:
+                exc.add_note(f"watch construction cleanup failed: {cleanup_failure}")
             raise

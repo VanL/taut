@@ -25,6 +25,12 @@ persistent identity-bearing `TautClient` on one serialized worker. The active
 uses one actor-free worker; `TuiSummonOperations` retains one foreground
 worker per TUI-started Summon run plus one bounded exit supervisor.
 
+The session worker owns and closes the client's BrokerSession. Watch creation
+uses independent metadata and reactor scopes: caller-thread construction state
+is recycled before handoff, and the watcher drive owner releases its cache and
+scopes after its final turn. A timed-out watcher stop therefore cannot make
+client cleanup close the watcher's independently owned queues.
+
 Conversation selection uses monotonically increasing generations. A switch
 stops and joins the old filtered watcher, loads bounded public history,
 commits only the current generation, then starts a watcher filtered to the

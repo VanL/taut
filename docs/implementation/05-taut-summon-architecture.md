@@ -39,8 +39,8 @@ required persistent-session visibility behavior; 5.3.0 added the live waiter
 replacement required by the shared core reactor; 5.3.2 made cancellation
 interrupt locked watcher bootstrap; and 5.3.3 added the cleanup and metric
 properties Summon requires. Version 5.6.1 added core reaction fanout; the
-repository-wide supported floor is now `simplebroker>=8.2.2`, aligned with
-`simplebroker-pg>=4.2.1`. The pair also exposes closeable public Queue
+repository-wide supported floor is now `simplebroker>=8.3.0`, aligned with
+`simplebroker-pg>=4.3.0`. The pair also exposes closeable public Queue
 iterators with same-thread synchronous operation cleanup. Version 8.0.0 makes
 ascending public message id the default retrieval order and advances the
 SQL/backend compatibility line; neither change alters Summon's read-one
@@ -699,8 +699,8 @@ the durable summon rows live in sidecar tables and require no row migration.
 
 The driver consumes control with fixed-topology `_ControlReactor`, a policy
 subclass of core's shared `BaseReactor`. It inherits the guarded process/wait/
-stop templates unchanged, owns persistent queue handles, and uses
-SimpleBroker 5.2.0's process-local session plus owner-thread-local core model.
+stop templates unchanged, owns directly constructed persistent queue handles,
+and holds an independent BrokerSession scope for owner-thread cache lifetime.
 That preserves at-most-once command semantics: a
 command lost to a driver crash is moot, STOP on a dead driver is meaningless,
 and STATUS/PING requesters retry. `TautClient.watch` is chat-only and knows
@@ -787,9 +787,11 @@ Long-lived actors use persistent owned handles: the chat watcher, summon
 control loop, driver ledger client, and watcher client. One-shot paths use
 transient handles: ordinary `taut say`, CLI
 `status`/`stop`, per-request reply queues, and short support reads outside
-loops. Owned lifetime ends with `Queue.close()` or `TautClient.close()`;
-`cleanup_connections()` is reserved for in-place recovery when the queue lease
-must remain alive.
+loops. Owned lifetime ends with `Queue.close()`, reactor scope close, or
+`TautClient.close()`. Replacement may install a new complete owner before the
+old scope closes; same-thread cache recycling leaves the replacement's handles
+usable. Dynamic audit queues remain direct, are evicted on leave, and are not
+retained by the reactor scope.
 
 If a broker fault surfaces on a long-lived control path, summon records health
 detail and defers complete handle replacement to the control owner's
@@ -799,9 +801,8 @@ or inherited wait template. It does not classify
 `malformed summon session row` errors as transient in Taut. If SimpleBroker
 still leaks a lock/busy contention failure after its own budget, the fix belongs
 in SimpleBroker or the dependency selection, not in a second retry wrapper.
-`simplebroker>=8.2.2` is the minimum supported runtime. Its reference reactor
-and
-persistent session design provide one process-local session with
+`simplebroker>=8.3.0` is the minimum supported runtime. Its reference reactor
+and public BrokerSession design provide process-shared keyed resources with
 owner-thread-local cores; cancellation can interrupt watcher bootstrap while
 PhaseLock or SQLite connection setup is blocked; runner cleanup does not infer
 ownership from path names; and timestamp-conflict metrics exist before

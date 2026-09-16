@@ -31,6 +31,40 @@ from taut.state import POSTGRES_SQL_DIALECT, SqlSidecarTautState
 pytestmark = pytest.mark.pg_only
 
 
+def test_persistent_client_worker_returns_postgres_session_checkout(
+    taut_pg_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(taut_pg_project)
+    TautClient.init()
+    peer = TautClient(as_name="peer", persistent=True)
+    peer._meta_queue.has_pending()
+    assert peer._meta_queue.conn is not None
+    process_session = peer._meta_queue.conn._shared_session
+    assert process_session is not None
+    runner = process_session._factory._runner
+    assert runner is not None
+    baseline_depth = runner._lease_depth
+    observed_depths: list[int] = []
+
+    def use_and_close_client() -> None:
+        worker = TautClient(as_name="worker", persistent=True)
+        worker._meta_queue.has_pending()
+        observed_depths.append(runner._lease_depth)
+        worker.close()
+        observed_depths.append(runner._lease_depth)
+
+    thread = threading.Thread(target=use_and_close_client)
+    thread.start()
+    thread.join(timeout=5.0)
+
+    assert not thread.is_alive()
+    assert observed_depths == [baseline_depth + 1, baseline_depth]
+    assert runner._lease_depth == baseline_depth
+    assert peer.join("survives").thread == "survives"
+    peer.close()
+
+
 def test_direct_taut_backend_settings_select_postgres_without_project_file(
     tmp_path: Path,
     pg_dsn: str,

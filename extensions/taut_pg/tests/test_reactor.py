@@ -15,10 +15,47 @@ import taut.watcher as watcher_module
 from taut._exceptions import EmptyResultError
 from taut.client import Message, Notification, TautClient
 from taut.client._watching import _watch_runtime_for_client
-from taut.watcher import TautWatcher
+from taut.watcher import BaseReactor, TautWatcher
 from tests.helpers.eventually import eventually
 
 pytestmark = pytest.mark.pg_only
+
+
+def test_persistent_reactor_returns_postgres_worker_checkout(
+    taut_pg_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(taut_pg_project)
+    TautClient.init()
+    peer = TautClient(as_name="peer", persistent=True)
+    peer._meta_queue.has_pending()
+    assert peer._meta_queue.conn is not None
+    process_session = peer._meta_queue.conn._shared_session
+    assert process_session is not None
+    runner = process_session._factory._runner
+    assert runner is not None
+    baseline_depth = runner._lease_depth
+    watcher = BaseReactor(
+        queue_configs={"reactor.input": {"handler": lambda *_args: None}},
+        persistent=True,
+    )
+
+    thread = watcher.start()
+    try:
+        eventually(
+            lambda: runner._lease_depth == baseline_depth + 1,
+            timeout=5.0,
+            interval=0.01,
+            description="Postgres reactor holds one worker checkout",
+        )
+    finally:
+        watcher.stop()
+        thread.join(timeout=5.0)
+
+    assert not thread.is_alive()
+    assert runner._lease_depth == baseline_depth
+    assert peer.join("survives").thread == "survives"
+    peer.close()
 
 
 def _cursor_reached(

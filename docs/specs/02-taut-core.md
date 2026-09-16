@@ -459,7 +459,7 @@ an accident. Two consequences are binding:
   CLI/client work, persistent owned handles for long-lived actors, and
   `close()` at owned lifetime end.
 
-  The `simplebroker>=8.2.2` floor is load-bearing. Version 5.2.0 supplies the
+  The `simplebroker>=8.3.0` floor is load-bearing. Version 5.2.0 supplies the
   reference ownership model, 5.2.2 first passed Taut's persistent-owner
   process/control proof, 5.3.0 supplies the public live activity-waiter
   replacement contract, 5.3.1 makes `Queue.write()` return the exact committed
@@ -490,7 +490,7 @@ an accident. Two consequences are binding:
   [TAUT-3.2]. Version 8.0.0 makes
   ascending public message id the uniform default retrieval order, removes
   the private SQL row-order surrogate in schema 6, and advances the backend
-  API to v8; `simplebroker-pg>=4.2.1` is the matching PostgreSQL line. Ordinary
+  API to v8; `simplebroker-pg>=4.3.0` is the matching PostgreSQL line. Ordinary
   generated writes remain FIFO-like because their ids are monotonic. Exact
   inserts, loads, or id-preserving moves of lower ids are selected by public
   id rather than insertion time. Taut continues to expose only oldest
@@ -504,20 +504,48 @@ an accident. Two consequences are binding:
   verify the target, and restart only v8 clients. Taut never inspects,
   migrates, or repairs SimpleBroker-owned schema objects itself.
 
-  Taut uses neither
-  the SimpleBroker command layer nor the newly
+  Version 8.3.0 supplies public BrokerSession scope ownership and explicit
+  per-thread recycling. Taut integrates these lifetimes rather than relying
+  on an upstream watcher's idle-stop path to clean its custom reactor loop.
+
+  Taut uses neither the SimpleBroker command layer nor the newly
   re-exported project-config helpers; it continues to use the root queue/target
-  API and the existing `simplebroker.ext` embedder surfaces. Persistent Queue
-  handles for one
-  resolved target share a process-local broker session; each driving thread
-  receives its own thread-local backend core. Releasing an ordinary operation
-  ends only its active-operation lease; it does not recycle the owning thread's
-  cached core or end the Queue lease. `Queue.cleanup_connections()` explicitly
-  recycles active handles while retaining the Queue lease, and `Queue.close()`
-  ends the owned persistent lifetime. Taut follows the 5.2.0 reference-reactor
-  rule: after drive begins, only the reactor owner performs normal Queue and
-  sidecar work. Taut does not recreate SimpleBroker connection release or retry
-  policy.
+  API and the existing `simplebroker.ext` embedder surfaces. Taut uses
+  SimpleBroker's public `BrokerSession` to own persistent client and reactor
+  lifetimes. A scope is acquired from the already resolved target and complete
+  Config; it does not reread environment or project configuration. Scopes with
+  equal process-session keys share backend resources and one cached core per
+  driving thread. They are not isolated connections or transactions.
+
+  A client acquires its scope lazily on its first persistent queue request,
+  including an explicit persistent request on an otherwise transient client.
+  Its name cache returns plain public Queue handles minted by that scope.
+  Explicit transient requests remain transient and uncached. `TautClient.close()`
+  ends the owned lifetime on its resource-owning thread, closes the scope and
+  separately owned transient metadata handle, and is idempotent. It must not
+  create a scope solely for cleanup. First-party callers close every open
+  same-key iterator and sidecar/connection context before close and use a fresh
+  client for a new lifetime. No general cross-thread client safety is implied.
+
+  A reactor owns a separate scope from its source client for its thread-cache
+  lifetime. Reactor queues remain directly owned, same-target/same-Config
+  persistent Queues in the existing active maps. Queue creation through the
+  scope is not required for same-key cache recycling. Membership and auxiliary
+  queues are evicted and closed at retirement; their objects must not accumulate
+  in the scope. The watcher metadata runtime has its own independently closed
+  scope for its metadata queue, sharing the reactor's process-session key
+  without sharing the source client's ownership.
+
+  Queue close releases that Queue's lease; scope close also recycles the
+  calling thread's cache. Scope close requires that no same-key operation is
+  active on that thread, even through another owner. A rejected close leaves
+  ownership intact for a later valid close. Closing another same-key scope
+  between operations may recycle this thread's shared cache, but surviving
+  handles remain usable and reacquire it. Workers release their cache on their
+  own thread before retirement; a foreign stop caller cannot reclaim that
+  worker cache. Construction-thread I/O is recycled before handing a watcher
+  to its drive owner. Taut does not recreate SimpleBroker's connection,
+  session-registry, or retry policy.
 - Taut must tolerate foreign writes: bodies that are not taut envelopes
   render as raw text ([TAUT-6.3]), and queues with no `taut_threads` row
   are invisible to `taut list` but must not break any command.
@@ -1471,6 +1499,10 @@ activity-waiter integration by long-lived embedders; semantic reads continue
 through `peek_inbox()` or `inbox()`, so extensions do not derive `notify.*`
 names or decode queue bodies.
 
+A persistent activity queue requested on a transient client belongs to that
+client's lazy BrokerSession scope and ends with `TautClient.close()` under
+[TAUT-3.4]. This does not make the client's ordinary operations persistent.
+
 `TautClient(..., inherit_environment_identity: bool = True)` controls only
 the constructor's fallback to the process-wide `TAUT_AS` and `TAUT_TOKEN`
 identity selectors. The default preserves the CLI and ordinary embedding
@@ -1486,8 +1518,8 @@ through read-only identity resolution. It does not update activity, record an
 identity claim, inspect unread state, or create membership. Long-lived
 extensions use it to reconcile their own thread-scoped resources.
 
-Core runtime dependencies: exactly `simplebroker>=8.2.2` and `psutil`. The
-optional `taut-pg` extension adds `simplebroker-pg>=4.2.1` and its driver
+Core runtime dependencies: exactly `simplebroker>=8.3.0` and `psutil`. The
+optional `taut-pg` extension adds `simplebroker-pg>=4.3.0` and its driver
 dependencies in the same environment as Taut. Python ≥ 3.11. The CLI uses
 argparse, not a CLI framework.
 
@@ -1636,9 +1668,25 @@ broker waits; it is safe from handlers, signals, and foreign threads.
 reactor-owned handles while that owner is driving. The drive finalizer runs
 only after the turn loop has unwound, and closes owned queues, waiters, strategy
 resources, and runtime state exactly once on clean stop, bounded-run return, or
-unexpected failure. A foreign caller may close only after the owner thread
-exits; an instance that was never driven may be closed by its caller.
-Unexpected exceptions remain observable after finalization.
+unexpected failure. A normally completed owner has already released its thread
+cache and scopes; subsequent foreign stop calls are idempotent and do not
+recycle the foreign caller's cache. A never-driven instance may be closed by
+its caller. Abnormal foreign cleanup after owner exit may release residual
+leases and recycle only its caller's cache; it cannot reclaim the dead worker's
+cache. Unexpected exceptions remain observable after finalization.
+
+The owner closes active queue/sidecar operations before its BrokerSession
+scopes, including on exception, stop during a turn, and bounded-run return.
+The reactor calls `recycle_thread()` before scope `close()`, so an active
+same-key operation that refuses close still has cache recycling scheduled for
+its unwind. Failed finalization remains observable and retains incomplete scope
+ownership for explicit cleanup. Activity waiters and strategy resources are
+retired before their owning scope. Client, reactor, and metadata runtime scopes
+are independently owned; closing the source client cannot close a live
+watcher's queues. Repeated membership and auxiliary-queue churn retains objects
+in proportion to live topology, not the number of prior joins and leaves.
+Partial constructor failure releases every acquired scope without replacing
+the constructor's original exception with an ordinary cleanup error.
 
 Polling/activity infrastructure initializes only after drive ownership is
 claimed. One shared wait template follows the reference reactor and waits
@@ -2930,6 +2978,9 @@ expression behavior.
   current MCP/current-core metadata and installed lifecycle gate.
 
 ## Related Plans
+
+- `docs/plans/2026-09-15-broker-session-integration-plan.md` — adopts public
+  BrokerSession ownership for persistent clients, reactors, and watch runtimes.
 
 - `docs/plans/2026-09-15-reactor-worker-cache-compatibility-plan.md`: restores
   worker cache retirement with already-admitted SimpleBroker 8.3 under [TAUT-8.5].

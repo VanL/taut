@@ -498,11 +498,11 @@ wheels = [
 
 [[package]]
 name = "simplebroker"
-version = "8.2.2"
+version = "8.3.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/8e/82/dd56ddd70bd56bec0f5925ac756aba5475ed38997f8ad835041711944586/simplebroker-8.2.2.tar.gz", hash = "sha256:a2274d30357151e61f306f23a9d3b85e58b87f3308804e0a7dec15b189c10a0c", size = 223476, upload-time = "2026-09-14T20:03:05.182Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ac/03/7a54d5ad764df0a02a7f5a94f903a1f11b78d660fe46ee5cd813ef183ae9/simplebroker-8.3.0.tar.gz", hash = "sha256:576731833ce0d498eb822276d6b98e5ea9e0905def1720fcde321dd500f48f42", size = 226989, upload-time = "2026-09-16T00:22:58.619Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c9/d6/bb02c0758709ed5517640320c9b340022db1143801d867a4c9cedc716a14/simplebroker-8.2.2-py3-none-any.whl", hash = "sha256:12f3fb1a81d03cac3ef64792c470e96e7b846c46f325a309b3071c22b8d5620d", size = 248464, upload-time = "2026-09-14T20:03:03.607Z" },
+    { url = "https://files.pythonhosted.org/packages/c2/a1/bc9c28122d55c626814ac15a5404284fb8ba51d3506b18055b5c07ea0110/simplebroker-8.3.0-py3-none-any.whl", hash = "sha256:4899e6c3046c5e032e7fb806ad73e5bddf1082c6a07ad5d7f016671ae5140c07", size = 252516, upload-time = "2026-09-16T00:22:56.771Z" },
 ]
 
 [[package]]
@@ -526,8 +526,8 @@ requires-dist = [
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.8.0" },
     { name = "pyyaml", marker = "extra == 'dev'", specifier = ">=6.0.3" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.16.3" },
-    { name = "simplebroker", specifier = ">=8.2.2" },
-    { name = "simplebroker-pg", marker = "extra == 'dev'", specifier = ">=4.2.1" },
+    { name = "simplebroker", specifier = ">=8.3.0" },
+    { name = "simplebroker-pg", marker = "extra == 'dev'", specifier = ">=4.3.0" },
     { name = "taut-mcp", marker = "extra == 'all'", editable = "../taut_mcp" },
     { name = "taut-pg", marker = "extra == 'all'", editable = "../taut_pg" },
     { name = "taut-summon", marker = "extra == 'all'", editable = "." },

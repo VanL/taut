@@ -33,6 +33,7 @@ from __future__ import annotations
 import itertools
 import logging
 import signal
+import sys
 import threading
 import time
 import weakref
@@ -43,6 +44,7 @@ from pathlib import Path
 from typing import Any, cast, final
 
 from simplebroker import (
+    BrokerSession,
     BrokerTarget,
     Config,
     Queue,
@@ -58,6 +60,7 @@ from simplebroker.ext import (
 )
 
 from taut import addressing
+from taut._cleanup import capture_cleanup_failure
 from taut._config import load_config
 from taut._constants import (
     QUEUE_PRIORITY_NORMAL,
@@ -793,12 +796,29 @@ class BaseReactor(MultiQueueWatcher):
         self._stop_once_lock = threading.Lock()
         self._stop_requested = False
         self._resources_closed = False
+        self._resources_closing = False
+        self._session: BrokerSession | None = None
         self._strategy_started = False
         self._strategy_generation: int | None = None
         self._waiter_replacement_critical = False
         self._waiter_replacement_sigint_pending = False
         self._queue_cache: dict[str, Queue] = {}
-        super().__init__(*args, **kwargs)
+        try:
+            super().__init__(*args, **kwargs)
+            if self._persistent:
+                self._session = BrokerSession.connect(
+                    self._db_path,
+                    config=self._config,
+                )
+        except BaseException as exc:
+            cleanup_exc = (
+                capture_cleanup_failure(None, self._close_reactor_resources)
+                if hasattr(self, "_strategy")
+                else None
+            )
+            if cleanup_exc is not None:
+                exc.add_note(f"reactor construction cleanup failed: {cleanup_exc}")
+            raise
         for runtime_config in self._queues.values():
             self._queue_cache[runtime_config.name] = runtime_config.queue
 
@@ -1091,7 +1111,18 @@ class BaseReactor(MultiQueueWatcher):
         finally:
             with self._drive_owner_lock:
                 self._drive_loop_active = False
+            self._finalize_run()
+
+    def _finalize_run(self) -> None:
+        """Finalize without replacing an exception already leaving the run."""
+
+        active_failure = sys.exception()
+        try:
             self.stop(join=False)
+        except Exception as cleanup_failure:
+            if active_failure is None:
+                raise
+            active_failure.add_note(f"reactor cleanup failed: {cleanup_failure}")
 
     @final
     def run_forever(self) -> None:
@@ -1112,7 +1143,7 @@ class BaseReactor(MultiQueueWatcher):
                     signal.signal(signal.SIGINT, previous_sigint_handler)
             finally:
                 try:
-                    self.stop(join=False)
+                    self._finalize_run()
                 finally:
                     self._running_event.clear()
 
@@ -1168,31 +1199,35 @@ class BaseReactor(MultiQueueWatcher):
     def _close_reactor_resources(self) -> None:
         """Close queue handles after the drive owner has unwound."""
 
-        try:
-            self._strategy.close()
-        except Exception:  # pragma: no cover - defensive third-party cleanup
-            logger.debug("failed to close reactor polling strategy", exc_info=True)
+        failure: Exception | None = None
+        failure = capture_cleanup_failure(failure, self._strategy.close)
 
-        if self._drive_thread is threading.current_thread():
-            try:
-                # Our custom loop bypasses upstream run-thread cache cleanup.
-                self._queue_obj.cleanup_connections()
-            except Exception:
-                logger.debug("failed to recycle reactor owner cache", exc_info=True)
+        session = self._session
+        if session is not None:
+            failure = capture_cleanup_failure(failure, session.recycle_thread)
 
         seen: set[int] = set()
-        queues = list(self._queue_cache.values()) + [
-            config.queue for config in self._queues.values()
-        ]
+        queues = list(self._queue_cache.values())
+        if hasattr(self, "_queue_obj"):
+            queues.append(self._queue_obj)
+        queues.extend(config.queue for config in getattr(self, "_queues", {}).values())
         for queue in queues:
             if id(queue) in seen:
                 continue
             seen.add(id(queue))
-            try:
-                queue.close()
-            except (BrokerError, OSError, RuntimeError):
-                logger.debug("failed to close reactor queue", exc_info=True)
-        self._queue_cache.clear()
+            failure = capture_cleanup_failure(failure, queue.close)
+
+        if session is not None:
+            close_failure = capture_cleanup_failure(None, session.close)
+            if close_failure is None:
+                self._session = None
+            elif failure is None:
+                failure = close_failure
+
+        if failure is None:
+            self._queue_cache.clear()
+            return
+        raise failure
 
     @final
     def request_stop(self) -> None:
@@ -1236,16 +1271,23 @@ class BaseReactor(MultiQueueWatcher):
             return
 
         with self._stop_once_lock:
-            if self._resources_closed:
+            if self._resources_closed or self._resources_closing:
                 return
-            self._resources_closed = True
+            self._resources_closing = True
 
-        try:
-            super().stop(join=False, timeout=timeout)
-        except Exception:  # pragma: no cover - defensive third-party cleanup
-            logger.debug("inherited reactor cleanup failed", exc_info=True)
-        finally:
-            self._close_reactor_resources()
+        inherited_failure = capture_cleanup_failure(
+            None,
+            lambda: super(BaseReactor, self).stop(join=False, timeout=timeout),
+        )
+        cleanup_failure = capture_cleanup_failure(None, self._close_reactor_resources)
+        failure = inherited_failure or cleanup_failure
+        if failure is not None:
+            with self._stop_once_lock:
+                self._resources_closing = False
+            raise failure
+        with self._stop_once_lock:
+            self._resources_closing = False
+            self._resources_closed = True
 
 
 TautBaseWatcher = BaseReactor
@@ -1288,31 +1330,41 @@ class TautWatcher(BaseReactor):
         self._next_membership_refresh_at = time.monotonic()
         self._notification_queue_name = addressing.notification_queue_name(member_id)
         self._runtime_cleanup_done = False
-        memberships = self._current_memberships(strict=strict_membership)
-        queue_configs = {
-            self._notification_queue_name: {
-                "handler": self._make_notification_handler(),
-                "mode": QueueMode.READ,
-            },
-            **{
-                row.name: {
-                    "handler": self._make_taut_handler(row.name),
-                    "mode": QueueMode.PEEK,
-                }
-                for row in memberships
-            },
-        }
-        for row in memberships:
-            self._cursors[row.name] = row.last_seen_ts
-        super().__init__(
-            queue_configs,
-            db=self._runtime.target,
-            stop_event=stop_event,
-            persistent=persistent,
-            inactive_probe_interval=membership_refresh_interval,
-            default_error_handler_fn=_taut_default_error_handler,
-            config=self._runtime.config,
-        )
+        try:
+            memberships = self._current_memberships(strict=strict_membership)
+            queue_configs = {
+                self._notification_queue_name: {
+                    "handler": self._make_notification_handler(),
+                    "mode": QueueMode.READ,
+                },
+                **{
+                    row.name: {
+                        "handler": self._make_taut_handler(row.name),
+                        "mode": QueueMode.PEEK,
+                    }
+                    for row in memberships
+                },
+            }
+            for row in memberships:
+                self._cursors[row.name] = row.last_seen_ts
+            super().__init__(
+                queue_configs,
+                db=self._runtime.target,
+                stop_event=stop_event,
+                persistent=persistent,
+                inactive_probe_interval=membership_refresh_interval,
+                default_error_handler_fn=_taut_default_error_handler,
+                config=self._runtime.config,
+            )
+        except BaseException as exc:
+            cleanup_exc = capture_cleanup_failure(None, self._runtime.close)
+            if cleanup_exc is not None:
+                exc.add_note(
+                    f"watcher runtime construction cleanup failed: {cleanup_exc}"
+                )
+            else:
+                self._runtime_cleanup_done = True
+            raise
 
     def list_queues(self) -> list[str]:
         return [
@@ -1332,16 +1384,18 @@ class TautWatcher(BaseReactor):
             event.set()
 
     def _close_reactor_resources(self) -> None:
-        super()._close_reactor_resources()
-        if self._runtime_cleanup_done:
-            return
-        self._runtime_cleanup_done = True
-        close_runtime = getattr(self._runtime, "close", None)
-        if callable(close_runtime):
-            try:
-                close_runtime()
-            except (BrokerError, OSError, RuntimeError):
-                logger.debug("failed to close watcher runtime", exc_info=True)
+        failure: Exception | None = None
+        failure = capture_cleanup_failure(failure, super()._close_reactor_resources)
+        if not self._runtime_cleanup_done:
+            close_runtime = getattr(self._runtime, "close", None)
+            if callable(close_runtime):
+                runtime_failure = capture_cleanup_failure(None, close_runtime)
+                if runtime_failure is None:
+                    self._runtime_cleanup_done = True
+                elif failure is None:
+                    failure = runtime_failure
+        if failure is not None:
+            raise failure
 
     def _current_memberships(self, *, strict: bool) -> list[WatchedThread]:
         rows = self._runtime.list_watched_threads(self.member_id)

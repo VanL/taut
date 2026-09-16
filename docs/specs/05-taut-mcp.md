@@ -257,6 +257,11 @@ resolved config and target on the child thread and sends only immutable
 canonical-path, directory-identity, and backend-name data to the master.
 The master does not touch the resolved filesystem object.
 
+Each resident workspace closes its client-owned BrokerSession on the workspace
+owner, after activity-waiter and active-operation cleanup, including rejected
+attachment and detach. Another resident owner on the same target may keep the
+process session alive; this does not defer the retiring worker's cache release.
+
 After the master grants the candidate, the child constructs its core client
 through `TautClient(broker_target=resolved_target,
 broker_config=resolved_config, token=token,
@@ -2243,6 +2248,9 @@ wheel to register its `mcp` manifest.
 | [MCP-12] acceptance proof | `extensions/taut_mcp/tests/test_dual_era_contract.py`, `extensions/taut_mcp/tests/test_process_reactor.py`, `extensions/taut_mcp/tests/test_stdio_server.py`, and the rest of `extensions/taut_mcp/tests/`, with rationale in `docs/implementation/07-taut-mcp-architecture.md` |
 
 ## Related Plans
+
+- `docs/plans/2026-09-15-broker-session-integration-plan.md` — binds resident
+  workspace BrokerSession cleanup to each workspace owner.
 
 - `docs/plans/2026-09-15-mcp-result-simplification-plan.md` — replaces the
   six-field result envelope with the CLI-shaped `records` object, moves

@@ -10,9 +10,16 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, NoReturn
 
-from simplebroker import BrokerTarget, Config, Queue, resolve_broker_target
+from simplebroker import (
+    BrokerSession,
+    BrokerTarget,
+    Config,
+    Queue,
+    resolve_broker_target,
+)
 
 from taut import addressing, identity
+from taut._cleanup import capture_cleanup_failure
 from taut._config import load_config
 from taut._constants import (
     MEMBER_ID_RE,
@@ -147,6 +154,8 @@ class _ClientBase(ABC):
     _meta_queue: Queue
     _persistent: bool
     _queue_cache: dict[str, Queue]
+    _session: BrokerSession | None
+    _transient_meta_queue: Queue | None
     _reaction_values: tuple[str, ...]
     _state: TautState
 
@@ -183,17 +192,27 @@ class _ClientBase(ABC):
         self.identity_capture = identity_capture
         self._persistent = persistent
         self._queue_cache: dict[str, Queue] = {}
+        self._session = None
+        self._transient_meta_queue = None
         self.last_created_member = None
         self.last_candidates = []
         self.last_notification_warnings = []
         self.last_search_warnings = []
         self.last_thread_display_names = {}
-        self._meta_queue = self.queue(META_QUEUE_NAME)
-        self._state = SqlSidecarTautState(
-            self._meta_queue,
-            dialect_for_taut_target(self.target),
-        )
-        self._state.ensure_schema()
+        try:
+            self._meta_queue = self.queue(META_QUEUE_NAME)
+            if self._meta_queue.session is None:
+                self._transient_meta_queue = self._meta_queue
+            self._state = SqlSidecarTautState(
+                self._meta_queue,
+                dialect_for_taut_target(self.target),
+            )
+            self._state.ensure_schema()
+        except BaseException as exc:
+            cleanup_exc = capture_cleanup_failure(None, self.close)
+            if cleanup_exc is not None:
+                exc.add_note(f"client construction cleanup failed: {cleanup_exc}")
+            raise
 
     def queue(self, name: str, *, persistent: bool | None = None) -> Queue:
         """Return a queue bound to this client's resolved target."""
@@ -203,12 +222,19 @@ class _ClientBase(ABC):
             cached = self._queue_cache.get(name)
             if cached is not None:
                 return cached
-        queue = Queue(
-            name,
-            db_path=self.target,
-            persistent=use_persistent,
-            config=self.config,
-        )
+            if self._session is None:
+                self._session = BrokerSession.connect(
+                    self.target,
+                    config=self.config,
+                )
+            queue = self._session.queue(name)
+        else:
+            queue = Queue(
+                name,
+                db_path=self.target,
+                persistent=False,
+                config=self.config,
+            )
         if use_persistent:
             self._queue_cache[name] = queue
         return queue
@@ -221,15 +247,25 @@ class _ClientBase(ABC):
         persistent queue/session ownership for handles cached by this client.
         """
 
-        seen: set[int] = set()
-        queues = [self._meta_queue, *self._queue_cache.values()]
-        for queue in queues:
-            queue_id = id(queue)
-            if queue_id in seen:
-                continue
-            seen.add(queue_id)
-            queue.close()
-        self._queue_cache.clear()
+        failure: Exception | None = None
+        if self._session is not None:
+            failure = capture_cleanup_failure(failure, self._session.close)
+            if failure is None:
+                self._session = None
+                self._queue_cache.clear()
+
+        if self._transient_meta_queue is not None:
+            resource_failure = capture_cleanup_failure(
+                None,
+                self._transient_meta_queue.close,
+            )
+            if resource_failure is None:
+                self._transient_meta_queue = None
+            elif failure is None:
+                failure = resource_failure
+
+        if failure is not None:
+            raise failure
 
     def _enqueue_search_message(self, *, message_ts: int, thread: str) -> None:
         """Best-effort durable invalidation after canonical source success."""
@@ -273,7 +309,7 @@ class _ClientBase(ABC):
         session the next call expects to reuse.
         """
 
-        if not self._persistent:
+        if queue.session is None:
             queue.close()
 
     def _resolve_target(  # noqa: C901 approved [DOM-10.2.1] [RUFF-SUP-046] exception

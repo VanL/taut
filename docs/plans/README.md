@@ -52,6 +52,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 | Plan | Status | Exemplar | Note |
 |------|--------|----------|------|
 | `2026-09-15-reactor-worker-cache-compatibility-plan.md` | completed | no | Owner-thread cache retirement repaired; real peer proof on 8.2.2 and 8.3.0, Summon consumers verified, independent review passed. Publication remains separate. |
+| `2026-09-15-broker-session-integration-plan.md` | active | no | BrokerSession integration in implementation; reviewed specs promoted and 8.3.0 / PG 4.3.0 floors selected. |
 | `2026-09-15-confirmed-report-cleanup-plan.md` | completed | no | Confirmed transcript, Unicode, watcher, dead-code, packaging, and synchronized-release cleanup. |
 | `2026-09-15-reported-issues-followup-plan.md` | active | no | Reviewed plan in implementation: TUI rename/draft preservation, diagnostics, Summon cancellation, and search measurement. DDL unchanged. |
 | `2026-09-15-windows-pty-lifecycle-fixes-plan.md` | completed | no | Windows PTY lifecycle repair implemented, locally verified, and independently reviewed PASS; owner deferred hosted Windows qualification to the next push. |

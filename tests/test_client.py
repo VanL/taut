@@ -349,8 +349,11 @@ def test_notification_activity_queue_is_reused_and_closed_by_client(
 
     monkeypatch.setattr(Queue, "close", close_spy)
 
+    assert observer._session is None
     first = observer.notification_activity_queue()
     second = observer.notification_activity_queue()
+    assert observer._session is not None
+    assert first.session is observer._session
     observer.close()
 
     expected_name = addressing.notification_queue_name(created.member_id)
@@ -3096,6 +3099,114 @@ def test_client_default_queue_handles_are_transient(tmp_path: Path) -> None:
     assert first is not second
     assert first._persistent is False
     assert second._persistent is False
+    assert first.session is None
+    assert second.session is None
+    assert van._session is None
+
+
+def test_client_lazy_session_owns_only_persistent_queue_requests(
+    tmp_path: Path,
+) -> None:
+    TautClient.init(db_path=tmp_path / ".taut.db")
+    van = TautClient(db_path=tmp_path / ".taut.db", persistent=True)
+
+    assert van._session is not None
+    assert van._meta_queue.session is van._session
+    persistent = van.queue("persistent")
+    transient = van.queue("transient", persistent=False)
+
+    assert persistent is van.queue("persistent")
+    assert persistent.session is van._session
+    assert transient.session is None
+    assert transient is not van.queue("transient", persistent=False)
+
+    van._release_if_ephemeral(transient)
+    van.close()
+
+
+def test_client_close_refusal_preserves_session_for_retry(tmp_path: Path) -> None:
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    client = TautClient(db_path=db, persistent=True)
+    peer = Queue("peer", db_path=client.target, persistent=True, config=client.config)
+    peer.write("first")
+    peer.write("second")
+    iterator = cast(Any, peer.read(all_messages=True))
+    assert next(iterator) == "first"
+    session = client._session
+
+    with pytest.raises(RuntimeError, match="open Queue or connection operation"):
+        client.close()
+
+    assert client._session is session
+    assert client._queue_cache[META_QUEUE_NAME] is client._meta_queue
+    iterator.close()
+    client.close()
+    peer.write("survives")
+    assert peer.read() == "second"
+    assert peer.read() == "survives"
+    peer.close()
+
+
+def test_persistent_client_workers_release_their_thread_cache(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    peer = TautClient(db_path=db, persistent=True)
+    assert peer._session is not None
+    peer._meta_queue.has_pending()
+    assert peer._meta_queue.conn is not None
+    process_session = peer._meta_queue.conn._shared_session
+    assert process_session is not None
+    assert len(process_session._cores) == 1
+    errors: list[BaseException] = []
+
+    def use_and_close_client() -> None:
+        try:
+            worker = TautClient(db_path=db, persistent=True)
+            worker._meta_queue.has_pending()
+            worker.close()
+            worker.close()
+        except (AttributeError, OSError, RuntimeError, ValueError) as exc:
+            errors.append(exc)
+
+    for _generation in range(3):
+        thread = threading.Thread(target=use_and_close_client)
+        thread.start()
+        thread.join(timeout=5.0)
+        assert not thread.is_alive()
+        assert errors == []
+        assert len(process_session._cores) == 1
+        peer._meta_queue.has_pending()
+
+    peer.close()
+
+
+def test_persistent_client_schema_failure_releases_partial_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = tmp_path / ".taut.db"
+    TautClient.init(db_path=db)
+    peer = TautClient(db_path=db, persistent=True)
+    peer._meta_queue.has_pending()
+    assert peer._meta_queue.conn is not None
+    process_session = peer._meta_queue.conn._shared_session
+    assert process_session is not None
+
+    def fail_schema(_state: SqlSidecarTautState) -> None:
+        raise ValueError("schema sentinel")
+
+    monkeypatch.setattr(client_base.SqlSidecarTautState, "ensure_schema", fail_schema)
+
+    with pytest.raises(ValueError, match="schema sentinel"):
+        TautClient(db_path=db, persistent=True)
+
+    assert len(process_session._cores) == 0
+    peer._meta_queue.has_pending()
+    assert len(process_session._cores) == 1
+    peer.close()
 
 
 def test_default_ephemeral_client_operation_releases_owned_runner(

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from simplebroker import BrokerTarget, Config, Queue
+from simplebroker import BrokerSession, BrokerTarget, Config, Queue
 
+from taut._cleanup import capture_cleanup_failure
 from taut._constants import META_QUEUE_NAME
-from taut._watch_runtime import TautWatchRuntime, WatchedThread
+from taut._watch_runtime import WatchedThread
 from taut.state import SqlSidecarTautState, dialect_for_taut_target
 
 from ._base import _ClientBase, _direct_message_context_for_state
@@ -27,22 +28,37 @@ class _OwnedWatchRuntime:
     ) -> None:
         self.target = target
         self.config = config
-        queue = Queue(
-            META_QUEUE_NAME,
-            db_path=target,
-            persistent=persistent,
-            config=self.config,
-        )
+        self._session: BrokerSession | None = None
+        self._queue: Queue | None = None
+        self._closed = False
         try:
+            if persistent:
+                self._session = BrokerSession.connect(target, config=self.config)
+                queue = self._session.queue(META_QUEUE_NAME)
+            else:
+                queue = Queue(
+                    META_QUEUE_NAME,
+                    db_path=target,
+                    persistent=False,
+                    config=self.config,
+                )
+            self._queue = queue
             self._state = SqlSidecarTautState(
                 queue,
                 dialect_for_taut_target(target),
             )
-        except BaseException:
-            queue.close()
+        except BaseException as exc:
+            cleanup = self._session.close if self._session is not None else None
+            if cleanup is None and self._queue is not None:
+                cleanup = self._queue.close
+            cleanup_exc = (
+                capture_cleanup_failure(None, cleanup) if cleanup is not None else None
+            )
+            if cleanup_exc is not None:
+                exc.add_note(
+                    f"watch runtime construction cleanup failed: {cleanup_exc}"
+                )
             raise
-        self._queue = queue
-        self._closed = False
         self._member_id = member_id
         self._thread_display_names = thread_display_names
 
@@ -84,8 +100,19 @@ class _OwnedWatchRuntime:
     def close(self) -> None:
         if self._closed:
             return
+        if self._session is not None:
+            self._session.close()
+            self._session = None
+        elif self._queue is not None:
+            self._queue.close()
+        self._queue = None
         self._closed = True
-        self._queue.close()
+
+    def recycle_thread(self) -> None:
+        """Release construction-thread resources before watcher handoff."""
+
+        if self._session is not None:
+            self._session.recycle_thread()
 
 
 def _watch_runtime_for_client(
@@ -93,7 +120,7 @@ def _watch_runtime_for_client(
     *,
     persistent: bool = True,
     member_id: str | None = None,
-) -> TautWatchRuntime:
+) -> _OwnedWatchRuntime:
     return _OwnedWatchRuntime(
         client.target,
         client.config,

@@ -226,6 +226,12 @@ one explicitly supervised blocking worker under [TUI-11]. Worker results are
 marshalled into the UI loop with generation ids so a stale completion cannot
 replace newer selection or search state.
 
+The session worker closes its client scope on that worker. A watcher built
+there has independent scope ownership: construction-thread I/O is recycled
+before handoff, and the watcher drive thread releases its own cache and scopes
+before exiting. Client shutdown does not close a surviving watcher's queues,
+including when its bounded stop times out.
+
 No TUI worker is a user-managed daemon. Normal shutdown stops and joins owned
 watchers, restores any logging and terminal state, and resolves every active
 TUI-owned operation according to this spec. Abrupt process or OS termination
@@ -1028,6 +1034,9 @@ Version 1 does not include:
 - a direct port of the historical PR implementation.
 
 ## Related Plans
+
+- `docs/plans/2026-09-15-broker-session-integration-plan.md` — separates TUI
+  client, watcher runtime, and reactor BrokerSession ownership.
 
 - `docs/plans/2026-09-15-reported-issues-followup-plan.md` — canonical channel
   rename continuity and session-local recovery for displaced drafts.

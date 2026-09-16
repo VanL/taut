@@ -77,8 +77,8 @@ retrying the operation, or changing errors for PostgreSQL targets. This keeps
 corrupt-file diagnostics actionable while leaving backend policy with
 SimpleBroker.
 
-The current SimpleBroker minimum is `simplebroker>=8.2.2`, aligned with the
-current `simplebroker-pg>=4.2.1` minimum and their owning lock selections.
+The current SimpleBroker minimum is `simplebroker>=8.3.0`, aligned with the
+current `simplebroker-pg>=4.3.0` minimum and their owning lock selections.
 Version 7.0.0 supplies the public message-id formatter
 and the exact-string JSON boundary while leaving Python and backend values as
 integers. Version 8.2.2 supplies the declaration-driven `Config`, explicit-source
@@ -722,16 +722,26 @@ owns exactly-once cleanup from an outer boundary that also covers handler
 installation, running-state publication, and drive-owner claim; the CLI's
 `finally` remains an idempotent backstop. This keeps native waiter locks and
 coverage shutdown hooks outside asynchronous signal re-entry.
-After the strategy closes, owner-thread cleanup explicitly calls the primary
-queue's public `cleanup_connections()` before releasing queue leases. All
-same-key queues share the thread cache, so one call covers the reactor. This
-is necessary with SimpleBroker 8.3: its idle watcher stop no longer recycles
-the caller cache, and Taut's custom loop does not enter the upstream `run()`.
-The owner guard prevents foreign or never-driven cleanup from acquiring this
-additional recycling behavior. A cleanup error is logged independently so
-remaining queue leases still close. See
-`docs/plans/2026-09-15-reactor-worker-cache-compatibility-plan.md` for the
-real retained-peer regression and version-matrix evidence.
+Persistent reactors hold one public `BrokerSession` solely for thread-cache
+lifetime. Their changing queue topology remains directly constructed and
+owned by the active maps, so retired membership and auxiliary queues close
+immediately instead of accumulating in the scope. Owner cleanup closes the
+strategy, asks the scope to recycle the current thread, closes every direct
+queue independently, then closes the scope. Recycling precedes close so an
+open same-key operation schedules cache release even when scope close refuses;
+the retained scope and incomplete marker permit an explicit retry after
+operation unwind. Ordinary cleanup failure is attached to an active run
+failure rather than replacing it. A never-driven reactor may close on its
+caller; foreign stop cannot recycle a live worker's cache.
+
+Persistent clients lazily acquire a separate scope at their first persistent
+queue request, including a notification activity queue on an otherwise
+transient client. Persistent name-cache misses are scope-minted and deduped by
+Taut; explicit transient overrides remain direct and uncached. Watcher metadata
+uses another small scope. `client.watch()` recycles construction-thread state
+through that runtime before handoff, and the watcher owner closes runtime and
+reactor scopes independently. Constructor rollback retains the original error
+while attempting every acquired owner.
 The firing proof for the real SIGINT path runs the reactor in a dedicated child
 process. The child first emits structured startup readiness after imports; only
 then does the parent start the strict three-second behavior watchdog. A distinct
@@ -1028,6 +1038,7 @@ config context; debug action execution still reads its live environment.
 | `taut/_message_text.py` | Built-in Unicode blank classifier for user-authored message entry points |
 | `taut/addressing.py` | Target parsing, channel/sub-thread validation, and internal queue naming |
 | `taut/_scripts.py` | Developer helper logic for `bin/pytest-pg` |
+| `taut/_cleanup.py` | First-failure retention for independent resource cleanup |
 | `taut/_exceptions.py` | Public exception hierarchy |
 | `taut/_watch_runtime.py` | Internal watcher runtime protocol and watched-thread value object |
 | `taut/envelope.py` | Envelope encode/decode, `from_id`/`from` snapshot handling, and foreign fallback |
@@ -1055,7 +1066,7 @@ requirement or auditing implementation coverage.
 | Spec area | Primary code owners | Contract tests |
 |---|---|---|
 | [TAUT-3.2], namespaced config resolution, project resolution, direct Config handoff, and Windows SQLite path preflight | `taut/_config.py::load_config`, `taut/client/_base.py::_ClientBase.__init__`, `_resolve_target`, `taut/client/__init__.py::TautClient.init`, `taut/client/_watching.py`, `taut/watcher.py` | behavioral declaration/isolation cases in `tests/test_constants.py`; resolved-handoff, argument-pair, missing-target cases in `tests/test_client.py`; `tests/test_shared_contract.py::test_project_resolved_target_config_handoff_contract` on SQLite and PostgreSQL; `tests/test_project_config.py`; `tests/test_cli.py::test_init_uses_project_config_postgres_backend`, `test_windows_sqlite_target_validation_rejects_every_control`, `test_posix_sqlite_target_validation_preserves_control_bearing_paths`, and `test_cli_windows_control_bearing_database_target_fails_fast` |
-| [TAUT-3.3], [TAUT-3.4], sidecar schema, shared stored-version interpretation, future ordered migration ladder, and version gate | `taut/state/_sql.py::decode_schema_version`, `SqlSidecarTautState.ensure_schema`, `taut/state/__init__.py::TautState` | shared-decoder and schema refusal cases in `tests/test_state_contract.py` and `tests/test_system_doctor.py`, other state contracts in `tests/test_state_contract.py` and `tests/test_shared_contract.py`, and `extensions/taut_pg/tests/test_pg_sidecar.py::test_postgres_concurrent_empty_schema_initializers_converge` |
+| [TAUT-3.3], [TAUT-3.4], sidecar schema, BrokerSession ownership, shared stored-version interpretation, future ordered migration ladder, and version gate | `taut/client/_base.py`, `taut/client/_watching.py`, `taut/watcher.py`, `taut/state/_sql.py::decode_schema_version`, `SqlSidecarTautState.ensure_schema`, `taut/state/__init__.py::TautState` | persistent-client identity/override/worker/refusal/rollback cases in `tests/test_client.py`; reactor peer/handoff/refusal/retry/rollback cases in `tests/test_watcher.py`; shared state contracts in `tests/test_state_contract.py` and `tests/test_shared_contract.py`; PostgreSQL contracts in `extensions/taut_pg/tests` |
 | [TAUT-4], channels, membership, replies, reads, logs, and listing | `taut/client/_threads.py::ThreadsMixin.join`, `leave`, `list_threads`; `taut/client/_messaging.py::MessagingMixin.say`, `reply`, `read_unread`, `log`; `taut/client/_identity.py::IdentityMixin.who` | `tests/test_client.py`, `tests/test_cli.py`, `tests/test_shared_contract.py` |
 | [TAUT-4.4], channel-topic validation, observational reads, membership-scoped mutation, metadata merge, and rename serialization | `taut/state/_channel_topics.py`; `taut/state/_sql.py::set_channel_topic`, `start_channel_rename`; `taut/client/_threads.py::ThreadsMixin.get_channel`, `set_channel_topic`, `_channel_from_row` | Channel-topic and corruption cases in `tests/test_state_contract.py`, `tests/test_client.py`, and `tests/test_shared_contract.py` on SQLite and PostgreSQL; channel CLI cases in `tests/test_cli.py` |
 | [TAUT-5], [IAN-3], [IAN-4], identity claims, deterministic selector capture, read-only selection, recognition, automatic display names, rejoin, and name changes | `taut/identity.py`, `taut/state/_sql.py::route_keys_in_use`, `taut/client/_identity.py::IdentityMixin._resolve_member`, `peek_identity`, `_create_member`, `rejoin`, `set_name` | `tests/test_identity.py`; `tests/test_client.py` public no-touch selector, explicit-selector, token, creation/guest/rejoin/explain, and `test_automatic_*` cases; `tests/test_identity_performance.py` (manual evidence, not a timing contract); `tests/test_shared_contract.py::test_project_automatic_name_skips_alias_owned_route_contract`, `test_project_public_identity_activity_seams_are_observational_contract`; `tests/test_cli.py::test_rejoin_*` |
