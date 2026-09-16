@@ -3,6 +3,14 @@
 Status: completed — implemented 2026-09-15. All slices and independent
 reviews passed. Manifest: 20,514 bytes under the owner-approved 21,000-byte
 ceiling; `outputSchema` omitted. No release published.
+
+Owner decision (2026-09-16): the result-envelope simplification is
+non-breaking for this internal pre-1.0 beta and ships with core and every
+extension in coordinated 0.9.8. This decision supersedes every prospective
+0.10.0, minor-only, “breaking,” and MCP-only release instruction below; those
+statements remain only as the historical plan and review record. No
+compatibility shim, canary, or prior-version support is required.
+
 Class: 5 (spec-changing). [DOM-5] risky trigger fires: this changes the
 public MCP result contract, so the hardening-plans checklist applies. Plan
 type: implementation with spec revision. Promotion strategy: A (in-file

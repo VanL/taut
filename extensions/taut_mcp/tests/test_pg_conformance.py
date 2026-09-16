@@ -5,10 +5,11 @@ from __future__ import annotations
 import asyncio
 import threading
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pytest
 from conftest import canonical_of
+from simplebroker import BrokerSession
 
 import taut_mcp._workspace_reactor as workspace_reactor
 from taut import EmptyResultError, TautClient, identity
@@ -19,7 +20,7 @@ from taut_mcp._process_reactor import ProcessReactor, WorkspaceToolError
 
 @pytest.mark.pg_only
 @pytest.mark.timeout(30)
-def test_postgres_owner_detach_reattach_and_shutdown_return_checkout(
+def test_postgres_owner_detach_reattach_and_shutdown_close_sessions(
     taut_pg_project: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -32,19 +33,21 @@ def test_postgres_owner_detach_reattach_and_shutdown_return_checkout(
     selected.close()
     peer = TautClient(token=member.token, persistent=True)
     peer._meta_queue.has_pending()
-    assert peer._meta_queue.conn is not None
-    process_session = peer._meta_queue.conn._shared_session
-    assert process_session is not None
-    runner = cast(Any, process_session._factory)._runner
-    assert runner is not None
-    baseline_depth = runner._lease_depth
+    original_close = BrokerSession.close
+    close_calls: list[tuple[BrokerSession, int]] = []
 
-    async def wait_for_depth(expected: int, description: str) -> None:
+    def record_close(session: BrokerSession) -> None:
+        close_calls.append((session, threading.get_ident()))
+        original_close(session)
+
+    monkeypatch.setattr(BrokerSession, "close", record_close)
+
+    async def wait_for_closes(expected: int, description: str) -> None:
         deadline = asyncio.get_running_loop().time() + 5
-        while runner._lease_depth != expected:
+        while len(close_calls) != expected:
             if asyncio.get_running_loop().time() >= deadline:
                 raise AssertionError(
-                    f"{description}: expected {expected}, got {runner._lease_depth}"
+                    f"{description}: expected {expected}, got {len(close_calls)}"
                 )
             await asyncio.sleep(0.01)
 
@@ -55,23 +58,27 @@ def test_postgres_owner_detach_reattach_and_shutdown_return_checkout(
                 str(taut_pg_project),
                 "taut-invalid-token",
             )
-        await wait_for_depth(baseline_depth, "failed candidate checkout retirement")
+        await wait_for_closes(1, "failed candidate session close")
 
         attached = await reactor.attach_workspace(
             str(taut_pg_project),
             member.token or "",
         )
         canonical = canonical_of(attached)
-        await wait_for_depth(baseline_depth + 1, "attached owner checkout")
+        assert len(close_calls) == 1
         await reactor.detach_workspace(canonical)
-        await wait_for_depth(baseline_depth, "detached owner checkout retirement")
+        await wait_for_closes(2, "detached owner session close")
 
         await reactor.attach_workspace(str(taut_pg_project), member.token or "")
-        await wait_for_depth(baseline_depth + 1, "reattached owner checkout")
+        assert len(close_calls) == 2
         await reactor.aclose()
-        await wait_for_depth(baseline_depth, "shutdown owner checkout retirement")
+        await wait_for_closes(3, "shutdown owner session close")
 
     asyncio.run(scenario())
+    assert len({id(session) for session, _thread_id in close_calls}) == 3
+    assert all(
+        thread_id != threading.get_ident() for _session, thread_id in close_calls
+    )
     peer_queue = peer.queue("mcp.peer.probe")
     peer_queue.write("peer survives PG owner retirement")
     assert peer_queue.read() == "peer survives PG owner retirement"

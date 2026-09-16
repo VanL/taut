@@ -1957,11 +1957,13 @@ def test_interrupt_unblocks_full_pty_input_queue(
             "modes": False,
             "unknown_query": "[?15n",
             "unknown_blocks": True,
+            "ignore_sigint": True,
         },
         stall_s=0.2,
     )
     pump = EventPump(handle)
     _wait_for(log, "unknown_reply_window")
+    monkeypatch.setattr(handle, "_signal_process_group", lambda _sig: None)
 
     injected: list[BaseException] = []
     input_queue_full = threading.Event()
@@ -1994,8 +1996,9 @@ def test_interrupt_unblocks_full_pty_input_queue(
     injector.join(timeout=3.0)
     assert not injector.is_alive()
     assert len(injected) == 1
-    assert isinstance(injected[0], (AdapterWriteCancelled, AdapterExitedError))
-    assert str(injected[0]) == "PTY child exited during write"
+    assert isinstance(injected[0], AdapterWriteCancelled)
+    assert str(injected[0]) == "PTY write interrupted"
+    assert handle._domain.observe_leader_exit() is None
     handle.close()
     pump.drain_until_exit(timeout=5.0)
 

@@ -2,12 +2,14 @@
 
 ## Unreleased
 
+## 0.9.8 - 2026-09-16
+
 - Persistent clients, reactor workers, and watcher metadata runtimes now own
   explicit SimpleBroker BrokerSession scopes. Their owning threads recycle
   cached backend resources at lifetime end while same-target peers remain
   usable; reactor membership and auxiliary queues remain bounded by live
-  topology. The supported floors are SimpleBroker 8.3.0 and
-  simplebroker-pg 4.3.0. Repeated finalization retries preserve only one cleanup
+  topology. The supported floors are SimpleBroker 8.3.1 and
+  simplebroker-pg 4.3.1. Repeated finalization retries preserve only one cleanup
   note on an active handler failure.
 
 - Transcript rows now follow the TUI layout contract: wide and medium views
@@ -48,15 +50,15 @@
   watcher-failure budget; provider exit and permanent retirement keep their
   existing recovery paths.
 
-- For `taut-mcp` 0.10.0, successful tool results now use `{"records": [...]}`
+- Successful `taut-mcp` tool results now use `{"records": [...]}`
   with `warnings` present only when nonempty. This replaces the six-field
   `empty`/`guidance`/`record_type`/`records`/`warnings`/`workspace` object and
-  is a breaking wire-format change. Records, errors, and the notification
-  resource retain their existing shapes. Cursor and retry guidance moves to
-  `read`, `message_delete`, and `message_react` descriptions; parameter prose
-  is shorter. `outputSchema` remains omitted and closed result validation
-  stays in tests. The compact tool manifest measures 20,514 bytes, down from
-  31,679 bytes in 0.9.7.
+  keeps the same record payloads in a smaller envelope. Records, errors, and
+  the notification resource retain their existing shapes. Cursor and retry
+  guidance moves to `read`, `message_delete`, and `message_react`
+  descriptions; parameter prose is shorter. `outputSchema` remains omitted
+  and closed result validation stays in tests. The compact tool manifest
+  measures 20,514 bytes, down from 31,679 bytes in 0.9.7.
 
 - Process identity now uses numeric, scheme-prefixed start-time tokens:
   `/proc/<pid>/stat` ticks on Linux and integer microseconds from unadjusted

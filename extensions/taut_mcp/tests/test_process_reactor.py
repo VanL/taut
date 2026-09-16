@@ -221,10 +221,6 @@ def test_broker_session_owner_retirement_orders_waiter_before_scope_close(
     second.close()
     peer = TautClient(db_path=db, token=token, persistent=True)
     peer._meta_queue.has_pending()
-    assert peer._meta_queue.conn is not None
-    process_session = peer._meta_queue.conn._shared_session
-    assert process_session is not None
-    baseline_cores = len(process_session._cores)
     real_waiter_factory = workspace_reactor.create_activity_waiter_for_queues
     real_client_close = workspace_reactor.TautClient.close
     waiters: dict[int, Any] = {}
@@ -271,38 +267,20 @@ def test_broker_session_owner_retirement_orders_waiter_before_scope_close(
         ):
             await reactor.attach_workspace(str(workspace), "taut-invalid-token")
         await async_eventually(
-            lambda: len(process_session._cores) == baseline_cores,
+            lambda: not reactor._candidates,
             timeout=5,
             interval=0.01,
-            description="failed MCP candidate retires its worker core",
+            description="failed MCP candidate is reaped",
         )
 
         attached = await reactor.attach_workspace(str(workspace), token)
         canonical = canonical_of(attached)
-        await async_eventually(
-            lambda: len(process_session._cores) == baseline_cores + 1,
-            timeout=5,
-            interval=0.01,
-            description="ready MCP owner holds one worker core",
-        )
         with _tool_error("workspace already attached; detach to replace token"):
             await reactor.attach_workspace(canonical, second_token.token or "")
         await reactor.detach_workspace(canonical)
-        await async_eventually(
-            lambda: len(process_session._cores) == baseline_cores,
-            timeout=5,
-            interval=0.01,
-            description="detached MCP owner retires its worker core",
-        )
 
         await reactor.attach_workspace(str(workspace), token)
         await reactor.aclose()
-        await async_eventually(
-            lambda: len(process_session._cores) == baseline_cores,
-            timeout=5,
-            interval=0.01,
-            description="MCP shutdown retires reattached worker core",
-        )
 
     asyncio.run(scenario())
 

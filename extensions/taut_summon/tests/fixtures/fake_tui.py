@@ -208,7 +208,8 @@ def _run_startup(config: dict[str, object], record_paths: list[Path]) -> None:
         _record(record_paths, "signal", signal="term")
         raise SystemExit(0)
 
-    signal.signal(signal.SIGTERM, _term)
+    if not config.get("ignore_sigterm", False):
+        signal.signal(signal.SIGTERM, _term)
     _record(
         record_paths,
         "start",
@@ -292,6 +293,8 @@ def main() -> int:
     configure_raw_input()
     INPUT = TerminalInput()
     config = json.loads(os.environ.get("TAUT_FAKE_TUI_CONFIG", "{}"))
+    if config.get("ignore_sigint", False):
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
     REDRAW = bool(config.get("redraw", True))
     record_paths = _record_paths_from_env()
     _run_startup(config, record_paths)

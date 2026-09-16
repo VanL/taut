@@ -1358,7 +1358,7 @@ def test_mcp_precheck_lock_build_and_quality_are_package_local() -> None:
     assert (
         "uv",
         "run",
-        "--no-sync",
+        "--isolated",
         "--project",
         "extensions/taut_mcp",
         "--extra",
@@ -1367,6 +1367,10 @@ def test_mcp_precheck_lock_build_and_quality_are_package_local() -> None:
         ".",
         "--with-editable",
         "extensions/taut_mcp",
+        "--with-editable",
+        "./extensions/taut_pg",
+        "python",
+        "-m",
         "pytest",
         "extensions/taut_mcp/tests",
         "-m",
@@ -1429,7 +1433,7 @@ def test_tui_precheck_lock_build_and_quality_are_package_local() -> None:
     assert (
         "uv",
         "run",
-        "--no-sync",
+        "--isolated",
         "--project",
         "extensions/taut_tui",
         "--extra",
@@ -1438,6 +1442,8 @@ def test_tui_precheck_lock_build_and_quality_are_package_local() -> None:
         ".",
         "--with-editable",
         "extensions/taut_tui",
+        "python",
+        "-m",
         "pytest",
         "extensions/taut_tui/tests",
         "-n",
@@ -2254,6 +2260,7 @@ def test_every_target_set_plans_one_literal_universal_precheck_sequence(
         (
             "uv",
             "run",
+            "--isolated",
             "--project",
             "extensions/taut_mcp",
             "--extra",
@@ -2262,6 +2269,10 @@ def test_every_target_set_plans_one_literal_universal_precheck_sequence(
             ".",
             "--with-editable",
             "extensions/taut_mcp",
+            "--with-editable",
+            "./extensions/taut_pg",
+            "python",
+            "-m",
             "pytest",
             "extensions/taut_mcp/tests",
             "-m",
@@ -2272,6 +2283,7 @@ def test_every_target_set_plans_one_literal_universal_precheck_sequence(
         (
             "uv",
             "run",
+            "--isolated",
             "--project",
             "extensions/taut_tui",
             "--extra",
@@ -2280,6 +2292,8 @@ def test_every_target_set_plans_one_literal_universal_precheck_sequence(
             ".",
             "--with-editable",
             "extensions/taut_tui",
+            "python",
+            "-m",
             "pytest",
             "extensions/taut_tui/tests",
             "-n",
@@ -2439,9 +2453,15 @@ def test_every_target_set_plans_one_literal_universal_precheck_sequence(
 
     commands = release.build_precheck_commands_for_targets(targets)
 
-    assert all(command[:3] == ("uv", "run", "--no-sync") for command in commands)
-    without_no_sync = tuple((*command[:2], *command[3:]) for command in commands)
-    assert without_no_sync == expected
+    assert all(
+        command[:3] in (("uv", "run", "--no-sync"), ("uv", "run", "--isolated"))
+        for command in commands
+    )
+    normalized = tuple(
+        (*command[:2], *command[3:]) if command[2] == "--no-sync" else command
+        for command in commands
+    )
+    assert normalized == expected
 
 
 def test_pg_precheck_commands_include_pg_gate_and_extension_checks() -> None:
@@ -2542,6 +2562,16 @@ def test_summon_precheck_env_splits_live_and_local_llm_lanes() -> None:
     assert local_llm_env["TAUT_SUMMON_LOCAL_LLM_ENDPOINT"] == "http://127.0.0.1:9999/v1"
     assert local_llm_env["TAUT_SUMMON_LOCAL_LLM_MODEL"] == "local-test:latest"
     assert "TAUT_SUMMON_LIVE_HARNESS_STRICT" not in local_llm_env
+
+
+def test_extension_precheck_env_allows_isolated_dependency_sync() -> None:
+    release = _load_release_module()
+
+    for command in (release.MCP_TEST_COMMAND, release.TUI_TEST_COMMAND):
+        env = release._precheck_env_overrides(command)
+        assert "TAUT_PG_UV_NO_SYNC" not in env
+        assert "UV_NO_SYNC" not in env
+        assert env["PYTEST_ADDOPTS"] == "-x --maxfail=1"
 
 
 def test_local_llm_default_image_contains_fixed_amx_build() -> None:

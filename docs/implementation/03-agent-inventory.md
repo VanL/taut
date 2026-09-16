@@ -100,3 +100,20 @@ exit 0, success/end_turn and terminal_reason=completed. Round 1 took
 367 seconds under a 540-second bound; round 2 used a 360-second bound
 and verified four accepted refinements. Both returned read-only verdicts;
 no unexpected repository write occurred.
+
+### BrokerSession plan review probe (2026-09-15)
+
+Claude 2.1.207 passed a fresh file-reading liveness probe (`PROBE-OK # Taut
+Core Specification`) and refused the requested repository write with only
+Read/Grep/Glob available. No probe file appeared. Both calls exited 0 with
+`success`, `end_turn`, and `terminal_reason=completed`; the default resolved
+to `claude-opus-4-8[1m]`. Invocation used safe mode, plan mode, matched
+Read/Grep/Glob tools/allowedTools, strict MCP configuration, no session
+persistence, JSON output, closed stdin, and a 120-second per-probe cap.
+The existing unrelated agent-kernel edit was preserved.
+
+The complete BrokerSession plan review passed in 346 seconds (900-second
+bound); scoped round-2 verification passed in 342 seconds (540-second bound).
+Both exited 0 with success/end_turn and terminal_reason=completed. Findings
+and dispositions are recorded in the BrokerSession plan. No unexpected
+repository writes occurred.

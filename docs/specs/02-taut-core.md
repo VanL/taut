@@ -459,7 +459,7 @@ an accident. Two consequences are binding:
   CLI/client work, persistent owned handles for long-lived actors, and
   `close()` at owned lifetime end.
 
-  The `simplebroker>=8.3.0` floor is load-bearing. Version 5.2.0 supplies the
+  The `simplebroker>=8.3.1` floor is load-bearing. Version 5.2.0 supplies the
   reference ownership model, 5.2.2 first passed Taut's persistent-owner
   process/control proof, 5.3.0 supplies the public live activity-waiter
   replacement contract, 5.3.1 makes `Queue.write()` return the exact committed
@@ -490,7 +490,7 @@ an accident. Two consequences are binding:
   [TAUT-3.2]. Version 8.0.0 makes
   ascending public message id the uniform default retrieval order, removes
   the private SQL row-order surrogate in schema 6, and advances the backend
-  API to v8; `simplebroker-pg>=4.3.0` is the matching PostgreSQL line. Ordinary
+  API to v8; `simplebroker-pg>=4.3.1` is the matching PostgreSQL line. Ordinary
   generated writes remain FIFO-like because their ids are monotonic. Exact
   inserts, loads, or id-preserving moves of lower ids are selected by public
   id rather than insertion time. Taut continues to expose only oldest
@@ -1518,8 +1518,8 @@ through read-only identity resolution. It does not update activity, record an
 identity claim, inspect unread state, or create membership. Long-lived
 extensions use it to reconcile their own thread-scoped resources.
 
-Core runtime dependencies: exactly `simplebroker>=8.3.0` and `psutil`. The
-optional `taut-pg` extension adds `simplebroker-pg>=4.3.0` and its driver
+Core runtime dependencies: exactly `simplebroker>=8.3.1` and `psutil`. The
+optional `taut-pg` extension adds `simplebroker-pg>=4.3.1` and its driver
 dependencies in the same environment as Taut. Python ≥ 3.11. The CLI uses
 argparse, not a CLI framework.
 
@@ -2978,6 +2978,9 @@ expression behavior.
   current MCP/current-core metadata and installed lifecycle gate.
 
 ## Related Plans
+
+- `docs/plans/2026-09-16-coordinated-0-9-8-preparation-plan.md` — reconciles
+  the supported broker floors and synchronized release guidance for 0.9.8.
 
 - `docs/plans/2026-09-15-broker-session-integration-plan.md` — adopts public
   BrokerSession ownership for persistent clients, reactors, and watch runtimes.

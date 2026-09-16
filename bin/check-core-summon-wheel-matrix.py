@@ -1059,8 +1059,11 @@ class _McpStdioDriver:
             }
         )
         listed = self._tool_result(5, "list_workspaces after detach")
-        if listed.get("records") != [] or listed.get("empty") is not True:
-            self._fail("list_workspaces retained state after detach")
+        if listed != {"records": []}:
+            self._fail(
+                "list_workspaces retained state after detach: "
+                f"{json.dumps(listed, sort_keys=True)}"
+            )
 
     def shutdown(self) -> None:
         self.stdin.close()

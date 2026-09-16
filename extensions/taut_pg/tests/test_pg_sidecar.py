@@ -5,11 +5,11 @@ import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import psycopg
 import pytest
-from simplebroker import Queue, target_for_directory
+from simplebroker import BrokerSession, Queue, target_for_directory
 from simplebroker.ext import IntegrityError, get_backend_plugin
 from taut_summon._state import (
     DriverConflictError,
@@ -31,7 +31,7 @@ from taut.state import POSTGRES_SQL_DIALECT, SqlSidecarTautState
 pytestmark = pytest.mark.pg_only
 
 
-def test_persistent_client_worker_returns_postgres_session_checkout(
+def test_persistent_client_worker_closes_postgres_session(
     taut_pg_project: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -39,28 +39,33 @@ def test_persistent_client_worker_returns_postgres_session_checkout(
     TautClient.init()
     peer = TautClient(as_name="peer", persistent=True)
     peer._meta_queue.has_pending()
-    assert peer._meta_queue.conn is not None
-    process_session = peer._meta_queue.conn._shared_session
-    assert process_session is not None
-    runner = cast(Any, process_session._factory)._runner
-    assert runner is not None
-    baseline_depth = runner._lease_depth
-    observed_depths: list[int] = []
+    peer_session = peer.queue(META_QUEUE_NAME).session
+    assert peer_session is not None
+    original_close = BrokerSession.close
+    close_calls: list[tuple[BrokerSession, int]] = []
+
+    def record_close(session: BrokerSession) -> None:
+        close_calls.append((session, threading.get_ident()))
+        original_close(session)
+
+    monkeypatch.setattr(BrokerSession, "close", record_close)
+    worker_observation: list[tuple[BrokerSession, int]] = []
 
     def use_and_close_client() -> None:
         worker = TautClient(as_name="worker", persistent=True)
         worker._meta_queue.has_pending()
-        observed_depths.append(runner._lease_depth)
+        worker_session = worker.queue(META_QUEUE_NAME).session
+        assert worker_session is not None
+        worker_observation.append((worker_session, threading.get_ident()))
         worker.close()
-        observed_depths.append(runner._lease_depth)
 
     thread = threading.Thread(target=use_and_close_client)
     thread.start()
     thread.join(timeout=5.0)
 
     assert not thread.is_alive()
-    assert observed_depths == [baseline_depth + 1, baseline_depth]
-    assert runner._lease_depth == baseline_depth
+    assert close_calls == worker_observation
+    assert close_calls[0][0] is not peer_session
     assert peer.join("survives").thread == "survives"
     peer.close()
 

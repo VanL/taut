@@ -202,7 +202,9 @@ SUMMON_TEST_COMMANDS: Final[tuple[Command, ...]] = (
     SUMMON_LOCAL_LLM_TEST_COMMAND,
 )
 MCP_TEST_COMMAND: Final[Command] = (
-    *UV_RUN_PREFIX,
+    "uv",
+    "run",
+    "--isolated",
     "--project",
     "extensions/taut_mcp",
     "--extra",
@@ -211,6 +213,10 @@ MCP_TEST_COMMAND: Final[Command] = (
     ".",
     "--with-editable",
     "extensions/taut_mcp",
+    "--with-editable",
+    "./extensions/taut_pg",
+    "python",
+    "-m",
     "pytest",
     "extensions/taut_mcp/tests",
     "-m",
@@ -219,7 +225,9 @@ MCP_TEST_COMMAND: Final[Command] = (
     "0",
 )
 TUI_TEST_COMMAND: Final[Command] = (
-    *UV_RUN_PREFIX,
+    "uv",
+    "run",
+    "--isolated",
     "--project",
     "extensions/taut_tui",
     "--extra",
@@ -228,6 +236,8 @@ TUI_TEST_COMMAND: Final[Command] = (
     ".",
     "--with-editable",
     "extensions/taut_tui",
+    "python",
+    "-m",
     "pytest",
     "extensions/taut_tui/tests",
     "-n",
@@ -2118,6 +2128,12 @@ def _precheck_env_overrides(
     local_llm_env: dict[str, str] | None = None,
 ) -> dict[str, str]:
     overrides = dict(PRECHECK_ENV_OVERRIDES)
+    if command in {MCP_TEST_COMMAND, TUI_TEST_COMMAND}:
+        # Isolated uv runs must resolve the extension dev dependencies from
+        # their lockfiles. Do not let the CI safety override turn --isolated
+        # into an empty environment.
+        overrides.pop("TAUT_PG_UV_NO_SYNC", None)
+        overrides.pop("UV_NO_SYNC", None)
     if command == SUMMON_LIVE_HARNESS_TEST_COMMAND:
         overrides["TAUT_SUMMON_LIVE_HARNESS"] = "1"
         overrides["TAUT_SUMMON_LIVE_HARNESS_STRICT"] = "1"

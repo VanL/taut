@@ -6,10 +6,10 @@ import threading
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pytest
-from simplebroker import Queue
+from simplebroker import BrokerSession, Queue
 
 import taut.watcher as watcher_module
 from taut._exceptions import EmptyResultError
@@ -21,7 +21,7 @@ from tests.helpers.eventually import eventually
 pytestmark = pytest.mark.pg_only
 
 
-def test_persistent_reactor_returns_postgres_worker_checkout(
+def test_persistent_reactor_recycles_and_closes_postgres_session(
     taut_pg_project: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -29,12 +29,21 @@ def test_persistent_reactor_returns_postgres_worker_checkout(
     TautClient.init()
     peer = TautClient(as_name="peer", persistent=True)
     peer._meta_queue.has_pending()
-    assert peer._meta_queue.conn is not None
-    process_session = peer._meta_queue.conn._shared_session
-    assert process_session is not None
-    runner = cast(Any, process_session._factory)._runner
-    assert runner is not None
-    baseline_depth = runner._lease_depth
+    original_recycle_thread = BrokerSession.recycle_thread
+    original_close = BrokerSession.close
+    recycle_calls: list[tuple[BrokerSession, int]] = []
+    close_calls: list[tuple[BrokerSession, int]] = []
+
+    def record_recycle_thread(session: BrokerSession) -> None:
+        recycle_calls.append((session, threading.get_ident()))
+        original_recycle_thread(session)
+
+    def record_close(session: BrokerSession) -> None:
+        close_calls.append((session, threading.get_ident()))
+        original_close(session)
+
+    monkeypatch.setattr(BrokerSession, "recycle_thread", record_recycle_thread)
+    monkeypatch.setattr(BrokerSession, "close", record_close)
     watcher = BaseReactor(
         queue_configs={"reactor.input": {"handler": lambda *_args: None}},
         persistent=True,
@@ -43,17 +52,19 @@ def test_persistent_reactor_returns_postgres_worker_checkout(
     thread = watcher.start()
     try:
         eventually(
-            lambda: runner._lease_depth == baseline_depth + 1,
+            thread.is_alive,
             timeout=5.0,
             interval=0.01,
-            description="Postgres reactor holds one worker checkout",
+            description="Postgres reactor drive owner starts",
         )
     finally:
         watcher.stop()
         thread.join(timeout=5.0)
 
     assert not thread.is_alive()
-    assert runner._lease_depth == baseline_depth
+    assert len(recycle_calls) == 1
+    assert close_calls == recycle_calls
+    assert close_calls[0][1] == thread.ident
     assert peer.join("survives").thread == "survives"
     peer.close()
 

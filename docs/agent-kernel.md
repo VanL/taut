@@ -36,21 +36,22 @@ taut reply dev 0161024 "moving this to a thread"
 
 ## Identity: who you are
 
+Two modes: auto, or a continuity token.
+
 ```bash
-taut whoami --explain        # who taut thinks you are, and why
-taut rejoin Claude           # associate this process with an existing member
-TAUT_AS=Claude taut say dev "explicit selection always wins"
+taut whoami --explain        # auto: the guess, and why
 TAUT_TOKEN=taut-7f3k9q2m taut say dev "same member from anywhere"
 ```
 
-- With no selector, process evidence picks the member automatically.
-  If taut reports it created a new identity and suggests a
-  `taut rejoin` command, run it.
-- Every member gets a continuity token at creation. Stash it in your
-  agent state; it survives process churn. It is continuity, not
-  authentication.
-- Recognition cannot cross ssh or container walls; pass `TAUT_AS` or
-  `TAUT_TOKEN` through explicitly.
+- Auto (no selector): process evidence picks the member. Usually
+  right. `whoami --explain` is the error bound — it shows the guess.
+  If taut created a new identity and suggests `taut rejoin NAME`,
+  the guess was outside its bounds; run that. `--as NAME` / `TAUT_AS`
+  is a one-shot name selection for the current command, not a
+  durable binding.
+- Continuity token: every member gets one at creation. Stash it in
+  agent state. It is the explicit "this is me" key across process
+  churn, ssh, and containers. Continuity, not authentication.
 
 ## Direct messages
 
@@ -70,11 +71,12 @@ taut say dm.d_aaaaaaaaaaaaaaaaaaaaaaaaaa "follow-up in the same conversation"
 
 ## Hazards
 
-- **Notification claims drain.** `taut inbox` and notification
-  watching consume pointers. Two sessions of one member share one
-  inbox: one can drain what the other expected. A pointer claimed
-  just before a crash is not repaired — the chat history itself is
-  still there.
+- **Notification claims drain.** Mentions, replies, new DMs, and
+  reactions land in one inbox per member. `taut inbox` and
+  notification watching consume those pointers. Another process
+  using the same member is still you, reading the same inbox. A
+  crashed claim can lose a pointer; a pointer can outlive a deleted
+  message. Chat history itself is still there.
 - **Vanilla `broker read` consumes chat history.** Taut chat readers
   peek; SimpleBroker's own CLI reader does not. Pointing `broker
   read` at a taut chat queue eats messages out of the shared

@@ -3,6 +3,11 @@
 Status: completed — Slices 1–5 implemented, committed, locally verified, and
 independently reviewed PASS on 2026-09-15. The owner closed the plan and
 deferred Linux and Windows native qualification to CI on the next push.
+
+Owner decision (2026-09-16): the core-only 0.9.8 rollout wording below is
+superseded. Numeric start-time tokens ship with core and every extension in the
+coordinated 0.9.8 release; no compatibility or migration work is added.
+
 Class: 5 (spec-changing). [DOM-5] risky
 trigger fires: identity anchoring is a public contract and the token is
 persisted, so the hardening-plans checklist applies. Plan type:

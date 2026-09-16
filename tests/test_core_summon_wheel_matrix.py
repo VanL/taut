@@ -342,7 +342,10 @@ for line in sys.stdin:
     elif request_id == 4:
         tool_result(4, {"records": [{"status": "detached", "workspace": workspace}]})
     elif request_id == 5:
-        tool_result(5, {"empty": True, "records": []})
+        if mode == "legacy-empty-envelope":
+            tool_result(5, {"empty": True, "records": []})
+        else:
+            tool_result(5, {"records": []})
 
 if mode == "shutdown-timeout":
     time.sleep(60)
@@ -1520,6 +1523,7 @@ def test_mcp_stdio_driver_fires_complete_success_lifecycle(
         ("fail-3", "list_workspaces returned a protocol error"),
         ("fail-4", "detach_workspace returned a protocol error"),
         ("fail-5", "list_workspaces after detach returned a protocol error"),
+        ("legacy-empty-envelope", "list_workspaces retained state after detach"),
         ("shutdown-failure", "clean_shutdown exited 2"),
     ],
     ids=(
@@ -1528,6 +1532,7 @@ def test_mcp_stdio_driver_fires_complete_success_lifecycle(
         "list-attached",
         "detach",
         "list-detached",
+        "legacy-empty-envelope",
         "shutdown",
     ),
 )

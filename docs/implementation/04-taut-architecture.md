@@ -77,8 +77,8 @@ retrying the operation, or changing errors for PostgreSQL targets. This keeps
 corrupt-file diagnostics actionable while leaving backend policy with
 SimpleBroker.
 
-The current SimpleBroker minimum is `simplebroker>=8.3.0`, aligned with the
-current `simplebroker-pg>=4.3.0` minimum and their owning lock selections.
+The current SimpleBroker minimum is `simplebroker>=8.3.1`, aligned with the
+current `simplebroker-pg>=4.3.1` minimum and their owning lock selections.
 Version 7.0.0 supplies the public message-id formatter
 and the exact-string JSON boundary while leaving Python and backend values as
 integers. Version 8.2.2 supplies the declaration-driven `Config`, explicit-source
@@ -224,8 +224,9 @@ A later gate failure therefore leaves a clean, unpushed commit that
 can be inspected or reused on a rerun.
 
 The helper accepts `core`/`pg`/`summon`/`mcp`/`tui` targets plus `all`;
-`all --version X.Y.Z` coordinates all five manifests, while target-specific
-versions remain independent. A real publishing run is allowed only from
+`all --version X.Y.Z` is the only version-preparation path and coordinates all
+five manifests, while target selection still controls builds, tags, and
+publication. A real publishing run is allowed only from
 `main` or `master`, checked once before any preparation mutation; dry-run and
 checks-only remain branch-independent. By default, every target and `all` run
 one identical universal precheck sequence: root, PostgreSQL, an explicit MCP
