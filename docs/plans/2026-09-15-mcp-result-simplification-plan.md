@@ -962,7 +962,11 @@ def test_manifest_size_stays_under_ceiling() -> None:
     )
     breakdown = {
         field: sum(
-            len(json.dumps(tool[field], separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+            len(
+                json.dumps(
+                    tool[field], separators=(",", ":"), ensure_ascii=False
+                ).encode("utf-8")
+            )
             for tool in dumped
             if field in tool
         )

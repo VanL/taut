@@ -5,7 +5,7 @@ import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import psycopg
 import pytest
@@ -42,7 +42,7 @@ def test_persistent_client_worker_returns_postgres_session_checkout(
     assert peer._meta_queue.conn is not None
     process_session = peer._meta_queue.conn._shared_session
     assert process_session is not None
-    runner = process_session._factory._runner
+    runner = cast(Any, process_session._factory)._runner
     assert runner is not None
     baseline_depth = runner._lease_depth
     observed_depths: list[int] = []

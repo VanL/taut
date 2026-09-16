@@ -1023,6 +1023,7 @@ def test_base_reactor_queue_close_failure_preserves_cleanup_for_retry(
         persistent=True,
     )
     queue = watcher.get_queue("cleanup.input")
+    assert queue is not None
     real_close = queue.close
     close_calls = 0
 
@@ -2038,8 +2039,10 @@ def test_client_watch_construction_failure_reports_cleanup_failure(
     def capture_runtime(*args: Any, **kwargs: Any) -> Any:
         runtime = real_factory(*args, **kwargs)
         runtimes.append(runtime)
-        runtime.close = lambda: (_ for _ in ()).throw(
-            RuntimeError("runtime cleanup sentinel")
+        monkeypatch.setattr(
+            runtime,
+            "close",
+            lambda: (_ for _ in ()).throw(RuntimeError("runtime cleanup sentinel")),
         )
         return runtime
 
@@ -2077,8 +2080,10 @@ def test_client_watch_handoff_failure_reports_cleanup_and_remains_retryable(
     def capture_runtime(*args: Any, **kwargs: Any) -> Any:
         runtime = real_factory(*args, **kwargs)
         runtimes.append(runtime)
-        runtime.recycle_thread = lambda: (_ for _ in ()).throw(
-            ValueError("handoff recycle sentinel")
+        monkeypatch.setattr(
+            runtime,
+            "recycle_thread",
+            lambda: (_ for _ in ()).throw(ValueError("handoff recycle sentinel")),
         )
         return runtime
 
@@ -3358,7 +3363,7 @@ def test_taut_watcher_rejects_removed_client_constructor(
 
     with pytest.raises(TypeError, match="use client.watch"):
         TautWatcher(
-            client,
+            cast(Any, client),
             client.whoami().member_id,
             lambda _message: None,
         )

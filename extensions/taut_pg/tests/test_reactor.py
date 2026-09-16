@@ -6,7 +6,7 @@ import threading
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from simplebroker import Queue
@@ -32,7 +32,7 @@ def test_persistent_reactor_returns_postgres_worker_checkout(
     assert peer._meta_queue.conn is not None
     process_session = peer._meta_queue.conn._shared_session
     assert process_session is not None
-    runner = process_session._factory._runner
+    runner = cast(Any, process_session._factory)._runner
     assert runner is not None
     baseline_depth = runner._lease_depth
     watcher = BaseReactor(
