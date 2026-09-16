@@ -395,7 +395,6 @@ class TautApp(App[None]):
         self._conversation_intent = 0
         self._pending_search_anchor: tuple[int, int] | None = None
         self._search_anchor_restore_applied = False
-        self._protected_search_anchor: int | None = None
         self._transcript_restore_generation = 0
         self._next_send_token = 0
         self._pending_sends: dict[int, tuple[str, int]] = {}
@@ -455,6 +454,9 @@ class TautApp(App[None]):
         self._accepted_size = size
         self._apply_placement(size)
         self._set_mode(InteractionMode.NORMAL)
+        self._query_base(
+            "#transcript", TautOptionList
+        ).user_viewport_intent = self._on_transcript_user_viewport_intent
         self._query_base("#navigation-list", TautOptionList).focus()
         self._update_status()
         self._session = TuiSession(
@@ -2846,7 +2848,6 @@ class TautApp(App[None]):
 
     def _advance_conversation_intent(self, *, reset_search: bool = True) -> int:
         self._clear_pending_search_anchor()
-        self._protected_search_anchor = None
         self._conversation_intent += 1
         if reset_search and self._operation_state == "searching":
             self._operation_state = "idle"
@@ -3323,15 +3324,6 @@ class TautApp(App[None]):
     def _capture_scroll_anchor(self) -> None:
         if self._pending_search_anchor is not None:
             return
-        if (
-            self._protected_search_anchor is not None
-            and self.visual_state.selected_message_id == self._protected_search_anchor
-            and any(
-                message.ts == self._protected_search_anchor
-                for message in self._message_rows
-            )
-        ):
-            return
         if not self._message_rows:
             return
         try:
@@ -3361,6 +3353,9 @@ class TautApp(App[None]):
                 intra_row_offset=intra_row,
             )
         self.visual_state = replace(self.visual_state, scroll_anchor=anchor)
+
+    def _on_transcript_user_viewport_intent(self) -> None:
+        self._clear_pending_search_anchor()
 
     def _arm_search_anchor(self, intent: int, message_id: int) -> None:
         self._invalidate_transcript_restores()
@@ -3444,7 +3439,6 @@ class TautApp(App[None]):
             or self._shutting_down
         ):
             return
-        self._protected_search_anchor = owner[1]
         self._clear_pending_search_anchor(intent=owner[0])
 
     def _message_prompt(self, message: Message) -> DisplayText:

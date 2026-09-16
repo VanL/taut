@@ -2145,6 +2145,7 @@ def test_direct_message_header_and_composer_use_actor_scoped_label(
     tmp_path: Path,
 ) -> None:
     from taut_tui.app import TautApp
+    from taut_tui.session import NavigationSnapshot
     from taut_tui.widgets import TautOptionList
 
     db_path = tmp_path / "dm.db"
@@ -2156,15 +2157,45 @@ def test_direct_message_header_and_composer_use_actor_scoped_label(
     alice.say("@bob", "hello")
 
     async def exercise() -> None:
-        app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
+        navigation_applied = asyncio.Event()
+        navigation_error: BaseException | None = None
+        navigation_snapshot: NavigationSnapshot | None = None
+        rendered_navigation: tuple[str | object, ...] = ()
+
+        class ObservedTautApp(TautApp):
+            def _apply_navigation_result(
+                self,
+                future: Future[NavigationSnapshot],
+            ) -> None:
+                nonlocal navigation_error, navigation_snapshot, rendered_navigation
+                if future.cancelled():
+                    navigation_error = RuntimeError(
+                        "initial navigation request was cancelled"
+                    )
+                else:
+                    navigation_error = future.exception()
+                    if navigation_error is None:
+                        navigation_snapshot = future.result()
+                try:
+                    super()._apply_navigation_result(future)
+                finally:
+                    rendered_navigation = tuple(self._navigation_targets)
+                    navigation_applied.set()
+
+        app = ObservedTautApp(
+            db_path=str(db_path),
+            as_name="alice",
+            continuity_token=None,
+        )
         async with app.run_test(size=(100, 34)) as pilot:
             navigation = app.query_one("#navigation-list", TautOptionList)
-            await _pause_until(
-                pilot,
-                lambda: any(
-                    isinstance(target, str) and target != "general"
-                    for target in app._navigation_targets
-                ),
+            await asyncio.wait_for(navigation_applied.wait(), timeout=5)
+            assert navigation_error is None
+            assert navigation_snapshot is not None
+            assert navigation_snapshot.direct_messages
+            assert any(
+                isinstance(target, str) and target != "general"
+                for target in rendered_navigation
             )
             dm_index = next(
                 index
@@ -2956,6 +2987,131 @@ def test_open_search_result_anchors_exact_hit_without_advancing_cursor(
         asyncio.run(exercise())
     finally:
         alice.close()
+
+
+@pytest.mark.parametrize("user_input", ["wheel", "scrollbar", "keyboard"])
+def test_user_scroll_supersedes_pending_search_anchor_restore(
+    user_input: str,
+) -> None:
+    from textual import events
+    from textual.scrollbar import ScrollTo
+
+    from taut.client import Message
+    from taut_tui.app import TautApp
+    from taut_tui.widgets import TautOptionList
+
+    messages = tuple(
+        Message("general", index, "m_alice", "alice", "message", f"row {index}")
+        for index in range(1, 50)
+    )
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 24)) as pilot:
+            transcript = app.query_one("#transcript", TautOptionList)
+            app._conversation_intent = 7
+            app._message_rows = messages
+            transcript.add_options(app._message_prompt(message) for message in messages)
+            await pilot.pause()
+            initial_offset = transcript.scroll_offset.y
+            app._arm_search_anchor(7, messages[24].ts)
+
+            if user_input == "wheel":
+                await pilot._post_mouse_events(
+                    [events.MouseScrollDown],
+                    "#transcript",
+                )
+            elif user_input == "scrollbar":
+                transcript.vertical_scrollbar.post_message(
+                    ScrollTo(y=10, animate=False)
+                )
+                await pilot.pause()
+            else:
+                transcript.focus()
+                await pilot.press("pagedown")
+
+            assert app._pending_search_anchor is None
+            assert transcript.scroll_offset.y != initial_offset
+            app._capture_scroll_anchor()
+            user_anchor = app.visual_state.scroll_anchor
+            user_offset = transcript.scroll_offset.y
+            assert user_anchor.message_id != messages[24].ts
+
+            rendered = asyncio.Event()
+            app._render_messages(messages)
+            app.call_after_refresh(rendered.set)
+            await asyncio.wait_for(rendered.wait(), timeout=5)
+            assert transcript.scroll_offset.y == user_offset
+            assert app.visual_state.scroll_anchor == user_anchor
+
+            stale_generation = app._transcript_restore_generation - 1
+            restored: list[int] = []
+            app._apply_owned_search_anchor_restore(
+                stale_generation,
+                (7, messages[24].ts),
+                True,
+                lambda _messages, index, _offset: restored.append(index),
+                messages,
+                24,
+                0,
+            )
+            assert restored == []
+
+    asyncio.run(exercise())
+
+
+def test_completed_search_restore_releases_viewport_ownership() -> None:
+    from taut.client import Message
+    from taut_tui.app import TautApp
+    from taut_tui.widgets import TautOptionList
+
+    messages = tuple(
+        Message("general", index, "m_alice", "alice", "message", f"row {index}")
+        for index in range(1, 50)
+    )
+    message = messages[24]
+
+    async def exercise() -> None:
+        app = TautApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(100, 34)) as pilot:
+            app._conversation_intent = 7
+            app._message_rows = messages
+            transcript = app.query_one("#transcript", TautOptionList)
+            transcript.add_options(item.text for item in messages)
+            app.visual_state = replace(
+                app.visual_state,
+                selected_message_id=message.ts,
+            )
+            app._arm_search_anchor(7, message.ts)
+            generation = app._transcript_restore_generation
+            app._apply_owned_search_anchor_restore(
+                generation,
+                (7, message.ts),
+                True,
+                lambda _messages, _index, _offset: None,
+                messages,
+                24,
+                0,
+            )
+            await pilot.pause()
+            assert app._pending_search_anchor is None
+
+            transcript.scroll_to(y=5, animate=False, force=True)
+            await pilot.pause()
+            app._capture_scroll_anchor()
+            assert app.visual_state.scroll_anchor.tail_pinned is False
+            assert app.visual_state.scroll_anchor.message_id != message.ts
+            assert app.visual_state.selected_message_id == message.ts
+            user_offset = transcript.scroll_offset.y
+
+            rendered = asyncio.Event()
+            app._render_messages(messages)
+            app.call_after_refresh(rendered.set)
+            await asyncio.wait_for(rendered.wait(), timeout=5)
+            assert transcript.scroll_offset.y == user_offset
+            assert app.visual_state.selected_message_id == message.ts
+
+    asyncio.run(exercise())
 
 
 def test_search_anchor_restore_owner_is_intent_exact() -> None:

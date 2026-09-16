@@ -1,7 +1,7 @@
 # Windows Lifecycle and Test Determinism
 
 Date: 2026-09-16
-Status: draft — independently reviewed; implementation not started.
+Status: active — independently reviewed; implementation in progress.
 Class: 4. Async native-I/O cancellation, deferred viewport ownership, and
 cross-process test coordination trigger risky-work hardening under [DOM-5]
 and [DOM-15]. No intended product behavior or normative spec text changes.
@@ -114,34 +114,34 @@ as a separate routine release action after this work qualifies.
 
 ### S1 — Exact driver identity and readiness
 
-- [ ] Reproduce both wrong-target STOP outcomes before the fix. Resolve the owned
+- [x] Reproduce both wrong-target STOP outcomes before the fix. Resolve the owned
   session using child PID plus available process-start evidence, retain member
   ID, and PING that member through the existing correlated control helper.
   If CLI STOP requires a name, derive its current name from that exact member;
   never fall back on lookup failure. Prefer the existing member-targeted control
   helper where it avoids a mutable-name race, retaining separate real CLI tests.
-- [ ] Separate graceful stop from cleanup fallback; failure diagnostics include
+- [x] Separate graceful stop from cleanup fallback; failure diagnostics include
   target member/session, child PID/start/exit, STOP reply and child stderr.
   Bound diagnostics and redact continuity tokens; diagnostic failure must not
   replace the primary error. Cleanup still owns child reap on every failure.
-- [ ] Force early shutdown while name-allocation competitors are active. Use
+- [x] Force early shutdown while name-allocation competitors are active. Use
   real drivers, real SQLite and real control requests; gate the later readiness
   boundary with a test-only injected synchronization seam (no shipped sleep or
   environment backdoor). Exercise the CLI/control stop strategy on POSIX too.
   Assert unrelated member and competing driver remain alive and responsive,
   intended child exits 0, and all children are reaped in finally.
-- [ ] Done: forced schedules fail before/pass after, existing identity/process
+- [x] Done: forced schedules fail before/pass after, existing identity/process
   tests pass with -n auto, independent slice review passes. Replan if this needs
   a new public selector, persistence field or core ownership change.
 
 ### S2 — Write retirement and cancellation handoff
 
-- [ ] Separate typed reusable-interrupt outcomes from terminal-close outcomes in
+- [x] Separate typed reusable-interrupt outcomes from terminal-close outcomes in
   the native test; keep active and queued writers covered in both phases.
-- [ ] Add deterministic fake-native tests pausing before syscall entry, while
+- [x] Add deterministic fake-native tests pausing before syscall entry, while
   pending, after normal completion, and during concurrent close. Use the real
   _EpochWriter; fake only native calls and their legal outcomes.
-- [ ] Extend cancellation reconciliation until the specific active operation
+- [x] Extend cancellation reconciliation until the specific active operation
   retires: under the state lock validate operation identity and handle validity,
   attempt cancellation, then release the lock while waiting on the condition.
   Reattempt on a short bounded wait when that SAME operation remains active,
@@ -149,10 +149,10 @@ as a separate routine release action after this work qualifies.
   Use the existing monotonic operation deadline; no busy spin or timeout growth.
   Never hold the serializer or state lock while waiting for native completion.
   Completion/epoch checks prevent a later writer from inheriting cancellation.
-- [ ] Force the post-active-clear/pre-handle-close ordering, then handle release
+- [x] Force the post-active-clear/pre-handle-close ordering, then handle release
   and potential numeric reuse. Assert every cancel attempt validates the exact
   operation under _state and no attempt reaches a retired/released handle.
-- [ ] Retain native blocked-pipe proof. A test drainer must not release the large
+- [x] Retain native blocked-pipe proof. A test drainer must not release the large
   write before both cancelled callers have returned; afterward drain the single
   Ctrl-C and allow interrupt completion. If caller publication waits for Ctrl-C,
   acknowledge native write retirement separately before draining, then assert
@@ -165,32 +165,32 @@ as a separate routine release action after this work qualifies.
 
 ### S3 — User viewport intent supersedes search restoration
 
-- [ ] Before production edits, use a disposable run_test probe to establish which
+- [x] Before production edits, use a disposable run_test probe to establish which
   pinned Textual wheel, scrollbar and keyboard events distinguish user scrolling
   from programmatic scroll_to. TautOptionList does not yet expose a unified
   user-scroll seam. Record the chosen event boundary and probe evidence in the
   Execution Log; stop and revise S3 if those events cannot support the invariant.
-- [ ] Lock down the baseline scroll-snap regression with real run_test and actual
+- [x] Lock down the baseline scroll-snap regression with real run_test and actual
   scroll input on a transcript taller than the viewport. Assert rendered offset,
   first visible row/intra-row offset and unchanged selected message.
-- [ ] Replace _protected_search_anchor with finite restore ownership using the
+- [x] Replace _protected_search_anchor with finite restore ownership using the
   existing intent/generation machinery. Programmatic restore may preserve its
   logical anchor while pending; actual user scroll invalidates that ownership.
   Distinguish user input from programmatic scroll changes at the widget/event
   boundary. Cover mouse wheel, scrollbar and keyboard scroll paths supported by
   the widget. Successful restoration releases protection; later capture reads
   the real viewport. Selection remains independent.
-- [ ] Force refresh before/after restore, user scroll before/after restore,
+- [x] Force refresh before/after restore, user scroll before/after restore,
   stale generation, target switch, resize/wrapping and tail pinning. Observe
   applied outcomes, not merely callback invocation. Keep real Textual layout
   and refresh; controlled future delivery is allowed.
-- [ ] Done: original search jump and user-scroll regression pass with real UI;
+- [x] Done: original search jump and user-scroll regression pass with real UI;
   stale callbacks do nothing; independent review passes. Replan if reliable user
   intent cannot be identified without changing the public interaction contract.
 
 ### S4 — Diagnose initial DM navigation before selecting a fix
 
-- [ ] Instrument the exact initial navigation request/result/application sequence
+- [x] Instrument the exact initial navigation request/result/application sequence
   for test_direct_message_header_and_composer_use_actor_scoped_label. Record
   request ID, future error or DM targets, generation/stale decision and rendered
   navigation. Keep real TautClient/SQLite/session and navigation worker.
@@ -206,10 +206,10 @@ as a separate routine release action after this work qualifies.
 
 ### S5 — Restore and diagnose native Ctrl-D
 
-- [ ] Restore the Windows native branch in the existing terminal test, retaining
+- [x] Restore the Windows native branch in the existing terminal test, retaining
   Pilot binding proof separately if useful. Read its imported _terminal_probe
   helper and the Windows Textual input decoder before editing.
-- [ ] Trace positive readiness, injected representation, decoded event, guarded
+- [x] Trace positive readiness, injected representation, decoded event, guarded
   APPLICATION_QUIT and child exit. No fixed sleeps. Distinguish a raw control
   byte from a physical key/negotiated terminal encoding using the actual pinned
   terminal protocol. Record OS build and Textual version with failures.
@@ -317,15 +317,77 @@ bound, 89-second completion, exit 0, success/end_turn, completed. Verdict PASS.
 Reviewer: "New-defect check: None." Both added gates were verified against the
 owner code; no declined findings were reopened.
 
+TUI slice review found three proof defects before completion: direct observer
+invocation did not prove scrollbar movement/preservation; navigation observation
+could turn widget-application failure into another timeout; terminal timeout
+details were discarded. All were accepted. Tests now post the real scrollbar
+message and assert offset/anchor after refresh, navigation application signals
+in `finally` while preserving the exception, and the native probe retains its
+bounded output evidence. Focused and full TUI gates passed after correction.
+
+Summon completed-work review attempt 1: Claude 2.1.273 with read-only
+Read/Grep/Glob/Bash access reached its 900-second bound without output or
+verdict. The timeout is recorded as reviewer failure, not approval or a product
+finding. Per the review fallback, a fresh independent reviewer was dispatched
+against the same S1/S2 unit before CI publication.
+
+Fresh S1/S2 review verdict: blocked by S1-B1 and S1-B2; no S2 code blocker.
+S1-B1 found that `stop()` wrapped the raw control exception, which already
+contained unredacted stderr, before appending its sanitized diagnostic. S1-B2
+found that the collision test waited for the final summoned identity log and
+therefore did not force the original pre-log race. Both findings were accepted:
+sanitize the complete primary error with a real stderr secret fixture, and gate
+STOP after session/control readiness but before identity-log publication. The
+review also noted the owned-session lookup must receive the remaining aggregate
+deadline. Native S2 Windows qualification remains required.
+
+Round 2 scoped to S1-B1/S1-B2 and the aggregate deadline: PASS. The complete
+primary exception and assembled diagnostic are sanitized; the regression puts
+a distinctive token in real child stderr and proves both it and the session
+token absent. The fallback child blocks at the exact pre-identity-log boundary
+after control readiness, STOP runs while log identity is unavailable, and the
+competitor answers PING before and after only the fallback exits. One monotonic
+deadline now supplies remaining budgets throughout. No new blocker found.
+
 ## Execution Log
 
 - 2026-09-16: Planning only. CI logs and controlled reproductions from diagnosis
   underpin W1–W6; native Windows qualification is explicitly outstanding.
+- 2026-09-16 pre-edit comprehension gate: (1) no, the session row precedes
+  provider/control/watch readiness; (2) no, `_active` is published before
+  native `WriteFile`; (3) no, scrolling can leave message selection unchanged
+  while the first visible row moves. All three match the plan's expected answers.
 - Planning verification: check-doc-paths passed (1,417 claims),
   check-plan-status-index passed, tests/test_docs_references.py passed (12 tests),
   git diff --check passed, and all 36 literal plan file paths exist. These are
   documentation checks, not runtime qualification. Existing testing/review
   guidance already covers the exposed errors; no skill/runbook change proposed.
+- S1 RED: the exact-owner regression failed because `DriverProcess` lacked an
+  owned-member seam. GREEN: both new forced-order tests passed; full
+  `test_driver.py` passed 144 tests under `-n auto --dist load`. The harness now
+  binds PID/start evidence to one session, PING-fences readiness, targets STOP
+  by member id, leaves failed graceful stops to cleanup, and redacts diagnostics.
+- S2 RED: both pre-native-I/O handoff cases left the writer live before the
+  reconciliation change. GREEN: platform-neutral Windows PTY tests passed 33
+  with 6 native skips. Exact-operation cancellation now spans ERROR_NOT_FOUND,
+  successful-but-incomplete cancellation, active retirement, and handle reuse
+  under the original deadline. Native Windows qualification remains open.
+- S3 probe on retained Textual 8.2.8: programmatic `scroll_to(y=10)` invoked only
+  the method; wheel reached `on_mouse_scroll_down`, PageDown the key path, and a
+  real child-scrollbar `ScrollTo` reached `on_scroll_to`. GREEN: actual viewport
+  offset/anchor and refresh preservation pass for all three input paths. The
+  permanent protected anchor was removed.
+- S4 exact-event diagnosis passed 20/20 locally: the navigation future returned
+  a snapshot containing the DM and application rendered it. No causal product
+  defect reproduced, so production navigation code was not changed. Windows
+  qualification with the phase evidence remains open.
+- S5 restored the shipped native Ctrl-D path and retained the Pilot binding
+  proof. Pinned Textual parsed raw `0x04` as `ctrl+d` locally; native POSIX
+  Ctrl-C/Ctrl-D pass. Windows ConPTY qualification remains open.
+- Integrated local gates: Summon driver plus Windows PTY tests passed 177 with
+  6 native skips in 21.98 seconds under `-n auto`; retained TUI passed 462 in
+  123.32 seconds under `-n 2 --dist loadfile`; Ruff and format were clean;
+  Summon and TUI mypy gates passed. These do not substitute for hosted Windows.
 - Comprehension answers, red/green commands, slice reviews and final SHA evidence
   are required here during implementation; no implementation completion claimed.
 

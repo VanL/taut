@@ -24,7 +24,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import signal
 import sqlite3
 import subprocess
 import sys
@@ -36,9 +35,10 @@ from typing import Any
 import pytest
 from simplebroker import Queue
 from simplebroker.ext import OperationalError
+from taut_summon._state import list_sessions
 
 from taut.client import TautClient
-from taut.identity import route_key
+from taut.identity import capture_process, route_key
 
 _SUMMON_SQLITE_TEST_ENV: dict[str, str] = {
     # The real-process harness is a high-churn SQLite workload: driver,
@@ -394,6 +394,29 @@ class DriverProcess:
             stderr=self._stderr_file,
             text=True,
         )
+        self._driver_start_time = self._capture_child_start_time()
+        self._owned_member_id: str | None = None
+        self._owned_session_row: dict[str, Any] | None = None
+
+    def _capture_child_start_time(self) -> str:
+        start_time: str | None = None
+
+        def captured_child_identity() -> bool:
+            nonlocal start_time
+            evidence = capture_process(self.proc.pid)
+            if evidence is not None and evidence.start_time is not None:
+                start_time = evidence.start_time
+                return True
+            if self.proc.poll() is not None:
+                raise AssertionError(
+                    "driver exited before its process identity was captured: "
+                    f"exit={self.proc.returncode!r}; stderr={self.stderr_tail()!r}"
+                )
+            return False
+
+        wait_until(captured_child_identity, message="driver process identity")
+        assert start_time is not None
+        return start_time
 
     # --- received-log accessors ------------------------------------------
 
@@ -464,17 +487,11 @@ class DriverProcess:
             timeout=timeout,
             message=f"watch readiness; stderr: {self.stderr_tail()}",
         )
-        member_id = self._last_summoned_member_id()
-        assert member_id is not None, f"no summoned member id in {self.stderr_tail()}"
-        member = _member_by_name(self.db, self.name)
-        assert member is not None
-        assert member.member_id == member_id
-        session_row = _wait_for_session_row(
-            self.db,
-            member_id,
+        session_row = self.wait_for_owned_session(
             timeout=timeout,
             message=f"bootstrap completion; stderr: {self.stderr_tail()}",
         )
+        member_id = self.owned_member_id()
         _await_control_request(
             self.db,
             member_id,
@@ -528,13 +545,92 @@ class DriverProcess:
             return None
         return matches[-1].group("member_id")
 
-    def _current_member_name(self) -> str:
-        member_id = self._last_summoned_member_id()
-        if member_id is not None:
-            for member in _who(self.db):
-                if member.member_id == member_id:
-                    return str(member.name)
-        return self.name
+    def wait_for_owned_session(
+        self,
+        *,
+        timeout: float = _DEADLINE,
+        message: str = "owned driver session",
+    ) -> dict[str, Any]:
+        """Resolve this child through its PID/start evidence, never its name."""
+
+        row: dict[str, Any] | None = None
+        queue = Queue("taut_summon_test_owner_reader", db_path=str(self.db))
+
+        def found_owned_session() -> bool:
+            nonlocal row
+            try:
+                matches = [
+                    candidate
+                    for candidate in list_sessions(queue)
+                    if candidate["driver_pid"] == self.proc.pid
+                    and candidate["driver_start_time"] == self._driver_start_time
+                ]
+            except OperationalError:
+                return False
+            if len(matches) > 1:
+                raise AssertionError(
+                    "multiple session rows claim driver evidence "
+                    f"pid={self.proc.pid}, start={self._driver_start_time!r}"
+                )
+            if not matches:
+                if self.proc.poll() is not None:
+                    raise AssertionError(
+                        "driver exited before publishing its owned session"
+                    )
+                return False
+            row = dict(matches[0])
+            return True
+
+        try:
+            wait_until(found_owned_session, timeout=timeout, message=message)
+        except AssertionError as exc:
+            raise AssertionError(f"{exc}; {self._identity_diagnostic()}") from None
+        finally:
+            queue.close()
+        assert row is not None
+        self._owned_member_id = str(row["member_id"])
+        self._owned_session_row = row
+        return row
+
+    def owned_member_id(self) -> str:
+        if self._owned_member_id is None:
+            self.wait_for_owned_session()
+        assert self._owned_member_id is not None
+        return self._owned_member_id
+
+    def _identity_diagnostic(
+        self,
+        *,
+        stop_reply: dict[str, Any] | None = None,
+    ) -> str:
+        stderr = self._redact_diagnostic(self.stderr_tail())
+        session = self._owned_session_row
+        session_identity = (
+            None
+            if session is None
+            else {
+                "member_id": session.get("member_id"),
+                "driver_pid": session.get("driver_pid"),
+                "driver_start_time": session.get("driver_start_time"),
+                "provider": session.get("provider"),
+            }
+        )
+        detail = (
+            f"member={self._owned_member_id!r}, "
+            f"session={session_identity!r}, child_pid={self.proc.pid}, "
+            f"child_start={self._driver_start_time!r}, "
+            f"child_exit={self.proc.poll()!r}, stop_reply={stop_reply!r}, "
+            f"stderr={stderr[-2000:]!r}"
+        )
+        return self._redact_diagnostic(detail)
+
+    @staticmethod
+    def _redact_diagnostic(detail: str) -> str:
+        return re.sub(
+            r"(?i)(continuity[-_ ]?token|token)(\s*[:=]\s*)\S+",
+            r"\1\2<redacted>",
+            detail,
+        )
 
     # --- lifecycle --------------------------------------------------------
 
@@ -542,23 +638,41 @@ class DriverProcess:
         self,
         *,
         timeout: float = _DEADLINE,
-        member_name: str | None = None,
     ) -> int:
+        deadline = time.monotonic() + timeout
+        stop_reply: dict[str, Any] | None = None
         if self.proc.poll() is None:
-            if os.name == "nt":
-                rc, _out, _err = summon_cli(
-                    "stop",
-                    member_name or self._current_member_name(),
-                    db=self.db,
-                    cwd=self.tmp_path,
-                    timeout=timeout,
+            try:
+                row = self.wait_for_owned_session(
+                    timeout=max(0.01, deadline - time.monotonic())
                 )
-                if rc != 0 and self.proc.poll() is None:
-                    self.proc.terminate()
-            else:
-                self.proc.send_signal(signal.SIGINT)
+                member_id = self.owned_member_id()
+                _await_control_request(
+                    self.db,
+                    member_id,
+                    "PING",
+                    timeout=max(0.01, deadline - time.monotonic()),
+                    request_timeout=min(5.0, max(0.01, deadline - time.monotonic())),
+                    driver=self,
+                    session_row=row,
+                )
+                stop_reply = _control_request(
+                    self.db,
+                    member_id,
+                    "STOP",
+                    timeout=max(0.01, deadline - time.monotonic()),
+                    session_row=row,
+                )
+                if stop_reply is None or stop_reply.get("status") != "ack":
+                    raise AssertionError(f"STOP was not acknowledged: {stop_reply!r}")
+            except Exception as exc:
+                primary = self._redact_diagnostic(f"{type(exc).__name__}: {exc}")
+                raise AssertionError(
+                    f"graceful driver stop failed: {primary}; "
+                    f"{self._identity_diagnostic(stop_reply=stop_reply)}"
+                ) from exc
         try:
-            rc = self.proc.wait(timeout=timeout)
+            rc = self.proc.wait(timeout=max(0.01, deadline - time.monotonic()))
         finally:
             self._stderr_file.flush()
         return rc

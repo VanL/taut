@@ -54,6 +54,7 @@ _CLEAN_PIPE_END = frozenset(
 )
 _ACTIVITY_SECONDS = 10.0
 _CLOSE_TIMEOUT_S = 10.0
+_CANCEL_RECONCILE_S = 0.01
 _GRACEFUL_TIMEOUT_S = 5.0
 _DETACH_RESET = b"\x1b[?1049l\x1b[?25h\x1b[0m\x1b[?2004l"
 logger = logging.getLogger("taut_summon.pty_windows")
@@ -155,11 +156,13 @@ class _EpochWriter:
     ) -> None:
         with self._serializer:
             thread_handle: int | None = None
+            active: _ActiveWrite | None = None
             try:
                 with self._state:
                     self._validate(epoch, interrupt_owner=interrupt_owner)
                     thread_handle = self._api.open_current_thread()
-                    self._active = _ActiveWrite(epoch, thread_handle)
+                    active = _ActiveWrite(epoch, thread_handle)
+                    self._active = active
                 try:
                     self._api.write(self._handle, payload)
                 except Win32IoError as exc:
@@ -171,16 +174,14 @@ class _EpochWriter:
                     self._validate(epoch, interrupt_owner=interrupt_owner)
             finally:
                 with self._state:
-                    if (
-                        self._active is not None
-                        and self._active.thread_handle == thread_handle
-                    ):
+                    if self._active is active:
                         self._active = None
                     self._state.notify_all()
                 if thread_handle is not None:
                     self._api.close_handle(thread_handle)
 
     def interrupt(self) -> None:
+        deadline = time.monotonic() + _CLOSE_TIMEOUT_S
         with self._state:
             if self._retired:
                 return
@@ -189,8 +190,8 @@ class _EpochWriter:
             self._interrupting = True
             active = self._active
         try:
-            self._cancel_active(active)
-            self._wait_inactive("interrupt")
+            self._cancel_active_until_retired(active, "interrupt", deadline)
+            self._wait_inactive("interrupt", deadline)
             self._write_with_epoch(b"\x03", epoch, interrupt_owner=True)
         finally:
             with self._state:
@@ -230,9 +231,10 @@ class _EpochWriter:
 
     def _graceful_close_write(self, active: _ActiveWrite | None) -> None:
         thread_handle: int | None = None
+        deadline = time.monotonic() + _CLOSE_TIMEOUT_S
         try:
-            self._cancel_active(active)
-            self._wait_inactive("request_close")
+            self._cancel_active_until_retired(active, "request_close", deadline)
+            self._wait_inactive("request_close", deadline)
             with self._serializer:
                 thread_handle = self._api.open_current_thread()
                 self._api.write(self._handle, b"\x03")
@@ -249,19 +251,28 @@ class _EpochWriter:
                     if self._close_failure is None:
                         self._close_failure = exc
 
-    def _cancel_active(self, active: _ActiveWrite | None) -> None:
+    def _cancel_active_until_retired(
+        self,
+        active: _ActiveWrite | None,
+        operation: str,
+        deadline: float,
+    ) -> None:
         if active is None:
             return
         with self._state:
-            if self._active is not active:
-                return
-            try:
-                self._api.cancel_thread(active.thread_handle, retiring=True)
-            except Win32IoError as exc:
-                raise AdapterError(f"ConPTY write cancellation failed: {exc}") from exc
+            while self._active is active:
+                try:
+                    self._api.cancel_thread(active.thread_handle, retiring=True)
+                except Win32IoError as exc:
+                    raise AdapterError(
+                        f"ConPTY write cancellation failed: {exc}"
+                    ) from exc
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise AdapterError(f"ConPTY writer did not stop after {operation}")
+                self._state.wait(min(remaining, _CANCEL_RECONCILE_S))
 
-    def _wait_inactive(self, operation: str) -> None:
-        deadline = time.monotonic() + _CLOSE_TIMEOUT_S
+    def _wait_inactive(self, operation: str, deadline: float) -> None:
         with self._state:
             while self._active is not None:
                 remaining = deadline - time.monotonic()

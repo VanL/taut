@@ -205,6 +205,190 @@ class _EpochRaceApi:
         return True
 
 
+class _CancellationHandoffApi:
+    """Model the gap between writer publication and pending native I/O."""
+
+    def __init__(self) -> None:
+        self.write_called = threading.Event()
+        self.allow_pending = threading.Event()
+        self.pending = threading.Event()
+        self.cancel_before_pending = threading.Event()
+        self.cancel_requested = threading.Event()
+        self.cancelled = threading.Event()
+        self.closed: list[int] = []
+        self.cancelled_handles: list[int] = []
+        self.writes: list[bytes] = []
+        self._next_thread_handle = 90
+
+    def open_current_thread(self) -> int:
+        self._next_thread_handle += 1
+        return self._next_thread_handle
+
+    def close_handle(self, handle: int) -> None:
+        self.closed.append(handle)
+
+    def write(self, _handle: int, data: bytes) -> None:
+        from taut_summon._win32_io import ERROR_OPERATION_ABORTED, Win32IoError
+
+        self.writes.append(data)
+        if data != b"payload":
+            return
+        self.write_called.set()
+        assert self.allow_pending.wait(2.0)
+        self.pending.set()
+        assert self.cancelled.wait(2.0)
+        raise Win32IoError("WriteFile", ERROR_OPERATION_ABORTED)
+
+    def cancel_thread(self, handle: int, *, retiring: bool) -> bool:
+        del retiring
+        assert handle not in self.closed
+        self.cancelled_handles.append(handle)
+        if not self.pending.is_set():
+            self.cancel_before_pending.set()
+            return False
+        if not self.cancel_requested.is_set():
+            self.cancel_requested.set()
+            return True
+        self.cancelled.set()
+        return False
+
+
+@pytest.mark.parametrize("operation", ["interrupt", "close"])
+def test_epoch_writer_reconciles_cancel_across_native_entry(
+    operation: str,
+) -> None:
+    from taut_summon._pty_windows import _EpochWriter
+
+    api = _CancellationHandoffApi()
+    writer = _EpochWriter(cast(Any, api), 41)
+    write_errors: list[BaseException] = []
+    writing = threading.Thread(
+        target=lambda: _capture_epoch_write(writer, b"payload", write_errors)
+    )
+    writing.start()
+    assert api.write_called.wait(1.0)
+
+    if operation == "interrupt":
+        operation_errors: list[BaseException] = []
+        operating = threading.Thread(
+            target=lambda: _capture_interrupt(writer, operation_errors)
+        )
+    else:
+        writer.request_close()
+        operation_errors = []
+        operating = threading.Thread(
+            target=lambda: _capture_finish_close(writer, operation_errors)
+        )
+    operating.start()
+    try:
+        assert api.cancel_before_pending.wait(1.0)
+        api.allow_pending.set()
+        writing.join(2.0)
+        operating.join(2.0)
+        assert not writing.is_alive()
+        assert not operating.is_alive()
+        assert operation_errors == []
+        expected = (
+            "PTY write interrupted"
+            if operation == "interrupt"
+            else "PTY master is closed"
+        )
+        assert [str(error) for error in write_errors] == [expected]
+        assert api.cancelled_handles.count(91) >= 3
+        assert api.closed.count(91) == 1
+        assert api.writes == [b"payload", b"\x03"]
+    finally:
+        api.allow_pending.set()
+        api.cancelled.set()
+        writing.join(2.0)
+        operating.join(2.0)
+
+
+def _capture_epoch_write(
+    writer: Any, payload: bytes, errors: list[BaseException]
+) -> None:
+    try:
+        writer.write(payload)
+    except AdapterError as exc:
+        errors.append(exc)
+
+
+def _capture_interrupt(writer: Any, errors: list[BaseException]) -> None:
+    try:
+        writer.interrupt()
+    except AdapterError as exc:
+        errors.append(exc)
+
+
+def _capture_finish_close(writer: Any, errors: list[BaseException]) -> None:
+    try:
+        writer.finish_close_request()
+    except AdapterError as exc:
+        errors.append(exc)
+
+
+class _HandleReuseApi:
+    def __init__(self) -> None:
+        self.first_close_started = threading.Event()
+        self.release_first_close = threading.Event()
+        self.closed: list[int] = []
+        self.cancelled_handles: list[int] = []
+        self.writes: list[bytes] = []
+
+    def open_current_thread(self) -> int:
+        return 91
+
+    def close_handle(self, handle: int) -> None:
+        if not self.closed:
+            self.first_close_started.set()
+            assert self.release_first_close.wait(2.0)
+        self.closed.append(handle)
+
+    def write(self, _handle: int, data: bytes) -> None:
+        self.writes.append(data)
+
+    def cancel_thread(self, handle: int, *, retiring: bool) -> bool:
+        del retiring
+        self.cancelled_handles.append(handle)
+        return True
+
+
+def test_epoch_writer_never_cancels_cleared_or_reused_thread_handle() -> None:
+    from taut_summon._pty_windows import _EpochWriter
+
+    api = _HandleReuseApi()
+    writer = _EpochWriter(cast(Any, api), 41)
+    write_errors: list[BaseException] = []
+    interrupt_errors: list[BaseException] = []
+    writing = threading.Thread(
+        target=lambda: _capture_epoch_write(writer, b"payload", write_errors)
+    )
+    writing.start()
+    assert api.first_close_started.wait(1.0)
+
+    interrupting = threading.Thread(
+        target=lambda: _capture_interrupt(writer, interrupt_errors)
+    )
+    interrupting.start()
+    try:
+        assert _wait_until_true(lambda: writer._epoch == 1)
+        assert not api.cancelled_handles
+        api.release_first_close.set()
+        writing.join(1.0)
+        interrupting.join(1.0)
+        assert not writing.is_alive()
+        assert not interrupting.is_alive()
+        assert write_errors == []
+        assert interrupt_errors == []
+        assert api.cancelled_handles == []
+        assert api.closed == [91, 91]
+        assert api.writes == [b"payload", b"\x03"]
+    finally:
+        api.release_first_close.set()
+        writing.join(1.0)
+        interrupting.join(1.0)
+
+
 def test_epoch_writer_keeps_active_thread_handle_live_during_cancel() -> None:
     from taut_summon._pty_windows import _EpochWriter
 
@@ -249,14 +433,14 @@ def test_epoch_writer_skips_cancel_after_snapshotted_write_completes() -> None:
     api = _EpochRaceApi()
     writer = _EpochWriter(cast(Any, api), 41)
     write_errors: list[BaseException] = []
-    original_cancel = writer._cancel_active
+    original_cancel = writer._cancel_active_until_retired
 
-    def complete_then_cancel(active: object) -> None:
+    def complete_then_cancel(active: object, operation: str, deadline: float) -> None:
         api.release_first_write.set()
         assert _wait_until_true(lambda: 91 in api.closed)
-        original_cancel(cast(Any, active))
+        original_cancel(cast(Any, active), operation, deadline)
 
-    writer._cancel_active = complete_then_cancel  # type: ignore[method-assign]
+    writer._cancel_active_until_retired = complete_then_cancel  # type: ignore[method-assign]
     writing = threading.Thread(
         target=lambda: _blocked_epoch_write(writer, write_errors)
     )
@@ -672,22 +856,31 @@ def test_epoch_writer_cancels_a_real_blocked_windows_write() -> None:
         threads.extend((active, queued))
         interrupted = threading.Thread(target=writer.interrupt)
         interrupted.start()
-        drainer = threading.Thread(
-            target=_drain_windows_pipe, args=(api, read_handle, b"\x03")
-        )
-        drainer.start()
-        threads.extend((interrupted, drainer))
-        for thread in threads:
+        threads.append(interrupted)
+        for thread in (active, queued):
             thread.join(timeout=10.0)
             assert not thread.is_alive()
         assert len(errors) == 2
         assert all("interrupted" in str(error) for error in errors)
+        drainer = threading.Thread(
+            target=_drain_windows_pipe, args=(api, read_handle, b"\x03")
+        )
+        drainer.start()
+        threads.append(drainer)
+        for thread in (interrupted, drainer):
+            thread.join(timeout=10.0)
+            assert not thread.is_alive()
 
         active, queued = start_blocked_pair("close")
         threads.extend((active, queued))
         writer.request_close()
         with pytest.raises(AdapterError, match="closed"):
             writer.write(b"rejected")
+        for thread in (active, queued):
+            thread.join(timeout=10.0)
+            assert not thread.is_alive()
+        assert len(errors) == 4
+        assert all("closed" in str(error) for error in errors[2:])
         closer_drain = threading.Thread(
             target=_drain_windows_pipe, args=(api, read_handle, b"\x03")
         )
@@ -697,8 +890,6 @@ def test_epoch_writer_cancels_a_real_blocked_windows_write() -> None:
         for thread in (active, queued, closer_drain):
             thread.join(timeout=10.0)
             assert not thread.is_alive()
-        assert len(errors) == 4
-        assert all("interrupted" in str(error) for error in errors)
     finally:
         writer.request_close()
         cleanup_drain = threading.Thread(

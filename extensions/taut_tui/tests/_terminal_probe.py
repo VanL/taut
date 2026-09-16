@@ -193,7 +193,10 @@ def _collect_output(
         else:
             thread.join(timeout=0.02)
     if thread.is_alive():
-        raise TimeoutError("real-terminal child probe timed out")
+        raise TimeoutError(
+            "real-terminal child probe timed out; "
+            f"input_sent={input_sent}; output_tail={bytes(output[-4096:])!r}"
+        )
     while chunk := terminal.read_available():
         output.extend(chunk)
     return bytes(output), input_sent

@@ -51,7 +51,7 @@ directory. Run `bin/check-plan-status-index` after changing it.
 
 | Plan | Status | Exemplar | Note |
 |------|--------|----------|------|
-| `2026-09-16-windows-lifecycle-determinism-plan.md` | draft | no | Class 4 correction of Windows lifecycle/test boundaries; independent plan review passed; implementation and native qualification not started. |
+| `2026-09-16-windows-lifecycle-determinism-plan.md` | active | no | Class 4 correction of Windows lifecycle/test boundaries; independent plan review passed; implementation in progress and native qualification outstanding. |
 | `2026-09-16-coordinated-0-9-8-preparation-plan.md` | completed | no | Class 5+P coordinated 0.9.8 preparation: synchronized metadata, dependency-floor reconciliation, release-gate isolation, PG lifecycle-test alignment, final checks, artifact build, and independent review passed. |
 | `2026-09-15-reactor-worker-cache-compatibility-plan.md` | completed | no | Owner-thread cache retirement repaired; real peer proof on 8.2.2 and 8.3.0, Summon consumers verified, independent review passed. Publication remains separate. |
 | `2026-09-15-broker-session-integration-plan.md` | completed | no | BrokerSession ownership integrated for clients, watcher runtimes, and reactor cache lifetime; SQLite and PostgreSQL lifecycle proofs and independent review passed. |

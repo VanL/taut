@@ -95,6 +95,13 @@ incident log; these are the durable rules distilled from it. _(2026-06-30)_
 
 ## Project Lessons
 
+- 2026-09-16: Published state is not completion evidence for the next lifecycle
+  phase. A Summon session row preceded control readiness; an active writer was
+  published before its kernel I/O became cancellable; a selected message did
+  not identify the user's visible viewport. Tests must wait for the exact owner
+  and outcome they assert, and must force the gap between adjacent phases. A
+  later green run does not validate a fix aimed at a different phase.
+
 - 2026-09-15: A timeout does not transfer ownership away from a background
   native wait. Closing its handle while `WaitForSingleObject` is pending is
   undefined on Windows, even if foreground cleanup must continue. Give the

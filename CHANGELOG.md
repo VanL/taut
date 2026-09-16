@@ -29,12 +29,15 @@
   credential-bearing `database_path_from_target` helper was removed from the
   public client API before external release. Direct `TautWatcher(client, ...)`
   construction was also removed; callers use `client.watch(...)`. The retained
-  TUI now protects a completed search-result jump from passive navigation
-  refreshes that recapture the scroll anchor. The retained TUI gate verifies
+  TUI now gives a pending search-result jump finite viewport ownership while
+  passive refreshes land; real wheel, scrollbar, or keyboard scrolling
+  supersedes that ownership and later refreshes preserve the user's viewport.
+  The retained TUI gate verifies
   search-result anchor restoration and overlapping send completion from
   production UI callback completion instead of sleep-driven polling, and
-  separates the Windows Ctrl-D binding proof from the pipe-backed real-terminal
-  probe whose EOF semantics do not represent a physical Ctrl-D keypress.
+  keeps both the Ctrl-D binding proof and the shipped native-terminal probe.
+  Initial DM navigation tests now expose the exact source snapshot, application
+  failure, and rendered targets instead of collapsing every phase into a timeout.
 
 - Multi-queue watchers now reject unsupported yield strategies instead of
   silently accepting a setting that cannot affect round-robin scheduling.
@@ -86,6 +89,13 @@
   cancellation, and allows five seconds for graceful provider cleanup before
   closing the console. Deterministic Windows lifecycle regressions now run in
   every platform CI lane; Windows CI also exercises real graceful cleanup.
+  Write cancellation now reconciles against the exact active operation until
+  it retires, closing the gap where cancellation could precede the blocking
+  `WriteFile`; operation identity also prevents a reused thread-handle number
+  from receiving a stale cancellation. The real-process test harness resolves
+  its summoned member from PID plus process-start evidence, PING-fences control
+  readiness, and targets STOP by member id, so concurrent fallback names cannot
+  stop one another.
 
 - Debug credential redaction no longer hangs on an unterminated quoted
   value. The 0.9.7 escaped-JSON rules matched plain characters as a run

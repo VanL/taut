@@ -3279,10 +3279,232 @@ def test_step0_claim_collision_falls_back_for_implied_name(
             session_row=session_row,
         )
         assert _member_by_name(summon_db, "scripted") is None
-        assert driver.stop(member_name=fallback.name) == 0
+        assert driver.stop() == 0
     finally:
         child.kill()
         child.wait()
+
+
+def test_driver_process_stops_exact_owned_fallback_after_control_is_ready(
+    summon_db: Path, tmp_path: Path, driver_factory: Callable[..., DriverProcess]
+) -> None:
+    """Harness shutdown follows process evidence, not the requested name."""
+
+    site_dir = tmp_path / "delayed-claim-site"
+    site_dir.mkdir()
+    entered = tmp_path / "entered-delayed-claim"
+    release = tmp_path / "release-delayed-claim"
+    (site_dir / "sitecustomize.py").write_text(
+        """\
+import os
+from pathlib import Path
+
+from taut_summon import _driver
+
+_original_claim_name = _driver.claim_name
+_entered = Path(os.environ["TAUT_SUMMON_TEST_CLAIM_ENTERED"])
+_release = Path(os.environ["TAUT_SUMMON_TEST_CLAIM_RELEASE"])
+
+
+def _claim_then_wait(*args, **kwargs):
+    result = _original_claim_name(*args, **kwargs)
+    _entered.touch()
+    while not _release.exists():
+        import time
+        time.sleep(0.01)
+    return result
+
+
+_driver.claim_name = _claim_then_wait
+""",
+        encoding="utf-8",
+    )
+    pythonpath = os.pathsep.join((str(site_dir), _base_env()["PYTHONPATH"]))
+    owner = driver_factory(
+        summon_db,
+        "scripted",
+        "general",
+        control_interval=0.05,
+        extra_env={
+            "PYTHONPATH": pythonpath,
+            "TAUT_SUMMON_TEST_CLAIM_ENTERED": str(entered),
+            "TAUT_SUMMON_TEST_CLAIM_RELEASE": str(release),
+        },
+        tag="identity-owner",
+    )
+    wait_until(entered.exists, timeout=10.0, message="first driver's name claim")
+
+    prelog_site = tmp_path / "pre-summoned-log-site"
+    prelog_site.mkdir()
+    prelog_entered = tmp_path / "entered-pre-summoned-log"
+    prelog_release = tmp_path / "release-pre-summoned-log"
+    (prelog_site / "sitecustomize.py").write_text(
+        """\
+import os
+import time
+from pathlib import Path
+
+from taut_summon import _driver
+
+_original_info = _driver.logger.info
+_entered = Path(os.environ["TAUT_SUMMON_TEST_PRELOG_ENTERED"])
+_release = Path(os.environ["TAUT_SUMMON_TEST_PRELOG_RELEASE"])
+
+
+def _info_after_release(message, *args, **kwargs):
+    if message.startswith("summoned '"):
+        _entered.touch()
+        while not _release.exists():
+            time.sleep(0.01)
+    _original_info(message, *args, **kwargs)
+
+
+_driver.logger.info = _info_after_release
+""",
+        encoding="utf-8",
+    )
+    fallback_pythonpath = os.pathsep.join((str(prelog_site), _base_env()["PYTHONPATH"]))
+    fallback = driver_factory(
+        summon_db,
+        "scripted",
+        "general",
+        control_interval=0.05,
+        extra_env={
+            "PYTHONPATH": fallback_pythonpath,
+            "TAUT_SUMMON_TEST_PRELOG_ENTERED": str(prelog_entered),
+            "TAUT_SUMMON_TEST_PRELOG_RELEASE": str(prelog_release),
+        },
+        tag="identity-fallback",
+    )
+    wait_until(
+        prelog_entered.exists,
+        timeout=10.0,
+        message="fallback control readiness before summoned log",
+    )
+    assert fallback._last_summoned_member_id() is None
+    fallback_member_id = fallback.owned_member_id()
+    fallback_row = fallback.wait_for_owned_session()
+
+    release.touch()
+    owner.wait_for_start()
+    owner_member_id = owner.owned_member_id()
+    assert fallback_member_id != owner_member_id
+    assert fallback_row["driver_pid"] == fallback.proc.pid
+
+    stop_result: list[int] = []
+    stop_error: list[Exception] = []
+
+    def _stop_fallback() -> None:
+        try:
+            stop_result.append(fallback.stop(timeout=30.0))
+        except (AssertionError, subprocess.TimeoutExpired) as exc:
+            stop_error.append(exc)
+
+    stopper = threading.Thread(target=_stop_fallback)
+    stopper.start()
+    try:
+        owner_reply = _control_request(
+            summon_db,
+            owner_member_id,
+            "PING",
+            timeout=5.0,
+        )
+        assert owner_reply is not None
+        assert owner_reply["status"] == "ok"
+        assert owner.proc.poll() is None
+
+        assert stopper.is_alive()
+        assert fallback._last_summoned_member_id() is None
+        prelog_release.touch()
+        stopper.join(timeout=30.0)
+        assert not stopper.is_alive()
+        assert stop_error == []
+        assert stop_result == [0]
+        assert fallback.proc.poll() == 0
+
+        owner_reply = _control_request(
+            summon_db,
+            owner_member_id,
+            "PING",
+            timeout=5.0,
+        )
+        assert owner_reply is not None
+        assert owner_reply["status"] == "ok"
+        assert owner.proc.poll() is None
+    finally:
+        release.touch()
+        prelog_release.touch()
+        stopper.join(timeout=30.0)
+
+    assert owner.stop() == 0
+
+
+def test_driver_process_stop_failure_preserves_child_and_redacts_session_token(
+    summon_db: Path, tmp_path: Path, driver_factory: Callable[..., DriverProcess]
+) -> None:
+    site_dir = tmp_path / "blocked-control-site"
+    site_dir.mkdir()
+    release = tmp_path / "release-blocked-control"
+    (site_dir / "sitecustomize.py").write_text(
+        """\
+import os
+import sys
+from pathlib import Path
+
+from taut_summon import _control
+
+_original_publish_ready = _control.ControlLoop._publish_ready
+_release = Path(os.environ["TAUT_SUMMON_TEST_CONTROL_RELEASE"])
+print("continuity-token=distinctive-secret-value", file=sys.stderr, flush=True)
+
+
+def _publish_after_release(self):
+    while not _release.exists():
+        if self._shutdown.wait(0.01):
+            return
+    _original_publish_ready(self)
+
+
+_control.ControlLoop._publish_ready = _publish_after_release
+""",
+        encoding="utf-8",
+    )
+    pythonpath = os.pathsep.join((str(site_dir), _base_env()["PYTHONPATH"]))
+    driver = driver_factory(
+        summon_db,
+        "scripted",
+        "general",
+        control_interval=0.05,
+        extra_env={
+            "PYTHONPATH": pythonpath,
+            "TAUT_SUMMON_TEST_CONTROL_RELEASE": str(release),
+        },
+        tag="identity-stop-failure",
+    )
+    row = driver.wait_for_owned_session()
+    token = str(row["token"])
+    stderr_token = "distinctive-secret-value"
+    wait_until(
+        lambda: stderr_token in driver.stderr_tail(),
+        timeout=5.0,
+        message="sensitive stderr diagnostic fixture",
+    )
+
+    try:
+        with pytest.raises(AssertionError) as caught:
+            driver.stop(timeout=0.25)
+
+        detail = str(caught.value)
+        assert "graceful driver stop failed" in detail
+        assert f"child_pid={driver.proc.pid}" in detail
+        assert driver.owned_member_id() in detail
+        assert token not in detail
+        assert stderr_token not in detail
+        assert driver.proc.poll() is None
+    finally:
+        release.touch()
+
+    assert driver.stop() == 0
 
 
 def test_midbootstrap_fallback_conflict_reclaims_before_next_create(

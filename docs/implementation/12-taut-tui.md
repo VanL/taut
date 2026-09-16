@@ -317,9 +317,21 @@ viewport before finalization, it invalidates the earlier finalizer and
 re-establishes the owned scroll before scheduling a new following-refresh
 finalizer. Generation guards make older deferred restores no-ops. A superseding
 intent, missing-hit or failed/rejected context, and teardown clear ownership
-and invalidate its callback. This prevents both stale physical scrolling and
-an indefinitely capture-blocking owner without pausing the watcher or dropping
-deliveries.
+and invalidate its callback. Wheel, scrollbar, and scroll-key input also clears
+pending ownership at the transcript widget boundary before normal viewport
+capture; programmatic `scroll_to` does not impersonate user intent. Once the
+matching restore finishes, ownership is released and normal capture resumes
+even while selection stays on the search hit. This prevents stale physical
+scrolling, post-search snap-back, and an indefinitely capture-blocking owner
+without pausing the watcher or dropping deliveries.
+
+Initial navigation tests observe the exact navigation future before inspecting
+the rendered target list. Source cancellation/error, a snapshot missing direct
+messages, and widget-application failure are distinct immediate failures rather
+than one polling timeout. Native quit acceptance retains the shipped launcher
+and real PTY/ConPTY path for Ctrl-C and Ctrl-D; the in-process key-binding proof
+is supplemental. Timeout diagnostics retain whether input was sent plus bounded
+platform, Textual, decoded-key, guarded-dispatch, and output evidence.
 
 The checked visual fixtures are:
 

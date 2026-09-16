@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import ast
 import asyncio
-import os
 import textwrap
 from pathlib import Path
 from typing import Any, cast
@@ -416,32 +415,12 @@ def test_shipped_tui_translates_real_pty_quit_control_bytes(
     control_byte: bytes,
     label: str,
 ) -> None:
-    if os.name == "nt" and control_byte == b"\x04":
-        from taut_tui.actions import ActionId
-        from taut_tui.app import TautApp
-
-        guarded_quit_seen = False
-
-        class ProbeApp(TautApp):
-            def _dispatch_action_invocation(self, invocation: Any) -> None:
-                nonlocal guarded_quit_seen
-                if invocation.action_id is ActionId.APPLICATION_QUIT:
-                    guarded_quit_seen = True
-                super()._dispatch_action_invocation(invocation)
-
-        async def exercise() -> None:
-            app = ProbeApp(db_path=None, as_name=None, continuity_token=None)
-            async with app.run_test(size=(80, 24)) as pilot:
-                await pilot.pause()
-                await pilot.press("ctrl+d")
-
-        asyncio.run(exercise())
-        assert guarded_quit_seen
-        return
-
     child_source = textwrap.dedent(
         r"""
         import os
+        import platform
+
+        import textual
 
         import taut_tui.app as app_module
         from taut_tui._launch import run_tui
@@ -451,7 +430,16 @@ def test_shipped_tui_translates_real_pty_quit_control_bytes(
         class ProbeApp(app_module.TautApp):
             def on_mount(self) -> None:
                 super().on_mount()
+                detail = (
+                    f"PROBE-PLATFORM os={os.name} "
+                    f"platform={platform.platform()} textual={textual.__version__}"
+                )
+                os.write(1, detail.encode("utf-8", errors="replace"))
                 os.write(1, b"TAUT-TUI-QUIT-CONTROL-PROBE-MOUNTED")
+
+            def action_quit_tui_anywhere(self) -> None:
+                os.write(1, b"DECODED-QUIT-BINDING")
+                super().action_quit_tui_anywhere()
 
             def _dispatch_action_invocation(self, invocation) -> None:
                 if invocation.action_id is ActionId.APPLICATION_QUIT:
@@ -475,12 +463,35 @@ def test_shipped_tui_translates_real_pty_quit_control_bytes(
             ),
             timeout=15,
         )
-    except TimeoutError:
-        pytest.fail(f"{label} shipped-TUI PTY probe timed out")
+    except TimeoutError as exc:
+        pytest.fail(f"{label} shipped-TUI PTY probe timed out: {exc}")
     captured = result.output
     assert result.input_sent, captured.decode(errors="replace")
     assert result.returncode == 0, captured.decode(errors="replace")
+    assert b"DECODED-QUIT-BINDING" in captured
     assert b"GUARDED-QUIT" in captured
+
+
+def test_retained_textual_ctrl_d_binding_reaches_guarded_quit() -> None:
+    from taut_tui.actions import ActionId
+    from taut_tui.app import TautApp
+
+    guarded_quit_seen = False
+
+    class ProbeApp(TautApp):
+        def _dispatch_action_invocation(self, invocation: Any) -> None:
+            nonlocal guarded_quit_seen
+            if invocation.action_id is ActionId.APPLICATION_QUIT:
+                guarded_quit_seen = True
+            super()._dispatch_action_invocation(invocation)
+
+    async def exercise() -> None:
+        app = ProbeApp(db_path=None, as_name=None, continuity_token=None)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.press("ctrl+d")
+
+    asyncio.run(exercise())
+    assert guarded_quit_seen
 
 
 def test_real_textual_pty_never_emits_untrusted_terminal_control_payload() -> None:

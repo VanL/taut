@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from typing import Any, ClassVar, Self
 
 from rich.console import Console, ConsoleOptions, RenderableType
@@ -383,9 +383,46 @@ class TautOptionList(OptionList):
 
     def __init__(self, *content: Any, **kwargs: Any) -> None:
         kwargs["markup"] = False
+        self.user_viewport_intent: Callable[[], None] | None = None
         super().__init__(*content, **kwargs)
         self._last_pointer_chain = 0
         self._pointer_pending = False
+
+    def _declare_user_viewport_intent(self) -> None:
+        callback = self.user_viewport_intent
+        if callback is not None:
+            callback()
+
+    def on_mouse_scroll_down(self, event: object) -> None:
+        del event
+        self._declare_user_viewport_intent()
+
+    def on_mouse_scroll_up(self, event: object) -> None:
+        del event
+        self._declare_user_viewport_intent()
+
+    def on_scroll_to(self, message: object) -> None:
+        del message
+        self._declare_user_viewport_intent()
+
+    def on_scroll_down(self, message: object) -> None:
+        del message
+        self._declare_user_viewport_intent()
+
+    def on_scroll_up(self, message: object) -> None:
+        del message
+        self._declare_user_viewport_intent()
+
+    def on_key(self, event: object) -> None:
+        if getattr(event, "key", None) in {
+            "up",
+            "down",
+            "pageup",
+            "pagedown",
+            "home",
+            "end",
+        }:
+            self._declare_user_viewport_intent()
 
     def add_options(self, new_options: Iterable[Any]) -> TautOptionList:
         return super().add_options(

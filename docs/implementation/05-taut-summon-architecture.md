@@ -351,9 +351,14 @@ so a child that outlives console close leaves a recorded error, not a handle
 stuck in `closing` that blocks every later close. The
 sole output drain never waits for process exit or blocks on a terminal reply;
 reply writes use the serialized, cancellable input writer on a separate owner.
-Cancellation checks the exact active-write object and calls
-`CancelSynchronousIo` while holding the writer's short state lock; the writer
-cannot close its thread handle until cancellation returns. A reusable interrupt
+Cancellation checks the exact active-write object and reconciles
+`CancelSynchronousIo` until that operation retires while preserving one
+monotonic deadline. This covers both `ERROR_NOT_FOUND` before `WriteFile`
+becomes pending and a successful cancellation request whose operation has not
+completed. Each attempt validates object identity under the writer's short
+state lock; condition waits release that lock, and active ownership is cleared
+before the writer closes its thread handle. Numeric handle reuse therefore
+cannot retarget a stale cancellation. A reusable interrupt
 keeps its epoch and transient gate through the Ctrl-C write, so a superseding
 interrupt or terminal close cannot emit a stale signal or poison later writes.
 Both adapters translate the superseded epoch into `AdapterWriteCancelled` only
@@ -809,9 +814,14 @@ ownership from path names; and timestamp-conflict metrics exist before
 concurrent first writes. The 5.1.x per-operation release pattern was buggy and
 is unsupported.
 
-The real-process test harness follows the same posture. Readiness is a
-correlated PING/STATUS reply from the expected driver evidence; session rows and
-logs are diagnostics. The harness must not hide a malformed session row as "not
+The real-process test harness follows the same posture. It captures PID plus
+process-start evidence, resolves exactly one owned session from that evidence,
+and retains its member id. Readiness is a correlated PING/STATUS reply for that
+session; session rows and logs alone are diagnostics. Graceful fixture shutdown
+targets STOP by member id on every platform and leaves an unacknowledged child
+to the fixture cleanup owner instead of guessing a mutable name or counting
+forced termination as success. Failure details bound and redact stderr and omit
+the continuity token. The harness must not hide a malformed session row as "not
 ready" and must not create tight fresh-client polling loops that amplify SQLite
 connection churn.
 
