@@ -781,6 +781,79 @@ def test_base_reactor_stop_watching_returns_normally_without_prior_stop_request(
     assert watcher._resources_closed is True
 
 
+def test_base_reactor_retirement_recycles_worker_cache_with_live_peer(
+    tmp_path: Path,
+) -> None:
+    def stop_handler(*_args: Any) -> None:
+        watcher.request_stop()
+
+    watcher = BaseReactor(
+        queue_configs={"retire.input": {"handler": stop_handler}},
+        db=tmp_path / ".taut.db",
+        persistent=True,
+    )
+    with Queue(
+        "retire.peer", db_path=watcher._db_path, persistent=True, config=watcher._config
+    ) as peer:
+        peer.write("seed")
+        # Private observation only: closing the last lease would hide this leak.
+        assert peer.conn is not None
+        session = peer.conn._shared_session
+        assert session is not None
+        assert len(session._cores) == 1
+        for generation in range(3):
+            if generation:
+                watcher = BaseReactor(
+                    queue_configs={"retire.input": {"handler": stop_handler}},
+                    db=tmp_path / ".taut.db",
+                    persistent=True,
+                    config=watcher._config,
+                )
+            assert watcher._queue_obj.conn is not None
+            assert watcher._queue_obj.conn._shared_session is session
+            watcher._queue_obj.write("stop")
+            thread = watcher.start()
+            try:
+                thread.join(timeout=5.0)
+                assert not thread.is_alive()
+                assert watcher._resources_closed
+                assert len(session._cores) == 1
+                peer.write(str(generation))
+            finally:
+                watcher.stop()
+                thread.join(timeout=5.0)
+        assert list(peer.read(all_messages=True)) == ["seed", "0", "1", "2"]
+
+
+def test_base_reactor_cache_cleanup_error_does_not_skip_queue_close(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    watcher = BaseReactor(
+        queue_configs={"cleanup.input": {"handler": lambda *_args: None}},
+        db=tmp_path / ".taut.db",
+        persistent=True,
+    )
+    queue = watcher._queue_obj
+    assert queue.conn is not None
+    session = queue.conn._shared_session
+    assert session is not None
+    queue.write("warm cache")
+
+    def fail_cleanup() -> None:
+        raise RuntimeError("cache cleanup failed")
+
+    monkeypatch.setattr(queue, "cleanup_connections", fail_cleanup)
+    with caplog.at_level(logging.DEBUG, logger="taut.watcher"):
+        watcher.run_until_stopped(max_iterations=1)
+
+    assert "failed to recycle reactor owner cache" in caplog.text
+    # The real final lease close must still release the session's resources.
+    assert not session._cores
+    assert watcher._queue_cache == {}
+
+
 def test_base_reactor_background_owner_closes_current_waiter(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

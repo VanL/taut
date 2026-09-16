@@ -2931,6 +2931,9 @@ expression behavior.
 
 ## Related Plans
 
+- `docs/plans/2026-09-15-reactor-worker-cache-compatibility-plan.md`: restores
+  worker cache retirement with already-admitted SimpleBroker 8.3 under [TAUT-8.5].
+
 - `docs/plans/2026-09-15-reported-issues-followup-plan.md` — extends packaged
   terminal-policy fallback across known CLI diagnostic paths.
 

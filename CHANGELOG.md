@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Reactor workers explicitly recycle their own broker connection cache on
+  shutdown, preventing retained worker connections with SimpleBroker 8.3 when
+  another queue keeps the same broker session alive.
+
 - Transcript rows now follow the TUI layout contract: wide and medium views
   hang wrapped message text under an aligned body column, while compact views
   stack metadata above the body.

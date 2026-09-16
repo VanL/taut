@@ -722,6 +722,16 @@ owns exactly-once cleanup from an outer boundary that also covers handler
 installation, running-state publication, and drive-owner claim; the CLI's
 `finally` remains an idempotent backstop. This keeps native waiter locks and
 coverage shutdown hooks outside asynchronous signal re-entry.
+After the strategy closes, owner-thread cleanup explicitly calls the primary
+queue's public `cleanup_connections()` before releasing queue leases. All
+same-key queues share the thread cache, so one call covers the reactor. This
+is necessary with SimpleBroker 8.3: its idle watcher stop no longer recycles
+the caller cache, and Taut's custom loop does not enter the upstream `run()`.
+The owner guard prevents foreign or never-driven cleanup from acquiring this
+additional recycling behavior. A cleanup error is logged independently so
+remaining queue leases still close. See
+`docs/plans/2026-09-15-reactor-worker-cache-compatibility-plan.md` for the
+real retained-peer regression and version-matrix evidence.
 The firing proof for the real SIGINT path runs the reactor in a dedicated child
 process. The child first emits structured startup readiness after imports; only
 then does the parent start the strict three-second behavior watchdog. A distinct

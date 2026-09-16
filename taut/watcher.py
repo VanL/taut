@@ -1173,6 +1173,13 @@ class BaseReactor(MultiQueueWatcher):
         except Exception:  # pragma: no cover - defensive third-party cleanup
             logger.debug("failed to close reactor polling strategy", exc_info=True)
 
+        if self._drive_thread is threading.current_thread():
+            try:
+                # Our custom loop bypasses upstream run-thread cache cleanup.
+                self._queue_obj.cleanup_connections()
+            except Exception:
+                logger.debug("failed to recycle reactor owner cache", exc_info=True)
+
         seen: set[int] = set()
         queues = list(self._queue_cache.values()) + [
             config.queue for config in self._queues.values()
