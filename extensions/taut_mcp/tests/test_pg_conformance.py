@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from conftest import canonical_of
@@ -14,7 +14,68 @@ import taut_mcp._workspace_reactor as workspace_reactor
 from taut import EmptyResultError, TautClient, identity
 from taut.envelope import encode_envelope
 from taut_mcp._commands import record_object
-from taut_mcp._process_reactor import ProcessReactor
+from taut_mcp._process_reactor import ProcessReactor, WorkspaceToolError
+
+
+@pytest.mark.pg_only
+@pytest.mark.timeout(30)
+def test_postgres_owner_detach_reattach_and_shutdown_return_checkout(
+    taut_pg_project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(taut_pg_project)
+    TautClient.init()
+    selected = TautClient(as_name="selected")
+    selected.join("general")
+    member = selected.last_created_member
+    assert member is not None and member.token is not None
+    selected.close()
+    peer = TautClient(token=member.token, persistent=True)
+    peer._meta_queue.has_pending()
+    assert peer._meta_queue.conn is not None
+    process_session = peer._meta_queue.conn._shared_session
+    assert process_session is not None
+    runner = cast(Any, process_session._factory)._runner
+    assert runner is not None
+    baseline_depth = runner._lease_depth
+
+    async def wait_for_depth(expected: int, description: str) -> None:
+        deadline = asyncio.get_running_loop().time() + 5
+        while runner._lease_depth != expected:
+            if asyncio.get_running_loop().time() >= deadline:
+                raise AssertionError(
+                    f"{description}: expected {expected}, got {runner._lease_depth}"
+                )
+            await asyncio.sleep(0.01)
+
+    async def scenario() -> None:
+        reactor = ProcessReactor(asyncio.get_running_loop())
+        with pytest.raises(WorkspaceToolError, match="workspace identity invalid"):
+            await reactor.attach_workspace(
+                str(taut_pg_project),
+                "taut-invalid-token",
+            )
+        await wait_for_depth(baseline_depth, "failed candidate checkout retirement")
+
+        attached = await reactor.attach_workspace(
+            str(taut_pg_project),
+            member.token or "",
+        )
+        canonical = canonical_of(attached)
+        await wait_for_depth(baseline_depth + 1, "attached owner checkout")
+        await reactor.detach_workspace(canonical)
+        await wait_for_depth(baseline_depth, "detached owner checkout retirement")
+
+        await reactor.attach_workspace(str(taut_pg_project), member.token or "")
+        await wait_for_depth(baseline_depth + 1, "reattached owner checkout")
+        await reactor.aclose()
+        await wait_for_depth(baseline_depth, "shutdown owner checkout retirement")
+
+    asyncio.run(scenario())
+    peer_queue = peer.queue("mcp.peer.probe")
+    peer_queue.write("peer survives PG owner retirement")
+    assert peer_queue.read() == "peer survives PG owner retirement"
+    peer.close()
 
 
 def _sqlite_member(

@@ -206,6 +206,113 @@ def test_teardown_rejects_detach_admission(
     asyncio.run(scenario())
 
 
+@pytest.mark.sqlite_only
+@pytest.mark.timeout(15)
+def test_broker_session_owner_retirement_orders_waiter_before_scope_close(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace, token, _ = _create_workspace(tmp_path, "selected")
+    db = workspace / ".taut.db"
+    second = TautClient(db_path=db, as_name="second")
+    second.join("general")
+    second_token = second.last_created_member
+    assert second_token is not None and second_token.token is not None
+    second.close()
+    peer = TautClient(db_path=db, token=token, persistent=True)
+    peer._meta_queue.has_pending()
+    assert peer._meta_queue.conn is not None
+    process_session = peer._meta_queue.conn._shared_session
+    assert process_session is not None
+    baseline_cores = len(process_session._cores)
+    real_waiter_factory = workspace_reactor.create_activity_waiter_for_queues
+    real_client_close = workspace_reactor.TautClient.close
+    waiters: dict[int, Any] = {}
+    close_order: list[bool] = []
+
+    class RecordingWaiter:
+        def __init__(self, delegate: Any) -> None:
+            self.delegate = delegate
+            self.closed = False
+
+        def wait(self, timeout: float | None) -> bool:
+            if self.delegate is None:
+                return False
+            return bool(self.delegate.wait(timeout))
+
+        def close(self) -> None:
+            self.closed = True
+            if self.delegate is not None:
+                self.delegate.close()
+
+    def recording_waiter(*args: Any, **kwargs: Any) -> Any:
+        delegate = real_waiter_factory(*args, **kwargs)
+        waiter = RecordingWaiter(delegate)
+        waiters[threading.get_ident()] = waiter
+        return waiter
+
+    def ordered_client_close(client: TautClient) -> None:
+        waiter = waiters.get(threading.get_ident())
+        if waiter is not None:
+            close_order.append(waiter.closed)
+        real_client_close(client)
+
+    monkeypatch.setattr(
+        workspace_reactor,
+        "create_activity_waiter_for_queues",
+        recording_waiter,
+    )
+    monkeypatch.setattr(workspace_reactor.TautClient, "close", ordered_client_close)
+
+    async def scenario() -> None:
+        reactor = ProcessReactor(asyncio.get_running_loop())
+        with _tool_error(
+            "workspace identity invalid; provide a valid existing continuity token"
+        ):
+            await reactor.attach_workspace(str(workspace), "taut-invalid-token")
+        await async_eventually(
+            lambda: len(process_session._cores) == baseline_cores,
+            timeout=5,
+            interval=0.01,
+            description="failed MCP candidate retires its worker core",
+        )
+
+        attached = await reactor.attach_workspace(str(workspace), token)
+        canonical = canonical_of(attached)
+        await async_eventually(
+            lambda: len(process_session._cores) == baseline_cores + 1,
+            timeout=5,
+            interval=0.01,
+            description="ready MCP owner holds one worker core",
+        )
+        with _tool_error("workspace already attached; detach to replace token"):
+            await reactor.attach_workspace(canonical, second_token.token or "")
+        await reactor.detach_workspace(canonical)
+        await async_eventually(
+            lambda: len(process_session._cores) == baseline_cores,
+            timeout=5,
+            interval=0.01,
+            description="detached MCP owner retires its worker core",
+        )
+
+        await reactor.attach_workspace(str(workspace), token)
+        await reactor.aclose()
+        await async_eventually(
+            lambda: len(process_session._cores) == baseline_cores,
+            timeout=5,
+            interval=0.01,
+            description="MCP shutdown retires reattached worker core",
+        )
+
+    asyncio.run(scenario())
+
+    assert close_order and all(close_order)
+    peer_queue = peer.queue("mcp.peer.probe")
+    peer_queue.write("peer survives MCP owner retirement")
+    assert peer_queue.read() == "peer survives MCP owner retirement"
+    peer.close()
+
+
 def test_process_token_bucket_uses_continuous_refill_without_refund() -> None:
     """[MCP-10] Capacity, refill, and rejection math are exact."""
 

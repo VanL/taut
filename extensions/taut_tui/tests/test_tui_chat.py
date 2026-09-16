@@ -14,6 +14,7 @@ from pathlib import Path
 from threading import Event, Lock
 
 import pytest
+from simplebroker import Queue
 
 from taut.client import Message, Notification, TautClient
 from taut_tui.app import TautApp
@@ -268,6 +269,46 @@ def test_latest_switch_wins_and_stops_old_watcher_before_replacement(
     )
 
 
+def test_repeated_target_switches_retire_broker_worker_cores(
+    tmp_path: Path,
+) -> None:
+    from taut_tui.session import TuiSession
+
+    db_path = tmp_path / "chat.db"
+    alice, bob = _seed(db_path)
+    alice.join("quiet")
+    bob.join("quiet")
+    anchor = TautClient(db_path=db_path, as_name="alice", persistent=True)
+    anchor._meta_queue.has_pending()
+    assert anchor._meta_queue.conn is not None
+    process_session = anchor._meta_queue.conn._shared_session
+    assert process_session is not None
+    baseline_cores = len(process_session._cores)
+    session = TuiSession(
+        db_path=str(db_path),
+        as_name="alice",
+        continuity_token=None,
+    )
+    try:
+        for target in ("general", "quiet", "general"):
+            session.open_conversation(target).result(timeout=5)
+            _wait_until(
+                lambda: (
+                    baseline_cores < len(process_session._cores) <= baseline_cores + 2
+                )
+            )
+    finally:
+        session.close()
+
+    _wait_until(lambda: len(process_session._cores) == baseline_cores)
+    anchor_queue = anchor.queue("tui.anchor.probe")
+    anchor_queue.write("anchor survives switches")
+    assert anchor_queue.read() == "anchor survives switches"
+    anchor.close()
+    alice.close()
+    bob.close()
+
+
 def test_shutdown_rejection_does_not_acknowledge_chat_message(tmp_path: Path) -> None:
     from taut_tui.session import TuiSession
 
@@ -364,6 +405,44 @@ def test_close_attempts_client_cleanup_when_watcher_stop_times_out() -> None:
         session.close()
 
     assert client.closed is True
+
+
+def test_broker_session_timeout_closes_client_but_watcher_queue_survives(
+    tmp_path: Path,
+) -> None:
+    from taut_tui.session import TuiSession, WatcherStopTimeout
+
+    db_path = tmp_path / "chat.db"
+    TautClient.init(db_path=db_path)
+    client = TautClient(db_path=db_path, as_name="alice", persistent=True)
+    client.join("general")
+    watcher = client.watch(lambda _item: None, threads=["general"])
+    watcher_queue = watcher.get_queue("general")
+    assert isinstance(watcher_queue, Queue)
+
+    class StuckThread:
+        def is_alive(self) -> bool:
+            return True
+
+    class SurvivingWatcher:
+        def request_stop(self) -> None:
+            return None
+
+        def stop(self, *, join: bool, timeout: float | None = None) -> None:
+            del join, timeout
+
+    session = TuiSession(db_path=None, as_name=None, continuity_token=None)
+    session._client = client
+    session._watcher = (SurvivingWatcher(), StuckThread())  # type: ignore[assignment]
+
+    with pytest.raises(WatcherStopTimeout):
+        session.close()
+
+    assert client._session is None
+    watcher_queue.write("survives client cleanup")
+    pending = list(watcher_queue.peek(all_messages=True) or ())
+    assert "survives client cleanup" in pending
+    watcher.stop(join=False)
 
 
 def test_explicit_reply_open_commits_claimed_history_and_watches_both_surfaces(

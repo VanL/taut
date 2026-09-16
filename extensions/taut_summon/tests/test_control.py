@@ -19,6 +19,7 @@ import sys
 import threading
 import time
 import weakref
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, ClassVar, cast
 
@@ -150,13 +151,27 @@ class _FailingReplyQueue:
         self.closed = True
 
 
+class _RecordingReplyQueue:
+    def __init__(self) -> None:
+        self.closed = False
+        self.writes: list[str] = []
+
+    def write(self, body: str) -> None:
+        self.writes.append(body)
+
+    def close(self) -> None:
+        self.closed = True
+
+
 class _ReplyClient:
-    def __init__(self, queue: _FailingReplyQueue) -> None:
+    def __init__(self, queue: _FailingReplyQueue | _RecordingReplyQueue) -> None:
         self.queue_obj = queue
         self.names: list[str] = []
         self.persistent_flags: list[object] = []
 
-    def queue(self, name: str, *, persistent: bool | None = None) -> _FailingReplyQueue:
+    def queue(
+        self, name: str, *, persistent: bool | None = None
+    ) -> _FailingReplyQueue | _RecordingReplyQueue:
         self.names.append(name)
         self.persistent_flags.append(persistent)
         return self.queue_obj
@@ -1585,7 +1600,12 @@ def test_control_loop_real_correlated_ping_round_trip(tmp_path: Path) -> None:
     assert created is not None and created.token is not None
     bot.join("dev")
     ledger_owner = control_module.TautClient(db_path=db_path, persistent=True)
-    ledger_owner.queue("taut.summon_state")
+    ledger_queue = ledger_owner.queue("taut.summon_state")
+    ledger_queue.has_pending()
+    assert ledger_queue.conn is not None
+    process_session = ledger_queue.conn._shared_session
+    assert process_session is not None
+    baseline_cores = len(process_session._cores)
     pump_ready = threading.Event()
     release_pump = threading.Event()
 
@@ -1713,6 +1733,7 @@ def test_control_loop_real_correlated_ping_round_trip(tmp_path: Path) -> None:
         watcher_owner.join(timeout=3.0)
         release_pump.set()
         pump_owner.join(timeout=3.0)
+        assert len(process_session._cores) == baseline_cores
         ledger_owner.close()
         bot.close()
         peer.close()
@@ -1747,6 +1768,69 @@ def test_reopen_preserves_rate_audit_cursor_and_closes_old_handles() -> None:
     assert old_ctl_in.closed is True
     assert old_ledger.closed is True
     assert old_ctl_in.deleted is False
+
+
+def test_broker_session_replacement_installs_complete_set_before_old_scope_close() -> (
+    None
+):
+    loop = _make_loop(rate_limit=60)
+    reply_queue = _RecordingReplyQueue()
+    new_client = _ReplyClient(reply_queue)
+    close_observations: list[bool] = []
+
+    class OldClient:
+        def close(self) -> None:
+            close_observations.append(
+                loop._client is new_client
+                and loop._ctl_in is new_handles.ctl_in
+                and loop._ledger is new_handles.ledger
+                and loop._thread_queues == new_handles.thread_queues
+            )
+
+    old_handles = _fake_broker_handles()
+    old_handles = replace(old_handles, client=cast(Any, OldClient()))
+    new_handles = replace(
+        _fake_broker_handles(),
+        client=cast(Any, new_client),
+    )
+    loop._install_broker_handles(old_handles)
+    loop._make_broker_handles = lambda: new_handles  # type: ignore[method-assign]
+
+    assert loop._reopen_broker_handles(
+        "between turns",
+        OperationalError("connection reset"),
+    )
+    loop._reply("reply", reply_to="sys.rsp_m_probe")
+
+    assert close_observations == [True]
+    assert new_client.names == ["sys.rsp_m_probe"]
+    assert new_client.persistent_flags == [False]
+    assert reply_queue.writes == ["reply"]
+    assert reply_queue.closed is True
+
+
+def test_broker_session_request_queue_is_borrowed_and_reply_queue_is_transient() -> (
+    None
+):
+    loop = _make_loop(rate_limit=60)
+    borrowed_request = _CloseableQueue()
+    control_client = ControlClient(
+        lambda _name: cast(Queue, borrowed_request),
+        "m_abc",
+        owns_request_queue=False,
+    )
+    control_client.close()
+
+    reply_queue = _RecordingReplyQueue()
+    client = _ReplyClient(reply_queue)
+    loop._client = cast(Any, client)
+
+    loop._reply("reply", reply_to="sys.rsp_m_probe")
+
+    assert borrowed_request.closed is False
+    assert client.persistent_flags == [False]
+    assert reply_queue.writes == ["reply"]
+    assert reply_queue.closed is True
 
 
 def test_close_closes_control_handles_without_delete_all() -> None:

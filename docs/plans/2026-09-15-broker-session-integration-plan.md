@@ -848,6 +848,18 @@ post-construction handoff failure proof; that proof was added. The final verdict
 was **READY** with no open correctness finding. The TDD and call-agent workflows
 need no durable skill change from this implementation.
 
+Owner follow-up added the host-specific firing proofs that the first closeout
+had omitted: `test_broker_session_replacement_installs_complete_set_before_old_scope_close`,
+`test_broker_session_request_queue_is_borrowed_and_reply_queue_is_transient`,
+the worker-core assertion in `test_control_loop_real_correlated_ping_round_trip`,
+`test_repeated_target_switches_retire_broker_worker_cores`,
+`test_broker_session_timeout_closes_client_but_watcher_queue_survives`,
+`test_broker_session_owner_retirement_orders_waiter_before_scope_close`, and
+`test_postgres_owner_detach_reattach_and_shutdown_return_checkout`. The same
+follow-up changed the BS-8 cleanup-failure proof to drive `run_forever()` and
+assert two cleanup attempts attach exactly one secondary note. These are plan
+completion work, not deviations from the promoted contracts.
+
 ## Fresh-Eyes Review
 
 Author inspection and review dispositions checked the upstream strong retention rule, active-operation

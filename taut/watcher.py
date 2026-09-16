@@ -1122,7 +1122,9 @@ class BaseReactor(MultiQueueWatcher):
         except Exception as cleanup_failure:
             if active_failure is None:
                 raise
-            active_failure.add_note(f"reactor cleanup failed: {cleanup_failure}")
+            note = f"reactor cleanup failed: {cleanup_failure}"
+            if note not in getattr(active_failure, "__notes__", ()):
+                active_failure.add_note(note)
 
     @final
     def run_forever(self) -> None:

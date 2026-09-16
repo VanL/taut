@@ -927,16 +927,20 @@ def test_base_reactor_cleanup_failure_does_not_mask_handler_failure(
     assert watcher._session is not None
     session = watcher._session
     real_close = session.close
-    monkeypatch.setattr(
-        session,
-        "close",
-        lambda: (_ for _ in ()).throw(RuntimeError("cleanup sentinel")),
-    )
+    close_calls = 0
+
+    def fail_close() -> None:
+        nonlocal close_calls
+        close_calls += 1
+        raise RuntimeError("cleanup sentinel")
+
+    monkeypatch.setattr(session, "close", fail_close)
 
     with pytest.raises(ValueError, match="handler sentinel") as caught:
-        watcher.run_until_stopped()
+        watcher.run_forever()
 
-    assert any("cleanup sentinel" in note for note in (caught.value.__notes__))
+    assert close_calls == 2
+    assert caught.value.__notes__.count("reactor cleanup failed: cleanup sentinel") == 1
     assert watcher._resources_closed is False
     monkeypatch.setattr(session, "close", real_close)
     watcher.stop(join=False)

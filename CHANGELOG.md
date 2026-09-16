@@ -7,7 +7,8 @@
   cached backend resources at lifetime end while same-target peers remain
   usable; reactor membership and auxiliary queues remain bounded by live
   topology. The supported floors are SimpleBroker 8.3.0 and
-  simplebroker-pg 4.3.0.
+  simplebroker-pg 4.3.0. Repeated finalization retries preserve only one cleanup
+  note on an active handler failure.
 
 - Transcript rows now follow the TUI layout contract: wide and medium views
   hang wrapped message text under an aligned body column, while compact views
