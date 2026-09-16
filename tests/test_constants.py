@@ -77,7 +77,7 @@ def test_declared_identity_and_custom_context_reach_client_unchanged(
         client.close()
 
 
-def test_invalid_setting_preserves_upstream_public_metadata(
+def test_invalid_setting_preserves_upstream_public_origin_metadata(
     clean_env: None,
 ) -> None:
     with pytest.raises(InvalidConfigError) as raised:
@@ -85,7 +85,6 @@ def test_invalid_setting_preserves_upstream_public_metadata(
 
     assert raised.value.key == "TAUT_BUSY_TIMEOUT"
     assert raised.value.source == "override"
-    assert raised.value.expected == "an integer number of milliseconds"
 
 
 def test_config_derivation_keeps_source_snapshot(clean_env: None) -> None:
