@@ -571,8 +571,10 @@ async def _search_open_result(context: HandlerContext) -> None:
         observer.close()
     search_context_applied = asyncio.Event()
     navigation_refresh_applied = asyncio.Event()
+    search_anchor_restore_finished = asyncio.Event()
     observed_snapshots: list[ConversationSnapshot | None] = []
     apply_optional_conversation = context.app._apply_optional_conversation
+    finish_owned_search_anchor_restore = context.app._finish_owned_search_anchor_restore
     expected_intent = context.app._conversation_intent + 1
 
     def observe_search_context(
@@ -594,23 +596,31 @@ async def _search_open_result(context: HandlerContext) -> None:
             navigation_refresh_applied.set()
         search_context_applied.set()
 
+    def observe_search_anchor_finish(
+        generation: int,
+        owner: tuple[int, int],
+    ) -> None:
+        finish_owned_search_anchor_restore(generation, owner)
+        if owner == (expected_intent, context.message_ts):
+            search_anchor_restore_finished.set()
+
     with context.monkeypatch.context() as patch:
         patch.setattr(
             context.app,
             "_apply_optional_conversation",
             observe_search_context,
         )
+        patch.setattr(
+            context.app,
+            "_finish_owned_search_anchor_restore",
+            observe_search_anchor_finish,
+        )
         await _select_palette(context, ActionId.SEARCH_OPEN_RESULT)
         await asyncio.wait_for(search_context_applied.wait(), timeout=5)
         await asyncio.wait_for(navigation_refresh_applied.wait(), timeout=5)
-        await _eventually(
-            context.pilot,
-            lambda: (
-                context.app._pending_search_anchor is None
-                and context.app.visual_state.scroll_anchor.message_id
-                == context.message_ts
-            ),
-        )
+        await asyncio.wait_for(search_anchor_restore_finished.wait(), timeout=5)
+    assert context.app._pending_search_anchor is None
+    assert context.app.visual_state.scroll_anchor.message_id == context.message_ts
     assert len(observed_snapshots) == 1
     snapshot = observed_snapshots[0]
     assert snapshot is not None

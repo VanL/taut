@@ -3240,6 +3240,17 @@ def test_overlapping_send_completion_only_clears_its_own_draft(
     async def exercise() -> None:
         app = TautApp(db_path=str(db_path), as_name="alice", continuity_token=None)
         async with app.run_test(size=(100, 34)) as pilot:
+            send_results_applied: asyncio.Queue[int] = asyncio.Queue()
+            apply_send_result = app._apply_send_result
+
+            def observe_send_result(
+                send_token: int,
+                future: Future[Message],
+            ) -> None:
+                apply_send_result(send_token, future)
+                send_results_applied.put_nowait(send_token)
+
+            app._apply_send_result = observe_send_result  # type: ignore[method-assign]
             navigation = app.query_one("#navigation-list", TautOptionList)
             await _pause_until(
                 pilot,
@@ -3268,17 +3279,14 @@ def test_overlapping_send_completion_only_clears_its_own_draft(
 
             first = alice.say("general", "first\nbody")
             sends[0].set_result(first)
-            await pilot.pause()
+            assert await asyncio.wait_for(send_results_applied.get(), timeout=5) == 1
             assert app.visual_state.draft_for("general") == expected
             assert composer.text == "second\nbody"
             assert composer.cursor_position == 4
 
             second = alice.say("general", "second\nbody")
             sends[1].set_result(second)
-            for _ in range(100):
-                await pilot.pause(0.01)
-                if composer.text == "":
-                    break
+            assert await asyncio.wait_for(send_results_applied.get(), timeout=5) == 2
             assert composer.text == ""
 
     try:

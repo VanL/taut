@@ -29,9 +29,10 @@
   credential-bearing `database_path_from_target` helper was removed from the
   public client API before external release. Direct `TautWatcher(client, ...)`
   construction was also removed; callers use `client.watch(...)`. The retained
-  TUI gate now verifies search-result anchor restoration from observable app
-  state after a deterministic competing navigation refresh, avoiding a Windows
-  scheduler race without weakening the behavior assertion.
+  TUI gate now verifies search-result anchor restoration and overlapping send
+  completion from production UI callback completion instead of sleep-driven
+  polling, avoiding Windows scheduler races without weakening the behavior
+  assertions.
 
 - Multi-queue watchers now reject unsupported yield strategies instead of
   silently accepting a setting that cannot affect round-robin scheduling.
