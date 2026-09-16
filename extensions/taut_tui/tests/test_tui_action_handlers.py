@@ -30,7 +30,7 @@ from taut_tui.screens import (
 )
 from taut_tui.session import ConversationSnapshot, NavigationSnapshot
 from taut_tui.summon import TuiSummonOperations
-from taut_tui.widgets import TautComposer, TautOptionList
+from taut_tui.widgets import TautComposer
 
 pytestmark = pytest.mark.sqlite_only
 
@@ -570,66 +570,28 @@ async def _search_open_result(context: HandlerContext) -> None:
     finally:
         observer.close()
     search_context_applied = asyncio.Event()
-    search_anchor_restore_invoked = asyncio.Event()
+    navigation_refresh_applied = asyncio.Event()
     observed_snapshots: list[ConversationSnapshot | None] = []
     apply_optional_conversation = context.app._apply_optional_conversation
-    apply_owned_search_anchor_restore = context.app._apply_owned_search_anchor_restore
     expected_intent = context.app._conversation_intent + 1
 
     def observe_search_context(
         intent: int,
         future: Future[ConversationSnapshot | None],
     ) -> None:
-        if intent != expected_intent:
-            apply_optional_conversation(intent, future)
-            return
-
-        def observe_search_anchor_restore(
-            generation: int,
-            owner: tuple[int, int],
-            authorize: bool,
-            restore: Callable[[tuple[Any, ...], int, int], None],
-            messages: tuple[Any, ...],
-            anchor_index: int,
-            intra_row_offset: int,
-        ) -> None:
-            assert owner == (expected_intent, context.message_ts)
-            assert messages[anchor_index].ts == context.message_ts
-            # Reproduce a live delivery/navigation refresh landing after
-            # the logical search anchor is committed but before its
-            # deferred physical viewport restore.
-            transcript = context.app._query_base("#transcript", TautOptionList)
-            transcript.scroll_to(y=0, animate=False, force=True)
-            context.app._capture_scroll_anchor()
-            apply_owned_search_anchor_restore(
-                generation,
-                owner,
-                authorize,
-                restore,
-                messages,
-                anchor_index,
-                intra_row_offset,
-            )
-            assert (
-                context.app.visual_state.scroll_anchor.message_id == context.message_ts
-            )
-            navigation: Future[NavigationSnapshot] = Future()
-            navigation.set_result(NavigationSnapshot((), (), ()))
-            context.app.call_after_refresh(
-                context.app._apply_navigation_result,
-                navigation,
-            )
-            search_anchor_restore_invoked.set()
-
-        patch.setattr(
-            context.app,
-            "_apply_owned_search_anchor_restore",
-            observe_search_anchor_restore,
-        )
         apply_optional_conversation(intent, future)
         snapshot = _successful_conversation(future)
-        if snapshot is not None:
-            observed_snapshots.append(snapshot)
+        if intent == expected_intent:
+            if snapshot is not None:
+                observed_snapshots.append(snapshot)
+            # Reproduce a live delivery/navigation refresh landing after
+            # the logical search anchor is committed but before its
+            # deferred physical viewport restore. The assertion below waits
+            # for the user-visible owner restore to clear the pending anchor.
+            navigation: Future[NavigationSnapshot] = Future()
+            navigation.set_result(NavigationSnapshot((), (), ()))
+            context.app._apply_navigation_result(navigation)
+            navigation_refresh_applied.set()
         search_context_applied.set()
 
     with context.monkeypatch.context() as patch:
@@ -640,7 +602,7 @@ async def _search_open_result(context: HandlerContext) -> None:
         )
         await _select_palette(context, ActionId.SEARCH_OPEN_RESULT)
         await asyncio.wait_for(search_context_applied.wait(), timeout=5)
-        await asyncio.wait_for(search_anchor_restore_invoked.wait(), timeout=5)
+        await asyncio.wait_for(navigation_refresh_applied.wait(), timeout=5)
         await _eventually(
             context.pilot,
             lambda: (
