@@ -46,6 +46,16 @@ Last refreshed: 2026-09-15 (Codex failure note; Claude 2026-09-14)
 
 ## Review Preference
 
+2026-09-16: Claude 2.1.273 passed a fresh combined file-read/write-containment
+probe with safe mode, plan mode, matched Read/Grep/Glob tool sets, strict MCP
+config, no session persistence, JSON output and closed stdin. It read the
+Summon spec heading (PROBE-OK) and reported WRITE-UNAVAILABLE;
+`probe-write-test.txt` was absent. Result: success/end_turn, completed,
+is_error=false; default reviewer resolved to claude-opus-4-8[1m].
+The Windows lifecycle plan review completed in 290 seconds with exit 0,
+success/end_turn and terminal_reason=completed, verdict PASS. Findings and
+dispositions are recorded in that plan; no unexpected repository write occurred.
+
 2026-09-15 Windows PTY plan review probe: Claude 2.1.207 passed a fresh
 read-only file-reading liveness check (`PROBE-OK # Taut Summon Specification`)
 with the same safe-mode, matched Read/Grep/Glob tool restrictions, strict MCP

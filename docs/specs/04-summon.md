@@ -1645,6 +1645,9 @@ tail plus the `--attach` instruction.
 
 ## Related Plans
 
+- `docs/plans/2026-09-16-windows-lifecycle-determinism-plan.md` — plans exact
+  driver-test ownership and cancellation retirement fixes under existing contracts.
+
 - `docs/plans/2026-09-16-coordinated-0-9-8-preparation-plan.md` — reconciles
   the supported broker floors for the coordinated 0.9.8 release.
 

@@ -1035,6 +1035,9 @@ Version 1 does not include:
 
 ## Related Plans
 
+- `docs/plans/2026-09-16-windows-lifecycle-determinism-plan.md` — plans viewport
+  ownership corrections and native input/navigation diagnosis under existing contracts.
+
 - `docs/plans/2026-09-15-broker-session-integration-plan.md` — separates TUI
   client, watcher runtime, and reactor BrokerSession ownership.
 
